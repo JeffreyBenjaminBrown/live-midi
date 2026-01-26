@@ -1,0 +1,46 @@
+
+* Docker MIDI Configuration for NixOS with Pipewire
+
+Given your NixOS setup with Pipewire and JACK support enabled, here's the modified Docker command:
+
+#+begin_src bash
+docker run --name "$CONTAINER_NAME" -it -d \
+  -v /run/user/1000/pipewire-0:/run/user/1000/pipewire-0   \
+  -e PIPEWIRE_RUNTIME_DIR=/run/user/1000                   \
+  --network host                           \
+  --platform linux/amd64                   \
+  --user 1000:1000                         \
+  --group-add audio                        \
+  --device /dev/snd                        \
+  --dns 8.8.8.8 --dns 1.1.1.1              \
+  -v "$NATIVE":/home/ubuntu                \
+  jeffreybbrown/hode:latest
+#+end_src
+
+** Key additions:
+
+- ~--group-add audio~ - Adds the container user to the audio group for MIDI/audio device access
+- ~--device /dev/snd~ - Mounts all ALSA sound/MIDI devices (includes ~/dev/snd/seq~, ~/dev/snd/midiC*D*~, etc.)
+
+** How this works with your NixOS Pipewire setup:
+
+*** MIDI Input (Hardware → Container):
+- Your hardware MIDI devices appear as ALSA devices at ~/dev/snd/midiC*D*~
+- The ~--device /dev/snd~ mount makes these accessible inside the container
+- Applications in the container can read from these ALSA MIDI devices directly
+
+*** MIDI Output (Container → QJackCtl):
+- Your Pipewire configuration has ~services.pipewire.jack.enable = true~
+- The shared Pipewire runtime (~/run/user/1000/pipewire-0~) allows JACK applications in the container to connect to the host's Pipewire-JACK
+- JACK MIDI ports created by container applications will appear in QJackCtl on the host
+- You can route connections between container and host JACK MIDI ports using QJackCtl
+
+*** Latency settings:
+- Your host is configured for 512/48000 latency
+- Container applications using JACK will inherit these settings through the shared Pipewire runtime
+
+** Note on ALSA sequencer:
+Your config has ~alsaSeq.enable = false~, which disables the ALSA sequencer. This means:
+- ALSA MIDI applications won't have access to the sequencer API
+- You'll need to use JACK MIDI applications in the container, or applications that can read/write raw ALSA MIDI devices
+- If you need ALSA sequencer support, consider enabling it in your NixOS config, or run ~a2jmidid~ on the host to bridge ALSA MIDI to JACK
