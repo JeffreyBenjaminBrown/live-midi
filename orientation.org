@@ -12,10 +12,11 @@
 * USAGE
 ** Connections
    To make this audible, in QJackCtl connect
-     in Midi-Bridge, the red
-       'polite-ping:(capture_0) pulse-out'
-     to, in Reaper, the red
-       'MIDI Input 1'
+     purple things:
+       the Casio output to the program input
+     red things:
+       whatever outputs from Midi-Bridge
+       need connecting to Reaper
 * Pitfalls
 ** To read MIDI data without freezing
    Don't read raw binary data from MIDI devices directly,

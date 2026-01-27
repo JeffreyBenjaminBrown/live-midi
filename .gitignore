@@ -1,4 +1,3 @@
-
 *~
 .bash_history
 .cache/
@@ -8,4 +7,5 @@
 /.claude*
 /.npm
 /temp/
+Cargo.lock
 target/

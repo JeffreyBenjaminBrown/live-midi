@@ -7,5 +7,9 @@ edition = "2021"
 name = "polite_ping"
 path = "code/polite_ping.rs"
 
+[[bin]]
+name = "add_echo"
+path = "code/add_echo.rs"
+
 [dependencies]
 midir = "0.10"
