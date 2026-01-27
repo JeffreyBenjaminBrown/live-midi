@@ -1,0 +1,9 @@
+Starting the container, you'll see something like this:
+
+```
+jeff 2026-01-26 19:52:49 ~/code/midi$ docker exec -it $CONTAINER_NAME bash
+groups: cannot find name for group ID 17
+ubuntu@jbb-hp24-oled:/$
+```
+
+It doesn't matter.

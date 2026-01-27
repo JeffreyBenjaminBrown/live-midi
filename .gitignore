@@ -1,3 +1,10 @@
+
+*~
+.bash_history
+.cache/
+.emacs.desktop*
+.local/
+.ssh/
 /.claude*
 /.npm
 /temp/

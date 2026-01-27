@@ -4,3 +4,5 @@
 * The host system is running NixOS.
   I have copied (I would like to symlink, but Docker)
   the system's NixOS configuration to the folder host-nix-config-copy/.
+* The idea of the project
+  is to read and write MIDI to and from the host system.
