@@ -1,0 +1,6 @@
+* This project runs in a Docker container.
+  The root of the project is mounted to the container.
+  See docker.sh for details.
+* The host system is running NixOS.
+  I have copied (I would like to symlink, but Docker)
+  the system's NixOS configuration to the folder host-nix-config-copy/.
