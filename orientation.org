@@ -1,8 +1,19 @@
 * This project runs in a Docker container.
   The root of the project is mounted to the container.
-  See docker.sh for details.
+  See docker.sh for how it's launched.
+  Permissions matter -- it needs access to audio (or at least midi,
+  but I think both are bundled in the 'audio' group).
 * The host system is running NixOS.
   I have copied (I would like to symlink, but Docker)
   the system's NixOS configuration to the folder host-nix-config-copy/.
 * The idea of the project
   is to read and write MIDI to and from the host system.
+* Pitfalls
+** To read MIDI data without freezing
+   Don't read raw binary data from MIDI devices directly,
+   because that blocks indefinitely.
+   Use aseqdump with timeout and head:
+   : timeout 10s aseqdump -p 20:0 2>&1 | head -20
+   To list available MIDI devices:
+   : aconnect -l
+   : amidi -l
