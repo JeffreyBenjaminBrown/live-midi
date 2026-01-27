@@ -3,5 +3,9 @@ name = "midi_pulse"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "polite_ping"
+path = "code/polite_ping.rs"
+
 [dependencies]
 midir = "0.10"
