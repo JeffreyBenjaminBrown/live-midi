@@ -8,3 +8,4 @@
 /.claude*
 /.npm
 /temp/
+target/
