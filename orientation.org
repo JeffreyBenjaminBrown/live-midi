@@ -1,4 +1,7 @@
-* This project runs in a Docker container.
+* The idea of the project
+  is to, from within a docker container,
+  read and write MIDI to and from the host system.
+* This code runs in a Docker container.
   The root of the project is mounted to the container.
   See docker.sh for how it's launched.
   Permissions matter -- it needs access to audio (or at least midi,
@@ -6,8 +9,13 @@
 * The host system is running NixOS.
   I have copied (I would like to symlink, but Docker)
   the system's NixOS configuration to the folder host-nix-config-copy/.
-* The idea of the project
-  is to read and write MIDI to and from the host system.
+* USAGE
+** Connections
+   To make this audible, in QJackCtl connect
+     in Midi-Bridge, the red
+       'polite-ping:(capture_0) pulse-out'
+     to, in Reaper, the red
+       'MIDI Input 1'
 * Pitfalls
 ** To read MIDI data without freezing
    Don't read raw binary data from MIDI devices directly,

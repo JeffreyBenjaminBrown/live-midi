@@ -7,6 +7,7 @@
 //! ```
 //!
 //! # Where to see it in QJackCtl
+//! Claude wrote this. I haven't got it to work, but I haven't tried much. See the USAGE section of orientation.org for what I've been doing.
 //!
 //! 1. Open QJackCtl and click the "Connect" button (or press Ctrl+P)
 //! 2. Go to the "ALSA" tab (not "Audio" or "MIDI" - those are for JACK routing)
@@ -24,28 +25,28 @@ use midir::os::unix::VirtualOutput;
 use std::{thread, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let midi_out = MidiOutput::new("polite-ping")?;
+  let midi_out: MidiOutput = MidiOutput::new("polite-ping")?;
 
-    // Create a virtual output port (appears in ALSA/JACK)
-    let mut conn = midi_out.create_virtual("pulse-out")?;
+  // Create a virtual output port (appears in ALSA/JACK)
+  let mut conn: midir::MidiOutputConnection = midi_out.create_virtual("pulse-out")?;
 
-    println!("Created virtual MIDI port 'polite-ping:pulse-out'");
-    println!("Look for 'polite-ping' in QJackCtl's ALSA tab or aconnect -l");
-    println!("Sending note 96 (C7), velocity 10, every 300ms. Ctrl+C to stop.");
+  println!("Created virtual MIDI port 'polite-ping:pulse-out'");
+  println!("Look for 'polite-ping' in QJackCtl's ALSA tab or aconnect -l");
+  println!("Sending note 96 (C7), velocity 10, every 300ms. Ctrl+C to stop.");
 
-    let note: u8 = 96;      // C7 - high note
-    let velocity: u8 = 10;  // quiet
-    let channel: u8 = 0;    // channel 1
+  let note: u8 = 96;    // C7 - high note
+  let velocity: u8 = 10;  // quiet
+  let channel: u8 = 0;  // channel 1
 
-    loop {
-        // Note on: 0x90 + channel, note, velocity
-        conn.send(&[0x90 | channel, note, velocity])?;
+  loop {
+    // Note on: 0x90 + channel, note, velocity
+    conn.send(&[0x90 | channel, note, velocity])?;
 
-        thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(100));
 
-        // Note off: 0x80 + channel, note, velocity
-        conn.send(&[0x80 | channel, note, 0])?;
+    // Note off: 0x80 + channel, note, velocity
+    conn.send(&[0x80 | channel, note, 0])?;
 
-        thread::sleep(Duration::from_millis(200));
-    }
+    thread::sleep(Duration::from_millis(200));
+  }
 }
