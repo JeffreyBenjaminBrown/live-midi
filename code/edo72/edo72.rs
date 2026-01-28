@@ -111,53 +111,80 @@ fn transform_message(
     return vec![message.to_vec()]; }
   let original_note: u8 = message[1];
   let velocity: u8 = message[2];
-  // Top octave controls the offset (F#7 = 0, G7 = +1, F7 = -1, etc.)
   if original_note >= OFFSET_OCTAVE_START {
-    if status == 0x90 && velocity > 0 { // note-on
-      let offset: i8 = original_note as i8 - OFFSET_ZERO_NOTE as i8;
-      CURRENT_OFFSET.store(offset, Ordering::Relaxed); }
-    return vec![]; } // don't pass through offset control notes
-  let is_note_on: bool = status == 0x90 && velocity > 0;
-  let is_note_off: bool = status == 0x80 || (status == 0x90 && velocity == 0);
-  let normalized_pitch: i16 =
-    original_note as i16
-    - LOWEST_A as i16
-    + SHIFT_IN_12_EDO as i16;
-  let channel_offset: i16 = normalized_pitch.div_euclid(12);
-  let note_offset: i16 = normalized_pitch.rem_euclid(12);
-  let new_channel: i16 = MIN_CHANNEL as i16 + channel_offset;
-  let offset: i8 = CURRENT_OFFSET.load(Ordering::Relaxed);
-  let new_note: i16 = MIN_NOTE as i16
-                      + note_offset * EDO_OVER_12 as i16
-                      + offset as i16;
-  if new_channel < 0 || new_channel > 15 {
-    return vec![]; } // channel out of range
-  let out_channel: u8 = new_channel as u8;
+    handle_offset_control(
+      status, velocity, original_note)
+  } else {
+    handle_regular_note(
+      status, velocity, original_note) }}
+
+fn handle_offset_control(
+  status: u8,
+  velocity: u8,
+  original_note: u8
+) -> Vec<Vec<u8>> {
+  // Top octave controls the offset (F#7 = 0, G7 = +1, F7 = -1, etc.)
+  if status == 0x90 && velocity > 0 { // note-on
+    let offset: i8 = original_note as i8 - OFFSET_ZERO_NOTE as i8;
+    CURRENT_OFFSET.store(offset, Ordering::Relaxed); }
+  vec![] } // don't pass through offset control notes
+
+fn handle_regular_note(
+  status: u8,
+  velocity: u8,
+  original_note: u8
+) -> Vec<Vec<u8>> {
+  let is_note_on: bool =
+    status == 0x90 && velocity > 0;
+  let is_note_off: bool =
+    status == 0x80 || (status == 0x90 && velocity == 0);
+  let (new_channel, new_note): (i16, i16) =
+    compute_output(original_note);
+  let output_in_range: bool = // what the MIDI standard allows
+    new_channel >= 0 && new_channel <= 15 &&
+    new_note >= 0 && new_note <= 127;
   let mut results: Vec<Vec<u8>> = vec![];
   let mut ongoing = ongoing_notes().lock().unwrap();
   if is_note_on {
     if let Some(old) = ongoing.get(&original_note) {
       // The input note is already playing.
-      if old.output_channel != out_channel ||
+      if !output_in_range ||
+         old.output_channel != new_channel as u8 ||
          old.output_note != new_note as u8
       { // The old note is somehow different. Silence it.
         let off_status: u8 = 0x80 | old.output_channel;
         results.push(vec![off_status, old.output_note, 0]); }}
-    if new_note >= 0 && new_note <= 127 {
-      // Send the new note (if in range).
+    if output_in_range {
+      // Send the new note.
       ongoing.insert(original_note, TransformedNote {
-        output_channel: out_channel,
+        output_channel: new_channel as u8,
         output_note: new_note as u8 });
-      let on_status: u8 = 0x90 | out_channel;
+      let on_status: u8 = 0x90 | new_channel as u8;
       results.push(vec![on_status, new_note as u8, velocity]); }
   } else if is_note_off {
     if let Some(old) = ongoing.remove(&original_note) {
       // Look up what output the earlier note-on produced.
       let off_status: u8 = 0x80 | old.output_channel;
       results.push(vec![off_status, old.output_note, velocity]);
-    } else if new_note >= 0 && new_note <= 127 {
+    } else if output_in_range {
       // Somehow there is no record of the earlier note-on.
       // Send a note-off anyway, using current settings.
-      let off_status: u8 = 0x80 | out_channel;
+      let off_status: u8 = 0x80 | new_channel as u8;
       results.push(vec![off_status, new_note as u8, velocity]); }}
   results }
+
+fn compute_output(
+  original_note: u8
+) -> (i16, // channel
+      i16) { // note
+  let normalized: i16 = original_note as i16
+                        - LOWEST_A as i16
+                        + SHIFT_IN_12_EDO as i16;
+  let channel_offset: i16 = normalized.div_euclid(12);
+  let note_offset: i16 = normalized.rem_euclid(12);
+  let channel: i16 = MIN_CHANNEL as i16 + channel_offset;
+  let offset: i8 = CURRENT_OFFSET.load(Ordering::Relaxed);
+  let note: i16 = MIN_NOTE as i16
+                  + note_offset * EDO_OVER_12 as i16
+                  + offset as i16;
+  (channel, note) }
