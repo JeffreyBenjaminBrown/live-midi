@@ -55,6 +55,21 @@ fn ongoing_shifts(
   ONGOING.get_or_init(
     || Mutex::new(HashMap::new() )) }
 
+fn pitch_class_shifts(
+) -> &'static Mutex<HashMap<u8, i8>> {
+  static SHIFTS: OnceLock<Mutex<HashMap<u8, i8>>> =
+    OnceLock::new();
+  SHIFTS.get_or_init(
+    || Mutex::new(HashMap::new() )) }
+
+fn current_total_shift() -> Option<i16> {
+  let shifts = ongoing_shifts() . lock() . unwrap();
+  if shifts . is_empty()
+  { None
+  } else { Some( shifts . values() . map(
+                   |s| s . shift_value as i16)
+                 . sum( )) }}
+
 const SHIFT_IN_12_EDO : i8 = -5;  // Added to the MIDI note before processing.
 const LOWEST_A        : u8 = 21;  // A0, lowest note on 88-key piano
 const MIN_CHANNEL     : u8 = 1;   // adjust for whatever the synth wants
@@ -159,6 +174,13 @@ fn handle_regular_note(
     status == 0x90 && velocity > 0;
   let is_note_off: bool =
     status == 0x80 || (status == 0x90 && velocity == 0);
+  if is_note_on {
+    // Update the persistent pitch class shift before transformation,
+    // but only if shift keys are being held (we find a Some).
+    if let Some(total_shift) = current_total_shift() {
+      let pitch_class: u8 = original_note % 12;
+      pitch_class_shifts().lock().unwrap()
+        .insert(pitch_class, total_shift as i8); }}
   let (new_channel, new_note): (i16, i16) =
     edo72_instruction(original_note);
   let output_in_range: bool = // what the MIDI standard allows
@@ -204,11 +226,12 @@ fn edo72_instruction(
   let channel_offset: i16 = normalized.div_euclid(12);
   let note_offset: i16 = normalized.rem_euclid(12);
   let channel: i16 = MIN_CHANNEL as i16 + channel_offset;
-  let total_shift: i16 = ongoing_shifts().lock().unwrap()
-    .values()
-    .map(|s| s.shift_value as i16)
-    .sum();
+  let pitch_class: u8 = original_note % 12;
+  let shift :  i16 =
+    pitch_class_shifts() . lock() . unwrap()
+    . get(&pitch_class) . copied()
+    . unwrap_or(0) as i16;
   let note: i16 = MIN_NOTE as i16
                   + note_offset * EDO_OVER_12 as i16
-                  + total_shift;
+                  + shift;
   (channel, note) }
