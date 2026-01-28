@@ -11,7 +11,7 @@
 //! - "sample-out": Plays back recorded loop
 //!
 //! Special keys (not passed through):
-//! - Bb7 (note 106): Stop - ends the loop and silences hanging notes
+//! - Bb7 (note 106): Stop - ends loop, silences hanging notes, stops recording if it's going
 //! - B7 (note 107): Record - starts/stops recording
 //! - C8 (note 108): Trigger - stops recording (if active) and starts looping
 
@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
       if let Some(n) = note {
         if n == TOP_BFLAT && is_on {
-          handle_stop(&gen_for_callback, &tx_sample);
+          handle_stop(&state_for_callback, &gen_for_callback, &tx_sample);
           return;
         }
 
@@ -270,7 +270,14 @@ fn send_all_notes_off(conn: &mut MidiOutputConnection, active_notes: &HashSet<(u
   }
 }
 
-fn handle_stop(gen: &AtomicU64, tx: &mpsc::Sender<Command>) {
+fn handle_stop(
+  state: &Arc<Mutex<SamplerState>>,
+  gen: &AtomicU64,
+  tx: &mpsc::Sender<Command>,
+) {{ let mut state: MutexGuard<SamplerState> = state.lock().unwrap();
+     if state.recording {
+     stop_recording(&mut state);
+     }}
   gen.fetch_add(1, Ordering::SeqCst);
   let _ = tx.send(Command::Stop);
   println!("[Sampler] Stop requested"); }
