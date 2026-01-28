@@ -27,7 +27,6 @@
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI8, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::{io, thread};
@@ -37,9 +36,21 @@ struct TransformedNote {
   output_note: u8,
 }
 
+struct ShiftPress {
+  input_note: u8,
+  shift_value: i8,
+}
+
 fn ongoing_notes(
 ) -> &'static Mutex<HashMap<u8, TransformedNote>> {
   static ONGOING: OnceLock<Mutex<HashMap<u8, TransformedNote>>> =
+    OnceLock::new();
+  ONGOING.get_or_init(
+    || Mutex::new(HashMap::new() )) }
+
+fn ongoing_shifts(
+) -> &'static Mutex<HashMap<u8, ShiftPress>> {
+  static ONGOING: OnceLock<Mutex<HashMap<u8, ShiftPress>>> =
     OnceLock::new();
   ONGOING.get_or_init(
     || Mutex::new(HashMap::new() )) }
@@ -51,7 +62,6 @@ const MIN_NOTE        : u8 = 28;  // could also be adjusted for the synth. I lik
 const EDO_OVER_12     : u8 = 6;   // 72 / 12 = 6
 const OFFSET_OCTAVE_START: u8 = 97;  // C#7 - first note of offset control octave (top 12 keys)
 const OFFSET_ZERO_NOTE   : u8 = 102; // F#7 - this note means offset = 0
-static CURRENT_OFFSET: AtomicI8 = AtomicI8::new(0);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let midi_in: MidiInput =
@@ -118,15 +128,26 @@ fn transform_message(
     handle_regular_note(
       status, velocity, original_note) }}
 
+/// Modifies the set of shifts.
 fn handle_offset_control(
   status: u8,
   velocity: u8,
-  original_note: u8
+  input_note: u8
 ) -> Vec<Vec<u8>> {
   // Top octave controls the offset (F#7 = 0, G7 = +1, F7 = -1, etc.)
-  if status == 0x90 && velocity > 0 { // note-on
-    let offset: i8 = original_note as i8 - OFFSET_ZERO_NOTE as i8;
-    CURRENT_OFFSET.store(offset, Ordering::Relaxed); }
+  // Total shift = sum of all held shift notes.
+  let is_note_on: bool =
+    status == 0x90 && velocity > 0;
+  let is_note_off: bool =
+    status == 0x80 || (status == 0x90 && velocity == 0);
+  let mut shifts = ongoing_shifts().lock().unwrap();
+  if is_note_on {
+    let shift_value: i8 = input_note as i8
+                          - OFFSET_ZERO_NOTE as i8;
+    shifts.insert(input_note,
+                  ShiftPress { input_note, shift_value });
+  } else if is_note_off {
+    shifts.remove(&input_note); }
   vec![] } // don't pass through offset control notes
 
 fn handle_regular_note(
@@ -139,7 +160,7 @@ fn handle_regular_note(
   let is_note_off: bool =
     status == 0x80 || (status == 0x90 && velocity == 0);
   let (new_channel, new_note): (i16, i16) =
-    compute_output(original_note);
+    edo72_instruction(original_note);
   let output_in_range: bool = // what the MIDI standard allows
     new_channel >= 0 && new_channel <= 15 &&
     new_note >= 0 && new_note <= 127;
@@ -173,7 +194,7 @@ fn handle_regular_note(
       results.push(vec![off_status, new_note as u8, velocity]); }}
   results }
 
-fn compute_output(
+fn edo72_instruction(
   original_note: u8
 ) -> (i16, // channel
       i16) { // note
@@ -183,8 +204,11 @@ fn compute_output(
   let channel_offset: i16 = normalized.div_euclid(12);
   let note_offset: i16 = normalized.rem_euclid(12);
   let channel: i16 = MIN_CHANNEL as i16 + channel_offset;
-  let offset: i8 = CURRENT_OFFSET.load(Ordering::Relaxed);
+  let total_shift: i16 = ongoing_shifts().lock().unwrap()
+    .values()
+    .map(|s| s.shift_value as i16)
+    .sum();
   let note: i16 = MIN_NOTE as i16
                   + note_offset * EDO_OVER_12 as i16
-                  + offset as i16;
+                  + total_shift;
   (channel, note) }
