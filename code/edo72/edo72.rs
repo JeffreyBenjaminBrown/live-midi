@@ -26,9 +26,23 @@
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI8, Ordering};
 use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 use std::{io, thread};
+
+struct TransformedNote {
+  output_channel: u8,
+  output_note: u8,
+}
+
+fn ongoing_notes(
+) -> &'static Mutex<HashMap<u8, TransformedNote>> {
+  static ONGOING: OnceLock<Mutex<HashMap<u8, TransformedNote>>> =
+    OnceLock::new();
+  ONGOING.get_or_init(
+    || Mutex::new(HashMap::new() )) }
 
 const SHIFT_IN_12_EDO : i8 = -5;  // Added to the MIDI note before processing.
 const LOWEST_A        : u8 = 21;  // A0, lowest note on 88-key piano
@@ -37,7 +51,6 @@ const MIN_NOTE        : u8 = 28;  // could also be adjusted for the synth. I lik
 const EDO_OVER_12     : u8 = 6;   // 72 / 12 = 6
 const OFFSET_OCTAVE_START: u8 = 97;  // C#7 - first note of offset control octave (top 12 keys)
 const OFFSET_ZERO_NOTE   : u8 = 102; // F#7 - this note means offset = 0
-
 static CURRENT_OFFSET: AtomicI8 = AtomicI8::new(0);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,8 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     midi_in.create_virtual(
       "in",
       move |_timestamp: u64, message: &[u8], _: &mut ()| {
-        if let Some(transformed) = transform_message(message) {
-          let _ = tx.send(transformed); }},
+        for msg in transform_message(message) {
+          let _ = tx.send(msg); }},
       () )?;
   print_startup_message();
   let mut input: String = String::new();
@@ -88,14 +101,14 @@ fn run_output_thread(
 
 fn transform_message(
   message: &[u8]
-) -> Option<Vec<u8>> {
+) -> Vec<Vec<u8>> {
   if message.len() < 2 {
-    return Some(message.to_vec()); }
+    return vec![message.to_vec()]; }
   let status: u8 = message[0] & 0xF0;
   if message.len() < 3 ||
     ! ( status == 0x80 || status == 0x90)
   { // Not a note event, so pass through unchanged.
-    return Some(message.to_vec()); }
+    return vec![message.to_vec()]; }
   let original_note: u8 = message[1];
   let velocity: u8 = message[2];
   // Top octave controls the offset (F#7 = 0, G7 = +1, F7 = -1, etc.)
@@ -103,23 +116,48 @@ fn transform_message(
     if status == 0x90 && velocity > 0 { // note-on
       let offset: i8 = original_note as i8 - OFFSET_ZERO_NOTE as i8;
       CURRENT_OFFSET.store(offset, Ordering::Relaxed); }
-    return None; } // don't pass through offset control notes
-  let normalized: i16 = original_note as i16
-                        - LOWEST_A as i16
-                        + SHIFT_IN_12_EDO as i16;
-  let channel_offset: i16 = normalized.div_euclid(12);
-  let note_offset: i16 = normalized.rem_euclid(12); // Whereas (%) preserves sign, rem_euclid returns in range [0,divisor-1].
+    return vec![]; } // don't pass through offset control notes
+  let is_note_on: bool = status == 0x90 && velocity > 0;
+  let is_note_off: bool = status == 0x80 || (status == 0x90 && velocity == 0);
+  let normalized_pitch: i16 =
+    original_note as i16
+    - LOWEST_A as i16
+    + SHIFT_IN_12_EDO as i16;
+  let channel_offset: i16 = normalized_pitch.div_euclid(12);
+  let note_offset: i16 = normalized_pitch.rem_euclid(12);
   let new_channel: i16 = MIN_CHANNEL as i16 + channel_offset;
   let offset: i8 = CURRENT_OFFSET.load(Ordering::Relaxed);
   let new_note: i16 = MIN_NOTE as i16
                       + note_offset * EDO_OVER_12 as i16
                       + offset as i16;
-  if ( new_channel < 0 || new_channel > 15 ||
-       new_note    < 0 || new_note    > 127 )
-  { // the MIDI standard does not allow such messages
-    return None; }
-  let new_status: u8 = status | (new_channel as u8);
-  Some(vec![new_status,
-            new_note as u8,
-            velocity])
-}
+  if new_channel < 0 || new_channel > 15 {
+    return vec![]; } // channel out of range
+  let out_channel: u8 = new_channel as u8;
+  let mut results: Vec<Vec<u8>> = vec![];
+  let mut ongoing = ongoing_notes().lock().unwrap();
+  if is_note_on {
+    if let Some(old) = ongoing.get(&original_note) {
+      // The input note is already playing.
+      if old.output_channel != out_channel ||
+         old.output_note != new_note as u8
+      { // The old note is somehow different. Silence it.
+        let off_status: u8 = 0x80 | old.output_channel;
+        results.push(vec![off_status, old.output_note, 0]); }}
+    if new_note >= 0 && new_note <= 127 {
+      // Send the new note (if in range).
+      ongoing.insert(original_note, TransformedNote {
+        output_channel: out_channel,
+        output_note: new_note as u8 });
+      let on_status: u8 = 0x90 | out_channel;
+      results.push(vec![on_status, new_note as u8, velocity]); }
+  } else if is_note_off {
+    if let Some(old) = ongoing.remove(&original_note) {
+      // Look up what output the earlier note-on produced.
+      let off_status: u8 = 0x80 | old.output_channel;
+      results.push(vec![off_status, old.output_note, velocity]);
+    } else if new_note >= 0 && new_note <= 127 {
+      // Somehow there is no record of the earlier note-on.
+      // Send a note-off anyway, using current settings.
+      let off_status: u8 = 0x80 | out_channel;
+      results.push(vec![off_status, new_note as u8, velocity]); }}
+  results }
