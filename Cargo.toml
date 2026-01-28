@@ -11,5 +11,9 @@ path = "code/polite_ping.rs"
 name = "add_echo"
 path = "code/add_echo.rs"
 
+[[bin]]
+name = "sampler"
+path = "code/sampler.rs"
+
 [dependencies]
 midir = "0.10"

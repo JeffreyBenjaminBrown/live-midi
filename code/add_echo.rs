@@ -7,7 +7,7 @@
 //! ```
 //!
 //! Creates three virtual MIDI ports:
-//! - "midi-in": Input port - connect your MIDI source here
+//! - "midi-in": Input port - connect MIDI source (keyboard) here
 //! - "immediate-out": Outputs MIDI immediately (pass-through)
 //! - "echo-out": Outputs MIDI delayed by 300ms
 
