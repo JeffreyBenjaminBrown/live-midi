@@ -24,7 +24,7 @@ use std::{io, thread};
 
 const SHIFT_IN_12_EDO : i8 = -5; // Added to the MIDI note before processing.
 const LOWEST_A        : u8 = 21; // A0, lowest note on 88-key piano
-const MIN_CHANNEL     : u8 = 0;  // adjust for whatever the synth wants
+const MIN_CHANNEL     : u8 = 1;  // adjust for whatever the synth wants
 const MIN_NOTE        : u8 = 28; // could also be adjusted for the synth. I like to adjust the synth for this instead, though, because 28 = (128 - 72) / 2 puts the notes closest to the middle of the range [0,127], which makes future MIDI edits less constrained -- plenty of room to adjust up or down in either direction without switching channels.
 const EDO_OVER_12     : u8 = 6;  // 72 / 12 = 6
 
@@ -86,8 +86,8 @@ fn transform_message(
   let normalized: i16 = original_note as i16
                         - LOWEST_A as i16
                         + SHIFT_IN_12_EDO as i16;
-  let channel_offset: i16 = normalized / 12;
-  let note_offset: i16 = normalized % 12;
+  let channel_offset: i16 = normalized.div_euclid(12);
+  let note_offset: i16 = normalized.rem_euclid(12); // Whereas (%) preserves sign, rem_euclid returns in range [0,divisor-1].
   let new_channel: i16 = MIN_CHANNEL as i16 + channel_offset;
   let new_note: i16 = MIN_NOTE as i16
                       + note_offset * EDO_OVER_12 as i16;
