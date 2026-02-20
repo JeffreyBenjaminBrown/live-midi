@@ -1,0 +1,69 @@
+* dubstep
+** special keys are for changing timbre
+** make a scide synth with momentum
+* microtonal shift
+** 1
+   Use one note at a time from the highest octave
+   to define 72-edo shifts
+     for whatever note from another octave is played
+     while that high note is depressed.
+   Persist those shifts over time and octave.
+   A collection of such shift values is a 'scale'.
+** will wnat to bring down volume of loops
+* sampler
+** 1
+Based on the other two files in code/, let's make a sampler.
+This should echo to one output immediately,
+while the other is only used when samples are triggered.
+The two highest notes on the keyboard will be repurposed;
+they do not correspond to notes but to actions.
+In particular, the highest one is to trigger,
+and the second highest one is to record.
+Let's call those keys highest-c and highest-b.
+
+There will for now be at most only one recorded clip in memory at once.
+As soon as highest-b is pressed (note on), recording begins.
+It continues until highest-b or -c is again played (note on).
+If it's highest-b, recording ends and that's all.
+If it's instead highest-c, recording ends and playback begins.
+
+Let's modify that a little, though: If there was a note-on or note-off event from the normal keys within the last 50 ms, the recording time is moved back to that moment.
+** 2
+It needs complication. The loop should run forever. That means I need a third button. I renamed the top two keys to TOP_*. Let's add TOP_BFLAT, which ends the loop.
+
+We also need to worry about note offs. Ending the loop should terminate all notes that would be otherwise left ringing.
+** document it
+*** top-bflat: if recording is going, it ends.
+    if playback is going, it ends.
+*** top-b: start, stop recording
+*** top-c: start playback (and stop recording if applicable)
+* arpeggiator
+** one hand plays pattern
+** one hand chooses notes
+** playing is constrained to within the choice
+** record and trigger
+   three highest keys are to record to a place and
+                          to play from a place
+                          to stop that playback
+   next few keys below are the places
+** hard: the map from melody onto chosen pitch constraint
+* scale display
+  Print scales to screen. Maybe name them randomly.
+* scale save
+  on laptop, press 's' followed by any character
+* scale recall
+  on laptop, press 'r' followed by any character
+* silent scale input
+  Hold a chord with sustain pedal.
+  Press a key to pause the echo behavior.
+  With practice, a 7-tone scale consisting of two chains of fifths
+  will be enterable in under a second. In serial:
+    - right hand plays first shift
+    - left hand plays the notes with that shift
+    - right hand plays the second shift
+    - left hand plays the notes with that shift
+* record scale to reaper
+* play back scale from reaper
+* All note-specific shifts are absolute, i.e. idempotent.
+  Shifting a note up 2\72, and then doing it again,
+  is just like shifting it up 2\72 once.
