@@ -1,28 +1,4 @@
-//! 72-EDO MIDI transformer
-//!
-//! # USAGE
-//! ```sh
-//! cargo run --bin edo72
-//! ```
-//! Be sure the 'const' definitions in the code make sense --
-//! they depend on the synth being used.
-//!
-//! # PURPOSE
-//! Transforms piano notes into multi-channel output for 72-EDO tuning.
-//! For this first pass, uses every 6th note (so really 12-EDO).
-//! For each piano note (21-96):
-//! - Subtract lowest A (21) to get 0-75
-//! - divmod by 12: quotient -> channel offset,
-//!                 remainder -> note offset
-//! - Add those offsets to min_channel and min_note
-//!   (The earlier channel value is discarded.)
-//!
-//! # OFFSET CONTROL
-//! The top octave (notes 97-108, C#7 to C8) controls microtonal offset:
-//! - F#7 (102) = 0 offset (12-EDO)
-//! - G7 (103) = +1, G#7 = +2, ... C8 (108) = +6
-//! - F7 (101) = -1, E7 = -2, ... C#7 (97) = -5
-//! This offset is added to the output note, shifting all played notes.
+/// See the README.
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};

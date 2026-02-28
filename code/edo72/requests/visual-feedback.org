@@ -1,0 +1,24 @@
+Welcome back, Claude! Please read orientation.org to remember what we're doing here. Then, at code/edo72/ you'll find code that transforms incoming MIDI notes. I want to extend it, to provide visual feedback indicating which pitch is showing.
+
+Imagine an infinite 12-edo tuning grid, like the frets of a guitar.
+Pitch rises by 1\12 (that's one twelfth of an octave)
+in the horizontal direction and 5\12 in the vertical direction.
+We will use the grid to represent the octave.
+
+Each spot on the grid is 4 characters.
+The first two characters are either
+empty (black keys) or filled in (white keys).
+The next two characters are used to indicate the offset of that key:
+a digit in [0,6] that might be preceded by "-".
+
+I don't have an infinite screen,
+so we only show a portion of the infinite grid.
+Let's put E in the lower-left cell,
+and show five 'frets' (columns, spaced horizontal)
+and six 'strings' (rows, spaced vertically).
+
+Each time a note is played,
+the first two characters of every cell representing that note
+(modulo octave -- the grid ignores register)
+flash black and white for 100 ms with a 20 ms wavelength:
+10 ms black, 10 white, 10 black, 10 white ...

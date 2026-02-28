@@ -10,14 +10,14 @@
   I have copied (I would like to symlink, but Docker)
   the system's NixOS configuration to the folder host-nix-config-copy/.
 * USAGE
-** Connections
+** connections
    To make this audible, in QJackCtl connect
      purple things:
        the Casio output to the program input
      red things:
        whatever outputs from Midi-Bridge
        need connecting to Reaper
-* Pitfalls
+* PITFALLs
 ** To read MIDI data without freezing
    Don't read raw binary data from MIDI devices directly,
    because that blocks indefinitely.
