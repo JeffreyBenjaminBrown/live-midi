@@ -22,3 +22,6 @@ the first two characters of every cell representing that note
 (modulo octave -- the grid ignores register)
 flash black and white for 100 ms with a 20 ms wavelength:
 10 ms black, 10 white, 10 black, 10 white ...
+
+The timing for the visual feedback need not be precise. There could be a single global black and white save with a 20 ms duration that every note 'taps into' when it starts to flash and 'taps out of' when it's done. That way updates to the screen would only have to be every 10 ms at the fastest (and when nothing is flashing, no updates are needed).
+g
