@@ -1,0 +1,31 @@
+* request: GUI functionality
+** background
+*** docker.sh
+    shows how this code, which runs in a docker container,
+    interacts with the host system.
+*** code/edo72/
+    is the code I would like to extend.
+    The relevant portion of it is the display.
+    Currently that display shows a grid,
+    arranged like the frets of a guitar tuned to uniform perfect fourths,
+    each cell of which has three aspects:
+    - the note it corresponds to (modulo 12 --
+      octaves are irrelevant in the display)
+    - color (black or white, corresponds to the piano)
+    - microtonal shift (a small integer, could be negative)
+*** the host system
+    runs NixOS, KDE, X11 (not Wayland).
+    See nix/config/ for more on the host system.
+** extension request
+   That display is in the shell. It's hard to read.
+   I would like instead a window to appear on my host machine.
+   Install whatever Rust libraries you need.
+   If you need other things installed, inside or outside of this docker container,
+   you might not have permission; in that case just tell me what to do.
+
+   I would like the display to be like this:
+   - Each cell has a uniform background color, white or black,
+     corresponding to that note's color on a piano.
+   - The number in each cell is the opposite color from its background.
+   - Rather than flashing those colors (as currently happens)
+     apply a red border.
