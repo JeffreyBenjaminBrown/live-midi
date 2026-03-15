@@ -3,9 +3,11 @@
 .cache/
 .emacs.desktop*
 .local/
+.python_history
 .ssh/
 /.claude*
 /.npm
 /temp/
 Cargo.lock
+__pycache__/
 target/

@@ -1,4 +1,7 @@
 * 72-EDO MIDI transformer
+* how to play
+** recognize on screen the value at a root
+** retune other things in terms of it
 * purpose
 Transforms MIDI notes from a piano keyboard
 into multi-channel output for 72-EDO tuning.

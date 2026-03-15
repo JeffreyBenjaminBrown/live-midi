@@ -1,0 +1,7 @@
+* ALSO NEEDS INSTALLED
+  from within the Docker container,
+  if using git@github.com:JeffreyBenjaminBrown/docker-typedb-rust.git
+
+  apt-get install -y libportaudio2
+* to understand the architecture
+  see [[./architecture.org]]

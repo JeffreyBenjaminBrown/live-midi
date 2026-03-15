@@ -19,5 +19,9 @@ path = "code/sampler/sampler.rs"
 name = "edo72"
 path = "code/edo72/edo72.rs"
 
+[[bin]]
+name = "triangle_chord"
+path = "code/synth_rust/triangle_chord.rs"
+
 [dependencies]
 midir = "0.10"

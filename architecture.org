@@ -1,0 +1,77 @@
+* Architecture Overview
+
+** What this project is
+   A containerized MIDI transformation and audio environment.
+   Rust programs read/write MIDI via the midir library,
+   running inside Docker but talking to the host's audio stack.
+   There is also a Python-based WAV generator for direct audio output.
+
+** Container setup (Docker)
+   See docker.sh for the full invocation. Key aspects:
+   - The project root is bind-mounted into the container at /home/ubuntu.
+   - The host PipeWire socket is shared:
+     -v /run/user/1000/pipewire-0:/run/user/1000/pipewire-0
+   - The ALSA sound devices are exposed: --device /dev/snd
+   - The container joins the host's audio group.
+   - Network mode is host (--network host).
+   - Runs as UID 1000.
+   - Image: jeffreybbrown/hode:latest
+
+** Audio routing: host ↔ container
+*** How MIDI gets in and out
+    - midir (Rust) creates virtual JACK MIDI ports.
+    - These appear in QJackCtl on the host via PipeWire's JACK bridge.
+    - Physical MIDI keyboards (e.g. Casio) appear as ALSA devices
+      exposed through /dev/snd.
+    - Connections are made with aconnect (ALSA) or pw-link (PipeWire).
+*** How sound comes out
+    - MIDI path: container MIDI → QJackCtl → Reaper (or other synth) → speakers.
+      The container itself does not synthesize audio in this path;
+      an external synth (Reaper, Pianoteq, SuperCollider, etc.) does.
+    - Direct audio path: Python scripts generate WAV files,
+      playable via pw-play or aplay through the shared PipeWire socket
+      and /dev/snd.
+
+** Host system
+   NixOS. Copies of the host's Nix config live in host-nix-config-copy/.
+   - PipeWire is the audio server (PulseAudio disabled).
+   - JACK bridge is enabled (48kHz, quantum 512).
+   - ALSA sequencer is disabled; raw /dev/snd device access is used instead.
+
+** Tools available inside the container
+*** MIDI (Rust, via `cargo run --bin <name>`)
+    - polite_ping : sends a quiet C7 note every 300ms (test tool)
+    - add_echo    : MIDI pass-through with 300ms delayed echo
+    - edo72       : 72-EDO microtonal transformer with visual grid
+    - sampler     : record, loop, and trigger MIDI sequences
+*** Audio generation
+    - generate-soothing-beep.sh : Python script that writes a
+      multi-voice sine-wave WAV to /tmp/beep.wav
+*** Audio playback
+    - pw-play  : PipeWire native playback (preferred)
+    - aplay    : ALSA playback (also works)
+    - pw-cat   : PipeWire Swiss-army audio tool
+*** MIDI utilities
+    - aconnect : list/make ALSA MIDI connections
+    - amidi    : raw MIDI device access
+    - aseqdump : dump MIDI events from a port
+    - pw-link  : PipeWire port connection tool
+    - mido-connect, mido-play, mido-ports : Python MIDI utilities
+
+** Output capabilities summary
+   | Method       | What it produces | How                              |
+   |--------------+------------------+----------------------------------|
+   | Rust/midir   | MIDI events      | Virtual JACK ports → external synth |
+   | Python/wave  | WAV files        | Write file, play with pw-play    |
+   | Shell script | WAV files        | Wraps Python, same mechanism     |
+
+** Source layout
+   - code/demos/          : polite_ping.rs, add_echo.rs
+   - code/edo72/          : edo72.rs, connect-midi.sh, README.org
+   - code/sampler/        : sampler.rs, connect-midi.sh
+   - learnings/           : notes on Docker+MIDI+NixOS integration
+   - host-nix-config-copy/: snapshots of NixOS audio/package config
+   - Cargo.toml           : defines all four Rust binary targets
+   - docker.sh            : container launch command
+   - orientation.org      : original project overview
+   - TODO.org             : feature roadmap
