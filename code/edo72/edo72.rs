@@ -1,13 +1,13 @@
 /// See the README.
 /// Maybe tweak the 'CONST's defined below.
 
+mod gui;
+
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::io::Write;
-use std::time::{Duration, Instant};
 use std::{io, thread};
 
 const SHIFT_IN_12_EDO : i8 = -5;  // Added to the MIDI note before processing.
@@ -17,13 +17,13 @@ const MIN_NOTE_OUT    : u8 = 28;  // could also be adjusted for the synth. I lik
 const EDO_OVER_12     : u8 = 6;   // 72 / 12 = 6
 const OFFSET_OCTAVE_START : u8 = 97;  // C#7 - first note of offset control octave (top 12 keys)
 const OFFSET_ZERO_NOTE    : u8 = 102; // F#7 - this note means offset = 0
-const FLASH_MILLIS : u64 = 500; // how long a note-on flash lasts
-const TICK_MILLIS  : u64 = 50;  // redraw interval during flash animation
-const GRID_ROWS : usize = 6;  // strings; vertical extent of grid
-const GRID_COLS : usize = 7;  // frets; horizontal extent of grid
-const GRID_ANCHOR   : usize = 4; // pitch class of bottom-left cell (4 = E)
-const GRID_ROW_STEP : usize = 5; // semitones between adjacent strings (5 = perfect fourth)
-const WHITE_KEYS : [bool; 12] = [
+pub const FLASH_MILLIS : u64 = 500; // how long a note-on flash lasts
+pub const TICK_MILLIS  : u64 = 50;  // redraw interval during flash animation
+pub const GRID_ROWS : usize = 6;  // strings; vertical extent of grid
+pub const GRID_COLS : usize = 7;  // frets; horizontal extent of grid
+pub const GRID_ANCHOR   : usize = 4; // pitch class of bottom-left cell (4 = E)
+pub const GRID_ROW_STEP : usize = 5; // semitones between adjacent strings (5 = perfect fourth)
+pub const WHITE_KEYS : [bool; 12] = [
   true, false, true, // C, C#, D
   false, true, true, // D#, E, F, etc.
   false, true, false, true, false, true, ];
@@ -50,7 +50,7 @@ fn ongoing_shifts(
   ONGOING.get_or_init(
     || Mutex::new(HashMap::new() )) }
 
-fn pitch_class_shifts(
+pub fn pitch_class_shifts(
 ) -> &'static Mutex<HashMap<u8, i8>> {
   static SHIFTS: OnceLock<Mutex<HashMap<u8, i8>>> =
     OnceLock::new();
@@ -66,60 +66,6 @@ fn current_total_shift() -> Option<i16> {
                    |s: &ShiftPress| s . shift_value as i16)
                  . sum( )) }}
 
-fn draw_grid(
-  flash_deadline: &[Option<Instant>; 12],
-  phase_white: bool,
-) {
-  let now: Instant = Instant::now();
-  let shifts: MutexGuard<'_, HashMap<u8, i8>> =
-    pitch_class_shifts().lock().unwrap();
-  let mut buf: String = String::new();
-  for row in (0..GRID_ROWS).rev() {
-    for col in 0..GRID_COLS {
-      let pc: u8 =
-        ((GRID_ANCHOR + GRID_ROW_STEP * row + col) % 12) as u8;
-      let flashing: bool = flash_deadline [pc as usize]
-                           . map_or(false, |d: Instant| d > now);
-      let show_white: bool = if flashing { phase_white }
-                             else { WHITE_KEYS[pc as usize] };
-      let block: &str = if show_white { "██" } else { "  " };
-      let shift: i8 = shifts.get(&pc).copied().unwrap_or(0);
-      buf.push_str(&format!("{}{:2}", block, shift)); }
-    buf.push('\n'); }
-  buf.push_str(&format!("\x1b[{}A", GRID_ROWS));
-  io::stdout().write_all(buf.as_bytes());
-  io::stdout().flush(); }
-
-fn run_display_thread(rx: mpsc::Receiver<u8>) {
-  let mut flash_deadline: [Option<Instant>; 12] =
-    [None; 12];
-  let mut phase_white: bool = true;
-  let flash_dur: Duration = Duration::from_millis(FLASH_MILLIS);
-  let tick: Duration = Duration::from_millis(TICK_MILLIS);
-  draw_grid(&flash_deadline, phase_white);
-  loop { // Drain all pending events
-    while let Ok(pc) = rx.try_recv() {
-      flash_deadline[pc as usize] =
-        Some(Instant::now() + flash_dur); }
-    let any_active: bool = flash_deadline.iter().any(
-      |d: &Option<Instant>| d.map_or(false,
-        |d: Instant| d > Instant::now()));
-    if any_active {
-      phase_white = !phase_white;
-      let now: Instant = Instant::now();
-      for d in flash_deadline.iter_mut() {
-        if d.map_or(false, |deadline: Instant| deadline <= now)
-          { *d = None; }}
-      draw_grid(&flash_deadline, phase_white);
-      thread::sleep(tick);
-    } else {
-      draw_grid(&flash_deadline, true); // Final resting redraw
-      match rx.recv() { // Block until next note (zero CPU)
-        Ok(pc) => {
-          flash_deadline[pc as usize] =
-            Some(Instant::now() + flash_dur); }
-        Err(_) => break, }} }}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let midi_in: MidiInput =
     MidiInput::new("edo72-in")?;
@@ -132,24 +78,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let _out_thread: thread::JoinHandle<()> =
     thread::spawn(move || {
       run_output_thread(conn_out, rx); });
-  let (display_tx, display_rx): (mpsc::Sender<u8>,
-                                 mpsc::Receiver<u8>) = mpsc::channel();
+  let (display_tx, display_rx): (mpsc::Sender<(u8, bool)>,
+                                 mpsc::Receiver<(u8, bool)>) = mpsc::channel();
   let _conn_in: MidiInputConnection<()> =
     midi_in.create_virtual(
       "in",
       move |_timestamp: u64, message: &[u8], _: &mut ()| {
         for msg in transform_message(message) {
           let _ = tx.send(msg); }
-        let status: u8 = message[0] & 0xF0;
-        if message.len() >= 3 && status == 0x90
-           && message[2] > 0 && message[1] < OFFSET_OCTAVE_START {
-          let _ = display_tx.send(message[1] % 12);
-        }},
+        if message.len() >= 3 && message[1] < OFFSET_OCTAVE_START {
+          let status: u8 = message[0] & 0xF0;
+          let is_note_on: bool =
+            status == 0x90 && message[2] > 0;
+          let is_note_off: bool =
+            status == 0x80 || (status == 0x90 && message[2] == 0);
+          if is_note_on || is_note_off {
+            let _ = display_tx.send(
+              (message[1] % 12, is_note_on));
+          }}},
       () )?;
   print_startup_message();
   let _display_thread: thread::JoinHandle<()> =
     thread::spawn(move || {
-      run_display_thread(display_rx); });
+      gui::run_display_thread(display_rx); });
   let mut input: String = String::new();
   io::stdin().read_line(&mut input)?;
   Ok (( )) }

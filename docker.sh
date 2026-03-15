@@ -7,13 +7,15 @@ HOST=/home/jeff/code/midi
 docker run --name "$CONTAINER_NAME" -it -d               \
   -v /run/user/1000/pipewire-0:/run/user/1000/pipewire-0 \
   -e PIPEWIRE_RUNTIME_DIR=/run/user/1000                 \
-  --network host              \
-  --platform linux/amd64      \
-  --user 1000:1000            \
-  --dns 8.8.8.8 --dns 1.1.1.1 \
-  -v "$HOST":/home/ubuntu     \
-  --group-add $(getent group audio | cut -d: -f3) \
-  --device /dev/snd           \
+  -v /tmp/.X11-unix:/tmp/.X11-unix                       \
+  -e DISPLAY=${DISPLAY:-:0}                              \
+  --network host                                         \
+  --platform linux/amd64                                 \
+  --user 1000:1000                                       \
+  --dns 8.8.8.8 --dns 1.1.1.1                            \
+  -v "$HOST":/home/ubuntu                                \
+  --group-add $(getent group audio | cut -d: -f3)        \
+  --device /dev/snd                                      \
   jeffreybbrown/hode:latest
 
   # Above:

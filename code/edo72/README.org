@@ -1,8 +1,6 @@
 * 72-EDO MIDI transformer
-* how to play
-** recognize on screen the value at a root
-** retune other things in terms of it
 * purpose
+** in the abstract
 Transforms MIDI notes from a piano keyboard
 into multi-channel output for 72-EDO tuning.
 There are twelve microtonal shifts,
@@ -10,15 +8,20 @@ one for each note modulo octave.
 They all start at 0 and can be changed by +/- 6\72.
 While one presses a shift value from the shift octave,
 every note-on from the other octaves is shifted that much.
+** how to play it
+*** recognize on screen the value at a root
+*** retune other things in terms of it
 * using it
 ** to start it
 *** Connect the keyboard.
 *** Start the docker container.
     See [[../../docker.sh]].
-*** In the docker container, run
+*** In the host system, run
+    xhost +local: # so Wayland permits the GUI window
+*** In the docker container, from the project root, run
     cargo run --bin edo72
-*** In the host system, from this folder, run
-    ./connect-midi.sh
+*** In the host system, run
+    ./code/edo72//connect-midi.sh
 ** to configure it
 Be sure the 'const' definitions in the code make sense --
 they depend on the synth being used.

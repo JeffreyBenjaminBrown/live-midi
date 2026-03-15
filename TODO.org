@@ -5,15 +5,6 @@
 * dubstep
 ** special keys are for changing timbre
 ** make a scide synth with momentum
-* microtonal shift
-** 1
-   Use one note at a time from the highest octave
-   to define 72-edo shifts
-     for whatever note from another octave is played
-     while that high note is depressed.
-   Persist those shifts over time and octave.
-   A collection of such shift values is a 'scale'.
-** will wnat to bring down volume of loops
 * sampler
 ** 1
 Based on the other two files in code/, let's make a sampler.
