@@ -1,0 +1,91 @@
+* Measures of harmonic harshness
+
+** Spectral slope (spectral rolloff)
+
+Fit a line to log-power vs. log-frequency across the harmonics.
+A steeper negative slope means mellower sound.
+
+- Triangle wave: -12 dB/octave (amplitudes ~ 1/n^2)
+- Square wave:   -6 dB/octave  (amplitudes ~ 1/n)
+
+This is probably the most standard acoustic measure of
+"brightness" or "harshness."
+
+** Spectral centroid
+
+The power-weighted mean frequency:
+
+  C = sum(f * |X(f)|^2) / sum(|X(f)|^2)
+
+Higher centroid = brighter/harsher.
+Widely used in music information retrieval (MIR)
+as the primary "brightness" descriptor.
+
+** Spectral slope weighted by log-frequency
+
+A variant of spectral centroid using log-frequency:
+
+  C_log = sum(log(f) * |X(f)|^2) / sum(|X(f)|^2)
+
+This weights harmonics by perceptual pitch distance
+(an octave shift has the same effect everywhere).
+Less established than the standard spectral centroid
+but arguably more perceptually meaningful.
+
+** Spectral flatness
+
+  geometric_mean(|X(f)|^2) / arithmetic_mean(|X(f)|^2)
+
+Measures how noise-like vs. tonal. Less directly relevant
+here, since all waveforms in this family are strongly harmonic.
+
+* Trapezoidal wave family
+
+A one-parameter family of symmetric piecewise-linear waves,
+continuously interpolating from triangle (s=0) to square (s=1).
+
+** Parameters
+
+- s: side-hugging, in [0, 1].
+      Fraction of the period spent at the extreme values +/-1.
+- T: wavelength (period).
+- t: time.
+
+** Definition
+
+Let phi = (t / T) mod 1, so phi in [0, 1).
+Let h = s/2 (fraction of period at each extreme).
+Let r = (1 - s)/2 (fraction of period in each transition).
+
+#+begin_example
+         _____________
+  +1    /             \
+       / r         r   \
+------/---- h -- h -----\------
+  -1                     \_____________/
+       |   |         |   |
+       0   h       h+r  2h+r          1
+#+end_example
+
+  f(phi) =
+    -1                              if phi in [0, h)
+    -1 + 2 * (phi - h) / r         if phi in [h, h + r)
+    +1                              if phi in [h + r, 2h + r)
+    +1 - 2 * (phi - 2h - r) / r    if phi in [2h + r, 1)
+
+where phi = (t / T) mod 1.
+
+For r = 0 (i.e. s = 1), the transition is instantaneous (square wave).
+
+** Verification
+
+- s = 0: h = 0, r = 1/2.
+  No flat regions. Linear rise [0, 1/2), linear fall [1/2, 1).
+  Triangle wave.
+
+- s = 1/2: h = 1/4, r = 1/4.
+  1/4 period at -1, 1/4 rising, 1/4 at +1, 1/4 falling.
+
+- s = 1: h = 1/2, r = 0.
+  1/2 period at -1, instant jump, 1/2 period at +1.
+  Square wave.
