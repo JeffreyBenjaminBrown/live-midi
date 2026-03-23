@@ -126,7 +126,7 @@ def main():
     lhs_num = [(p, prime_info[p][0]) for p in primes if prime_info[p][1] == 'L']
     rhs_num = [(p, prime_info[p][0]) for p in primes if prime_info[p][1] == 'R']
     simplest = ((tuple(lhs_num), ()), (tuple(rhs_num), ()))
-    print(f"\nSimplest equation (ignoring 2): {format_equation(*simplest)}")
+    print(f"\nFoundational equation (ignoring 2): {format_equation(*simplest)}")
     degrees = {p: prime_info[p][0] for p in primes}
     print(f"Degrees: {', '.join(f'degree({p})={degrees[p]}' for p in primes)}")
 
