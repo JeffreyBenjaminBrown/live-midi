@@ -1,0 +1,412 @@
+#+TITLE: Bases and Generators for the Space of Periodic Waveforms
+#+DATE: 2026-04-14
+
+* The problem
+
+Every repeating waveform can be decomposed into sine waves (Fourier's
+theorem). But specifying every harmonic individually is tedious.
+Meanwhile, the "classic" simple waveforms---square, triangle,
+sawtooth---each have a single fixed spectrum (modulo fundamental
+frequency). Trapezoid waves add one parameter (the flat-top fraction
+=s=, morphing between triangle and square), but that's still not very
+flexible.
+
+What other approaches exist for spanning the space of periodic
+functions, or interesting subsets of it, with few parameters and cheap
+computation?
+
+* Mathematical bases (not just sines)
+
+** Fourier basis (sines and cosines)
+
+The standard. Every L^2 periodic function can be represented as a sum
+of sines and cosines. Complete and orthonormal. The downside: you need
+infinitely many coefficients to represent anything with sharp features,
+and each coefficient is an independent degree of freedom.
+
+** Walsh functions (square-wave basis)
+
+Yes, square waves (or rather, functions that only take values +1 and -1)
+can form a complete orthonormal basis. The Walsh functions are exactly
+this. They are defined on [0,1) and take only the values +1 and -1,
+switching at dyadic rationals. They are ordered by "sequency" (the
+analog of frequency---the number of zero-crossings per period).
+
+The Walsh-Hadamard transform is the analog of the Fourier transform in
+this basis. All arithmetic is over {+1, -1}, so the transform requires
+only additions and subtractions---no multiplies at all. This made Walsh
+functions attractive for early digital hardware.
+
+For audio, Walsh functions are less natural than Fourier because they
+don't correspond to physical resonances. But they demonstrate that many
+different function families can span the same space.
+
+** Haar wavelets
+
+The Haar wavelet is the simplest wavelet: a step function that is +1 on
+[0, 0.5) and -1 on [0.5, 1). Its scaled and translated copies form an
+orthonormal basis for L^2. Unlike Fourier or Walsh, Haar is /localized/:
+each basis function has compact support.
+
+Haar wavelets are closely related to Walsh functions---the Haar system
+is the wavelet packet family you get using Walsh/Hadamard filters. But
+Haar is localized in time while Walsh is not.
+
+For periodic waveform generation, Haar-like bases suggest an approach:
+instead of specifying global harmonics, you specify local features at
+different scales.
+
+** Chebyshev polynomials (waveshaping basis)
+
+Chebyshev polynomials T_n(x) = cos(n * arccos(x)) are an orthogonal
+basis on [-1, 1] with weight function 1/sqrt(1-x^2). They have a
+remarkable property for audio:
+
+If you feed a sine wave of amplitude 1 through a transfer function
+defined by the n-th Chebyshev polynomial, you get /exactly/ the n-th
+harmonic. A weighted sum of Chebyshev polynomials as a transfer function
+therefore produces exactly the corresponding weighted sum of harmonics.
+
+This is the mathematical basis of /waveshaping synthesis/ (see below).
+The catch: it only works perfectly for a single sine input at amplitude
+exactly 1. Change the input amplitude, and intermodulation products
+appear. But this amplitude-dependent behavior is itself musically
+interesting---it gives dynamic timbral variation.
+
+* Dynamical systems as oscillators
+
+** The spring-mass system (simple harmonic oscillator)
+
+You're right to remember this. A mass on a spring with no friction:
+
+    m * x'' = -k * x
+
+The solution is x(t) = A * cos(omega * t + phi), where omega =
+sqrt(k/m). This is /the/ canonical generator of sine waves. The system
+has two state variables (position x, velocity v = x'), and the update
+rule is:
+
+    x' = v
+    v' = -(k/m) * x
+
+This is a 2D rotation in phase space. Digitize it naively with forward
+Euler and you get exponential amplitude growth; digitize it carefully
+and you get stable digital oscillators (see below).
+
+** Digital coupled-form oscillators (the magic circle)
+
+The "magic circle" algorithm (modified coupled form, MCF) is a digital
+implementation of the spring-mass idea. The state is two numbers
+(x1, x2), updated each sample:
+
+    x1(n) = x1(n-1) + epsilon * x2(n-1)
+    x2(n) = x2(n-1) - epsilon * x1(n)       [note: uses NEW x1]
+
+where epsilon = 2*sin(pi*f/fs). This is a leapfrog integrator applied
+to the harmonic oscillator equations. The "trick" is that x2's update
+uses the /already-updated/ x1, which gives error cancellation.
+
+Properties:
+- Generates a pure sine wave with no wavetable lookup.
+- Only one or two multiplies per sample.
+- No exponential amplitude drift from quantization errors (unlike naive
+  coupled form where cos^2 + sin^2 may drift from 1).
+- Frequency is controlled by a single parameter epsilon.
+
+This is the digital realization of your intuition: "instead of iterating
+a complex power series, just iterate a simpler process on a memory."
+Two numbers of state, one multiply, one sine wave. The digital waveguide
+oscillator (Julius O. Smith, Perry Cook) generalizes this further.
+
+** The Van der Pol oscillator (a nonlinear dynamical system)
+
+The Van der Pol oscillator adds nonlinear damping to the harmonic
+oscillator:
+
+    x'' - mu*(1 - x^2)*x' + x = 0
+
+- For mu = 0, it's a simple harmonic oscillator (sine wave).
+- For small mu, the output is a slightly distorted sine---a limit cycle
+  with gentle nonlinear coloring.
+- For large mu, you get /relaxation oscillations/: the waveform
+  approaches a square wave, with slow buildup and fast snap transitions.
+
+So a single parameter mu continuously morphs from sine to (approximately)
+square. This is more interesting than a trapezoid's parameter, because the
+intermediate shapes come from dynamics rather than piecewise linearity.
+The waveform has a "natural" quality because it arises from a physical
+process (it was first observed in vacuum tube circuits).
+
+Computing it requires numerically integrating the ODE each sample, which
+is more expensive than a table lookup but entirely feasible.
+
+** Karplus-Strong (a delay-line dynamical system)
+
+A completely different kind of dynamical system: fill a delay line with
+random noise, then feed it back through a simple lowpass filter (e.g.,
+average adjacent samples). The result: the noise "crystallizes" into a
+pitched tone that sounds like a plucked string.
+
+The system's state is the entire contents of the delay line. The delay
+length determines pitch. The filter determines decay rate and timbral
+evolution. The initial noise provides richness that decays into
+near-sinusoidal behavior---mimicking a real string.
+
+This is physical modeling synthesis in its simplest form: derive the
+waveform from a simulated physical process, not from a mathematical
+formula.
+
+* TODO Synthesis architectures (practical waveform generation)
+
+** Subtractive synthesis (East Coast / Moog)
+
+The classic approach, pioneered by Robert Moog (1964 onward):
+
+1. Start with a harmonically rich waveform (sawtooth, square, pulse).
+2. Remove harmonics with a voltage-controlled filter (VCF).
+3. Shape amplitude with an envelope generator (ADSR).
+4. Modulate filter cutoff with an LFO or envelope for movement.
+
+The filter is the key expressive element. Moog's transistor ladder
+filter, for instance, has a distinctive resonant character that defines
+the "Moog sound." Different filter topologies (ladder, state-variable,
+Sallen-Key, diode) give different timbral characters.
+
+The "basis" here is: {one fixed waveform} x {filter transfer function
+space}. The filter cutoff and resonance are the two main parameters.
+This is /extremely/ cheap to compute and gives musically useful results.
+
+** DONE nah : Additive synthesis (the direct Fourier approach)
+
+The brute-force version of Fourier: generate individual sine waves for
+each harmonic, each with its own amplitude and phase envelope. This gives
+total control but requires many oscillators and many parameters.
+
+The Hammond organ (1935) is an electromechanical additive synthesizer:
+tonewheels generate sine-like partials, and drawbars set the amplitude
+of each. Nine drawbars = nine harmonics = a playable parameterization
+of a useful subspace of periodic waveforms.
+
+** FM synthesis (Chowning / Yamaha DX7)
+
+Discovered by John Chowning at Stanford (1967): use one sine oscillator
+(the modulator) to vary the frequency of another (the carrier).
+
+    output(t) = sin(2*pi*fc*t + I * sin(2*pi*fm*t))
+
+Three parameters---carrier frequency fc, modulator frequency fm,
+and modulation index I---produce a huge range of spectra. When fm/fc
+is a simple ratio, you get harmonic spectra; irrational ratios give
+inharmonic, bell-like timbres.
+
+The Yamaha DX7 (1983) used 6 operators (sine oscillators) arranged in
+32 fixed "algorithms" (routing topologies). This is cheap to compute
+(just sine lookups and addition) but notoriously hard to program
+intuitively, because the relationship between parameters and resulting
+timbre is highly nonlinear.
+
+FM synthesis generates waveforms from a dynamical process (one oscillator
+driving another), not from a static formula. The modulation index is a
+natural parameter to vary over time for timbral animation.
+
+** TODO huh ? Phase distortion synthesis (Casio CZ)
+
+Casio's 1984 workaround for Yamaha's FM patent. Instead of modulating
+frequency, you distort the /phase/ of a cosine lookup:
+
+- A linear phase ramp through a cosine table gives a plain cosine.
+- A piecewise-linear phase function (fast then slow, or vice versa)
+  gives a distorted waveform with different harmonic content.
+
+Different phase-distortion curves produce sawtooth-like, pulse-like, and
+resonant waveforms, all from a single cosine table. The CZ series had 8
+basic waveforms, including three with simulated filter resonance: these
+used a /windowed hard-sync/ technique, where a sine at the resonant
+frequency is amplitude-shaped by a window function at the fundamental.
+
+This is a clever basis: {cosine} x {space of phase-distortion curves}.
+One or two parameters control the distortion shape, giving timbral
+variation cheaply.
+
+** TODO huh ? Waveshaping synthesis (Chebyshev / Buchla)
+
+Feed a simple waveform (usually sine) through a nonlinear transfer
+function:
+
+    output(t) = f(input(t))
+
+where f is a static function (a curve). As noted above, Chebyshev
+polynomials let you design f to produce specific harmonics.
+
+Don Buchla's "West Coast" synthesis (1960s onward) is built on this
+idea. Instead of filtering a rich waveform (Moog's approach), Buchla
+/adds/ harmonics to a simple waveform by running it through a
+wavefolder---a circuit that "folds" the waveform back on itself when
+it exceeds a threshold. Increasing the input amplitude drives the
+signal further into the fold, adding more harmonics.
+
+The "basis" here is: {input waveform} x {waveshaping function} x
+{input amplitude}. The amplitude acts as a timbral control, which is
+musically interesting because dynamics and timbre become coupled.
+
+** Wavetable and vector synthesis
+
+Store many single-cycle waveforms in a table. Scan through the table
+over time, crossfading between adjacent waveforms:
+
+- PPG Wave (late 1970s, Wolfgang Palm): 32 wavetables of 64 waveforms
+  each. No interpolation---audible stepping between waveforms.
+- Sequential Prophet VS (1986): 2D interpolation between 4 waveform
+  sources using a joystick ("vector synthesis").
+- Modern wavetable synths (Serum, Vital): smooth interpolation with
+  antialiasing.
+
+The "basis" is a discrete set of stored waveforms with interpolation.
+The quality depends entirely on the choice of waveforms in the table.
+Computationally trivial (table lookup + interpolation).
+
+* Band-limiting
+
+A practical concern for digital synthesis: naive generation of waveforms
+with discontinuities (sawtooth, square, pulse) causes aliasing. Several
+algorithms fix this:
+
+- BLIT (band-limited impulse train): generate a stream of sinc-shaped
+  pulses, then integrate to get sawtooth, square, etc.
+- PolyBLEP (polynomial band-limited step): correct the discontinuity
+  region using a cheap polynomial, avoiding both aliasing and lookup
+  tables. Only a few arithmetic operations per sample.
+
+These are less "bases" than practical implementations of the classic
+waveforms that sound clean at any frequency.
+
+* Interesting hybrids and further ideas
+
+** Parameterized waveform families
+
+Some families interpolate between known shapes with a small number of
+parameters:
+
+*** DONE Trapezoid wave: one parameter (flat-top fraction) morphs triangle to
+  square. Already implemented in our code/synth_python/.
+*** TODO huh ? Superformula / superellipse:
+attempt to parameterize 2D shapes;
+can be projected to 1D periodic waveforms.
+*** Variable-symmetry waveforms:
+take any waveform and independently
+scale the rising and falling portions. A triangle with asymmetric
+slopes morphs from triangle to sawtooth.
+*** TODO Pulse-width modulation (PWM): vary the duty cycle of a square wave.
+  Simple but effective.
+
+** Coupled oscillator systems
+
+Instead of one oscillator, use two or more with interaction:
+
+*** TODO Two spring-mass systems coupled by a spring give beating and energy
+  exchange---the waveform evolves over time.
+*** TODO Buchla's "complex oscillator" concept: two oscillators with cross-
+  modulation (FM, AM, or sync) and waveshaping. The Buchla 259 (1977)
+  is the archetype.
+*** chaotic systems
+Reaction-diffusion systems, predator-prey equations, Lorenz
+attractors---any chaotic or quasi-periodic dynamical system can
+generate complex waveforms. (Whether they sound /good/ is another question.)
+** TODO The filter-as-oscillator
+
+A resonant filter with high Q, excited by an impulse or noise, /is/ an
+oscillator. The state-variable filter has an internal state that, at
+self-oscillation, traces a limit cycle. This is how many analog synths
+generate sine waves: crank up the filter resonance until it self-
+oscillates.
+
+This connects to the dynamical-systems perspective: a resonant filter
+is a damped harmonic oscillator. At self-oscillation, it's an undamped
+one. Add nonlinearity (saturation, clipping) and you get more complex
+limit cycles with richer spectra.
+
+** TODO Physical modeling as waveform generation
+
+Karplus-Strong is the simplest case, but the idea generalizes to
+digital waveguide synthesis (Julius O. Smith): simulate the physics
+of vibrating strings, air columns, membranes, and bars using delay
+lines, filters, and scattering junctions.
+
+The "basis" here isn't a set of mathematical functions---it's the space
+of physical systems. Parameters are physical: string length, tension,
+stiffness, pick position, bow pressure. The waveform emerges from
+simulation rather than formula.
+
+** TODO huh ? Formant-wave-function (FOF) synthesis
+
+Developed at IRCAM by Xavier Rodet. Each "grain" is a damped sinusoid
+windowed by an envelope, tuned to a formant frequency. Multiple grains
+at different formant frequencies are triggered synchronously at the
+fundamental pitch rate.
+
+The basis here is: {damped sinusoids at formant frequencies} x
+{window functions} x {fundamental period}. It's particularly good for
+voice synthesis.
+
+* Summary table
+
+| Approach              | # Parameters | Compute cost | Timbral range     | Key idea                         |
+|-----------------------+--------------+--------------+-------------------+----------------------------------|
+| Fourier (additive)    | N (one/harm) | N oscillators | Unlimited        | Direct spectral control          |
+| Walsh functions       | N            | Adds only    | Unlimited         | +1/-1 basis, no multiplies       |
+| Subtractive           | 2-4          | Very cheap   | Wide (filtered)   | Rich source + filter             |
+| FM synthesis          | 3+ per op    | Cheap        | Very wide         | Oscillator modulates oscillator  |
+| Phase distortion      | 1-2          | Very cheap   | Moderate          | Distort phase of cosine lookup   |
+| Waveshaping           | 1-2          | Cheap        | Moderate          | Nonlinear transfer function      |
+| Wavetable/vector      | 1-2          | Very cheap   | Depends on table  | Interpolate stored waveforms     |
+| Karplus-Strong        | 2-3          | Cheap        | String-like       | Filtered delay feedback          |
+| Van der Pol           | 1 (mu)       | Moderate     | Sine to square    | Nonlinear ODE                    |
+| Magic circle          | 1 (epsilon)  | Very cheap   | Sine only         | Leapfrog harmonic oscillator     |
+| Coupled oscillators   | Several      | Moderate     | Wide              | Interacting dynamical systems    |
+| Physical modeling     | Physical     | Moderate-high | Realistic        | Simulate the physics             |
+
+* What seems most promising for cheap, flexible exploration
+
+1. *Subtractive with parameterized source*: Combine a parameterized
+   waveform (e.g., trapezoid) with a cheap digital filter (biquad,
+   state-variable, one-pole). Two parameters on the source + two on
+   the filter = huge timbral range. This is what most analog synths do.
+
+2. *Van der Pol or other nonlinear oscillators*: A single-parameter ODE
+   that morphs from sine to square is conceptually elegant and has
+   "organic" intermediate shapes. Could be combined with a filter.
+
+3. *Waveshaping with amplitude control*: A fixed nonlinear function
+   (wavefolder, tanh, Chebyshev sum) applied to a sine, with input
+   gain as the timbral parameter. Very cheap and highly interactive.
+
+4. *Coupled magic-circle oscillators*: Two cheap sine oscillators
+   with some coupling term (FM, AM, ring mod). A handful of parameters,
+   and the interaction produces evolving spectra.
+
+5. *Karplus-Strong variants*: Replace the noise burst with a shaped
+   initial condition, vary the filter, and you get a family of plucked/
+   struck/bowed timbres from a very simple algorithm.
+
+* References and sources
+
+** Walsh functions: https://en.wikipedia.org/wiki/Walsh_function
+** Haar wavelets: https://en.wikipedia.org/wiki/Haar_wavelet
+** Digital waveguide oscillator / magic circle: https://dsprelated.com/freebooks/pasp/Digital_Waveguide_Oscillator.html
+** Smith & Cook, "The Second-Order Digital Waveguide Oscillator": https://ccrma.stanford.edu/~jos/wgo/wgo.pdf
+** Digital sinusoid generators (CCRMA): https://ccrma.stanford.edu/~jos/pasp/Digital_Sinusoid_Generators.html
+** Chebyshev waveshaping: https://kennypeng.com/2022/06/18/chebyshev_harmonics.html
+** Waveshaping synthesis (Columbia): https://sites.music.columbia.edu/cmc/MusicAndComputers/chapter4/04_06.php
+** FM synthesis: https://en.wikipedia.org/wiki/Frequency_modulation_synthesis
+** Chowning remembers: https://hub.yamaha.com/keyboards/synthesizers/discovering-digital-fm-john-chowning-remembers/
+** Phase distortion synthesis: https://electricdruid.net/phase-distortion-synthesis/
+** Phase distortion (Wikipedia): https://en.wikipedia.org/wiki/Phase_distortion_synthesis
+** Subtractive synthesis: https://en.wikipedia.org/wiki/Subtractive_synthesis
+** West Coast / Buchla waveshaping: https://www.perfectcircuit.com/signal/what-is-west-coast-synthesis
+** Wavetable synthesis: https://en.wikipedia.org/wiki/Wavetable_synthesis
+** Prophet VS / vector synthesis: https://www.perfectcircuit.com/signal/prophet-vs-history
+** BLIT synthesis (Stilson & Smith): https://ccrma.stanford.edu/~stilti/papers/blit.pdf
+** PolyBLEP: https://www.metafunction.co.uk/post/all-about-digital-oscillators-part-2-blits-bleps
+** Karplus-Strong: https://en.wikipedia.org/wiki/Karplus%E2%80%93Strong_string_synthesis
+** Van der Pol oscillator: https://en.wikipedia.org/wiki/Van_der_Pol_oscillator
+** FOF synthesis: https://ccrma.stanford.edu/~mjolsen/220a/fp.html
