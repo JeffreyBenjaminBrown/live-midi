@@ -16,6 +16,9 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   -v "$HOST":/home/ubuntu                                \
   --group-add $(getent group audio | cut -d: -f3)        \
   --device /dev/snd                                      \
+  --cap-add=SYS_NICE                                     \
+  --ulimit rtprio=99                                     \
+  --ulimit memlock=-1                                    \
   jeffreybbrown/hode:latest
 
   # Above:
@@ -25,6 +28,13 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   #   --newtowrk host binds each port
   #   to the host's port of the same number,
   #   e.g. 1729=1729 (TypeDB).
+  # The --cap-add/ulimit lines let processes in the container raise
+  #   their own thread priority to SCHED_FIFO, which grid_synth needs
+  #   for glitch-free low-latency audio.
+  #   - SYS_NICE: permission to change scheduling policy.
+  #   - rtprio=99: ulimit cap on RT priority (default 0 blocks all RT).
+  #   - memlock=-1: unlimited mlock for audio buffers (so pages aren't
+  #     swapped out during the RT callback).
 
 docker start $CONTAINER_NAME
 docker exec -it $CONTAINER_NAME bash
