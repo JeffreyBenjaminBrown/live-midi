@@ -27,7 +27,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use rosc::{decoder, encoder, OscMessage, OscPacket, OscType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -42,9 +42,64 @@ const RELEASE_SECS: f32 = 0.050;
 // against the physical click of the button.
 const CLICK_SECS: f32 = 0.003;
 const CLICK_AMPLITUDE: f32 = 0.4;
+// Hardcoded for the 256 (16×16) grid. If smaller/larger grids appear,
+// query /sys/size from serialoscd at startup and replace these.
+const GRID_W: i32 = 16;
+const GRID_H: i32 = 16;
 
 fn freq_for(x: i32, y: i32, fund: f64, edo: f64, x_step: f64, y_step: f64) -> f32 {
   (fund * 2.0_f64.powf((x_step * x as f64 + y_step * y as f64) / edo)) as f32
+}
+
+// Per-grid pitch-class index. Two keys with the same EdoPitch sound
+// the same note modulo octave. Built once at startup; lookup is O(1).
+// Only meaningful when edo / x_step / y_step are integers.
+struct PitchClass {
+  key_to_pitch: HashMap<(i32, i32), i32>,
+  pitch_to_keys: HashMap<i32, Vec<(i32, i32)>>,
+}
+
+fn build_pitch_class(x_step: i32, y_step: i32, edo: i32, w: i32, h: i32) -> PitchClass {
+  let mut k2p = HashMap::new();
+  let mut p2k: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
+  for x in 0..w {
+    for y in 0..h {
+      let p = (x_step * x + y_step * y).rem_euclid(edo);
+      k2p.insert((x, y), p);
+      p2k.entry(p).or_default().push((x, y));
+    }
+  }
+  PitchClass { key_to_pitch: k2p, pitch_to_keys: p2k }
+}
+
+// Returns the keys whose LEDs should be turned on. Caller is
+// responsible for adding (x, y) to the `pressed` set first if desired
+// — this function reads it but doesn't mutate.
+fn leds_for_press(pc: Option<&PitchClass>, x: i32, y: i32) -> Vec<(i32, i32)> {
+  match pc.and_then(|pc| pc.key_to_pitch.get(&(x, y))
+                          .and_then(|p| pc.pitch_to_keys.get(p)))
+  {
+    Some(keys) => keys.clone(),
+    None => vec![(x, y)],
+  }
+}
+
+// Returns the keys whose LEDs should be turned off. Empty if any
+// pitch-equivalent key is still pressed.
+fn leds_for_release(pc: Option<&PitchClass>, pressed: &HashSet<(i32, i32)>,
+                    x: i32, y: i32) -> Vec<(i32, i32)> {
+  match pc.and_then(|pc| pc.key_to_pitch.get(&(x, y))
+                          .and_then(|p| pc.pitch_to_keys.get(p)))
+  {
+    Some(keys) => {
+      if keys.iter().any(|k| pressed.contains(k)) {
+        vec![]
+      } else {
+        keys.clone()
+      }
+    }
+    None => vec![(x, y)],
+  }
 }
 
 fn triangle(phase: f32) -> f32 {
@@ -295,6 +350,19 @@ fn main() {
 
   eprintln!("ready. press keys on the grid. Ctrl-C to quit.");
 
+  // Pitch-class equivalence (mod octave): all keys producing the same
+  // pitch class light up together when any one is pressed, and all
+  // stay lit until none is pressed. Only well-defined when the
+  // tuning args are integers.
+  let pitch_class: Option<PitchClass> =
+    if edo.fract() == 0.0 && x_step.fract() == 0.0 && y_step.fract() == 0.0 {
+      Some(build_pitch_class(x_step as i32, y_step as i32, edo as i32, GRID_W, GRID_H))
+    } else {
+      eprintln!("non-integer EDO/steps: lighting only the pressed key");
+      None
+    };
+  let mut pressed: HashSet<(i32, i32)> = HashSet::new();
+
   // --- Main event loop: OSC from grid ---
   let key_addr = format!("{PREFIX}/grid/key");
   let led_set = format!("{PREFIX}/grid/led/set");
@@ -356,24 +424,23 @@ fn main() {
                 click_samples: click_samples_total,
               });
             drop(vs);
-            send_osc(
-              &sock,
-              device,
-              &led_set,
-              vec![OscType::Int(x), OscType::Int(y), OscType::Int(1)],
-            );
+            pressed.insert(key);
+            for (lx, ly) in leds_for_press(pitch_class.as_ref(), x, y) {
+              send_osc(&sock, device, &led_set,
+                vec![OscType::Int(lx), OscType::Int(ly), OscType::Int(1)]);
+            }
           } else {
             eprintln!("release x={x:>2} y={y:>2}");
             if let Some(v) = vs.get_mut(&key) {
               v.releasing = true;
             }
             drop(vs);
-            send_osc(
-              &sock,
-              device,
-              &led_set,
-              vec![OscType::Int(x), OscType::Int(y), OscType::Int(0)],
-            ); }}}
+            pressed.remove(&key);
+            for (lx, ly) in leds_for_release(pitch_class.as_ref(), &pressed, x, y) {
+              send_osc(&sock, device, &led_set,
+                vec![OscType::Int(lx), OscType::Int(ly), OscType::Int(0)]);
+            }
+          }}}
       Err(_) => { /* timeout, loop again */ }}} }
 
 #[cfg(test)]
@@ -445,6 +512,52 @@ mod tests {
     // Only the triangle, capped by AMPLITUDE=0.15.
     assert!(peak > 0.10 && peak < 0.20,
       "triangle-only peak out of range: {peak} (want 0.10..0.20)");
+  }
+
+  #[test]
+  fn pitch_class_46_9_1_groups_x1_yminus9_together() {
+    // Jeff's default layout: edo=46, x_step=9, y_step=1.
+    // (x, y) and (x+1, y-9) should share a pitch class.
+    let pc = build_pitch_class(9, 1, 46, 16, 16);
+    let p_4_10 = pc.key_to_pitch[&(4, 10)];
+    let p_5_1 = pc.key_to_pitch[&(5, 1)];
+    assert_eq!(p_4_10, p_5_1, "(4,10) and (5,1) should be enharmonic");
+    let group = &pc.pitch_to_keys[&p_4_10];
+    assert!(group.contains(&(4, 10)));
+    assert!(group.contains(&(5, 1)));
+  }
+
+  #[test]
+  fn press_lights_all_equivalents_release_keeps_lit_until_last() {
+    let pc = build_pitch_class(9, 1, 46, 16, 16);
+    let mut pressed: HashSet<(i32, i32)> = HashSet::new();
+
+    // Press (4,10): expect lights for the full pitch-class group.
+    let on1 = leds_for_press(Some(&pc), 4, 10);
+    pressed.insert((4, 10));
+    assert!(on1.contains(&(4, 10)) && on1.contains(&(5, 1)));
+
+    // Press (5,1) too: same group, same set lights.
+    let on2 = leds_for_press(Some(&pc), 5, 1);
+    pressed.insert((5, 1));
+    assert_eq!(on1.len(), on2.len());
+
+    // Release (5,1): (4,10) still pressed, so nothing turns off.
+    pressed.remove(&(5, 1));
+    let off1 = leds_for_release(Some(&pc), &pressed, 5, 1);
+    assert!(off1.is_empty(), "should not turn off while equivalent key still pressed");
+
+    // Release (4,10): now turn off the whole group.
+    pressed.remove(&(4, 10));
+    let off2 = leds_for_release(Some(&pc), &pressed, 4, 10);
+    assert!(off2.contains(&(4, 10)) && off2.contains(&(5, 1)));
+  }
+
+  #[test]
+  fn no_pitch_class_falls_back_to_single_key() {
+    let pressed: HashSet<(i32, i32)> = HashSet::new();
+    assert_eq!(leds_for_press(None, 7, 3), vec![(7, 3)]);
+    assert_eq!(leds_for_release(None, &pressed, 7, 3), vec![(7, 3)]);
   }
 
   #[test]
