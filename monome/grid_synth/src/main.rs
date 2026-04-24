@@ -131,23 +131,42 @@ fn main() {
   let device_audio = host
     .default_output_device()
     .expect("no default output device");
-  let supported = device_audio
+  // Prefer a 48 kHz F32 config: PipeWire runs at 48 k natively, so
+  // asking for 44.1 k forces an extra resampler in the chain. Match
+  // the default config's channel count — picking the wrong one
+  // (e.g. a mono variant PipeWire exposes but doesn't actually route)
+  // results in a stream that opens but never fires its callback.
+  let default_cfg = device_audio
     .default_output_config()
     .expect("no default output config");
+  let default_channels = default_cfg.channels();
+  let supported = device_audio
+    .supported_output_configs()
+    .expect("query output configs")
+    .filter(|c| c.sample_format() == SampleFormat::F32
+                && c.min_sample_rate().0 <= 48000
+                && c.max_sample_rate().0 >= 48000)
+    .max_by_key(|c| (c.channels() == default_channels, c.channels()))
+    .map(|c| c.with_sample_rate(cpal::SampleRate(48000)))
+    .unwrap_or_else(|| {
+      eprintln!("no 48 kHz F32 config; falling back to default");
+      default_cfg
+    });
   let sample_format = supported.sample_format();
   let sample_rate = supported.sample_rate().0 as f32;
   let channels = supported.channels() as usize;
   let default_buf = supported.buffer_size().clone();
-  // BUF env var picks buffer_size: "default" or a positive integer.
-  // Smaller → lower press-to-sound latency, but too small can silence
-  // the stream on some backends. Default is cpal's default.
+  // BUF env var picks buffer_size. Default is 128 frames (≈2.7 ms at
+  // 48 kHz). Smaller → lower press-to-sound latency, but too small
+  // can xrun. "default" → cpal's default; integer → that frame count.
   let buffer_size = match std::env::var("BUF").ok().as_deref() {
-    Some("default") | None => cpal::BufferSize::Default,
+    Some("default") => cpal::BufferSize::Default,
+    None => cpal::BufferSize::Fixed(128),
     Some(s) => match s.parse::<u32>() {
       Ok(n) => cpal::BufferSize::Fixed(n),
       Err(_) => {
-        eprintln!("BUF={s:?} is neither 'default' nor an integer; using Default");
-        cpal::BufferSize::Default
+        eprintln!("BUF={s:?} is neither 'default' nor an integer; using Fixed(128)");
+        cpal::BufferSize::Fixed(128)
       }
     },
   };
