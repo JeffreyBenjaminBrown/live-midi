@@ -38,6 +38,10 @@ const LISTEN_PORT: u16 = 9000;
 const AMPLITUDE: f32 = 0.15;
 const ATTACK_SECS: f32 = 0.005;
 const RELEASE_SECS: f32 = 0.050;
+// A short noise burst at press-onset, to compare ear-time of audio
+// against the physical click of the button.
+const CLICK_SECS: f32 = 0.003;
+const CLICK_AMPLITUDE: f32 = 0.4;
 
 fn freq_for(x: i32, y: i32, fund: f64, edo: f64, x_step: f64, y_step: f64) -> f32 {
   (fund * 2.0_f64.powf((x_step * x as f64 + y_step * y as f64) / edo)) as f32
@@ -52,12 +56,61 @@ fn triangle(phase: f32) -> f32 {
   }
 }
 
+// Render one cpal callback's worth of audio into `data` from `voices`.
+// Pulled out of the closure so unit tests can exercise it without cpal
+// or PipeWire.
+fn render_block(
+  voices: &mut VoiceMap,
+  data: &mut [f32],
+  channels: usize,
+  sample_rate: f32,
+  attack_per_sample: f32,
+  release_per_sample: f32,
+  click_samples_total: u32,
+  rng: &mut u32,
+) {
+  for frame in data.chunks_mut(channels) {
+    let mut mix = 0.0_f32;
+    voices.retain(|_, v| {
+      if v.releasing {
+        v.env -= release_per_sample;
+        if v.env <= 0.0 {
+          return false;
+        }
+      } else if v.env < 1.0 {
+        v.env = (v.env + attack_per_sample).min(1.0);
+      }
+      v.phase += v.freq / sample_rate;
+      if v.phase >= 1.0 {
+        v.phase -= 1.0;
+      }
+      mix += triangle(v.phase) * v.env * AMPLITUDE;
+      if v.click_samples > 0 {
+        // xorshift32
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 17;
+        *rng ^= *rng << 5;
+        let n = (*rng as i32 as f32) / (i32::MAX as f32);
+        let click_env = v.click_samples as f32 / click_samples_total as f32;
+        mix += n * click_env * CLICK_AMPLITUDE;
+        v.click_samples -= 1;
+      }
+      true
+    });
+    let s = mix.clamp(-0.95, 0.95);
+    for out in frame.iter_mut() {
+      *out = s;
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Voice {
   freq: f32,
   phase: f32,
   env: f32,
   releasing: bool,
+  click_samples: u32,
 }
 
 type VoiceMap = HashMap<(i32, i32), Voice>;
@@ -113,11 +166,25 @@ fn main() {
   let y_step: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
   eprintln!("tuning: fund={fund} Hz  edo={edo}  x_step={x_step}  y_step={y_step}");
 
-  let sock = UdpSocket::bind(("0.0.0.0", LISTEN_PORT)).expect("bind UDP :9000");
+  // GRID_LISTEN_PORT overrides the default :9000 — useful for running
+  // a second instance alongside the live one for testing.
+  let listen_port: u16 = std::env::var("GRID_LISTEN_PORT").ok()
+    .and_then(|s| s.parse().ok())
+    .unwrap_or(LISTEN_PORT);
+  let sock = UdpSocket::bind(("0.0.0.0", listen_port))
+    .unwrap_or_else(|e| panic!("bind UDP :{listen_port}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
 
-  let mut device_port = discover_device(&sock)
-    .expect("no monome device found; is serialoscd running and a grid plugged in?");
+  // GRID_DEVICE_PORT skips serialoscd discovery — useful for running
+  // the audio path without a monome plugged in (testing, etc.). LED
+  // commands still get sent but go nowhere.
+  let mut device_port = match std::env::var("GRID_DEVICE_PORT").ok()
+    .and_then(|s| s.parse::<u16>().ok())
+  {
+    Some(p) => { eprintln!("GRID_DEVICE_PORT={p}; skipping discovery"); p }
+    None => discover_device(&sock)
+      .expect("no monome device found; is serialoscd running and a grid plugged in?"),
+  };
   let mut device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
   eprintln!("device port: {device_port}");
 
@@ -187,7 +254,9 @@ fn main() {
   let voices_audio = Arc::clone(&voices);
   let attack_per_sample = 1.0 / (ATTACK_SECS * sample_rate);
   let release_per_sample = 1.0 / (RELEASE_SECS * sample_rate);
+  let click_samples_total: u32 = (CLICK_SECS * sample_rate) as u32;
   let mut promoted = false;
+  let mut rng: u32 = 0xCAFEBABE;
 
   let stream = device_audio
     .build_output_stream(
@@ -213,27 +282,12 @@ fn main() {
           }
         }
         let mut voices = voices_audio.lock().unwrap();
-        for frame in data.chunks_mut(channels) {
-          let mut mix = 0.0_f32;
-          voices.retain(|_, v| {
-            if v.releasing {
-              v.env -= release_per_sample;
-              if v.env <= 0.0 {
-                return false;
-              }
-            } else if v.env < 1.0 {
-              v.env = (v.env + attack_per_sample).min(1.0);
-            }
-            v.phase += v.freq / sample_rate;
-            if v.phase >= 1.0 {
-              v.phase -= 1.0;
-            }
-            mix += triangle(v.phase) * v.env * AMPLITUDE;
-            true
-          });
-          let s = mix.clamp(-0.95, 0.95);
-          for out in frame.iter_mut() {
-            *out = s; }}},
+        render_block(
+          &mut voices, data, channels, sample_rate,
+          attack_per_sample, release_per_sample,
+          click_samples_total, &mut rng,
+        );
+      },
       |e| eprintln!("audio stream error: {e}"),
       None, )
     .expect("build output stream");
@@ -292,12 +346,14 @@ fn main() {
                 // Retrigger while still sounding: cancel release, keep env.
                 v.releasing = false;
                 v.freq = freq;
+                v.click_samples = click_samples_total;
               })
               .or_insert(Voice {
                 freq,
                 phase: 0.0,
                 env: 0.0,
                 releasing: false,
+                click_samples: click_samples_total,
               });
             drop(vs);
             send_osc(
@@ -319,3 +375,99 @@ fn main() {
               vec![OscType::Int(x), OscType::Int(y), OscType::Int(0)],
             ); }}}
       Err(_) => { /* timeout, loop again */ }}} }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn fresh_rng() -> u32 { 0xCAFEBABE }
+
+  // Render N frames (mono) for a single voice with the given initial state.
+  fn render_voice(v: Voice, n: usize, sample_rate: f32) -> Vec<f32> {
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert((0, 0), v);
+    let mut data = vec![0.0_f32; n];
+    let mut rng = fresh_rng();
+    let click_total = (CLICK_SECS * sample_rate) as u32;
+    render_block(
+      &mut voices, &mut data, 1, sample_rate,
+      1.0 / (ATTACK_SECS * sample_rate),
+      1.0 / (RELEASE_SECS * sample_rate),
+      click_total, &mut rng,
+    );
+    data
+  }
+
+  #[test]
+  fn empty_voices_produce_silence() {
+    let mut voices: VoiceMap = HashMap::new();
+    let mut data = vec![0.123_f32; 64]; // pre-fill nonzero
+    let mut rng = fresh_rng();
+    render_block(&mut voices, &mut data, 1, 48000.0, 0.01, 0.01, 144, &mut rng);
+    assert!(data.iter().all(|&s| s == 0.0), "expected all zeros");
+  }
+
+  #[test]
+  fn click_produces_nonzero_output_in_first_3ms() {
+    // 48 kHz, 3 ms click → 144 samples. Voice with env=1, click_samples=144.
+    let sr = 48000.0;
+    let click_total = (CLICK_SECS * sr) as u32;
+    let v = Voice {
+      freq: 220.0, phase: 0.0, env: 1.0,
+      releasing: false, click_samples: click_total,
+    };
+    // Render past the click window so we can check both regions.
+    let data = render_voice(v, 1024, sr);
+
+    let click_region = &data[..click_total as usize];
+    let post_click = &data[click_total as usize..];
+
+    let click_peak = click_region.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+    let post_peak = post_click.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+
+    // Click region should be louder than just the triangle (AMPLITUDE=0.15).
+    assert!(click_peak > 0.20,
+      "click region peak too quiet: {click_peak} (want > 0.20)");
+    // Post-click region should still have triangle audio (env decays slowly).
+    assert!(post_peak > 0.05,
+      "post-click triangle too quiet: {post_peak} (want > 0.05)");
+  }
+
+  #[test]
+  fn no_click_just_triangle() {
+    let sr = 48000.0;
+    let v = Voice {
+      freq: 440.0, phase: 0.0, env: 1.0,
+      releasing: false, click_samples: 0,
+    };
+    let data = render_voice(v, 1024, sr);
+    let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+    // Only the triangle, capped by AMPLITUDE=0.15.
+    assert!(peak > 0.10 && peak < 0.20,
+      "triangle-only peak out of range: {peak} (want 0.10..0.20)");
+  }
+
+  #[test]
+  fn release_decays_to_zero_and_drops_voice() {
+    let sr = 48000.0;
+    let release_samples = (RELEASE_SECS * sr) as usize; // 2400
+    let v = Voice {
+      freq: 220.0, phase: 0.0, env: 1.0,
+      releasing: true, click_samples: 0,
+    };
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert((0, 0), v);
+    let mut data = vec![0.0_f32; release_samples + 200];
+    let mut rng = fresh_rng();
+    render_block(
+      &mut voices, &mut data, 1, sr,
+      1.0 / (ATTACK_SECS * sr),
+      1.0 / (RELEASE_SECS * sr),
+      144, &mut rng,
+    );
+    assert!(voices.is_empty(), "voice should have been dropped after release");
+    let tail = &data[release_samples + 100..];
+    assert!(tail.iter().all(|&s| s == 0.0),
+      "tail after release should be silent");
+  }
+}
