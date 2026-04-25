@@ -1,7 +1,8 @@
 * The idea
-We can already accumulate pitches.
-We've been calling a button the 'emit' button,
-which plays an accretion of pitches.
+We can already accumulate pitches
+(see earlier plan at 'TODO/DONE/pitch-accretion/').
+We've been calling one of those buttons the 'emit' button.
+It plays an accretion of pitches.
 
 We will make a lot of buttons like the 'emit' button.
 It will be no different from the rest of them.
@@ -23,6 +24,21 @@ and they don't have to be the same button.
 The "silence" button is much like the other chords,
 but it is always empty; it cannot be the accretion target.
 
+The wipe button affects the same target as the accretion-on button.
+
 The accretion target should be dimly lit,
 unless it is also emitting,
 in which case it should be brightly (normally) lit.
+
+The new layout should be:
+```
+wipe    | accrete-on | emit-is-toggle |
+silence | chord 1    | chord 2        | chord 3 | ... | chord 15
+```
+That is, it covers the entire bottom row,
+and also the first three buttons of the row above that.
+I guess that means we should shape the windows differently:
+The bottom row is one window,
+and the other three buttons are a different window.
+
+Let's use brightness level 5 out of 16 for the accretion target when it's dimly lit.

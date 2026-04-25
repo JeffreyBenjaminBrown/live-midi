@@ -135,6 +135,35 @@ address doesn't begin with the device's current prefix are silently
 dropped — if your presses produce no sound and your LEDs don't
 change, check the prefix first.
 
+* Coding the monome
+
+** Brightness: only ~4 distinct levels, despite the 0-15 API
+
+The standard monome OSC protocol exposes per-cell brightness via
+=/<prefix>/grid/led/level/set i x i y i level=, with =level= in
+[0, 15]. We measured this on Jeff's grid using
+=12-brightness-test.sh= (paints a row with ascending brightness
+0..15) and observed *roughly four* distinct visual levels across
+that range, not sixteen. So the device — whether by hardware,
+firmware, or serialosc's translation — buckets the API value
+into a much coarser scale.
+
+Practical implication: when designing UI that uses brightness for
+information density (e.g. dim/mid/bright/full to encode held vs.
+sustained vs. emphasised states), pick four roughly equally-spaced
+=level= values, not sixteen. Something like 1, 5, 10, 15 is a
+reasonable starting set.
+
+To re-test on this device, or to characterise a different one:
+
+#+begin_src bash
+bash ./12-brightness-test.sh        # paint row 0 with 0..15
+bash ./12-brightness-test.sh 8      # row 8
+#+end_src
+
+(Best with =grid_synth= not running, so live presses don't
+overwrite the test row with binary on/off LEDs.)
+
 * Known gotcha: ghost /dev/ttyUSBN devices
 
 On one session we observed =systemctl --user status serialoscd=

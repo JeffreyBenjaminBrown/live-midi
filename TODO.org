@@ -1,7 +1,7 @@
 * constraint both the composition and the music interface
 ** TODO NEXT : unified storage actions for sustain/chords
 needs all of these
-*** NEXT: accretion without storage
+*** DONE : accretion without storage
 **** types
 ***** 'accretion slot' = a vector of edo pitches
 These are unconstrained integers.
@@ -50,7 +50,7 @@ If it was playing, it should stop.
 **** windows
 ***** The main edo grid is already implemented.
 ***** A 2x2 square in the bottom left can be for the accretion buttons.
-*** storage
+*** TODO NEXT : storage
 **** silence (already implemented)
 is like a permanent stored empty chord button.
 Unlike the others chord buttons, it cannot be written to.
