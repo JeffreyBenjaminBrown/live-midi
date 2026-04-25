@@ -30,6 +30,7 @@ use rosc::{decoder, encoder, OscMessage, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const PREFIX: &str = "/256-1-cable";
@@ -817,6 +818,22 @@ fn main() {
   let voices_audio = Arc::clone(&voices);
   let mut promoted = false;
 
+  // Heartbeat counters. Read from the main loop ~1×/s; the audio
+  // thread bumps them on every callback. Lets us tell three failure
+  // modes apart when sound goes silent: (1) callbacks stopped firing
+  // (PipeWire dropped the stream), (2) callbacks fire but peak=0 with
+  // voices present (render bug), (3) callbacks fire and peak>0 but
+  // you hear nothing (PipeWire routing — restart the graph).
+  let cb_count       = Arc::new(AtomicU64::new(0));
+  let sample_count   = Arc::new(AtomicU64::new(0));
+  // Peak is f32; store it as bits so we can use AtomicU32. Race
+  // between "load current" and "store new max" is fine — observability,
+  // not correctness, and the worst case loses one sample's max.
+  let peak_bits      = Arc::new(AtomicU32::new(0));
+  let cb_count_audio     = Arc::clone(&cb_count);
+  let sample_count_audio = Arc::clone(&sample_count);
+  let peak_bits_audio    = Arc::clone(&peak_bits);
+
   let stream = device_audio
     .build_output_stream(
       &config,
@@ -842,8 +859,18 @@ fn main() {
         }
         let mut voices = voices_audio.lock().unwrap();
         render_block(&mut voices, data, channels, sample_rate);
+        // Heartbeat: count this callback, the frames we wrote, and
+        // the peak |sample| we produced.
+        cb_count_audio.fetch_add(1, Ordering::Relaxed);
+        sample_count_audio.fetch_add((data.len() / channels) as u64, Ordering::Relaxed);
+        let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+        let peak_u = peak.to_bits();
+        let cur = peak_bits_audio.load(Ordering::Relaxed);
+        if peak_u > cur || f32::from_bits(cur) < peak {
+          peak_bits_audio.store(peak_u, Ordering::Relaxed);
+        }
       },
-      |e| eprintln!("audio stream error: {e}"),
+      |e| eprintln!("audio stream error: {e:?}"),
       None, )
     .expect("build output stream");
   stream.play().expect("start stream");
@@ -869,7 +896,28 @@ fn main() {
   let key_addr = format!("{PREFIX}/grid/key");
   let led_set = format!("{PREFIX}/grid/led/set");
   let mut buf = [0u8; 2048];
+  // Heartbeat cadence: poll the audio counters every HEARTBEAT_SECS
+  // and log one summary line. STALL warning if no callbacks fired.
+  const HEARTBEAT_SECS: f64 = 1.0;
+  let mut last_heartbeat = Instant::now();
   loop {
+    // Heartbeat — log once per HEARTBEAT_SECS regardless of OSC activity.
+    let elapsed = last_heartbeat.elapsed();
+    if elapsed.as_secs_f64() >= HEARTBEAT_SECS {
+      let cb = cb_count.swap(0, Ordering::Relaxed);
+      let frames = sample_count.swap(0, Ordering::Relaxed);
+      let peak = f32::from_bits(peak_bits.swap(0, Ordering::Relaxed));
+      let voice_n = state.voices.lock().unwrap().len();
+      let elapsed_ms = elapsed.as_millis();
+      eprintln!(
+        "[hb] {elapsed_ms}ms cb={cb} frames={frames} voices={voice_n} peak={peak:.3}{}{}",
+        if cb == 0 { " STALL no-callbacks" } else { "" },
+        if voice_n > 0 && peak == 0.0 && cb > 0 {
+          " WARN voices-but-silent"
+        } else { "" },
+      );
+      last_heartbeat = Instant::now();
+    }
     match sock.recv_from(&mut buf) {
       Ok((n, _)) => {
         let pkt = match decoder::decode_udp(&buf[..n]) {
