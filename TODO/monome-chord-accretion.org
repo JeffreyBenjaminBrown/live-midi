@@ -1,0 +1,82 @@
+* NEXT: note accretion
+** the big idea
+This is like a generalization of a piano sustain pedal.
+While playing, you can turn 'accretion-accrete' on.
+The pitches from note-on events while accretion-accrete is on
+are stored in an 'accretion slot' (just a vector of pitches).
+
+When 'accretion-emit' is on, the notes that have been accreted sound.
+Those two things are independent.
+Having them both on resembles holding the piano sustain pedal down:
+New notes continue to ring after the fingers leave the keys.
+** types
+*** 'accretion slot' = a vector of edo pitches
+These are unconstrained integers.
+If the edo is 46, then 46 is an octave above 0, etc.
+There will only be one accretion slot in the app
+(until we add chord storage), but it still deserves its own type.
+*** 'fingered key' = one being depressed
+The monome sends instantaneous key down (press)
+and key up (remove finger) messages.
+A fingered key is one for which
+a key down has been received sometime in the past,
+and no key up has been received since the last key down.
+*** the 'fingered keyset'
+*** 'toggle keys'
+Press it once to turn it on.
+Press it again to turn it off.
+Removing finger, in both cases, does nothing.
+*** 'ephemeral keys'
+This is the other option to 'toggle key'.
+An ephemeral key is only on -- both emitting light,
+and doing whatever the light emission signifiies -- while depressed.
+Finger down turns it on; finger up turns it off.
+*** 'toggleness toggle keys'
+These keys are dedicated merely to
+choosing whether another key is toggle or ephemeral.
+*** 'ephemeral-or-toggle key'
+A key B is ephemeral-or-toggle
+if some corresponding 'toggleness toggle key' T
+determines whether B is toggle or not.
+(Such key T is always toggle, never ephemeral.)
+** some special keys
+*** 'accretion-accrete' key
+When accretion-ingest is on,
+notes played in the main edo region accrete into the slot.
+Each note-on writes to the slot.
+Each note-off does not affect the slot.
+Already-fingered keys are accreted when accretion is turned on
+  (which is why we keep track of the fingered keyset).
+*** 'accretion-emit' key
+Pressing this key makes the accretion sound,
+and lights up every corresponding key in the main edo grid region.
+  (As with ordinary notes played live,
+  any key enharmonically equivalent (regardless of octave)
+  to any note in the accretion slot should light up.
+*** 'accretion-silent' key
+**** what it does
+Pressing this key makes the accretion stop sounding if it was.
+**** Why this is distinct from 'accretion-silent'
+will become apparent once chord storage is added.
+*** 'accretion-wipe' key
+Pressing this resets the accretion slot to the empty vector.
+If it was playing, it should stop.
+*** 'accretion-emit-is-toggle' toggle key
+** windows
+*** instances
+**** The main edo grid is already implemented.
+We should explicitly name that window, though.
+**** A 2x2 square for the 'main' accretion keys
+can be in the bottom-left
+(high y value, low x value, I think).
+**** A 1x1 square for the 'accretion-emit-is-toggle' toggle key
+This could be at point (2,15) -- on the bottom edge,
+right next to the 2x2 square.
+*** the window list
+Windows are rectangles.
+Windows earlier in the list obscure the later ones.
+That is, each key press lands in exactly one window,
+and has no effect on the others.
+The main edo grid window covers the whole 16x16 monome,
+and the little windows should precede it in the window list.
+(If two windows don't overlap, it doesn't matter which is first.)
