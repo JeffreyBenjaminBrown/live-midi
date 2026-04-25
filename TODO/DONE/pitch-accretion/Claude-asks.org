@@ -1,0 +1,1113 @@
+#+TITLE: Claude's questions about monome-chord-accretion.org
+#+DATE: 2026-04-25
+
+* Claude's initial sketch, nearly perfect
+
+- *Pitch* = an integer in EDO units, with octave info, computed as
+  =x_step * x + y_step * y= for keys (always integer in v1).
+- *Pitch class* = pitch mod edo (already implemented for lighting).
+- The *accretion slot* stores full pitches (with octave), but lighting
+  uses pitch class — so the same lit cells we already compute, except
+  the source of "what's currently active" expands to include the slot.
+- *Windows*: a Vec<Window>. Each event lands in exactly one window
+  (the first one in the list whose rect contains the cell). Each
+  window has its own press/release handler. Main EDO grid is last in
+  the list and covers the whole 16×16; the accretion windows precede
+  it and obscure the cells they cover.
+- *Toggle vs ephemeral*: a key's mode determines whether its "on"
+  state flips on press (toggle) or matches finger-down (ephemeral).
+- *Toggleness toggle key*: itself always a toggle; its on/off state
+  controls whether some target key is toggle or ephemeral.
+
+** TODO Jeff speaking
+Almost precisely right. The one slight difference,
+(or maybe this is what you meant in different words):
+A pitch for our purposes is just an integer.
+One can extract octave from it (div pitch edo = octave,
+where div is the div from Haskell)
+but octave is not separately represented.
+
+* Claude's questions, round 1
+
+** Layout of the 2×2 accretion window
+
+| (0,14) accrete | (1,14) wipe |
+| (0,15) silent  | (1,15) emit |
+
+** Accretion-silent semantics in v1
+You wrote: "Pressing accretion-silent makes the accretion stop
+sounding if it was. Why this is distinct from 'accretion-silent' [sic
+— I assume you meant accretion-emit] will become apparent once chord
+storage is added."
+
+For v1, is it OK to implement accretion-silent as "force
+accretion-emit off"? Or do you want a separate =muted= flag that
+suppresses emit's sound without touching emit's on/off state? (The
+latter is more code now but maps better onto the eventual
+chord-storage design.)
+
+*** TODO Jeff here
+Let introduce another abstraction: "Voice".
+A voice is a pitch paired with a birth,
+which can be either a key (giving its x-y coordinates)
+or the accretion slot.
+
+Accretion-silent silences all the voices born of accretion.
+Accretion-emit births them.
+
+Does this clear up the question?
+
+** Slot: vector with duplicates, or set?
+You wrote "vector of pitches" and "Each note-on writes to the slot."
+If I press the same key 5 times while accretion-accrete is on, do I
+end up with 5 copies of that pitch in the slot, or just 1? (5 copies
+= louder voice on emit; 1 copy = no audible difference.)
+
+I'd default to "dedupe — slot is a Set<Pitch> stored as a sorted Vec
+for determinism," unless you want the duplicates to mean something.
+
+*** Set seems appropriate.
+
+** Toggle vs ephemeral status of each key
+*** specifying the other three keys
+**** =accretion-accrete= always toggle
+**** =accretion-silent= fire on press, no state
+**** =accretion-wipe= fire on press, no state
+*** that introduces a new abstraction
+A third way for a key to behave.
+I guess we could call them 'Toggle | Nursed | Fire'.
+"Nursed" keys are so called because they only serve while attended to by a finger.
+
+An enum might not be appropriate,
+but let's make sure to explicitly represent all three ways,
+somehow, in the type system.
+** Default mode for accretion-emit
+On startup, accretion-emit-is-toggle should be on.
+
+** Sound shape for emitted notes
+When accretion-emit becomes "on" (either via toggle press or via
+ephemeral hold), each pitch in the slot starts ringing. Some choices:
+- Envelope: same 5 ms attack, sustain at full env, then 50 ms release
+  on emit-off? Or something else (continuous sustain, no envelope
+  shape at all)?
+- Click: should the "click" play on emit-on for each accreted note,
+  or skip it (the click is for measuring physical press latency, not
+  meaningful here)? My default: skip.
+- Per-note amplitude: same =AMPLITUDE = 0.15= as live notes? Or
+  scaled down so a 7-note chord doesn't clip?
+
+*** TODO Jeff here
+Let's remove the click from the whole app.
+It was just a test. (Successful!)
+
+Let's make the on-envelope a logarithmic 3 ms ramp.
+Use the same off-envelope.
+For now, accretion-born voices should sound at 1/2 volue.
+
+** Interaction: emit ON + live press of same pitch
+If pitch P is in the slot AND emit is on AND I press a key whose
+pitch is P, do I get one voice or two? (I'd default to "two, summed"
+— it matches the sustain-pedal analogy where holding a key already
+sustained by the pedal does in fact retrigger.)
+
+*** TODO Jeff here
+Tricky. Suppose I'm playing note E,
+and I turn on accretion, and emit was already on.
+I don't want E to suddenly get louder.
+What I would like, though, is that when I release E,
+its volume ramps down from full to whatever I said for accretions
+(I think I said 1/2) over those 50 ms, rather than to 0.
+And thereupon the voice's birth should change,
+from from-the-keyboard to from-the-accretions.
+
+The reverse is not true, though:
+If an accreted voice is sounding, and I play the same pitch,
+I want to hear the note I just played,
+so in that case we should sum the two voices (1 + 1/2).
+They don't need to be in phase.
+
+I suspect this might be hard.
+Please consider whether I missed any cases.
+
+** "Already-fingered keys accreted when accretion turns on"
+Confirmed: the moment accrete flips on, snapshot all currently-held
+EDO-grid keys' pitches into the slot. Does this also apply if accrete
+is in ephemeral mode and I tap-and-hold it (so accrete is "on" only
+while held)? My default: yes — same rule.
+
+*** TODO Yes, same rule.
+
+** Pitch-class index after windowing
+Currently the pitch-class index is built over the entire 16×16. With
+the accretion 2×2 + the 1×1 toggle key out of the EDO region, those
+cells will never reach the EDO press handler. Should the pitch-class
+index exclude them (so they can never light up via enharmonic
+equivalence either), or stay over the full 16×16? My default: exclude
+— anything not in the main EDO window shouldn't be repurposed as a
+pitch indicator.
+
+*** TODO No, let's include them.
+It's cheap to include them, and it separates window concerns.
+One shouldn't have to anticipate, when coding one window,
+the windows that might be on top of it.
+And later we might introduce the ability to move windows around.
+
+** LED merging when a cell is lit for multiple reasons
+A cell could be lit because:
+  (a) it's currently pressed,
+  (b) a pitch-equivalent cell is pressed,
+  (c) its pitch is in an emitting slot,
+  (d) it's an accretion control cell showing its own state.
+
+For (a)-(c), the cell is on if ANY reason applies, off if none. The
+existing release logic ("don't turn off until all equivalent keys
+released") becomes "don't turn off until no reason remains." That's
+the only sane policy I can see — confirming.
+
+For (d): accretion control cells are managed entirely by their own
+window and never light from pitch-class logic. Confirming.
+
+*** TODO Yes.
+This might warrant introducing a Reason_Its_On abstraction.
+Tell me if you think so.
+We definitely want a record of
+which keys in the main edo grid are lit up,
+so we know which to consider turning off when a reason goes away.
+We could keep a map from those lit keys to a set of Reasons.
+Or we could, every time a reason disappears,
+check each key for whether it no longer has a reason.
+
+** "accretion-emit-is-toggle" — its own LED?
+When this toggle key is on (so emit is in toggle mode), should its
+LED be on? My default: yes — its LED reflects its own toggle state,
+since it's the only feedback for the user about which mode emit is
+in.
+
+*** TODO yes
+
+** What sound, if any, does pressing the accretion controls make?
+None, right? They're pure UI keys. Confirming.
+
+*** TODO Yes.
+
+** Test strategy
+I'd plan to:
+- Unit-test the window dispatch (a Window list + a press/release event
+  → which window handles it).
+- Unit-test the accretion state machine (sequence of events + state
+  transitions → final slot, emit-on, accrete-on, fingered keyset).
+- Unit-test the LED-merging logic (set of "lit reasons" per cell →
+  desired LED state).
+- Keep the existing render_block tests for audio, plus add one that
+  verifies emit produces voices with the right frequencies.
+
+Anything I should add or skip?
+
+*** TODO That all seems good.
+
+* Claude's questions, round 2
+
+** Envelope curve shape
+
+You said "logarithmic 3 ms ramp." Two readings, both common in audio:
+
+  (a) Starts fast and levels off — env(t) = log(1 + k·t) / log(1 + k),
+      i.e. concave-down. Sounds "snappier" — most of the loudness
+      arrives in the first ms.
+  (b) Starts slow and accelerates — env(t) = (e^(k·t) - 1) / (e^k - 1),
+      i.e. concave-up. Often called "exponential attack." Sounds
+      smoother / less clicky.
+
+Which do you mean by "logarithmic"?
+
+Also: the off-envelope is currently a linear 50 ms ramp. Keep it
+linear, or also change to whichever curve you pick?
+
+*** TODO
+I forgot that a logarithmic curve never gets to zero.
+Yeah sure, let's use linear.
+
+** Edge cases for the accretion / key voice interaction
+
+Your spec is clear about the two main rules:
+  - Releasing a key whose pitch is in an emitting slot: voice's
+    birth changes to accretion, env ramps from full to 1/2 over 50 ms.
+  - An accretion voice exists and you press the same pitch: spawn a
+    new key-born voice at full; sum.
+
+A few derived cases I want to nail down before writing it up:
+
+*** (i) Adding pitch P to slot while emit is on
+The user is playing P (key-born, full) AND accrete just turned on,
+adding P to the slot. Does an accretion voice for P spawn
+*immediately* (1/2 volume, summed on top of the full key voice), or
+not until the key is released? My instinct: spawn immediately — the
+accretion voice is a function of "P is in slot AND emit is on,"
+which became true at that moment. So you'd briefly hear 1.5x volume
+while holding P, then 1/2 after releasing.
+
+But if you'd rather not have that 1.5 spike, the alternative is:
+"don't spawn an accretion voice for P if a key-born voice for P
+already exists; on key release, just convert the key voice's birth
+(per your existing rule)." Cleaner sound, slightly more state.
+Which?
+
+**** TODO no, instead we transform the voice
+If the emit key and the pitch P key were pressed
+at the exact same time, and P was not previously sounding
+(was not in the accretion), then we should only hear one voice.
+But when the finger is lifted, if emit is still on,
+the voice will ramp down to 1/2 volume and change its birth.
+
+*** (ii) accretion-wipe while emit is on
+Slot empties. Do the currently-ringing accretion voices:
+  - die immediately, or
+  - release with the 50 ms off-envelope?
+
+My default: 50 ms release (consistent with all other "voice goes
+away" events).
+
+**** TODO yes
+
+*** (iii) accretion-silent off-envelope
+Same question: 50 ms release for accretion-born voices, or
+instantaneous? (Reading "silences" literally suggests instant; but
+50 ms is more musical.)
+
+**** TODO I need a verb.
+I don't understand what you're asking.
+
+*** (iv) Two accretion voices for the same pitch
+Sequence: (a) emit on, slot = {P}, accretion voice A1 for P sounds
+at 1/2. (b) I press the key for P — key voice K spawns at full,
+sums with A1 → 1.5. (c) I release the key — per rule, K's birth
+becomes accretion and ramps from 1 down to 1/2. So I now have A1
+(at 1/2) AND K-now-A2 (at 1/2 after the ramp). Two accretion voices
+for the same pitch.
+
+Options:
+  - Keep both; total accretion volume for P stays at 1.0 instead of
+    0.5 forever after.
+  - When the converted-from-key voice finishes its 50 ms ramp, drop
+    A1 (or drop the converted one). Total stays at 0.5.
+  - At conversion time, instantly merge: cancel K's ramp, leave only
+    A1 at 1/2.
+
+The middle option is most-spec, slightly more bookkeeping. Pick one?
+
+**** TODO no, all the way down
+If the accretion was already sounding
+before key-down for the same pitch,
+then key-up on that pitch should send the finger voice to 0,
+leaving us with the same 1/2 volume accretion voice we started with.
+
+*** (v) emit toggles off, then on again, mid-release
+Scenario: emit was on, slot = {P, Q}; emit toggles off, accretion
+voices for P and Q start their 50 ms release; 20 ms in, emit toggles
+back on. Do those mid-release voices reawaken (cancel release, ramp
+back up to 1/2), or do we let them die and spawn fresh ones at
+env=0 ramping up to 1/2? Fresh is simpler, reawaken is smoother.
+Default to simpler (fresh)?
+
+**** TODO simple sounds good
+
+** TODO Jeff here, trying the accretion rules de novo
+I think I got it!
+*** When accretion is on
+any key currently being pressed,
+and any key pressed later while accretion is on,
+is added to the accretion set.
+*** When we turn emit on (press 'accretion-emit')
+all the accreted pitches sound,
+regardless of what's being played live.
+There were previously no sounding accreted voices
+(or else they were mid-decay, which is fine; don't interrupt that)
+because emit was off before we turned it on.
+When we turn it on, we disregard anything fingered voices;
+we gain a new accretion-born voice at 1/2 volume
+for every pitch in the accretion set.
+*** When we turn emit off (press 'accretion-silence')
+All accretion-born voices ramp to 0.
+*** When accretion is wiped
+the set is emptied, *and* all accretion-born voices are silenced.
+*** When we press pitch P
+we always start a new full-volume fingered voice,
+and we add P to the accretion set if appropriate,
+and -- perhaps surprisingly -- that's all.
+I've worked through the four cases:
+**** if P is in the accretion set and emission is off
+We don't do anything more.
+One finger-voice P is all we need.
+**** if P is in the accretion set and emission is on
+We don't do anything more.
+If there was already an accretion voice at P, it keeps sounding.
+If there wasn't, we don't create one.
+**** if P is absent from the accretion set and emission is off
+We add P to the accretion set, and that's all.
+One finger-voice at pitch P is all we need.
+**** if P is absent from the accretion set and emission is on
+We add P to the accretion set, and that's all.
+One finger-voice at pitch P is all we need.
+*** When we release pitch P
+**** if P is in the accretion set and emission is on
+we turn off the finger voice for P, and that's all.
+**** if P is in the accretion set and emission is on
+we check whether any accretion voice is sounding at pitch P.
+If not, we reduce the fingered voice's volume
+to the accretion level, and change its birth to accretion.
+If so, we reduce the fingered voice's volume
+all the way to zero.
+Either way, we are left with a single accretion voice at pitch P.
+**** if P is absent from the accretion set
+then it doesn't matter whether emission is on or off.
+We ramp the finger voice for P to 0. There's nothing else to do.
+** TODO PITFALL: We must identify the x-y origin of a fingered voice.
+Pitch is not enough information,
+because there are key pairs that map to the same pitch.
+** Reason_Its_On abstraction
+
+I think yes — keep a =HashMap<(x,y), HashSet<Reason>>= where Reason
+is something like:
+
+#+begin_src rust
+  enum LedReason {
+    Pressed { source: (i32,i32) },        // a key with pitch P pressed
+    Emitting { pitch: EdoPitch },         // P is in the emitting slot
+    Control { kind: ControlKind },        // (d) — only used in 2x2/1x1
+  }
+#+end_src
+
+A cell's lit state is just =reasons.is_empty()=. The map only contains
+cells that currently have ≥1 reason (so it doesn't grow to 256
+entries). Mutations: when reason X disappears, remove it from the
+sets of all cells that had it; for any cell whose set is now empty,
+remove it from the map and emit an LED-off command. When X appears,
+add it to all relevant cells; for any cell whose set was empty,
+emit an LED-on command. The "every-tick recompute" alternative is
+simpler but spammier (256 LED commands per change).
+
+Sound good?
+*** TODO good
+but add a "PITFALL|TODO" comment to the effect that
+it's awkward that different windows share this type.
+** How to type-encode Toggle / Nursed / Fire
+
+You said "an enum might not be appropriate" — what direction did
+you have in mind? My options:
+
+  (a) =enum KeyMode { Toggle, Nursed, Fire }= attached to each
+      control key's metadata, with handler logic that dispatches on
+      it. Simple; one place to add a new mode.
+
+  (b) Trait objects: =trait ControlKey { fn on_press(&mut self,
+      state: &mut World); fn on_release(&mut self, state: &mut
+      World); }=  with three impls. More flexible but more types.
+
+  (c) Three handler closures per key (on_press, on_release, get_led)
+      — store closures in the window's data. Most flexible, least
+      structured.
+
+(a) feels right for v1; (b)/(c) better if we expect lots of new
+key kinds. Pick one, or describe what you had in mind?
+*** TODO I guess the enum, yes
+It would look something like
+```
+type Button = Toggle {onAction :: _, offAction :: _}
+            | Nursed {onAction :: _, offAction :: _}
+            | Fire {action :: _}
+```
+** What does "mode flip mid-hold" mean for accretion-emit?
+
+Sequence: emit-is-toggle is OFF (emit is Nursed); user is holding
+the emit key (so emit-on = true and accretion voices are ringing);
+user presses emit-is-toggle (it toggles ON, so emit becomes Toggle);
+user releases the emit key.
+
+Two interpretations:
+  (a) Snapshot: emit-on stays true through the mode change. Releasing
+      the emit key now does nothing (it's a toggle). The user must
+      press emit again to toggle it off.
+  (b) Reset: when the mode changes, force emit-on = false (and stop
+      the accretion voices).
+
+I'd default to (a) — preserves user's audible state, mode change
+doesn't cause a stutter. But it means the emit key release is
+"swallowed" silently.
+*** TODO (a), definitely
+** Voice birth = "key" — does it carry the (x,y), or just the pitch?
+
+You wrote: "A voice is a pitch paired with a birth, which can be
+either a key (giving its x-y coordinates) or the accretion slot."
+
+The (x,y) is useful for: (1) knowing which physical key pressed the
+voice, in case we need to re-lookup later. But two enharmonic keys
+can sound the same pitch; do we want to distinguish them as
+different voices? E.g., I press both (4,10) and (5,1) — both
+pitch P. Two voices summing to 2x, or one voice?
+
+Today: =VoiceMap = HashMap<(i32,i32), Voice>= keyed on (x,y), so
+yes, two voices. That's the existing behavior. Keep it (each press
+makes its own voice, distinguished by (x,y))?
+*** TODO right!
+Preserve x-y; permit two voices to share a pitch.
+Don't try to coordinate their phases.
+** Removing the click
+
+Confirming: I should rip out =CLICK_SECS=, =CLICK_AMPLITUDE=,
+=Voice.click_samples=, the rng, the click branch in =render_block=,
+the click logic in the press handlers, and the click-related tests.
+The escape-hatch env vars (=GRID_DEVICE_PORT=, =GRID_LISTEN_PORT=)
+stay because they're useful for testing.
+
+Yes?
+*** TODO yes
+* Claude's questions, round 3
+
+Your de novo rules subsume most of round 2. Let me state what I'm
+reading and what's still worth pinning down. Each item gets my
+proposed default; tell me which to keep and which to override.
+
+** What "silent" / "emit off" really do
+Your de novo says "When we turn emit off (press 'accretion-silence')
+all accretion-born voices ramp to 0." So I'm reading: silent and
+"emit toggled off" are the *same event* — both ramp accretion
+voices to 0 over 50 ms and set the stored =emit_on= boolean to
+false. There is no separate "muted but still emitting" state in v1.
+The reason silent will become distinct from emit later (chord
+storage) is parked for v2.
+
+Confirm?
+
+*** TODO yes
+
+** silent in Nursed mode
+Nursed mode for emit means: =emit_on= follows the emit key's
+finger-down state, but only on press / release *events* (not
+sample-by-sample). So the stored boolean is what the audio thread
+reads.
+
+If you're holding emit (=emit_on=true=, accretion voices ringing)
+and you press silent: =emit_on= flips to false, voices ramp out.
+You're still holding emit. When you eventually release emit, the
+release event fires =emit_on=false= (already false; no-op). Nothing
+re-spawns. To get sound back you'd press emit again (another
+press-event sets emit_on=true and spawns fresh voices).
+
+Sound right? (The alternative is "emit re-evaluates every sample
+from finger state," which would re-spawn after silent. I think
+event-driven is what you want.)
+
+*** TODO right
+Also, it's worth commenting in the code that
+pressing the silence button while
+the emit button is in 'Nursed' mode is silly --
+just release the emit button.
+
+** emit-on with a held finger on a slot pitch
+Scenario: P is in the slot, emit is off, I'm holding the key for P
+(finger voice at full), I press emit. The de novo says "we gain a
+new accretion-born voice at 1/2 volume for every pitch in the
+accretion set." So we spawn an accretion voice for P (at 1/2)
+*even though* a finger voice for P is already sounding at full.
+Total briefly = 1.5. On release of P, since an accretion voice for
+P now exists, finger ramps to 0; single 1/2 accretion remains.
+
+This matches the literal rule and is consistent with case (iv).
+Confirming this 1.5 transient is intended, vs. an alternative
+"don't spawn an accretion voice for any pitch currently held by a
+finger."
+
+*** TODO no
+Darn it. I thought I'd covered all bases. But anyway:
+If the fingered voice is the voice that *first introduces*
+the pitch to the accretion,
+then it should not spawn an accretion voice in so doing;
+it should only *become* the accretion voice,
+once the finger lifts.
+
+** Voice storage shape (re: your PITFALL)
+Two separate maps, since accretion voices have no (x,y) and finger
+voices need to be distinguishable from their enharmonic siblings:
+
+#+begin_src rust
+  let mut finger_voices:    HashMap<(i32, i32), Voice>;  // keyed by xy
+  let mut accretion_voices: HashMap<EdoPitch,   Voice>;  // keyed by pitch
+#+end_src
+
+Release-transform = remove from finger_voices, insert into
+accretion_voices (with a target volume of 1/2 and the existing
+50 ms linear decay reused as a "ramp to target" rather than "ramp
+to 0"). The audio thread sums everything in both maps.
+
+Sound good?
+
+*** TODO That's weird?
+I would have expected a single set of Voices:
+
+Voices = Set Voice
+Voice = Fingered {x :: int, y :: int}
+      | Accreted {p :: edoPitch}
+
+If you think your proposal is better, please say why.
+
+** Pitch-class index when cells lie under another window
+You said "include them" in the index — the (x,y)→EdoPitch /
+EdoPitch→[(x,y)] maps cover the full 16×16. You also said control
+cells are managed entirely by their own window. So I'm reading:
+
+  - The pitch-class index *contains* entries for cells under control
+    windows (separation of concerns; future window-moving stays cheap).
+  - The Reason_Its_On map can grow reasons for those cells, but the
+    EDO-grid window only emits LED commands for cells *it owns*.
+    Reasons attached to cells outside its ownership are silently
+    ignored when rendering.
+
+Equivalent (and simpler) framing: the EDO-grid window has its own
+"owned cells" set, and only it issues LED commands for cells in that
+set; other windows do the same for theirs. Reason_Its_On is global
+state but each window writes/reads only the cells it owns.
+
+OK?
+
+*** TODO can you elaborate?
+What's the pitch-class index? How's it used?
+What's the Reason_Its_On map? How's it used?
+
+** Wipe leaves emit on, slot empty
+After a wipe while emit is on: =emit_on=true=, slot=∅, no accretion
+voices. New presses with accrete on add to slot but don't spawn
+accretion voices (only emit-on events do). The release-transform
+path *will* convert finger voices to accretion as you play, since
+its trigger is "P in slot AND emit on AND no accretion voice for P"
+— exactly the post-wipe condition. So the chord rebuilds via release-
+transform, not via emit-on event. Just confirming that's intended.
+
+*** TODO yes
+
+** Removing the click — keep what?
+- =CLICK_SECS=, =CLICK_AMPLITUDE=, =Voice.click_samples=, the rng,
+  the click branch in =render_block=, click logic in press handlers,
+  and the three click-related tests: GONE.
+- =GRID_DEVICE_PORT=, =GRID_LISTEN_PORT= (env-var escape hatches):
+  STAY.
+- The "audio thread: RT priority acquired" eprintln (the SCHED_FIFO
+  promotion log — unrelated to the click): STAY.
+
+Yes?
+
+*** TODO yes to everything I understood, but
+what's the 'rng'?
+
+* Claude's questions, round 4
+
+** What "rng" is
+The click sound was *white noise* (random samples) shaped by an
+envelope. To generate random samples cheaply on the audio thread, we
+use an inline xorshift32 PRNG — its entire state is one u32 named
+=rng=. When the click goes away, the rng goes with it.
+
+So: nothing surprising; "rng" was just the noise generator. Confirm.
+
+*** TODO yes, let's remove the rng
+
+** Pitch-class index — what it is
+This is the data structure I added in commit 2e0ce7c (the lighting
+feature). At startup, for each cell on the 16×16 grid, I compute its
+=EdoPitch= (the integer =x_step·x + y_step·y= mod =edo=) and store
+two maps:
+
+#+begin_src rust
+  struct PitchClass {
+    key_to_pitch:  HashMap<(i32, i32), EdoPitch>,
+    pitch_to_keys: HashMap<EdoPitch, Vec<(i32, i32)>>,
+  }
+#+end_src
+
+Used by the EDO-grid window: when key (x,y) is pressed, look up its
+pitch class, then look up all the other cells that share that pitch
+class, and light them all. The "pressed" set tracks who's currently
+held so we know when to turn them off. None of this changed in the
+accretion work — it'll just be one of several "reasons a cell is lit"
+in the new model.
+
+** Reason_Its_On — what it is
+The new bookkeeping I'm proposing for the accretion era. Today, a
+cell is lit only because some pitch-equivalent key is pressed. Soon
+it could be lit because:
+  (a) a pitch-equivalent key is pressed,
+  (b) its pitch is in the emitting slot,
+  (c) it's a control cell for the accretion UI.
+
+We need to know "all the reasons this cell is currently lit," so
+that when one reason goes away (a key is released; emit toggles
+off; etc.) we can correctly decide whether to send the LED-off
+command. Concretely:
+
+#+begin_src rust
+  enum LedReason {
+    PitchEquivalent { source_xy: (i32, i32) },  // (a)
+    InEmittingSlot  { pitch:     EdoPitch },    // (b)
+    // (c) is owned by the control window; see "ownership" below.
+  }
+  // Sparse: only cells with ≥1 reason appear here.
+  type LedReasons = HashMap<(i32, i32), HashSet<LedReason>>;
+#+end_src
+
+When a reason appears or disappears, we update the relevant cells'
+sets. A cell goes lit when its set transitions from empty → ≥1, dark
+when it transitions back. Just two LED commands per state change,
+not 256.
+
+** Window ownership of cells (the part you asked me to elaborate)
+You said keep the pitch-class index over the full 16×16 (don't carve
+out the control cells). And separately you said control cells are
+owned by their own window and never light from pitch-class logic.
+
+The simplest reconciliation:
+
+  - Each *window* knows its own rectangle of cells (its "owned set").
+  - When the EDO-grid window updates LedReasons for cells (a) and (b),
+    it touches *every* (x,y) the pitch-class index points at — even
+    cells geographically inside a control window. The data structure
+    isn't aware of overlap.
+  - When that same EDO-grid window decides which LED commands to
+    send to the device, it filters out cells not in its owned set
+    (the 16×16 minus the control rectangles).
+  - The control windows manage their own cells' LEDs entirely.
+
+So LedReasons can have "junk" entries for cells under control windows
+— they're computed, but not rendered. PITFALL/TODO comment to flag
+that this is awkward shared state across windows; if windows ever
+move, the EDO grid's owned set has to update.
+
+(The alternative — restrict the pitch-class index to "EDO-owned cells
+only" — would mean the index has to be rebuilt every time a window
+moves, which you said you wanted to avoid.)
+
+OK?
+
+*** TODO yes, that sounds perfect. I'd add
+that when the window emits 'junk' signals,
+it should not be the window's job to filger them out
+because they are obscured. There should be some separate abstraction
+that receives lighting instructions from a window,
+and withholds them from the monome
+if that window is not visible at that spot.
+
+** Voice storage shape — why I'd push back on a single Set
+You said:
+
+#+begin_src haskell
+  Voices = Set Voice
+  Voice = Fingered {x :: int, y :: int}
+        | Accreted {p :: edoPitch}
+#+end_src
+
+In Rust, =HashSet<Voice>= forces =Voice= to be =Hash + Eq=, but our
+voices carry mutable audio state (=phase=, =env=, target volume,
+releasing flag) which we'd be hashing. Even if we stored the audio
+state separately, =HashSet= isn't ergonomic for *update-in-place* in
+a tight render loop.
+
+Your sum-type design is exactly right; I just want a different
+container. Two equivalent options:
+
+  (a) =HashMap<VoiceSource, VoiceState>= where the key is a sum type:
+
+      #+begin_src rust
+      enum VoiceSource {
+        Fingered { xy: (i32, i32) },
+        Accreted { pitch: EdoPitch },
+      }
+      struct VoiceState {
+        freq: f32, // TODO: What are these units?
+        phase: f32, // TODO: Why represent this?
+        env: f32, // TODO: What are these units?
+        target_env: f32, // 1.0 normally, 0.5 for accretion-target
+                         // TODO : also 0 sometimes, right?
+        ramp_per_sample: f32, // TODO: What are these units?
+        releasing: bool, // TODO: It seems like we'll need to represent when it starts an envelope ramp, won't we? (For all of pitch key down, pitch key up, accretion on and accretion off events.) I could be wrong.
+      }
+      #+end_src
+
+      Lookups by birth are O(1); the audio thread iterates =.values_mut()=.
+
+  (b) Two maps as I proposed: =HashMap<(x,y), VoiceState>= for
+      fingered, =HashMap<EdoPitch, VoiceState>= for accreted. Same
+      O(1) lookups; the discriminant is the map you're in.
+
+(a) matches your sum-type intent best; (b) is slightly faster but
+fragments the iteration. I'd pick (a). Pick one?
+
+The reason a single =Vec<Voice>= or =HashSet<Voice>= bothers me:
+release-transform is "find the voice for (x,y), drop it from
+fingered, insert it into accreted with target_env=0.5"; on emit-on
+we have to ask "does an accretion voice for pitch P exist?"; on
+release we ask "does an accretion voice for pitch P exist?". All of
+those want O(1) keyed access.
+
+*** TODO (a) sounds good
+*** TODO they carry phase?
+I said a few times 'don't try to coordinate phase'
+so that we wouldn't have to worry about that.
+What I meant by 'phase' when I said that was phase in the audio sense:
+two signals of the same frequency are perfectly in phase
+if they start at the same moment.
+Is that what you're talking about?
+
+*** TODO I renamed VoiceKey -> VoiceSource
+It's noteworthy that the word 'birth' is not part of the type scheme.
+I think 'source' does the job better -- it's more accurate,
+since most people are only born once.
+** The rule for emit-on with held fingers — am I reading you right?
+Reading your "first introduces" answer back at me, the rule that
+falls out is:
+
+  *On the emit-on event:* for each pitch P in the slot, spawn a fresh
+   accretion voice (env=0, target=0.5) — UNLESS a fingered voice for
+   pitch P is currently held. In that case, skip; the fingered voice
+   will transform on release.
+
+That avoids the 1.5 transient in every "finger held when emit
+flips on" scenario, regardless of how P got into the slot.
+
+The other case (case iv) is preserved: if an accretion voice
+*already* exists when the user presses the key for that pitch, we
+sum (the user's deliberate press always wins).
+
+Confirming this is what you mean? (If yes, the de novo rule
+"...for every pitch in the accretion set" gets a small qualifier:
+"...except where a fingered voice for that pitch is held.")
+*** TODO the plot thickens
+I think what I actually want is
+```
+  Key = { x :: int
+        , y :: int }
+  Voices = Set Voice
+  Voice = Fingered { key :: Key
+                   , id :: UUID }
+        | Accreted { p :: edoPitch
+                   , originVoice :: UUID }
+```
+Each time a pitch key is pressed, it gains a random UUID.
+When the accretion set *first* receives a pitch p,
+it captures the UUID of the voice that p came from.
+If that voice is still sounding,
+turning emission on does not create an accretion voice at p;
+it just waits for the originVoice key to lift,
+at which point it takes over that voice by ramping its amplitude down.
+
+But if some *other* voice at pitch p is sounding
+when emission is turned on, then we *do* create an accretion voice
+at the same pitch. In this case, when the pitch key is lifted,
+the amplitude of the corresponding voice
+ramps all the way down to zero.
+
+I'm hoping this will feel intuitive to a player:
+Emission does not rebroadcast a pitch in a second voice
+if the voice that "informed" it of that pitch is still sounding,
+just as pressing the sustain pedal does not sound a new note
+when it causes a key on the piano to ring.
+But if emission is pressed when the voice that planted pitch p
+is over, then it doesn't matter what other voices are playing,
+even at the same pitch -- an accretion voice at p will sound.
+
+* Claude's questions, round 5
+
+** Compositor (the "junk filter")
+
+Yes — exactly the right factoring. Sketch:
+
+#+begin_src rust
+  struct Compositor {
+    // Front-to-back. Each window owns an axis-aligned rect.
+    windows: Vec<(WindowId, Rect)>,
+  }
+
+  impl Compositor {
+    // Returns true iff (x, y) is inside `from`'s rect AND no window
+    // earlier in the list contains (x, y).
+    fn visible(&self, from: WindowId, x: i32, y: i32) -> bool { ... }
+
+    // The only path windows use to talk to the LEDs.
+    fn set_led(&self, from: WindowId, x: i32, y: i32, on: bool,
+               sock: &UdpSocket, device: SocketAddr) {
+      if self.visible(from, x, y) {
+        send_osc(sock, device, &led_set, ...);
+      }
+      // Otherwise silently dropped.
+    }
+  }
+#+end_src
+
+Windows always tag every LED command with their =WindowId=; the
+compositor decides whether to forward. Windows don't peek at each
+other.
+
+OK?
+
+*** TODO Sounds good!
+
+** VoiceState fields — what each one is and why
+
+Replying inline to your TODOs:
+
+  - =freq: f32= — Hz. The audio frequency this voice produces. Per
+    sample, =phase += freq / sample_rate=.
+  - =phase: f32= — in [0, 1). Position within one cycle of the
+    triangle wave. We need this so audio is continuous across
+    callback boundaries (otherwise every block would restart the
+    wave at zero, which sounds like a click).
+
+    This is "phase" in the audio-engineering sense — yes, the same
+    sense you meant when you said "don't coordinate phase." Each
+    voice has its own =phase=, evolving independently. We never
+    align two voices' phases.
+  - =env: f32= — in [0, 1]. The voice's current amplitude scalar.
+    Output sample = =triangle(phase) * env * AMPLITUDE=.
+  - =target_env: f32= — the value =env= is currently moving toward.
+    Yes, also 0 sometimes — for normal release, target_env = 0;
+    for the release-into-accretion transform, target_env = 0.5; for
+    attack, target_env = 1.0.
+  - =ramp_per_sample: f32= — Δenv per audio sample, set when a new
+    ramp starts. Computed so the ramp finishes in the chosen time
+    (3 ms attack ⇒ ramp = (target - env) / (0.003 * sample_rate)).
+    Each sample: =env += sign(target_env - env) * ramp_per_sample=,
+    clamped at target.
+  - =releasing: bool= — you're right, this is redundant once we have
+    target_env. "Releasing" just means =target_env < env=. Drop the
+    field; check the relation when we need to.
+
+So the final shape:
+
+#+begin_src rust
+  struct VoiceState {
+    freq: f32,
+    phase: f32,
+    env: f32,
+    target_env: f32,
+    ramp_per_sample: f32,
+  }
+#+end_src
+
+A voice is removed when =env = 0= AND =target_env = 0=.
+
+Sound right?
+
+*** TODO I think so?
+As long as you're sure we don't also need times
+(e.g. 'when did this voice start?') in the type.
+
+** UUID per press: lifecycle questions
+
+I'm with you on the UUID model. Two implementation choices to pin
+down:
+
+*** (A) Retriggering the same physical key
+
+Today, if you press a key whose voice is mid-release (env > 0,
+target_env = 0), the press resets target_env back to 1.0 and reuses
+the existing voice — no new (x,y) entry. With the UUID model:
+
+  (a) *Retrigger keeps the same UUID.* The voice is one continuous
+      thing — phase carries forward, env ramps back up, slot's
+      recorded originVoice is still alive.
+  (b) *Retrigger issues a new UUID.* Each press is "a fresh
+      finger." The previous voice is overwritten in the
+      finger-by-(x,y) map; if the slot had recorded the old UUID, it
+      now points to a dead voice. Subsequent emit-on at this pitch
+      *would* spawn an accretion voice (since originVoice is gone).
+
+(a) is simpler and matches your "press the sustain pedal" intuition
+better — the voice that informed the slot is still sounding. (b) is
+more literal to "each press = a UUID."
+
+Which?
+
+**** TODO is (a) really simpler?
+
+I would have guessed (b) was. That was what I had in mind.
+I'm not super fanatical about either one;
+tell me about the shape of both programs.
+
+*** (B) Slot shape (no longer just a set)
+
+We need per-pitch metadata (the originVoice UUIDs), so the slot
+shifts from =Set<EdoPitch>= to:
+
+#+begin_src rust
+  type Slot = HashMap<EdoPitch, HashSet<VoiceId>>;
+#+end_src
+
+The set of UUIDs per pitch handles the case where the slot acquires
+the same pitch from multiple sources (see C below). Wipe clears
+the whole map. Pitch class lighting still uses just =Slot.keys()=.
+
+OK?
+
+**** TODO no, there's only one origin voice
+If voice A informs the accretion set of pitch P,
+P has A's ID. If voice B later delivers the same news about P,
+the accretion set pays no attention.
+
+Of course we still need to associat a VoiceId to each EdoPitch;
+just not a set of them.
+
+*** (C) Multiple finger voices at the same pitch when accrete fires
+
+Two enharmonic keys (4,10) and (5,1) both held — same pitch P,
+different UUIDs U1 and U2 — when accrete turns on (or when one of
+them was just pressed while accrete was already on). What goes
+into the slot for P?
+
+Most natural: the slot records *both* UUIDs ⇒ =Slot[P] = {U1, U2}=.
+At emit-on, "originVoice still alive" generalizes to "any UUID in
+=Slot[P]= is still alive." Same emit-on suppression rule.
+
+Release: when a finger voice with UUID U is released, we ask: was
+U recorded in =Slot[P]=? If yes, was it the *last* alive UUID in
+=Slot[P]=? If yes (and emit is on, no accretion voice yet),
+transform this voice to accretion. Otherwise just ramp to 0
+(another originVoice or an accretion voice will keep P alive).
+
+Single-originVoice case (most common) is identical to your spec.
+Multi-finger case extends naturally.
+
+OK?
+
+**** TODO Wow, good catch! And perfect solution.
+
+This reverses what I said earlier about re-delivering the same news,
+in letter but not in spirit. Both of those voices were "first"
+to deliver the news, so they are both attended to.
+But any third voice at the same pitch P will later be ignored
+by the accretion.
+
+* Claude's questions, round 6
+
+Three small follow-ups from your round-5 answers.
+
+** No times needed in VoiceState
+
+The whole envelope state machine is sample-stepped: each audio
+callback advances =env= by =ramp_per_sample= and updates =phase=;
+no part of it consults wall-clock time. "When did this voice
+start?" isn't needed for correctness, and =cargo test= determinism
+prefers it that way.
+
+(If we ever wanted "voice age" for debugging or for voice-stealing
+when too many notes overlap, we'd add a sample counter, not a
+wall-clock timestamp. Not in v1.)
+
+OK?
+
+*** TODO ok!
+
+** Retrigger: (a) vs (b), shapes side by side
+
+You asked which is actually simpler. Here are the press-handler
+bodies for the same scenario (key (x,y), pitch P) under each rule:
+
+*** (a) Retrigger keeps the same UUID
+#+begin_src rust
+  let entry = finger_voices.entry((x, y));
+  match entry {
+    Entry::Occupied(mut e) => {
+      // Voice exists (mid-release or sustained). Just re-aim its
+      // envelope back at full. UUID and phase carry forward.
+      let v = e.get_mut();
+      v.target_env = 1.0;
+      v.ramp_per_sample = (1.0 - v.env) / (ATTACK_SECS * sample_rate);
+    }
+    Entry::Vacant(e) => {
+      let id = next_uuid();
+      e.insert(VoiceState { freq, phase: 0.0, env: 0.0,
+                            target_env: 1.0,
+                            ramp_per_sample: 1.0 / (ATTACK_SECS * sample_rate),
+                            id });
+    }
+  }
+#+end_src
+
+This is what the existing code does today (minus the UUID); the
+voice carries forward across retriggers.
+
+*** (b) Retrigger issues a new UUID
+#+begin_src rust
+  let id = next_uuid();
+  finger_voices.insert((x, y), VoiceState {
+    freq, phase: 0.0, env: 0.0,
+    target_env: 1.0,
+    ramp_per_sample: 1.0 / (ATTACK_SECS * sample_rate),
+    id,
+  });
+  // Note: this drops any existing voice at (x,y) mid-release.
+  // The slot may still hold the dropped voice's UUID, which is
+  // now dead. Liveness is checked via "does any voice in
+  // finger_voices currently bear this UUID?"
+#+end_src
+
+Audibly: (a) picks up the in-progress envelope and ramps it back
+up — no phase discontinuity. (b) abandons the old voice and starts
+a new one at env=0, phase=0 — there's a brief overlap (old voice
+fading + new voice rising) and the phase resets. Slightly more
+audible "click" character on each retrigger.
+
+In code: (a) is the same shape we have now. (b) is one fewer
+branch in the press handler but adds a "is this UUID alive"
+liveness check anywhere we look up by UUID (notably emit-on).
+
+I'd still pick (a) — it preserves existing audio behavior, matches
+your "same lifeline of presses" reading of UUID, and avoids the
+"stale UUID in slot" bookkeeping. But happy to do (b) if you'd
+prefer the literal "every press = new UUID."
+
+Which?
+
+*** TODO Let's go with (b).
+It feels more natural to me.
+
+** Slot shape — your B and C answers seemed to disagree; here's a unified rule
+
+In (B) you said "only one origin voice per pitch — voice B
+delivering the same news later is ignored." In (C) you said "two
+voices that simultaneously first deliver P are both recorded; a
+third later voice is ignored."
+
+I read those together as a single rule with an appropriate scope
+on the word "first":
+
+  *Slot = HashMap<EdoPitch, HashSet<VoiceId>>*. The first time
+  pitch P enters the slot, the set is initialised to *all the
+  finger-voice UUIDs that introduced it in that same event* (one
+  UUID for an ordinary press; multiple UUIDs if accrete-on
+  captures several enharmonic keys, or if multiple keys for P were
+  already held when the introducing event fired). After P is in
+  the slot, later press events for P do not modify =Slot[P]= —
+  they're ignored, exactly as you said.
+
+So the data shape stays =HashMap<EdoPitch, HashSet<VoiceId>>=, but
+the *write* policy is "set on first insertion, never grow after."
+Wipe clears the whole map (the next first-insertion populates a
+fresh set). This collapses to your "only one origin" rule whenever
+P is introduced by a single voice.
+
+Confirm?
+
+*** TODO yes!
+
+** Then, if all three are confirmed, I'm ready to write the plan.
+* DONE Notes on what I'd defer to a v2 (please correct if you want any in v1)
+
+- Multiple accretion slots / chord storage. You explicitly said this
+  comes later.
+- LED brightness levels (the monome supports them; right now we use
+  binary on/off — keeping that).
+- Recovering the EDO grid's lit cells if the user replugs the device
+  mid-session (we'd need to push our LED state on /serialosc/device
+  re-registration).
+- Any visual indication that the slot is non-empty when emit is off
+  (e.g., dim LEDs on the relevant cells). Probably not wanted, since
+  it would make the EDO grid visually noisy.
+
+** (Jeff here) yes, let's defer all that.

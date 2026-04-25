@@ -60,6 +60,37 @@ Args default to =220 46 9 1= — i.e. =(0,0) = 220 Hz=, pitch rises
 9/46 of an octave per x step and 1/46 of an octave per y step. All
 four args are =f64=, so fractional EDOs work.
 
+* Accretion controls (the five special keys)
+
+Five cells in the bottom-left corner are repurposed from the EDO
+grid into a small UI. They form two windows that obscure the EDO
+grid beneath them:
+
+#+begin_example
+              x=0        x=1        x=2
+           +----------+----------+----------+
+    y=14   | accrete  |  wipe    |  (EDO)   |
+           +----------+----------+----------+
+    y=15   | silent   |  emit    |  emit-   |
+           |          |          |  toggle  |
+           +----------+----------+----------+
+                  ^^^accretion 2x2^^^   ^1x1^
+#+end_example
+
+| Key            | Kind             | What it does                                      |
+|----------------+------------------+---------------------------------------------------|
+| =accrete=      | Toggle           | While on, every EDO press adds its pitch to the slot. Toggling on also snapshots whatever's currently held. |
+| =wipe=         | Fire             | Empties the slot; any sounding accretion voices ramp to silence. |
+| =silent=       | Fire             | Same effect as toggling =emit= off: accretion voices ramp out, =emit= becomes off. |
+| =emit=         | Toggle or Nursed | When on, every pitch in the slot sounds at half volume. Mode controlled by =emit-toggle=. |
+| =emit-toggle=  | Toggle           | Picks =emit='s mode. On (the default) ⇒ =emit= is a Toggle key; off ⇒ =emit= is Nursed (sounds only while held). |
+
+A pressed EDO key whose pitch is in the slot AND =emit= is on
+behaves like the sustain-pedal generalisation: when you release the
+finger, the voice doesn't go silent — it ramps from full volume
+down to the half-volume accretion level and keeps ringing until
+=silent=, =wipe=, or another release event takes it away.
+
 * The monome OSC protocol in one page
 
 All communication is OSC over UDP. The monome (via serialoscd) both

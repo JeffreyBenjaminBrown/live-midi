@@ -1,0 +1,28 @@
+* The idea
+We can already accumulate pitches.
+We've been calling a button the 'emit' button,
+which plays an accretion of pitches.
+
+We will make a lot of buttons like the 'emit' button.
+It will be no different from the rest of them.
+Each will correspond to a separate accretion vector.
+Each will light up when it is emitting.
+The emit-is-toggle button now changes all of their toggleness at once.
+(We don't need, therefore,
+to represent toggleness on a per-button basis;
+we can just have one boolean field in World (I think we already do)
+that indicates whether the chord buttons are toggle or nursed.)
+
+We need one more special button: 'set-accretion-target'.
+Pressing this button, and then one of the chord buttons,
+causes accretion to switch to that button's chord accretion.
+
+There is always precisely one accretion target,
+and always at most one emitting chord,
+and they don't have to be the same button.
+The "silence" button is much like the other chords,
+but it is always empty; it cannot be the accretion target.
+
+The accretion target should be dimly lit,
+unless it is also emitting,
+in which case it should be brightly (normally) lit.
