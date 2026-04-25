@@ -42,12 +42,25 @@ impl AppState {
       accretion_target: INITIALLY_ACCRETING_CHORD,
       emitting_chord: None,
       pressed_chords: vec![],
+      target_select_mode: false,
       accrete_on: false, emit_is_toggle: true,
       next_voice_id: 0, pitchled_reasons: HashMap::new(),
       control_buttons,
       pitch_class, fund, edo, sample_rate,
     }
   }
+}
+
+// LedCmd for the set-accretion-target cell at its resting brightness
+// (Dim). Used after exiting target-select mode to stop the flash.
+pub fn repaint_set_target_button() -> LedCmd {
+  (WindowId::ControlsTop, CELL_SET_ACCRETION_TARGET, Brightness::Dim)
+}
+
+// LedCmd for chord N's cell, computed from current state.
+pub fn repaint_chord_button(state: &AppState, chord: ChordId) -> LedCmd {
+  (WindowId::ControlsBottom, (chord as i32, 15),
+   chord_button_brightness(state, chord))
 }
 
 // EDO window press.
@@ -162,6 +175,14 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
 // Press in any control window. Returns LED diffs (the button's own
 // light, plus any caused by the dispatched ButtonAction).
 pub fn control_press(state: &mut AppState, cell: MonomeKey, win: WindowId) -> Vec<LedCmd> {
+  // While in target-select mode, ANY control-button press exits the
+  // mode without firing the button's normal action. (Per Round 2:
+  // "any chord-related button that is not a legitimate chord exits
+  // it, with no change.")
+  if state.target_select_mode {
+    state.target_select_mode = false;
+    return vec![repaint_set_target_button()];
+  }
   let button = match state.control_buttons.get_mut(&cell) {
     Some(b) => b,
     None => return vec![],
@@ -211,6 +232,24 @@ pub fn control_release(state: &mut AppState, cell: MonomeKey, win: WindowId) -> 
 // and Nursed modes, the pressed_chords stack, and emitter
 // switching with all attendant LED diffs.
 pub fn chord_press(state: &mut AppState, chord_id: ChordId) -> Vec<LedCmd> {
+  // If we're in target-select mode, this chord press *exits* the
+  // mode. A legitimate chord (1..=15) also reassigns the target;
+  // pressing silence (chord 0) just exits without changing target.
+  // Either way, the press itself does NOT switch the emitter, and
+  // pressed_chords is NOT updated.
+  if state.target_select_mode {
+    state.target_select_mode = false;
+    let mut diffs = vec![repaint_set_target_button()];
+    if chord_id != SILENCE_CHORD {
+      let old_target = state.accretion_target;
+      state.accretion_target = chord_id;
+      // Both the old and new target cells need repainting.
+      diffs.push(repaint_chord_button(state, old_target));
+      diffs.push(repaint_chord_button(state, chord_id));
+    }
+    return diffs;
+  }
+
   // Update pressed_chords: push to top, removing any earlier occurrence.
   state.pressed_chords.retain(|&c| c != chord_id);
   state.pressed_chords.push(chord_id);
@@ -382,7 +421,11 @@ pub fn do_action(state: &mut AppState, action: ButtonAction) -> Vec<LedCmd> {
       vec![]
     }
     ButtonAction::SetTargetFire => {
-      // commit 6 implements the modal target-select flow. No-op.
+      // Enter target-select mode. (control_press intercepts presses
+      // while already in the mode, so SetTargetFire only fires from
+      // a press while NOT in the mode.) The first flash-tick paints
+      // the cell Bright; we don't need to send anything here.
+      state.target_select_mode = true;
       vec![]
     }
   }
@@ -749,6 +792,76 @@ mod tests {
     s.pressed_chords.retain(|&c| c != 1);
     do_action(&mut s, ButtonAction::EmitIsToggleOff);
     assert_eq!(s.emitting_chord, None, "no held chord → silenced on flip");
+  }
+
+  // === Target-select mode ==============================================
+
+  #[test]
+  fn set_target_press_enters_mode() {
+    let mut s = fresh_state();
+    do_action(&mut s, ButtonAction::SetTargetFire);
+    assert!(s.target_select_mode);
+  }
+
+  #[test]
+  fn set_target_press_again_exits_mode_no_change() {
+    let mut s = fresh_state();
+    let target0 = s.accretion_target;
+    do_action(&mut s, ButtonAction::SetTargetFire);
+    assert!(s.target_select_mode);
+    // Press the set-accretion-target cell while in mode — control_press
+    // intercepts and exits.
+    let diffs = control_press(&mut s, CELL_SET_ACCRETION_TARGET, WindowId::ControlsTop);
+    assert!(!s.target_select_mode);
+    assert_eq!(s.accretion_target, target0, "target unchanged on re-press");
+    // Diffs include the set-target cell repaint.
+    assert!(diffs.iter().any(|&(w, c, _)|
+      w == WindowId::ControlsTop && c == CELL_SET_ACCRETION_TARGET));
+  }
+
+  #[test]
+  fn chord_press_in_target_mode_changes_target_and_exits() {
+    let mut s = fresh_state();
+    let target0 = s.accretion_target;
+    do_action(&mut s, ButtonAction::SetTargetFire);
+    assert!(s.target_select_mode);
+    let new_target = 7;
+    chord_press(&mut s, new_target);
+    assert!(!s.target_select_mode);
+    assert_eq!(s.accretion_target, new_target);
+    assert_ne!(s.accretion_target, target0);
+    // Crucially the chord press did NOT switch the emitter or push
+    // to pressed_chords.
+    assert_eq!(s.emitting_chord, None);
+    assert!(s.pressed_chords.is_empty());
+  }
+
+  #[test]
+  fn silence_press_in_target_mode_exits_no_change() {
+    let mut s = fresh_state();
+    let target0 = s.accretion_target;
+    do_action(&mut s, ButtonAction::SetTargetFire);
+    chord_press(&mut s, SILENCE_CHORD);
+    assert!(!s.target_select_mode);
+    assert_eq!(s.accretion_target, target0,
+               "silence is not a legitimate target — exit with no change");
+    assert_eq!(s.emitting_chord, None,
+               "silence press in target mode does NOT become emitter");
+  }
+
+  #[test]
+  fn wipe_press_in_target_mode_exits_with_no_action() {
+    let mut s = fresh_state();
+    s.chords[INITIALLY_ACCRETING_CHORD]
+      .insert(0, [99].into_iter().collect());
+    do_action(&mut s, ButtonAction::SetTargetFire);
+    // Press wipe via control_press.
+    control_press(&mut s, CELL_WIPE, WindowId::ControlsTop);
+    assert!(!s.target_select_mode);
+    // The slot was NOT wiped — control_press intercepts in target
+    // mode and skips the action entirely.
+    assert!(s.chords[INITIALLY_ACCRETING_CHORD].contains_key(&0),
+            "wipe action should not fire when intercepted by mode-exit");
   }
 
   #[test]

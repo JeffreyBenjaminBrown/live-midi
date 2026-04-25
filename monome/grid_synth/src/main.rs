@@ -44,7 +44,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::consts::{
-  GRID_H, GRID_W, HEARTBEAT_SECS, LISTEN_PORT, PREFIX,
+  CELL_SET_ACCRETION_TARGET, FLASH_PHASE_MS, GRID_H, GRID_W,
+  HEARTBEAT_SECS, LISTEN_PORT, PREFIX,
 };
 use crate::diagnostics::capture_stall_diagnostics;
 use crate::osc::{discover_device, register, send_osc};
@@ -262,13 +263,19 @@ fn main() {
   // pitch-equivalent / accretion lighting.
   let repaint = |state: &AppState, device: SocketAddr| {
     // y=14 control buttons (Toggle/Nursed/Fire). Toggle/Nursed light
-    // by .state; Fire is never lit.
+    // by .state; Fire is normally off — except set-accretion-target,
+    // which sits at Dim resting brightness (and flashes via the
+    // main-loop tick when target_select_mode is true).
     for (&cell, button) in &state.control_buttons {
-      let lit = match button {
-        Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
-        Button::Fire { .. } => false,
+      let b = if cell == CELL_SET_ACCRETION_TARGET {
+        Brightness::Dim
+      } else {
+        let lit = match button {
+          Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
+          Button::Fire { .. } => false,
+        };
+        if lit { Brightness::Bright } else { Brightness::Off }
       };
-      let b = if lit { Brightness::Bright } else { Brightness::Off };
       set_led(&windows, WindowId::ControlsTop, cell, b,
               &sock, device, &led_level_set);
     }
@@ -302,8 +309,28 @@ fn main() {
   let mut last_heartbeat = Instant::now();
   let mut consecutive_stalls: u32 = 0;
   let mut stall_captured = false;
+  // Flash tick state for set-accretion-target while in select mode.
+  // 2 is a sentinel that won't equal a real phase (0 or 1), so the
+  // first iteration after entering the mode forces a paint.
+  let start = Instant::now();
+  let mut last_flash_phase: u8 = 2;
   loop {
     if STOP.load(Ordering::SeqCst) { break; }
+    // Flash tick: while in target-select mode, toggle the
+    // set-accretion-target cell between Bright and Off every
+    // FLASH_PHASE_MS. When mode exits, reset the sentinel so the
+    // next entry forces a fresh paint.
+    if state.target_select_mode {
+      let phase = ((start.elapsed().as_millis() / FLASH_PHASE_MS) & 1) as u8;
+      if phase != last_flash_phase {
+        last_flash_phase = phase;
+        let b = if phase == 0 { Brightness::Bright } else { Brightness::Off };
+        set_led(&windows, WindowId::ControlsTop, CELL_SET_ACCRETION_TARGET,
+                b, &sock, device, &led_level_set);
+      }
+    } else {
+      last_flash_phase = 2;
+    }
     // Heartbeat — log once per HEARTBEAT_SECS regardless of OSC activity.
     let elapsed = last_heartbeat.elapsed();
     if elapsed.as_secs_f64() >= HEARTBEAT_SECS {

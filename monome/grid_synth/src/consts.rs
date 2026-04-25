@@ -48,3 +48,10 @@ pub const EDO_RECT:             ((i32, i32), (i32, i32)) = ((0,  0), (15, 15));
 // control flow — purely for spotting audio-stall issues. See commit
 // 74cee11 for context.
 pub const HEARTBEAT_SECS: f64 = 1.0;
+
+// === UI feedback ======================================================
+
+// Set-accretion-target LED flash period: half on, half off, this many
+// milliseconds per phase (so the full cycle is 2× this). The main
+// loop's 50 ms recv timeout dominates the worst-case visible jitter.
+pub const FLASH_PHASE_MS: u128 = 150;

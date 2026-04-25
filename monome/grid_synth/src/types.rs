@@ -175,6 +175,12 @@ pub struct AppState {
   //   Toggle mode: informational; consulted on Toggle→Nursed flip.
   pub pressed_chords:   Vec<ChordId>,
 
+  // Modal: while true, the next chord-button press picks the
+  // accretion target. Any other "chord-related" button press exits
+  // the mode without changing target. EDO presses are unaffected.
+  // The set-accretion-target LED flashes while this is true.
+  pub target_select_mode: bool,
+
   pub accrete_on:       bool,
   pub emit_is_toggle:   bool,
   pub next_voice_id:    VoiceId,
