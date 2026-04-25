@@ -53,6 +53,88 @@ fn freq_for(x: i32, y: i32, fund: f64, edo: f64, x_step: f64, y_step: f64) -> f3
   (fund * 2.0_f64.powf((x_step * x as f64 + y_step * y as f64) / edo)) as f32
 }
 
+// === Windows ============================================================
+
+type Cell = (i32, i32);
+// Inclusive corners.
+type Rect = (Cell, Cell);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowId { Edo, Accretion2x2, EmitToggle1x1 }
+
+#[derive(Debug, Clone, Copy)]
+struct Window {
+  id:   WindowId,
+  rect: Rect,
+}
+
+fn rect_contains(rect: &Rect, cell: Cell) -> bool {
+  let ((x0, y0), (x1, y1)) = *rect;
+  let (x, y) = cell;
+  x0 <= x && x <= x1 && y0 <= y && y <= y1
+}
+
+// Front-to-back: returns the first window whose rect contains `cell`.
+fn window_for_cell(windows: &[Window], cell: Cell) -> Option<WindowId> {
+  windows.iter().find(|w| rect_contains(&w.rect, cell)).map(|w| w.id)
+}
+
+// True iff window `from` "owns" `cell` — i.e. `from`'s rect contains
+// `cell` AND no earlier (front-er) window's rect does. This is the
+// compositor's only decision; pulled out as a pure fn for testing.
+//
+// PITFALL: the LedReasons map (later commit) is global state that
+// every window writes into. Without this filter the EDO grid would
+// quietly stomp the LEDs that control windows are managing. If you
+// move windows around, also update what cells the EDO grid claims.
+fn visible(windows: &[Window], from: WindowId, cell: Cell) -> bool {
+  for w in windows {
+    if w.id == from {
+      return rect_contains(&w.rect, cell);
+    }
+    if rect_contains(&w.rect, cell) {
+      return false;
+    }
+  }
+  false
+}
+
+// LED-command compositor wrapper around send_osc. Drops writes for
+// cells the calling window doesn't own.
+fn set_led(
+  windows: &[Window], from: WindowId, cell: Cell, on: bool,
+  sock: &UdpSocket, device: SocketAddr, led_set: &str,
+) {
+  if !visible(windows, from, cell) { return; }
+  send_osc(sock, device, led_set, vec![
+    OscType::Int(cell.0), OscType::Int(cell.1),
+    OscType::Int(if on { 1 } else { 0 }),
+  ]);
+}
+
+// === Buttons ============================================================
+
+// What a control-window cell does. Stored in per-window button maps
+// on World; dispatched by ButtonRole, never by closure (closures
+// fight Rust's borrow checker for &mut World).
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+enum Button {
+  Toggle { state: bool, on: ButtonRole, off: ButtonRole },
+  Nursed { state: bool, on: ButtonRole, off: ButtonRole },
+  Fire   { fire: ButtonRole },
+}
+
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+enum ButtonRole {
+  AccreteOn, AccreteOff,
+  EmitOn,    EmitOff,
+  SilentFire,
+  WipeFire,
+  EmitIsToggleOn, EmitIsToggleOff,
+}
+
 // Per-grid pitch-class index. Two keys with the same EdoPitch sound
 // the same note modulo octave. Built once at startup; lookup is O(1).
 // Only meaningful when edo / x_step / y_step are integers.
@@ -369,6 +451,31 @@ fn main() {
     };
   let mut pressed: HashSet<(i32, i32)> = HashSet::new();
 
+  // Windows, front-to-back. Smaller control windows occlude the EDO
+  // grid below them. The EDO window covers the whole 16×16; the
+  // accretion 2×2 sits in the bottom-left, the emit-toggle 1×1
+  // sits next to it.
+  let windows: Vec<Window> = vec![
+    Window { id: WindowId::Accretion2x2,   rect: ((0, 14), (1, 15)) },
+    Window { id: WindowId::EmitToggle1x1,  rect: ((2, 15), (2, 15)) },
+    Window { id: WindowId::Edo,            rect: ((0, 0),  (15, 15)) },
+  ];
+  // Per-window button maps; their actions are no-ops in this commit
+  // (the accretion state machine wires them up in a later commit).
+  let _accretion_buttons: HashMap<Cell, Button> = {
+    let mut m = HashMap::new();
+    m.insert((0, 14), Button::Toggle { state: false, on: ButtonRole::AccreteOn,
+                                       off: ButtonRole::AccreteOff });
+    m.insert((1, 14), Button::Fire   { fire: ButtonRole::WipeFire });
+    m.insert((0, 15), Button::Fire   { fire: ButtonRole::SilentFire });
+    m.insert((1, 15), Button::Toggle { state: false, on: ButtonRole::EmitOn,
+                                       off: ButtonRole::EmitOff });
+    m
+  };
+  let _emit_toggle_button: Button =
+    Button::Toggle { state: true, on: ButtonRole::EmitIsToggleOn,
+                                  off: ButtonRole::EmitIsToggleOff };
+
   // --- Main event loop: OSC from grid ---
   let key_addr = format!("{PREFIX}/grid/key");
   let led_set = format!("{PREFIX}/grid/led/set");
@@ -410,43 +517,62 @@ fn main() {
             }
             _ => continue,
           };
-          let mut vs = voices.lock().unwrap();
-          let key = VoiceSource::Fingered { xy: (x, y) };
-          if s == 1 {
-            let freq = freq_for(x, y, fund, edo, x_step, y_step);
-            eprintln!("press   x={x:>2} y={y:>2}  f={freq:.2} Hz");
-            // (b)-style retrigger: each press is a fresh voice with a
-            // new id; any existing entry at this xy is overwritten.
-            let id = next_voice_id;
-            next_voice_id += 1;
-            vs.insert(key, VoiceState {
-              id,
-              freq,
-              phase: 0.0,
-              env: 0.0,
-              target_env: 1.0,
-              ramp_per_sample: 1.0 / (ATTACK_SECS * sample_rate),
-            });
-            drop(vs);
-            pressed.insert((x, y));
-            for (lx, ly) in leds_for_press(pitch_class.as_ref(), x, y) {
-              send_osc(&sock, device, &led_set,
-                vec![OscType::Int(lx), OscType::Int(ly), OscType::Int(1)]);
+          let cell = (x, y);
+          let win = match window_for_cell(&windows, cell) {
+            Some(w) => w,
+            None => continue,
+          };
+          match win {
+            WindowId::Accretion2x2 => {
+              eprintln!("{} accretion-control x={x:>2} y={y:>2}",
+                        if s == 1 { "press  " } else { "release" });
+              // No-op until the accretion state machine lands.
             }
-          } else {
-            eprintln!("release x={x:>2} y={y:>2}");
-            if let Some(v) = vs.get_mut(&key) {
-              v.target_env = 0.0;
-              // Always-finish-in-50ms ramp from current env.
-              v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
+            WindowId::EmitToggle1x1 => {
+              eprintln!("{} emit-is-toggle x={x:>2} y={y:>2}",
+                        if s == 1 { "press  " } else { "release" });
+              // No-op until the accretion state machine lands.
             }
-            drop(vs);
-            pressed.remove(&(x, y));
-            for (lx, ly) in leds_for_release(pitch_class.as_ref(), &pressed, x, y) {
-              send_osc(&sock, device, &led_set,
-                vec![OscType::Int(lx), OscType::Int(ly), OscType::Int(0)]);
+            WindowId::Edo => {
+              let mut vs = voices.lock().unwrap();
+              let key = VoiceSource::Fingered { xy: cell };
+              if s == 1 {
+                let freq = freq_for(x, y, fund, edo, x_step, y_step);
+                eprintln!("press   x={x:>2} y={y:>2}  f={freq:.2} Hz");
+                // (b)-style retrigger: each press is a fresh voice with a
+                // new id; any existing entry at this xy is overwritten.
+                let id = next_voice_id;
+                next_voice_id += 1;
+                vs.insert(key, VoiceState {
+                  id,
+                  freq,
+                  phase: 0.0,
+                  env: 0.0,
+                  target_env: 1.0,
+                  ramp_per_sample: 1.0 / (ATTACK_SECS * sample_rate),
+                });
+                drop(vs);
+                pressed.insert(cell);
+                for (lx, ly) in leds_for_press(pitch_class.as_ref(), x, y) {
+                  set_led(&windows, WindowId::Edo, (lx, ly), true,
+                          &sock, device, &led_set);
+                }
+              } else {
+                eprintln!("release x={x:>2} y={y:>2}");
+                if let Some(v) = vs.get_mut(&key) {
+                  v.target_env = 0.0;
+                  v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
+                }
+                drop(vs);
+                pressed.remove(&cell);
+                for (lx, ly) in leds_for_release(pitch_class.as_ref(), &pressed, x, y) {
+                  set_led(&windows, WindowId::Edo, (lx, ly), false,
+                          &sock, device, &led_set);
+                }
+              }
             }
-          }}}
+          }
+        }}
       Err(_) => { /* timeout, loop again */ }}} }
 
 #[cfg(test)]
@@ -528,6 +654,60 @@ mod tests {
     let pressed: HashSet<(i32, i32)> = HashSet::new();
     assert_eq!(leds_for_press(None, 7, 3), vec![(7, 3)]);
     assert_eq!(leds_for_release(None, &pressed, 7, 3), vec![(7, 3)]);
+  }
+
+  fn standard_windows() -> Vec<Window> {
+    vec![
+      Window { id: WindowId::Accretion2x2,  rect: ((0, 14), (1, 15)) },
+      Window { id: WindowId::EmitToggle1x1, rect: ((2, 15), (2, 15)) },
+      Window { id: WindowId::Edo,           rect: ((0, 0),  (15, 15)) },
+    ]
+  }
+
+  #[test]
+  fn event_in_2x2_goes_to_accretion_window() {
+    let ws = standard_windows();
+    assert_eq!(window_for_cell(&ws, (0, 14)), Some(WindowId::Accretion2x2));
+    assert_eq!(window_for_cell(&ws, (1, 15)), Some(WindowId::Accretion2x2));
+  }
+
+  #[test]
+  fn event_in_1x1_goes_to_emit_toggle_window() {
+    let ws = standard_windows();
+    assert_eq!(window_for_cell(&ws, (2, 15)), Some(WindowId::EmitToggle1x1));
+  }
+
+  #[test]
+  fn event_outside_smalls_goes_to_edo_window() {
+    let ws = standard_windows();
+    assert_eq!(window_for_cell(&ws, (0, 0)),  Some(WindowId::Edo));
+    assert_eq!(window_for_cell(&ws, (8, 8)),  Some(WindowId::Edo));
+    assert_eq!(window_for_cell(&ws, (15, 15)), Some(WindowId::Edo));
+    assert_eq!(window_for_cell(&ws, (3, 15)), Some(WindowId::Edo)); // just past 1x1
+  }
+
+  #[test]
+  fn edo_writing_into_2x2_cell_is_dropped() {
+    let ws = standard_windows();
+    assert!(!visible(&ws, WindowId::Edo, (0, 14)));
+    assert!(!visible(&ws, WindowId::Edo, (1, 15)));
+  }
+
+  #[test]
+  fn edo_writing_into_owned_cell_passes() {
+    let ws = standard_windows();
+    assert!(visible(&ws, WindowId::Edo, (0, 0)));
+    assert!(visible(&ws, WindowId::Edo, (15, 14)));
+  }
+
+  #[test]
+  fn accretion_window_writes_pass_for_its_own_cells() {
+    let ws = standard_windows();
+    assert!(visible(&ws, WindowId::Accretion2x2, (0, 14)));
+    assert!(visible(&ws, WindowId::Accretion2x2, (1, 15)));
+    // …but not into cells outside its rect.
+    assert!(!visible(&ws, WindowId::Accretion2x2, (2, 15)));
+    assert!(!visible(&ws, WindowId::Accretion2x2, (5, 5)));
   }
 
   #[test]
