@@ -156,33 +156,56 @@ fn build_pitch_class(x_step: i32, y_step: i32, edo: i32, w: i32, h: i32) -> Pitc
   PitchClass { key_to_pitch: k2p, pitch_to_keys: p2k }
 }
 
-// Returns the keys whose LEDs should be turned on. Caller is
-// responsible for adding (x, y) to the `pressed` set first if desired
-// — this function reads it but doesn't mutate.
-fn leds_for_press(pc: Option<&PitchClass>, x: i32, y: i32) -> Vec<(i32, i32)> {
-  match pc.and_then(|pc| pc.key_to_pitch.get(&(x, y))
-                          .and_then(|p| pc.pitch_to_keys.get(p)))
-  {
+// All cells whose LEDs reflect the same pitch class as `cell` —
+// the pressed cell itself plus its enharmonic equivalents.
+// Falls back to just `cell` when no pitch-class index exists
+// (non-integer tuning; gone once startup validation lands).
+fn cells_for_pitch_of(pc: Option<&PitchClass>, cell: Cell) -> Vec<Cell> {
+  match pc.and_then(|pc| pc.key_to_pitch.get(&cell)
+                          .and_then(|p| pc.pitch_to_keys.get(p))) {
     Some(keys) => keys.clone(),
-    None => vec![(x, y)],
+    None => vec![cell],
   }
 }
 
-// Returns the keys whose LEDs should be turned off. Empty if any
-// pitch-equivalent key is still pressed.
-fn leds_for_release(pc: Option<&PitchClass>, pressed: &HashSet<(i32, i32)>,
-                    x: i32, y: i32) -> Vec<(i32, i32)> {
-  match pc.and_then(|pc| pc.key_to_pitch.get(&(x, y))
-                          .and_then(|p| pc.pitch_to_keys.get(p)))
-  {
-    Some(keys) => {
-      if keys.iter().any(|k| pressed.contains(k)) {
-        vec![]
-      } else {
-        keys.clone()
-      }
-    }
-    None => vec![(x, y)],
+// === LedReasons =========================================================
+
+// Why a cell's LED is currently lit. A cell stays lit as long as it
+// has ≥1 reason and goes dark when its reason set empties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // Accretion variant lights up in step 5.
+enum LedReason {
+  PitchEquivalent { source_xy: Cell },   // a fingered key at source_xy is held
+  Accretion       { pitch: i32 },        // pitch is in PitchAccretion AND emit_on
+}
+
+// Sparse: only cells with ≥1 reason appear here.
+type LedReasons = HashMap<Cell, HashSet<LedReason>>;
+
+// Mutate `reasons`; return Some(true) iff `cell` newly lit (was empty
+// or absent, now has this reason). Returns None when the cell already
+// had reasons, or when the reason was already present (no transition).
+fn add_reason(reasons: &mut LedReasons, cell: Cell, r: LedReason) -> Option<bool> {
+  let entry = reasons.entry(cell).or_default();
+  let was_empty = entry.is_empty();
+  let inserted = entry.insert(r);
+  if was_empty && inserted { Some(true) } else { None }
+}
+
+// Mutate `reasons`; return Some(false) iff `cell` newly dark (had
+// this reason, now has none). Returns None when no transition (cell
+// wasn't lit, reason wasn't there, or other reasons remain).
+fn remove_reason(reasons: &mut LedReasons, cell: Cell, r: LedReason) -> Option<bool> {
+  let entry = match reasons.get_mut(&cell) {
+    Some(s) => s,
+    None => return None,
+  };
+  if !entry.remove(&r) { return None; }
+  if entry.is_empty() {
+    reasons.remove(&cell);
+    Some(false)
+  } else {
+    None
   }
 }
 
@@ -449,7 +472,7 @@ fn main() {
       eprintln!("non-integer EDO/steps: lighting only the pressed key");
       None
     };
-  let mut pressed: HashSet<(i32, i32)> = HashSet::new();
+  let mut led_reasons: LedReasons = HashMap::new();
 
   // Windows, front-to-back. Smaller control windows occlude the EDO
   // grid below them. The EDO window covers the whole 16×16; the
@@ -552,10 +575,12 @@ fn main() {
                   ramp_per_sample: 1.0 / (ATTACK_SECS * sample_rate),
                 });
                 drop(vs);
-                pressed.insert(cell);
-                for (lx, ly) in leds_for_press(pitch_class.as_ref(), x, y) {
-                  set_led(&windows, WindowId::Edo, (lx, ly), true,
-                          &sock, device, &led_set);
+                let r = LedReason::PitchEquivalent { source_xy: cell };
+                for c in cells_for_pitch_of(pitch_class.as_ref(), cell) {
+                  if let Some(true) = add_reason(&mut led_reasons, c, r) {
+                    set_led(&windows, WindowId::Edo, c, true,
+                            &sock, device, &led_set);
+                  }
                 }
               } else {
                 eprintln!("release x={x:>2} y={y:>2}");
@@ -564,10 +589,12 @@ fn main() {
                   v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
                 }
                 drop(vs);
-                pressed.remove(&cell);
-                for (lx, ly) in leds_for_release(pitch_class.as_ref(), &pressed, x, y) {
-                  set_led(&windows, WindowId::Edo, (lx, ly), false,
-                          &sock, device, &led_set);
+                let r = LedReason::PitchEquivalent { source_xy: cell };
+                for c in cells_for_pitch_of(pitch_class.as_ref(), cell) {
+                  if let Some(false) = remove_reason(&mut led_reasons, c, r) {
+                    set_led(&windows, WindowId::Edo, c, false,
+                            &sock, device, &led_set);
+                  }
                 }
               }
             }
@@ -624,36 +651,80 @@ mod tests {
   }
 
   #[test]
-  fn press_lights_all_equivalents_release_keeps_lit_until_last() {
+  fn cells_for_pitch_of_with_pc_returns_full_equivalence_group() {
     let pc = build_pitch_class(9, 1, 46, 16, 16);
-    let mut pressed: HashSet<(i32, i32)> = HashSet::new();
-
-    // Press (4,10): expect lights for the full pitch-class group.
-    let on1 = leds_for_press(Some(&pc), 4, 10);
-    pressed.insert((4, 10));
-    assert!(on1.contains(&(4, 10)) && on1.contains(&(5, 1)));
-
-    // Press (5,1) too: same group, same set lights.
-    let on2 = leds_for_press(Some(&pc), 5, 1);
-    pressed.insert((5, 1));
-    assert_eq!(on1.len(), on2.len());
-
-    // Release (5,1): (4,10) still pressed, so nothing turns off.
-    pressed.remove(&(5, 1));
-    let off1 = leds_for_release(Some(&pc), &pressed, 5, 1);
-    assert!(off1.is_empty(), "should not turn off while equivalent key still pressed");
-
-    // Release (4,10): now turn off the whole group.
-    pressed.remove(&(4, 10));
-    let off2 = leds_for_release(Some(&pc), &pressed, 4, 10);
-    assert!(off2.contains(&(4, 10)) && off2.contains(&(5, 1)));
+    let g = cells_for_pitch_of(Some(&pc), (4, 10));
+    assert!(g.contains(&(4, 10)));
+    assert!(g.contains(&(5, 1)));
   }
 
   #[test]
-  fn no_pitch_class_falls_back_to_single_key() {
-    let pressed: HashSet<(i32, i32)> = HashSet::new();
-    assert_eq!(leds_for_press(None, 7, 3), vec![(7, 3)]);
-    assert_eq!(leds_for_release(None, &pressed, 7, 3), vec![(7, 3)]);
+  fn cells_for_pitch_of_without_pc_falls_back_to_single_key() {
+    assert_eq!(cells_for_pitch_of(None, (7, 3)), vec![(7, 3)]);
+  }
+
+  #[test]
+  fn add_then_remove_same_reason_returns_lit_then_dark_transition() {
+    let mut reasons: LedReasons = HashMap::new();
+    let r = LedReason::PitchEquivalent { source_xy: (3, 3) };
+    assert_eq!(add_reason(&mut reasons, (4, 4), r), Some(true), "newly lit");
+    assert_eq!(add_reason(&mut reasons, (4, 4), r), None, "already lit, same reason");
+    assert_eq!(remove_reason(&mut reasons, (4, 4), r), Some(false), "newly dark");
+    assert!(!reasons.contains_key(&(4, 4)));
+  }
+
+  #[test]
+  fn two_reasons_must_both_be_removed_before_dark_transition() {
+    let mut reasons: LedReasons = HashMap::new();
+    let r1 = LedReason::PitchEquivalent { source_xy: (3, 3) };
+    let r2 = LedReason::PitchEquivalent { source_xy: (5, 5) };
+    add_reason(&mut reasons, (4, 4), r1);
+    assert_eq!(add_reason(&mut reasons, (4, 4), r2), None,
+               "second reason on already-lit cell: no transition");
+    assert_eq!(remove_reason(&mut reasons, (4, 4), r1), None,
+               "removing one of two: still lit");
+    assert_eq!(remove_reason(&mut reasons, (4, 4), r2), Some(false),
+               "removing the last: now dark");
+  }
+
+  #[test]
+  fn pitch_class_group_press_release_via_led_reasons() {
+    let pc = build_pitch_class(9, 1, 46, 16, 16);
+    let mut reasons: LedReasons = HashMap::new();
+
+    // Press (4,10): every cell in the pitch-class group transitions to lit.
+    let r_410 = LedReason::PitchEquivalent { source_xy: (4, 10) };
+    let mut newly_lit_410 = vec![];
+    for c in cells_for_pitch_of(Some(&pc), (4, 10)) {
+      if let Some(true) = add_reason(&mut reasons, c, r_410) {
+        newly_lit_410.push(c);
+      }
+    }
+    assert!(newly_lit_410.contains(&(4, 10)));
+    assert!(newly_lit_410.contains(&(5, 1)));
+
+    // Press (5,1) — same group; no further LED transitions.
+    let r_51 = LedReason::PitchEquivalent { source_xy: (5, 1) };
+    for c in cells_for_pitch_of(Some(&pc), (5, 1)) {
+      assert_eq!(add_reason(&mut reasons, c, r_51), None,
+                 "cell {c:?} should already be lit");
+    }
+
+    // Release (5,1) while (4,10) is still pressed — no dark transitions.
+    for c in cells_for_pitch_of(Some(&pc), (5, 1)) {
+      assert_eq!(remove_reason(&mut reasons, c, r_51), None,
+                 "cell {c:?} still lit by (4,10)'s reason");
+    }
+
+    // Release (4,10) — every group cell transitions to dark.
+    let mut newly_dark = vec![];
+    for c in cells_for_pitch_of(Some(&pc), (4, 10)) {
+      if let Some(false) = remove_reason(&mut reasons, c, r_410) {
+        newly_dark.push(c);
+      }
+    }
+    assert!(newly_dark.contains(&(4, 10)));
+    assert!(newly_dark.contains(&(5, 1)));
   }
 
   fn standard_windows() -> Vec<Window> {
