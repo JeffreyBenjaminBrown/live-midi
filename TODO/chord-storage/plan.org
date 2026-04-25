@@ -1,0 +1,680 @@
+#+TITLE: Plan: monome chord storage (v2)
+#+DATE: 2026-04-25
+
+* Goal
+
+Generalise the single accretion slot into 15 named chord slots
+plus a "silence" button. Each chord has its own pitch set; at most
+one chord emits at a time; the *accretion target* (the chord that
+=accrete-on= and =wipe= operate on) is a separate piece of state
+from the *emitting chord*. A new =set-accretion-target= modal
+button reassigns the target. Modal feedback uses /grid/led/level/
+varibright (four distinct levels per the README).
+
+* What's already in tree (do not redo)
+
+- The accretion v1 work (commits =e8b66e8= through =3015f41=,
+  =2b6f73a=, =f224473=, =1a43bd2=).
+- Heartbeat + auto-stall capture (=74cee11=, =f224473=).
+- Re-register repaint (=2b6f73a=).
+- =12-brightness-test.sh= (single-row gradient, replaced in this work).
+
+* Layout (after this work)
+
+#+begin_example
+              x=0     x=1     x=2     x=3     x=4 ... x=15
+            +-------+-------+-------+-------+----- ... -----+
+   y=14     | wipe  |accrete| emit- | set-  | (EDO grid)    |
+            |       |  -on  |  is-  | accr- |               |
+            |       |       |toggle | target|               |
+            +-------+-------+-------+-------+----- ... -----+
+   y=15     |silence|chord 1|chord 2|chord 3| chord 4 ... 15|
+            +-------+-------+-------+-------+----- ... -----+
+              ^^^^^^^^^^^ control window (y=14, x=0..3) ^^^^^^^^
+                              16-cell control window (y=15, x=0..15)
+#+end_example
+
+* Two new sibling files (full module split)
+
+| Module          | Owns (data shapes only — methods elsewhere)             |
+|-----------------+---------------------------------------------------------|
+| =types.rs=      | Every =struct=, =enum=, =type= alias used by the app.   |
+|                 | =#[derive(...)]= attributes live with the type.         |
+|                 | Hand-written =impl= blocks do *not* live here. The one  |
+|                 | exception: =Foo::new(...)= constructors are allowed in  |
+|                 | their domain module via =impl Foo { fn new ... }= so    |
+|                 | "go to definition" jumps to the type.                   |
+| =consts.rs=     | All magic numbers in one place. Imported from anywhere. |
+
+| Module          | Owns (functions / impls / event handlers)               |
+|-----------------+---------------------------------------------------------|
+| =pitch.rs=      | =build_pitch_class=, =freq_for=, =freq_for_pitch=,      |
+|                 | =cells_for_pitch_of=, =cells_for_pitch=                 |
+| =voices.rs=     | =render_block=, =triangle=, =voice_alive_with_id=,      |
+|                 | =spawn_accretion_voice=, =ramp_chord_accretion_to_zero= |
+| =leds.rs=       | =add_reason=, =remove_reason=, =low_res_brightness=     |
+| =windows.rs=    | =rect_contains=, =window_for_cell=, =visible=,          |
+|                 | =set_led=, =set_led_level=                              |
+| =osc.rs=        | =send_osc=, =register=, =discover_device=               |
+| =state.rs=      | All =AppState= event handlers, as free functions:       |
+|                 | =edo_press=, =edo_release=, =chord_press=,              |
+|                 | =chord_release=, =do_role=, =repaint=, etc.             |
+| =diagnostics.rs=| =capture_stall_diagnostics=                             |
+| =main.rs=       | startup, args parsing, audio stream setup, SIGINT,      |
+|                 | main event loop, heartbeat, flash tick                  |
+
+Import shape: every domain module imports from =types.rs= and
+=consts.rs=. =types.rs= and =consts.rs= are leaves. Domain modules
+generally don't import each other, except where natural (e.g.
+=state.rs= uses =leds.rs= and =voices.rs=).
+
+* Types (in =types.rs=)
+
+#+begin_src rust
+  // --- existing, unchanged ---
+  pub type MonomeKey = (i32, i32);
+  pub type EdoPitch = i32;
+  pub type Rect     = (MonomeKey, MonomeKey);
+  pub type VoiceId  = u64;
+
+  pub struct PitchClass {
+    pub key_to_pitch:  HashMap<MonomeKey, EdoPitch>,
+    pub key_to_pitchclass:  HashMap<MonomeKey, EdoPitch>,
+    pub pitchclass_to_keys: HashMap<EdoPitch, Vec<MonomeKey>>,
+  }
+
+  // --- new ---
+  pub type ChordId = usize; // 0 = silence, 1..=15 = chords
+
+  // Per-chord accretion slot (was a single global field). First-
+  // insertion-wins semantics still apply, per chord.
+  pub type Chord = HashMap<EdoPitch, HashSet<VoiceId>>;
+
+  // VoiceSource gains a chord tag on the Accreted variant, so two
+  // chords sharing a pitch don't collide in the voices map during
+  // emitter transitions.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+  pub enum VoiceSource {
+    Fingered { xy: MonomeKey },
+    Accreted { chord: ChordId, pitch: EdoPitch },
+  }
+
+  #[derive(Debug, Clone, Copy)]
+  pub struct VoiceState {
+    pub id:              VoiceId,
+    pub freq:            f32,
+    pub phase:           f32,
+    pub env:             f32,
+    pub target_env:      f32,
+    pub ramp_per_sample: f32,
+  }
+  pub type VoiceMap = HashMap<VoiceSource, VoiceState>;
+
+  // The Chord variant gains a chord-id tag because two chords
+  // might both contain a pitch class P; when we switch emitters we
+  // need to remove the right one's reasons without disturbing the
+  // other's.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+  pub enum PitchLedReason {
+    PitchEquivalent { source_xy: MonomeKey },
+    Chord           { chord: ChordId, pitch: EdoPitch },
+  }
+  pub type PitchLedReasons = HashMap<MonomeKey, HashSet<PitchLedReason>>;
+
+  // Window types unchanged.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum WindowId {
+    Edo,
+    ControlsTop,    // y=14, x=0..3 (was Accretion2x2 / EmitToggle1x1)
+    ControlsBottom, // y=15, x=0..15
+  }
+  pub struct Window { pub id: WindowId, pub rect: Rect }
+
+  // Button kinds unchanged in shape; the action enum (ButtonAction)
+  // gains chord-storage entries.
+  #[derive(Debug, Clone, Copy)]
+  pub enum Button {
+    Toggle { state: bool, on: ButtonAction, off: ButtonAction },
+    Nursed { state: bool, on: ButtonAction, off: ButtonAction },
+    Fire   { fire: ButtonAction },
+  }
+  #[derive(Debug, Clone, Copy)]
+  pub enum ButtonAction {
+    AccreteOn, AccreteOff,
+    WipeFire,
+    EmitIsToggleOn, EmitIsToggleOff,
+    SetTargetFire,                    // enter target-select mode
+    ChordEmitOn  { chord: ChordId },  // pressed in Toggle mode-on,
+                                      //   or any chord press in Nursed
+    ChordEmitOff { chord: ChordId },  // pressed in Toggle mode-off,
+                                      //   or any chord release in Nursed
+  }
+
+  // The five-tuple LED command emitted by handlers, run through
+  // the compositor on its way to the device.
+  pub type LedCmd = (WindowId, MonomeKey, Brightness);
+
+  // Brightness as an exhaustive enum, no magic numbers at call sites.
+  // The four lit levels match the four distinct buckets the device
+  // appears to render — see leds::low_res_brightness.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum Brightness { Off, B0, B1, B2, B3 }
+
+  pub struct AppState {
+    pub voices:           Arc<Mutex<VoiceMap>>,
+
+    // Per-chord accretion slot. Indexed by ChordId. Index 0 is
+    // silence — its slot is always empty by invariant.
+    pub chords:      Vec<Chord>,    // length = N_CHORDS
+    pub accretion_target: ChordId,                // never 0 (silence)
+    pub emitting_chord:   Option<ChordId>,        // None = nothing emits
+
+    pub emit_is_toggle:   bool,                   // mode for chord buttons
+    pub accrete_on:       bool,
+    pub next_voice_id:    VoiceId,
+    pub pitchled_reasons:      PitchLedReasons,
+
+    // Single source of truth: which chord buttons are *physically*
+    // depressed right now, in press order. Updated on every chord
+    // press/release event in both modes.
+    //   Nursed mode: this IS the emit stack; top = current emitter.
+    //   Toggle mode: informational; consulted on Toggle→Nursed flip.
+    pub pressed_chords:   Vec<ChordId>,
+
+    // Modal state for the set-accretion-target gesture.
+    pub target_select_mode:  bool,
+
+    // Buttons indexed by their cell. Both control windows pool
+    // into the same map; dispatch is by Window.id but the lookup
+    // is uniform.
+    pub control_buttons:  HashMap<MonomeKey, Button>,
+
+    // Immutable config:
+    pub pitch_class:      PitchClass,
+    pub fund:             f64,
+    pub edo:              i32,
+    pub sample_rate:      f32,
+  }
+#+end_src
+
+** Renames applied above (record):
+ButtonRole → ButtonAction; Cell → MonomeKey; chord_slots → chords;
+PitchLedReason::Accretion → PitchLedReason::Chord; key_to_class →
+key_to_pitchclass; class_to_keys → pitchclass_to_keys;
+PitchAccretion → Chord.
+
+* Constants (in =consts.rs=)
+
+#+begin_src rust
+  // Tuning / timing
+  pub const AMPLITUDE:         f32 = 0.15;
+  pub const ATTACK_SECS:       f32 = 0.003;
+  pub const RELEASE_SECS:      f32 = 0.050;
+  pub const ACCRETION_TARGET:  f32 = 0.5;
+
+  // Grid geometry
+  pub const GRID_W: i32 = 16;
+  pub const GRID_H: i32 = 16;
+
+  // Chord storage
+  pub const N_CHORDS:                usize = 16;       // index 0 = silence
+  pub const SILENCE_CHORD:           usize = 0;
+  pub const INITIALLY_ACCRETING_CHORD: usize = 1;       // chord 1 by default
+
+  // Set-accretion-target flash cadence
+  pub const FLASH_PHASE_MS:    u64 = 150;              // 150 on, 150 off
+
+  // Heartbeat
+  pub const HEARTBEAT_SECS:    f64 = 1.0;
+
+  // Cell positions of every control button (single source of truth
+  // for layout — used by AppState::new and any LED-painting code)
+  pub const CELL_WIPE:                MonomeKey = (0, 14);
+  pub const CELL_ACCRETE_ON:          MonomeKey = (1, 14);
+  pub const CELL_EMIT_IS_TOGGLE:      MonomeKey = (2, 14);
+  pub const CELL_SET_ACCRETION_TARGET: MonomeKey = (3, 14);
+  pub const CELL_SILENCE:             MonomeKey = (0, 15);
+  // Chord N (1..=15) lives at (N, 15).
+
+  // OSC
+  pub const PREFIX:           &str = "/256-1-cable";
+  pub const DETECTOR_PORT:    u16  = 12002;
+  pub const LISTEN_PORT:      u16  = 9000;
+#+end_src
+
+* Brightness mapping
+
+In =leds.rs=:
+
+#+begin_src rust
+  // The monome appears to render only 4 distinct brightness levels
+  // across the 0..15 API range — buckets of 4. See README's "Coding
+  // the monome" section. This function maps our exhaustive
+  // Brightness enum to the OSC level int. Conjecture: index i =>
+  // 4*i; verified by 12-brightness-test.sh in commit 2.
+  pub fn low_res_brightness(b: Brightness) -> i32 {
+    match b {
+      Brightness::Off => 0,
+      Brightness::B0  => 4,    // dimmest lit
+      Brightness::B1  => 8,
+      Brightness::B2  => 12,
+      Brightness::B3  => 15,   // full
+    }
+  }
+#+end_src
+
+(If the brightness test reveals a different bucketing, only this
+function changes.)
+
+* Behavioural rules
+
+** EDO press of cell C
+1. Compute =P = pitch_class.key_to_pitch[C]=.
+2. Generate =id = next_voice_id; next_voice_id += 1=.
+3. Insert =Fingered{xy:C}= → fresh =VoiceState{ id, freq, phase=0,
+   env=0, target_env=1.0, ramp_per_sample=1/(0.003·sr) }=.
+4. *If* =accrete_on=:
+   - Let =target = accretion_target=.
+   - If P is *not yet* in =chords[target]=, insert
+     =P → {id}=.
+   - If =emitting_chord == Some(target)= (slot mutation while
+     emitter is the same chord), add =PitchLedReason::Chord{chord:
+     target, pitch: P}= for every cell in
+     =pitchclass_to_keys[P mod edo]=. (LED diff via the compositor.)
+5. For every cell C' in =cells_for_pitch_of(C)=, add
+   =PitchLedReason::PitchEquivalent{source_xy: C}= to
+   =pitchled_reasons[C']=. LED on for newly-lit cells.
+
+** EDO release of cell C
+1. Compute P. Look up the finger voice at =Fingered{xy:C}=.
+2. For every cell C' in =cells_for_pitch_of(C)=, remove
+   =PitchLedReason::PitchEquivalent{source_xy: C}=. LED off for
+   newly-dark cells.
+3. Decide voice fate:
+   - Let =em = emitting_chord=. If =em == None= → ramp to 0.
+   - Let =em = em.unwrap()=. If P is *not* in =chords[em]=
+     → ramp to 0. (Per Round 1 answer: transform requires the
+     pitch be in the *emitting* chord's slot, not just any
+     chord's.)
+   - If =Accreted{chord: em, pitch: P}= already exists in voices
+     → ramp to 0.
+   - If this voice's id is *not* in =chords[em][P]= (this
+     voice wasn't an originVoice for em) → ramp to 0.
+   - If any *other* alive (target_env > 0) voice's id is in
+     =chords[em][P]= → ramp to 0 (not the last alive
+     originVoice yet).
+   - Else: *transform* — rekey the entry from =Fingered{xy:C}=
+     to =Accreted{chord: em, pitch: P}=, set =target_env = 0.5=,
+     =ramp_per_sample = |env − 0.5| / (0.05·sr)=.
+4. "Ramp to 0" means =target_env = 0=,
+   =ramp_per_sample = env / (0.05·sr)=.
+
+** Chord-button press (cell (chord, 15) for chord ∈ 0..=15)
+Behaviour depends on =emit_is_toggle= and on
+=target_select_mode=.
+
+*** If =target_select_mode=:
+- If chord ∈ 1..=15: =accretion_target = chord=,
+  =target_select_mode = false=. LED diffs: stop flashing
+  =CELL_SET_ACCRETION_TARGET=, repaint old target dark, repaint
+  new target dim.
+- If chord == 0 (silence): exit the mode without changing target.
+  Stop flashing. (Per "any chord-related button that's not a
+  legitimate chord exits with no change".)
+
+*** If not in target-select mode AND =emit_is_toggle=  (Toggle mode):
+- If =emitting_chord == Some(chord)= → toggle off:
+  =emitting_chord = None=. Ramp all =Accreted{chord: chord, ..}=
+  voices to 0. Remove their =Accretion{chord, ..}= LED reasons.
+- Else → switch emitter:
+  - If =emitting_chord = Some(prev)=, prev ≠ chord: ramp prev's
+    Accreted voices to 0; remove prev's Chord-variant LED reasons.
+  - =emitting_chord = Some(chord)=. For each P in
+    =chords[chord]=, spawn =Accreted{chord, pitch:P}= unless
+    a live originVoice is held; add =Accretion{chord, pitch:P}=
+    LED reasons.
+  - Update =CELL_(prev,15)= LED → off (per chord LED rules).
+    Update =CELL_(chord,15)= LED → full bright.
+- Always update =pressed_chords= with this chord (push if not
+  present, no-op if present — Toggle's "press and never release"
+  doesn't track presses precisely, but the press *event* still
+  pushes for the Toggle→Nursed-flip rule).
+
+*** If not in target-select mode AND NOT =emit_is_toggle=  (Nursed mode):
+- Push =chord= onto =pressed_chords=. (If already present, move
+  it to the top — per Round 2 answer to case 5.)
+- The new top of =pressed_chords= is the new emitter:
+  - If =emitting_chord == Some(prev)=, prev ≠ chord: ramp prev's
+    Accreted voices to 0; remove prev's Chord-variant LED reasons.
+  - =emitting_chord = Some(chord)=. For each P in
+    =chords[chord]=, spawn (with originVoice check); add
+    Chord-variant LED reasons.
+  - Repaint chord LEDs accordingly.
+
+** Chord-button release (cell (chord, 15))
+*** If =emit_is_toggle=  (Toggle mode):
+- Remove =chord= from =pressed_chords= (if present). No emitter
+  change. No LED change. (Toggle ignores release.)
+
+*** If NOT =emit_is_toggle=  (Nursed mode):
+- Remove =chord= from =pressed_chords= (anywhere it appears).
+- If it was the top: ramp the now-old emitter's Accreted voices
+  to 0; remove its Chord-variant LED reasons.
+  - If =pressed_chords= is now non-empty: new top = new emitter;
+    spawn Accreted voices and add Chord-variant LED reasons.
+  - Else: =emitting_chord = None=. Repaint chord LEDs.
+- If it wasn't the top: no audible/visible change beyond the
+  internal stack update.
+
+** =wipe= press (Fire)
+- Let =target = accretion_target=.
+- Clear =chords[target]=.
+- If =emitting_chord == Some(target)=:
+  - Ramp every =Accreted{chord: target, ..}= voice to 0.
+  - Remove every =Accretion{chord: target, ..}= LED reason.
+  - Repaint accordingly.
+  - JEFF ADDs : also set emitting_chord = none.
+- Else: no audible change. Visually: target stays dim (still the
+  target, just empty).
+
+** =accrete-on= press (Toggle)
+*** Off → on
+- =accrete_on = true=.
+- Atomic per-pitch snapshot: group held finger voices by pitch,
+  insert =P → { all held voice ids for P }= into
+  =chords[accretion_target]= for any P not already present
+  there.
+- If =emitting_chord == Some(accretion_target)=, add Accretion
+  LED reasons for any newly-introduced P.
+- LED for =CELL_ACCRETE_ON= → full bright.
+
+*** On → off
+- =accrete_on = false=. =chords= unchanged. LED off.
+
+** =emit-is-toggle= press (Toggle, default state = on)
+On every press, flip =emit_is_toggle=. Then:
+
+*** Toggle → Nursed
+- The currently-emitting chord stays emitting *iff* it is in
+  =pressed_chords= right now.
+  - If yes: =pressed_chords= already contains it; that is the new
+    emit stack.
+  - If no: silence the current emitter (ramp its Accreted voices
+    to 0; remove its Chord-variant LED reasons; =emitting_chord =
+    None=; repaint).
+- Repaint =CELL_EMIT_IS_TOGGLE= → off.
+
+*** Nursed → Toggle
+- Snapshot: the top of =pressed_chords= (if any) becomes the
+  Toggle-on chord. =emitting_chord= already reflects this; no
+  audible change.
+- The chord button at (top, 15) gets its =Button::Toggle.state=
+  set to =true=; all other chord buttons reset to false. (We
+  rebuild the chord buttons on every mode flip anyway.)
+- Repaint =CELL_EMIT_IS_TOGGLE= → full bright.
+
+** =set-accretion-target= press (Fire)
+- =target_select_mode = !target_select_mode=. (Pressing it again
+  while already in the mode cancels it — per Round 2 answer:
+  "any chord-related button that is not a legitimate chord exits
+  it, with no change.")
+- If now in mode: start flashing =CELL_SET_ACCRETION_TARGET= at
+  the FLASH cadence (see Flash tick below).
+- If exiting: stop flashing; restore the cell to its non-flash
+  brightness (dim, level B0 — same as the accretion target).
+
+** Other control button presses while in target-select mode
+- =wipe=, =accrete-on=, =emit-is-toggle=: cancel target-select
+  mode, then perform the button's normal action. (Per Round 2:
+  these are "chord-related" in the sense that they belong to the
+  chord-storage UI. Only EDO presses are exempt.)
+- EDO key press: independent. Mode stays active. (Round 2 answer.)
+
+** Flash tick (in main event loop, alongside heartbeat)
+The main loop wakes every 50 ms. On each wake:
+- If =target_select_mode= is true:
+  - Compute =flash_phase = (start.elapsed().as_millis() /
+    FLASH_PHASE_MS) % 2= (0 or 1).
+  - If =flash_phase != last_flash_phase=, emit one LED-level cmd
+    for =CELL_SET_ACCRETION_TARGET=:
+    - phase 0 → =Brightness::B3= (full)
+    - phase 1 → =Brightness::Off=
+- If we just exited target-select mode, force one paint to
+  restore the cell to =Brightness::B0= (dim).
+
+** Mode flip implications for the chord buttons
+On every =emit-is-toggle= press, walk =control_buttons[(c, 15)]=
+for c in 1..=15 (and the silence button at (0,15)):
+- Reset to =Button::Toggle{state, ..}= or =Button::Nursed{state,
+  ..}= according to the new mode, with =state= set to:
+  - Toggle: =true= iff =Some(c) == emitting_chord=, else =false=.
+  - Nursed: =true= iff =c= is in =pressed_chords=, else =false=.
+
+* LED model
+
+*** Per-cell brightness
+
+| MonomeKey                      | Brightness                                       |
+|---------------------------+--------------------------------------------------|
+| chord c (1..=15) at (c, 15) | =B3= if =Some(c) == emitting_chord=,           |
+|                           | else =B0= if =c == accretion_target=,            |
+|                           | else =Off=.                                      |
+| silence at (0, 15)        | =B3= if =Some(0) == emitting_chord=, else =Off=. |
+| =wipe= at (0, 14)         | =Off= (Fire button — momentary press, no light). |
+| =accrete-on= at (1, 14)   | =B3= if =accrete_on=, else =Off=.                |
+| =emit-is-toggle= at (2,14)| =B3= if =emit_is_toggle=, else =Off=.            |
+| =set-accretion-target=    | =B0= normally; flashes between =B3= and =Off=    |
+|   at (3, 14)              | when =target_select_mode= is true.               |
+| EDO grid cells            | =B3= if any =PitchLedReason= is present, else =Off=.  |
+
+*** Repaint
+The =repaint= helper (called at startup, after re-register on
+serialosc port change, and on any state-changing event that may
+have shifted multiple cells) walks the table above and pushes the
+right brightness for every owned cell through the compositor.
+
+* Window dispatch
+
+Two control windows now (front-to-back):
+
+#+begin_src rust
+  windows = vec![
+    Window { id: WindowId::ControlsTop,    rect: ((0, 14), (3, 14)) },
+    Window { id: WindowId::ControlsBottom, rect: ((0, 15), (15, 15)) },
+    Window { id: WindowId::Edo,            rect: ((0, 0),  (15, 15)) },
+  ]
+#+end_src
+
+The dispatcher in =main.rs= matches on =Window.id= and calls into
+=state.rs= for the appropriate handler.
+
+* Implementation order
+
+Each commit ends with =cargo test --release= green. Numbered
+commit-by-commit:
+
+** Commit 1 — Refactor only, zero behaviour change
+
+1. Create =src/types.rs= containing every existing struct, enum,
+   and type alias from =main.rs=. =#[derive(...)]= attributes
+   move with the type. No new types in this commit.
+2. Create =src/consts.rs= containing every existing =const=. No
+   new consts.
+3. Create =src/{pitch,voices,leds,windows,osc,state,
+   diagnostics}.rs=. Move existing free functions and any =impl
+   AppState { ... }= methods (rewritten as free functions
+   =fn whatever(state: &mut AppState, ...) -> ...=) into the
+   appropriate file per Round 2's table.
+4. =main.rs= shrinks to: imports, =fn main()= with startup +
+   audio stream setup + signal handler + main event loop +
+   heartbeat + flash tick (still empty since target_select_mode
+   doesn't exist yet).
+5. Tests redistribute into per-module =#[cfg(test)] mod tests=
+   blocks. Existing 27 tests unchanged in name and meaning.
+
+*Acceptance:* same observable behaviour; same 27 tests pass.
+
+** Commit 2 — Two-row brightness diagnostic
+
+1. Replace =monome/12-brightness-test.sh= with the two-row
+   diagnostic that paints:
+   - Row 0: cells 0-3 at level 0, 4-7 at level 4, 8-11 at level
+     8, 12-15 at level 12.
+   - Row 8: cells 0-3 at level 1, 4-7 at level 5, 8-11 at level
+     9, 12-15 at level 13.
+2. Print the interpretation guide in the script's output.
+
+*Acceptance:* I run it; Jeff reads the grid and tells me which
+mapping to commit to.
+
+** ⚠ STOP HERE ⚠
+
+Wait for Jeff's reading of the brightness test before proceeding.
+The reading determines =low_res_brightness=; the exact constants
+will be set in commit 3 below.
+
+** Commit 3 — Brightness enum + low_res_brightness
+
+1. Add =Brightness= enum to =types.rs=.
+2. Add =low_res_brightness= function to =leds.rs=, with the
+   mapping confirmed by the test.
+3. Add =set_led_level(windows, from, cell, b: Brightness, sock,
+   device, prefix)= to =windows.rs= — wraps =/grid/led/level/set=
+   through the compositor.
+4. The existing =set_led(... bool ...)= becomes a thin wrapper
+   that calls =set_led_level= with =B3= or =Off=. (Or we can
+   wholesale switch to the level API; the binary set is just
+   level 0 vs 15 anyway.)
+
+*Acceptance:* All existing buttons render with the same look as
+before (they were either fully on or fully off, which the new
+API handles trivially).
+
+** Commit 4 — Per-chord slot infrastructure
+
+Goal: introduce =Vec<Chord>= and =ChordId=, but with
+=N_CHORDS = 1= effectively (or with all logic still implicitly
+addressing chord 0). No layout change. Existing tests still pass.
+
+1. =types.rs=: add =ChordId=. Change =VoiceSource::Accreted= to
+   carry =chord: ChordId=. Change =PitchLedReason::Chord= likewise.
+2. =AppState=: replace =pitch_accretion: Chord= with
+   =chords: Vec<Chord>= (initialise with one entry
+   for now, indexed at 0). Add =emitting_chord: Option<ChordId>=
+   replacing =emit_on: bool= (=Some(0)= or =None=). Add
+   =accretion_target: ChordId= (=0= for now).
+3. Update every =VoiceSource::Accreted { pitch }= →
+   =VoiceSource::Accreted { chord: 0, pitch }=, every
+   =PitchLedReason::Chord { pitch }= →
+   =PitchLedReason::Chord { chord: 0, pitch }=, every
+   =self.pitch_accretion= → =self.chords[0]=.
+4. =emit_on= ↔ =emitting_chord.is_some()= equivalence.
+5. Existing tests adjusted in shape but identical in intent.
+
+*Acceptance:* All existing 27 tests still pass with the new
+shape.
+
+** Commit 5 — Layout + chord buttons + emitter switching
+
+Goal: 16 chord buttons + the moved control buttons. Stack
+behaviour fully implemented. No =set-accretion-target= yet.
+
+1. =consts.rs=: add =N_CHORDS=, =SILENCE_CHORD=,
+   =INITIALLY_ACCRETING_CHORD=, all the cell constants.
+2. =AppState::new=: build =chords: vec![empty; N_CHORDS]=
+   and =control_buttons= with all 16 chord buttons in the bottom
+   row plus =wipe=, =accrete-on=, =emit-is-toggle= on the top
+   row. (=set-accretion-target= cell exists with a placeholder
+   button that does nothing.)
+3. Add =pressed_chords: Vec<ChordId>=. Update on every chord
+   press/release.
+4. Implement =chord_press= / =chord_release= per the rules above
+   (Toggle and Nursed modes, with stack behaviour and originVoice
+   spawn checks per chord).
+5. Implement =wipe= per the new rules (operates on
+   =accretion_target=, which for now is fixed to chord 1).
+6. Implement =do_role= for =EmitIsToggleOn/Off= per the mode
+   flip rules (rebuilds chord buttons; consults =pressed_chords=
+   for the Toggle→Nursed snapshot).
+7. =leds.rs::repaint=: walks the per-cell brightness table.
+
+   Tests added:
+   - =chord_press_in_toggle_mode_starts_emit=
+   - =chord_press_in_toggle_mode_switches_emitter=
+   - =chord_press_same_chord_in_toggle_toggles_off=
+   - =chord_press_in_nursed_mode_pushes_stack=
+   - =chord_release_in_nursed_pops_and_restores_underneath=
+   - =chord_release_in_nursed_of_buried_does_not_change_emitter=
+   - =silence_in_toggle_acts_as_fire_to_kill_current_emitter=
+   - =silence_in_nursed_emits_silence_then_restores_on_release=
+   - =mode_flip_toggle_to_nursed_with_held_chord_keeps_emitting=
+   - =mode_flip_toggle_to_nursed_without_held_chord_silences=
+   - =mode_flip_nursed_to_toggle_snapshots_top_of_stack=
+   - =wipe_clears_target_and_ramps_accretion_voices_when_target_is_emitter=
+   - =wipe_target_no_audible_change_when_target_not_emitter=
+
+** Commit 6 — set-accretion-target button + flash
+
+1. Add =SetTargetFire= ButtonAction; place a =Button::Fire= at
+   =CELL_SET_ACCRETION_TARGET=.
+2. Add =target_select_mode: bool= to =AppState=. Implement entry
+   (any press of the button) and exit (chord press, or any other
+   chord-related button press, or another set-accretion-target
+   press).
+3. Implement the per-cell brightness rule for the set-target
+   cell (dim normally, flashing during select-mode).
+4. =main.rs=: add the flash tick block in the main loop, alongside
+   the heartbeat. =FLASH_PHASE_MS= and the =flash_phase=
+   computation per Round 2's sketch (with =flash_phase= as the
+   variable name).
+5. Implement =do_role= for =SetTargetFire= and the chord-press
+   path's "if in target select mode" branch.
+6. Implement the dim-target highlighting: the accretion target's
+   chord button gets =B0= when not also emitting, =B3= when both
+   emitting and target.
+
+   Tests added:
+   - =set_target_press_enters_mode=
+   - =set_target_press_again_exits_mode_no_change=
+   - =chord_press_in_target_mode_changes_target_and_exits=
+   - =silence_press_in_target_mode_exits_no_change=
+   - =wipe_press_in_target_mode_exits_then_wipes_new_target=
+     (should still wipe the *old* target since the dispatch order
+     is "exit mode, then perform action" — the wipe operates on
+     whatever target is now, which is the old one.)
+   - =edo_press_in_target_mode_does_not_exit=
+
+** Commit 7 — README + final pass
+
+1. Update =monome/README.org= "Accretion controls" section with
+   the new layout and new behaviour. Update the picture.
+2. Add a "Chord storage" subsection explaining slots and the
+   target/emitter distinction.
+3. Manual smoke test on the actual grid.
+
+* Test plan
+
+All =cargo test --release=, no audio backend, no monome.
+
+Existing tests: redistributed across modules, names and intent
+preserved.
+
+New tests by commit (already enumerated in the implementation
+order above). Total at the end: ~50.
+
+Important *not* to add: tests for visual flash timing — too
+brittle and the flash is driven from elapsed-time math that's
+already obvious by inspection.
+
+* Out of scope (deferred)
+
+- Saving / loading chord sets across sessions.
+- Per-chord brightness as a third semantic level (e.g. dim chord
+  buttons when their slot is non-empty even if not emitting).
+  Could be a nice future feature.
+- Per-chord MIDI output / external storage hooks.
+- Unifying =silence= with =Brightness::Off= — silence's slot is
+  empty by invariant but it's still a chord that can be the
+  emitter; conceptually distinct.
+- Touching the per-stall diagnostics; they continue working as
+  they did.

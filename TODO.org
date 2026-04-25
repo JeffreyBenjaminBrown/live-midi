@@ -1,3 +1,4 @@
+rename led_reasons -> pitchled_reasons
 * constraint both the composition and the music interface
 ** TODO NEXT : unified storage actions for sustain/chords
 needs all of these

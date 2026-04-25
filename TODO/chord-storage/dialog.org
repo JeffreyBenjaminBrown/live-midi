@@ -1,0 +1,681 @@
+#+TITLE: Claude's questions about chord-storage.org
+#+DATE: 2026-04-25
+
+* What I think you're saying
+
+- 16 cells along the bottom row (y=15) become *chord buttons*: x=0
+  is "silence" (a chord that's always empty), x=1..15 are 15
+  ordinary chord slots. Pressing a chord button sets it as the
+  emitting chord. At most one chord emits at a time; pressing a
+  different chord button switches.
+- 3 cells in y=14 (x=0..2) are =wipe=, =accrete-on=,
+  =emit-is-toggle=. Everything else on y=14 is back to being EDO
+  grid.
+- =emit-is-toggle= still picks Toggle vs Nursed, but the choice
+  applies to *all* chord buttons globally (not per-chord). So the
+  Button stored at (1,15)..(15,15) gets rebuilt with the same
+  variant they all share.
+- =accrete-on= and =wipe= operate on the *accretion target*, which
+  is a separate concept from the emitting chord. There's always
+  exactly one target. =silence= cannot be the target.
+- A new =set-accretion-target= button: pressing it (and then the
+  next chord button you press) reassigns the target.
+- Visual: emitting chord = full brightness; accretion target (if
+  not also emitting) = dim, level 5/16. Both, when they coincide
+  on the same button = full.
+
+Internally that means we go from a single =pitch_accretion=
+=HashMap<EdoPitch, HashSet<VoiceId>>= to one of those *per chord*,
+plus separate =emitting_chord: Option<ChordId>= and
+=accretion_target: ChordId= state, and the =VoiceSource::Accreted=
+variant gains a =chord: ChordId= field so transitions between
+emitting chords don't collide on a shared pitch.
+
+If that's all wrong, stop me here.
+
+** TODO perfect
+
+* Refining the spec: Round 1
+
+** =set-accretion-target= — placement and behaviour
+
+The proposal lists wipe / accrete-on / emit-is-toggle on y=14
+columns 0-2, and silence + chords 1-15 on y=15. =set-accretion-
+target= is mentioned but not placed in the layout. Where does it
+go?
+
+(My guess: y=14 column 3, making the y=14 control window 4 wide.
+But that's a guess.)
+
+And how does it work?
+
+  (a) *Modal* — press once to enter "set target" mode (the button
+      lights), then the next chord button you press becomes the
+      target and the mode auto-exits.
+  (b) *Held* — hold =set-accretion-target=, press a chord button
+      while held, that chord becomes target; release. (Nursed-
+      style.)
+
+(a) is one-handed-friendlier; (b) is harder to enter accidentally.
+Which?
+
+*** TODO option (a)
+upon which it should start flashing
+*** TODO
+Let's make it the fourth button on the second to last row.
+It should usually be the same dim light level
+as the accretion target, to make the correspondence obvious,
+with one exception: it flashes when awaiting a new target,
+i.e. when the mode has been triggered.
+Those flashes should be at the top brightness level,
+with a 50/50 duty cycle, at a frequency of 300 ms
+(150 ms on, 150 ms off).
+
+But be sure to gather all the magic numbers
+into a section somewhere that defines consts.
+That probably already exists.
+
+** Initial accretion target on startup
+
+Some chord must be the target at boot. My default: chord 1 (cell
+(1, 15)). OK? Or do you want it to start as e.g. chord 0 (the
+silence button) — no wait, you said silence can't be the target.
+So chord 1 by default. Confirming.
+
+*** TODO yes
+
+** Pressing a chord button while another is emitting
+
+Hard invariant: at most one emitting chord. A press on a different
+chord button must replace the current emitter. Two paths to
+specify:
+
+  *Toggle mode:* state of the *previous* emitter flips off
+   (its voices ramp out, 50 ms), state of the *new* emitter flips
+   on (voices spawn for its slot pitches with no held originVoice).
+   Pressing the same chord again toggles it off (no emitter).
+
+  *Nursed mode:* holding chord A makes A emit; releasing makes A
+   stop. If you press chord B while A is still held — A stops, B
+   starts. If you then release A while B is still held — does
+   anything happen? Two readings:
+     (i)  A's release is silently ignored (B is now the live one).
+     (ii) A's release stops B (because the gesture "press A" was
+          still in flight via A's button).
+   I'd default to (i) — simpler, "the current emitter is whichever
+   chord button was pressed most recently and is still held."
+
+Confirming both halves of this?
+
+*** TODO yes but that raises another corner case
+In nursed mode, if we hold A, then press b,
+b should interrupt A, but as soon as b is released,
+if a is still held, the sound of a should replace b,
+rather than having silence replace it.
+This will require, I think, introducing a stack of nursed chords.
+
+This only applies when chords are in nursed mode.
+When they are toggle, that would be a mess.
+In toggle mode, one chord cuts off another.
+Nothing in memory retains the fact that the prior chord was on;
+it does not respawn when the second chord ends.
+
+** Release-transform when accretion target ≠ emitting chord
+
+Today's sustain-pedal rule says: on release of finger voice for
+pitch P, if P is in =pitch_accretion= AND emit is on AND no
+Accreted{P} voice exists AND this voice is the last alive
+originVoice for P → transform to accretion at half volume.
+
+In the new model, "is in =pitch_accretion=" has to mean *which
+chord's* accretion. Two candidates:
+
+  (A) The emitting chord's slot. (i.e., the voice you're
+      releasing transforms only if its pitch is currently being
+      sounded by emit.)
+  (B) The accretion target's slot at the moment of press (which is
+      where this voice's id was recorded as originVoice).
+
+These differ when target ≠ emitting chord. Example: target=chord 3,
+emitting=chord 5, you press a key whose pitch is in chord 3 but
+not chord 5. On release:
+
+  (A) Doesn't transform — the pitch isn't part of what's currently
+      sounding. The voice ramps to 0.
+  (B) Transforms — into a chord 3 accretion voice that... isn't
+      audible because chord 5 is emitting.
+
+(A) seems right to me — the sustain-pedal analogy is about the
+chord you're currently *playing*, not chords you've stored away.
+(B) would produce a silent ghost that springs to life if you
+later switch to chord 3, which is weird.
+
+Confirming (A)?
+
+(And as a corollary: the originVoice tracking is per-chord —
+each chord's slot maps =EdoPitch -> HashSet<VoiceId>= keyed by
+that chord's introduction events.)
+
+*** TODO yes, (A)
+
+** What does =silence= emitting mean for the audio thread?
+
+Mechanically, silence is a chord that's always empty. Pressing its
+emit button means:
+  - the previously-emitting chord (if any) ramps to 0,
+  - silence becomes "the emitter" — but its slot is empty, so
+    no Accreted voices spawn,
+  - the silence button lights brightly to indicate it's emitting.
+
+Pressing silence again (Toggle mode) toggles emission off — same
+audible result as before (still nothing) but the silence LED goes
+dark.
+
+That feels right for the data model — silence is a uniform
+sibling of other chords, just always-empty. Confirming.
+
+*** TODO Jeff brainstorming here
+When the chords are in toggle mode,
+silence is effectively Fire, even if we represent it otherwise --
+key down cuts off the previous chord, key up does nothing,
+a second key down does nothing (if no chord fired in the interim).
+
+When the chords are in nursed mode,
+it is very much like the other chord buttons:
+pressing it silences whatever is under it
+in the stack of nursed chords,
+just like any other chord would do.
+
+So yes, everything you said is, I think, correct.
+It's noteworthy that toggle buttons now toggle each other --
+whichever was on gets toggled off when another is toggled on.
+And silence is no different in this sense.
+
+** Wipe with no audible effect on emitter
+
+If you wipe the accretion target while a *different* chord is
+emitting, the user hears nothing change. The target's slot is
+emptied. Visually: the target stays dim (still the target, just
+empty), no LED change in the emitting chord's pitch class lighting.
+Right?
+
+(If the target IS the emitting chord, wipe ramps the accretion
+voices to 0 same as today.)
+
+*** TODO yes
+
+** The five existing buttons' moves
+
+Layout transition: =silent= leaves (it was at (0,15)) and is
+replaced by silence at the same cell (so visually it stays put,
+semantically it broadens). =wipe= moves from (1,14) to (0,14).
+=accrete= moves from (0,14) to (1,14). =emit= disappears (now
+distributed across 15 chord buttons). =emit-is-toggle= moves from
+(2,15) to (2,14).
+
+Tell me if any of those moves is wrong, or if the existing key
+identities (wipe, accrete) should be renamed.
+
+*** TODO yes
+
+** Brightness
+
+Per the README finding: ~4 distinct levels even though the API is
+0..15. You said level 5 for the dim "accretion target" indicator.
+That's distinct from level 15 (full bright) on the device, so
+should work. Just naming the constant explicitly:
+
+#+begin_src rust
+  const TARGET_DIM_LEVEL:    i32 = 5;
+  const FULL_BRIGHT_LEVEL:   i32 = 15;
+#+end_src
+
+OK?
+
+*** TODO let's abstract this, actually
+Let's make a function low_res_brightness, such that:
+  low_res_brightness (0) = 2
+  low_res_brightness (1) = 6
+  low_res_brightness (2) = 10
+  low_res_brightness (3) = 14
+and stick to that, with an explanation in the comment.
+That dodges magic numbers.
+
+** Scope and order of operations
+
+This is a substantial refactor of the accretion machinery. Plan
+to introduce it as a small chain of commits, in this order:
+
+1. Generalise =pitch_accretion= -> =Vec<PitchAccretion>= indexed
+   by ChordId, with =VoiceSource::Accreted{chord, pitch}=. State
+   machine still uses chord 0 implicitly; no UI change, all
+   existing tests pass.
+2. Replace the single =emit= Toggle button at (1,15) with the row
+   of 15 chord buttons + silence. Move wipe/accrete/emit-is-toggle
+   to y=14. New tests for chord switching.
+3. Wire =/grid/led/level/set= for the dim-target indicator;
+   replace the LedReason "Accretion {pitch}" with one that carries
+   the chord id, so a switch in emitting chord drives the right
+   diff.
+4. Add the =set-accretion-target= button.
+
+Each commit ends with =cargo test --release= green. OK?
+
+*** TODO first let's just refactor without adding new functionality
+The file is long -- 1300 lines.
+Let's break it into modules, however you see fit.
+
+* Refining the spec: Round 2
+
+Six follow-ups from Round 1.
+
+** Module split for the no-functionality-change refactor
+
+Proposed layout (as src/ siblings of main.rs):
+
+| Module          | Contents                                                |
+|-----------------+---------------------------------------------------------|
+| =pitch.rs=      | =Cell=, =EdoPitch=, =PitchClass=, =build_pitch_class=,  |
+|                 | =freq_for=, =freq_for_pitch=, =cells_for_pitch_of=,     |
+|                 | =cells_for_pitch=                                       |
+| =voices.rs=     | =VoiceId=, =VoiceSource=, =VoiceState=, =VoiceMap=,     |
+|                 | =render_block=, =triangle=, =voice_alive_with_id=,      |
+|                 | =spawn_accretion_voice=, =ramp_all_accretion_to_zero=,  |
+|                 | the audio constants (=ATTACK_SECS=, =RELEASE_SECS=,     |
+|                 | =AMPLITUDE=, =ACCRETION_TARGET=)                        |
+| =leds.rs=       | =LedReason=, =LedReasons=, =add_reason=, =remove_reason=|
+| =windows.rs=    | =WindowId=, =Window=, =Rect=, =rect_contains=,          |
+|                 | =window_for_cell=, =visible=, =set_led=                 |
+| =buttons.rs=    | =Button=, =ButtonRole=, =PitchAccretion=                |
+| =state.rs=      | =AppState= and all its event methods                    |
+| =osc.rs=        | =send_osc=, =register=, =discover_device=, the OSC      |
+|                 | constants (=PREFIX=, =DETECTOR_PORT=, =LISTEN_PORT=)    |
+| =diagnostics.rs=| =capture_stall_diagnostics=                             |
+| =main.rs=       | startup, args parsing, audio stream setup, SIGINT       |
+|                 | handler, main event loop, heartbeat                     |
+
+Each module keeps its own =#[cfg(test)] mod tests= for the helpers
+it exposes; the existing 27 tests get distributed accordingly. No
+behaviour changes, =cargo test --release= still green at every
+step.
+
+If you want a different cut — e.g. fewer modules, or a single
+=accretion.rs= holding everything related to the slot — say so.
+
+*** TODO in addition to those, let's collect all the type defs
+(structs, enums, etc.) in a single 'types.rs' module.
+All their methods, impls -- anything but the data structure itself --
+should go in other modules.
+types.rs is the one file that I'm likely to read a lot.
+
+** Nursed-mode chord stack — derived rules
+
+The stack model is clear; here are the corner cases I want to nail
+down before coding.
+
+Definitions: a *stack* of currently-held chord buttons, top of the
+stack is the active emitter. Order = order of presses.
+
+  1. *Press chord A* (stack empty): push A; A emits.
+  2. *Press chord B with A held* (stack [A]): push B; A's voices
+     ramp to 0, B's voices spawn. Stack [A, B].
+  3. *Release B* (stack [A, B]): pop B; B's voices ramp to 0, A's
+     voices spawn afresh. Stack [A].
+  4. *Release A* (stack [A]): pop A; A's voices ramp to 0. Stack
+     empty, no emitter.
+  5. *Press A again with A already held* (stack [A]): two readings.
+     (i)  No-op — A is already emitting; the stack already has it.
+     (ii) Move A to the top — pop the existing entry, push fresh.
+     Doesn't matter much but specify. I'd default to (i).
+
+     TODO : I don't see how this is physically possible.
+     But yes, if it somehow happened, the emission should not change,
+     and the chord should bump to the top of the stack.
+
+  6. *Release A from stack [A, B]* (release the underneath one
+     while top is still held): two readings.
+     (i)  Just remove A from the stack; B keeps emitting.
+          Subsequent release of B → empty stack, silence.
+     (ii) Same audible effect now, but on subsequent release of B,
+          the stack returns to [] (since A was already released).
+     Both produce the same audible behaviour; (i) is the obvious
+     "remove from the stack wherever it is" rule. Confirming (i).
+
+     TODO : yes
+
+  7. *Mode flip Nursed → Toggle* while stack non-empty: snapshot the
+     top of the stack as the new "Toggle on" state — i.e., the
+     currently-emitting chord stays on. Stack discarded. After the
+     flip, releasing the previously-held buttons does nothing
+     (Toggle ignores release). Right?
+
+     TODO : yes
+
+  8. *Mode flip Toggle → Nursed* while a chord is emitting via
+     Toggle: two readings.
+     (i)  The emitting chord stays on, but treated as the bottom
+          of an empty stack — i.e., it keeps emitting until
+          *something* in Nursed mode happens (a press), then
+          normal Nursed semantics apply and the Toggle-held chord
+          gets buried.
+     (ii) The mode flip immediately stops the chord (Nursed = "key
+          must be held"; nobody is holding anything; therefore
+          nothing emits).
+     I'd default to (ii) — simpler model, no hybrid state.
+
+     TODO : It should be a little more complicated.
+     If a chord is toggled on, and the mode flips to Nursed,
+     and it is *currently depressed*,
+     then it should become the first chord in the stack.
+     The sound does not change; it keeps sounding.
+     But if that key is not currently depressed,
+     then it should be silenced.
+
+Confirming 1-7 (with (i) for 5, (i) for 6, "as described" for 7,
+(ii) for 8)?
+
+** =set-accretion-target= mode: which presses cancel it?
+
+You said: enter mode, press chord button, mode auto-exits with
+the new target chosen. What about presses on *other* buttons
+while in target-select mode?
+
+  - *Press another chord button (the intended path):* sets target,
+    exits mode.
+  - *Press =silence=:* silence can't be the target. Reject; stay in
+    mode? Or reject and exit mode?
+  - *Press =accrete-on=, =wipe=, =emit-is-toggle=, or
+    =set-accretion-target= itself again:* cancel mode without
+    changing target?
+  - *Press an EDO key:* play the note normally, stay in mode? Or
+    cancel? (Playing notes while in mode is fine if mode doesn't
+    interfere — modal UI that doesn't lock the keyboard.)
+
+My defaults:
+  - silence → reject, stay in mode (flashing continues). User has
+    to press a real chord or cancel some other way.
+  - any other control button → cancel mode, then perform that
+    button's normal action.
+  - any EDO key → does its normal thing, mode stays active.
+  - pressing =set-accretion-target= a second time → cancel mode,
+    no target change.
+
+Right defaults?
+
+*** TODO I'd simplify.
+Pressing an edo key should not exit the select-target mode.
+Pressing any chord-related button
+that is not a legitimate (i.e. non-silence) chord should exit it,
+with no change.
+Pressing a legitimate chord should also exit it,
+but changing the target.
+
+** Flashing implementation
+
+The =set-accretion-target= LED flashes at 150 ms on / 150 ms off
+when in target-select mode. The main event loop already wakes
+every 50 ms (the recv timeout) and runs heartbeat work; I'd add a
+flash tick to it:
+
+#+begin_src rust
+  // In the main loop body, alongside the heartbeat block:
+  if target_select_mode {
+    let phase_on = (start.elapsed().as_millis() / 150) % 2 == 0;
+    if phase_on != last_flash_phase_on {
+      last_flash_phase_on = phase_on;
+      let level = if phase_on { low_res_brightness(3) } else { 0 };
+      // send /grid/led/level/set for the set-accretion-target cell
+      // via the compositor
+    }
+  }
+#+end_src
+
+Cadence: at 50 ms loop wakeups vs a 150 ms flash period, the
+phase changes will land within ~50 ms of the ideal — the eye won't
+notice. OK?
+
+*** TODO
+Yes, but 'phase' is ambiguous; call it 'flash_phase'.
+(You already called the other variable 'last_flash_phase_on'
+so those line up nicely.)
+
+** Brightness function: how to handle "off"
+
+Your spec:
+  =low_res_brightness(0) = 2=
+  =low_res_brightness(1) = 6=
+  =low_res_brightness(2) = 10=
+  =low_res_brightness(3) = 14=
+
+That's four *lit* levels. Where does "fully off" live? Three
+options:
+
+  (a) A separate value 0, sent directly when we want a cell dark.
+      The function maps the four indices 0..3 to the four lit levels.
+  (b) Add a fifth: =low_res_brightness(-1) = 0= (or take an enum).
+  (c) Use a tiny enum =Brightness { Off, B0, B1, B2, B3 }= and have
+      the function be =fn level_of(b: Brightness) -> i32=.
+
+I'd go (c) — enum is exhaustive, no magic indices, no silly
+"-1 means off" sentinel. Tradeoff: slightly more typing at call
+sites. Or stick with (a) and accept that "off" is a special case
+in the calling code. Pick one?
+
+*** TODO
+I believe [0,3] all map to off, [12,15] all map to on, etc.
+So those four values I gave should be the same as 0,4,8,12.
+I was only following your lead by not using 0,
+being unsure whether it's 0-indexed (but surely it is?) or 1-indexed.
+Let's test to be sure first.
+
+** "Magic numbers in one place" — what counts?
+
+You said gather magic numbers into a const section. There's
+already one near the top of main.rs (now to move into voices.rs
+under my proposed split):
+
+#+begin_src rust
+  const AMPLITUDE: f32 = 0.15;
+  const ATTACK_SECS: f32 = 0.003;
+  const RELEASE_SECS: f32 = 0.050;
+  const ACCRETION_TARGET: f32 = 0.5;
+  const GRID_W: i32 = 16;
+  const GRID_H: i32 = 16;
+#+end_src
+
+New constants for this round of work:
+  - flash period (150 ms each phase),
+  - the four brightness levels (2/6/10/14),
+  - initial accretion target (chord 1),
+  - heartbeat cadence (currently HEARTBEAT_SECS=1.0).
+
+Plan: each module owns the constants only it uses (e.g.
+flash period in =state.rs= or =leds.rs=, brightness levels in
+=leds.rs=). Top of each module gets a clearly labelled
+=// === Constants ============= = block. No magic literals
+elsewhere.
+
+If you'd rather have a single =consts.rs= module instead, say so —
+it's slightly more centralised but spreads the imports.
+
+*** TODO
+Yes, a centralize consts.rs would be nice.
+* Refining the spec: Round 3
+
+Five follow-ups from Round 2.
+
+** Brightness: a more careful test before we settle on the mapping
+
+Your hypothesis: levels [0,3] all = off, [4,7] = dim, [8,11] = mid,
+[12,15] = bright (so the four lit levels you originally named —
+2/6/10/14 — are the same as 0/4/8/12 visually, with index 0
+producing genuine off).
+
+If true, =low_res_brightness(i)= can be just =4*i=, with index 0
+naturally meaning off and no separate enum needed.
+
+Let me ship an updated =12-brightness-test.sh= that paints two
+adjacent rows for a side-by-side diagnostic:
+
+  Row A: cells 0-3 at level 0, cells 4-7 at level 4, cells 8-11
+         at level 8, cells 12-15 at level 12.
+  Row B: cells 0-3 at level 1, cells 4-7 at level 5, cells 8-11
+         at level 9, cells 12-15 at level 13.
+
+Then look at the grid:
+  - If row A and row B are visually identical *and* you see
+    exactly four distinct shades (off, dim, mid, bright) → buckets
+    are 4-wide aligned to multiples of 4. =low_res_brightness(i)
+    = 4 * i= and we're done.
+  - If row A's first quartet is dark and row B's first quartet is
+    lit → boundary is between 0 and 1, not at 4. We'd shift the
+    mapping.
+  - If you see more than four shades total → buckets aren't 4-wide.
+    Tell me what you see and we go from there.
+
+OK to ship that as =12-brightness-test.sh= replacing the current
+single-row version?
+
+*** TODO yes
+
+** Physically-held chord buttons: a separate piece of state
+
+Round 2 question 8's revised answer (Toggle → Nursed flip):
+"if [the Toggle-on chord] is currently *depressed*, it should
+become the first chord in the stack; if not, it should be
+silenced."
+
+That requires tracking which chord buttons are physically held
+*regardless of mode*. New state on AppState:
+
+#+begin_src rust
+  // chord buttons currently physically depressed, in press order.
+  // independent of toggle/nursed state — used to reconstitute the
+  // emit stack on a mode flip.
+  pressed_chords: Vec<ChordId>,
+#+end_src
+
+Updated on every chord-button press/release event, in both Toggle
+and Nursed mode. In Nursed, this *is* the emit stack. In Toggle,
+it's informational; on a Toggle → Nursed flip we read it to decide
+whether to keep emitting.
+
+I think this is the right shape — a single source of truth, no
+divergence between "what's held" and "what's emitting." Confirm?
+
+(One implication: if the user is in Toggle mode and lifts their
+finger from a chord button that's still emitting via Toggle, then
+flips the mode to Nursed, the Toggle-emitting chord is *not* in
+=pressed_chords= and so per your rule it gets silenced on the
+flip. That matches what you wrote.)
+
+*** TODO yes
+
+** =types.rs= — what counts as a "type"?
+
+Reading you literally: =types.rs= holds every =struct=, =enum=,
+and =type= alias. All =impl= blocks and free functions live in
+their domain modules.
+
+So e.g.:
+  - =types.rs= has =struct VoiceState { id, freq, phase, ... }=
+  - =voices.rs= has =impl VoiceState { fn ... }= and any
+    free-standing =fn render_block(...)= helpers
+
+Imports go *into* the domain module from =types.rs=, never the
+other way (=types.rs= depends on nothing in this codebase, so it's
+the leaf of the import graph). Constants live in =consts.rs= and
+imports come from there too.
+
+Is that the shape you want? In particular: do trait =impl= blocks
+go in =types.rs= (because they're "part of the type") or in the
+domain module (because the trait being impl'd is behaviour)?
+I'd default to the domain module — keeps =types.rs= a pure data
+declaration.
+
+*** TODO yes, pure data
+Also, I've never really appreciated the value of 'impl'.
+Ordinary functions seem more reasonable to me.
+I imagine their important for adhering for typeclasses,
+but other than that, is there any reason for them?
+If not, let's just use ordinary functions.
+
+** Constants tied to types
+
+Some "constants" are basically defaults for a struct's fields —
+e.g. =ATTACK_SECS= determines the initial =ramp_per_sample= when a
+=VoiceState= is built. Fine to live in =consts.rs= and be imported
+by =voices.rs= when constructing voices. But it does mean
+=voices.rs= imports from both =types.rs= and =consts.rs=.
+
+Confirming you're OK with that import shape (every other module
+imports types and consts; only the leaf modules =types.rs= and
+=consts.rs= are import-free).
+
+*** TODO absolutely
+
+* Refining the spec: Round 4
+
+Just two items.
+
+** Free functions vs =impl= blocks
+
+Direct answer to your aside: in Rust there are basically three
+reasons to write =impl Type { ... }= rather than free functions
+that take =&Type= or =&mut Type=:
+
+  1. *Trait impls* (=impl Clone for Foo=, =impl Debug for Foo=,
+     etc.). These have to be impl blocks; the language requires
+     it. We use them all the time via =#[derive(Clone, Debug,
+     PartialEq, Eq, Hash)]= on struct/enum definitions. Those
+     stay on the type declaration itself in =types.rs= — they're
+     declarations *about* the data shape, not behaviour we wrote.
+  2. *Method-call syntax* (=foo.bar()= vs =bar(&foo)=). Pure
+     ergonomics, no semantic difference. Affects discoverability
+     in IDEs (=foo.= autocompletes to all methods) but not
+     behaviour.
+  3. *Associated functions* (=Foo::new(...)= as a constructor) —
+     these are conventionally =impl=, but a free function
+     =new_foo(...)= is identical.
+
+There's no semantic capability you lose by using free functions
+for our own behaviour. Generic constraints (=where T: Trait=) and
+trait-bound dispatch work identically.
+
+So my proposal for the refactor:
+  - =#[derive(...)]= attributes stay on type declarations in
+    =types.rs= (they're metadata, not behaviour).
+  - All hand-written =impl Type { fn ... }= methods become free
+    functions: =fn edo_press(state: &mut AppState, cell: Cell) ->
+    Vec<LedCmd>= instead of =impl AppState { fn edo_press(&mut
+    self, cell: Cell) -> ... }=.
+  - Trait impls we have to write by hand (none today, but if any
+    show up: =impl Display for ...= say) live in the domain
+    module, not =types.rs=.
+
+OK?
+
+*** TODO Sounds good!
+And I'm willing to make an exception for Foo:new();
+that really is more ergonomic than new_foo(),
+because it lets me jump to the definition of Foo.
+
+** Confirming the work order
+
+From Round 3, my plan is:
+  1. *Refactor commit*: split main.rs into the modules from Round
+     2 (pitch / voices / leds / windows / buttons / state / osc /
+     diagnostics / main + types.rs + consts.rs). Convert all
+     =impl AppState { ... }= methods to free functions. No
+     behaviour change. =cargo test --release= green.
+  2. *Brightness test commit*: replace =12-brightness-test.sh=
+     with the two-row diagnostic version.
+  3. *Stop and wait* for you to read the brightness test on the
+     hardware and tell me what you see (so we know whether
+     =low_res_brightness(i) = 4 * i= or some other mapping).
+  4. *Then* the chord-storage refactor proper, in the
+     small-commits cadence I sketched earlier.
+
+Sound right?
+
+*** TODO yes!
