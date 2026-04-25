@@ -36,8 +36,14 @@ const PREFIX: &str = "/256-1-cable";
 const DETECTOR_PORT: u16 = 12002;
 const LISTEN_PORT: u16 = 9000;
 const AMPLITUDE: f32 = 0.15;
-const ATTACK_SECS: f32 = 0.005;
+const ATTACK_SECS: f32 = 0.003;
 const RELEASE_SECS: f32 = 0.050;
+// Accretion-born voices play at this fraction of full volume.
+// Currently unused — wired up by the accretion state machine in a
+// later commit. Kept here so the VoiceState envelope code can refer
+// to it.
+#[allow(dead_code)]
+const ACCRETION_TARGET: f32 = 0.5;
 // Hardcoded for the 256 (16×16) grid. If smaller/larger grids appear,
 // query /sys/size from serialoscd at startup and replace these.
 const GRID_W: i32 = 16;
@@ -107,6 +113,36 @@ fn triangle(phase: f32) -> f32 {
   }
 }
 
+// Per-voice audio state. The envelope is a simple "ramp env toward
+// target_env by ramp_per_sample each sample, clamping at target." A
+// voice is removed once env=0 AND target_env=0.
+#[derive(Debug, Clone, Copy)]
+struct VoiceState {
+  // Read by the accretion state machine (later commit) for the
+  // originVoice-still-alive checks. Unused for now.
+  #[allow(dead_code)]
+  id:              VoiceId,
+  freq:            f32,
+  phase:           f32,
+  env:             f32,
+  target_env:      f32,
+  ramp_per_sample: f32,
+}
+
+type VoiceId = u64;
+
+// What gave rise to this voice. The accretion state machine (later
+// commit) is what populates the Accreted variant; for now every
+// voice is Fingered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+enum VoiceSource {
+  Fingered { xy: (i32, i32) },
+  Accreted { pitch: i32 },
+}
+
+type VoiceMap = HashMap<VoiceSource, VoiceState>;
+
 // Render one cpal callback's worth of audio into `data` from `voices`.
 // Pulled out of the closure so unit tests can exercise it without cpal
 // or PipeWire.
@@ -115,19 +151,22 @@ fn render_block(
   data: &mut [f32],
   channels: usize,
   sample_rate: f32,
-  attack_per_sample: f32,
-  release_per_sample: f32,
 ) {
   for frame in data.chunks_mut(channels) {
     let mut mix = 0.0_f32;
     voices.retain(|_, v| {
-      if v.releasing {
-        v.env -= release_per_sample;
-        if v.env <= 0.0 {
-          return false;
-        }
-      } else if v.env < 1.0 {
-        v.env = (v.env + attack_per_sample).min(1.0);
+      // Step env toward target_env.
+      let delta = v.target_env - v.env;
+      if delta.abs() <= v.ramp_per_sample {
+        v.env = v.target_env;
+      } else if delta > 0.0 {
+        v.env += v.ramp_per_sample;
+      } else {
+        v.env -= v.ramp_per_sample;
+      }
+      // Voice is gone once env and target both reach 0.
+      if v.env == 0.0 && v.target_env == 0.0 {
+        return false;
       }
       v.phase += v.freq / sample_rate;
       if v.phase >= 1.0 {
@@ -142,16 +181,6 @@ fn render_block(
     }
   }
 }
-
-#[derive(Debug, Clone, Copy)]
-struct Voice {
-  freq: f32,
-  phase: f32,
-  env: f32,
-  releasing: bool,
-}
-
-type VoiceMap = HashMap<(i32, i32), Voice>;
 
 fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType>) {
   let buf = encoder::encode(&OscPacket::Message(OscMessage {
@@ -228,8 +257,10 @@ fn main() {
 
   register(&sock, device);
 
-  // Shared state: map (x, y) -> Voice.
+  // Shared state: VoiceSource -> VoiceState. Currently only Fingered
+  // entries; the accretion machinery (later commit) populates Accreted.
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+  let mut next_voice_id: VoiceId = 0;
 
   // --- Audio stream setup ---
   let host = cpal::default_host();
@@ -290,8 +321,6 @@ fn main() {
   );
 
   let voices_audio = Arc::clone(&voices);
-  let attack_per_sample = 1.0 / (ATTACK_SECS * sample_rate);
-  let release_per_sample = 1.0 / (RELEASE_SECS * sample_rate);
   let mut promoted = false;
 
   let stream = device_audio
@@ -318,10 +347,7 @@ fn main() {
           }
         }
         let mut voices = voices_audio.lock().unwrap();
-        render_block(
-          &mut voices, data, channels, sample_rate,
-          attack_per_sample, release_per_sample,
-        );
+        render_block(&mut voices, data, channels, sample_rate);
       },
       |e| eprintln!("audio stream error: {e}"),
       None, )
@@ -385,24 +411,24 @@ fn main() {
             _ => continue,
           };
           let mut vs = voices.lock().unwrap();
-          let key = (x, y);
+          let key = VoiceSource::Fingered { xy: (x, y) };
           if s == 1 {
             let freq = freq_for(x, y, fund, edo, x_step, y_step);
             eprintln!("press   x={x:>2} y={y:>2}  f={freq:.2} Hz");
-            vs.entry(key)
-              .and_modify(|v| {
-                // Retrigger while still sounding: cancel release, keep env.
-                v.releasing = false;
-                v.freq = freq;
-              })
-              .or_insert(Voice {
-                freq,
-                phase: 0.0,
-                env: 0.0,
-                releasing: false,
-              });
+            // (b)-style retrigger: each press is a fresh voice with a
+            // new id; any existing entry at this xy is overwritten.
+            let id = next_voice_id;
+            next_voice_id += 1;
+            vs.insert(key, VoiceState {
+              id,
+              freq,
+              phase: 0.0,
+              env: 0.0,
+              target_env: 1.0,
+              ramp_per_sample: 1.0 / (ATTACK_SECS * sample_rate),
+            });
             drop(vs);
-            pressed.insert(key);
+            pressed.insert((x, y));
             for (lx, ly) in leds_for_press(pitch_class.as_ref(), x, y) {
               send_osc(&sock, device, &led_set,
                 vec![OscType::Int(lx), OscType::Int(ly), OscType::Int(1)]);
@@ -410,10 +436,12 @@ fn main() {
           } else {
             eprintln!("release x={x:>2} y={y:>2}");
             if let Some(v) = vs.get_mut(&key) {
-              v.releasing = true;
+              v.target_env = 0.0;
+              // Always-finish-in-50ms ramp from current env.
+              v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
             }
             drop(vs);
-            pressed.remove(&key);
+            pressed.remove(&(x, y));
             for (lx, ly) in leds_for_release(pitch_class.as_ref(), &pressed, x, y) {
               send_osc(&sock, device, &led_set,
                 vec![OscType::Int(lx), OscType::Int(ly), OscType::Int(0)]);
@@ -426,15 +454,11 @@ mod tests {
   use super::*;
 
   // Render N frames (mono) for a single voice with the given initial state.
-  fn render_voice(v: Voice, n: usize, sample_rate: f32) -> Vec<f32> {
+  fn render_voice(v: VoiceState, n: usize, sample_rate: f32) -> Vec<f32> {
     let mut voices: VoiceMap = HashMap::new();
-    voices.insert((0, 0), v);
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; n];
-    render_block(
-      &mut voices, &mut data, 1, sample_rate,
-      1.0 / (ATTACK_SECS * sample_rate),
-      1.0 / (RELEASE_SECS * sample_rate),
-    );
+    render_block(&mut voices, &mut data, 1, sample_rate);
     data
   }
 
@@ -442,16 +466,16 @@ mod tests {
   fn empty_voices_produce_silence() {
     let mut voices: VoiceMap = HashMap::new();
     let mut data = vec![0.123_f32; 64]; // pre-fill nonzero
-    render_block(&mut voices, &mut data, 1, 48000.0, 0.01, 0.01);
+    render_block(&mut voices, &mut data, 1, 48000.0);
     assert!(data.iter().all(|&s| s == 0.0), "expected all zeros");
   }
 
   #[test]
   fn sustained_voice_produces_triangle_output() {
     let sr = 48000.0;
-    let v = Voice {
-      freq: 440.0, phase: 0.0, env: 1.0,
-      releasing: false,
+    let v = VoiceState {
+      id: 0, freq: 440.0, phase: 0.0, env: 1.0,
+      target_env: 1.0, ramp_per_sample: 0.0,
     };
     let data = render_voice(v, 1024, sr);
     let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
@@ -510,18 +534,15 @@ mod tests {
   fn release_decays_to_zero_and_drops_voice() {
     let sr = 48000.0;
     let release_samples = (RELEASE_SECS * sr) as usize; // 2400
-    let v = Voice {
-      freq: 220.0, phase: 0.0, env: 1.0,
-      releasing: true,
+    let v = VoiceState {
+      id: 0, freq: 220.0, phase: 0.0, env: 1.0,
+      target_env: 0.0,
+      ramp_per_sample: 1.0 / (RELEASE_SECS * sr),
     };
     let mut voices: VoiceMap = HashMap::new();
-    voices.insert((0, 0), v);
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; release_samples + 200];
-    render_block(
-      &mut voices, &mut data, 1, sr,
-      1.0 / (ATTACK_SECS * sr),
-      1.0 / (RELEASE_SECS * sr),
-    );
+    render_block(&mut voices, &mut data, 1, sr);
     assert!(voices.is_empty(), "voice should have been dropped after release");
     let tail = &data[release_samples + 100..];
     assert!(tail.iter().all(|&s| s == 0.0),
