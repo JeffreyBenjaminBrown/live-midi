@@ -49,8 +49,8 @@ const ACCRETION_TARGET: f32 = 0.5;
 const GRID_W: i32 = 16;
 const GRID_H: i32 = 16;
 
-fn freq_for(x: i32, y: i32, fund: f64, edo: f64, x_step: f64, y_step: f64) -> f32 {
-  (fund * 2.0_f64.powf((x_step * x as f64 + y_step * y as f64) / edo)) as f32
+fn freq_for(x: i32, y: i32, fund: f64, edo: i32, x_step: i32, y_step: i32) -> f32 {
+  freq_for_pitch(x_step * x + y_step * y, fund, edo)
 }
 
 // === Windows ============================================================
@@ -135,38 +135,63 @@ enum ButtonRole {
   EmitIsToggleOn, EmitIsToggleOff,
 }
 
-// Per-grid pitch-class index. Two keys with the same EdoPitch sound
-// the same note modulo octave. Built once at startup; lookup is O(1).
-// Only meaningful when edo / x_step / y_step are integers.
+// Per-grid pitch index. For each cell:
+//   * its *absolute* pitch (in EDO units, octave preserved) — used
+//     when storing a pitch in the accretion slot so emit can sound
+//     it at the right frequency.
+//   * its pitch *class* (absolute mod edo) — used to find the
+//     enharmonic equivalents that should light together.
+// Built once at startup; all lookups O(1).
 struct PitchClass {
-  key_to_pitch: HashMap<(i32, i32), i32>,
-  pitch_to_keys: HashMap<i32, Vec<(i32, i32)>>,
+  key_to_pitch: HashMap<Cell, i32>,         // absolute
+  key_to_class: HashMap<Cell, i32>,         // absolute mod edo
+  class_to_keys: HashMap<i32, Vec<Cell>>,   // class -> all cells in that class
 }
 
 fn build_pitch_class(x_step: i32, y_step: i32, edo: i32, w: i32, h: i32) -> PitchClass {
   let mut k2p = HashMap::new();
-  let mut p2k: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
+  let mut k2c = HashMap::new();
+  let mut c2k: HashMap<i32, Vec<Cell>> = HashMap::new();
   for x in 0..w {
     for y in 0..h {
-      let p = (x_step * x + y_step * y).rem_euclid(edo);
-      k2p.insert((x, y), p);
-      p2k.entry(p).or_default().push((x, y));
+      let abs = x_step * x + y_step * y;
+      let cls = abs.rem_euclid(edo);
+      k2p.insert((x, y), abs);
+      k2c.insert((x, y), cls);
+      c2k.entry(cls).or_default().push((x, y));
     }
   }
-  PitchClass { key_to_pitch: k2p, pitch_to_keys: p2k }
+  PitchClass { key_to_pitch: k2p, key_to_class: k2c, class_to_keys: c2k }
+}
+
+// fund * 2^(pitch / edo). pitch is absolute (with octave).
+fn freq_for_pitch(pitch: i32, fund: f64, edo: i32) -> f32 {
+  (fund * 2.0_f64.powf(pitch as f64 / edo as f64)) as f32
 }
 
 // All cells whose LEDs reflect the same pitch class as `cell` —
 // the pressed cell itself plus its enharmonic equivalents.
-// Falls back to just `cell` when no pitch-class index exists
-// (non-integer tuning; gone once startup validation lands).
-fn cells_for_pitch_of(pc: Option<&PitchClass>, cell: Cell) -> Vec<Cell> {
-  match pc.and_then(|pc| pc.key_to_pitch.get(&cell)
-                          .and_then(|p| pc.pitch_to_keys.get(p))) {
-    Some(keys) => keys.clone(),
-    None => vec![cell],
-  }
+fn cells_for_pitch_of(pc: &PitchClass, cell: Cell) -> Vec<Cell> {
+  pc.key_to_class.get(&cell)
+    .and_then(|c| pc.class_to_keys.get(c))
+    .cloned()
+    .unwrap_or_else(|| vec![cell])
 }
+
+// All cells whose pitch class equals `pitch.rem_euclid(edo)`.
+fn cells_for_pitch(pc: &PitchClass, pitch: i32, edo: i32) -> Vec<Cell> {
+  let cls = pitch.rem_euclid(edo);
+  pc.class_to_keys.get(&cls).cloned().unwrap_or_default()
+}
+
+// === Accretion slot =====================================================
+
+// Pitch (absolute, with octave) → set of finger-voice ids that
+// "first introduced" this pitch. The set is fixed on first
+// insertion; later press events for the same pitch don't grow it.
+// Wipe clears the whole map.
+#[allow(dead_code)] // used by the accretion state machine in the next commit
+type PitchAccretion = HashMap<i32, HashSet<VoiceId>>;
 
 // === LedReasons =========================================================
 
@@ -332,10 +357,21 @@ fn discover_device(sock: &UdpSocket) -> Option<u16> {
 
 fn main() {
   let args: Vec<String> = std::env::args().collect();
+  // fund stays f64 (it's a continuous frequency in Hz). edo / x_step
+  // / y_step are integer-only — without that, pitch math sees floating
+  // -point jitter and accretion's "is this pitch in the slot?" check
+  // gets racy. Reject non-integer here at startup.
   let fund: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(220.0);
-  let edo: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(46.0);
-  let x_step: f64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(9.0);
-  let y_step: f64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+  let edo: i32 = args.get(2).map(|s| s.parse::<i32>()
+        .unwrap_or_else(|_| panic!("edo must be a positive integer, got {s:?}")))
+    .unwrap_or(46);
+  let x_step: i32 = args.get(3).map(|s| s.parse::<i32>()
+        .unwrap_or_else(|_| panic!("x_step must be an integer, got {s:?}")))
+    .unwrap_or(9);
+  let y_step: i32 = args.get(4).map(|s| s.parse::<i32>()
+        .unwrap_or_else(|_| panic!("y_step must be an integer, got {s:?}")))
+    .unwrap_or(1);
+  assert!(edo > 0, "edo must be positive, got {edo}");
   eprintln!("tuning: fund={fund} Hz  edo={edo}  x_step={x_step}  y_step={y_step}");
 
   // GRID_LISTEN_PORT overrides the default :9000 — useful for running
@@ -465,13 +501,8 @@ fn main() {
   // pitch class light up together when any one is pressed, and all
   // stay lit until none is pressed. Only well-defined when the
   // tuning args are integers.
-  let pitch_class: Option<PitchClass> =
-    if edo.fract() == 0.0 && x_step.fract() == 0.0 && y_step.fract() == 0.0 {
-      Some(build_pitch_class(x_step as i32, y_step as i32, edo as i32, GRID_W, GRID_H))
-    } else {
-      eprintln!("non-integer EDO/steps: lighting only the pressed key");
-      None
-    };
+  let pitch_class: PitchClass =
+    build_pitch_class(x_step, y_step, edo, GRID_W, GRID_H);
   let mut led_reasons: LedReasons = HashMap::new();
 
   // Windows, front-to-back. Smaller control windows occlude the EDO
@@ -576,7 +607,7 @@ fn main() {
                 });
                 drop(vs);
                 let r = LedReason::PitchEquivalent { source_xy: cell };
-                for c in cells_for_pitch_of(pitch_class.as_ref(), cell) {
+                for c in cells_for_pitch_of(&pitch_class, cell) {
                   if let Some(true) = add_reason(&mut led_reasons, c, r) {
                     set_led(&windows, WindowId::Edo, c, true,
                             &sock, device, &led_set);
@@ -590,7 +621,7 @@ fn main() {
                 }
                 drop(vs);
                 let r = LedReason::PitchEquivalent { source_xy: cell };
-                for c in cells_for_pitch_of(pitch_class.as_ref(), cell) {
+                for c in cells_for_pitch_of(&pitch_class, cell) {
                   if let Some(false) = remove_reason(&mut led_reasons, c, r) {
                     set_led(&windows, WindowId::Edo, c, false,
                             &sock, device, &led_set);
@@ -642,10 +673,10 @@ mod tests {
     // Jeff's default layout: edo=46, x_step=9, y_step=1.
     // (x, y) and (x+1, y-9) should share a pitch class.
     let pc = build_pitch_class(9, 1, 46, 16, 16);
-    let p_4_10 = pc.key_to_pitch[&(4, 10)];
-    let p_5_1 = pc.key_to_pitch[&(5, 1)];
-    assert_eq!(p_4_10, p_5_1, "(4,10) and (5,1) should be enharmonic");
-    let group = &pc.pitch_to_keys[&p_4_10];
+    let c_4_10 = pc.key_to_class[&(4, 10)];
+    let c_5_1 = pc.key_to_class[&(5, 1)];
+    assert_eq!(c_4_10, c_5_1, "(4,10) and (5,1) should be enharmonic");
+    let group = &pc.class_to_keys[&c_4_10];
     assert!(group.contains(&(4, 10)));
     assert!(group.contains(&(5, 1)));
   }
@@ -653,14 +684,16 @@ mod tests {
   #[test]
   fn cells_for_pitch_of_with_pc_returns_full_equivalence_group() {
     let pc = build_pitch_class(9, 1, 46, 16, 16);
-    let g = cells_for_pitch_of(Some(&pc), (4, 10));
+    let g = cells_for_pitch_of(&pc, (4, 10));
     assert!(g.contains(&(4, 10)));
     assert!(g.contains(&(5, 1)));
   }
 
   #[test]
-  fn cells_for_pitch_of_without_pc_falls_back_to_single_key() {
-    assert_eq!(cells_for_pitch_of(None, (7, 3)), vec![(7, 3)]);
+  fn cells_for_pitch_of_with_unknown_cell_returns_just_itself() {
+    let pc = build_pitch_class(9, 1, 46, 16, 16);
+    // (-1,-1) isn't in the grid, so the lookup falls through to vec![cell].
+    assert_eq!(cells_for_pitch_of(&pc, (-1, -1)), vec![(-1, -1)]);
   }
 
   #[test]
@@ -695,7 +728,7 @@ mod tests {
     // Press (4,10): every cell in the pitch-class group transitions to lit.
     let r_410 = LedReason::PitchEquivalent { source_xy: (4, 10) };
     let mut newly_lit_410 = vec![];
-    for c in cells_for_pitch_of(Some(&pc), (4, 10)) {
+    for c in cells_for_pitch_of(&pc, (4, 10)) {
       if let Some(true) = add_reason(&mut reasons, c, r_410) {
         newly_lit_410.push(c);
       }
@@ -705,20 +738,20 @@ mod tests {
 
     // Press (5,1) — same group; no further LED transitions.
     let r_51 = LedReason::PitchEquivalent { source_xy: (5, 1) };
-    for c in cells_for_pitch_of(Some(&pc), (5, 1)) {
+    for c in cells_for_pitch_of(&pc, (5, 1)) {
       assert_eq!(add_reason(&mut reasons, c, r_51), None,
                  "cell {c:?} should already be lit");
     }
 
     // Release (5,1) while (4,10) is still pressed — no dark transitions.
-    for c in cells_for_pitch_of(Some(&pc), (5, 1)) {
+    for c in cells_for_pitch_of(&pc, (5, 1)) {
       assert_eq!(remove_reason(&mut reasons, c, r_51), None,
                  "cell {c:?} still lit by (4,10)'s reason");
     }
 
     // Release (4,10) — every group cell transitions to dark.
     let mut newly_dark = vec![];
-    for c in cells_for_pitch_of(Some(&pc), (4, 10)) {
+    for c in cells_for_pitch_of(&pc, (4, 10)) {
       if let Some(false) = remove_reason(&mut reasons, c, r_410) {
         newly_dark.push(c);
       }
