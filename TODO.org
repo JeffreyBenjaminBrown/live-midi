@@ -1,3 +1,84 @@
+* constraint both the composition and the music interface
+** TODO NEXT : unified storage actions for sustain/chords
+needs all of these
+*** NEXT: accretion without storage
+**** types
+***** 'accretion slot' = a vector of edo pitches
+These are unconstrained integers.
+If the edo is 46, then 46 is an octave above 0, etc.
+There will only be one accretion slot in the app
+(until we add chord storage), but it still deserves its own type.
+***** "toggle buttons"
+Press it once to turn it on.
+Press it again to turn it off.
+Removing finger, in both cases, does nothing.
+***** "ephemeral buttons"
+This is the other option to "toggle button".
+An ephemeral button is only on -- both emitting light,
+and doing whatever the light emission signifiies -- while depressed.
+Finger down turns it on; finger up turns it off.
+***** "toggleness toggle buttons"
+These buttons are dedicated merely to
+choosing whether another button is toggle or ephemeral.
+***** "ephemeral-or-toggle button"
+A button B is ephemeral-or-toggle
+if some corresponding "toggleness toggle button" T
+determines whether B is toggle or not.
+(Such button T is always toggle, never ephemeral.)
+**** four special buttons
+***** 'accretion-accrete' button
+When accretion-ingest is on,
+notes played in the main edo region accrete into the slot.
+Each note-on writes to the slot.
+Each note-off does not affect the slot.
+Notes that were already being held when accretion-ingest turned on
+are not accreted.
+***** 'accretion-emit' button
+Pressing this button makes the accretion sound,
+and lights up every corresponding button in the main edo grid region.
+  (As with ordinary notes played live,
+  any key enharmonically equivalent (regardless of octave)
+  to any note in the accretion slot should light up.
+***** 'accretion-silent' button
+****** what it does
+Pressing this button makes the accretion stop sounding if it was.
+****** Why this is distinct from 'accretion-silent'
+will become apparent once chord storage is added.
+***** 'accretion-wipe' button
+Pressing this resets the accretion slot to the empty vector.
+If it was playing, it should stop.
+*** storage
+**** silence (already implemented)
+is like a permanent stored empty chord button.
+Unlike the others chord buttons, it cannot be written to.
+**** chord buttons
+Some buttons are where chords can be stored.
+One chord per button.
+Call these the chord buttons.
+**** the button being accreted to can be on or off
+If it's on, the accretions continue ringing after finger-off.
+This unifies sustain and chord storage.
+*** a volume control for the stored chords
+Critical, for the melody to stand out.
+** the whole vision, but disorganized
+*** chord storage
+**** detail
+***** The major playing area is an edo grid.
+***** Some smaller ones are for storage:
+**** initial vision
+Store a chord to a button,
+change the {volume,..} of the stored chords,
+play them. The notes they correspond to show.
+*** melody-chord symmetry
+For both the finger-sounding notes and the stored chords,
+some buttons are presets (at least 8),
+some control the dimension being varied,
+and some (a row of 8, say) control the value along that dimension.
+That is, there are two (finger and stored) windows of three
+(presets, dimensions, value).
+Oh wait no a fourth, the record/accrete/store/save actions.
+** more fun ideas
+*** record short "vibrato loops" of the parameter values
 * [[./code/edo72/requests/visual-feedback.org][72-edo-from-12 visual feedback]]
 * [[id:beefb9cf-7378-4e75-9cd4-d868ea065092][monome haskell : build each note and map it to the keys]]
 * synth plans
