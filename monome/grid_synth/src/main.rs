@@ -898,21 +898,29 @@ fn main() {
   let led_all = format!("{PREFIX}/grid/led/all");
   let mut buf = [0u8; 2048];
 
-  // Push the initial LED state for any control button that boots
-  // up "on" — e.g., emit-is-toggle starts in Toggle mode (state=true)
-  // so its cell should be lit immediately. register() above already
-  // cleared the whole grid; this paints the toggles back on.
-  for (&cell, button) in &state.control_buttons {
-    let lit = match button {
-      Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
-      Button::Fire { .. } => false,
-    };
-    if lit {
+  // Paint every LED that should be lit, given the current state.
+  // Called at startup (after register() clears the grid) and again
+  // after every re-register triggered by a /serialosc/device port
+  // change — without that second call, a stale-tty announcement
+  // mid-session silently wipes our control LEDs and any
+  // pitch-equivalent / accretion lighting.
+  let repaint = |state: &AppState, device: SocketAddr| {
+    // Control buttons (Toggle/Nursed): light if state is true.
+    for (&cell, button) in &state.control_buttons {
+      let lit = match button {
+        Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
+        Button::Fire { .. } => false,
+      };
       if let Some(win) = window_for_cell(&windows, cell) {
-        set_led(&windows, win, cell, true, &sock, device, &led_set);
+        set_led(&windows, win, cell, lit, &sock, device, &led_set);
       }
     }
-  }
+    // EDO grid: any cell with at least one LedReason is lit.
+    for &cell in state.led_reasons.keys() {
+      set_led(&windows, WindowId::Edo, cell, true, &sock, device, &led_set);
+    }
+  };
+  repaint(&state, device);
 
   // SIGINT handler: just flip a flag the main loop watches. Avoids
   // running anything non-async-signal-safe from the handler itself.
@@ -967,6 +975,9 @@ fn main() {
                 device_port = p;
                 device = format!("127.0.0.1:{p}").parse().unwrap();
                 register(&sock, device);
+                // register() just sent /grid/led/all 0; restore our
+                // current LED state on the new port.
+                repaint(&state, device);
               }
             }
             continue;
