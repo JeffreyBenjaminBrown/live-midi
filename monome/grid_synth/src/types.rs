@@ -13,7 +13,11 @@ pub type MonomeKey = (i32, i32);
 pub type Rect = (MonomeKey, MonomeKey);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowId { Edo, Accretion2x2, EmitToggle1x1 }
+pub enum WindowId {
+  Edo,
+  ControlsTop,    // y=14, x=0..3 — wipe / accrete / emit-is-toggle / set-accretion-target
+  ControlsBottom, // y=15, x=0..15 — silence + chord 1..15
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
@@ -106,6 +110,13 @@ pub type PitchLedReasons = HashMap<MonomeKey, HashSet<PitchLedReason>>;
 // What a control-window cell does. Stored in a button map on
 // AppState; dispatched by ButtonAction (an enum, not a closure —
 // closures fight Rust's borrow checker for &mut AppState).
+//
+// Nursed is currently unused for the y=14 control buttons (none of
+// them are Nursed), but the variant stays for symmetry — chord
+// buttons in Nursed mode are conceptually Nursed even though
+// chord_press / chord_release handle them directly without going
+// through the Button enum.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum Button {
   Toggle { state: bool, on: ButtonAction, off: ButtonAction },
@@ -116,10 +127,9 @@ pub enum Button {
 #[derive(Debug, Clone, Copy)]
 pub enum ButtonAction {
   AccreteOn, AccreteOff,
-  EmitOn,    EmitOff,
-  SilentFire,
   WipeFire,
   EmitIsToggleOn, EmitIsToggleOff,
+  SetTargetFire,                    // commit 6 implements; placeholder no-op now
 }
 
 // === Brightness =========================================================
@@ -159,10 +169,20 @@ pub struct AppState {
   pub accretion_target: ChordId,            // which slot accrete-on / wipe affect
   pub emitting_chord:   Option<ChordId>,    // None = nothing emits
 
+  // Single source of truth for which chord buttons are *physically*
+  // depressed right now, in press order.
+  //   Nursed mode: this IS the emit stack; top = current emitter.
+  //   Toggle mode: informational; consulted on Toggle→Nursed flip.
+  pub pressed_chords:   Vec<ChordId>,
+
   pub accrete_on:       bool,
   pub emit_is_toggle:   bool,
   pub next_voice_id:    VoiceId,
   pub pitchled_reasons: PitchLedReasons,
+  // y=14 control buttons only (wipe / accrete-on / emit-is-toggle /
+  // set-accretion-target). Chord buttons at y=15 are handled by
+  // chord_press / chord_release directly; they have no per-button
+  // state to store (emitting_chord and pressed_chords cover it).
   pub control_buttons:  HashMap<MonomeKey, Button>,
 
   // Immutable config:

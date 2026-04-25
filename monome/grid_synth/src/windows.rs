@@ -64,55 +64,59 @@ mod tests {
 
   fn standard_windows() -> Vec<Window> {
     vec![
-      Window { id: WindowId::Accretion2x2,  rect: ((0, 14), (1, 15)) },
-      Window { id: WindowId::EmitToggle1x1, rect: ((2, 15), (2, 15)) },
-      Window { id: WindowId::Edo,           rect: ((0, 0),  (15, 15)) },
+      Window { id: WindowId::ControlsTop,    rect: ((0, 14), (3, 14)) },
+      Window { id: WindowId::ControlsBottom, rect: ((0, 15), (15, 15)) },
+      Window { id: WindowId::Edo,            rect: ((0, 0),  (15, 15)) },
     ]
   }
 
   #[test]
-  fn event_in_2x2_goes_to_accretion_window() {
+  fn event_in_top_row_left_goes_to_controls_top() {
     let ws = standard_windows();
-    assert_eq!(window_for_cell(&ws, (0, 14)), Some(WindowId::Accretion2x2));
-    assert_eq!(window_for_cell(&ws, (1, 15)), Some(WindowId::Accretion2x2));
+    assert_eq!(window_for_cell(&ws, (0, 14)), Some(WindowId::ControlsTop));
+    assert_eq!(window_for_cell(&ws, (3, 14)), Some(WindowId::ControlsTop));
   }
 
   #[test]
-  fn event_in_1x1_goes_to_emit_toggle_window() {
+  fn event_in_bottom_row_goes_to_controls_bottom() {
     let ws = standard_windows();
-    assert_eq!(window_for_cell(&ws, (2, 15)), Some(WindowId::EmitToggle1x1));
+    assert_eq!(window_for_cell(&ws, (0, 15)),  Some(WindowId::ControlsBottom));
+    assert_eq!(window_for_cell(&ws, (15, 15)), Some(WindowId::ControlsBottom));
   }
 
   #[test]
-  fn event_outside_smalls_goes_to_edo_window() {
+  fn event_outside_controls_goes_to_edo_window() {
     let ws = standard_windows();
-    assert_eq!(window_for_cell(&ws, (0, 0)),  Some(WindowId::Edo));
-    assert_eq!(window_for_cell(&ws, (8, 8)),  Some(WindowId::Edo));
-    assert_eq!(window_for_cell(&ws, (15, 15)), Some(WindowId::Edo));
-    assert_eq!(window_for_cell(&ws, (3, 15)), Some(WindowId::Edo)); // just past 1x1
+    assert_eq!(window_for_cell(&ws, (0, 0)),   Some(WindowId::Edo));
+    assert_eq!(window_for_cell(&ws, (8, 8)),   Some(WindowId::Edo));
+    assert_eq!(window_for_cell(&ws, (15, 13)), Some(WindowId::Edo));
+    assert_eq!(window_for_cell(&ws, (4, 14)),  Some(WindowId::Edo)); // just past ControlsTop
   }
 
   #[test]
-  fn edo_writing_into_2x2_cell_is_dropped() {
+  fn edo_writing_into_controls_cell_is_dropped() {
     let ws = standard_windows();
     assert!(!visible(&ws, WindowId::Edo, (0, 14)));
-    assert!(!visible(&ws, WindowId::Edo, (1, 15)));
+    assert!(!visible(&ws, WindowId::Edo, (3, 14)));
+    assert!(!visible(&ws, WindowId::Edo, (0, 15)));
+    assert!(!visible(&ws, WindowId::Edo, (15, 15)));
   }
 
   #[test]
   fn edo_writing_into_owned_cell_passes() {
     let ws = standard_windows();
     assert!(visible(&ws, WindowId::Edo, (0, 0)));
-    assert!(visible(&ws, WindowId::Edo, (15, 14)));
+    assert!(visible(&ws, WindowId::Edo, (4, 14)));   // past ControlsTop
+    assert!(visible(&ws, WindowId::Edo, (15, 13))); // above ControlsBottom
   }
 
   #[test]
-  fn accretion_window_writes_pass_for_its_own_cells() {
+  fn controls_top_writes_pass_for_its_own_cells() {
     let ws = standard_windows();
-    assert!(visible(&ws, WindowId::Accretion2x2, (0, 14)));
-    assert!(visible(&ws, WindowId::Accretion2x2, (1, 15)));
-    // …but not into cells outside its rect.
-    assert!(!visible(&ws, WindowId::Accretion2x2, (2, 15)));
-    assert!(!visible(&ws, WindowId::Accretion2x2, (5, 5)));
+    assert!(visible(&ws, WindowId::ControlsTop, (0, 14)));
+    assert!(visible(&ws, WindowId::ControlsTop, (3, 14)));
+    // …but not outside its rect.
+    assert!(!visible(&ws, WindowId::ControlsTop, (4, 14)));
+    assert!(!visible(&ws, WindowId::ControlsTop, (0, 15)));
   }
 }

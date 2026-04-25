@@ -21,6 +21,26 @@ pub const ACCRETION_TARGET: f32 = 0.5;
 pub const GRID_W: i32 = 16;
 pub const GRID_H: i32 = 16;
 
+// === Chord storage =====================================================
+
+// Number of chord slots, including silence at index 0. Chord buttons
+// fill the entire y=15 row.
+pub const N_CHORDS:                 usize = 16;
+pub const SILENCE_CHORD:            usize = 0;
+pub const INITIALLY_ACCRETING_CHORD: usize = 1;
+
+// === Layout: cell positions of every control-window button ============
+
+pub const CELL_WIPE:                 (i32, i32) = (0, 14);
+pub const CELL_ACCRETE_ON:           (i32, i32) = (1, 14);
+pub const CELL_EMIT_IS_TOGGLE:       (i32, i32) = (2, 14);
+pub const CELL_SET_ACCRETION_TARGET: (i32, i32) = (3, 14);
+// Silence at (0,15); chord N at (N, 15) for N in 1..=15.
+
+pub const CONTROLS_TOP_RECT:    ((i32, i32), (i32, i32)) = ((0, 14), (3, 14));
+pub const CONTROLS_BOTTOM_RECT: ((i32, i32), (i32, i32)) = ((0, 15), (15, 15));
+pub const EDO_RECT:             ((i32, i32), (i32, i32)) = ((0,  0), (15, 15));
+
 // === Diagnostics =======================================================
 
 // How often the main loop reads the audio thread's atomic counters

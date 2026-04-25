@@ -49,7 +49,9 @@ use crate::consts::{
 use crate::diagnostics::capture_stall_diagnostics;
 use crate::osc::{discover_device, register, send_osc};
 use crate::pitch::{build_pitch_class, freq_for};
-use crate::state::{control_press, control_release, edo_press, edo_release};
+use crate::state::{
+  chord_press, chord_release, control_press, control_release, edo_press, edo_release,
+};
 use crate::types::{
   AppState, Brightness, Button, LedCmd, PitchClass, VoiceMap, Window, WindowId,
 };
@@ -237,12 +239,13 @@ fn main() {
     Arc::clone(&voices), pitch_class, fund, edo, sample_rate,
   );
 
-  // Windows, front-to-back. Smaller control windows occlude the EDO
+  // Windows, front-to-back. The two control windows occlude the EDO
   // grid below them.
+  use crate::consts::{CONTROLS_BOTTOM_RECT, CONTROLS_TOP_RECT, EDO_RECT};
   let windows: Vec<Window> = vec![
-    Window { id: WindowId::Accretion2x2,   rect: ((0, 14), (1, 15)) },
-    Window { id: WindowId::EmitToggle1x1,  rect: ((2, 15), (2, 15)) },
-    Window { id: WindowId::Edo,            rect: ((0, 0),  (15, 15)) },
+    Window { id: WindowId::ControlsTop,    rect: CONTROLS_TOP_RECT },
+    Window { id: WindowId::ControlsBottom, rect: CONTROLS_BOTTOM_RECT },
+    Window { id: WindowId::Edo,            rect: EDO_RECT },
   ];
 
   // --- Main event loop: OSC from grid ---
@@ -258,16 +261,23 @@ fn main() {
   // mid-session silently wipes our control LEDs and any
   // pitch-equivalent / accretion lighting.
   let repaint = |state: &AppState, device: SocketAddr| {
-    // Control buttons (Toggle/Nursed): light if state is true.
+    // y=14 control buttons (Toggle/Nursed/Fire). Toggle/Nursed light
+    // by .state; Fire is never lit.
     for (&cell, button) in &state.control_buttons {
       let lit = match button {
         Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
         Button::Fire { .. } => false,
       };
       let b = if lit { Brightness::Bright } else { Brightness::Off };
-      if let Some(win) = window_for_cell(&windows, cell) {
-        set_led(&windows, win, cell, b, &sock, device, &led_level_set);
-      }
+      set_led(&windows, WindowId::ControlsTop, cell, b,
+              &sock, device, &led_level_set);
+    }
+    // y=15 chord-button row: per-chord brightness from helper.
+    for chord in 0..crate::consts::N_CHORDS {
+      let cell = (chord as i32, 15);
+      let b = state::chord_button_brightness(state, chord);
+      set_led(&windows, WindowId::ControlsBottom, cell, b,
+              &sock, device, &led_level_set);
     }
     // EDO grid: any cell with at least one PitchLedReason is lit.
     for &cell in state.pitchled_reasons.keys() {
@@ -381,11 +391,18 @@ fn main() {
                 edo_release(&mut state, cell)
               }
             }
-            WindowId::Accretion2x2 | WindowId::EmitToggle1x1 => {
-              eprintln!("{} control x={x:>2} y={y:>2}",
+            WindowId::ControlsTop => {
+              eprintln!("{} control-top x={x:>2} y={y:>2}",
                         if press { "press  " } else { "release" });
               if press { control_press(&mut state, cell, win) }
               else     { control_release(&mut state, cell, win) }
+            }
+            WindowId::ControlsBottom => {
+              let chord_id = x as usize;
+              eprintln!("{} chord {chord_id:>2}",
+                        if press { "press  " } else { "release" });
+              if press { chord_press(&mut state, chord_id) }
+              else     { chord_release(&mut state, chord_id) }
             }
           };
           for (from, c, b) in diffs {
