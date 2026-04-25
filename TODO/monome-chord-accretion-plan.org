@@ -1,0 +1,396 @@
+#+TITLE: Plan: monome chord accretion (v1)
+#+DATE: 2026-04-25
+
+* Goal
+
+Add a "generalized sustain pedal" to grid_synth: a single in-memory
+*accretion slot* of EDO pitches, plus four control keys that
+populate/silence/clear it and toggle whether its contents sound. A
+fifth control key changes the mode of the emit key. A Reason-based
+LED model keeps every cell's lit state correct as voices come and
+go, including the existing pitch-class equivalence lighting.
+
+This is v1. Multiple slots / chord storage, brightness, LED-state
+restore on USB re-enumeration, and any "slot non-empty when emit
+off" indicator are deferred.
+
+* What's already in tree (do not redo)
+
+- 48 kHz + Fixed(128) audio config (commit ~812b9f1~).
+- Pitch-class lighting via =build_pitch_class= /
+  =leds_for_press= / =leds_for_release= (commit ~2e0ce7c~).
+- =render_block= refactored out of the cpal closure
+  (commit ~921e9ae~).
+- Env-var escape hatches =GRID_DEVICE_PORT=, =GRID_LISTEN_PORT=
+  (commit ~921e9ae~) — KEEP.
+
+* What gets removed
+
+The whole click / noise-burst feature, which was a one-off for
+measuring perceived latency:
+- Constants =CLICK_SECS=, =CLICK_AMPLITUDE=.
+- =Voice.click_samples= and the rng (xorshift32 state).
+- Click branch in =render_block=, click logic in press handlers.
+- Click-related unit tests:
+  =click_produces_nonzero_output_in_first_3ms=,
+  =no_click_just_triangle=,
+  =empty_voices_produce_silence= (keep this one — generalise to
+  the new render path).
+
+The =eprintln!("audio thread: RT priority acquired ...")= line is
+unrelated to the click and STAYS.
+
+* Types
+
+#+begin_src rust
+  // --- existing, unchanged ---
+  type EdoPitch = i32;
+  type Cell = (i32, i32);
+
+  // --- new ---
+  type VoiceId = u64;
+  type Rect = (Cell, Cell);  // inclusive corners
+
+  enum VoiceSource {
+    Fingered { xy: Cell },
+    Accreted { pitch: EdoPitch },
+  }
+
+  struct VoiceState {
+    id: VoiceId,
+    freq: f32,
+    phase: f32,
+    env: f32,
+    target_env: f32,        // 0.0, 0.5, or 1.0
+    ramp_per_sample: f32,   // |Δenv per sample|; recomputed when target changes
+  }
+
+  type VoiceMap = HashMap<VoiceSource, VoiceState>;
+
+  // First-insertion-wins: the set is initialised when P first enters
+  // the accretion and never grown afterwards. Wipe clears the whole map.
+  type PitchAccretion = HashMap<EdoPitch, HashSet<VoiceId>>;
+
+  enum LedReason {
+    PitchEquivalent { source_xy: Cell },   // a fingered key at xy is held
+    Accretion        { pitch: EdoPitch },   // P is in PitchAccretion AND emit is on
+  }
+
+  // Sparse: only cells with ≥1 reason appear here.
+  type LedReasons = HashMap<Cell, HashSet<LedReason>>;
+
+  // Three behavioural shapes for control keys.
+  enum Button {
+    Toggle { state: bool, on: ButtonRole, off: ButtonRole },
+    Nursed { state: bool, on: ButtonRole, off: ButtonRole },
+    Fire   { fire: ButtonRole },
+  }
+
+  // A small enum of "what does this button do" — dispatched by the
+  // World, not stored as closures (which fight the borrow checker).
+  enum ButtonRole {
+    AccreteOn, AccreteOff,
+    EmitOn,    EmitOff,
+    SilentFire,
+    WipeFire,
+    EmitIsToggleOn, EmitIsToggleOff,
+  }
+
+  // A window is a rectangle of cells routed to one named handler.
+  // World stores them front-to-back: an event hits the first window
+  // whose rect contains the cell. An LED command from window W to
+  // cell C is forwarded only if C is in W's rect AND no earlier
+  // window's rect contains C. Dispatch is by `id` — the EDO window
+  // runs the pitch-grid handler; control windows look the cell up
+  // in their own button map (kept on World, see below).
+  struct Window {
+    id:   WindowId,
+    rect: Rect,
+  }
+  enum WindowId { Edo, Accretion2x2, EmitToggle1x1 }
+
+  struct World {
+    voices:           VoiceMap,
+    pitch_accretion:  PitchAccretion,
+    emit_on:          bool,
+    accrete_on:       bool,
+    emit_is_toggle:   bool,        // true ⇒ emit Button is Toggle; false ⇒ Nursed
+    next_voice_id:    VoiceId,
+    pitch_class:      PitchClass,  // existing struct
+    led_reasons:      LedReasons,
+
+    // Front-to-back; the dispatcher walks this list to route events.
+    windows:          Vec<Window>,
+    // Per-cell button maps for the control windows. Looked up only
+    // when the dispatcher's match on Window.id lands on the
+    // matching variant.
+    accretion_buttons:   HashMap<Cell, Button>,  // cells in the 2x2
+    emit_toggle_button:  Button,                 // the single (2,15) cell
+
+    // tuning, sample rate, etc. — same as today
+  }
+#+end_src
+
+* Behavioural rules
+
+** Startup: integer-only tuning
+
+=edo=, =x_step=, =y_step= are *required* to be integers (parse as
+=i32=); =fund= stays =f64= (it's a continuous frequency in Hz). If
+any of the three integer args is missing or unparseable, panic with
+a helpful message at startup and exit. With this guarantee every
+=pitch_class.key_to_pitch[C]= is an exact integer — no floating-
+point jitter, no per-press "is this integer?" branch.
+
+The existing pitch-class lighting code's "non-integer fallback"
+branch (=Some(build_pitch_class_maps(...))= vs =None=) becomes dead
+code; delete it.
+
+** Press of cell C in EDO grid window
+- Compute pitch =P = pitch_class.key_to_pitch[C]=.
+- Generate =id = next_voice_id; next_voice_id += 1=.
+- Insert =Fingered{xy:C}= → fresh =VoiceState{ id, freq, phase=0,
+  env=0, target_env=1.0, ramp_per_sample=1/(0.003·sr) }=.
+  (Per Jeff's choice (b): retrigger always issues a new id and
+  resets env/phase. Old voice at same xy is dropped.)
+- If =accrete_on= and P is *not yet* in =pitch_accretion=:
+  insert =P → {id}= into =pitch_accretion=.
+  If =emit_on=, also add =LedReason::Accretion{P}= to every cell
+  in =pitch_class.pitch_to_keys[P]= (see LED diff below).
+- For every cell C' in =pitch_class.pitch_to_keys[P]=, add
+  =LedReason::PitchEquivalent{source_xy:C}= to =led_reasons[C']=.
+
+** Release of cell C in EDO grid window
+- Compute pitch =P = pitch_class.key_to_pitch[C]=.
+- For every cell C' in =pitch_class.pitch_to_keys[P]=, remove
+  =LedReason::PitchEquivalent{source_xy:C}= from =led_reasons[C']=.
+- Look up the finger voice at =Fingered{xy:C}=; its id is =id=.
+- Decide its target_env. Let
+  =originvoices_for_P = pitch_accretion.get(&P)= and
+  =other_originvoices_alive(P, id) = originvoices_for_P.contains some
+  id' ≠ id whose voice is still in =voices=.=
+  - *Transform* (=target_env = 0.5=,
+    =ramp_per_sample = |env − 0.5| / (0.05·sr)=, and rekey the
+    HashMap entry from =Fingered{xy:C}= to =Accreted{pitch:P}=) iff
+    *all* of:
+    - P is in =pitch_accretion=,
+    - =emit_on=,
+    - no =Accreted{P}= voice currently exists,
+    - =originvoices_for_P= contains =id=,
+    - *no other live originVoice for P*: =not
+      other_originvoices_alive(P, id)=.
+  - *Else:* ramp to 0 — =target_env = 0=,
+    =ramp_per_sample = env / (0.05·sr)=.
+
+The "this is the last alive originVoice for P" condition handles
+the case where two enharmonic keys both first-introduced P:
+releasing the first one ramps to 0 (the other is keeping P alive);
+only releasing the second triggers the transform.
+
+** accretion-accrete press (Toggle)
+- *Off → on:*
+  - =accrete_on = true=.
+  - *Atomic snapshot.* Group all currently-held finger voices by
+    pitch. For each pitch P with at least one held finger voice:
+    - If P is *not* in =pitch_accretion=: insert =P → {set of ids
+      of all held finger voices for P}=. (Multiple held enharmonic
+      keys all become co-originVoices in this single event.)
+    - If P *is* already in =pitch_accretion=: do nothing — leave
+      the existing originVoice set alone. (P was introduced by an
+      earlier event; this snapshot doesn't grow it.)
+  - If =emit_on=: for each newly-introduced P, add
+    =LedReason::Accretion{P}= reasons (see LED diff).
+- *On → off:*
+  - =accrete_on = false=. =pitch_accretion= is unchanged. No voice
+    changes.
+
+** accretion-emit press (Toggle or Nursed, depending on =emit_is_toggle=)
+- *off → on:*
+  - =emit_on = true=.
+  - For each P in =pitch_accretion=: if there is *no* alive finger
+    voice whose id is in =pitch_accretion[P]= (i.e., no originVoice
+    for P currently held), spawn an =Accreted{P}= voice with
+    =target_env=0.5=, =env=0=, =ramp_per_sample=0.5/(0.003·sr)=.
+    Otherwise skip (the held finger voice will transform on
+    release).
+  - For each P in =pitch_accretion=, add =LedReason::Accretion{P}=
+    to every cell in =pitch_class.pitch_to_keys[P]=.
+- *on → off:*
+  - =emit_on = false=.
+  - For every =Accreted{P}= voice: =target_env=0=,
+    =ramp_per_sample = env / (0.05·sr)=.
+  - Remove all =LedReason::Accretion= reasons from =led_reasons=.
+
+** accretion-silent press (Fire)
+- Identical effect to "emit on→off" *if* =emit_on=. Plus =emit_on
+  = false=. (Comment in code: pressing silent while emit is in
+  Nursed mode is silly — just release the emit key.) If =emit_on=
+  is already false, no-op.
+
+** accretion-wipe press (Fire)
+- =pitch_accretion= cleared. Every =Accreted{P}= voice ramped to 0
+  (target=0, same ramp as emit-off). All =LedReason::Accretion=
+  reasons cleared. =emit_on= unchanged.
+
+** accretion-emit-is-toggle press (Toggle)
+- Flips =emit_is_toggle=. Snapshot semantics: =emit_on= is *not*
+  touched; whichever state it was in, it stays. The =Button= for
+  emit is rebuilt with the new variant on next dispatch.
+- Light/darken the (2,15) LED to match =emit_is_toggle=.
+
+* Voice rendering (per-block, in =render_block=)
+
+For each =VoiceState= in =voices.values_mut()=:
+- Advance =env= toward =target_env= by =ramp_per_sample= (clamped at
+  target).
+- Advance =phase= by =freq / sample_rate= (mod 1.0).
+- Mix =triangle(phase) * env * AMPLITUDE * source_scale= where
+  =source_scale= = 1.0 for Fingered, 0.5 already encoded in
+  target_env for Accreted (so source_scale=1.0 always — env carries
+  the half-volume).
+- After the loop, drop voices where =env == 0.0 && target_env ==
+  0.0=.
+
+(=source_scale= note: I'm folding the 1/2 accretion volume into the
+voice's =target_env= rather than a separate scalar. Simpler render
+loop, same audible result.)
+
+* LED diff helpers
+
+Two pure helpers, exercised in isolation by tests:
+
+#+begin_src rust
+  // Given the led_reasons map and a (cell, reason) to add or remove,
+  // mutate the map AND return the cell-level transition (None, Some(true)
+  // for newly-lit, Some(false) for newly-dark).
+  fn add_reason(reasons: &mut LedReasons, cell: Cell, r: LedReason) -> Option<bool>;
+  fn remove_reason(reasons: &mut LedReasons, cell: Cell, r: LedReason) -> Option<bool>;
+#+end_src
+
+Every press / release / emit / wipe / silent goes through these.
+Cells whose set transitions empty→nonempty get a =compositor.set_led(EDO,
+cell, true)=; nonempty→empty gets =false=.
+
+* Files touched
+
+Single file (=monome/grid_synth/src/main.rs=). v1 stays in one file;
+splitting into modules is not justified at this size. I'll add
+section banners (=// === voices ==== etc.) so it's navigable.
+
+* Test plan
+
+All =cargo test --release=, no audio backend, no monome.
+
+** Existing tests
+- =empty_voices_produce_silence= — keep, adapt to =VoiceMap=.
+- =release_decays_to_zero_and_drops_voice= — keep, adapt.
+- =pitch_class_46_9_1_groups_x1_yminus9_together= — keep as-is.
+- =press_lights_all_equivalents_release_keeps_lit_until_last= —
+  reframe in terms of =LedReasons= transitions.
+- =no_pitch_class_falls_back_to_single_key= — keep.
+- Click tests — DELETE.
+
+** New tests
+
+*** Window dispatch
+- =event_in_2x2_goes_to_accretion_window=,
+  =event_in_1x1_goes_to_emit_toggle_window=,
+  =event_outside_smalls_goes_to_edo_window=.
+
+*** Compositor visibility
+- =edo_writing_into_2x2_cell_is_dropped=,
+  =edo_writing_into_owned_cell_passes=,
+  =accretion_window_writes_pass_for_its_own_cells=.
+
+*** Buttons
+- =toggle_button_press_flips_state=,
+  =nursed_button_press_release_set_then_clear=,
+  =fire_button_release_does_nothing=.
+
+*** Accretion state machine
+Each test runs a deterministic sequence of events on a fresh =World=
+and asserts the final =pitch_accretion=, =voices.keys()=,
+=emit_on=, and =led_reasons=:
+- =press_then_release_with_accrete_on_emit_on_transforms_to_accretion=
+  (the canonical sustain-pedal case).
+- =press_then_release_with_accrete_on_emit_off_leaves_no_accretion_voice=
+  (=pitch_accretion= grows; voice ramps to 0 normally).
+- =emit_on_with_held_finger_does_not_spawn_accretion=
+  (Jeff's "originVoice still alive" rule).
+- =emit_on_with_dead_originvoice_spawns_accretion=
+  (originVoice released earlier; emit-on now spawns).
+- =second_press_at_same_pitch_after_accretion_voice_sums_then_ramps_to_zero=
+  (case iv: pressing into an existing accretion gives sum, release
+  ramps to 0).
+- =wipe_with_emit_on_clears_accretion_and_ramps_voices=.
+- =silent_with_emit_on_ramps_voices_and_sets_emit_off=.
+- =silent_with_emit_off_is_noop=.
+- =multi_enharmonic_originvoice_keeps_p_alive_until_last_release=
+  (two enharmonic keys both first-introducing P; releasing one
+  doesn't transform yet; releasing the second does).
+- =accrete_on_snapshot_captures_held_keys_atomically_per_pitch=
+  (two enharmonic keys held when accrete fires both become
+  co-originVoices in =pitch_accretion[P]=; a third later press at
+  P does not grow that set).
+- =accrete_on_snapshot_does_not_grow_existing_pitch_accretion_entry=
+  (P already in =pitch_accretion= from an earlier cycle: snapshot
+  leaves that originVoice set untouched even if held finger voices
+  for P exist).
+- =emit_is_toggle_flip_does_not_disturb_emit_on= (snapshot).
+- =startup_rejects_non_integer_edo_x_step_y_step= (CLI-level).
+
+*** LED reasons
+- =add_then_remove_same_reason_returns_lit_then_dark_transition=.
+- =two_reasons_must_both_be_removed_before_dark_transition=.
+- =reason_for_cell_under_control_window_does_not_drive_led_command=
+  (compositor-level; tests the EDO window's writes are filtered).
+
+*** Render
+- =renders_finger_voice_at_full_amplitude=.
+- =renders_accretion_voice_at_half_amplitude= (target_env=0.5
+  reached, sample peaks ≈ 0.5·AMPLITUDE).
+- =attack_3ms_reaches_full_in_3ms_at_48k=
+  (env hits 1.0 within 144 samples).
+- =release_50ms_reaches_zero_in_50ms_at_48k=
+  (env hits 0.0 within 2400 samples).
+
+* Out of scope (deferred to v2)
+
+- Multiple slots / chord storage.
+- LED brightness levels.
+- Pushing LED state on USB re-enumeration.
+- Visual indication of non-empty slot when emit is off.
+- Splitting main.rs into modules.
+
+* Implementation order
+
+To keep each step small and reviewable, I'll commit in this order:
+
+1. *Remove the click.* All deletions, no new behavior. Tests
+   shrink. Verify =cargo test= still passes.
+
+2. *Refactor voices to =HashMap<VoiceSource, VoiceState>=
+   with =target_env= / =ramp_per_sample= envelope.* No new
+   behavior; existing tests adapted. New attack ramp 3 ms (was
+   5 ms); new accretion volume scaffolding present but unused.
+
+3. *Introduce =Vec<Window>= + dispatch + Buttons skeleton.* The EDO
+   window wraps the existing handler unchanged; the 2×2 and 1×1
+   windows have buttons whose actions are *no-ops* at this stage.
+   New tests for dispatch and visibility pass.
+
+4. *Wire the LedReasons model.* Pitch-equivalence reasons replace
+   the current =pressed: HashSet=-driven LED logic. Existing
+   lighting behavior preserved. Existing tests reframed.
+
+5. *Implement accretion state machine.* Accrete / emit / silent /
+   wipe / emit-is-toggle actions hooked into ButtonRoles. Voice
+   spawn / ramp / transform rules from §"Behavioural rules" land.
+   All accretion tests pass.
+
+6. *Final pass:* keymap / layout numbers double-checked, comments
+   for the "silent in Nursed mode is silly" pitfall and the
+   "junk reasons across windows" pitfall, manual smoke test on
+   the actual grid.
+
+Each commit ends with =cargo test --release= green.
