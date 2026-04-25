@@ -475,6 +475,12 @@ impl AppState {
         }
         self.add_accretion_led_reasons(&pitches)
       }
+      // PITFALL: pressing silent while emit is in Nursed mode is
+      // silly. The emit Button's `state` is still true (you're
+      // holding the key); silent flips emit_on to false and the
+      // accretion voices ramp out, but the next emit press / release
+      // cycle restores them. To stop accretion in Nursed mode, just
+      // release the emit key.
       ButtonRole::EmitOff | ButtonRole::SilentFire => {
         let was_on = self.emit_on;
         self.emit_on = false;
