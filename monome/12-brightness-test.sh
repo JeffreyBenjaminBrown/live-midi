@@ -1,26 +1,37 @@
 #!/usr/bin/env bash
-# Dead-simple brightness check: paint one row with ascending
-# brightness 0..15, left to right. If the monome shows a smooth
-# gradient, varibright works; if it's effectively binary
-# (cells x=0..7 dark, x=8..15 lit, all the same brightness), the
-# device or its firmware doesn't support /grid/led/level/set.
+# Two-row brightness diagnostic. Earlier observation: the device
+# renders ~4 distinct levels across the 0..15 API. This narrows
+# down the bucket boundaries.
 #
-# Usage:
-#   bash 12-brightness-test.sh        # row 0 (top)
-#   bash 12-brightness-test.sh 8      # row 8
+# Row 0:  cells 0-3 at level 0;   4-7 at level 4;   8-11 at level 8;
+#         12-15 at level 12.
+# Row 8:  cells 0-3 at level 1;   4-7 at level 5;   8-11 at level 9;
+#         12-15 at level 13.
 #
-# Best run with grid_synth NOT running, since live key presses
-# while it's running would overwrite our LEDs with binary on/off.
+# How to read it:
+#   * If row 0 and row 8 look IDENTICAL across all four quartets,
+#     the boundaries are 4-wide and aligned to multiples of 4 —
+#     i.e. levels {0,1,2,3} all = off, {4..7} all = dim, {8..11}
+#     all = mid, {12..15} all = bright. Then low_res_brightness(i)
+#     can be just 4*i and we're done.
+#   * If row 0's first quartet (level 0) is dark but row 8's first
+#     quartet (level 1) is dim, the boundary between off and the
+#     first lit bucket is between 0 and 1 (probably 0 alone is the
+#     only off level). Tell me and we shift the mapping.
+#   * If you see more than four shades total across the two rows,
+#     buckets aren't 4-wide. Tell me what you see.
+#
+# Usage: bash 12-brightness-test.sh
+# Best with grid_synth NOT running, since live key presses would
+# overwrite our LEDs with binary on/off.
 
 set -e
-ROW="${1:-0}"
 PREFIX=/256-1-cable
 
 python3 - <<EOF
 import socket, struct, time
 
 PREFIX = "$PREFIX"
-ROW    = $ROW
 
 def osc(addr, *args):
     a = addr.encode() + b'\0'; a += b'\0' * ((4 - len(a) % 4) % 4)
@@ -80,12 +91,24 @@ s.sendto(osc('/sys/prefix', PREFIX), dev)
 s.sendto(osc(f'{PREFIX}/grid/led/all', 0), dev)
 time.sleep(0.05)
 
-print(f"painting row y={ROW} with brightness 0..15 across x=0..15:")
-for x in range(16):
-    s.sendto(osc(f'{PREFIX}/grid/led/level/set', x, ROW, x), dev)
-    print(f"  ({x:>2}, {ROW:>2})  level={x:>2}")
+# Row 0: levels 0, 4, 8, 12 (one per quartet).
+# Row 8: levels 1, 5, 9, 13 (one per quartet, shifted by 1).
+ROWS = [
+    (0, [0, 4, 8, 12]),
+    (8, [1, 5, 9, 13]),
+]
+for (row, quartet_levels) in ROWS:
+    print(f"row {row}:")
+    for q, level in enumerate(quartet_levels):
+        for x in range(q * 4, q * 4 + 4):
+            s.sendto(osc(f'{PREFIX}/grid/led/level/set', x, row, level), dev)
+        print(f"  cells {q*4}..{q*4+3} at level {level}")
 
-print("\nLook at the grid. Expected: a smooth ramp, dark on the left,")
-print("brightest on the right. If you see only two states (off vs on)")
-print("with the boundary near the middle, varibright isn't working.")
+print()
+print("Compare row 0 (top) with row 8 (middle):")
+print("  - identical across all quartets -> boundaries at 0,4,8,12;")
+print("    low_res_brightness(i) = 4 * i")
+print("  - row 0's first quartet dark but row 8's first quartet lit ->")
+print("    only 0 is off; first lit level is 1; mapping shifts.")
+print("  - more than four total shades -> buckets aren't 4-wide.")
 EOF
