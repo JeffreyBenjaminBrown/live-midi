@@ -2,7 +2,7 @@
 
 use crate::consts::{ACCRETION_TARGET, AMPLITUDE, ATTACK_SECS, RELEASE_SECS};
 use crate::pitch::freq_for_pitch;
-use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
+use crate::types::{ChordId, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
 pub fn triangle(phase: f32) -> f32 {
   // phase is in [0, 1)
@@ -60,16 +60,16 @@ pub fn voice_alive_with_id(voices: &VoiceMap, id: VoiceId) -> bool {
   voices.values().any(|v| v.id == id && v.target_env > 0.0)
 }
 
-// Spawn a fresh accretion voice for `pitch` at env=0 ramping to
+// Spawn a fresh accretion voice for chord/pitch at env=0 ramping to
 // ACCRETION_TARGET over ATTACK_SECS. Overwrites any existing entry
-// at Accreted{pitch}.
+// at Accreted{chord, pitch}.
 pub fn spawn_accretion_voice(
-  voices: &mut VoiceMap, pitch: i32,
+  voices: &mut VoiceMap, chord: ChordId, pitch: i32,
   fund: f64, edo: i32, next_voice_id: &mut VoiceId, sample_rate: f32,
 ) {
   let id = *next_voice_id;
   *next_voice_id += 1;
-  voices.insert(VoiceSource::Accreted { pitch }, VoiceState {
+  voices.insert(VoiceSource::Accreted { chord, pitch }, VoiceState {
     id,
     freq: freq_for_pitch(pitch, fund, edo),
     phase: 0.0,
@@ -79,13 +79,15 @@ pub fn spawn_accretion_voice(
   });
 }
 
-// Set target_env=0 on every Accreted voice; ramp completes in
-// RELEASE_SECS regardless of starting env.
-pub fn ramp_all_accretion_to_zero(voices: &mut VoiceMap, sample_rate: f32) {
+// Set target_env=0 on every Accreted voice belonging to `chord`;
+// ramp completes in RELEASE_SECS regardless of starting env.
+pub fn ramp_chord_accretion_to_zero(voices: &mut VoiceMap, chord: ChordId, sample_rate: f32) {
   for (src, v) in voices.iter_mut() {
-    if matches!(src, VoiceSource::Accreted { .. }) {
-      v.target_env = 0.0;
-      v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
+    if let VoiceSource::Accreted { chord: c, .. } = src {
+      if *c == chord {
+        v.target_env = 0.0;
+        v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
+      }
     }
   }
 }

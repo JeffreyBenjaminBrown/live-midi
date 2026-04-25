@@ -36,15 +36,26 @@ pub struct PitchClass {
   pub pitchclass_to_keys: HashMap<i32, Vec<MonomeKey>>,  // class -> all cells in that class
 }
 
+// === Chord identification ==============================================
+
+// Index into AppState.chords. Each chord button gets one slot;
+// commit 5 will set the layout (16 chord buttons, with chord 0
+// reserved for "silence" — always empty). For now there's just
+// one chord at index 0 and everything implicitly references it.
+pub type ChordId = usize;
+
 // === Voices =============================================================
 
 pub type VoiceId = u64;
 
-// What gave rise to this voice.
+// What gave rise to this voice. The chord field on Accreted
+// distinguishes accretion voices belonging to different chords —
+// during emitter transitions both the old and new chord may have
+// voices in the map at the same pitch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VoiceSource {
   Fingered { xy: MonomeKey },
-  Accreted { pitch: i32 },
+  Accreted { chord: ChordId, pitch: i32 },
 }
 
 // Per-voice audio state. The envelope is "ramp env toward target_env
@@ -76,10 +87,15 @@ pub type Chord = HashMap<i32, HashSet<VoiceId>>;
 // long as it has ≥1 reason and goes dark when its reason set empties.
 // Only used by the EDO grid window — the control windows manage their
 // own LEDs directly from button state.
+//
+// The chord field on Chord-variant reasons distinguishes "this cell is
+// lit because chord N is emitting and contains its pitch" — needed
+// during emitter switches when the old chord's reasons are removed
+// and the new chord's are added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PitchLedReason {
-  PitchEquivalent { source_xy: MonomeKey },   // a fingered key at source_xy is held
-  Chord           { pitch: i32 },             // pitch is in Chord AND emit_on
+  PitchEquivalent { source_xy: MonomeKey },               // a fingered key at source_xy is held
+  Chord           { chord: ChordId, pitch: i32 },         // pitch in chord N AND chord N is emitting
 }
 
 // Sparse: only cells with ≥1 reason appear here.
@@ -113,6 +129,9 @@ pub enum ButtonAction {
 // by 12-brightness-test.sh on this device). This enum is the only
 // way the rest of the code talks about brightness; leds::low_res_brightness
 // maps it to the OSC integer.
+// Dim and Mid are unused today — Dim lights the accretion target
+// in commit 6, Mid is held in reserve for future state distinctions.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Brightness {
   Off,    // bucket 0  (OSC level 0..=3)
@@ -132,9 +151,15 @@ pub type LedCmd = (WindowId, MonomeKey, Brightness);
 
 pub struct AppState {
   pub voices:           Arc<Mutex<VoiceMap>>,
-  pub pitch_accretion:  Chord,
+
+  // One slot per chord. Commit 5 grows this to N_CHORDS=16; for now
+  // there's a single entry at index 0 and all logic implicitly
+  // addresses chord 0 via accretion_target / emitting_chord.
+  pub chords:           Vec<Chord>,
+  pub accretion_target: ChordId,            // which slot accrete-on / wipe affect
+  pub emitting_chord:   Option<ChordId>,    // None = nothing emits
+
   pub accrete_on:       bool,
-  pub emit_on:          bool,
   pub emit_is_toggle:   bool,
   pub next_voice_id:    VoiceId,
   pub pitchled_reasons: PitchLedReasons,

@@ -11,10 +11,10 @@ use crate::consts::{ACCRETION_TARGET, ATTACK_SECS, RELEASE_SECS};
 use crate::leds::{add_reason, remove_reason};
 use crate::pitch::{cells_for_pitch, cells_for_pitch_of, freq_for_pitch};
 use crate::types::{
-  AppState, Brightness, Button, ButtonAction, LedCmd, MonomeKey, PitchClass,
-  PitchLedReason, VoiceId, VoiceMap, VoiceSource, VoiceState, WindowId,
+  AppState, Brightness, Button, ButtonAction, ChordId, LedCmd, MonomeKey,
+  PitchClass, PitchLedReason, VoiceId, VoiceMap, VoiceSource, VoiceState, WindowId,
 };
-use crate::voices::{ramp_all_accretion_to_zero, spawn_accretion_voice, voice_alive_with_id};
+use crate::voices::{ramp_chord_accretion_to_zero, spawn_accretion_voice, voice_alive_with_id};
 
 impl AppState {
   pub fn new(
@@ -36,8 +36,12 @@ impl AppState {
       Button::Toggle { state: true,  on: ButtonAction::EmitIsToggleOn,
                                      off: ButtonAction::EmitIsToggleOff });
     AppState {
-      voices, pitch_accretion: HashMap::new(),
-      accrete_on: false, emit_on: false, emit_is_toggle: true,
+      voices,
+      // Single chord at index 0 for now; commit 5 grows this to N_CHORDS.
+      chords: vec![HashMap::new()],
+      accretion_target: 0,
+      emitting_chord: None,
+      accrete_on: false, emit_is_toggle: true,
       next_voice_id: 0, pitchled_reasons: HashMap::new(),
       control_buttons,
       pitch_class, fund, edo, sample_rate,
@@ -71,15 +75,16 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       diffs.push((WindowId::Edo, c, Brightness::Bright));
     }
   }
-  // If accrete is on AND this pitch is not yet in the slot:
+  // If accrete is on AND this pitch is not yet in the target's slot:
   // introduce it with this voice's id as the originVoice, and (if
-  // emit is on) light the corresponding cells.
-  if state.accrete_on && !state.pitch_accretion.contains_key(&abs_pitch) {
+  // the emitting chord IS the target) light the corresponding cells.
+  let target = state.accretion_target;
+  if state.accrete_on && !state.chords[target].contains_key(&abs_pitch) {
     let mut ids = HashSet::new();
     ids.insert(id);
-    state.pitch_accretion.insert(abs_pitch, ids);
-    if state.emit_on {
-      let r = PitchLedReason::Chord { pitch: abs_pitch };
+    state.chords[target].insert(abs_pitch, ids);
+    if state.emitting_chord == Some(target) {
+      let r = PitchLedReason::Chord { chord: target, pitch: abs_pitch };
       for c in cells_for_pitch(&state.pitch_class, abs_pitch, state.edo) {
         if let Some(true) = add_reason(&mut state.pitchled_reasons, c, r) {
           diffs.push((WindowId::Edo, c, Brightness::Bright));
@@ -97,31 +102,41 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
     None => return vec![],
   };
   let mut diffs = vec![];
-  // Decide the voice's fate.
+  // Decide the voice's fate. The release-transform fires only if
+  // this voice's pitch is in the *currently emitting* chord's slot
+  // and this voice is the last alive originVoice for it (per
+  // chord-storage spec, Round 1 answer (A)).
   let mut vs = state.voices.lock().unwrap();
   if let Some(this_voice) = vs.get(&VoiceSource::Fingered { xy: cell }).copied() {
-    let in_slot = state.pitch_accretion.contains_key(&abs_pitch);
-    let acc_voice_exists =
-      vs.contains_key(&VoiceSource::Accreted { pitch: abs_pitch });
-    let (is_originvoice, last_alive_originvoice) =
-      match state.pitch_accretion.get(&abs_pitch) {
-        None => (false, false),
-        Some(originvoices) => {
-          let mine = originvoices.contains(&this_voice.id);
-          // "alive" matches voice_alive_with_id: target_env > 0,
-          // i.e., the user is still holding that key.
-          let any_other_alive = originvoices.iter().any(|&id| {
-            id != this_voice.id
-              && vs.values().any(|v| v.id == id && v.target_env > 0.0)
-          });
-          (mine, mine && !any_other_alive)
-        }
-      };
-    let should_transform = in_slot && state.emit_on && !acc_voice_exists
+    let em = state.emitting_chord;
+    let (in_slot, originvoices_opt) = match em {
+      Some(c) => (
+        state.chords[c].contains_key(&abs_pitch),
+        state.chords[c].get(&abs_pitch),
+      ),
+      None => (false, None),
+    };
+    let acc_voice_exists = em.is_some()
+      && vs.contains_key(&VoiceSource::Accreted { chord: em.unwrap(), pitch: abs_pitch });
+    let (is_originvoice, last_alive_originvoice) = match originvoices_opt {
+      None => (false, false),
+      Some(originvoices) => {
+        let mine = originvoices.contains(&this_voice.id);
+        // "alive" matches voice_alive_with_id: target_env > 0,
+        // i.e., the user is still holding that key.
+        let any_other_alive = originvoices.iter().any(|&id| {
+          id != this_voice.id
+            && vs.values().any(|v| v.id == id && v.target_env > 0.0)
+        });
+        (mine, mine && !any_other_alive)
+      }
+    };
+    let should_transform = in_slot && em.is_some() && !acc_voice_exists
                         && is_originvoice && last_alive_originvoice;
     if should_transform {
+      let chord = em.unwrap();
       let v = vs.remove(&VoiceSource::Fingered { xy: cell }).unwrap();
-      vs.insert(VoiceSource::Accreted { pitch: abs_pitch }, VoiceState {
+      vs.insert(VoiceSource::Accreted { chord, pitch: abs_pitch }, VoiceState {
         id: v.id, freq: v.freq, phase: v.phase, env: v.env,
         target_env: ACCRETION_TARGET,
         ramp_per_sample:
@@ -198,7 +213,8 @@ pub fn do_action(state: &mut AppState, action: ButtonAction) -> Vec<LedCmd> {
   match action {
     ButtonAction::AccreteOn => {
       state.accrete_on = true;
-      // Atomic snapshot per pitch.
+      // Atomic snapshot per pitch — into the accretion target's slot.
+      let target = state.accretion_target;
       let vs = state.voices.lock().unwrap();
       let mut by_pitch: HashMap<i32, HashSet<VoiceId>> = HashMap::new();
       for (src, v) in vs.iter() {
@@ -211,13 +227,15 @@ pub fn do_action(state: &mut AppState, action: ButtonAction) -> Vec<LedCmd> {
       drop(vs);
       let mut newly_introduced: Vec<i32> = vec![];
       for (p, ids) in by_pitch {
-        if !state.pitch_accretion.contains_key(&p) {
-          state.pitch_accretion.insert(p, ids);
+        if !state.chords[target].contains_key(&p) {
+          state.chords[target].insert(p, ids);
           newly_introduced.push(p);
         }
       }
-      if state.emit_on {
-        add_chord_pitchled_reasons(state, &newly_introduced)
+      // Light up newly-introduced pitches only if the emitting chord
+      // is the same chord we just modified.
+      if state.emitting_chord == Some(target) {
+        add_chord_pitchled_reasons(state, target, &newly_introduced)
       } else { vec![] }
     }
     ButtonAction::AccreteOff => {
@@ -225,49 +243,54 @@ pub fn do_action(state: &mut AppState, action: ButtonAction) -> Vec<LedCmd> {
       vec![]
     }
     ButtonAction::EmitOn => {
-      state.emit_on = true;
-      let pitches: Vec<i32> = state.pitch_accretion.keys().copied().collect();
+      // For now, "emit on" means start emitting the accretion target.
+      // (Commit 5 will let any chord be the emitter, decoupled from
+      // the target.)
+      let chord = state.accretion_target;
+      state.emitting_chord = Some(chord);
+      let pitches: Vec<i32> = state.chords[chord].keys().copied().collect();
       // Spawn accretion voices for pitches with no held originVoice.
       {
         let mut vs = state.voices.lock().unwrap();
         for &p in &pitches {
-          let originvoices = &state.pitch_accretion[&p];
+          let originvoices = &state.chords[chord][&p];
           let any_alive = originvoices.iter()
             .any(|&id| voice_alive_with_id(&vs, id));
           if !any_alive {
-            spawn_accretion_voice(&mut vs, p, state.fund, state.edo,
+            spawn_accretion_voice(&mut vs, chord, p, state.fund, state.edo,
                                   &mut state.next_voice_id, state.sample_rate);
           }
         }
       }
-      add_chord_pitchled_reasons(state, &pitches)
+      add_chord_pitchled_reasons(state, chord, &pitches)
     }
     // PITFALL: pressing silent while emit is in Nursed mode is silly.
     // The emit Button's `state` is still true (you're holding the
-    // key); silent flips emit_on to false and the accretion voices
-    // ramp out, but the next emit press / release cycle restores
-    // them. To stop accretion in Nursed mode, just release the emit
-    // key.
+    // key); silent flips emit off and the accretion voices ramp
+    // out, but the next emit press / release cycle restores them.
+    // To stop accretion in Nursed mode, just release the emit key.
     ButtonAction::EmitOff | ButtonAction::SilentFire => {
-      let was_on = state.emit_on;
-      state.emit_on = false;
-      if !was_on { return vec![]; }
+      let chord = match state.emitting_chord { Some(c) => c, None => return vec![] };
+      state.emitting_chord = None;
       {
         let mut vs = state.voices.lock().unwrap();
-        ramp_all_accretion_to_zero(&mut vs, state.sample_rate);
+        ramp_chord_accretion_to_zero(&mut vs, chord, state.sample_rate);
       }
-      let pitches: Vec<i32> = state.pitch_accretion.keys().copied().collect();
-      remove_chord_pitchled_reasons(state, &pitches)
+      let pitches: Vec<i32> = state.chords[chord].keys().copied().collect();
+      remove_chord_pitchled_reasons(state, chord, &pitches)
     }
     ButtonAction::WipeFire => {
-      let pitches: Vec<i32> = state.pitch_accretion.keys().copied().collect();
-      state.pitch_accretion.clear();
-      {
-        let mut vs = state.voices.lock().unwrap();
-        ramp_all_accretion_to_zero(&mut vs, state.sample_rate);
-      }
-      if state.emit_on {
-        remove_chord_pitchled_reasons(state, &pitches)
+      // Wipe affects the accretion target. If the target IS also the
+      // emitter, ramp its voices and clear its LED reasons.
+      let target = state.accretion_target;
+      let pitches: Vec<i32> = state.chords[target].keys().copied().collect();
+      state.chords[target].clear();
+      if state.emitting_chord == Some(target) {
+        {
+          let mut vs = state.voices.lock().unwrap();
+          ramp_chord_accretion_to_zero(&mut vs, target, state.sample_rate);
+        }
+        remove_chord_pitchled_reasons(state, target, &pitches)
       } else { vec![] }
     }
     ButtonAction::EmitIsToggleOn | ButtonAction::EmitIsToggleOff => {
@@ -294,10 +317,10 @@ pub fn do_action(state: &mut AppState, action: ButtonAction) -> Vec<LedCmd> {
   }
 }
 
-pub fn add_chord_pitchled_reasons(state: &mut AppState, pitches: &[i32]) -> Vec<LedCmd> {
+pub fn add_chord_pitchled_reasons(state: &mut AppState, chord: ChordId, pitches: &[i32]) -> Vec<LedCmd> {
   let mut diffs = vec![];
   for &p in pitches {
-    let r = PitchLedReason::Chord { pitch: p };
+    let r = PitchLedReason::Chord { chord, pitch: p };
     for c in cells_for_pitch(&state.pitch_class, p, state.edo) {
       if let Some(true) = add_reason(&mut state.pitchled_reasons, c, r) {
         diffs.push((WindowId::Edo, c, Brightness::Bright));
@@ -307,10 +330,10 @@ pub fn add_chord_pitchled_reasons(state: &mut AppState, pitches: &[i32]) -> Vec<
   diffs
 }
 
-pub fn remove_chord_pitchled_reasons(state: &mut AppState, pitches: &[i32]) -> Vec<LedCmd> {
+pub fn remove_chord_pitchled_reasons(state: &mut AppState, chord: ChordId, pitches: &[i32]) -> Vec<LedCmd> {
   let mut diffs = vec![];
   for &p in pitches {
-    let r = PitchLedReason::Chord { pitch: p };
+    let r = PitchLedReason::Chord { chord, pitch: p };
     for c in cells_for_pitch(&state.pitch_class, p, state.edo) {
       if let Some(false) = remove_reason(&mut state.pitchled_reasons, c, r) {
         diffs.push((WindowId::Edo, c, Brightness::Off));
@@ -344,15 +367,15 @@ mod tests {
     do_action(&mut s, ButtonAction::EmitOn);
     let cell = (0, 0);  // pitch 0
     edo_press(&mut s, cell);
-    assert!(s.pitch_accretion.contains_key(&0));
+    assert!(s.chords[0].contains_key(&0));
     // Before release: only fingered voice exists.
     assert!(voice_keys(&s).contains(&VoiceSource::Fingered { xy: cell }));
-    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
     edo_release(&mut s, cell);
     // After release: voice transformed to Accreted.
     assert!(!voice_keys(&s).contains(&VoiceSource::Fingered { xy: cell }));
-    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
-    let v = s.voices.lock().unwrap()[&VoiceSource::Accreted { pitch: 0 }];
+    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
+    let v = s.voices.lock().unwrap()[&VoiceSource::Accreted { chord: 0, pitch: 0 }];
     assert_eq!(v.target_env, ACCRETION_TARGET);
   }
 
@@ -362,10 +385,10 @@ mod tests {
     do_action(&mut s, ButtonAction::AccreteOn);
     let cell = (0, 0);
     edo_press(&mut s, cell);
-    assert!(s.pitch_accretion.contains_key(&0));
+    assert!(s.chords[0].contains_key(&0));
     edo_release(&mut s, cell);
     // Voice ramps to 0 normally; no accretion voice exists.
-    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
     let vs = s.voices.lock().unwrap();
     let v = &vs[&VoiceSource::Fingered { xy: cell }];
     assert_eq!(v.target_env, 0.0);
@@ -379,7 +402,7 @@ mod tests {
     edo_press(&mut s, cell);  // pitch 0 enters slot via this press
     do_action(&mut s, ButtonAction::EmitOn);
     // The originVoice is still alive: emit-on must skip the spawn.
-    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
   }
 
   #[test]
@@ -399,21 +422,21 @@ mod tests {
     assert!(voice_keys(&s).is_empty(), "originVoice should have decayed");
     do_action(&mut s, ButtonAction::EmitOn);
     // Now no live originVoice; emit-on spawns a fresh accretion voice.
-    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
   }
 
   #[test]
   fn second_press_at_same_pitch_after_accretion_voice_sums_then_ramps_to_zero() {
     let mut s = fresh_state();
     // Get an accretion voice for pitch 0 going (no held originVoice).
-    s.pitch_accretion.insert(0, [99].into_iter().collect()); // dead origin id
+    s.chords[0].insert(0, [99].into_iter().collect()); // dead origin id
     do_action(&mut s, ButtonAction::EmitOn);
-    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
     let cell = (0, 0);
     edo_press(&mut s, cell);
     // Both voices coexist (the deliberate press always wins / sums).
     assert!(voice_keys(&s).contains(&VoiceSource::Fingered { xy: cell }));
-    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
     edo_release(&mut s, cell);
     // Accretion voice exists, so finger ramps to 0 (no transform).
     let vs = s.voices.lock().unwrap();
@@ -428,24 +451,24 @@ mod tests {
     do_action(&mut s, ButtonAction::EmitOn);
     edo_press(&mut s, (0, 0));
     edo_release(&mut s, (0, 0));
-    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { pitch: 0 }));
+    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: 0 }));
     do_action(&mut s, ButtonAction::WipeFire);
-    assert!(s.pitch_accretion.is_empty());
+    assert!(s.chords[0].is_empty());
     let vs = s.voices.lock().unwrap();
-    let v = &vs[&VoiceSource::Accreted { pitch: 0 }];
+    let v = &vs[&VoiceSource::Accreted { chord: 0, pitch: 0 }];
     assert_eq!(v.target_env, 0.0, "wipe should ramp accretion voices to 0");
   }
 
   #[test]
   fn silent_with_emit_on_ramps_voices_and_sets_emit_off() {
     let mut s = fresh_state();
-    s.pitch_accretion.insert(0, [99].into_iter().collect());
+    s.chords[0].insert(0, [99].into_iter().collect());
     do_action(&mut s, ButtonAction::EmitOn);
-    assert!(s.emit_on);
+    assert!(s.emitting_chord.is_some());
     do_action(&mut s, ButtonAction::SilentFire);
-    assert!(!s.emit_on);
+    assert!(!s.emitting_chord.is_some());
     let vs = s.voices.lock().unwrap();
-    let v = &vs[&VoiceSource::Accreted { pitch: 0 }];
+    let v = &vs[&VoiceSource::Accreted { chord: 0, pitch: 0 }];
     assert_eq!(v.target_env, 0.0);
   }
 
@@ -453,7 +476,7 @@ mod tests {
   fn silent_with_emit_off_is_noop() {
     let mut s = fresh_state();
     do_action(&mut s, ButtonAction::SilentFire);
-    assert!(!s.emit_on);
+    assert!(!s.emitting_chord.is_some());
     assert!(voice_keys(&s).is_empty());
   }
 
@@ -468,14 +491,14 @@ mod tests {
     edo_press(&mut s, (5, 1));
     do_action(&mut s, ButtonAction::AccreteOn);
     do_action(&mut s, ButtonAction::EmitOn);
-    assert_eq!(s.pitch_accretion[&p].len(), 2,
+    assert_eq!(s.chords[0][&p].len(), 2,
                "both finger voices should be co-originVoices");
     // Release one: not the last alive originVoice → ramp to 0, no transform.
     edo_release(&mut s, (4, 10));
-    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { pitch: p }));
+    assert!(!voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: p }));
     // Release the other: now the last alive originVoice → transform.
     edo_release(&mut s, (5, 1));
-    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { pitch: p }));
+    assert!(voice_keys(&s).contains(&VoiceSource::Accreted { chord: 0, pitch: p }));
   }
 
   #[test]
@@ -486,19 +509,19 @@ mod tests {
     edo_press(&mut s, (5, 1));
     let p = s.pitch_class.key_to_pitch[&(4, 10)];
     do_action(&mut s, ButtonAction::AccreteOn);
-    assert_eq!(s.pitch_accretion[&p].len(), 2);
+    assert_eq!(s.chords[0][&p].len(), 2);
   }
 
   #[test]
   fn accrete_on_snapshot_does_not_grow_existing_pitch_accretion_entry() {
     let mut s = fresh_state();
     // Put pitch 0 into the slot already (manually, with a dead id).
-    s.pitch_accretion.insert(0, [99].into_iter().collect());
+    s.chords[0].insert(0, [99].into_iter().collect());
     // Hold a key for pitch 0, then snapshot via accrete-on.
     edo_press(&mut s, (0, 0));
     do_action(&mut s, ButtonAction::AccreteOn);
     // Snapshot must NOT grow the originVoice set — leave the dead id alone.
-    let set = &s.pitch_accretion[&0];
+    let set = &s.chords[0][&0];
     assert_eq!(set.len(), 1);
     assert!(set.contains(&99));
   }
@@ -506,15 +529,15 @@ mod tests {
   #[test]
   fn emit_is_toggle_flip_does_not_disturb_emit_on() {
     let mut s = fresh_state();
-    s.pitch_accretion.insert(0, [99].into_iter().collect());
+    s.chords[0].insert(0, [99].into_iter().collect());
     // Press the emit button itself, not just the action: the button's
     // own `state` field (UI on/off) gets flipped by the dispatcher,
     // and that's what the rebuild reads.
     control_press(&mut s, (1, 15), WindowId::Accretion2x2);
-    assert!(s.emit_on);
+    assert!(s.emitting_chord.is_some());
     // Press emit-is-toggle (initially Toggle/state=true → state=false).
     control_press(&mut s, (2, 15), WindowId::EmitToggle1x1);
-    assert!(s.emit_on, "emit state preserved across mode flip");
+    assert!(s.emitting_chord.is_some(), "emit state preserved across mode flip");
     assert!(!s.emit_is_toggle);
     // The emit Button at (1,15) is now a Nursed variant with state preserved.
     match s.control_buttons[&(1, 15)] {
