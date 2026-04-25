@@ -106,12 +106,27 @@ pub enum ButtonAction {
   EmitIsToggleOn, EmitIsToggleOff,
 }
 
+// === Brightness =========================================================
+
+// The monome renders only ~4 distinct brightness levels across the
+// 0..15 OSC API — buckets of 4 aligned to multiples of 4 (verified
+// by 12-brightness-test.sh on this device). This enum is the only
+// way the rest of the code talks about brightness; leds::low_res_brightness
+// maps it to the OSC integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Brightness {
+  Off,    // bucket 0  (OSC level 0..=3)
+  Dim,    // bucket 1  (OSC level 4..=7)
+  Mid,    // bucket 2  (OSC level 8..=11)
+  Bright, // bucket 3  (OSC level 12..=15)
+}
+
 // === LED command =======================================================
 
 // One LED command emitted by event handlers. Goes through the
 // compositor's visibility filter (windows::set_led) on the way to
 // the device.
-pub type LedCmd = (WindowId, MonomeKey, bool);
+pub type LedCmd = (WindowId, MonomeKey, Brightness);
 
 // === The whole world ===================================================
 

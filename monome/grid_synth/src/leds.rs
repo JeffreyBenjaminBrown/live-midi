@@ -5,7 +5,21 @@
 //! The cell is lit iff its reason set is non-empty; LED commands fire
 //! only on the empty↔non-empty transition.
 
-use crate::types::{MonomeKey, PitchLedReason, PitchLedReasons};
+use crate::types::{Brightness, MonomeKey, PitchLedReason, PitchLedReasons};
+
+// Map our 4-state brightness enum to the OSC level integer the
+// device expects. Verified by 12-brightness-test.sh: this device
+// renders levels 0..15 in 4-wide buckets aligned to multiples of 4
+// (see README "Coding the monome"), so any value in each bucket
+// looks the same. We pick the bucket-aligned value.
+pub fn low_res_brightness(b: Brightness) -> i32 {
+  match b {
+    Brightness::Off    => 0,
+    Brightness::Dim    => 4,
+    Brightness::Mid    => 8,
+    Brightness::Bright => 12,
+  }
+}
 
 // Mutate `reasons`; return Some(true) iff `cell` newly lit (was empty
 // or absent, now has this reason). Returns None when the cell already

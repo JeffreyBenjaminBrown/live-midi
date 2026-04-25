@@ -51,7 +51,7 @@ use crate::osc::{discover_device, register, send_osc};
 use crate::pitch::{build_pitch_class, freq_for};
 use crate::state::{control_press, control_release, edo_press, edo_release};
 use crate::types::{
-  AppState, Button, LedCmd, PitchClass, VoiceMap, Window, WindowId,
+  AppState, Brightness, Button, LedCmd, PitchClass, VoiceMap, Window, WindowId,
 };
 use crate::voices::render_block;
 use crate::windows::{set_led, window_for_cell};
@@ -247,7 +247,7 @@ fn main() {
 
   // --- Main event loop: OSC from grid ---
   let key_addr = format!("{PREFIX}/grid/key");
-  let led_set = format!("{PREFIX}/grid/led/set");
+  let led_level_set = format!("{PREFIX}/grid/led/level/set");
   let led_all = format!("{PREFIX}/grid/led/all");
   let mut buf = [0u8; 2048];
 
@@ -264,13 +264,15 @@ fn main() {
         Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
         Button::Fire { .. } => false,
       };
+      let b = if lit { Brightness::Bright } else { Brightness::Off };
       if let Some(win) = window_for_cell(&windows, cell) {
-        set_led(&windows, win, cell, lit, &sock, device, &led_set);
+        set_led(&windows, win, cell, b, &sock, device, &led_level_set);
       }
     }
     // EDO grid: any cell with at least one PitchLedReason is lit.
     for &cell in state.pitchled_reasons.keys() {
-      set_led(&windows, WindowId::Edo, cell, true, &sock, device, &led_set);
+      set_led(&windows, WindowId::Edo, cell, Brightness::Bright,
+              &sock, device, &led_level_set);
     }
   };
   repaint(&state, device);
@@ -386,8 +388,8 @@ fn main() {
               else     { control_release(&mut state, cell, win) }
             }
           };
-          for (from, c, on) in diffs {
-            set_led(&windows, from, c, on, &sock, device, &led_set);
+          for (from, c, b) in diffs {
+            set_led(&windows, from, c, b, &sock, device, &led_level_set);
           }
         }}
       Err(_) => { /* timeout, loop again */ }}}

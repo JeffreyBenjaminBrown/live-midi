@@ -11,7 +11,7 @@ use crate::consts::{ACCRETION_TARGET, ATTACK_SECS, RELEASE_SECS};
 use crate::leds::{add_reason, remove_reason};
 use crate::pitch::{cells_for_pitch, cells_for_pitch_of, freq_for_pitch};
 use crate::types::{
-  AppState, Button, ButtonAction, LedCmd, MonomeKey, PitchClass,
+  AppState, Brightness, Button, ButtonAction, LedCmd, MonomeKey, PitchClass,
   PitchLedReason, VoiceId, VoiceMap, VoiceSource, VoiceState, WindowId,
 };
 use crate::voices::{ramp_all_accretion_to_zero, spawn_accretion_voice, voice_alive_with_id};
@@ -68,7 +68,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
   let r = PitchLedReason::PitchEquivalent { source_xy: cell };
   for c in cells_for_pitch_of(&state.pitch_class, cell) {
     if let Some(true) = add_reason(&mut state.pitchled_reasons, c, r) {
-      diffs.push((WindowId::Edo, c, true));
+      diffs.push((WindowId::Edo, c, Brightness::Bright));
     }
   }
   // If accrete is on AND this pitch is not yet in the slot:
@@ -82,7 +82,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       let r = PitchLedReason::Chord { pitch: abs_pitch };
       for c in cells_for_pitch(&state.pitch_class, abs_pitch, state.edo) {
         if let Some(true) = add_reason(&mut state.pitchled_reasons, c, r) {
-          diffs.push((WindowId::Edo, c, true));
+          diffs.push((WindowId::Edo, c, Brightness::Bright));
         }
       }
     }
@@ -137,7 +137,7 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
   let r = PitchLedReason::PitchEquivalent { source_xy: cell };
   for c in cells_for_pitch_of(&state.pitch_class, cell) {
     if let Some(false) = remove_reason(&mut state.pitchled_reasons, c, r) {
-      diffs.push((WindowId::Edo, c, false));
+      diffs.push((WindowId::Edo, c, Brightness::Off));
     }
   }
   diffs
@@ -162,7 +162,9 @@ pub fn control_press(state: &mut AppState, cell: MonomeKey, win: WindowId) -> Ve
     Button::Fire { fire } => (Some(*fire), None),
   };
   let mut diffs = vec![];
-  if let Some(lit) = new_state { diffs.push((win, cell, lit)); }
+  if let Some(lit) = new_state {
+    diffs.push((win, cell, if lit { Brightness::Bright } else { Brightness::Off }));
+  }
   if let Some(action) = action { diffs.extend(do_action(state, action)); }
   diffs
 }
@@ -182,7 +184,9 @@ pub fn control_release(state: &mut AppState, cell: MonomeKey, win: WindowId) -> 
     _ => (None, None),
   };
   let mut diffs = vec![];
-  if let Some(lit) = new_state { diffs.push((win, cell, lit)); }
+  if let Some(lit) = new_state {
+    diffs.push((win, cell, if lit { Brightness::Bright } else { Brightness::Off }));
+  }
   if let Some(action) = action { diffs.extend(do_action(state, action)); }
   diffs
 }
@@ -296,7 +300,7 @@ pub fn add_chord_pitchled_reasons(state: &mut AppState, pitches: &[i32]) -> Vec<
     let r = PitchLedReason::Chord { pitch: p };
     for c in cells_for_pitch(&state.pitch_class, p, state.edo) {
       if let Some(true) = add_reason(&mut state.pitchled_reasons, c, r) {
-        diffs.push((WindowId::Edo, c, true));
+        diffs.push((WindowId::Edo, c, Brightness::Bright));
       }
     }
   }
@@ -309,7 +313,7 @@ pub fn remove_chord_pitchled_reasons(state: &mut AppState, pitches: &[i32]) -> V
     let r = PitchLedReason::Chord { pitch: p };
     for c in cells_for_pitch(&state.pitch_class, p, state.edo) {
       if let Some(false) = remove_reason(&mut state.pitchled_reasons, c, r) {
-        diffs.push((WindowId::Edo, c, false));
+        diffs.push((WindowId::Edo, c, Brightness::Off));
       }
     }
   }

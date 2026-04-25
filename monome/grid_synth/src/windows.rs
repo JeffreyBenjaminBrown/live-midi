@@ -8,8 +8,9 @@
 use std::net::{SocketAddr, UdpSocket};
 use rosc::OscType;
 
+use crate::leds::low_res_brightness;
 use crate::osc::send_osc;
-use crate::types::{MonomeKey, Rect, Window, WindowId};
+use crate::types::{Brightness, MonomeKey, Rect, Window, WindowId};
 
 pub fn rect_contains(rect: &Rect, cell: MonomeKey) -> bool {
   let ((x0, y0), (x1, y1)) = *rect;
@@ -43,15 +44,17 @@ pub fn visible(windows: &[Window], from: WindowId, cell: MonomeKey) -> bool {
 }
 
 // LED-command compositor wrapper around send_osc. Drops writes for
-// cells the calling window doesn't own.
+// cells the calling window doesn't own. Uses /grid/led/level/set
+// (variable brightness); binary on/off is just the Off/Bright cases
+// of Brightness.
 pub fn set_led(
-  windows: &[Window], from: WindowId, cell: MonomeKey, on: bool,
-  sock: &UdpSocket, device: SocketAddr, led_set: &str,
+  windows: &[Window], from: WindowId, cell: MonomeKey, b: Brightness,
+  sock: &UdpSocket, device: SocketAddr, led_level_set: &str,
 ) {
   if !visible(windows, from, cell) { return; }
-  send_osc(sock, device, led_set, vec![
+  send_osc(sock, device, led_level_set, vec![
     OscType::Int(cell.0), OscType::Int(cell.1),
-    OscType::Int(if on { 1 } else { 0 }),
+    OscType::Int(low_res_brightness(b)),
   ]);
 }
 
