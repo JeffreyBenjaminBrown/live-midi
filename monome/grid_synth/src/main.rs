@@ -758,33 +758,58 @@ fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType>) {
 // clear LEDs. Called on startup and again whenever serialoscd tells us
 // the device has moved to a new port (which happens when serialoscd
 // or the USB link restarts).
-fn register(sock: &UdpSocket, device: SocketAddr) {
+fn register(sock: &UdpSocket, device: SocketAddr, listen_port: u16) {
   send_osc(sock, device, "/sys/host", vec![OscType::String("127.0.0.1".into())]);
-  send_osc(sock, device, "/sys/port", vec![OscType::Int(LISTEN_PORT as i32)]);
+  send_osc(sock, device, "/sys/port", vec![OscType::Int(listen_port as i32)]);
   send_osc(sock, device, "/sys/prefix", vec![OscType::String(PREFIX.into())]);
   send_osc(sock, device, &format!("{PREFIX}/grid/led/all"), vec![OscType::Int(0)]);
 }
 
-fn discover_device(sock: &UdpSocket) -> Option<u16> {
+// Listen for the full 2-second discovery window — DON'T return on
+// the first response. Multiple /serialosc/device replies are the
+// classic ghost-tty symptom (see README): a real serialosc-device
+// plus zombie ones tied to dead ttyUSBs. The zombies typically pin
+// a CPU at 100% spinning on EIO, and host-side audio scheduling
+// gets unhappy. We can't fix that from the container, but we can
+// be loud about it and at least pick the most-recently-spawned
+// device port (= last response), which heuristically maps to the
+// real grid per the README.
+fn discover_device(sock: &UdpSocket, listen_port: u16) -> Option<u16> {
   let detector: SocketAddr = format!("127.0.0.1:{DETECTOR_PORT}").parse().ok()?;
-  send_osc(
-    sock,
-    detector,
-    "/serialosc/list",
-    vec![
-      OscType::String("127.0.0.1".into()),
-      OscType::Int(LISTEN_PORT as i32),
-    ],
-  );
+  send_osc(sock, detector, "/serialosc/list", vec![
+    OscType::String("127.0.0.1".into()),
+    OscType::Int(listen_port as i32),
+  ]);
   let deadline = Instant::now() + Duration::from_secs(2);
   let mut buf = [0u8; 2048];
+  let mut ports: Vec<u16> = vec![];
   while Instant::now() < deadline {
     if let Ok((n, _)) = sock.recv_from(&mut buf) {
       if let Ok((_, OscPacket::Message(m))) = decoder::decode_udp(&buf[..n]) {
         if m.addr == "/serialosc/device" && m.args.len() >= 3 {
           if let Some(OscType::Int(p)) = m.args.get(2) {
-            return Some(*p as u16); }}} }}
-  None }
+            let p = *p as u16;
+            if !ports.contains(&p) { ports.push(p); }
+          }
+        }
+      }
+    }
+  }
+  if ports.len() > 1 {
+    eprintln!(
+      "WARN: serialoscd reported {} device ports: {:?}. \
+       This is the ghost-tty bug from the README. The dead one(s) \
+       are probably pinning a CPU at 100% on the host and may \
+       starve PipeWire enough to drop audio. Picking the last \
+       (heuristically newest) port = {}. Fix on the host:\n\
+       \n\
+       \tsystemctl --user restart serialoscd\n\
+       \t# unplug the monome, wait ~3s, replug\n",
+      ports.len(), ports, ports.last().unwrap(),
+    );
+  }
+  ports.last().copied()
+}
 
 fn main() {
   let args: Vec<String> = std::env::args().collect();
@@ -821,13 +846,13 @@ fn main() {
     .and_then(|s| s.parse::<u16>().ok())
   {
     Some(p) => { eprintln!("GRID_DEVICE_PORT={p}; skipping discovery"); p }
-    None => discover_device(&sock)
+    None => discover_device(&sock, listen_port)
       .expect("no monome device found; is serialoscd running and a grid plugged in?"),
   };
   let mut device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
   eprintln!("device port: {device_port}");
 
-  register(&sock, device);
+  register(&sock, device, listen_port);
 
   // Shared state: VoiceSource -> VoiceState. Both Fingered (a key is
   // held) and Accreted (the slot is sounding it) variants live here.
@@ -1076,7 +1101,7 @@ fn main() {
                 eprintln!("device port changed {device_port} -> {p}; re-registering");
                 device_port = p;
                 device = format!("127.0.0.1:{p}").parse().unwrap();
-                register(&sock, device);
+                register(&sock, device, listen_port);
                 // register() just sent /grid/led/all 0; restore our
                 // current LED state on the new port.
                 repaint(&state, device);
