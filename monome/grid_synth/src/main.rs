@@ -30,7 +30,7 @@ use rosc::{decoder, encoder, OscMessage, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const PREFIX: &str = "/256-1-cable";
@@ -895,12 +895,38 @@ fn main() {
   // --- Main event loop: OSC from grid ---
   let key_addr = format!("{PREFIX}/grid/key");
   let led_set = format!("{PREFIX}/grid/led/set");
+  let led_all = format!("{PREFIX}/grid/led/all");
   let mut buf = [0u8; 2048];
+
+  // Push the initial LED state for any control button that boots
+  // up "on" — e.g., emit-is-toggle starts in Toggle mode (state=true)
+  // so its cell should be lit immediately. register() above already
+  // cleared the whole grid; this paints the toggles back on.
+  for (&cell, button) in &state.control_buttons {
+    let lit = match button {
+      Button::Toggle { state, .. } | Button::Nursed { state, .. } => *state,
+      Button::Fire { .. } => false,
+    };
+    if lit {
+      if let Some(win) = window_for_cell(&windows, cell) {
+        set_led(&windows, win, cell, true, &sock, device, &led_set);
+      }
+    }
+  }
+
+  // SIGINT handler: just flip a flag the main loop watches. Avoids
+  // running anything non-async-signal-safe from the handler itself.
+  static STOP: AtomicBool = AtomicBool::new(false);
+  extern "C" fn on_sigint(_: libc::c_int) { STOP.store(true, Ordering::SeqCst); }
+  let handler: extern "C" fn(libc::c_int) = on_sigint;
+  unsafe { libc::signal(libc::SIGINT, handler as libc::sighandler_t); }
+
   // Heartbeat cadence: poll the audio counters every HEARTBEAT_SECS
   // and log one summary line. STALL warning if no callbacks fired.
   const HEARTBEAT_SECS: f64 = 1.0;
   let mut last_heartbeat = Instant::now();
   loop {
+    if STOP.load(Ordering::SeqCst) { break; }
     // Heartbeat — log once per HEARTBEAT_SECS regardless of OSC activity.
     let elapsed = last_heartbeat.elapsed();
     if elapsed.as_secs_f64() >= HEARTBEAT_SECS {
@@ -982,7 +1008,12 @@ fn main() {
             set_led(&windows, from, c, on, &sock, device, &led_set);
           }
         }}
-      Err(_) => { /* timeout, loop again */ }}} }
+      Err(_) => { /* timeout, loop again */ }}}
+  // Loop exited (Ctrl-C). Wipe the grid so we don't leave stale
+  // LEDs lit on the device.
+  send_osc(&sock, device, &led_all, vec![OscType::Int(0)]);
+  eprintln!("monome cleared; bye.");
+}
 
 #[cfg(test)]
 mod tests {
