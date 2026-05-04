@@ -1,3 +1,7 @@
+* if my sound dies
+systemctl --user restart serialoscd
+
+Does this problem affect more than the monome?
 * to understand the architecture
   see [[./architecture.org]]
 * The idea of the project
