@@ -4,49 +4,6 @@ This directory contains a tiny Rust synth driven by a monome grid,
 plus the scripts and notes from resurrecting Jeff's monome on NixOS
 in April 2026.
 
-* Layout
-
-| Path                      | What it is                                    |
-|---------------------------+-----------------------------------------------|
-| =09-sound-test.sh=        | Compile + play =triangle_chord.rs=; audio sanity.|
-| =10-button-test.sh=       | Build + run =button_test/= (no-audio OSC dump).|
-| =11-grid-synth.sh=        | Build + run =grid_synth/= (the fun part).      |
-| =button_test/=            | Rust: registers with serialoscd, prints events.|
-| =grid_synth/=             | Rust: triangle-wave voice per pressed key.     |
-| =for-jeff-to-run.org=     | Step-by-step log of what to run and when.     |
-| =README.org=              | This file.                                    |
-
-* Architecture
-
-#+begin_example
-  monome USB ─── ftdi_sio ──┐  host NixOS
-                            │
-                            ▼
-          /dev/ttyUSBN  (owned root:dialout)
-                            │
-                            ▼
-              serialoscd  (user systemd service)
-              detector @ :12002
-              device    @ :PORT   ← assigned per connect; changes!
-                            ▲
-                            │  OSC/UDP
-                            │
-    ┌───────────────────────┴────────────────────────┐
-    │   docker container (--network host, so        │
-    │   localhost in container == localhost on host) │
-    │                                                 │
-    │    grid_synth  (this repo)                      │
-    │      - listens on :9000 for grid events         │
-    │      - cpal → /run/user/1000/pipewire-0         │
-    │        (socket mounted from host)               │
-    │      - /dev/snd bind-mounted; audio group added │
-    └─────────────────────────────────────────────────┘
-#+end_example
-
-The container is started by =../docker.sh=. Relevant flags:
-=--network host= (localhost passthrough), the =pipewire-0= bind
-mount, =/dev/snd= device, and =--group-add audio=.
-
 * Running grid_synth
 
 Inside the container:
@@ -59,6 +16,45 @@ bash ./11-grid-synth.sh [FUND [EDO [X_STEP [Y_STEP]]]]
 Args default to =220 46 9 1= — i.e. =(0,0) = 220 Hz=, pitch rises
 9/46 of an octave per x step and 1/46 of an octave per y step. All
 four args are =f64=, so fractional EDOs work.
+
+* Known gotcha: ghost /dev/ttyUSBN devices
+
+On one session we observed =systemctl --user status serialoscd=
+showing THREE =serialosc-devic= children, one each for
+=/dev/ttyUSB{0,1,2}=, all reporting themselves as the same device id
+=m0000102= on three different OSC ports (15326, 15997, 16104). Only
+the latest tty corresponded to the physically connected grid; the
+other two logged =libmonome: error in write: Input/output error=.
+
+Cause: the FTDI USB-serial chip got re-enumerated while serialoscd
+was already watching =/dev/ttyUSB0=. The kernel gave the new
+enumeration =/dev/ttyUSB1=, then again as =/dev/ttyUSB2=.
+serialoscd's detector spawned a fresh =serialosc-device= process for
+each new tty but never cleaned up the dead ones.
+
+Symptom inside this project: a client registers via
+=/serialosc/list= and gets back one of the ports (say 15326). Key
+events never arrive because that port's =serialosc-device= is the
+stale one; only the newest port actually reaches the grid.
+
+Fix:
+
+#+begin_src bash
+# on the host
+systemctl --user restart serialoscd
+# unplug the monome, wait ~3 s, replug
+#+end_src
+
+After restart =status= should show exactly ONE =serialosc-devic=
+child on a single =/dev/ttyUSBN=.
+
+** grid_synth's defense
+
+=grid_synth= watches for =/serialosc/device= messages even after
+startup. Any such message with a port different from our current
+device port triggers a fresh =register()= to the new port. This
+makes the synth survive serialoscd restarts while running, though
+it doesn't help with pre-existing stale devices.
 
 * Chord storage (twenty special keys, two control windows)
 
@@ -144,6 +140,49 @@ between *Bright* and *Off* every 150 ms while in selection mode.
 See the "Coding the monome" section below for why we use only four
 distinct brightness levels.
 
+* Layout
+
+| Path                      | What it is                                    |
+|---------------------------+-----------------------------------------------|
+| =09-sound-test.sh=        | Compile + play =triangle_chord.rs=; audio sanity.|
+| =10-button-test.sh=       | Build + run =button_test/= (no-audio OSC dump).|
+| =11-grid-synth.sh=        | Build + run =grid_synth/= (the fun part).      |
+| =button_test/=            | Rust: registers with serialoscd, prints events.|
+| =grid_synth/=             | Rust: triangle-wave voice per pressed key.     |
+| =for-jeff-to-run.org=     | Step-by-step log of what to run and when.     |
+| =README.org=              | This file.                                    |
+
+* Architecture
+
+#+begin_example
+  monome USB ─── ftdi_sio ──┐  host NixOS
+                            │
+                            ▼
+          /dev/ttyUSBN  (owned root:dialout)
+                            │
+                            ▼
+              serialoscd  (user systemd service)
+              detector @ :12002
+              device    @ :PORT   ← assigned per connect; changes!
+                            ▲
+                            │  OSC/UDP
+                            │
+    ┌───────────────────────┴────────────────────────┐
+    │   docker container (--network host, so        │
+    │   localhost in container == localhost on host) │
+    │                                                 │
+    │    grid_synth  (this repo)                      │
+    │      - listens on :9000 for grid events         │
+    │      - cpal → /run/user/1000/pipewire-0         │
+    │        (socket mounted from host)               │
+    │      - /dev/snd bind-mounted; audio group added │
+    └─────────────────────────────────────────────────┘
+#+end_example
+
+The container is started by =../docker.sh=. Relevant flags:
+=--network host= (localhost passthrough), the =pipewire-0= bind
+mount, =/dev/snd= device, and =--group-add audio=.
+
 * The monome OSC protocol in one page
 
 All communication is OSC over UDP. The monome (via serialoscd) both
@@ -216,45 +255,6 @@ bash ./12-brightness-test.sh 8      # row 8
 
 (Best with =grid_synth= not running, so live presses don't
 overwrite the test row with binary on/off LEDs.)
-
-* Known gotcha: ghost /dev/ttyUSBN devices
-
-On one session we observed =systemctl --user status serialoscd=
-showing THREE =serialosc-devic= children, one each for
-=/dev/ttyUSB{0,1,2}=, all reporting themselves as the same device id
-=m0000102= on three different OSC ports (15326, 15997, 16104). Only
-the latest tty corresponded to the physically connected grid; the
-other two logged =libmonome: error in write: Input/output error=.
-
-Cause: the FTDI USB-serial chip got re-enumerated while serialoscd
-was already watching =/dev/ttyUSB0=. The kernel gave the new
-enumeration =/dev/ttyUSB1=, then again as =/dev/ttyUSB2=.
-serialoscd's detector spawned a fresh =serialosc-device= process for
-each new tty but never cleaned up the dead ones.
-
-Symptom inside this project: a client registers via
-=/serialosc/list= and gets back one of the ports (say 15326). Key
-events never arrive because that port's =serialosc-device= is the
-stale one; only the newest port actually reaches the grid.
-
-Fix:
-
-#+begin_src bash
-# on the host
-systemctl --user restart serialoscd
-# unplug the monome, wait ~3 s, replug
-#+end_src
-
-After restart =status= should show exactly ONE =serialosc-devic=
-child on a single =/dev/ttyUSBN=.
-
-** grid_synth's defense
-
-=grid_synth= watches for =/serialosc/device= messages even after
-startup. Any such message with a port different from our current
-device port triggers a fresh =register()= to the new port. This
-makes the synth survive serialoscd restarts while running, though
-it doesn't help with pre-existing stale devices.
 
 * Known issue: latency
 

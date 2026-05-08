@@ -20,7 +20,7 @@
 #   BUF=1024 bash ./11-grid-synth.sh
 #   BUF=default bash ./11-grid-synth.sh   # explicit, same as unset
 
-set -u
+set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/11-grid-synth.out"
 PROJECT="$HERE/grid_synth"
@@ -30,6 +30,11 @@ progress() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&3; }
 
 progress "cargo build --release (first run fetches cpal + deps)"
 (cd "$PROJECT" && cargo build --release 2>&1) | tee "$OUT"
+build_status=${PIPESTATUS[0]}
+if [ "$build_status" -ne 0 ]; then
+  progress "cargo build failed; not running grid_synth"
+  exit "$build_status"
+fi
 
 progress "running grid_synth; press keys on the grid; Ctrl-C to quit"
 echo

@@ -1,4 +1,3 @@
-claude --resume "force-48khz-fixed-buffer"
 * monome
 ** if inter-row distance is negative, lowest pitch should be of the bottom-left key
 not the top-left

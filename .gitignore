@@ -1,11 +1,14 @@
 *~
 .bash_history
-.cache/
+.cache
+.cargo
+.codex
 .emacs.desktop*
 .local/
 .python_history
 .ssh/
 /.claude*
+/.lesshst
 /.npm
 /temp/
 Cargo.lock

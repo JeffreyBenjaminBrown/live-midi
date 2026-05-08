@@ -1,0 +1,393 @@
+#+TITLE: Montevideo / Synth: Zot
+#+SUBTITLE: A report on the recursive synth at Montevideo/Synth
+#+AUTHOR: Report by Claude
+#+DATE: 2026-04-27
+
+Source: https://github.com/JeffreyBenjaminBrown/montevideo/tree/master/Montevideo/Synth
+
+* Overview
+
+The =Montevideo/Synth= directory is a small Haskell library of
+=SynthDef= s built on top of [[https://github.com/Vivid-Synth/vivid][Vivid]] (a Haskell binding to
+SuperCollider). Several synths live here -- =Boop=, =Vap=, =Axe=,
+=Samples= -- but the centerpiece, and the only one that closes a
+feedback loop on itself, is *Zot* (=Zot.hs=).
+
+Zot is a single-voice synth whose entire signal chain is wrapped in
+an audio-rate feedback loop via SuperCollider's =localIn=/=localOut=
+pair, with a delay line in the loop sized in /periods of the
+fundamental/. Almost every modulator inside the synth has a
+"=*-b=" knob that mixes that feedback signal into itself.
+
+This report focuses on:
+1. the signal flow (the topology of one Zot voice),
+2. the parameters (39 of them, organised in families), and
+3. the recursive structure (where the feedback enters, and how each
+   stage controls how much of it it consumes).
+
+A small supporting fact worth noting up front: =Zot.hs= is
+accompanied by =Envelope.hs= (which defines =onOffEnvelope=, the
+attack/release gate Zot uses) and =Config.hs= (which defines
+=maxAmp=, =filterFreqMin=, =filterFreqMax=). The README adds that
+=on= -- not =amp= -- is the preferred way to start and stop a voice,
+because zeroing =amp= erases its state.
+
+* Signal flow
+
+Zot's signal flow is a long serial chain with a one-sample feedback
+loop wrapped around the whole thing. Each numbered stage below
+corresponds to a block in the =do= notation of =zot=
+(=Zot.hs=, the body of =sd (...) $ do=).
+
+** 0. The feedback tap
+
+#+begin_src haskell
+fb_11 <- head <$> localIn(1)
+fb_01 <- (fb_11 ~+ 1) ~/ 2
+#+end_src
+
+=localIn(1)= reads the previous block's =localOut= -- one sample of
+audio-rate feedback. =fb_11= is "the feedback as is", nominally in
+[-1, 1]; =fb_01= is the same signal rescaled to [0, 1]. Comments in
+the source warn that "if we're lucky" =fb_11= really is in [-1,1] --
+feedback, by its nature, is not bounded a priori.
+
+These two feedback signals are then made available to the
+modulators below. Modulators that wobble symmetrically around 0
+(=fm=, =wm=, =rm=, =sh=) consume =fb_11=; modulators that need a
+non-negative shape (=pm=, =am=) consume =fb_01=.
+
+** 1. Building the modulators (FM / PM / WM)
+
+Three modulator signals are computed before the oscillators are
+even instantiated. Each follows the same template:
+
+#+begin_quote
+modulator = (sine of fundamental·=*-f=) · =*-m= + feedback · =*-b=
+#+end_quote
+
+- *fm* (frequency mod, =fb_11=-driven): added directly to the
+  carrier frequency of =aSin=. =fm-f= sets the wobble's frequency as
+  a multiple of the fundamental; =fm-m= sets its amplitude in Hz
+  (also scaled by the fundamental); =fm-b= mixes the raw feedback
+  in. =fm= is /not/ applied to the pulse oscillator -- the comment
+  says doing so "sounds staticky and very inharmonic for almost all
+  audio-rate FM."
+- *pm* (phase mod, =fb_01=-driven): scaled by π/2 and used as the
+  =phase_= argument to =aSin=. =pm-b= mixes feedback in. PM is
+  inaudible when =pulse=1=, since only =aPulse= is heard.
+- *wm* (width mod, =fb_11=-driven): added to the baseline pulse
+  width =w= and used as the =width_= of =aPulse=. WM is inaudible
+  when =pulse=0=.
+
+** 2. The two oscillators and the source mix
+
+#+begin_src haskell
+aSin   <- sinOsc (freq_ fm,              phase_ pm)
+aPulse <- pulse  (freq_ (V::V"freq"),    width_ wm)
+source <- ( (V::V"pulse")     ~* aPulse
+          + (1 ~- (V::V"pulse")) ~* aSin )
+          ~* onOffEnvelope
+#+end_src
+
+The =pulse= parameter is the crossfade between the two oscillators
+(0 = pure sine, 1 = pure pulse); =pulse + sin = 1= as the parameter
+comment puts it. The result is then gated by =onOffEnvelope=, the
+"on / att / rel" envelope from =Envelope.hs= -- a hand-rolled
+substitute for ADSR built by multiplying an attack envelope and a
+release envelope.
+
+** 3. AM and RM (serial)
+
+The source is run through amplitude modulation, then through ring
+modulation:
+
+#+begin_src haskell
+amSin <- ((sinOsc (freq_ freq · am-f)) + 1) / 2     -- in [0,1]
+am    <- 2 · ( fb_01·am-b + amSin·(1 - am-b) )
+amSig <- (1-am)·source + am·source·am
+
+rmSin <- sinOsc (freq_ freq · rm-f)                 -- in [-1,1]
+rm    <- (π/2) · ( fb_11·rm-b + rmSin·(1 - rm-b) )
+rmSig <- (1-rm)·amSig + rm·amSig·rm
+#+end_src
+
+Both stages have the same shape: a sinusoidal modulator is
+crossfaded with feedback (=*-b=), the modulator multiplies the
+signal, and then the modulated signal is crossfaded back against
+the unmodulated signal (=am=, =rm=). The constants 2 and π/2
+compensate for the average attenuation that AM and RM apply.
+
+The structural difference is just bias: AM uses the [0,1]-shifted
+sine and =fb_01= (no sign change of the carrier); RM uses the raw
+sine and =fb_11= (sign-flipping ring modulation).
+
+** 4. Three serial filters
+
+#+begin_src haskell
+filt_1 = (1-lpf-m)·rmSig + lpf-m · lpf  (rmSig, freq·lpf)
+filt_2 = (1-bpf-m)·filt_1 + bpf-m · bpf  (filt_1, freq·bpf, q=bpf-q)
+filt_3 = (1-hpf-m)·filt_2 + hpf-m · hpf  (filt_2, freq·hpf)
+#+end_src
+
+Each filter's cutoff is /relative to the fundamental/ (so changing
+=freq= shifts all three cutoffs proportionally), and each is
+clamped by =freqRange= to [=filterFreqMin=, =filterFreqMax=] = [10,
+22050] Hz. =*-m= is the wet/dry mix; only the bandpass exposes a Q
+(=bpf-q=).
+
+** 5. Limiter
+
+#+begin_src haskell
+lim_out = tanh(filt_3 / lim) · lim
+#+end_src
+
+A soft clipper. =lim= is /inverse-aggressive/: large =lim= means
+the input is barely scaled before =tanh= and so the limiter is
+nearly transparent; small =lim= drives =tanh= harder and clips
+sooner.
+
+** 6. Frequency shifter (the only non-harmonic block)
+
+#+begin_src haskell
+shift = freqShift(lim_out, freq_ = freq · (sh + sh-b · fb_11))
+#+end_src
+
+This is single-sideband Hilbert frequency shift -- it adds a
+constant /Hz/ offset to every partial, which destroys harmonicity.
+=sh= is the baseline shift in units of the fundamental; =sh-b=
+mixes feedback into the shift amount. There is no separate wet/dry
+control; the comment says omitting it "seemed natural."
+
+** 7. Delay line, then back to the top
+
+#+begin_src haskell
+s1 <- delayL(shift, maxDelaySecs_ = 1, delaySecs_ = del / freq)
+localOut [s1]
+#+end_src
+
+The post-shift signal is delayed by =del= /periods of the
+fundamental/ (i.e. =del/freq= seconds, capped at 1 s of buffer).
+=s1= is what =localOut= writes back; on the next sample, =localIn=
+reads it as =fb_11= and the cycle continues.
+
+This is what makes Zot recursive. The whole synth -- oscillators,
+AM, RM, filters, limiter, shifter -- is inside that loop; six
+different stages (=fm-b=, =pm-b=, =wm-b=, =am-b=, =rm-b=, =sh-b=)
+each pull a controlled amount of that feedback back into their
+modulator.
+
+** 8. Output mix: six taps
+
+The audible output is /not/ just the end of the chain. The synth
+exposes six taps along the chain, each with its own level:
+
+| tap         | from stage             | parameter |
+|-------------+------------------------+-----------|
+| =source-l=  | post-envelope source   | step 2    |
+| =am-l=      | post-AM                | step 3    |
+| =rm-l=      | post-RM                | step 3    |
+| =filt-l=    | post-filter (=filt_3=) | step 4    |
+| =lim-l=     | post-limiter           | step 5    |
+| =shift-l=   | post-shift             | step 6    |
+
+These are weighted-summed, then divided by the sum of weights (with
+a 0.001 floor to avoid divide-by-zero) so that lighting up multiple
+taps doesn't increase the perceived loudness. The whole sum is then
+multiplied by =amp= and sent to both stereo channels =out 0=.
+
+Note that the /feedback/ always taps from the very end of the chain
+(after =shift= and =delayL=), regardless of where the audible /tap/
+points are -- the audio you hear and the audio that recirculates are
+independently configurable.
+
+* Parameters
+
+Zot exposes 39 parameters. They are declared three times in the
+source for different purposes: as the =ZotParam= ADT (for
+key-mapping), as the type-level list =ZotParams= (for the =SynthDef=
+signature), and in =_zotDefaultInfo= (which also gives each its
+default and its /UI mapping/ -- linear or logarithmic, with min/max
+-- for the monome controller surface).
+
+** Voice control
+
+| param  | default        | range       | role                                  |
+|--------+----------------+-------------+---------------------------------------|
+| =on=   | 1              | Lin 0..1    | gate; toggles attack vs release       |
+| =freq= | 0 (set live)   | Log 40..20k | fundamental, set by keyboard not slider |
+| =amp=  | =maxAmp/4=     | Log0 ...    | overall level (=maxAmp= = 0.05)       |
+| =att=  | 0.003 s        | Log         | attack time of =onOffEnvelope=        |
+| =rel=  | 0.05 s         | Log         | release time of =onOffEnvelope=       |
+
+** Source mix
+
+| param   | default | range    | role                                |
+|---------+---------+----------+-------------------------------------|
+| =pulse= | 0.5     | Lin 0..1 | crossfade between =aSin= and =aPulse= |
+| =w=     | 0.5     | Lin 0..½ | baseline pulse width                |
+
+** Modulators (each is a triple plus, for WM, a baseline)
+
+Every audio-rate modulator follows the same =-b/-m/-f= pattern --
+feedback amount, sinusoid amount, sinusoid frequency (as a multiple
+of =freq=).
+
+| family | =-b= (feedback) | =-m= (sine amt) | =-f= (sine freq) | extra      |
+|--------+-----------------+-----------------+------------------+------------|
+| FM     | =fm-b=          | =fm-m=          | =fm-f=           |            |
+| PM     | =pm-b=          | =pm-m=          | =pm-f=           |            |
+| WM     | =wm-b=          | =wm-m=          | =wm-f=           | =w= (base) |
+
+Defaults set =-m= = 0 everywhere (no modulation by default) and
+=-f= = 1 (modulator at the fundamental, so when you do bring it in,
+the result starts harmonic).
+
+** AM and RM
+
+| param   | default | role                                    |
+|---------+---------+-----------------------------------------|
+| =am=    | 0       | wet/dry of AM-modulated source          |
+| =am-b=  | 0       | mix feedback into the AM modulator      |
+| =am-f=  | 1       | AM sinusoid frequency, ×=freq=          |
+| =rm=    | 0       | wet/dry of RM-modulated AM-output       |
+| =rm-b=  | 0       | mix feedback into the RM modulator      |
+| =rm-f=  | 1       | RM sinusoid frequency, ×=freq=          |
+
+** Filters
+
+| param    | default | role                            |
+|----------+---------+---------------------------------|
+| =lpf=    | =filterFreqMax= | LP cutoff, ×=freq=, clamped to [10, 22050] |
+| =lpf-m=  | 0       | LP wet/dry                      |
+| =bpf=    | 7       | BP center freq, ×=freq=         |
+| =bpf-m=  | 0       | BP wet/dry                      |
+| =bpf-q=  | 0.5     | BP Q (small Q = narrow band)    |
+| =hpf=    | 1       | HP cutoff, ×=freq=              |
+| =hpf-m=  | 0       | HP wet/dry                      |
+
+** Distortion / shifter / delay
+
+| param   | default | role                                      |
+|---------+---------+-------------------------------------------|
+| =lim=   | 1       | =tanh= soft-clip; larger = less clipping  |
+| =sh=    | 0       | freq shift in units of =freq=             |
+| =sh-b=  | 0       | feedback into shift amount                |
+| =del=   | 1       | feedback delay in periods of =freq= (max 1 s) |
+
+** Output taps (the "-l" family)
+
+| param        | default | role                       |
+|--------------+---------+----------------------------|
+| =source-l=   | 0       | tap post-envelope source   |
+| =am-l=       | 0       | tap post-AM                |
+| =rm-l=       | 0       | tap post-RM                |
+| =filt-l=     | 0       | tap post-filters           |
+| =lim-l=      | 0       | tap post-limiter           |
+| =shift-l=    | 1       | tap post-frequency-shift   |
+
+By default only =shift-l= is open, so what you hear out of the
+patch is the very end of the chain -- the same point that is also
+fed back via =localOut=.
+
+* The recursive structure, in one picture
+
+#+begin_example
+                ┌──────────────────────────────────────────────┐
+                │                                              │
+                │  fb_11 / fb_01  (audio-rate, 1-sample tap)   │
+                │                                              │
+   on/att/rel   ▼                                              │
+        ┌──── modulators ──────┐                               │
+   freq │ fm (·fb_11)          │                               │
+   ──── │ pm (·fb_01)          │                               │
+        │ wm (·fb_11)          │                               │
+        └──────────┬───────────┘                               │
+                   ▼                                           │
+              ┌────────────┐                                   │
+              │  aSin      │ ── × pulse ─┐                     │
+              │  aPulse    │ ── × (1-p) ─┴──> source ──┐       │
+              └────────────┘                           │       │
+                                                       ▼       │
+                                            AM (·fb_01) ─> amSig
+                                                       │       │
+                                            RM (·fb_11) ─> rmSig
+                                                       │       │
+                                            lpf → bpf → hpf  filt_3
+                                                       │       │
+                                            lim = tanh-clip    │
+                                                       │       │
+                                            freqShift (·fb_11) │
+                                                       │       │
+                                            delayL(del/freq)   │
+                                                       │       │
+                                                  localOut ────┘
+                                                       │
+                                                       ▼
+                                       weighted sum of
+                                       source / amSig / rmSig /
+                                       filt_3 / lim / shift  → out 0
+#+end_example
+
+The vertical line on the right is what makes Zot a /recursive/
+synth in the strict sense: the synth's own output (after delay)
+becomes part of its own modulators on the very next sample. The
+=del= parameter governs the loop's delay -- expressed in periods of
+the fundamental, so harmonically aligned feedback "stays
+harmonic" when =del= is integer-valued. The six =-b= parameters
+govern /how aggressively/ each block consumes that feedback.
+
+* Notes and pitfalls (from the source comments)
+
+- *Vivid VarList limit.* The header comment warns that adding a
+  39th parameter triggers a cryptic GHC error rather than a clean
+  "no instance" error, because Vivid's tuple instances stop at 38.
+  Zot is right at this limit, which is why some experimental knobs
+  (e.g. =Zot_amp_slope=) are commented out.
+- *=on= vs =amp=.* The README emphasises that =on= should toggle
+  whether a voice plays; setting =amp= to 0 would erase amplitude
+  state. =onOffEnvelope= (=Envelope.hs=) is the SynthDef that gives
+  =on= its meaning.
+- *Modulator irrelevance at extremes.* PM has no audible effect
+  when =pulse=1=; WM has no audible effect when =pulse=0=. The
+  comments call these out as pitfalls because the parameters
+  silently do nothing rather than failing loudly.
+- *Filter linearity.* The three filters are SuperCollider's plain
+  linear =lpf=, =bpf=, =hpf=. The author notes Q is only exposed for
+  bandpass; the others could in principle be swapped for
+  Q-supporting variants.
+- *Delay must be positive.* =del= = 0 (or negative) is meaningless
+  -- the feedback loop needs at least some delay, and =delayL=
+  expects a positive value.
+- *=lim='s direction.* Counter-intuitively, increasing =lim=
+  /reduces/ clipping. The signal is divided by =lim= before =tanh=
+  and multiplied by =lim= after, so large =lim= keeps the input
+  inside =tanh='s near-linear region.
+- *=Log0= vs =Log=.* The =NumScale= for parameter ranges is mostly
+  =Log= or =Lin=, but =amp='s default range uses =Log0=, which
+  presumably allows the parameter to reach exactly zero on the
+  controller (a true logarithmic scale cannot).
+
+* Files in the directory, for context
+
+| file              | role                                                      |
+|-------------------+-----------------------------------------------------------|
+| =Zot.hs=          | the recursive synth analysed above                        |
+| =Envelope.hs=     | =onOffEnvelope= and =cheapDistortion=                      |
+| =Config.hs=       | =maxAmp=, =filterFreqMin=, =filterFreqMax=, samples path  |
+| =Boop.hs=         | a simpler synth (referenced in README)                    |
+| =Vap.hs=          | another synth (with its own =.ghci.hs=)                    |
+| =Axe.hs=          | another synth (also has =Axe.hs.unused=)                   |
+| =Samples.hs=      | sample-playback support                                   |
+| =Vivid_Demo.hs=   | demo / scratch using Vivid directly                        |
+| =Msg.hs=          | message types                                             |
+| =Distortion.hs=   | distortion utilities                                      |
+| =*.ghci.hs=       | per-synth GHCi loaders for live experimentation           |
+| =README.md=       | the =on= vs =amp= note                                    |
+
+The =Zot=/=Boop=/=Vap=/=Axe= split, the per-synth =.ghci.hs= files,
+and the parameter-defaults-with-UI-ranges machinery (=NumScale=,
+=Log0=, =Log=, =Lin=) all suggest that this code was written to be
+driven live from a monome grid controller, with a higher layer
+(elsewhere in =montevideo/=) translating physical control surface
+events into parameter messages.
