@@ -1,3 +1,34 @@
+* edo72_piano_monome
+** DONE determine coordinates
+Next, I'd like you to rename edo72 to edo72_piano,
+and start a similar program edo72_piano_monome.
+This one won't use the top octave to adjust notes.
+Instead it will let the user push buttons on the monome.
+I've connected a monome 128 (so 8x16).
+
+I guess our first order of business should be
+to determine its coordinate system.
+Please light the key at x=0, y=1 so I can see what that means.
+** TODO
+Great! That's just under the top-left, like I hoped.
+
+I just enabled a sound hook and want to test it.
+Please say hi without thinking.
+** TODO
+Here's the idea for edo72_piano_monome:
+The bottom 7 rows of the leftmost twelve columns
+represent the 12 keys of the piano, from C to B.
+Let's call each of those 7-key columns an 'offset column'.
+Each offset column corresponding to a black piano key
+should be dimly lit.
+There's a single brightly lit key on each offset column.
+To start, it's in the middle.
+If it is n keys higher or lower,
+the corresponding piano key (in every octave,
+just like edo72_piano once that's been renamed)
+is n steps of 72-edo higher or lower.
+
+I'll use the other keys for something else but not yet.
 * monome
 ** if inter-row distance is negative, lowest pitch should be of the bottom-left key
 not the top-left
@@ -27,7 +58,7 @@ and for each n > 1 similarly.
 by source (chord storage v. live edo grid)
 by pitch order among voices
 by pitch range
-* [[./code/rust/edo72/requests/visual-feedback.org][72-edo-from-12 visual feedback]]
+* [[./code/rust/edo72_piano/requests/visual-feedback.org][72-edo-from-12 visual feedback]]
 * [[id:beefb9cf-7378-4e75-9cd4-d868ea065092][monome haskell : build each note and map it to the keys]]
 * synth plans
 ** maybe don't choose algorithms (e.g. sine) ahead of time; just pick the easiest initially, and optimize only if profiling identifies it as important

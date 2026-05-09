@@ -1,4 +1,4 @@
-* 72-EDO MIDI transformer
+* 72-EDO piano-keyboard MIDI transformer
 * purpose
 ** in the abstract
 Transforms MIDI notes from a piano keyboard
@@ -22,9 +22,9 @@ every note-on from the other octaves is shifted that much.
     X11 runtime libraries on =LD_LIBRARY_PATH=; the current Docker image
     definition in =docker-typedb-rust/docker.nix= provides the library path.
 *** In the docker container, from the project root, run
-    cargo run --bin edo72
+    cargo run --bin edo72_piano
 *** In the host system, run
-    ./code/rust/edo72/connect-midi.sh
+    ./code/rust/edo72_piano/connect-midi.sh
 ** to configure it
 Be sure the 'const' definitions in the code make sense --
 they depend on the synth being used.

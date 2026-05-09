@@ -42,7 +42,8 @@
 *** MIDI (Rust, via `cargo run --bin <name>`)
     - polite_ping : sends a quiet C7 note every 300ms (test tool)
     - add_echo    : MIDI pass-through with 300ms delayed echo
-    - edo72       : 72-EDO microtonal transformer with visual grid
+    - edo72_piano : 72-EDO microtonal transformer with keyboard offsets
+    - edo72_piano_monome : 72-EDO transformer with monome offset columns
     - sampler     : record, loop, and trigger MIDI sequences
 *** Audio generation
     - generate-soothing-beep.sh : Python script that writes a
@@ -67,7 +68,8 @@
 
 ** Source layout
    - code/rust/demos/          : polite_ping.rs, add_echo.rs
-   - code/rust/edo72/          : edo72.rs, connect-midi.sh, README.org
+   - code/rust/edo72_piano/ : keyboard-offset 72-EDO transformer
+   - code/rust/edo72_piano_monome/ : monome-offset 72-EDO transformer
    - code/rust/sampler/        : sampler.rs, connect-midi.sh
    - code/rust/monome/         : monome grid synth, OSC tests, and notes
    - code/python/              : Python synth and pitch-theory experiments

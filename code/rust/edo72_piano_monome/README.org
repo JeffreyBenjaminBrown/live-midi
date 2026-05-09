@@ -1,0 +1,30 @@
+* 72-EDO piano transformer with monome offsets
+** purpose
+This is like 72edo_piano, but simpler (for the user).
+Whereas that uses the top octave of the piano
+as modifier keys to detune the rest of the piano,
+this uses a monome 128.
+** to start it
+*** Connect the keyboard and monome 128.
+*** Start the docker container.
+*** In the docker container, from the project root, run
+    cargo run --bin edo72_piano_monome
+*** In the host system, run
+    ./code/rust/edo72_piano_monome/connect-midi.sh
+** to use it
+*** monome layout
+The grid is 16 columns by 8 rows, with =y=0 at the top.
+
+The first twelve columns, =x=0..11=, correspond to the piano keys C
+through B. Black-key columns are dimly lit across all eight rows.
+
+For now, the offset controls use the bottom seven rows, =y=1..7=:
+
+- =x=0..11= means piano keys C, C#, D, ..., B.
+- One bright key in each column is the active offset.
+- =y=4= means no offset.
+- Moving upward raises the pitch: =y=3= is =+1= step of 72-EDO.
+- Moving downward lowers the pitch: =y=5= is =-1= step of 72-EDO.
+
+The top row, =y=0=, is lit for black-key columns but does not change
+the offset yet.

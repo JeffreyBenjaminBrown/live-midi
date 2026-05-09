@@ -1,4 +1,4 @@
-Welcome back, Claude! Please read orientation.org to remember what we're doing here. Then, at code/rust/edo72/ you'll find code that transforms incoming MIDI notes. I want to extend it, to provide visual feedback indicating which pitch is showing.
+Welcome back, Claude! Please read orientation.org to remember what we're doing here. Then, at code/rust/edo72_piano/ you'll find code that transforms incoming MIDI notes. I want to extend it, to provide visual feedback indicating which pitch is showing.
 
 Imagine an infinite 12-edo tuning grid, like the frets of a guitar.
 Pitch rises by 1\12 (that's one twelfth of an octave)

@@ -34,7 +34,6 @@ struct TransformedNote {
   output_note: u8, }
 
 struct ShiftPress {
-  input_note: u8,
   shift_value: i8, }
 
 fn ongoing_notes(
@@ -69,9 +68,9 @@ fn current_total_shift() -> Option<i16> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let midi_in: MidiInput =
-    MidiInput::new("edo72-in")?;
+    MidiInput::new("edo72_piano-in")?;
   let midi_out: MidiOutput =
-    MidiOutput::new("edo72-out")?;
+    MidiOutput::new("edo72_piano-out")?;
   let conn_out: MidiOutputConnection =
     midi_out.create_virtual("out")?;
   let (tx, rx): (mpsc::Sender<Vec<u8>>,
@@ -107,8 +106,8 @@ fn print_startup_message() {
   println!("72-EDO transformer started!");
   println!();
   println!("Virtual ports created:");
-  println!("  - 'edo72-in:in' (input)");
-  println!("  - 'edo72-out:out' (output)");
+  println!("  - 'edo72_piano-in:in' (input)");
+  println!("  - 'edo72_piano-out:out' (output)");
   println!();
   println!("Config:");
   println!("  - min_channel: {}", MIN_CHANNEL_OUT);
@@ -155,7 +154,7 @@ fn handle_offset_control(
     let shift_value: i8 = input_note as i8
                           - OFFSET_ZERO_NOTE as i8;
     shifts.insert(input_note,
-                  ShiftPress { input_note, shift_value });
+                  ShiftPress { shift_value });
   } else if is_note_off {
     shifts.remove(&input_note); }
   vec![] } // don't pass through offset control notes

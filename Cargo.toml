@@ -19,8 +19,12 @@ name = "sampler"
 path = "code/rust/sampler/sampler.rs"
 
 [[bin]]
-name = "edo72"
-path = "code/rust/edo72/edo72.rs"
+name = "edo72_piano"
+path = "code/rust/edo72_piano/edo72_piano.rs"
+
+[[bin]]
+name = "edo72_piano_monome"
+path = "code/rust/edo72_piano_monome/edo72_piano_monome.rs"
 
 [[bin]]
 name = "triangle_chord"
@@ -29,3 +33,5 @@ path = "code/rust/synth/triangle_chord.rs"
 [dependencies]
 midir = "0.10"
 minifb = "0.27"
+rosc = "0.10"
+libc = "0.2"
