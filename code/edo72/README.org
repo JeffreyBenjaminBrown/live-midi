@@ -16,12 +16,15 @@ every note-on from the other octaves is shifted that much.
 *** Connect the keyboard.
 *** Start the docker container.
     See [[../../docker.sh]].
-*** In the host system, run
-    xhost +local: # so Wayland permits the GUI window
+*** In the host system, allow the container to open an X11 window:
+    xhost +local:
+    The container also needs =/tmp/.X11-unix= mounted, =DISPLAY= set, and
+    X11 runtime libraries on =LD_LIBRARY_PATH=; the current Docker image
+    definition in =docker-typedb-rust/docker.nix= provides the library path.
 *** In the docker container, from the project root, run
     cargo run --bin edo72
 *** In the host system, run
-    ./code/edo72//connect-midi.sh
+    ./code/edo72/connect-midi.sh
 ** to configure it
 Be sure the 'const' definitions in the code make sense --
 they depend on the synth being used.

@@ -8,7 +8,8 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   -v /run/user/1000/pipewire-0:/run/user/1000/pipewire-0 \
   -e PIPEWIRE_RUNTIME_DIR=/run/user/1000                 \
   -v /tmp/.X11-unix:/tmp/.X11-unix                       \
-  -e DISPLAY=${DISPLAY:-:0}                              \
+  -e DISPLAY="${DISPLAY:-:0}"                            \
+  -v /nix/store:/nix/store:ro                            \
   --network host                                         \
   --platform linux/amd64                                 \
   --user 1000:1000                                       \
@@ -25,9 +26,14 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   # The --group-add line dynamically gets the host audio group GID.
   # The --dns line somehow lets Claude Code
   #   work through my phone's mobile hotspot.
-  #   --newtowrk host binds each port
+  #   --network host binds each port
   #   to the host's port of the same number,
   #   e.g. 1729=1729 (TypeDB).
+  # The /tmp/.X11-unix mount and DISPLAY let minifb/X11 GUI windows
+  #   open on the host; the rebuilt image sets LD_LIBRARY_PATH for
+  #   libX11/libXcursor/libXrandr.
+  # The /nix/store bind keeps Nix-built image store references available
+  #   when the image was built by docker-typedb-rust/docker.nix.
   # The --cap-add/ulimit lines let processes in the container raise
   #   their own thread priority to SCHED_FIFO, which grid_synth needs
   #   for glitch-free low-latency audio.
