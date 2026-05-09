@@ -24,6 +24,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/11-grid-synth.out"
 PROJECT="$HERE/grid_synth"
+TARGET_DIR="${CARGO_TARGET_DIR:-/home/ubuntu/target}"
 
 exec 3>&1
 progress() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&3; }
@@ -41,4 +42,4 @@ echo
 echo "### GRID SYNTH LIVE — press keys on the grid; Ctrl-C to quit ###"
 echo
 
-stdbuf -oL -eL "$PROJECT/target/release/grid_synth" "$@" 2>&1 | tee -a "$OUT"
+stdbuf -oL -eL "$TARGET_DIR/release/grid_synth" "$@" 2>&1 | tee -a "$OUT"

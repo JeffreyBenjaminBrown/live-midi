@@ -3,25 +3,28 @@ name = "midi_pulse"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+path = "code/rust/midi_pulse/lib.rs"
+
 [[bin]]
 name = "polite_ping"
-path = "code/demos/polite_ping.rs"
+path = "code/rust/demos/polite_ping.rs"
 
 [[bin]]
 name = "add_echo"
-path = "code/demos/add_echo.rs"
+path = "code/rust/demos/add_echo.rs"
 
 [[bin]]
 name = "sampler"
-path = "code/sampler/sampler.rs"
+path = "code/rust/sampler/sampler.rs"
 
 [[bin]]
 name = "edo72"
-path = "code/edo72/edo72.rs"
+path = "code/rust/edo72/edo72.rs"
 
 [[bin]]
 name = "triangle_chord"
-path = "code/synth_rust/triangle_chord.rs"
+path = "code/rust/synth/triangle_chord.rs"
 
 [dependencies]
 midir = "0.10"

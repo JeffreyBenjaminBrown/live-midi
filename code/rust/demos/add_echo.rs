@@ -13,6 +13,7 @@
 
 use midir::{MidiInput, MidiOutput, MidiInputConnection, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
+use midi_pulse::midi;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{thread, io};
@@ -28,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let midi_out_echo: MidiOutput = MidiOutput::new("add-echo-echo")?;
 
     // Create virtual output ports
-    let mut conn_immediate: MidiOutputConnection =
+    let conn_immediate: MidiOutputConnection =
         midi_out_immediate.create_virtual("immediate-out")?;
     let conn_echo: MidiOutputConnection =
         midi_out_echo.create_virtual("echo-out")?;
@@ -44,11 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) = mpsc::channel();
 
     // Spawn thread for immediate output
-    let _immediate_thread: thread::JoinHandle<()> = thread::spawn(move || {
-        while let Ok(data) = rx_immediate.recv() {
-            let _ = conn_immediate.send(&data);
-        }
-    });
+    let _immediate_thread: thread::JoinHandle<()> =
+        thread::spawn(move || midi::run_output_thread(conn_immediate, rx_immediate));
 
     // Spawn thread for delayed echo output
     let _echo_thread: thread::JoinHandle<()> = thread::spawn(move || {

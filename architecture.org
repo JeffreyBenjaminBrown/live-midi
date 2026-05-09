@@ -66,12 +66,14 @@
    | Shell script | WAV files        | Wraps Python, same mechanism     |
 
 ** Source layout
-   - code/demos/          : polite_ping.rs, add_echo.rs
-   - code/edo72/          : edo72.rs, connect-midi.sh, README.org
-   - code/sampler/        : sampler.rs, connect-midi.sh
+   - code/rust/demos/          : polite_ping.rs, add_echo.rs
+   - code/rust/edo72/          : edo72.rs, connect-midi.sh, README.org
+   - code/rust/sampler/        : sampler.rs, connect-midi.sh
+   - code/rust/monome/         : monome grid synth, OSC tests, and notes
+   - code/python/              : Python synth and pitch-theory experiments
    - learnings/           : notes on Docker+MIDI+NixOS integration
    - host-nix-config-copy/: snapshots of NixOS audio/package config
-   - Cargo.toml           : defines all four Rust binary targets
+   - Cargo.toml           : defines the root Rust binary targets
    - docker.sh            : container launch command
    - orientation.org      : original project overview
    - TODO.org             : feature roadmap

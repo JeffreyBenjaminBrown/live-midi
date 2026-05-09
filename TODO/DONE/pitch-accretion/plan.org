@@ -273,7 +273,7 @@ cell, true)=; nonempty→empty gets =false=.
 
 * Files touched
 
-Single file (=monome/grid_synth/src/main.rs=). v1 stays in one file;
+Single file (=code/rust/monome/grid_synth/src/main.rs=). v1 stays in one file;
 splitting into modules is not justified at this size. I'll add
 section banners (=// === voices ==== etc.) so it's navigable.
 

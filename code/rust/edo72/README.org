@@ -15,7 +15,7 @@ every note-on from the other octaves is shifted that much.
 ** to start it
 *** Connect the keyboard.
 *** Start the docker container.
-    See [[../../docker.sh]].
+    See [[../../../docker.sh]].
 *** In the host system, allow the container to open an X11 window:
     xhost +local:
     The container also needs =/tmp/.X11-unix= mounted, =DISPLAY= set, and
@@ -24,7 +24,7 @@ every note-on from the other octaves is shifted that much.
 *** In the docker container, from the project root, run
     cargo run --bin edo72
 *** In the host system, run
-    ./code/edo72/connect-midi.sh
+    ./code/rust/edo72/connect-midi.sh
 ** to configure it
 Be sure the 'const' definitions in the code make sense --
 they depend on the synth being used.

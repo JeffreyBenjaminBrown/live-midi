@@ -516,7 +516,7 @@ commit-by-commit:
 
 ** Commit 2 — Two-row brightness diagnostic
 
-1. Replace =monome/12-brightness-test.sh= with the two-row
+1. Replace =code/rust/monome/12-brightness-test.sh= with the two-row
    diagnostic that paints:
    - Row 0: cells 0-3 at level 0, 4-7 at level 4, 8-11 at level
      8, 12-15 at level 12.
@@ -646,7 +646,7 @@ behaviour fully implemented. No =set-accretion-target= yet.
 
 ** Commit 7 — README + final pass
 
-1. Update =monome/README.org= "Accretion controls" section with
+1. Update =code/rust/monome/README.org= "Accretion controls" section with
    the new layout and new behaviour. Update the picture.
 2. Add a "Chord storage" subsection explaining slots and the
    target/emitter distinction.

@@ -27,7 +27,7 @@ and for each n > 1 similarly.
 by source (chord storage v. live edo grid)
 by pitch order among voices
 by pitch range
-* [[./code/edo72/requests/visual-feedback.org][72-edo-from-12 visual feedback]]
+* [[./code/rust/edo72/requests/visual-feedback.org][72-edo-from-12 visual feedback]]
 * [[id:beefb9cf-7378-4e75-9cd4-d868ea065092][monome haskell : build each note and map it to the keys]]
 * synth plans
 ** maybe don't choose algorithms (e.g. sine) ahead of time; just pick the easiest initially, and optimize only if profiling identifies it as important

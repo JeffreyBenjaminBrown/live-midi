@@ -1,0 +1,64 @@
+* DONE Step 9 — Sound test (verify audio stack)
+
+New project: turn button presses into triangle-wave tones. Before
+writing the integration, confirm the pieces separately. This step
+confirms sound output — compiles =code/rust/synth/triangle_chord.rs=
+(your existing file) and plays a 220 Hz tone for ~2 seconds.
+
+Run:
+#+begin_src bash
+cd /home/ubuntu/code/rust/monome
+bash ./09-sound-test.sh
+#+end_src
+
+Output: =09-sound-test.out=
+
+Tell Claude "step 9 done — heard it" or "step 9 done — silence".
+
+* DONE Step 10 — Button-press test (no Rust yet)
+
+Uses =oscsend=/=oscdump= (both from liblo, already on PATH). Tells
+serialoscd to forward events for your device to UDP :9000, then
+=oscdump= prints everything arriving there for 15 seconds. Press some
+buttons during that window.
+
+Expected lines in the output look like:
+  =/256-1-cable/grid/key iii 3 5 1=   (press at x=3, y=5)
+  =/256-1-cable/grid/key iii 3 5 0=   (release)
+
+Run:
+#+begin_src bash
+cd /home/ubuntu/code/rust/monome
+bash ./10-button-test.sh
+#+end_src
+
+Output: =10-button-test.out=
+
+Tell Claude "step 10 done" plus any notable observations (events
+arrived? timing felt responsive? any weird keys?).
+
+* Step 11 — Grid synth (the fun part)                             :pending:
+
+Single Rust program at =/home/ubuntu/code/rust/monome/grid_synth/=:
+- Discovers the grid via serialoscd's detector (same as step 10).
+- Registers UDP :9000 as the receiver, sets prefix to /256-1-cable,
+  clears all LEDs.
+- Uses =cpal= for real-time audio output (PipeWire, f32 samples).
+- Per press: inserts a voice at f(x,y) = 220 * 2^((9x - y)/46),
+  5 ms linear attack, and lights the LED at (x, y).
+- Per release: begins a 50 ms linear fade on that voice and darkens
+  the LED.
+- Retriggering a held key cancels the release, keeps envelope
+  continuity.
+- Audio callback mixes all active voices (~0.15 per voice, clamped
+  to ±0.95 at the output).
+
+Run:
+#+begin_src bash
+cd /home/ubuntu/code/rust/monome
+bash ./11-grid-synth.sh
+#+end_src
+
+Runs forever. Ctrl-C to quit. First build fetches cpal (~1 min).
+
+Output: =11-grid-synth.out= (mirrored tee of terminal output).

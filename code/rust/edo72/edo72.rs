@@ -5,6 +5,7 @@ mod gui;
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
+use midi_pulse::midi;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -77,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  mpsc::Receiver<Vec<u8>>) = mpsc::channel();
   let _out_thread: thread::JoinHandle<()> =
     thread::spawn(move || {
-      run_output_thread(conn_out, rx); });
+      midi::run_output_thread(conn_out, rx); });
   let (display_tx, display_rx): (mpsc::Sender<(u8, bool)>,
                                  mpsc::Receiver<(u8, bool)>) = mpsc::channel();
   let _conn_in: MidiInputConnection<()> =
@@ -87,11 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for msg in transform_message(message) {
           let _ = tx.send(msg); }
         if message.len() >= 3 && message[1] < OFFSET_OCTAVE_START {
-          let status: u8 = message[0] & 0xF0;
-          let is_note_on: bool =
-            status == 0x90 && message[2] > 0;
-          let is_note_off: bool =
-            status == 0x80 || (status == 0x90 && message[2] == 0);
+          let is_note_on: bool = midi::is_note_on(message);
+          let is_note_off: bool = midi::is_note_off(message);
           if is_note_on || is_note_off {
             let _ = display_tx.send(
               (message[1] % 12, is_note_on));
@@ -121,12 +119,6 @@ fn print_startup_message() {
   println!("Press Enter to exit...");
 }
 
-fn run_output_thread(
-  mut conn: MidiOutputConnection,
-  rx: mpsc::Receiver<Vec<u8>>)
-{ while let Ok(data) = rx.recv() {
-    let _ = conn.send(&data); }}
-
 fn transform_message(
   message: &[u8]
 ) -> Vec<Vec<u8>> {
@@ -154,10 +146,9 @@ fn handle_offset_control(
 ) -> Vec<Vec<u8>> {
   // Top octave controls the offset (F#7 = 0, G7 = +1, F7 = -1, etc.)
   // Total shift = sum of all held shift notes.
-  let is_note_on: bool =
-    status == 0x90 && velocity > 0;
-  let is_note_off: bool =
-    status == 0x80 || (status == 0x90 && velocity == 0);
+  let data: [u8; 3] = [status, input_note, velocity];
+  let is_note_on: bool = midi::is_note_on(&data);
+  let is_note_off: bool = midi::is_note_off(&data);
   let mut shifts: MutexGuard<'_, HashMap<u8, ShiftPress>> =
     ongoing_shifts().lock().unwrap();
   if is_note_on {
@@ -174,10 +165,9 @@ fn handle_regular_note(
   velocity: u8,
   original_note: u8
 ) -> Vec<Vec<u8>> {
-  let is_note_on: bool =
-    status == 0x90 && velocity > 0;
-  let is_note_off: bool =
-    status == 0x80 || (status == 0x90 && velocity == 0);
+  let data: [u8; 3] = [status, original_note, velocity];
+  let is_note_on: bool = midi::is_note_on(&data);
+  let is_note_off: bool = midi::is_note_off(&data);
   if is_note_on {
     // Update the persistent pitch class shift before transformation,
     // but only if shift keys are being held (we find a Some).

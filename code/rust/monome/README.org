@@ -1,4 +1,4 @@
-#+TITLE: monome/ — grid synth + hard-won ops notes
+#+TITLE: code/rust/monome/ — grid synth + hard-won ops notes
 
 This directory contains a tiny Rust synth driven by a monome grid,
 plus the scripts and notes from resurrecting Jeff's monome on NixOS
@@ -9,7 +9,7 @@ in April 2026.
 Inside the container:
 
 #+begin_src bash
-cd /home/ubuntu/monome
+cd /home/ubuntu/code/rust/monome
 bash ./11-grid-synth.sh [FUND [EDO [X_STEP [Y_STEP]]]]
 #+end_src
 

@@ -17,6 +17,7 @@
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
+use midi_pulse::midi;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
@@ -76,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let playback_gen: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
   let _immediate_thread: thread::JoinHandle<()> =
-    thread::spawn(move || run_immediate_thread(conn_immediate, rx_immediate));
+    thread::spawn(move || midi::run_output_thread(conn_immediate, rx_immediate));
 
   let state_for_sample: Arc<Mutex<SamplerState>> = Arc::clone(&state);
   let gen_for_sample: Arc<AtomicU64> = Arc::clone(&playback_gen);
@@ -91,8 +92,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     "midi-in",
     move |_timestamp: u64, message: &[u8], _: &mut ()| {
       let data: Vec<u8> = message.to_vec();
-      let note: Option<u8> = get_note(&data);
-      let is_on: bool = is_note_on(&data);
+      let note: Option<u8> = midi::note(&data);
+      let is_on: bool = midi::is_note_on(&data);
 
       if let Some(n) = note {
         if n == TOP_BFLAT && is_on {
@@ -142,12 +143,6 @@ fn print_startup_message() {
   println!("Use 'aconnect -l' to see ports, 'aconnect <src> <dst>' to connect.");
   println!("Press Enter to exit...");
 }
-
-fn run_immediate_thread(
-  mut conn: MidiOutputConnection,
-  rx: mpsc::Receiver<Vec<u8>>)
-  { while let Ok(data) = rx.recv()
-      { let _ = conn.send(&data); }}
 
 fn run_sample_thread(
   mut conn: MidiOutputConnection,
@@ -201,7 +196,7 @@ fn play_loop(
 
     for msg in clip.iter() {
       if gen.load(Ordering::SeqCst) != my_gen {
-        send_all_notes_off(conn, &active_notes);
+        midi::send_all_notes_off(conn, &active_notes);
         return;
       }
 
@@ -209,17 +204,17 @@ fn play_loop(
       let now: Instant = Instant::now();
       if target_time > now {
         if interruptible_sleep(target_time - now, gen, my_gen) {
-          send_all_notes_off(conn, &active_notes);
+          midi::send_all_notes_off(conn, &active_notes);
           return;
         }
       }
 
       // Track active notes
       if let (Some(note), Some(channel))
-        = (get_note(&msg.data), get_channel(&msg.data))
-        { if is_note_on(&msg.data) {
+        = (midi::note(&msg.data), midi::channel(&msg.data))
+        { if midi::is_note_on(&msg.data) {
             active_notes.insert((channel, note));
-          } else if is_note_off(&msg.data) {
+          } else if midi::is_note_off(&msg.data) {
             active_notes.remove(&(channel, note));
           }
         }
@@ -231,7 +226,7 @@ fn play_loop(
     let elapsed: Duration = loop_start.elapsed();
     if elapsed < loop_duration {
       if interruptible_sleep(loop_duration - elapsed, gen, my_gen) {
-        send_all_notes_off(conn, &active_notes);
+        midi::send_all_notes_off(conn, &active_notes);
         return;
       }
     }
@@ -261,13 +256,6 @@ fn interruptible_sleep(duration: Duration, gen: &AtomicU64, my_gen: u64) -> bool
     remaining = remaining.saturating_sub(to_sleep);
   }
   false
-}
-
-fn send_all_notes_off(conn: &mut MidiOutputConnection, active_notes: &HashSet<(u8, u8)>) {
-  for &(channel, note) in active_notes.iter() {
-    let note_off: [u8; 3] = [0x80 | channel, note, 0];
-    let _ = conn.send(&note_off);
-  }
 }
 
 fn handle_stop(
@@ -305,7 +293,7 @@ fn handle_normal_event(
 ) {
   let _ = tx_immediate.send(data.clone());
   let now: Instant = Instant::now();
-  if is_note_event(&data)
+  if midi::is_note_event(&data)
   { state.last_normal_note = Some((now,
                                    data.clone() )); }
   if state.recording {
@@ -339,46 +327,3 @@ fn start_recording(state: &mut MutexGuard<SamplerState>) {
       return; }}
   state.record_start = Some(now);
   println!("[Sampler] Recording started..."); }
-
-fn get_note(data: &[u8]) -> Option<u8> {
-  if data.len() >= 2 && is_note_event(data) {
-    Some(data[1])
-  } else {
-    None
-  }
-}
-
-fn get_channel(data: &[u8]) -> Option<u8> {
-  if !data.is_empty() {
-    Some(data[0] & 0x0F)
-  } else {
-    None
-  }
-}
-
-fn is_note_on(data: &[u8]) -> bool {
-  if data.len() >= 3 {
-    let status: u8 = data[0] & 0xF0;
-    status == 0x90 && data[2] > 0
-  } else {
-    false
-  }
-}
-
-fn is_note_off(data: &[u8]) -> bool {
-  if data.len() >= 3 {
-    let status: u8 = data[0] & 0xF0;
-    // Note off, or note on with velocity 0
-    status == 0x80 || (status == 0x90 && data[2] == 0)
-  } else {
-    false
-  }
-}
-
-fn is_note_event(data: &[u8]) -> bool {
-  if data.is_empty() {
-    return false;
-  }
-  let status: u8 = data[0] & 0xF0;
-  status == 0x80 || status == 0x90
-}

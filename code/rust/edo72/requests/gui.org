@@ -3,7 +3,7 @@
 *** docker.sh
     shows how this code, which runs in a docker container,
     interacts with the host system.
-*** code/edo72/
+*** code/rust/edo72/
     is the code I would like to extend.
     The relevant portion of it is the display.
     Currently that display shows a grid,
