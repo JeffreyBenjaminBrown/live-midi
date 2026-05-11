@@ -24,6 +24,13 @@ const OFFSET_COLS: i32 = 12;
 const OFFSET_Y_MIN: i32 = 1;
 const OFFSET_Y_MAX: i32 = 7;
 const OFFSET_Y_ZERO: i32 = 4;
+const ROOT_Y: i32 = 0;
+const GROUP_COLS: [i32; 3] = [13, 14, 15];
+const GROUP_INTERVALS: [&[usize]; 3] = [
+  &[0, 2, 5, 7],
+  &[1, 3, 8, 10],
+  &[4, 6, 9, 11],
+];
 const NOTE_FLASH: Duration = Duration::from_millis(30);
 const DIM_PULSE: PulseBrightness = PulseBrightness::one_thirty_second(15_000);
 const WHITE_KEYS: [bool; 12] = [
@@ -41,6 +48,8 @@ struct TransformedNote {
 
 struct MonomeLedState {
   shifts: [i8; 12],
+  root: usize,
+  group_shifts: [i8; 3],
   note_flash_until: [Option<Instant>; 12],
   dim_columns_on: bool,
 }
@@ -49,6 +58,8 @@ impl MonomeLedState {
   fn new(shifts: [i8; 12]) -> Self {
     MonomeLedState {
       shifts,
+      root: 0,
+      group_shifts: [0; 3],
       note_flash_until: [None; 12],
       dim_columns_on: false,
     }
@@ -138,7 +149,9 @@ fn print_startup_message() {
   println!();
   println!("Monome offset columns:");
   println!("  - x=0..11 maps C..B");
+  println!("  - y=0 selects the root");
   println!("  - y=4 is 0; y=3 is +1; y=5 is -1");
+  println!("  - x=13..15 set root-relative group offsets");
   println!("  - black-key columns are flashed at 1/32 duty cycle");
   println!();
   println!("Press Enter to exit...");
@@ -302,12 +315,28 @@ fn run_monome_thread(
         (*x, *y, *s),
       _ => continue,
     };
-    let Some((pitch_class, shift)) = apply_offset_press(x, y, s, &shifts) else {
+    if let Some(root) = apply_root_press(x, y, s) {
+      led_state.root = root;
+      eprintln!("root -> {}", pitch_name(root));
+      render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
       continue;
-    };
-    led_state.shifts[pitch_class] = shift;
-    eprintln!("offset {} -> {shift}", pitch_name(pitch_class));
-    render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
+    }
+    if let Some((group, shift, changed)) =
+      apply_group_press(x, y, s, led_state.root, &shifts)
+    {
+      led_state.group_shifts[group] = shift;
+      for pitch_class in changed {
+        led_state.shifts[pitch_class] = shift;
+      }
+      eprintln!("group {} -> {shift}", group + 1);
+      render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
+      continue;
+    }
+    if let Some((pitch_class, shift)) = apply_offset_press(x, y, s, &shifts) {
+      led_state.shifts[pitch_class] = shift;
+      eprintln!("offset {} -> {shift}", pitch_name(pitch_class));
+      render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
+    }
   }
   send_led_all(&sock, device, 0);
 }
@@ -403,6 +432,8 @@ fn render_to_monome(
 fn render_led_cols(led_state: &MonomeLedState, now: Instant) -> [u8; 16] {
   let mut state = MonomeLedState {
     shifts: led_state.shifts,
+    root: led_state.root,
+    group_shifts: led_state.group_shifts,
     note_flash_until: led_state.note_flash_until,
     dim_columns_on: led_state.dim_columns_on,
   };
@@ -411,7 +442,7 @@ fn render_led_cols(led_state: &MonomeLedState, now: Instant) -> [u8; 16] {
   let mut cols: [u8; 16] = [0; 16];
   for x in 0..OFFSET_COLS as usize {
     if !WHITE_KEYS[x] && state.dim_columns_on {
-      cols[x] = 0xff;
+      cols[x] = bottom_seven_mask();
     }
     let active_y: i32 = OFFSET_Y_ZERO - state.shifts[x] as i32;
     if active_y >= 0 && active_y < 8 {
@@ -421,7 +452,22 @@ fn render_led_cols(led_state: &MonomeLedState, now: Instant) -> [u8; 16] {
       cols[x] = 0xff;
     }
   }
+  cols[state.root] |= 1 << ROOT_Y;
+  for (group, x) in GROUP_COLS.iter().enumerate() {
+    let active_y: i32 = OFFSET_Y_ZERO - state.group_shifts[group] as i32;
+    if active_y >= 0 && active_y < 8 {
+      cols[*x as usize] |= 1 << active_y;
+    }
+  }
   cols
+}
+
+fn bottom_seven_mask() -> u8 {
+  let mut mask: u8 = 0;
+  for y in OFFSET_Y_MIN..=OFFSET_Y_MAX {
+    mask |= 1 << y;
+  }
+  mask
 }
 
 fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType>) {
@@ -436,6 +482,62 @@ fn is_offset_cell(x: i32, y: i32) -> bool {
   x >= 0 && x < OFFSET_COLS && y >= OFFSET_Y_MIN && y <= OFFSET_Y_MAX
 }
 
+fn is_root_cell(x: i32, y: i32) -> bool {
+  x >= 0 && x < OFFSET_COLS && y == ROOT_Y
+}
+
+fn is_group_cell(x: i32, y: i32) -> Option<usize> {
+  if y < OFFSET_Y_MIN || y > OFFSET_Y_MAX {
+    return None;
+  }
+  GROUP_COLS.iter().position(|col| *col == x)
+}
+
+fn pitch_class_from_root(root: usize, interval: usize) -> usize {
+  (root + interval) % 12
+}
+
+fn group_pitch_classes(root: usize, group: usize) -> Vec<usize> {
+  GROUP_INTERVALS[group]
+    .iter()
+    .map(|interval| pitch_class_from_root(root, *interval))
+    .collect()
+}
+
+fn shift_from_y(y: i32) -> i8 {
+  (OFFSET_Y_ZERO - y) as i8
+}
+
+fn apply_root_press(x: i32, y: i32, s: i32) -> Option<usize> {
+  if s == 1 && is_root_cell(x, y) {
+    Some(x as usize)
+  } else {
+    None
+  }
+}
+
+fn apply_group_press(
+  x: i32,
+  y: i32,
+  s: i32,
+  root: usize,
+  shifts: &Arc<Mutex<[i8; 12]>>,
+) -> Option<(usize, i8, Vec<usize>)> {
+  if s != 1 {
+    return None;
+  }
+  let group = is_group_cell(x, y)?;
+  let shift = shift_from_y(y);
+  let changed = group_pitch_classes(root, group);
+  {
+    let mut shifts = shifts.lock().unwrap();
+    for pitch_class in &changed {
+      shifts[*pitch_class] = shift;
+    }
+  }
+  Some((group, shift, changed))
+}
+
 fn apply_offset_press(
   x: i32,
   y: i32,
@@ -446,7 +548,7 @@ fn apply_offset_press(
     return None;
   }
   let pitch_class: usize = x as usize;
-  let shift: i8 = (OFFSET_Y_ZERO - y) as i8;
+  let shift: i8 = shift_from_y(y);
   shifts.lock().unwrap()[pitch_class] = shift;
   Some((pitch_class, shift))
 }
@@ -491,6 +593,54 @@ mod tests {
   }
 
   #[test]
+  fn top_row_selects_root() {
+    assert_eq!(apply_root_press(6, 0, 1), Some(6));
+    assert_eq!(apply_root_press(6, 0, 0), None);
+    assert_eq!(apply_root_press(13, 0, 1), None);
+  }
+
+  #[test]
+  fn first_group_press_includes_root_and_uses_third_and_fifth_like_interval_set() {
+    let shifts = shared_shifts();
+
+    assert_eq!(apply_group_press(13, 3, 1, 6, &shifts), Some((0, 1, vec![6, 8, 11, 1])));
+    let shifts = shifts.lock().unwrap();
+
+    assert_eq!(shifts[6], 1);
+    assert_eq!(shifts[8], 1);
+    assert_eq!(shifts[11], 1);
+    assert_eq!(shifts[1], 1);
+  }
+
+  #[test]
+  fn second_group_press_uses_four_note_interval_set() {
+    let shifts = shared_shifts();
+
+    assert_eq!(apply_group_press(14, 3, 1, 6, &shifts), Some((1, 1, vec![7, 9, 2, 4])));
+    let shifts = shifts.lock().unwrap();
+
+    assert_eq!(shifts[7], 1);
+    assert_eq!(shifts[9], 1);
+    assert_eq!(shifts[2], 1);
+    assert_eq!(shifts[4], 1);
+    assert_eq!(shifts[6], 0);
+  }
+
+  #[test]
+  fn third_group_press_uses_other_four_note_interval_set() {
+    let shifts = shared_shifts();
+
+    assert_eq!(apply_group_press(15, 5, 1, 6, &shifts), Some((2, -1, vec![10, 0, 3, 5])));
+    let shifts = shifts.lock().unwrap();
+
+    assert_eq!(shifts[10], -1);
+    assert_eq!(shifts[0], -1);
+    assert_eq!(shifts[3], -1);
+    assert_eq!(shifts[5], -1);
+    assert_eq!(shifts[6], 0);
+  }
+
+  #[test]
   fn piano_note_uses_current_pitch_class_shift() {
     let shifts = shared_shifts();
     let (_baseline_channel, baseline_note) = edo72_instruction(60, &shifts);
@@ -527,7 +677,7 @@ mod tests {
 
     let cols = render_led_cols(&led_state, now + NOTE_FLASH);
 
-    assert_eq!(cols[0], 1 << OFFSET_Y_ZERO);
+    assert_eq!(cols[0], (1 << ROOT_Y) | (1 << OFFSET_Y_ZERO));
   }
 
   #[test]
@@ -538,5 +688,31 @@ mod tests {
     let cols = render_led_cols(&led_state, Instant::now());
 
     assert_eq!(cols[1], 1 << OFFSET_Y_ZERO);
+  }
+
+  #[test]
+  fn render_root_selector_on_top_row_only() {
+    let mut led_state = MonomeLedState::new([0; 12]);
+    led_state.root = 6;
+    led_state.dim_columns_on = true;
+
+    let cols = render_led_cols(&led_state, Instant::now());
+
+    for (x, col) in cols.iter().take(12).enumerate() {
+      let root_bit = (col & (1 << ROOT_Y)) != 0;
+      assert_eq!(root_bit, x == 6);
+    }
+  }
+
+  #[test]
+  fn render_group_columns_use_their_own_offsets() {
+    let mut led_state = MonomeLedState::new([0; 12]);
+    led_state.group_shifts = [1, 0, -2];
+
+    let cols = render_led_cols(&led_state, Instant::now());
+
+    assert_eq!(cols[13], 1 << 3);
+    assert_eq!(cols[14], 1 << 4);
+    assert_eq!(cols[15], 1 << 6);
   }
 }
