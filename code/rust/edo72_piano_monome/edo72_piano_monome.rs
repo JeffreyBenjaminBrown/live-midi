@@ -24,7 +24,7 @@ const OFFSET_COLS: i32 = 12;
 const OFFSET_Y_MIN: i32 = 1;
 const OFFSET_Y_MAX: i32 = 7;
 const OFFSET_Y_ZERO: i32 = 4;
-const BRIGHT_LEVEL: i32 = 15;
+const NOTE_FLASH: Duration = Duration::from_millis(30);
 const DIM_PULSE: PulseBrightness = PulseBrightness::one_thirty_second(15_000);
 const WHITE_KEYS: [bool; 12] = [
   true, false, true,
@@ -39,6 +39,34 @@ struct TransformedNote {
   output_note: u8,
 }
 
+struct MonomeLedState {
+  shifts: [i8; 12],
+  note_flash_until: [Option<Instant>; 12],
+  dim_columns_on: bool,
+}
+
+impl MonomeLedState {
+  fn new(shifts: [i8; 12]) -> Self {
+    MonomeLedState {
+      shifts,
+      note_flash_until: [None; 12],
+      dim_columns_on: false,
+    }
+  }
+
+  fn flash_note(&mut self, pitch_class: usize, now: Instant) {
+    self.note_flash_until[pitch_class] = Some(now + NOTE_FLASH);
+  }
+
+  fn expire_flashes(&mut self, now: Instant) {
+    for flash_until in &mut self.note_flash_until {
+      if flash_until.is_some_and(|deadline| now >= deadline) {
+        *flash_until = None;
+      }
+    }
+  }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let shifts: Arc<Mutex<[i8; 12]>> = Arc::new(Mutex::new([0; 12]));
   let ongoing: Arc<Mutex<HashMap<u8, TransformedNote>>> =
@@ -49,6 +77,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let conn_out: MidiOutputConnection = midi_out.create_virtual("out")?;
   let (tx, rx): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) =
     mpsc::channel();
+  let (flash_tx, flash_rx) : (mpsc::Sender<usize>,
+                              mpsc::Receiver<usize>)
+    = mpsc::channel();
   let _out_thread: thread::JoinHandle<()> =
     thread::spawn(move || midi::run_output_thread(conn_out, rx));
 
@@ -58,16 +89,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let _conn_in: MidiInputConnection<()> = midi_in.create_virtual(
     "in",
     move |_timestamp: u64, message: &[u8], _: &mut ()| {
-      for msg in transform_message(message, &shifts_for_midi, &ongoing_for_midi) {
-        let _ = tx.send(msg);
+      if let Some(pitch_class) = note_on_pitch_class(message) {
+        let _ = flash_tx.send(pitch_class);
       }
-    },
-    (),
-  )?;
+      for msg in transform_message(message, &shifts_for_midi, &ongoing_for_midi) {
+        let _ = tx.send(msg); }},
+    (), )?;
 
   let shifts_for_monome: Arc<Mutex<[i8; 12]>> = Arc::clone(&shifts);
-  let _monome_thread: thread::JoinHandle<()> =
-    thread::spawn(move || run_monome_thread(shifts_for_monome));
+  let monome_thread: thread::JoinHandle<()> =
+    thread::spawn(move || run_monome_thread(shifts_for_monome, flash_rx));
 
   install_sigint_handler();
   print_startup_message();
@@ -83,6 +114,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     thread::sleep(Duration::from_millis(50));
   }
+  STOP_REQUESTED.store(true, Ordering::Relaxed);
+  let _ = monome_thread.join();
   black_monome();
   Ok(())
 }
@@ -120,6 +153,14 @@ fn transform_message(
     return vec![message.to_vec()];
   }
   handle_note_event(message[0] & 0xF0, message[2], message[1], shifts, ongoing)
+}
+
+fn note_on_pitch_class(message: &[u8]) -> Option<usize> {
+  if message.len() >= 3 && midi::is_note_on(message) {
+    Some((message[1] % 12) as usize)
+  } else {
+    None
+  }
 }
 
 fn handle_note_event(
@@ -189,7 +230,10 @@ fn edo72_instruction(
   (channel, note)
 }
 
-fn run_monome_thread(shifts: Arc<Mutex<[i8; 12]>>) {
+fn run_monome_thread(
+  shifts: Arc<Mutex<[i8; 12]>>,
+  flash_rx: mpsc::Receiver<usize>,
+) {
   let sock = UdpSocket::bind(("0.0.0.0", LISTEN_PORT))
     .unwrap_or_else(|e| panic!("bind UDP :{LISTEN_PORT}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
@@ -197,16 +241,31 @@ fn run_monome_thread(shifts: Arc<Mutex<[i8; 12]>>) {
     discover_device(&sock).expect("no monome found; is serialoscd running?");
   let mut device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
   register(&sock, device);
-  repaint_offsets(&sock, device, &shifts.lock().unwrap());
+  let mut led_state = MonomeLedState::new(*shifts.lock().unwrap());
+  let mut rendered_cols: [u8; 16] = [0; 16];
+  render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
   sock.set_read_timeout(Some(Duration::from_millis(1))).unwrap();
 
   let key_addr: String = format!("{PREFIX}/grid/key");
   let mut buf = [0u8; 2048];
-  let mut last_dim_pulse: Instant = Instant::now();
-  loop {
-    if last_dim_pulse.elapsed() >= DIM_PULSE.period {
-      pulse_dim_columns(&sock, device, &shifts.lock().unwrap());
-      last_dim_pulse = Instant::now();
+  let mut next_dim_pulse: Instant = Instant::now() + DIM_PULSE.period;
+  while !STOP_REQUESTED.load(Ordering::Relaxed) {
+    drain_note_flashes(&flash_rx, &mut led_state);
+    let now = Instant::now();
+    render_to_monome(&sock, device, &led_state, now, &mut rendered_cols);
+    if now >= next_dim_pulse {
+      led_state.dim_columns_on = true;
+      render_to_monome(&sock, device, &led_state, now, &mut rendered_cols);
+      thread::sleep(DIM_PULSE.on_time);
+      led_state.dim_columns_on = false;
+      render_to_monome(
+        &sock,
+        device,
+        &led_state,
+        Instant::now(),
+        &mut rendered_cols,
+      );
+      next_dim_pulse = now + DIM_PULSE.period;
     }
     let pkt = match sock.recv_from(&mut buf) {
       Ok((n, _)) => match decoder::decode_udp(&buf[..n]) {
@@ -223,7 +282,14 @@ fn run_monome_thread(shifts: Arc<Mutex<[i8; 12]>>) {
           device_port = p;
           device = format!("127.0.0.1:{p}").parse().unwrap();
           register(&sock, device);
-          repaint_offsets(&sock, device, &shifts.lock().unwrap());
+          rendered_cols = [0; 16];
+          render_to_monome(
+            &sock,
+            device,
+            &led_state,
+            Instant::now(),
+            &mut rendered_cols,
+          );
         }
       }
       continue;
@@ -239,9 +305,11 @@ fn run_monome_thread(shifts: Arc<Mutex<[i8; 12]>>) {
     let Some((pitch_class, shift)) = apply_offset_press(x, y, s, &shifts) else {
       continue;
     };
+    led_state.shifts[pitch_class] = shift;
     eprintln!("offset {} -> {shift}", pitch_name(pitch_class));
-    repaint_offsets(&sock, device, &shifts.lock().unwrap());
+    render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
   }
+  send_led_all(&sock, device, 0);
 }
 
 fn discover_device(sock: &UdpSocket) -> Option<u16> {
@@ -278,7 +346,7 @@ fn register(sock: &UdpSocket, device: SocketAddr) {
   send_osc(sock, device, "/sys/host", vec![OscType::String("127.0.0.1".into())]);
   send_osc(sock, device, "/sys/port", vec![OscType::Int(LISTEN_PORT as i32)]);
   send_osc(sock, device, "/sys/prefix", vec![OscType::String(PREFIX.into())]);
-  send_osc(sock, device, &format!("{PREFIX}/grid/led/all"), vec![OscType::Int(0)]);
+  send_led_all(sock, device, 0);
 }
 
 fn black_monome() {
@@ -288,40 +356,16 @@ fn black_monome() {
   let Some(device_port) = discover_device_on_port(&sock, my_port) else { return; };
   let device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
   send_osc(&sock, device, "/sys/prefix", vec![OscType::String(PREFIX.into())]);
-  send_osc(&sock, device, &format!("{PREFIX}/grid/led/all"), vec![OscType::Int(0)]);
+  send_led_all(&sock, device, 0);
 }
 
-fn repaint_offsets(sock: &UdpSocket, device: SocketAddr, shifts: &[i8; 12]) {
-  for x in 0..OFFSET_COLS {
-    let active_y: i32 = OFFSET_Y_ZERO - shifts[x as usize] as i32;
-    for y in OFFSET_Y_MIN..=OFFSET_Y_MAX {
-      let level: i32 =
-        if y == active_y {
-          BRIGHT_LEVEL
-        } else {
-          0
-        };
-      send_led_level_set(sock, device, x, y, level);
-    }
-  }
-}
-
-fn pulse_dim_columns(sock: &UdpSocket, device: SocketAddr, shifts: &[i8; 12]) {
-  for x in 0..OFFSET_COLS {
-    if WHITE_KEYS[x as usize] {
-      continue;
-    }
-    send_led_col(sock, device, x, 0xff);
-  }
-  thread::sleep(DIM_PULSE.on_time);
-  for x in 0..OFFSET_COLS {
-    if WHITE_KEYS[x as usize] {
-      continue;
-    }
-    send_led_col(sock, device, x, 0);
-    let active_y: i32 = OFFSET_Y_ZERO - shifts[x as usize] as i32;
-    send_led_level_set(sock, device, x, active_y, BRIGHT_LEVEL);
-  }
+fn send_led_all(sock: &UdpSocket, device: SocketAddr, state: i32) {
+  send_osc(
+    sock,
+    device,
+    &format!("{PREFIX}/grid/led/all"),
+    vec![OscType::Int(state)],
+  );
 }
 
 fn send_led_col(sock: &UdpSocket, device: SocketAddr, x: i32, mask: i32) {
@@ -333,19 +377,51 @@ fn send_led_col(sock: &UdpSocket, device: SocketAddr, x: i32, mask: i32) {
   );
 }
 
-fn send_led_level_set(
+fn drain_note_flashes(flash_rx: &mpsc::Receiver<usize>, led_state: &mut MonomeLedState) {
+  let now = Instant::now();
+  while let Ok(pitch_class) = flash_rx.try_recv() {
+    led_state.flash_note(pitch_class, now);
+  }
+}
+
+fn render_to_monome(
   sock: &UdpSocket,
   device: SocketAddr,
-  x: i32,
-  y: i32,
-  level: i32,
+  led_state: &MonomeLedState,
+  now: Instant,
+  rendered_cols: &mut [u8; 16],
 ) {
-  send_osc(
-    sock,
-    device,
-    &format!("{PREFIX}/grid/led/level/set"),
-    vec![OscType::Int(x), OscType::Int(y), OscType::Int(level)],
-  );
+  let cols = render_led_cols(led_state, now);
+  for (x, col) in cols.iter().enumerate() {
+    if rendered_cols[x] != *col {
+      send_led_col(sock, device, x as i32, *col as i32);
+      rendered_cols[x] = *col;
+    }
+  }
+}
+
+fn render_led_cols(led_state: &MonomeLedState, now: Instant) -> [u8; 16] {
+  let mut state = MonomeLedState {
+    shifts: led_state.shifts,
+    note_flash_until: led_state.note_flash_until,
+    dim_columns_on: led_state.dim_columns_on,
+  };
+  state.expire_flashes(now);
+
+  let mut cols: [u8; 16] = [0; 16];
+  for x in 0..OFFSET_COLS as usize {
+    if !WHITE_KEYS[x] && state.dim_columns_on {
+      cols[x] = 0xff;
+    }
+    let active_y: i32 = OFFSET_Y_ZERO - state.shifts[x] as i32;
+    if active_y >= 0 && active_y < 8 {
+      cols[x] |= 1 << active_y;
+    }
+    if state.note_flash_until[x].is_some_and(|deadline| now < deadline) {
+      cols[x] = 0xff;
+    }
+  }
+  cols
 }
 
 fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType>) {
@@ -423,5 +499,44 @@ mod tests {
     let (_channel, note) = edo72_instruction(60, &shifts);
 
     assert_eq!(note, baseline_note + 1);
+  }
+
+  #[test]
+  fn note_on_pitch_class_detects_keyboard_note_ons() {
+    assert_eq!(note_on_pitch_class(&[0x90, 61, 100]), Some(1));
+    assert_eq!(note_on_pitch_class(&[0x90, 61, 0]), None);
+    assert_eq!(note_on_pitch_class(&[0x80, 61, 64]), None);
+  }
+
+  #[test]
+  fn render_flashes_entire_pitch_class_column() {
+    let now = Instant::now();
+    let mut led_state = MonomeLedState::new([0; 12]);
+    led_state.flash_note(0, now);
+
+    let cols = render_led_cols(&led_state, now);
+
+    assert_eq!(cols[0], 0xff);
+  }
+
+  #[test]
+  fn render_restores_offset_after_flash_expires() {
+    let now = Instant::now();
+    let mut led_state = MonomeLedState::new([0; 12]);
+    led_state.flash_note(0, now);
+
+    let cols = render_led_cols(&led_state, now + NOTE_FLASH);
+
+    assert_eq!(cols[0], 1 << OFFSET_Y_ZERO);
+  }
+
+  #[test]
+  fn dim_black_column_preserves_selected_offset_bit() {
+    let mut led_state = MonomeLedState::new([0; 12]);
+    led_state.dim_columns_on = false;
+
+    let cols = render_led_cols(&led_state, Instant::now());
+
+    assert_eq!(cols[1], 1 << OFFSET_Y_ZERO);
   }
 }

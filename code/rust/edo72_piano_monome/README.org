@@ -28,3 +28,9 @@ For now, the offset controls use the bottom seven rows, =y=1..7=:
 
 The top row, =y=0=, is lit for black-key columns but does not change
 the offset yet.
+* keyboard feedback
+Every note-on from the keyboard
+flashes the corresponding pitch-class column
+at full brightness for NOTE_FLASH ms.
+The flash covers all eight rows, then returns to
+the normal offset and dim-column display.
