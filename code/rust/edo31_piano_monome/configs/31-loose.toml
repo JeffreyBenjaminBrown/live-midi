@@ -1,0 +1,5 @@
+lowest_hz = 80
+edo = 31
+between_columns = 6
+between_rows = 1
+remap_idiom = "loose"

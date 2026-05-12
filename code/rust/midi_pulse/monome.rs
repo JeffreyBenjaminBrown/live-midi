@@ -136,3 +136,19 @@ pub fn send_led_col(
     vec![OscType::Int(x), OscType::Int(y), OscType::Int(mask)],
   );
 }
+
+pub fn send_led_level_set(
+  sock: &UdpSocket,
+  device: SocketAddr,
+  prefix: &str,
+  x: i32,
+  y: i32,
+  level: i32,
+) {
+  send_osc(
+    sock,
+    device,
+    &format!("{prefix}/grid/led/level/set"),
+    vec![OscType::Int(x), OscType::Int(y), OscType::Int(level)],
+  );
+}

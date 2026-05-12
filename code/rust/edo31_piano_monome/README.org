@@ -8,8 +8,8 @@ pitch classes into an arbitrary EDO.
 *** Start the docker container.
 *** In the docker container, from the project root, run
     cargo run --bin edo31_piano_monome
-    # or, for 58-EDO with x=8 and y=1:
-    cargo run --bin edo31_piano_monome -- 58 8 1
+    # or choose a config file:
+    cargo run --bin edo31_piano_monome -- 31-loose.toml
 *** In the host system, run
     ./code/rust/edo31_piano_monome/connect-midi.sh
 ** monome layout
@@ -17,17 +17,35 @@ The grid size is inferred from serialosc's device type. Known sizes:
 =monome 128= is 16x8, and =monome 256= is 16x16. The y coordinate
 has =y=0= at the top.
 
-Command-line arguments are:
+The EDO map is drawn across the 10 leftmost columns of the physical
+grid, using every available row. On a 16x16 monome that is =x=0..9=
+and =y=0..15=.
 
-  =cargo run --bin edo31_piano_monome -- [EDO [X_STEP [Y_STEP]]]=
+The only command-line argument is an optional config filename:
 
-The defaults are =31 6 1=. Each physical key represents an EDO step:
+  =cargo run --bin edo31_piano_monome -- [CONFIG_FILE]=
 
-  =step = X_STEP*x + Y_STEP*y mod EDO=
+Configs live in =code/rust/edo31_piano_monome/config=. If omitted,
+the filename defaults to =default=. The app also accepts a config
+name without the =.toml= extension.
 
-For example, =58 8 1= means moving one key to the right raises pitch
-by 8 steps of 58-EDO, and moving one key downward in space raises
-pitch by 1 step of 58-EDO.
+The sample configs are:
+
+- =31-loose.toml=: 31-EDO, =between_columns=6=,
+  =between_rows=1=, loose remapping.
+- =58-8-5-snap.toml=: 58-EDO, =between_columns=8=,
+  =between_rows=5=, snap remapping.
+
+=default= points to =58-8-5-snap.toml=.
+
+Each key in that left-column map area represents an EDO step, using
+local coordinates within the map area:
+
+  =step = between_columns*x + between_rows*y mod edo=
+
+For example, =58-8-5-snap.toml= means moving one key to the right
+raises pitch by 8 steps of 58-EDO, and moving one key downward in
+space raises pitch by 5 steps of 58-EDO.
 
 The lit EDO steps are the current image of the twelve piano pitch
 classes. Initially they are spaced as evenly as possible. For 31-EDO:
@@ -41,23 +59,29 @@ For 58-EDO:
 The LEDs use three visual priorities:
 
 - Sounding pitches are steady on.
-- The current images of C, F and G flash with a 50/50 duty cycle
-  every 50 ms.
-- The rest of the current 12-EDO image flashes with a 10/90 duty
-  cycle every 10 ms.
+- The current images of C, F and G flash at full brightness.
+- The rest of the current 12-EDO image is steady dim, using the
+  monome level-brightness API rather than software PWM.
 
 Higher-priority visuals clobber lower-priority visuals on the same
 physical key.
 
-Tap a lit pitch to make its 12-EDO/EDO key-value pair loose. You
-can loosen multiple lit pitches. If no pitch is loose, tapping a dark
-pitch has no effect.
+There are two remap idioms.
+
+In the =loose= idiom, tap a lit pitch to make its 12-EDO/EDO
+key-value pair loose. You can loosen multiple lit pitches. If no pitch
+is loose, tapping a dark pitch has no effect.
 
 When you tap a dark pitch, the program finds the nearest lit pitch
 below it and the nearest lit pitch above it in the ring of integers
 mod EDO. If exactly one is loose, that key-value pair moves to the dark
 pitch and becomes fixed again. If both are loose, the nearer one moves;
 in a tie, the higher one moves. If neither is loose, nothing changes.
+
+In the =snap= idiom, tapping a dark pitch moves the nearest current
+image to that pitch. Distance is measured in the EDO ring, not in the
+2D monome layout. In a tie, the higher image snaps down to the tapped
+pitch and the lower image stays where it is.
 
 The program also tracks the signed lift of each pitch class. For
 example, in 31-EDO, moving C from step =0= to step =30= means =-1=,

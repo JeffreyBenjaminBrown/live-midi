@@ -8,10 +8,12 @@ use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midi_pulse::{midi, monome, piano_transform};
 use rosc::{decoder, OscPacket, OscType};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 
@@ -21,12 +23,19 @@ const MIN_NOTE_OUT    : u8 = 28;
 
 const PREFIX: &str = "/128-1-cable";
 const LISTEN_PORT: u16 = 9000;
+const LISTEN_PORT_ENV: &str = "EDO31_LISTEN_PORT";
 const LED_TRACE_ENV: &str = "EDO31_LED_TRACE";
 const DEFAULT_EDO: i16 = 31;
 const DEFAULT_X_STEP: i16 = 6;
 const DEFAULT_Y_STEP: i16 = 1;
+const DEFAULT_LOWEST_HZ: f64 = 80.0;
 const DEFAULT_GRID_W: i32 = 16;
 const DEFAULT_GRID_H: i32 = 8;
+const CONFIGS_DIR: &str = "code/rust/edo31_piano_monome/configs";
+const MAP_W: i32 = 10;
+const LED_LEVEL_OFF: u8 = 0;
+const LED_LEVEL_IMAGE: u8 = 4;
+const LED_LEVEL_FULL: u8 = 15;
 // Keep this no larger than the shortest on-window you want rendered.
 const MONOME_REFRESH: Duration = Duration::from_millis(1);
 
@@ -36,13 +45,13 @@ const ANCHOR_COLOR: Color = Color::Duty {
   period: Duration::from_micros(300_000),
   fraction_on: 0.3,
 };
-const IMAGE_COLOR: Color = Color::Duty {
-  // A color for one of the 12 values of 31-edo that the keyboard maps to.
-  period: Duration::from_micros(100_000),
-  fraction_on: 0.001,
-};
+// A color for one of the 12 values of EDO that the keyboard maps to.
+// This uses hardware level brightness instead of PWM; sub-millisecond
+// PWM was visibly erratic through serialosc on the monome 256.
+const IMAGE_COLOR: Color = Color::AlwaysOn;
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+static LED_TRACE_STARTED: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Clone)]
 struct Edo31State {
@@ -54,12 +63,20 @@ struct Edo31State {
 
 #[derive(Clone)]
 struct EdoConfig {
+  lowest_hz: f64,
   edo: i16,
   x_step: i16,
   y_step: i16,
+  remap_idiom: RemapIdiom,
   grid_w: i32,
   grid_h: i32,
   initial_map: [i16; 12],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemapIdiom {
+  Loose,
+  Snap,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,19 +201,31 @@ struct LedPhases {
 impl EdoConfig {
   fn default() -> Self {
     EdoConfig::new(
+      DEFAULT_LOWEST_HZ,
       DEFAULT_EDO,
       DEFAULT_X_STEP,
       DEFAULT_Y_STEP,
+      RemapIdiom::Snap,
       DEFAULT_GRID_W,
       DEFAULT_GRID_H,
     )
   }
 
-  fn new(edo: i16, x_step: i16, y_step: i16, grid_w: i32, grid_h: i32) -> Self {
+  fn new(
+    lowest_hz: f64,
+    edo: i16,
+    x_step: i16,
+    y_step: i16,
+    remap_idiom: RemapIdiom,
+    grid_w: i32,
+    grid_h: i32,
+  ) -> Self {
     EdoConfig {
+      lowest_hz,
       edo,
       x_step,
       y_step,
+      remap_idiom,
       grid_w,
       grid_h,
       initial_map: evenly_spaced_map(edo),
@@ -205,9 +234,11 @@ impl EdoConfig {
 
   fn with_grid_size(&self, grid_w: i32, grid_h: i32) -> Self {
     EdoConfig {
+      lowest_hz: self.lowest_hz,
       edo: self.edo,
       x_step: self.x_step,
       y_step: self.y_step,
+      remap_idiom: self.remap_idiom,
       grid_w,
       grid_h,
       initial_map: self.initial_map,
@@ -242,6 +273,7 @@ impl SoundingState {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config = parse_config()?;
+  let listen_port = configured_listen_port()?;
   let state: Arc<Mutex<Edo31State>> =
     Arc::new(Mutex::new(Edo31State::new(config.clone())));
   let sounding: Arc<Mutex<SoundingState>> =
@@ -279,7 +311,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let state_for_monome = Arc::clone(&state);
   let sounding_for_monome = Arc::clone(&sounding);
   let monome_thread: thread::JoinHandle<()> =
-    thread::spawn(move || run_monome_thread(state_for_monome, sounding_for_monome));
+    thread::spawn(move || {
+      run_monome_thread(state_for_monome, sounding_for_monome, listen_port)
+    });
 
   install_sigint_handler();
   print_startup_message(&config);
@@ -303,31 +337,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn parse_config() -> Result<EdoConfig, Box<dyn std::error::Error>> {
-  let mut config = EdoConfig::default();
   let args: Vec<String> = std::env::args().skip(1).collect();
-  if args.len() > 3 {
-    return Err("usage: edo31_piano_monome [EDO [X_STEP [Y_STEP]]]".into());
+  if args.len() > 1 {
+    return Err("usage: edo31_piano_monome [CONFIGS_FILE]".into());
   }
-  if let Some(arg) = args.first() {
-    config.edo = parse_positive_i16(arg, "EDO")?;
-  }
-  if let Some(arg) = args.get(1) {
-    config.x_step = arg.parse::<i16>()
-      .map_err(|_| format!("X_STEP must be an integer, got {arg:?}"))?;
-  }
-  if let Some(arg) = args.get(2) {
-    config.y_step = arg.parse::<i16>()
-      .map_err(|_| format!("Y_STEP must be an integer, got {arg:?}"))?;
-  }
-  config.initial_map = evenly_spaced_map(config.edo);
-  Ok(config)
+  let name = args.first().map(String::as_str).unwrap_or("default");
+  load_config(name)
 }
 
-fn parse_positive_i16(arg: &str, name: &str) -> Result<i16, Box<dyn std::error::Error>> {
-  let value = arg.parse::<i16>()
-    .map_err(|_| format!("{name} must be an integer, got {arg:?}"))?;
-  if value <= 0 {
-    return Err(format!("{name} must be positive, got {value}").into());
+#[derive(Deserialize)]
+struct ConfigToml {
+  lowest_hz: f64,
+  edo: i16,
+  between_columns: i16,
+  between_rows: i16,
+  #[serde(default)]
+  remap_idiom: ConfigRemapIdiom,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ConfigRemapIdiom {
+  Snap,
+  Loose,
+  Loosen,
+}
+
+impl Default for ConfigRemapIdiom {
+  fn default() -> Self {
+    ConfigRemapIdiom::Snap
+  }
+}
+
+impl ConfigRemapIdiom {
+  fn into_runtime(self) -> RemapIdiom {
+    match self {
+      ConfigRemapIdiom::Snap => RemapIdiom::Snap,
+      ConfigRemapIdiom::Loose | ConfigRemapIdiom::Loosen => RemapIdiom::Loose,
+    }
+  }
+}
+
+fn load_config(name: &str) -> Result<EdoConfig, Box<dyn std::error::Error>> {
+  if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+    return Err(format!("config file name must not be a path, got {name:?}").into());
+  }
+  let path = config_path(name);
+  let source = std::fs::read_to_string(&path)
+    .or_else(|original_error| {
+      if path.extension().is_none() {
+        let toml_path = path.with_extension("toml");
+        std::fs::read_to_string(&toml_path).map_err(|_| original_error)
+      } else {
+        Err(original_error)
+      }
+    })
+    .map_err(|e| format!("read config {name:?}: {e}"))?;
+  let parsed: ConfigToml = toml::from_str(&source)
+    .map_err(|e| format!("parse config {name:?}: {e}"))?;
+  validate_config_toml(&parsed)?;
+  Ok(EdoConfig::new(
+    parsed.lowest_hz,
+    parsed.edo,
+    parsed.between_columns,
+    parsed.between_rows,
+    parsed.remap_idiom.into_runtime(),
+    DEFAULT_GRID_W,
+    DEFAULT_GRID_H,
+  ))
+}
+
+fn config_path(name: &str) -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .join(CONFIGS_DIR)
+    .join(name)
+}
+
+fn validate_config_toml(config: &ConfigToml) -> Result<(), Box<dyn std::error::Error>> {
+  if !config.lowest_hz.is_finite() || config.lowest_hz <= 0.0 {
+    return Err(format!("lowest_hz must be positive, got {}", config.lowest_hz).into());
+  }
+  if config.edo <= 0 {
+    return Err(format!("edo must be positive, got {}", config.edo).into());
+  }
+  Ok(())
+}
+
+fn configured_listen_port() -> Result<u16, Box<dyn std::error::Error>> {
+  let Some(port) = std::env::var_os(LISTEN_PORT_ENV) else {
+    return Ok(LISTEN_PORT);
+  };
+  let port = port.to_string_lossy();
+  let value = port.parse::<u16>()
+    .map_err(|_| format!("{LISTEN_PORT_ENV} must be a UDP port, got {port:?}"))?;
+  if value == 0 {
+    return Err(format!("{LISTEN_PORT_ENV} must be nonzero").into());
   }
   Ok(value)
 }
@@ -357,6 +461,8 @@ fn print_startup_message(config: &EdoConfig) {
   println!("  - 'edo31_piano_monome-out:out' (output)");
   println!();
   println!("Monome {}-EDO map:", config.edo);
+  println!("  - lowest Hz: {}", config.lowest_hz);
+  println!("  - remap idiom: {}", remap_idiom_name(config.remap_idiom));
   println!(
     "  - each key's pitch is {}*x + {}*y mod {}",
     config.x_step,
@@ -366,11 +472,25 @@ fn print_startup_message(config: &EdoConfig) {
   println!("  - initial map: {:?}", config.initial_map);
   println!("  - sounding pitches stay lit");
   println!("  - C, F and G flash as anchors");
-  println!("  - other image pitches flash dimly");
-  println!("  - tap lit pitches to loosen them");
-  println!("  - tap a dark pitch to move a neighboring loose pitch");
+  println!("  - other image pitches are steady dim");
+  match config.remap_idiom {
+    RemapIdiom::Loose => {
+      println!("  - tap lit pitches to loosen them");
+      println!("  - tap a dark pitch to move a neighboring loose pitch");
+    }
+    RemapIdiom::Snap => {
+      println!("  - tap a dark pitch to snap the nearest image to it");
+    }
+  }
   println!();
   println!("Press Enter to exit...");
+}
+
+fn remap_idiom_name(remap_idiom: RemapIdiom) -> &'static str {
+  match remap_idiom {
+    RemapIdiom::Loose => "loose",
+    RemapIdiom::Snap => "snap",
+  }
 }
 
 fn edo31_instruction(
@@ -460,12 +580,13 @@ fn decrement_sounding_count(sounding: &mut SoundingState, step: i16) {
 fn run_monome_thread(
   state: Arc<Mutex<Edo31State>>,
   sounding: Arc<Mutex<SoundingState>>,
+  listen_port: u16,
 ) {
-  let sock = UdpSocket::bind(("0.0.0.0", LISTEN_PORT))
-    .unwrap_or_else(|e| panic!("bind UDP :{LISTEN_PORT}: {e}"));
+  let sock = UdpSocket::bind(("0.0.0.0", listen_port))
+    .unwrap_or_else(|e| panic!("bind UDP :{listen_port}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
   let mut device_info =
-    monome::discover_device_info(&sock, LISTEN_PORT)
+    monome::discover_device_info(&sock, listen_port)
       .expect("no monome found; is serialoscd running?");
   {
     let mut state = state.lock().unwrap();
@@ -480,7 +601,7 @@ fn run_monome_thread(
     device_info.grid_h,
   );
   let mut device: SocketAddr = format!("127.0.0.1:{}", device_info.port).parse().unwrap();
-  monome::register(&sock, device, PREFIX, LISTEN_PORT);
+  monome::register(&sock, device, PREFIX, listen_port);
   let mut rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
   let mut sounding_clock = ColorClock::new(SOUNDING_COLOR, Instant::now());
   let mut anchor_clock = ColorClock::new(ANCHOR_COLOR, Instant::now());
@@ -529,7 +650,7 @@ fn run_monome_thread(
         if p != device_info.port {
           device_info.port = p;
           device = format!("127.0.0.1:{p}").parse().unwrap();
-          monome::register(&sock, device, PREFIX, LISTEN_PORT);
+          monome::register(&sock, device, PREFIX, listen_port);
           rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
           render_to_monome(
             &sock,
@@ -573,9 +694,10 @@ fn run_monome_thread(
 }
 
 fn blank_rendered_cols(config: &EdoConfig) -> Vec<u8> {
-  vec![0; (config.grid_w as usize) * col_bank_count(config)]
+  vec![0; (config.grid_w * config.grid_h) as usize]
 }
 
+#[cfg(test)]
 fn col_bank_count(config: &EdoConfig) -> usize {
   ((config.grid_h + 7) / 8) as usize
 }
@@ -619,24 +741,25 @@ fn render_to_monome(
   phases: LedPhases,
   rendered_cols: &mut Vec<u8>,
 ) {
-  let cols = render_led_cols(state, sounding_counts, phases);
+  let levels = render_led_levels(state, sounding_counts, phases);
   let trace_leds = led_trace_enabled();
-  if rendered_cols.len() != cols.len() {
-    *rendered_cols = vec![0; cols.len()];
+  if rendered_cols.len() != levels.len() {
+    *rendered_cols = vec![0; levels.len()];
   }
-  let banks = col_bank_count(&state.config);
-  for (i, col) in cols.iter().enumerate() {
-    if rendered_cols[i] != *col {
-      let x = (i / banks) as i32;
-      let y = ((i % banks) * 8) as i32;
+  for (i, level) in levels.iter().enumerate() {
+    if rendered_cols[i] != *level {
+      let x = i as i32 % state.config.grid_w;
+      let y = i as i32 / state.config.grid_w;
       if trace_leds {
+        let trace_started = LED_TRACE_STARTED.get_or_init(Instant::now);
         eprintln!(
-          "led x={x:02} y={y:02} mask=0b{col:08b} old=0b{:08b}",
+          "led {:.3}ms x={x:02} y={y:02} level={level:02} old={:02}",
+          trace_started.elapsed().as_secs_f64() * 1000.0,
           rendered_cols[i],
         );
       }
-      monome::send_led_col(sock, device, PREFIX, x, y, *col as i32);
-      rendered_cols[i] = *col;
+      monome::send_led_level_set(sock, device, PREFIX, x, y, *level as i32);
+      rendered_cols[i] = *level;
     }
   }
 }
@@ -645,6 +768,7 @@ fn led_trace_enabled() -> bool {
   std::env::var_os(LED_TRACE_ENV).is_some()
 }
 
+#[cfg(test)]
 fn render_led_cols(
   state: &Edo31State,
   sounding_counts: &[u16],
@@ -652,10 +776,10 @@ fn render_led_cols(
 ) -> Vec<u8> {
   let banks = col_bank_count(&state.config);
   let mut cols = vec![0u8; state.config.grid_w as usize * banks];
+  let levels = render_led_levels(state, sounding_counts, phases);
   for y in 0..state.config.grid_h {
     for x in 0..state.config.grid_w {
-      let step = grid_step(&state.config, x, y);
-      if is_rendered_on(state, sounding_counts, step, phases) {
+      if levels[(y * state.config.grid_w + x) as usize] > 0 {
         let i = x as usize * banks + (y as usize / 8);
         cols[i] |= 1u8 << (y % 8);
       }
@@ -664,23 +788,40 @@ fn render_led_cols(
   cols
 }
 
-fn is_rendered_on(
+fn render_led_levels(
+  state: &Edo31State,
+  sounding_counts: &[u16],
+  phases: LedPhases,
+) -> Vec<u8> {
+  let mut levels = vec![LED_LEVEL_OFF; (state.config.grid_w * state.config.grid_h) as usize];
+  let rect = map_rect(&state.config);
+  for y in rect.y0..rect.y1 {
+    for x in rect.x0..rect.x1 {
+      let step = grid_step(&state.config, x - rect.x0, y - rect.y0);
+      levels[(y * state.config.grid_w + x) as usize] =
+        rendered_level(state, sounding_counts, step, phases);
+    }
+  }
+  levels
+}
+
+fn rendered_level(
   state: &Edo31State,
   sounding_counts: &[u16],
   step: i16,
   phases: LedPhases,
-) -> bool {
+) -> u8 {
   if sounding_counts[step as usize] > 0 {
-    return phases.sounding_on;
+    return if phases.sounding_on { LED_LEVEL_FULL } else { LED_LEVEL_OFF };
   }
   if let Some(preimage) = preimage_for_step(state, step) {
     if is_anchor_pitch_class(preimage) {
-      phases.anchor_on
+      if phases.anchor_on { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
     } else {
-      phases.image_on
+      if phases.image_on { LED_LEVEL_IMAGE } else { LED_LEVEL_OFF }
     }
   } else {
-    false
+    LED_LEVEL_OFF
   }
 }
 
@@ -689,13 +830,42 @@ fn is_anchor_pitch_class(preimage: usize) -> bool {
 }
 
 fn apply_grid_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
-  let step = grid_step(&state.config, x, y);
+  let Some((local_x, local_y)) = map_local_cell(&state.config, x, y) else {
+    return false;
+  };
+  let step = grid_step(&state.config, local_x, local_y);
+  match state.config.remap_idiom {
+    RemapIdiom::Loose => apply_loose_grid_press(state, step),
+    RemapIdiom::Snap => apply_snap_grid_press(state, step),
+  }
+}
+
+fn apply_loose_grid_press(state: &mut Edo31State, step: i16) -> bool {
   if let Some(preimage) = preimage_for_step(state, step) {
     state.loose[preimage] = LooseState::Loose;
     eprintln!("loose {} -> {step}", pitch_name(preimage));
     return true;
   }
-  let Some(preimage) = loose_neighbor_for_dark_step(step, state) else { return false; };
+  let Some(preimage) = loose_neighbor_for_dark_step(step, state) else {
+    return false;
+  };
+  move_preimage_to_step(state, preimage, step)
+}
+
+fn apply_snap_grid_press(state: &mut Edo31State, step: i16) -> bool {
+  if preimage_for_step(state, step).is_some() {
+    return false;
+  }
+  let (lower, higher) = nearest_light_neighbors(step, &state.map, state.config.edo);
+  let preimage = if lower.distance < higher.distance {
+    lower.preimage
+  } else {
+    higher.preimage
+  };
+  move_preimage_to_step(state, preimage, step)
+}
+
+fn move_preimage_to_step(state: &mut Edo31State, preimage: usize, step: i16) -> bool {
   let current = state.map[preimage];
   let Some(delta) = move_delta(current, step, &state.map, state.config.edo) else {
     return false;
@@ -778,7 +948,34 @@ fn grid_step(config: &EdoConfig, x: i32, y: i32) -> i16 {
 }
 
 fn is_grid_cell(config: &EdoConfig, x: i32, y: i32) -> bool {
-  x >= 0 && x < config.grid_w && y >= 0 && y < config.grid_h
+  map_local_cell(config, x, y).is_some()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GridRect {
+  x0: i32,
+  y0: i32,
+  x1: i32,
+  y1: i32,
+}
+
+fn map_rect(config: &EdoConfig) -> GridRect {
+  let w = MAP_W.min(config.grid_w).max(0);
+  GridRect {
+    x0: 0,
+    y0: 0,
+    x1: w,
+    y1: config.grid_h,
+  }
+}
+
+fn map_local_cell(config: &EdoConfig, x: i32, y: i32) -> Option<(i32, i32)> {
+  let rect = map_rect(config);
+  if x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1 {
+    Some((x - rect.x0, y - rect.y0))
+  } else {
+    None
+  }
 }
 
 fn pitch_name(pc: usize) -> &'static str {
@@ -793,11 +990,23 @@ mod tests {
   use super::*;
 
   fn test_config() -> EdoConfig {
-    EdoConfig::default()
+    EdoConfig::new(
+      DEFAULT_LOWEST_HZ,
+      DEFAULT_EDO,
+      DEFAULT_X_STEP,
+      DEFAULT_Y_STEP,
+      RemapIdiom::Loose,
+      DEFAULT_GRID_W,
+      DEFAULT_GRID_H,
+    )
   }
 
   fn test_state() -> Edo31State {
     Edo31State::new(test_config())
+  }
+
+  fn snap_state() -> Edo31State {
+    Edo31State::new(EdoConfig::default())
   }
 
   fn test_state_arc() -> Arc<Mutex<Edo31State>> {
@@ -826,6 +1035,19 @@ mod tests {
   }
 
   #[test]
+  fn map_rect_uses_all_rows_in_leftmost_ten_columns() {
+    let config = EdoConfig::new(80.0, 58, 8, 1, RemapIdiom::Snap, 16, 16);
+
+    assert_eq!(
+      map_rect(&config),
+      GridRect { x0: 0, y0: 0, x1: 10, y1: 16 },
+    );
+    assert_eq!(map_local_cell(&config, 0, 0), Some((0, 0)));
+    assert_eq!(map_local_cell(&config, 9, 15), Some((9, 15)));
+    assert_eq!(map_local_cell(&config, 10, 15), None);
+  }
+
+  #[test]
   fn initial_map_matches_even_31_edo_spacing() {
     assert_eq!(test_state().map, [0, 3, 5, 8, 10, 13, 16, 18, 21, 23, 26, 28]);
   }
@@ -839,11 +1061,33 @@ mod tests {
   }
 
   #[test]
+  fn default_config_load_58_8_5_snap() {
+    let config = load_config("default").unwrap();
+
+    assert_eq!(config.lowest_hz, 80.0);
+    assert_eq!(config.edo, 58);
+    assert_eq!(config.x_step, 8);
+    assert_eq!(config.y_step, 5);
+    assert_eq!(config.remap_idiom, RemapIdiom::Snap);
+  }
+
+  #[test]
+  fn loose_config_accept_loose_alias() {
+    let config = load_config("31-loose.toml").unwrap();
+
+    assert_eq!(config.edo, 31);
+    assert_eq!(config.x_step, 6);
+    assert_eq!(config.y_step, 1);
+    assert_eq!(config.remap_idiom, RemapIdiom::Loose);
+  }
+
+  #[test]
   fn lit_press_makes_preimage_loose_without_moving() {
     let mut state = test_state();
     let initial_map = state.config.initial_map;
+    let y0 = map_rect(&state.config).y0;
 
-    assert!(apply_grid_press(&mut state, 0, 0));
+    assert!(apply_grid_press(&mut state, 0, y0));
 
     assert_eq!(state.loose[0], LooseState::Loose);
     assert_eq!(state.map, initial_map);
@@ -852,8 +1096,9 @@ mod tests {
   #[test]
   fn dark_press_has_no_effect_when_no_preimage_is_loose() {
     let mut state = test_state();
+    let y = map_rect(&state.config).y0 + 1;
 
-    assert!(!apply_grid_press(&mut state, 0, 1));
+    assert!(!apply_grid_press(&mut state, 0, y));
 
     assert_eq!(state.map[0], 0);
   }
@@ -862,8 +1107,9 @@ mod tests {
   fn dark_press_moves_loose_neighbor_and_fixes_it() {
     let mut state = test_state();
     state.loose[0] = LooseState::Loose;
+    let y = map_rect(&state.config).y0 + 1;
 
-    assert!(apply_grid_press(&mut state, 0, 1));
+    assert!(apply_grid_press(&mut state, 0, y));
 
     assert_eq!(state.map[0], 1);
     assert_eq!(state.deltas[0], 1);
@@ -874,8 +1120,9 @@ mod tests {
   fn dark_press_moves_farther_neighbor_if_only_farther_neighbor_is_loose() {
     let mut state = test_state();
     state.loose[1] = LooseState::Loose;
+    let y = map_rect(&state.config).y0 + 1;
 
-    assert!(apply_grid_press(&mut state, 0, 1));
+    assert!(apply_grid_press(&mut state, 0, y));
 
     assert_eq!(state.map[0], 0);
     assert_eq!(state.map[1], 1);
@@ -888,14 +1135,40 @@ mod tests {
     let mut state = test_state();
     state.loose[0] = LooseState::Loose;
     state.loose[1] = LooseState::Loose;
+    let y = map_rect(&state.config).y0 + 2;
 
-    assert!(apply_grid_press(&mut state, 0, 2));
+    assert!(apply_grid_press(&mut state, 0, y));
 
     assert_eq!(state.map[0], 0);
     assert_eq!(state.map[1], 2);
     assert_eq!(state.deltas[1], -1);
     assert_eq!(state.loose[0], LooseState::Loose);
     assert_eq!(state.loose[1], LooseState::Fixed);
+  }
+
+  #[test]
+  fn snap_dark_press_moves_nearest_image_without_loose_state() {
+    let mut state = snap_state();
+    let y = map_rect(&state.config).y0 + 1;
+
+    assert!(apply_grid_press(&mut state, 0, y));
+
+    assert_eq!(state.map[0], 1);
+    assert_eq!(state.deltas[0], 1);
+    assert_eq!(state.loose[0], LooseState::Fixed);
+  }
+
+  #[test]
+  fn snap_tie_moves_higher_image_down() {
+    let mut state = snap_state();
+    state.map[1] = 4;
+    let y = map_rect(&state.config).y0 + 2;
+
+    assert!(apply_grid_press(&mut state, 0, y));
+
+    assert_eq!(state.map[0], 0);
+    assert_eq!(state.map[1], 2);
+    assert_eq!(state.deltas[1], -2);
   }
 
   #[test]
@@ -953,7 +1226,7 @@ mod tests {
 
   #[test]
   fn output_residue_matches_displayed_pitch_class_mapping() {
-    let config = EdoConfig::new(58, 8, 1, 16, 16);
+    let config = EdoConfig::new(80.0, 58, 8, 1, RemapIdiom::Snap, 16, 16);
     let state = Arc::new(Mutex::new(Edo31State::new(config.clone())));
 
     for note in 48..60 {
@@ -968,7 +1241,7 @@ mod tests {
 
   #[test]
   fn eb_to_bb_output_interval_matches_58_edo_display_interval() {
-    let config = EdoConfig::new(58, 8, 1, 16, 16);
+    let config = EdoConfig::new(80.0, 58, 8, 1, RemapIdiom::Snap, 16, 16);
     let state = Arc::new(Mutex::new(Edo31State::new(config.clone())));
     let (eb_channel, eb_note) = edo31_instruction(51, &state);
     let (bb_channel, bb_note) = edo31_instruction(58, &state);
@@ -1019,7 +1292,7 @@ mod tests {
 
   #[test]
   fn render_uses_two_led_col_banks_for_16_high_grid() {
-    let config = EdoConfig::new(58, 8, 1, 16, 16);
+    let config = EdoConfig::new(80.0, 58, 8, 1, RemapIdiom::Snap, 16, 16);
     let state = Edo31State::new(config.clone());
     let sounding = vec![0; config.edo as usize];
 
@@ -1032,9 +1305,13 @@ mod tests {
 
   #[test]
   fn duty_clock_schedules_off_from_actual_on_time() {
+    let color = Color::Duty {
+      period: Duration::from_micros(100_000),
+      fraction_on: 0.02,
+    };
     let start = Instant::now();
-    let mut clock = ColorClock::new(IMAGE_COLOR, start);
-    let (on_duration, off_duration) = IMAGE_COLOR.duty_durations().unwrap();
+    let mut clock = ColorClock::new(color, start);
+    let (on_duration, off_duration) = color.duty_durations().unwrap();
 
     assert!(clock.is_on());
     assert_eq!(clock.wait(start), Some(on_duration));
@@ -1052,15 +1329,15 @@ mod tests {
     let sounding_clock = ColorClock::new(SOUNDING_COLOR, start);
     let anchor_clock = ColorClock::new(ANCHOR_COLOR, start);
     let image_clock = ColorClock::new(IMAGE_COLOR, start);
-    let (image_on, _) = IMAGE_COLOR.duty_durations().unwrap();
+    let (anchor_on, _) = ANCHOR_COLOR.duty_durations().unwrap();
 
     assert_eq!(
       next_render_wait(start, sounding_clock, anchor_clock, image_clock),
-      image_on.min(MONOME_REFRESH),
+      anchor_on.min(MONOME_REFRESH),
     );
     assert_eq!(
       next_render_wait(
-        start + image_on,
+        start + anchor_on,
         sounding_clock,
         anchor_clock,
         image_clock,

@@ -39,3 +39,5 @@ midir = "0.10"
 minifb = "0.27"
 rosc = "0.10"
 libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
