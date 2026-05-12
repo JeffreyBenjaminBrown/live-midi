@@ -17,6 +17,10 @@ impl PulseBrightness {
     Self::fraction(period_micros, 16)
   }
 
+  pub const fn one_half(period_micros: u64) -> Self {
+    Self::fraction(period_micros, 2)
+  }
+
   pub const fn one_thirty_second(period_micros: u64) -> Self {
     Self::fraction(period_micros, 32)
   }

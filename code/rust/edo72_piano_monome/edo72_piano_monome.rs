@@ -1,12 +1,13 @@
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
-use midi_pulse::midi;
+use midi_pulse::monome;
 use midi_pulse::monome_brightness::PulseBrightness;
-use rosc::{decoder, encoder, OscMessage, OscPacket, OscType};
+use midi_pulse::{midi, piano_transform};
+use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 
@@ -17,7 +18,6 @@ const MIN_NOTE_OUT    : u8 = 28;
 const EDO_OVER_12     : u8 = 6;
 
 const PREFIX: &str = "/128-1-cable";
-const DETECTOR_PORT: u16 = 12002;
 const LISTEN_PORT: u16 = 9000;
 
 const OFFSET_COLS: i32 = 12;
@@ -40,11 +40,6 @@ const WHITE_KEYS: [bool; 12] = [
 ];
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-struct TransformedNote {
-  output_channel: u8,
-  output_note: u8,
-}
 
 struct MonomeLedState {
   shifts: [i8; 12],
@@ -80,7 +75,7 @@ impl MonomeLedState {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let shifts: Arc<Mutex<[i8; 12]>> = Arc::new(Mutex::new([0; 12]));
-  let ongoing: Arc<Mutex<HashMap<u8, TransformedNote>>> =
+  let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
   let midi_in: MidiInput = MidiInput::new("edo72_piano_monome-in")?;
@@ -95,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || midi::run_output_thread(conn_out, rx));
 
   let shifts_for_midi: Arc<Mutex<[i8; 12]>> = Arc::clone(&shifts);
-  let ongoing_for_midi: Arc<Mutex<HashMap<u8, TransformedNote>>> =
+  let ongoing_for_midi: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::clone(&ongoing);
   let _conn_in: MidiInputConnection<()> = midi_in.create_virtual(
     "in",
@@ -103,7 +98,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       if let Some(pitch_class) = note_on_pitch_class(message) {
         let _ = flash_tx.send(pitch_class);
       }
-      for msg in transform_message(message, &shifts_for_midi, &ongoing_for_midi) {
+      for msg in piano_transform::transform_message(
+        message,
+        &ongoing_for_midi,
+        |original_note| edo72_instruction(original_note, &shifts_for_midi),
+      ) {
         let _ = tx.send(msg); }},
     (), )?;
 
@@ -157,72 +156,12 @@ fn print_startup_message() {
   println!("Press Enter to exit...");
 }
 
-fn transform_message(
-  message: &[u8],
-  shifts: &Arc<Mutex<[i8; 12]>>,
-  ongoing: &Arc<Mutex<HashMap<u8, TransformedNote>>>,
-) -> Vec<Vec<u8>> {
-  if message.len() < 3 || !midi::is_note_event(message) {
-    return vec![message.to_vec()];
-  }
-  handle_note_event(message[0] & 0xF0, message[2], message[1], shifts, ongoing)
-}
-
 fn note_on_pitch_class(message: &[u8]) -> Option<usize> {
   if message.len() >= 3 && midi::is_note_on(message) {
     Some((message[1] % 12) as usize)
   } else {
     None
   }
-}
-
-fn handle_note_event(
-  status: u8,
-  velocity: u8,
-  original_note: u8,
-  shifts: &Arc<Mutex<[i8; 12]>>,
-  ongoing: &Arc<Mutex<HashMap<u8, TransformedNote>>>,
-) -> Vec<Vec<u8>> {
-  let data: [u8; 3] = [status, original_note, velocity];
-  let is_note_on: bool = midi::is_note_on(&data);
-  let is_note_off: bool = midi::is_note_off(&data);
-  let (new_channel, new_note): (i16, i16) =
-    edo72_instruction(original_note, shifts);
-  let output_in_range: bool =
-    new_channel >= 0 && new_channel <= 15 &&
-    new_note >= 0 && new_note <= 127;
-  let mut results: Vec<Vec<u8>> = vec![];
-  let mut ongoing: MutexGuard<'_, HashMap<u8, TransformedNote>> =
-    ongoing.lock().unwrap();
-
-  if is_note_on {
-    if let Some(old) = ongoing.get(&original_note) {
-      if !output_in_range ||
-         old.output_channel != new_channel as u8 ||
-         old.output_note != new_note as u8
-      {
-        let off_status: u8 = 0x80 | old.output_channel;
-        results.push(vec![off_status, old.output_note, 0]);
-      }
-    }
-    if output_in_range {
-      ongoing.insert(original_note, TransformedNote {
-        output_channel: new_channel as u8,
-        output_note: new_note as u8,
-      });
-      let on_status: u8 = 0x90 | new_channel as u8;
-      results.push(vec![on_status, new_note as u8, velocity]);
-    }
-  } else if is_note_off {
-    if let Some(old) = ongoing.remove(&original_note) {
-      let off_status: u8 = 0x80 | old.output_channel;
-      results.push(vec![off_status, old.output_note, velocity]);
-    } else if output_in_range {
-      let off_status: u8 = 0x80 | new_channel as u8;
-      results.push(vec![off_status, new_note as u8, velocity]);
-    }
-  }
-  results
 }
 
 fn edo72_instruction(
@@ -251,9 +190,10 @@ fn run_monome_thread(
     .unwrap_or_else(|e| panic!("bind UDP :{LISTEN_PORT}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
   let mut device_port: u16 =
-    discover_device(&sock).expect("no monome found; is serialoscd running?");
+    monome::discover_device(&sock, LISTEN_PORT)
+      .expect("no monome found; is serialoscd running?");
   let mut device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
-  register(&sock, device);
+  monome::register(&sock, device, PREFIX, LISTEN_PORT);
   let mut led_state = MonomeLedState::new(*shifts.lock().unwrap());
   let mut rendered_cols: [u8; 16] = [0; 16];
   render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
@@ -294,7 +234,7 @@ fn run_monome_thread(
         if p != device_port {
           device_port = p;
           device = format!("127.0.0.1:{p}").parse().unwrap();
-          register(&sock, device);
+          monome::register(&sock, device, PREFIX, LISTEN_PORT);
           rendered_cols = [0; 16];
           render_to_monome(
             &sock,
@@ -338,71 +278,21 @@ fn run_monome_thread(
       render_to_monome(&sock, device, &led_state, Instant::now(), &mut rendered_cols);
     }
   }
-  send_led_all(&sock, device, 0);
-}
-
-fn discover_device(sock: &UdpSocket) -> Option<u16> {
-  discover_device_on_port(sock, LISTEN_PORT)
-}
-
-fn discover_device_on_port(sock: &UdpSocket, listen_port: u16) -> Option<u16> {
-  let detector: SocketAddr = format!("127.0.0.1:{DETECTOR_PORT}").parse().ok()?;
-  send_osc(sock, detector, "/serialosc/list", vec![
-    OscType::String("127.0.0.1".into()),
-    OscType::Int(listen_port as i32),
-  ]);
-  let deadline = Instant::now() + Duration::from_secs(2);
-  let mut buf = [0u8; 2048];
-  let mut ports: Vec<u16> = vec![];
-  while Instant::now() < deadline {
-    if let Ok((n, _)) = sock.recv_from(&mut buf) {
-      if let Ok((_, OscPacket::Message(m))) = decoder::decode_udp(&buf[..n]) {
-        if m.addr == "/serialosc/device" && m.args.len() >= 3 {
-          if let Some(OscType::Int(p)) = m.args.get(2) {
-            let p = *p as u16;
-            if !ports.contains(&p) {
-              ports.push(p);
-            }
-          }
-        }
-      }
-    }
-  }
-  ports.last().copied()
-}
-
-fn register(sock: &UdpSocket, device: SocketAddr) {
-  send_osc(sock, device, "/sys/host", vec![OscType::String("127.0.0.1".into())]);
-  send_osc(sock, device, "/sys/port", vec![OscType::Int(LISTEN_PORT as i32)]);
-  send_osc(sock, device, "/sys/prefix", vec![OscType::String(PREFIX.into())]);
-  send_led_all(sock, device, 0);
+  monome::send_led_all(&sock, device, PREFIX, 0);
 }
 
 fn black_monome() {
-  let Ok(sock) = UdpSocket::bind(("0.0.0.0", 0)) else { return; };
-  let Ok(my_port) = sock.local_addr().map(|a| a.port()) else { return; };
-  let _ = sock.set_read_timeout(Some(Duration::from_millis(50)));
-  let Some(device_port) = discover_device_on_port(&sock, my_port) else { return; };
-  let device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
-  send_osc(&sock, device, "/sys/prefix", vec![OscType::String(PREFIX.into())]);
-  send_led_all(&sock, device, 0);
-}
-
-fn send_led_all(sock: &UdpSocket, device: SocketAddr, state: i32) {
-  send_osc(
-    sock,
-    device,
-    &format!("{PREFIX}/grid/led/all"),
-    vec![OscType::Int(state)],
-  );
+  monome::black(PREFIX);
 }
 
 fn send_led_col(sock: &UdpSocket, device: SocketAddr, x: i32, mask: i32) {
-  send_osc(
+  monome::send_led_col(
     sock,
     device,
-    &format!("{PREFIX}/grid/led/col"),
-    vec![OscType::Int(x), OscType::Int(0), OscType::Int(mask)],
+    PREFIX,
+    x,
+    0,
+    mask,
   );
 }
 
@@ -468,14 +358,6 @@ fn bottom_seven_mask() -> u8 {
     mask |= 1 << y;
   }
   mask
-}
-
-fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType>) {
-  let buf = encoder::encode(&OscPacket::Message(OscMessage {
-    addr: addr.to_string(),
-    args,
-  })).expect("encode OSC");
-  let _ = sock.send_to(&buf, dst);
 }
 
 fn is_offset_cell(x: i32, y: i32) -> bool {
