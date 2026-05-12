@@ -27,6 +27,10 @@ name = "edo72_piano_monome"
 path = "code/rust/edo72_piano_monome/edo72_piano_monome.rs"
 
 [[bin]]
+name = "edo31_piano_monome"
+path = "code/rust/edo31_piano_monome/edo31_piano_monome.rs"
+
+[[bin]]
 name = "triangle_chord"
 path = "code/rust/synth/triangle_chord.rs"
 

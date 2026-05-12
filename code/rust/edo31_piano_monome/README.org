@@ -1,29 +1,42 @@
-* 31-EDO piano transformer with monome mapping
+* EDO piano transformer with monome mapping
 ** purpose
 This is a variant of =edo72_piano_monome= that maps the twelve piano
-pitch classes into 31-EDO.
+pitch classes into an arbitrary EDO.
 
 ** to start it
-*** Connect the keyboard and monome 128.
+*** Connect the keyboard and monome.
 *** Start the docker container.
 *** In the docker container, from the project root, run
     cargo run --bin edo31_piano_monome
+    # or, for 58-EDO with x=8 and y=1:
+    cargo run --bin edo31_piano_monome -- 58 8 1
 *** In the host system, run
     ./code/rust/edo31_piano_monome/connect-midi.sh
 ** monome layout
-The grid is 16 columns by 8 rows, with =y=0= at the top.
+The grid size is inferred from serialosc's device type. Known sizes:
+=monome 128= is 16x8, and =monome 256= is 16x16. The y coordinate
+has =y=0= at the top.
 
-Each physical key represents a 31-EDO step:
+Command-line arguments are:
 
-  =step = 6*x + y mod 31=
+  =cargo run --bin edo31_piano_monome -- [EDO [X_STEP [Y_STEP]]]=
 
-Moving one key to the right raises pitch by 6 steps of 31-EDO.
-Moving one key downward in space raises pitch by 1 step of 31-EDO.
+The defaults are =31 6 1=. Each physical key represents an EDO step:
 
-The lit 31-EDO steps are the current image of the twelve piano pitch
-classes. Initially they are spaced as evenly as possible:
+  =step = X_STEP*x + Y_STEP*y mod EDO=
+
+For example, =58 8 1= means moving one key to the right raises pitch
+by 8 steps of 58-EDO, and moving one key downward in space raises
+pitch by 1 step of 58-EDO.
+
+The lit EDO steps are the current image of the twelve piano pitch
+classes. Initially they are spaced as evenly as possible. For 31-EDO:
 
   =0, 3, 5, 8, 10, 13, 16, 18, 21, 23, 26, 28=
+
+For 58-EDO:
+
+  =0, 5, 10, 15, 19, 24, 29, 34, 39, 44, 48, 53=
 
 The LEDs use three visual priorities:
 
@@ -36,17 +49,27 @@ The LEDs use three visual priorities:
 Higher-priority visuals clobber lower-priority visuals on the same
 physical key.
 
-Tap a lit pitch to make its 12-EDO/31-EDO key-value pair loose. You
+Tap a lit pitch to make its 12-EDO/EDO key-value pair loose. You
 can loosen multiple lit pitches. If no pitch is loose, tapping a dark
 pitch has no effect.
 
 When you tap a dark pitch, the program finds the nearest lit pitch
 below it and the nearest lit pitch above it in the ring of integers
-mod 31. If exactly one is loose, that key-value pair moves to the dark
+mod EDO. If exactly one is loose, that key-value pair moves to the dark
 pitch and becomes fixed again. If both are loose, the nearer one moves;
 in a tie, the higher one moves. If neither is loose, nothing changes.
 
 The program also tracks the signed lift of each pitch class. For
-example, moving C from step =0= to step =30= means =-1=, not =+30=,
-so outgoing MIDI moves down by one 31-EDO step rather than jumping up
+example, in 31-EDO, moving C from step =0= to step =30= means =-1=,
+not =+30=, so outgoing MIDI moves down by one EDO step rather than jumping up
 around the octave ring.
+
+** current monome diagnostic
+On 2026-05-12 serialosc reported:
+
+  =m0000102, monome 256=
+
+It also reported two device ports for that same id, which matches the
+ghost-tty issue described in =code/rust/monome/README.org=. The app
+chooses the last reply. If LEDs work but presses do not arrive, restart
+=serialoscd= on the host and reconnect the monome.

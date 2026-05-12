@@ -4,6 +4,15 @@ use std::time::{Duration, Instant};
 
 pub const DETECTOR_PORT: u16 = 12002;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceInfo {
+  pub id: String,
+  pub type_name: String,
+  pub port: u16,
+  pub grid_w: i32,
+  pub grid_h: i32,
+}
+
 pub fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType>) {
   let buf = encoder::encode(&OscPacket::Message(OscMessage {
     addr: addr.to_string(),
@@ -13,6 +22,10 @@ pub fn send_osc(sock: &UdpSocket, dst: SocketAddr, addr: &str, args: Vec<OscType
 }
 
 pub fn discover_device(sock: &UdpSocket, listen_port: u16) -> Option<u16> {
+  discover_device_info(sock, listen_port).map(|device| device.port)
+}
+
+pub fn discover_device_info(sock: &UdpSocket, listen_port: u16) -> Option<DeviceInfo> {
   let detector: SocketAddr = format!("127.0.0.1:{DETECTOR_PORT}").parse().ok()?;
   send_osc(sock, detector, "/serialosc/list", vec![
     OscType::String("127.0.0.1".into()),
@@ -20,22 +33,54 @@ pub fn discover_device(sock: &UdpSocket, listen_port: u16) -> Option<u16> {
   ]);
   let deadline = Instant::now() + Duration::from_secs(2);
   let mut buf = [0u8; 2048];
-  let mut ports: Vec<u16> = vec![];
+  let mut devices: Vec<DeviceInfo> = vec![];
   while Instant::now() < deadline {
     if let Ok((n, _)) = sock.recv_from(&mut buf) {
       if let Ok((_, OscPacket::Message(m))) = decoder::decode_udp(&buf[..n]) {
         if m.addr == "/serialosc/device" && m.args.len() >= 3 {
-          if let Some(OscType::Int(p)) = m.args.get(2) {
-            let p = *p as u16;
-            if !ports.contains(&p) {
-              ports.push(p);
+          if let (
+            Some(OscType::String(id)),
+            Some(OscType::String(type_name)),
+            Some(OscType::Int(port)),
+          ) = (m.args.first(), m.args.get(1), m.args.get(2)) {
+            let port = *port as u16;
+            if !devices.iter().any(|device| device.port == port) {
+              let (grid_w, grid_h) = grid_size_for_type(type_name);
+              devices.push(DeviceInfo {
+                id: id.clone(),
+                type_name: type_name.clone(),
+                port,
+                grid_w,
+                grid_h,
+              });
             }
           }
         }
       }
     }
   }
-  ports.last().copied()
+  if devices.len() > 1 {
+    let ports: Vec<u16> = devices.iter().map(|device| device.port).collect();
+    eprintln!(
+      "WARN: serialoscd reported {} device ports: {:?}. \
+       Picking the last reply, which is usually the newest live device.",
+      devices.len(),
+      ports,
+    );
+  }
+  devices.last().cloned()
+}
+
+fn grid_size_for_type(type_name: &str) -> (i32, i32) {
+  if type_name.contains("256") {
+    (16, 16)
+  } else if type_name.contains("128") {
+    (16, 8)
+  } else if type_name.contains("64") {
+    (8, 8)
+  } else {
+    (16, 8)
+  }
 }
 
 pub fn register(

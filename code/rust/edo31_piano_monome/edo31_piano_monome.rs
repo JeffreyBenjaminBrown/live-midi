@@ -15,18 +15,18 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 
-const SHIFT_IN_12_EDO : i8 = -5;
-const LOWEST_A        : u8 = 21;
+const LOWEST_C        : u8 = 24;
 const MIN_CHANNEL_OUT : u8 = 1;
 const MIN_NOTE_OUT    : u8 = 28;
 
 const PREFIX: &str = "/128-1-cable";
 const LISTEN_PORT: u16 = 9000;
 const LED_TRACE_ENV: &str = "EDO31_LED_TRACE";
-const GRID_W: i32 = 16;
-const GRID_H: i32 = 8;
-const EDO: i16 = 31;
-const INITIAL_MAP: [u8; 12] = [0, 3, 5, 8, 10, 13, 16, 18, 21, 23, 26, 28]; // In GHCI, the following expression yields this list:[ round $ i * 31/12 | i <- [0..12]]
+const DEFAULT_EDO: i16 = 31;
+const DEFAULT_X_STEP: i16 = 6;
+const DEFAULT_Y_STEP: i16 = 1;
+const DEFAULT_GRID_W: i32 = 16;
+const DEFAULT_GRID_H: i32 = 8;
 // Keep this no larger than the shortest on-window you want rendered.
 const MONOME_REFRESH: Duration = Duration::from_millis(1);
 
@@ -46,9 +46,20 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct Edo31State {
-  map: [u8; 12],
+  config: EdoConfig,
+  map: [i16; 12],
   deltas: [i16; 12],
   loose: [LooseState; 12],
+}
+
+#[derive(Clone)]
+struct EdoConfig {
+  edo: i16,
+  x_step: i16,
+  y_step: i16,
+  grid_w: i32,
+  grid_h: i32,
+  initial_map: [i16; 12],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,10 +181,45 @@ struct LedPhases {
   image_on: bool,
 }
 
+impl EdoConfig {
+  fn default() -> Self {
+    EdoConfig::new(
+      DEFAULT_EDO,
+      DEFAULT_X_STEP,
+      DEFAULT_Y_STEP,
+      DEFAULT_GRID_W,
+      DEFAULT_GRID_H,
+    )
+  }
+
+  fn new(edo: i16, x_step: i16, y_step: i16, grid_w: i32, grid_h: i32) -> Self {
+    EdoConfig {
+      edo,
+      x_step,
+      y_step,
+      grid_w,
+      grid_h,
+      initial_map: evenly_spaced_map(edo),
+    }
+  }
+
+  fn with_grid_size(&self, grid_w: i32, grid_h: i32) -> Self {
+    EdoConfig {
+      edo: self.edo,
+      x_step: self.x_step,
+      y_step: self.y_step,
+      grid_w,
+      grid_h,
+      initial_map: self.initial_map,
+    }
+  }
+}
+
 impl Edo31State {
-  fn new() -> Self {
+  fn new(config: EdoConfig) -> Self {
     Edo31State {
-      map: INITIAL_MAP,
+      map: config.initial_map,
+      config,
       deltas: [0; 12],
       loose: [LooseState::Fixed; 12],
     }
@@ -181,24 +227,25 @@ impl Edo31State {
 }
 
 struct SoundingState {
-  by_original_note: HashMap<u8, u8>,
-  counts: [u16; 31],
+  by_original_note: HashMap<u8, i16>,
+  counts: Vec<u16>,
 }
 
 impl SoundingState {
-  fn new() -> Self {
+  fn new(edo: i16) -> Self {
     SoundingState {
       by_original_note: HashMap::new(),
-      counts: [0; 31],
+      counts: vec![0; edo as usize],
     }
   }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+  let config = parse_config()?;
   let state: Arc<Mutex<Edo31State>> =
-    Arc::new(Mutex::new(Edo31State::new()));
+    Arc::new(Mutex::new(Edo31State::new(config.clone())));
   let sounding: Arc<Mutex<SoundingState>> =
-    Arc::new(Mutex::new(SoundingState::new()));
+    Arc::new(Mutex::new(SoundingState::new(config.edo)));
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
@@ -222,6 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ongoing_for_midi,
         |original_note| edo31_instruction(original_note, &state_for_midi),
       ) {
+        print_note_on_trace(message, &msg);
         let _ = tx.send(msg);
       }
     },
@@ -234,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || run_monome_thread(state_for_monome, sounding_for_monome));
 
   install_sigint_handler();
-  print_startup_message();
+  print_startup_message(&config);
   let (quit_tx, quit_rx): (mpsc::Sender<()>, mpsc::Receiver<()>) =
     mpsc::channel();
   thread::spawn(move || {
@@ -254,6 +302,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   Ok(())
 }
 
+fn parse_config() -> Result<EdoConfig, Box<dyn std::error::Error>> {
+  let mut config = EdoConfig::default();
+  let args: Vec<String> = std::env::args().skip(1).collect();
+  if args.len() > 3 {
+    return Err("usage: edo31_piano_monome [EDO [X_STEP [Y_STEP]]]".into());
+  }
+  if let Some(arg) = args.first() {
+    config.edo = parse_positive_i16(arg, "EDO")?;
+  }
+  if let Some(arg) = args.get(1) {
+    config.x_step = arg.parse::<i16>()
+      .map_err(|_| format!("X_STEP must be an integer, got {arg:?}"))?;
+  }
+  if let Some(arg) = args.get(2) {
+    config.y_step = arg.parse::<i16>()
+      .map_err(|_| format!("Y_STEP must be an integer, got {arg:?}"))?;
+  }
+  config.initial_map = evenly_spaced_map(config.edo);
+  Ok(config)
+}
+
+fn parse_positive_i16(arg: &str, name: &str) -> Result<i16, Box<dyn std::error::Error>> {
+  let value = arg.parse::<i16>()
+    .map_err(|_| format!("{name} must be an integer, got {arg:?}"))?;
+  if value <= 0 {
+    return Err(format!("{name} must be positive, got {value}").into());
+  }
+  Ok(value)
+}
+
+fn evenly_spaced_map(edo: i16) -> [i16; 12] {
+  let mut map = [0; 12];
+  for (i, slot) in map.iter_mut().enumerate() {
+    *slot = ((i as f64 * edo as f64 / 12.0).round() as i16).rem_euclid(edo);
+  }
+  map
+}
+
 fn install_sigint_handler() {
   extern "C" fn handler(_: i32) {
     STOP_REQUESTED.store(true, Ordering::Relaxed);
@@ -263,18 +349,24 @@ fn install_sigint_handler() {
   }
 }
 
-fn print_startup_message() {
-  println!("31-EDO piano transformer with monome mapping started!");
+fn print_startup_message(config: &EdoConfig) {
+  println!("{}-EDO piano transformer with monome mapping started!", config.edo);
   println!();
   println!("Virtual ports created:");
   println!("  - 'edo31_piano_monome-in:in' (input)");
   println!("  - 'edo31_piano_monome-out:out' (output)");
   println!();
-  println!("Monome 31-EDO map:");
-  println!("  - each key's pitch is 6*x + y mod 31");
+  println!("Monome {}-EDO map:", config.edo);
+  println!(
+    "  - each key's pitch is {}*x + {}*y mod {}",
+    config.x_step,
+    config.y_step,
+    config.edo,
+  );
+  println!("  - initial map: {:?}", config.initial_map);
   println!("  - sounding pitches stay lit");
-  println!("  - C, F and G flash 50/50 every 50 ms");
-  println!("  - other image pitches flash 10/90 every 10 ms");
+  println!("  - C, F and G flash as anchors");
+  println!("  - other image pitches flash dimly");
   println!("  - tap lit pitches to loosen them");
   println!("  - tap a dark pitch to move a neighboring loose pitch");
   println!();
@@ -286,8 +378,9 @@ fn edo31_instruction(
   state: &Arc<Mutex<Edo31State>>,
 ) -> (i16, i16) {
   let absolute_step = edo31_absolute_step(original_note, state);
-  let channel = MIN_CHANNEL_OUT as i16 + absolute_step.div_euclid(EDO);
-  let note = MIN_NOTE_OUT as i16 + absolute_step.rem_euclid(EDO);
+  let edo = state.lock().unwrap().config.edo;
+  let channel = MIN_CHANNEL_OUT as i16 + absolute_step.div_euclid(edo);
+  let note = MIN_NOTE_OUT as i16 + absolute_step.rem_euclid(edo);
   (channel, note)
 }
 
@@ -295,17 +388,34 @@ fn edo31_absolute_step(
   original_note: u8,
   state: &Arc<Mutex<Edo31State>>,
 ) -> i16 {
-  let normalized = original_note as i16
-                   - LOWEST_A as i16
-                   + SHIFT_IN_12_EDO as i16;
+  let normalized = original_note as i16 - LOWEST_C as i16;
   let channel_offset = normalized.div_euclid(12);
-  let note_offset = normalized.rem_euclid(12) as usize;
   let pitch_class = original_note % 12;
   let state = state.lock().unwrap();
   let pc = pitch_class as usize;
-  channel_offset * EDO
-    + INITIAL_MAP[note_offset] as i16
+  channel_offset * state.config.edo
+    + state.config.initial_map[pc]
     + state.deltas[pc]
+}
+
+fn print_note_on_trace(input: &[u8], output: &[u8]) {
+  if input.len() < 3 || output.len() < 3 {
+    return;
+  }
+  if !midi::is_note_on(input) || !midi::is_note_on(output) {
+    return;
+  }
+  let input_note = input[1];
+  let input_pc = input_note % 12;
+  let output_channel = (output[0] & 0x0f) + 1;
+  let output_note = output[1];
+  println!(
+    "note-on: input <{}, {}> -> output ({}, {})",
+    input_note,
+    input_pc,
+    output_channel,
+    output_note,
+  );
 }
 
 fn update_sounding(
@@ -335,12 +445,12 @@ fn update_sounding(
 fn sounding_step(
   original_note: u8,
   state: &Arc<Mutex<Edo31State>>,
-) -> u8 {
+) -> i16 {
   let pitch_class = (original_note % 12) as usize;
   state.lock().unwrap().map[pitch_class]
 }
 
-fn decrement_sounding_count(sounding: &mut SoundingState, step: u8) {
+fn decrement_sounding_count(sounding: &mut SoundingState, step: i16) {
   let count = &mut sounding.counts[step as usize];
   if *count > 0 {
     *count -= 1;
@@ -354,12 +464,24 @@ fn run_monome_thread(
   let sock = UdpSocket::bind(("0.0.0.0", LISTEN_PORT))
     .unwrap_or_else(|e| panic!("bind UDP :{LISTEN_PORT}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
-  let mut device_port =
-    monome::discover_device(&sock, LISTEN_PORT)
+  let mut device_info =
+    monome::discover_device_info(&sock, LISTEN_PORT)
       .expect("no monome found; is serialoscd running?");
-  let mut device: SocketAddr = format!("127.0.0.1:{device_port}").parse().unwrap();
+  {
+    let mut state = state.lock().unwrap();
+    state.config = state.config.with_grid_size(device_info.grid_w, device_info.grid_h);
+  }
+  eprintln!(
+    "monome: id={} type={} port={} size={}x{}",
+    device_info.id,
+    device_info.type_name,
+    device_info.port,
+    device_info.grid_w,
+    device_info.grid_h,
+  );
+  let mut device: SocketAddr = format!("127.0.0.1:{}", device_info.port).parse().unwrap();
   monome::register(&sock, device, PREFIX, LISTEN_PORT);
-  let mut rendered_cols = [0u8; 16];
+  let mut rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
   let mut sounding_clock = ColorClock::new(SOUNDING_COLOR, Instant::now());
   let mut anchor_clock = ColorClock::new(ANCHOR_COLOR, Instant::now());
   let mut image_clock = ColorClock::new(IMAGE_COLOR, Instant::now());
@@ -404,11 +526,11 @@ fn run_monome_thread(
     if m.addr == "/serialosc/device" && m.args.len() >= 3 {
       if let Some(OscType::Int(p)) = m.args.get(2) {
         let p = *p as u16;
-        if p != device_port {
-          device_port = p;
+        if p != device_info.port {
+          device_info.port = p;
           device = format!("127.0.0.1:{p}").parse().unwrap();
           monome::register(&sock, device, PREFIX, LISTEN_PORT);
-          rendered_cols = [0; 16];
+          rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
           render_to_monome(
             &sock,
             device,
@@ -429,7 +551,7 @@ fn run_monome_thread(
         (*x, *y, *s),
       _ => continue,
     };
-    if s != 1 || !is_grid_cell(x, y) {
+    if s != 1 || !is_grid_cell(&state.lock().unwrap().config, x, y) {
       continue;
     }
     let mut state = state.lock().unwrap();
@@ -448,6 +570,14 @@ fn run_monome_thread(
     }
   }
   monome::send_led_all(&sock, device, PREFIX, 0);
+}
+
+fn blank_rendered_cols(config: &EdoConfig) -> Vec<u8> {
+  vec![0; (config.grid_w as usize) * col_bank_count(config)]
+}
+
+fn col_bank_count(config: &EdoConfig) -> usize {
+  ((config.grid_h + 7) / 8) as usize
 }
 
 fn led_phases(
@@ -485,22 +615,28 @@ fn render_to_monome(
   sock: &UdpSocket,
   device: SocketAddr,
   state: &Edo31State,
-  sounding_counts: &[u16; 31],
+  sounding_counts: &[u16],
   phases: LedPhases,
-  rendered_cols: &mut [u8; 16],
+  rendered_cols: &mut Vec<u8>,
 ) {
   let cols = render_led_cols(state, sounding_counts, phases);
   let trace_leds = led_trace_enabled();
-  for (x, col) in cols.iter().enumerate() {
-    if rendered_cols[x] != *col {
+  if rendered_cols.len() != cols.len() {
+    *rendered_cols = vec![0; cols.len()];
+  }
+  let banks = col_bank_count(&state.config);
+  for (i, col) in cols.iter().enumerate() {
+    if rendered_cols[i] != *col {
+      let x = (i / banks) as i32;
+      let y = ((i % banks) * 8) as i32;
       if trace_leds {
         eprintln!(
-          "led x={x:02} mask=0b{col:08b} old=0b{:08b}",
-          rendered_cols[x],
+          "led x={x:02} y={y:02} mask=0b{col:08b} old=0b{:08b}",
+          rendered_cols[i],
         );
       }
-      monome::send_led_col(sock, device, PREFIX, x as i32, 0, *col as i32);
-      rendered_cols[x] = *col;
+      monome::send_led_col(sock, device, PREFIX, x, y, *col as i32);
+      rendered_cols[i] = *col;
     }
   }
 }
@@ -511,15 +647,17 @@ fn led_trace_enabled() -> bool {
 
 fn render_led_cols(
   state: &Edo31State,
-  sounding_counts: &[u16; 31],
+  sounding_counts: &[u16],
   phases: LedPhases,
-) -> [u8; 16] {
-  let mut cols = [0u8; 16];
-  for y in 0..GRID_H {
-    for x in 0..GRID_W {
-      let step = grid_step(x, y);
+) -> Vec<u8> {
+  let banks = col_bank_count(&state.config);
+  let mut cols = vec![0u8; state.config.grid_w as usize * banks];
+  for y in 0..state.config.grid_h {
+    for x in 0..state.config.grid_w {
+      let step = grid_step(&state.config, x, y);
       if is_rendered_on(state, sounding_counts, step, phases) {
-        cols[x as usize] |= 1 << y;
+        let i = x as usize * banks + (y as usize / 8);
+        cols[i] |= 1u8 << (y % 8);
       }
     }
   }
@@ -528,8 +666,8 @@ fn render_led_cols(
 
 fn is_rendered_on(
   state: &Edo31State,
-  sounding_counts: &[u16; 31],
-  step: u8,
+  sounding_counts: &[u16],
+  step: i16,
   phases: LedPhases,
 ) -> bool {
   if sounding_counts[step as usize] > 0 {
@@ -551,7 +689,7 @@ fn is_anchor_pitch_class(preimage: usize) -> bool {
 }
 
 fn apply_grid_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
-  let step = grid_step(x, y);
+  let step = grid_step(&state.config, x, y);
   if let Some(preimage) = preimage_for_step(state, step) {
     state.loose[preimage] = LooseState::Loose;
     eprintln!("loose {} -> {step}", pitch_name(preimage));
@@ -559,7 +697,9 @@ fn apply_grid_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
   }
   let Some(preimage) = loose_neighbor_for_dark_step(step, state) else { return false; };
   let current = state.map[preimage];
-  let Some(delta) = move_delta(current, step, &state.map) else { return false; };
+  let Some(delta) = move_delta(current, step, &state.map, state.config.edo) else {
+    return false;
+  };
   state.map[preimage] = step;
   state.deltas[preimage] += delta;
   state.loose[preimage] = LooseState::Fixed;
@@ -567,12 +707,12 @@ fn apply_grid_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
   true
 }
 
-fn preimage_for_step(state: &Edo31State, step: u8) -> Option<usize> {
+fn preimage_for_step(state: &Edo31State, step: i16) -> Option<usize> {
   state.map.iter().position(|s| *s == step)
 }
 
-fn loose_neighbor_for_dark_step(step: u8, state: &Edo31State) -> Option<usize> {
-  let (lower, higher) = nearest_light_neighbors(step, &state.map);
+fn loose_neighbor_for_dark_step(step: i16, state: &Edo31State) -> Option<usize> {
+  let (lower, higher) = nearest_light_neighbors(step, &state.map, state.config.edo);
   match (
     state.loose[lower.preimage] == LooseState::Loose,
     state.loose[higher.preimage] == LooseState::Loose,
@@ -595,15 +735,15 @@ struct Neighbor {
   distance: i16,
 }
 
-fn nearest_light_neighbors(step: u8, lit_steps: &[u8; 12]) -> (Neighbor, Neighbor) {
-  let mut lower = Neighbor { preimage: 0, distance: EDO };
-  let mut higher = Neighbor { preimage: 0, distance: EDO };
+fn nearest_light_neighbors(step: i16, lit_steps: &[i16; 12], edo: i16) -> (Neighbor, Neighbor) {
+  let mut lower = Neighbor { preimage: 0, distance: edo };
+  let mut higher = Neighbor { preimage: 0, distance: edo };
   for (preimage, lit) in lit_steps.iter().enumerate() {
-    let lower_distance = (step as i16 - *lit as i16).rem_euclid(EDO);
+    let lower_distance = (step - *lit).rem_euclid(edo);
     if lower_distance > 0 && lower_distance < lower.distance {
       lower = Neighbor { preimage, distance: lower_distance };
     }
-    let higher_distance = (*lit as i16 - step as i16).rem_euclid(EDO);
+    let higher_distance = (*lit - step).rem_euclid(edo);
     if higher_distance > 0 && higher_distance < higher.distance {
       higher = Neighbor { preimage, distance: higher_distance };
     }
@@ -611,33 +751,34 @@ fn nearest_light_neighbors(step: u8, lit_steps: &[u8; 12]) -> (Neighbor, Neighbo
   (lower, higher)
 }
 
-fn move_delta(from: u8, to: u8, lit_steps: &[u8; 12]) -> Option<i16> {
+fn move_delta(from: i16, to: i16, lit_steps: &[i16; 12], edo: i16) -> Option<i16> {
   if from == to {
     return Some(0);
   }
-  let cw = (to as i16 - from as i16).rem_euclid(EDO);
-  let ccw = (from as i16 - to as i16).rem_euclid(EDO);
+  let cw = (to - from).rem_euclid(edo);
+  let ccw = (from - to).rem_euclid(edo);
   if cw < ccw {
     let blocked = lit_steps.iter().any(|step| {
-      let d = (*step as i16 - from as i16).rem_euclid(EDO);
+      let d = (*step - from).rem_euclid(edo);
       d > 0 && d < cw
     });
     if blocked { None } else { Some(cw) }
   } else {
     let blocked = lit_steps.iter().any(|step| {
-      let d = (from as i16 - *step as i16).rem_euclid(EDO);
+      let d = (from - *step).rem_euclid(edo);
       d > 0 && d < ccw
     });
     if blocked { None } else { Some(-ccw) }
   }
 }
 
-fn grid_step(x: i32, y: i32) -> u8 {
-  ((6 * x + y).rem_euclid(EDO as i32)) as u8
+fn grid_step(config: &EdoConfig, x: i32, y: i32) -> i16 {
+  ((config.x_step as i32 * x + config.y_step as i32 * y)
+    .rem_euclid(config.edo as i32)) as i16
 }
 
-fn is_grid_cell(x: i32, y: i32) -> bool {
-  x >= 0 && x < GRID_W && y >= 0 && y < GRID_H
+fn is_grid_cell(config: &EdoConfig, x: i32, y: i32) -> bool {
+  x >= 0 && x < config.grid_w && y >= 0 && y < config.grid_h
 }
 
 fn pitch_name(pc: usize) -> &'static str {
@@ -651,39 +792,66 @@ fn pitch_name(pc: usize) -> &'static str {
 mod tests {
   use super::*;
 
-  fn no_sounding() -> [u16; 31] {
-    [0; 31]
+  fn test_config() -> EdoConfig {
+    EdoConfig::default()
+  }
+
+  fn test_state() -> Edo31State {
+    Edo31State::new(test_config())
+  }
+
+  fn test_state_arc() -> Arc<Mutex<Edo31State>> {
+    Arc::new(Mutex::new(test_state()))
+  }
+
+  fn no_sounding() -> Vec<u16> {
+    vec![0; test_config().edo as usize]
   }
 
   fn phases(sounding_on: bool, anchor_on: bool, image_on: bool) -> LedPhases {
     LedPhases { sounding_on, anchor_on, image_on }
   }
 
+  fn encoded_output_step(channel: i16, note: i16, edo: i16) -> i16 {
+    (channel - MIN_CHANNEL_OUT as i16) * edo
+      + (note - MIN_NOTE_OUT as i16)
+  }
+
   #[test]
   fn grid_geometry_matches_requested_axes() {
-    assert_eq!(grid_step(0, 0), 0);
-    assert_eq!(grid_step(1, 0), 6);
-    assert_eq!(grid_step(0, 1), 1);
+    let config = test_config();
+    assert_eq!(grid_step(&config, 0, 0), 0);
+    assert_eq!(grid_step(&config, 1, 0), 6);
+    assert_eq!(grid_step(&config, 0, 1), 1);
   }
 
   #[test]
   fn initial_map_matches_even_31_edo_spacing() {
-    assert_eq!(Edo31State::new().map, INITIAL_MAP);
+    assert_eq!(test_state().map, [0, 3, 5, 8, 10, 13, 16, 18, 21, 23, 26, 28]);
+  }
+
+  #[test]
+  fn initial_map_generalizes_to_58_edo() {
+    assert_eq!(
+      evenly_spaced_map(58),
+      [0, 5, 10, 15, 19, 24, 29, 34, 39, 44, 48, 53],
+    );
   }
 
   #[test]
   fn lit_press_makes_preimage_loose_without_moving() {
-    let mut state = Edo31State::new();
+    let mut state = test_state();
+    let initial_map = state.config.initial_map;
 
     assert!(apply_grid_press(&mut state, 0, 0));
 
     assert_eq!(state.loose[0], LooseState::Loose);
-    assert_eq!(state.map, INITIAL_MAP);
+    assert_eq!(state.map, initial_map);
   }
 
   #[test]
   fn dark_press_has_no_effect_when_no_preimage_is_loose() {
-    let mut state = Edo31State::new();
+    let mut state = test_state();
 
     assert!(!apply_grid_press(&mut state, 0, 1));
 
@@ -692,7 +860,7 @@ mod tests {
 
   #[test]
   fn dark_press_moves_loose_neighbor_and_fixes_it() {
-    let mut state = Edo31State::new();
+    let mut state = test_state();
     state.loose[0] = LooseState::Loose;
 
     assert!(apply_grid_press(&mut state, 0, 1));
@@ -704,7 +872,7 @@ mod tests {
 
   #[test]
   fn dark_press_moves_farther_neighbor_if_only_farther_neighbor_is_loose() {
-    let mut state = Edo31State::new();
+    let mut state = test_state();
     state.loose[1] = LooseState::Loose;
 
     assert!(apply_grid_press(&mut state, 0, 1));
@@ -717,7 +885,7 @@ mod tests {
 
   #[test]
   fn dark_press_chooses_higher_neighbor_on_tie() {
-    let mut state = Edo31State::new();
+    let mut state = test_state();
     state.loose[0] = LooseState::Loose;
     state.loose[1] = LooseState::Loose;
 
@@ -732,7 +900,7 @@ mod tests {
 
   #[test]
   fn edo31_note_uses_current_pitch_class_mapping() {
-    let state = Arc::new(Mutex::new(Edo31State::new()));
+    let state = test_state_arc();
     {
       let mut state = state.lock().unwrap();
       state.map[0] = 1;
@@ -741,18 +909,20 @@ mod tests {
 
     let (_channel, note) = edo31_instruction(60, &state);
 
-    assert_eq!(note, MIN_NOTE_OUT as i16 + 27);
+    assert_eq!(note, MIN_NOTE_OUT as i16 + 1);
   }
 
   #[test]
   fn move_delta_uses_shorter_arc_before_checking_blockers() {
-    assert_eq!(move_delta(0, 30, &INITIAL_MAP), Some(-1));
-    assert_eq!(move_delta(0, 4, &INITIAL_MAP), None);
+    let initial_map = test_config().initial_map;
+    assert_eq!(move_delta(0, 30, &initial_map, 31), Some(-1));
+    assert_eq!(move_delta(0, 4, &initial_map, 31), None);
   }
 
   #[test]
   fn lowering_c_across_display_boundary_lowers_one_31_edo_step() {
-    let state = Arc::new(Mutex::new(Edo31State::new()));
+    let state = test_state_arc();
+    let edo = test_config().edo;
     let (default_channel, default_note) = edo31_instruction(60, &state);
     {
       let mut state = state.lock().unwrap();
@@ -762,27 +932,58 @@ mod tests {
 
     let (channel, note) = edo31_instruction(60, &state);
 
-    assert_eq!(channel, default_channel);
-    assert_eq!(note, default_note - 1);
+    assert_eq!(
+      encoded_output_step(channel, note, edo),
+      encoded_output_step(default_channel, default_note, edo) - 1,
+    );
   }
 
   #[test]
   fn default_middle_octave_mapping_is_monotone_across_c_boundary() {
-    let state = Arc::new(Mutex::new(Edo31State::new()));
+    let state = test_state_arc();
     let encoded: Vec<i16> = (60..72)
       .map(|note| {
         let (channel, midi_note) = edo31_instruction(note, &state);
-        (channel - MIN_CHANNEL_OUT as i16) * EDO
-          + (midi_note - MIN_NOTE_OUT as i16)
+        encoded_output_step(channel, midi_note, test_config().edo)
       })
       .collect();
 
-    assert_eq!(encoded, vec![88, 90, 93, 96, 98, 101, 103, 106, 109, 111, 114, 116]);
+    assert_eq!(encoded, vec![93, 96, 98, 101, 103, 106, 109, 111, 114, 116, 119, 121]);
+  }
+
+  #[test]
+  fn output_residue_matches_displayed_pitch_class_mapping() {
+    let config = EdoConfig::new(58, 8, 1, 16, 16);
+    let state = Arc::new(Mutex::new(Edo31State::new(config.clone())));
+
+    for note in 48..60 {
+      let pitch_class = (note % 12) as usize;
+      let (channel, midi_note) = edo31_instruction(note, &state);
+      let residue = encoded_output_step(channel, midi_note, config.edo)
+        .rem_euclid(config.edo);
+
+      assert_eq!(residue, config.initial_map[pitch_class]);
+    }
+  }
+
+  #[test]
+  fn eb_to_bb_output_interval_matches_58_edo_display_interval() {
+    let config = EdoConfig::new(58, 8, 1, 16, 16);
+    let state = Arc::new(Mutex::new(Edo31State::new(config.clone())));
+    let (eb_channel, eb_note) = edo31_instruction(51, &state);
+    let (bb_channel, bb_note) = edo31_instruction(58, &state);
+    let eb = encoded_output_step(eb_channel, eb_note, config.edo);
+    let bb = encoded_output_step(bb_channel, bb_note, config.edo);
+    let output_interval = (bb - eb).rem_euclid(config.edo);
+    let display_interval = (config.initial_map[10] - config.initial_map[3])
+      .rem_euclid(config.edo);
+
+    assert_eq!(output_interval, display_interval);
   }
 
   #[test]
   fn render_hides_anchor_preimages_during_anchor_off_phase() {
-    let state = Edo31State::new();
+    let state = test_state();
     let sounding = no_sounding();
 
     let on_cols = render_led_cols(&state, &sounding, phases(true, true, true));
@@ -798,7 +999,7 @@ mod tests {
 
   #[test]
   fn render_hides_non_anchor_image_during_image_off_phase() {
-    let state = Edo31State::new();
+    let state = test_state();
     let sounding = no_sounding();
 
     let off_cols = render_led_cols(&state, &sounding, phases(true, true, false));
@@ -808,12 +1009,25 @@ mod tests {
 
   #[test]
   fn render_keeps_non_anchor_image_during_image_on_phase() {
-    let state = Edo31State::new();
+    let state = test_state();
     let sounding = no_sounding();
 
     let on_cols = render_led_cols(&state, &sounding, phases(true, true, true));
 
     assert_ne!(on_cols[0] & (1 << 3), 0);
+  }
+
+  #[test]
+  fn render_uses_two_led_col_banks_for_16_high_grid() {
+    let config = EdoConfig::new(58, 8, 1, 16, 16);
+    let state = Edo31State::new(config.clone());
+    let sounding = vec![0; config.edo as usize];
+
+    let cols = render_led_cols(&state, &sounding, phases(true, true, true));
+
+    assert_eq!(cols.len(), 32);
+    assert_ne!(cols[0], 0);
+    assert_ne!(cols[1], 0);
   }
 
   #[test]
@@ -857,7 +1071,7 @@ mod tests {
 
   #[test]
   fn sounding_pitch_clobbers_anchor_and_image_off_phases() {
-    let mut state = Edo31State::new();
+    let mut state = test_state();
     state.map[0] = 30;
     let mut sounding = no_sounding();
     sounding[30] = 1;
@@ -871,8 +1085,8 @@ mod tests {
 
   #[test]
   fn sounding_state_survives_map_change_until_note_off() {
-    let state = Arc::new(Mutex::new(Edo31State::new()));
-    let sounding = Arc::new(Mutex::new(SoundingState::new()));
+    let state = test_state_arc();
+    let sounding = Arc::new(Mutex::new(SoundingState::new(test_config().edo)));
 
     update_sounding(&[0x90, 60, 100], &state, &sounding);
     state.lock().unwrap().map[0] = 30;
@@ -885,12 +1099,12 @@ mod tests {
 
   #[test]
   fn sounding_state_uses_displayed_pitch_class_not_output_residue() {
-    let state = Arc::new(Mutex::new(Edo31State::new()));
-    let sounding = Arc::new(Mutex::new(SoundingState::new()));
+    let state = test_state_arc();
+    let sounding = Arc::new(Mutex::new(SoundingState::new(test_config().edo)));
 
     update_sounding(&[0x90, 62, 100], &state, &sounding);
 
-    assert_eq!(sounding.lock().unwrap().counts[INITIAL_MAP[2] as usize], 1);
+    assert_eq!(sounding.lock().unwrap().counts[test_config().initial_map[2] as usize], 1);
     assert_eq!(sounding.lock().unwrap().counts[0], 0);
   }
 }
