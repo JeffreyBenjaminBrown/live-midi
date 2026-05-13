@@ -21,6 +21,9 @@ The EDO map is drawn across the 10 leftmost columns of the physical
 grid, using every available row. On a 16x16 monome that is =x=0..9=
 and =y=0..15=.
 
+The bottom-right key is an undo button. It restores the previous
+remap state, including loose/fixed markings.
+
 The only command-line argument is an optional config filename:
 
   =cargo run --bin edo31_piano_monome -- [CONFIG_FILE]=

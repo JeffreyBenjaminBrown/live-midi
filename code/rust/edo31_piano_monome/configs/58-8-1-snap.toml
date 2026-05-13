@@ -1,0 +1,5 @@
+lowest_hz = 80
+edo = 58
+between_columns = 8
+between_rows = 1
+remap_idiom = "snap"

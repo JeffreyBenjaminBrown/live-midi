@@ -1,3 +1,56 @@
+* TODO a row on the monome to show which piano key was remapped
+* Save scale, given root.
+Predefined scales:
+** Evenly spaced
+** Pythagorean
+** m 7m neutral M 7M x {2,5,7} {1,3,8,10} {4,6,9,11}
+* Try sustain.
+* Apply monome pitch as root to saved scale.
+* record instructions
+alsamixer -c 0
+systemctl --user restart serialoscd wireplumber pipewire pipewire-pulse
+* 58-edo piano controls
+** snap to nearest pitch and retrigger note
+Keep the code for the 'loose key' idiom, but introduce another.
+*** request
+In code/rust/edo31_piano_monome/,
+I'd like to keep that code for the 'loose key' idiom,
+but introduce another.
+In this new idiom, when you press a dark key on the monome,
+the nearest (in the 31-edo ring, not the 2d space)
+image snaps to that value.
+In the event of a tie, snap the higher image down to it,
+and leave the lower image in place.
+
+Also, rather than a mess of command-line arguments,
+let's introduce a 'settings' folder with some .toml files.
+This new toml format has all the previous arguments,
+plus a new enum field for which remap behavior to use.
+Currently there are two variants: "snap" and "loosen".
+
+Begin with two sample files called '31-loose.toml'
+and '58-8-5-snap.toml'. 31 looks like this:
+```
+  lowest_hz = 80
+  edo : 31
+  between_columns : 6
+  between_rows : 1
+  remap_idiom : "loose"
+```
+and 58 looks like this:
+
+```
+  lowest_hz = 80
+  edo : 58
+  between_columns : 8
+  between_rows : 5
+  remap_idiom : "snap" # default
+```
+
+There should also be a simlink called 'default'
+pointing at 58-snap.toml.
+The only argument should be the name of the config file,
+and it should be optional, defaulting to 'default'.
 * monome
 ** if inter-row distance is negative, lowest pitch should be of the bottom-left key
 not the top-left

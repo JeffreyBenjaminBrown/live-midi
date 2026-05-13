@@ -23,7 +23,14 @@ connect_keyboard_to_alsa_client() {
   echo "  CASIO: $casio, $client_name: $client"
 
   if [[ -n "$casio" && -n "$client" ]]; then
-    aconnect "$casio:0" "$client:0" && echo "  Connected: keyboard -> $label"
+    if aconnect "$casio:0" "$client:0" 2>/tmp/connect-midi-aconnect.err; then
+      echo "  Connected: keyboard -> $label"
+    elif grep -q 'Connection is already subscribed' /tmp/connect-midi-aconnect.err; then
+      echo "  Already connected: keyboard -> $label"
+    else
+      cat /tmp/connect-midi-aconnect.err
+      return 1
+    fi
   else
     echo "  Warning: Could not find ALSA ports"
   fi
@@ -34,5 +41,12 @@ connect_pipewire_midi() {
   local dest="$2"
   local label="$3"
 
-  pw-link "$source" "$dest" && echo "  Connected: $label"
+  if pw-link "$source" "$dest" 2>/tmp/connect-midi-pw-link.err; then
+    echo "  Connected: $label"
+  elif pw-link -l | grep -A20 -Fx "$source" | grep -Fxq "  |-> $dest"; then
+    echo "  Already connected: $label"
+  else
+    cat /tmp/connect-midi-pw-link.err
+    return 1
+  fi
 }
