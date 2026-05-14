@@ -1,5 +1,6 @@
 use midir::os::unix::VirtualOutput;
 use midir::MidiOutput;
+use midi_pulse::config::{Config, MonomeWindowConfig};
 use midi_pulse::{midi, monome};
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
@@ -124,24 +125,107 @@ struct AppState {
   output_counts: HashMap<MidiNote, usize>,
   midi_tx: mpsc::Sender<Vec<u8>>,
   velocity: u8,
+  min_channel: i32,
+  min_note: i32,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+  let edo_window = config.monome_windows.iter().find_map(|window| {
+    if let MonomeWindowConfig::EdoNoteGrid { monome, tuning, sink, .. } = window {
+      Some((monome, tuning, sink))
+    } else {
+      None
+    }
+  }).ok_or("monome MIDI config requires an edo_note_grid window")?;
+  let monome_config = config.monomes.iter()
+    .find(|monome| monome.id == *edo_window.0)
+    .ok_or("edo_note_grid references an unknown monome")?;
+  let tuning = config.tunings.iter()
+    .find(|tuning| tuning.id == *edo_window.1)
+    .ok_or("edo_note_grid references an unknown tuning")?;
+  if !config.sinks.iter().any(|sink| sink.id() == edo_window.2.as_str()) {
+    return Err("edo_note_grid references an unknown sink".into());
+  }
+  let midi_output = config.midi.as_ref()
+    .ok_or("monome MIDI config requires [midi.output]")?
+    .output
+    .clone();
+  let grid_size = monome_config.select.size.unwrap_or([GRID_W, GRID_H]);
+  run(RuntimeSettings {
+    prefix: monome_config.prefix.clone(),
+    listen_port: monome_config.listen_port,
+    grid_w: grid_size[0],
+    grid_h: grid_size[1],
+    edo: tuning.edo as i32,
+    x_step: tuning.x_step as i32,
+    y_step: tuning.y_step as i32,
+    velocity: DEFAULT_VELOCITY,
+    min_channel: midi_output.min_channel as i32,
+    min_note: midi_output.min_note as i32,
+    midi_output_name: midi_output.virtual_name,
+  })
+}
+
+#[allow(dead_code)]
+pub fn run_default() -> Result<(), Box<dyn std::error::Error>> {
   let args: Vec<String> = std::env::args().collect();
   let edo = parse_i32_arg(&args, 1, "edo", DEFAULT_EDO);
   let x_step = parse_i32_arg(&args, 2, "x_step", DEFAULT_X_STEP);
   let y_step = parse_i32_arg(&args, 3, "y_step", DEFAULT_Y_STEP);
-  assert!(edo > 0, "edo must be positive, got {edo}");
-
-  let midi_out = MidiOutput::new("monome_edo_midi-out")?;
-  let conn_out = midi_out.create_virtual("out")?;
-  let (midi_tx, midi_rx) = mpsc::channel();
-  let _out_thread = thread::spawn(move || midi::run_output_thread(conn_out, midi_rx));
-
   let listen_port = std::env::var(LISTEN_PORT_ENV)
     .ok()
     .and_then(|s| s.parse().ok())
     .unwrap_or(LISTEN_PORT);
+  run(RuntimeSettings {
+    prefix: PREFIX.to_string(),
+    listen_port,
+    grid_w: GRID_W,
+    grid_h: GRID_H,
+    edo,
+    x_step,
+    y_step,
+    velocity: DEFAULT_VELOCITY,
+    min_channel: MIN_CHANNEL_OUT,
+    min_note: MIN_NOTE_OUT,
+    midi_output_name: "monome_edo_midi-out".to_string(),
+  })
+}
+
+struct RuntimeSettings {
+  prefix: String,
+  listen_port: u16,
+  grid_w: i32,
+  grid_h: i32,
+  edo: i32,
+  x_step: i32,
+  y_step: i32,
+  velocity: u8,
+  min_channel: i32,
+  min_note: i32,
+  midi_output_name: String,
+}
+
+fn run(settings: RuntimeSettings) -> Result<(), Box<dyn std::error::Error>> {
+  let RuntimeSettings {
+    prefix,
+    listen_port,
+    grid_w,
+    grid_h,
+    edo,
+    x_step,
+    y_step,
+    velocity,
+    min_channel,
+    min_note,
+    midi_output_name,
+  } = settings;
+  assert!(edo > 0, "edo must be positive, got {edo}");
+
+  let midi_out = MidiOutput::new(&midi_output_name)?;
+  let conn_out = midi_out.create_virtual("out")?;
+  let (midi_tx, midi_rx) = mpsc::channel();
+  let _out_thread = thread::spawn(move || midi::run_output_thread(conn_out, midi_rx));
+
   let sock = UdpSocket::bind(("0.0.0.0", listen_port))
     .unwrap_or_else(|e| panic!("bind UDP :{listen_port}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50)))?;
@@ -152,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       .expect("no 16x16 monome found; is the big grid plugged in and serialoscd running?"),
   };
   let mut device: SocketAddr = format!("127.0.0.1:{device_port}").parse()?;
-  monome::register(&sock, device, PREFIX, listen_port);
+  monome::register(&sock, device, &prefix, listen_port);
 
   let windows = vec![
     Window { id: WindowId::ControlsTop, rect: CONTROLS_TOP_RECT },
@@ -160,17 +244,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Window { id: WindowId::Edo, rect: EDO_RECT },
   ];
   let mut state = AppState::new(
-    build_pitch_class(x_step, y_step, edo, GRID_W, GRID_H),
+    build_pitch_class(x_step, y_step, edo, grid_w, grid_h),
     edo,
-    DEFAULT_VELOCITY,
+    velocity,
+    min_channel,
+    min_note,
     midi_tx,
   );
-  repaint(&sock, device, &windows, &state);
+  repaint(&sock, device, &prefix, &windows, &state);
 
   install_sigint_handler();
-  print_startup_message(edo, x_step, y_step);
+  print_startup_message(edo, x_step, y_step, &midi_output_name);
 
-  let key_addr = format!("{PREFIX}/grid/key");
+  let key_addr = format!("{prefix}/grid/key");
   let mut buf = [0u8; 2048];
   let start = Instant::now();
   let mut last_flash_phase = 2u8;
@@ -180,7 +266,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       if phase != last_flash_phase {
         last_flash_phase = phase;
         let brightness = if phase == 0 { Brightness::Bright } else { Brightness::Off };
-        set_led(&sock, device, &windows, WindowId::ControlsTop, CELL_SET_ACCRETION_TARGET, brightness);
+        set_led(
+          &sock,
+          device,
+          &prefix,
+          &windows,
+          WindowId::ControlsTop,
+          CELL_SET_ACCRETION_TARGET,
+          brightness,
+        );
       }
     } else {
       last_flash_phase = 2;
@@ -203,8 +297,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if is_big && port != device_port {
           device_port = port;
           device = format!("127.0.0.1:{port}").parse()?;
-          monome::register(&sock, device, PREFIX, listen_port);
-          repaint(&sock, device, &windows, &state);
+          monome::register(&sock, device, &prefix, listen_port);
+          repaint(&sock, device, &prefix, &windows, &state);
         }
       }
       continue;
@@ -237,12 +331,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
     };
     for (from, cell, brightness) in diffs {
-      set_led(&sock, device, &windows, from, cell, brightness);
+      set_led(&sock, device, &prefix, &windows, from, cell, brightness);
     }
   }
 
   state.all_notes_off();
-  monome::send_led_all(&sock, device, PREFIX, 0);
+  monome::send_led_all(&sock, device, &prefix, 0);
   Ok(())
 }
 
@@ -251,6 +345,8 @@ impl AppState {
     pitch_class: PitchClass,
     edo: i32,
     velocity: u8,
+    min_channel: i32,
+    min_note: i32,
     midi_tx: mpsc::Sender<Vec<u8>>,
   ) -> Self {
     let mut control_buttons = HashMap::new();
@@ -286,11 +382,15 @@ impl AppState {
       output_counts: HashMap::new(),
       midi_tx,
       velocity,
+      min_channel,
+      min_note,
     }
   }
 
   fn start_source(&mut self, source: Source, pitch: i32) {
-    let Some((channel, note)) = midi_note_for_pitch(pitch, self.edo) else {
+    let Some((channel, note)) =
+      midi_note_for_pitch(pitch, self.edo, self.min_channel, self.min_note)
+    else {
       eprintln!("pitch {pitch} is outside MIDI channel/note range; not sounding");
       return;
     };
@@ -371,11 +471,11 @@ fn serialosc_device_port_and_size(args: &[OscType]) -> Option<(&i32, bool)> {
   Some((port, type_name.contains("256")))
 }
 
-fn print_startup_message(edo: i32, x_step: i32, y_step: i32) {
+fn print_startup_message(edo: i32, x_step: i32, y_step: i32, midi_output_name: &str) {
   println!("monome_edo_midi started");
   println!();
   println!("Virtual port created:");
-  println!("  - 'monome_edo_midi-out:out' (output)");
+  println!("  - '{midi_output_name}:out' (output)");
   println!();
   println!("Grid tuning:");
   println!("  - edo={edo}, x_step={x_step}, y_step={y_step}");
@@ -394,9 +494,9 @@ fn install_sigint_handler() {
   }
 }
 
-fn midi_note_for_pitch(pitch: i32, edo: i32) -> Option<MidiNote> {
-  let channel = MIN_CHANNEL_OUT + pitch.div_euclid(edo);
-  let note = MIN_NOTE_OUT + pitch.rem_euclid(edo);
+fn midi_note_for_pitch(pitch: i32, edo: i32, min_channel: i32, min_note: i32) -> Option<MidiNote> {
+  let channel = min_channel + pitch.div_euclid(edo);
+  let note = min_note + pitch.rem_euclid(edo);
   if (0..=15).contains(&channel) && (0..=127).contains(&note) {
     Some((channel as u8, note as u8))
   } else {
@@ -719,7 +819,13 @@ fn remove_reason(
   }
 }
 
-fn repaint(sock: &UdpSocket, device: SocketAddr, windows: &[Window], state: &AppState) {
+fn repaint(
+  sock: &UdpSocket,
+  device: SocketAddr,
+  prefix: &str,
+  windows: &[Window],
+  state: &AppState,
+) {
   for (&cell, button) in &state.control_buttons {
     let brightness = if cell == CELL_SET_ACCRETION_TARGET {
       Brightness::Dim
@@ -729,12 +835,13 @@ fn repaint(sock: &UdpSocket, device: SocketAddr, windows: &[Window], state: &App
         _ => Brightness::Off,
       }
     };
-    set_led(sock, device, windows, WindowId::ControlsTop, cell, brightness);
+    set_led(sock, device, prefix, windows, WindowId::ControlsTop, cell, brightness);
   }
   for chord in 0..N_CHORDS {
     set_led(
       sock,
       device,
+      prefix,
       windows,
       WindowId::ControlsBottom,
       (chord as i32, 15),
@@ -742,13 +849,14 @@ fn repaint(sock: &UdpSocket, device: SocketAddr, windows: &[Window], state: &App
     );
   }
   for &cell in state.pitchled_reasons.keys() {
-    set_led(sock, device, windows, WindowId::Edo, cell, Brightness::Bright);
+    set_led(sock, device, prefix, windows, WindowId::Edo, cell, Brightness::Bright);
   }
 }
 
 fn set_led(
   sock: &UdpSocket,
   device: SocketAddr,
+  prefix: &str,
   windows: &[Window],
   from: WindowId,
   cell: Cell,
@@ -762,7 +870,7 @@ fn set_led(
     Brightness::Dim => 4,
     Brightness::Bright => 15,
   };
-  monome::send_led_level_set(sock, device, PREFIX, cell.0, cell.1, level);
+  monome::send_led_level_set(sock, device, prefix, cell.0, cell.1, level);
 }
 
 fn window_for_cell(windows: &[Window], cell: Cell) -> Option<WindowId> {

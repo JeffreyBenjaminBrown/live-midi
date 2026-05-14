@@ -7,6 +7,9 @@ use midi_pulse::midi;
 use std::sync::mpsc;
 use std::{io, thread};
 
+#[path = "../monome_edo_midi/monome_edo_midi.rs"]
+mod monome_edo_midi_runtime;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config_name = std::env::args().nth(1).ok_or_else(|| {
     "usage: cargo run --bin midi_pulse -- CONFIG_NAME".to_string()
@@ -15,8 +18,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   print_startup(&config);
   if config.piano.is_some() {
     run_piano_runtime(&config)?;
+  } else if is_monome_midi_config(&config) {
+    monome_edo_midi_runtime::run_from_config(&config)?;
   } else {
-    println!("No piano input configured; config validation complete.");
+    println!("No runnable runtime path is implemented for this config yet; config validation complete.");
   }
   Ok(())
 }
@@ -37,6 +42,14 @@ fn print_startup(config: &Config) {
       }
     }
   }
+}
+
+fn is_monome_midi_config(config: &Config) -> bool {
+  config
+    .monome_windows
+    .iter()
+    .any(|window| matches!(window, midi_pulse::config::MonomeWindowConfig::EdoNoteGrid { .. }))
+    && config.sinks.iter().any(|sink| matches!(sink, midi_pulse::config::SinkConfig::Midi { .. }))
 }
 
 fn run_piano_runtime(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
