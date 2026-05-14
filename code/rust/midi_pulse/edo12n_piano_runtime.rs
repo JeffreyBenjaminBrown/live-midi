@@ -1,10 +1,12 @@
 /// See the README.
 /// Maybe tweak the 'CONST's defined below.
 
+#[path = "edo12n_gui.rs"]
 mod gui;
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
+use midi_pulse::config::Config;
 use midi_pulse::midi;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -18,7 +20,9 @@ const MIN_NOTE_OUT    : u8 = 28;  // could also be adjusted for the synth. I lik
 const EDO_OVER_12     : u8 = 6;   // 72 / 12 = 6
 const OFFSET_OCTAVE_START : u8 = 97;  // C#7 - first note of offset control octave (top 12 keys)
 const OFFSET_ZERO_NOTE    : u8 = 102; // F#7 - this note means offset = 0
+#[allow(dead_code)]
 pub const FLASH_MILLIS : u64 = 500; // how long a note-on flash lasts
+#[allow(dead_code)]
 pub const TICK_MILLIS  : u64 = 50;  // redraw interval during flash animation
 pub const GRID_ROWS : usize = 6;  // strings; vertical extent of grid
 pub const GRID_COLS : usize = 7;  // frets; horizontal extent of grid
@@ -66,7 +70,11 @@ fn current_total_shift() -> Option<i16> {
                    |s: &ShiftPress| s . shift_value as i16)
                  . sum( )) }}
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_config(_config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+  run()
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
   let midi_in: MidiInput =
     MidiInput::new("edo12n_piano-in")?;
   let midi_out: MidiOutput =

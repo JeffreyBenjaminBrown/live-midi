@@ -11,6 +11,8 @@ use std::{io, thread};
 mod monome_edo_midi_runtime;
 #[path = "edo12n_piano_monome_runtime.rs"]
 mod edo12n_piano_monome_runtime;
+#[path = "edo12n_piano_runtime.rs"]
+mod edo12n_piano_runtime;
 
 #[path = "sawwave/consts.rs"]
 #[allow(dead_code)]
@@ -53,6 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     remap_runtime::run_from_config(&config)?;
   } else if is_edo12n_monome_config(&config) {
     edo12n_piano_monome_runtime::run_from_config(&config)?;
+  } else if is_edo12n_display_config(&config) {
+    edo12n_piano_runtime::run_from_config(&config)?;
   } else if config.piano.is_some() {
     run_piano_runtime(&config)?;
   } else if is_monome_sawwave_config(&config) {
@@ -63,6 +67,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("No runnable runtime path is implemented for this config yet; config validation complete.");
   }
   Ok(())
+}
+
+fn is_edo12n_display_config(config: &Config) -> bool {
+  config.piano.as_ref().is_some_and(|piano| {
+    matches!(
+      piano.mapping,
+      midi_pulse::config::PianoMappingConfig::TwelveN { .. }
+    )
+  }) && config.display.as_ref().is_some_and(|display| {
+    matches!(
+      display,
+      midi_pulse::config::DisplayConfig::PitchClassGrid { enabled: true, .. }
+    )
+  })
 }
 
 fn is_edo12n_monome_config(config: &Config) -> bool {

@@ -3,7 +3,7 @@ use std::sync::MutexGuard;
 use std::collections::HashMap;
 use std::sync::mpsc;
 
-use crate::{GRID_ROWS, GRID_COLS, GRID_ANCHOR, GRID_ROW_STEP,
+use super::{GRID_ROWS, GRID_COLS, GRID_ANCHOR, GRID_ROW_STEP,
             WHITE_KEYS, pitch_class_shifts};
 
 pub const CELL_W: usize = 90;
