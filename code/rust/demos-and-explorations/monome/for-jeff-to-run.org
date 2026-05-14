@@ -39,27 +39,19 @@ arrived? timing felt responsive? any weird keys?).
 
 * Step 11 — Grid synth (the fun part)                             :pending:
 
-Single Rust program at
-=/home/ubuntu/code/rust/monome_edo_sawwave/grid_synth/=:
+Single Rust program:
+=/home/ubuntu/target/debug/midi_pulse=, run from the project root:
 - Discovers the grid via serialoscd's detector (same as step 10).
 - Registers UDP :9000 as the receiver, sets prefix to /256-1-cable,
   clears all LEDs.
 - Uses =cpal= for real-time audio output (PipeWire, f32 samples).
-- Per press: inserts a voice at f(x,y) = 220 * 2^((9x - y)/46),
-  5 ms linear attack, and lights the LED at (x, y).
-- Per release: begins a 50 ms linear fade on that voice and darkens
-  the LED.
-- Retriggering a held key cancels the release, keeps envelope
-  continuity.
-- Audio callback mixes all active voices (~0.15 per voice, clamped
-  to ±0.95 at the output).
+- Uses the =monome-edo-sawwave= config for tuning, audio envelope,
+  monome selection, and chord/accretion windows.
 
 Run:
 #+begin_src bash
-cd /home/ubuntu/code/rust/monome_edo_sawwave
-bash ./grid-synth.sh
+cd /home/ubuntu
+cargo run --bin midi_pulse -- monome-edo-sawwave
 #+end_src
 
 Runs forever. Ctrl-C to quit. First build fetches cpal (~1 min).
-
-Output: =grid-synth.out= (mirrored tee of terminal output).

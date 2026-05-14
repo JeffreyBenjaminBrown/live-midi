@@ -24,15 +24,9 @@ const MIN_NOTE_OUT: u8 = 28;
 
 const PREFIX: &str = "/128-1-cable";
 const LISTEN_PORT: u16 = 9000;
-const LISTEN_PORT_ENV: &str = "EDO31_LISTEN_PORT";
-const LED_TRACE_ENV: &str = "EDO31_LED_TRACE";
-const DEFAULT_EDO: i16 = 31;
-const DEFAULT_X_STEP: i16 = 6;
-const DEFAULT_Y_STEP: i16 = 1;
-const DEFAULT_LOWEST_HZ: f64 = 80.0;
+const LED_TRACE_ENV: &str = "MIDI_PULSE_REMAP_LED_TRACE";
 const DEFAULT_GRID_W: i32 = 16;
 const DEFAULT_GRID_H: i32 = 8;
-const CONFIGS_DIR: &str = "code/rust/edo_un12_piano_monome/configs";
 const MAP_W: i32 = 10;
 
 const PREIMAGE_ROW_Y: i32 = 0;
