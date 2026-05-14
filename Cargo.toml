@@ -19,20 +19,8 @@ name = "sampler"
 path = "code/rust/sampler/sampler.rs"
 
 [[bin]]
-name = "edo12n_piano"
-path = "code/rust/edo12n_piano/edo12n_piano.rs"
-
-[[bin]]
-name = "edo12n_piano_monome"
-path = "code/rust/edo12n_piano_monome/edo12n_piano_monome.rs"
-
-[[bin]]
-name = "edo_un12_piano_monome"
-path = "code/rust/edo_un12_piano_monome/edo_un12_piano_monome.rs"
-
-[[bin]]
-name = "monome_edo_midi"
-path = "code/rust/monome_edo_midi/monome_edo_midi.rs"
+name = "midi_pulse"
+path = "code/rust/midi_pulse/midi_pulse.rs"
 
 [[bin]]
 name = "triangle_chord"
@@ -45,3 +33,4 @@ rosc = "0.10"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+cpal = "0.15"

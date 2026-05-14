@@ -1,5 +1,8 @@
+pub mod config;
+pub mod mapping;
 pub mod midi;
 pub mod monome;
 pub mod monome_brightness;
 pub mod monome_window;
+pub mod piano_runtime;
 pub mod piano_transform;

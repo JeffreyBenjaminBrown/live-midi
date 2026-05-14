@@ -2,6 +2,7 @@ use crate::midi;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[derive(Clone, Debug)]
 pub struct TransformedNote {
   pub output_channel: u8,
   pub output_note: u8,

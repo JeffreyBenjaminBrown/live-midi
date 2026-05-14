@@ -1,0 +1,51 @@
+version = 1
+id = "edo-un12-58-8-5-snap"
+title = "EDO un-12 58 8 5 Snap"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 5
+fundamental_hz = 80
+
+[midi.input]
+virtual_name = "edo_un12_piano_monome-in"
+
+[midi.output]
+virtual_name = "edo_un12_piano_monome-out"
+min_channel = 1
+min_note = 28
+
+[piano.mapping]
+kind = "remappable_un12"
+lowest_note = 24
+tuning = "main"
+remap_idiom = "snap"
+initial_map = "even"
+
+[[monomes]]
+id = "little"
+listen_port = 9000
+prefix = "/128-1-cable"
+select.size = [16, 8]
+select.type_contains = "128"
+
+[[monome_windows]]
+id = "preimage-row"
+monome = "little"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "little"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 7]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "little"
+kind = "remap_undo_button"
+rect = [15, 7, 15, 7]

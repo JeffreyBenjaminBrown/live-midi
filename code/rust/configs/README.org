@@ -1,0 +1,296 @@
+* midi_pulse config syntax
+
+Configs live in ~code/rust/configs/~ and are loaded by name:
+
+#+begin_src sh
+cargo run --bin midi_pulse -- CONFIG_NAME
+#+end_src
+
+~CONFIG_NAME~ resolves to ~code/rust/configs/CONFIG_NAME.toml~.
+
+Every config is TOML and starts with:
+
+#+begin_src toml
+version = 1
+id = "monome-edo-sawwave"
+title = "Monome EDO Sawwave"
+#+end_src
+
+Unknown fields are rejected. Tables with a ~kind~ field are tagged variants:
+fields for one kind cannot be mixed with fields from another kind.
+
+* Coordinates
+
+Monome rectangles are inclusive:
+
+#+begin_src toml
+rect = [x0, y0, x1, y1]
+#+end_src
+
+For example, ~[0, 14, 3, 14]~ covers ~(0,14)~, ~(1,14)~,
+~(2,14)~, and ~(3,14)~.
+
+Windows are listed back-to-front: earlier windows are underneath later
+windows. The runtime's window visibility and dispatch logic decides which
+overlapping window receives or paints each cell.
+
+* Tunings
+
+Tunings are named blocks:
+
+#+begin_src toml
+[[tunings]]
+id = "main"
+edo = 46
+x_step = 9
+y_step = 1
+fundamental_hz = 220
+#+end_src
+
+The ~id~ is a local name inside the same config file. References such as
+~tuning = "main"~ mean "use the ~[[tunings]]~ block whose ~id~ is
+~"main"~." The word ~main~ is not special; any ID may be used as long as
+the reference matches an existing tuning ID.
+
+This lets multiple parts of a config share one tuning, or lets one config
+define several tunings and explicitly choose between them.
+
+* Monomes
+
+#+begin_src toml
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+select.size = [16, 16]
+select.type_contains = "256"
+#+end_src
+
+All provided ~select.*~ predicates must match. If multiple devices match,
+the newest serialosc reply is used and the runtime warns. Each configured
+monome gets its own runtime thread and UDP socket. ~listen_port~ values
+must be unique.
+
+* MIDI piano input
+
+#+begin_src toml
+[midi.input]
+virtual_name = "edo12n_piano-in"
+
+[midi.output]
+virtual_name = "edo12n_piano-out"
+min_channel = 1
+min_note = 28
+#+end_src
+
+Piano mappings are tagged by ~kind~.
+
+#+begin_src toml
+[piano.mapping]
+kind = "twelve_n"
+lowest_note = 21
+shift_before_mapping = -5
+edo_per_12 = 6
+#+end_src
+
+#+begin_src toml
+[piano.mapping]
+kind = "remappable_un12"
+lowest_note = 24
+tuning = "main"
+remap_idiom = "snap"
+initial_map = "even"
+#+end_src
+
+For ~remappable_un12~, ~tuning~ is a reference to a ~[[tunings]]~ ID in
+the same file. For example, ~tuning = "main"~ selects:
+
+#+begin_src toml
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+#+end_src
+
+Piano regions are inclusive MIDI note ranges:
+
+#+begin_src toml
+[[piano.regions]]
+range = [0, 96]
+action = "emit_notes"
+
+[[piano.regions]]
+range = [97, 108]
+action = "held_offset_control"
+zero_note = 102
+#+end_src
+
+* Output sinks
+
+#+begin_src toml
+[[sinks]]
+id = "midi"
+kind = "midi"
+
+[[sinks]]
+id = "saw"
+kind = "cpal_sawwave"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.050
+accretion_level = 0.5
+#+end_src
+
+* Monome windows
+
+Monome windows reference configured monomes, tunings, and sinks by ID.
+
+#+begin_src toml
+[[monome_windows]]
+id = "edo-grid"
+monome = "big"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 13]
+tuning = "main"
+sink = "saw"
+#+end_src
+
+Here, ~monome = "big"~ references ~[[monomes]] id = "big"~,
+~tuning = "main"~ references ~[[tunings]] id = "main"~, and
+~sink = "saw"~ references ~[[sinks]] id = "saw"~.
+
+Built-in unbundled window kinds:
+
+- ~edo_note_grid~
+- ~chord_wipe_button~
+- ~chord_accrete_toggle~
+- ~chord_emit_mode_toggle~
+- ~chord_target_button~
+- ~chord_slot_buttons~
+- ~preimage_row~
+- ~remappable_un12_grid~
+- ~remap_undo_button~
+
+The bundled 12-EDO offset/root board is:
+
+#+begin_src toml
+[[monome_windows]]
+id = "offset-board"
+monome = "little"
+kind = "twelve_edo_offset_board"
+rect = [0, 0, 15, 7]
+offset_columns = [0, 11]
+offset_rows = [1, 7]
+zero_row = 4
+root_row = 0
+group_columns = [13, 14, 15]
+group_intervals = [[0, 2, 5, 7], [1, 3, 8, 10], [4, 6, 9, 11]]
+#+end_src
+
+For remappable un-12 behavior:
+
+#+begin_src toml
+[[monome_windows]]
+id = "preimage-row"
+monome = "little"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "little"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 7]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "little"
+kind = "remap_undo_button"
+rect = [15, 7, 15, 7]
+#+end_src
+
+* Optional display
+
+#+begin_src toml
+[display]
+kind = "pitch_class_grid"
+enabled = true
+rows = 6
+cols = 7
+anchor_12edo_value = 4
+row_step = 5
+flash_millis = 500
+tick_millis = 50
+#+end_src
+
+Use ~anchor_12edo_values~ for lists of 12-EDO anchor values:
+
+#+begin_src toml
+anchor_12edo_values = [0, 5, 7]
+#+end_src
+
+* Default config families
+
+Piano-only 12n:
+
+#+begin_src toml
+version = 1
+id = "edo12n-piano"
+title = "EDO 12n Piano"
+
+[piano.mapping]
+kind = "twelve_n"
+lowest_note = 21
+shift_before_mapping = -5
+edo_per_12 = 6
+#+end_src
+
+Remappable un-12:
+
+#+begin_src toml
+version = 1
+id = "edo-un12-31-loose"
+title = "EDO un-12 31 Loose"
+
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+
+[piano.mapping]
+kind = "remappable_un12"
+lowest_note = 24
+tuning = "main"
+remap_idiom = "loose"
+initial_map = "even"
+#+end_src
+
+Monome EDO grid:
+
+#+begin_src toml
+version = 1
+id = "monome-edo-midi"
+title = "Monome EDO MIDI"
+
+[[tunings]]
+id = "main"
+edo = 46
+x_step = 9
+y_step = 1
+fundamental_hz = 220
+
+[[monome_windows]]
+id = "edo-grid"
+monome = "big"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 13]
+tuning = "main"
+sink = "midi"
+#+end_src

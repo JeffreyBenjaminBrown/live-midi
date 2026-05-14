@@ -16,12 +16,13 @@ pub fn rect_contains(rect: &Rect, cell: MonomeCell) -> bool {
 pub fn window_for_cell<Id: Copy>(windows: &[Window<Id>], cell: MonomeCell) -> Option<Id> {
   windows
     .iter()
+    .rev()
     .find(|window| rect_contains(&window.rect, cell))
     .map(|window| window.id)
 }
 
 pub fn visible<Id: Copy + Eq>(windows: &[Window<Id>], from: Id, cell: MonomeCell) -> bool {
-  for window in windows {
+  for window in windows.iter().rev() {
     if window.id == from {
       return rect_contains(&window.rect, cell);
     }
@@ -44,13 +45,13 @@ mod tests {
 
   fn test_windows() -> Vec<Window<TestWindow>> {
     vec![
-      Window { id: TestWindow::Front, rect: ((1, 1), (2, 2)) },
       Window { id: TestWindow::Back, rect: ((0, 0), (3, 3)) },
+      Window { id: TestWindow::Front, rect: ((1, 1), (2, 2)) },
     ]
   }
 
   #[test]
-  fn dispatch_uses_first_matching_window() {
+  fn dispatch_uses_last_matching_window() {
     let windows = test_windows();
 
     assert_eq!(window_for_cell(&windows, (1, 1)), Some(TestWindow::Front));
