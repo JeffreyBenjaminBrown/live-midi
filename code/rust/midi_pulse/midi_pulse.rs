@@ -10,31 +10,31 @@ use std::{io, thread};
 #[path = "../monome_edo_midi/monome_edo_midi.rs"]
 mod monome_edo_midi_runtime;
 
-#[path = "../monome_edo_sawwave/grid_synth/src/consts.rs"]
+#[path = "sawwave/consts.rs"]
 #[allow(dead_code)]
 mod consts;
-#[path = "../monome_edo_sawwave/grid_synth/src/diagnostics.rs"]
+#[path = "sawwave/diagnostics.rs"]
 #[allow(dead_code)]
 mod diagnostics;
-#[path = "../monome_edo_sawwave/grid_synth/src/leds.rs"]
+#[path = "sawwave/leds.rs"]
 #[allow(dead_code)]
 mod leds;
-#[path = "../monome_edo_sawwave/grid_synth/src/osc.rs"]
+#[path = "sawwave/osc.rs"]
 #[allow(dead_code)]
 mod osc;
-#[path = "../monome_edo_sawwave/grid_synth/src/pitch.rs"]
+#[path = "sawwave/pitch.rs"]
 #[allow(dead_code)]
 mod pitch;
-#[path = "../monome_edo_sawwave/grid_synth/src/state.rs"]
+#[path = "sawwave/state.rs"]
 #[allow(dead_code)]
 mod state;
-#[path = "../monome_edo_sawwave/grid_synth/src/types.rs"]
+#[path = "sawwave/types.rs"]
 #[allow(dead_code)]
 mod types;
-#[path = "../monome_edo_sawwave/grid_synth/src/voices.rs"]
+#[path = "sawwave/voices.rs"]
 #[allow(dead_code)]
 mod voices;
-#[path = "../monome_edo_sawwave/grid_synth/src/windows.rs"]
+#[path = "sawwave/windows.rs"]
 #[allow(dead_code)]
 mod windows;
 mod sawwave_runtime;
