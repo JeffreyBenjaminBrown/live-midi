@@ -3,7 +3,7 @@ Predefined scales:
 ** Evenly spaced
 ** Pythagorean
 ** m 7m neutral M 7M x {2,5,7} {1,3,8,10} {4,6,9,11}
-* Try sustain.
+* stomp for volume changes
 * Apply monome pitch as root to saved scale.
 * record instructions
 alsamixer -c 0

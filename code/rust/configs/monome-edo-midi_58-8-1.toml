@@ -1,0 +1,66 @@
+version = 1
+id = "monome-edo-midi"
+title = "Monome EDO MIDI"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 220
+
+[midi.output]
+virtual_name = "monome_edo_midi-out"
+min_channel = 1
+min_note = 28
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+select.size = [16, 16]
+select.type_contains = "256"
+
+[[sinks]]
+id = "midi"
+kind = "midi"
+
+[[monome_windows]]
+id = "edo-grid"
+monome = "big"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 13]
+tuning = "main"
+sink = "midi"
+
+[[monome_windows]]
+id = "wipe"
+monome = "big"
+kind = "chord_wipe_button"
+rect = [0, 14, 0, 14]
+
+[[monome_windows]]
+id = "accrete"
+monome = "big"
+kind = "chord_accrete_toggle"
+rect = [1, 14, 1, 14]
+
+[[monome_windows]]
+id = "emit-mode"
+monome = "big"
+kind = "chord_emit_mode_toggle"
+rect = [2, 14, 2, 14]
+emit_is_toggle_initially = true
+
+[[monome_windows]]
+id = "target"
+monome = "big"
+kind = "chord_target_button"
+rect = [3, 14, 3, 14]
+
+[[monome_windows]]
+id = "chords"
+monome = "big"
+kind = "chord_slot_buttons"
+rect = [0, 15, 15, 15]
+initial_accretion_target = 1
