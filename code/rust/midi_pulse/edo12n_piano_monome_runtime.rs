@@ -2,6 +2,7 @@ use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midi_pulse::monome;
 use midi_pulse::monome_brightness::PulseBrightness;
+use midi_pulse::config::Config;
 use midi_pulse::{midi, piano_transform};
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
@@ -73,7 +74,12 @@ impl MonomeLedState {
   }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_config(_config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+  run()
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+  STOP_REQUESTED.store(false, Ordering::Relaxed);
   let shifts: Arc<Mutex<[i8; 12]>> = Arc::new(Mutex::new([0; 12]));
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
