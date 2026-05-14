@@ -10,6 +10,35 @@ use std::{io, thread};
 #[path = "../monome_edo_midi/monome_edo_midi.rs"]
 mod monome_edo_midi_runtime;
 
+#[path = "../monome_edo_sawwave/grid_synth/src/consts.rs"]
+#[allow(dead_code)]
+mod consts;
+#[path = "../monome_edo_sawwave/grid_synth/src/diagnostics.rs"]
+#[allow(dead_code)]
+mod diagnostics;
+#[path = "../monome_edo_sawwave/grid_synth/src/leds.rs"]
+#[allow(dead_code)]
+mod leds;
+#[path = "../monome_edo_sawwave/grid_synth/src/osc.rs"]
+#[allow(dead_code)]
+mod osc;
+#[path = "../monome_edo_sawwave/grid_synth/src/pitch.rs"]
+#[allow(dead_code)]
+mod pitch;
+#[path = "../monome_edo_sawwave/grid_synth/src/state.rs"]
+#[allow(dead_code)]
+mod state;
+#[path = "../monome_edo_sawwave/grid_synth/src/types.rs"]
+#[allow(dead_code)]
+mod types;
+#[path = "../monome_edo_sawwave/grid_synth/src/voices.rs"]
+#[allow(dead_code)]
+mod voices;
+#[path = "../monome_edo_sawwave/grid_synth/src/windows.rs"]
+#[allow(dead_code)]
+mod windows;
+mod sawwave_runtime;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config_name = std::env::args().nth(1).ok_or_else(|| {
     "usage: cargo run --bin midi_pulse -- CONFIG_NAME".to_string()
@@ -18,12 +47,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   print_startup(&config);
   if config.piano.is_some() {
     run_piano_runtime(&config)?;
+  } else if is_monome_sawwave_config(&config) {
+    sawwave_runtime::run_from_config(&config)?;
   } else if is_monome_midi_config(&config) {
     monome_edo_midi_runtime::run_from_config(&config)?;
   } else {
     println!("No runnable runtime path is implemented for this config yet; config validation complete.");
   }
   Ok(())
+}
+
+fn is_monome_sawwave_config(config: &Config) -> bool {
+  config
+    .monome_windows
+    .iter()
+    .any(|window| matches!(window, midi_pulse::config::MonomeWindowConfig::EdoNoteGrid { .. }))
+    && config
+      .sinks
+      .iter()
+      .any(|sink| matches!(sink, midi_pulse::config::SinkConfig::CpalSawwave { .. }))
 }
 
 fn print_startup(config: &Config) {

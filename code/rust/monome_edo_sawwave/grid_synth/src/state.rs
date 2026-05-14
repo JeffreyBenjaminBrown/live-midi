@@ -8,14 +8,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::consts::{
-  ACCRETION_TARGET, ATTACK_SECS, CELL_ACCRETE_ON, CELL_EMIT_IS_TOGGLE,
+  ACCRETION_TARGET, AMPLITUDE, ATTACK_SECS, CELL_ACCRETE_ON, CELL_EMIT_IS_TOGGLE,
   CELL_SET_ACCRETION_TARGET, CELL_WIPE, INITIALLY_ACCRETING_CHORD,
   N_CHORDS, RELEASE_SECS, SILENCE_CHORD,
 };
 use crate::leds::{add_reason, remove_reason};
 use crate::pitch::{cells_for_pitch, cells_for_pitch_of, freq_for_pitch};
 use crate::types::{
-  AppState, Brightness, Button, ButtonAction, ChordId, LedCmd, MonomeKey,
+  AppState, AudioParams, Brightness, Button, ButtonAction, ChordId, LedCmd, MonomeKey,
   PitchClass, PitchLedReason, VoiceId, VoiceMap, VoiceSource, VoiceState, WindowId,
 };
 use crate::voices::{ramp_chord_accretion_to_zero, spawn_accretion_voice, voice_alive_with_id};
@@ -25,6 +25,29 @@ impl AppState {
     voices: Arc<Mutex<VoiceMap>>,
     pitch_class: PitchClass,
     fund: f64, edo: i32, sample_rate: f32,
+  ) -> Self {
+    Self::new_with_audio_params(
+      voices,
+      pitch_class,
+      fund,
+      edo,
+      sample_rate,
+      AudioParams {
+        amplitude: AMPLITUDE,
+        attack_secs: ATTACK_SECS,
+        release_secs: RELEASE_SECS,
+        accretion_level: ACCRETION_TARGET,
+      },
+    )
+  }
+
+  pub fn new_with_audio_params(
+    voices: Arc<Mutex<VoiceMap>>,
+    pitch_class: PitchClass,
+    fund: f64,
+    edo: i32,
+    sample_rate: f32,
+    audio: AudioParams,
   ) -> Self {
     let mut control_buttons = HashMap::new();
     control_buttons.insert(CELL_WIPE, Button::Fire { fire: ButtonAction::WipeFire });
@@ -46,7 +69,7 @@ impl AppState {
       accrete_on: false, emit_is_toggle: true,
       next_voice_id: 0, pitchled_reasons: HashMap::new(),
       control_buttons,
-      pitch_class, fund, edo, sample_rate,
+      pitch_class, fund, edo, sample_rate, audio,
     }
   }
 }
@@ -78,7 +101,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       freq: freq_for_pitch(abs_pitch, state.fund, state.edo),
       phase: 0.0, env: 0.0,
       target_env: 1.0,
-      ramp_per_sample: 1.0 / (ATTACK_SECS * state.sample_rate),
+      ramp_per_sample: 1.0 / (state.audio.attack_secs * state.sample_rate),
     });
   }
   let mut diffs = vec![];
@@ -152,13 +175,14 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       let v = vs.remove(&VoiceSource::Fingered { xy: cell }).unwrap();
       vs.insert(VoiceSource::Accreted { chord, pitch: abs_pitch }, VoiceState {
         id: v.id, freq: v.freq, phase: v.phase, env: v.env,
-        target_env: ACCRETION_TARGET,
+        target_env: state.audio.accretion_level,
         ramp_per_sample:
-          (v.env - ACCRETION_TARGET).abs() / (RELEASE_SECS * state.sample_rate),
+          (v.env - state.audio.accretion_level).abs()
+            / (state.audio.release_secs * state.sample_rate),
       });
     } else if let Some(v) = vs.get_mut(&VoiceSource::Fingered { xy: cell }) {
       v.target_env = 0.0;
-      v.ramp_per_sample = v.env / (RELEASE_SECS * state.sample_rate);
+      v.ramp_per_sample = v.env / (state.audio.release_secs * state.sample_rate);
     }
   }
   drop(vs);
@@ -302,7 +326,12 @@ pub fn switch_emitter_to(state: &mut AppState, new: Option<ChordId>) -> Vec<LedC
     let pitches: Vec<i32> = state.chords[p].keys().copied().collect();
     {
       let mut vs = state.voices.lock().unwrap();
-      ramp_chord_accretion_to_zero(&mut vs, p, state.sample_rate);
+      ramp_chord_accretion_to_zero(
+        &mut vs,
+        p,
+        state.sample_rate,
+        state.audio.release_secs,
+      );
     }
     diffs.extend(remove_chord_pitchled_reasons(state, p, &pitches));
     // Repaint prev's chord-button cell.
@@ -320,8 +349,17 @@ pub fn switch_emitter_to(state: &mut AppState, new: Option<ChordId>) -> Vec<LedC
         let any_alive = originvoices.iter()
           .any(|&id| voice_alive_with_id(&vs, id));
         if !any_alive {
-          spawn_accretion_voice(&mut vs, n, p, state.fund, state.edo,
-                                &mut state.next_voice_id, state.sample_rate);
+          spawn_accretion_voice(
+            &mut vs,
+            n,
+            p,
+            state.fund,
+            state.edo,
+            &mut state.next_voice_id,
+            state.sample_rate,
+            state.audio.accretion_level,
+            state.audio.attack_secs,
+          );
         }
       }
     }
@@ -391,7 +429,12 @@ pub fn do_action(state: &mut AppState, action: ButtonAction) -> Vec<LedCmd> {
       if state.emitting_chord == Some(target) {
         {
           let mut vs = state.voices.lock().unwrap();
-          ramp_chord_accretion_to_zero(&mut vs, target, state.sample_rate);
+          ramp_chord_accretion_to_zero(
+            &mut vs,
+            target,
+            state.sample_rate,
+            state.audio.release_secs,
+          );
         }
         remove_chord_pitchled_reasons(state, target, &pitches)
       } else { vec![] }

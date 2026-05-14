@@ -1,6 +1,8 @@
 //! Audio rendering and per-voice helpers.
 
-use crate::consts::{ACCRETION_TARGET, AMPLITUDE, ATTACK_SECS, RELEASE_SECS};
+use crate::consts::AMPLITUDE;
+#[cfg(test)]
+use crate::consts::RELEASE_SECS;
 use crate::pitch::freq_for_pitch;
 use crate::types::{ChordId, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
@@ -22,6 +24,16 @@ pub fn render_block(
   channels: usize,
   sample_rate: f32,
 ) {
+  render_block_with_amplitude(voices, data, channels, sample_rate, AMPLITUDE);
+}
+
+pub fn render_block_with_amplitude(
+  voices: &mut VoiceMap,
+  data: &mut [f32],
+  channels: usize,
+  sample_rate: f32,
+  amplitude: f32,
+) {
   for frame in data.chunks_mut(channels) {
     let mut mix = 0.0_f32;
     voices.retain(|_, v| {
@@ -42,7 +54,7 @@ pub fn render_block(
       if v.phase >= 1.0 {
         v.phase -= 1.0;
       }
-      mix += triangle(v.phase) * v.env * AMPLITUDE;
+      mix += triangle(v.phase) * v.env * amplitude;
       true
     });
     let s = mix.clamp(-0.95, 0.95);
@@ -66,6 +78,7 @@ pub fn voice_alive_with_id(voices: &VoiceMap, id: VoiceId) -> bool {
 pub fn spawn_accretion_voice(
   voices: &mut VoiceMap, chord: ChordId, pitch: i32,
   fund: f64, edo: i32, next_voice_id: &mut VoiceId, sample_rate: f32,
+  accretion_level: f32, attack_secs: f32,
 ) {
   let id = *next_voice_id;
   *next_voice_id += 1;
@@ -74,19 +87,24 @@ pub fn spawn_accretion_voice(
     freq: freq_for_pitch(pitch, fund, edo),
     phase: 0.0,
     env: 0.0,
-    target_env: ACCRETION_TARGET,
-    ramp_per_sample: ACCRETION_TARGET / (ATTACK_SECS * sample_rate),
+    target_env: accretion_level,
+    ramp_per_sample: accretion_level / (attack_secs * sample_rate),
   });
 }
 
 // Set target_env=0 on every Accreted voice belonging to `chord`;
 // ramp completes in RELEASE_SECS regardless of starting env.
-pub fn ramp_chord_accretion_to_zero(voices: &mut VoiceMap, chord: ChordId, sample_rate: f32) {
+pub fn ramp_chord_accretion_to_zero(
+  voices: &mut VoiceMap,
+  chord: ChordId,
+  sample_rate: f32,
+  release_secs: f32,
+) {
   for (src, v) in voices.iter_mut() {
     if let VoiceSource::Accreted { chord: c, .. } = src {
       if *c == chord {
         v.target_env = 0.0;
-        v.ramp_per_sample = v.env / (RELEASE_SECS * sample_rate);
+        v.ramp_per_sample = v.env / (release_secs * sample_rate);
       }
     }
   }

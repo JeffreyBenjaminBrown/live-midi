@@ -159,6 +159,15 @@ pub type LedCmd = (WindowId, MonomeKey, Brightness);
 
 // === The whole world ===================================================
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub struct AudioParams {
+  pub amplitude: f32,
+  pub attack_secs: f32,
+  pub release_secs: f32,
+  pub accretion_level: f32,
+}
+
 pub struct AppState {
   pub voices:           Arc<Mutex<VoiceMap>>,
 
@@ -196,4 +205,5 @@ pub struct AppState {
   pub fund:             f64,
   pub edo:              i32,
   pub sample_rate:      f32,
+  pub audio:            AudioParams,
 }
