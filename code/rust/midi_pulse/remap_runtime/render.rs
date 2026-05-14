@@ -3,10 +3,10 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use super::config::EdoConfig;
+use super::config::RemapConfig;
 use super::layout::{map_rect, monome_windows, undo_cell, WindowId};
 use super::remap::preimage_for_step;
-use super::state::Edo31State;
+use super::state::RemappableEdoState;
 use super::{
   ANCHOR_PITCH_CLASSES, LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF, LED_LEVEL_UNDO,
   LED_TRACE_ENV, MONOME_REFRESH, PREFIX, PREIMAGE_ROW_FLASH_FRACTION_ON, PREIMAGE_ROW_FLASH_WAVELENGTH,
@@ -159,12 +159,12 @@ pub(crate) struct LedPhases {
   pub(crate) preimage_row_flash_on: bool,
 }
 
-pub(crate) fn blank_rendered_cols(config: &EdoConfig) -> Vec<u8> {
+pub(crate) fn blank_rendered_cols(config: &RemapConfig) -> Vec<u8> {
   vec![0; (config.grid_w * config.grid_h) as usize]
 }
 
 #[cfg(test)]
-pub(crate) fn col_bank_count(config: &EdoConfig) -> usize {
+pub(crate) fn col_bank_count(config: &RemapConfig) -> usize {
   ((config.grid_h + 7) / 8) as usize
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn next_render_wait(
 pub(crate) fn render_to_monome(
   sock: &UdpSocket,
   device: SocketAddr,
-  state: &Edo31State,
+  state: &RemappableEdoState,
   sounding_counts: &[u16],
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
@@ -257,7 +257,7 @@ fn led_trace_enabled() -> bool {
 
 #[cfg(test)]
 pub(crate) fn render_led_cols(
-  state: &Edo31State,
+  state: &RemappableEdoState,
   sounding_counts: &[u16],
   phases: LedPhases,
 ) -> Vec<u8> {
@@ -276,7 +276,7 @@ pub(crate) fn render_led_cols(
 }
 
 pub(crate) fn render_led_levels(
-  state: &Edo31State,
+  state: &RemappableEdoState,
   sounding_counts: &[u16],
   phases: LedPhases,
 ) -> Vec<u8> {
@@ -291,7 +291,7 @@ pub(crate) fn render_led_levels(
 }
 
 pub(crate) fn render_led_levels_with_preimage_row(
-  state: &Edo31State,
+  state: &RemappableEdoState,
   sounding_counts: &[u16],
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
@@ -332,7 +332,7 @@ pub(crate) fn render_led_levels_with_preimage_row(
 }
 
 fn render_preimage_row(
-  state: &Edo31State,
+  state: &RemappableEdoState,
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
   now: Instant,
@@ -362,7 +362,7 @@ fn render_preimage_row(
 }
 
 fn rendered_level(
-  state: &Edo31State,
+  state: &RemappableEdoState,
   sounding_counts: &[u16],
   step: i16,
   phases: LedPhases,

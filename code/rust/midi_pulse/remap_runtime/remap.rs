@@ -1,8 +1,8 @@
 use super::config::RemapIdiom;
 use super::layout::{edo_local_cell, grid_step};
-use super::state::{Edo31State, LooseState};
+use super::state::{RemappableEdoState, LooseState};
 
-pub(crate) fn apply_grid_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
+pub(crate) fn apply_grid_press(state: &mut RemappableEdoState, x: i32, y: i32) -> bool {
   let Some((local_x, local_y)) = edo_local_cell(&state.config, x, y) else {
     return false;
   };
@@ -18,7 +18,7 @@ pub(crate) fn apply_grid_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
   changed
 }
 
-fn apply_loose_grid_press(state: &mut Edo31State, step: i16) -> bool {
+fn apply_loose_grid_press(state: &mut RemappableEdoState, step: i16) -> bool {
   if let Some(preimage) = preimage_for_step(state, step) {
     state.loose[preimage] = LooseState::Loose;
     eprintln!("loose {} -> {step}", pitch_name(preimage));
@@ -30,7 +30,7 @@ fn apply_loose_grid_press(state: &mut Edo31State, step: i16) -> bool {
   move_preimage_to_step(state, preimage, step)
 }
 
-fn apply_snap_grid_press(state: &mut Edo31State, step: i16) -> bool {
+fn apply_snap_grid_press(state: &mut RemappableEdoState, step: i16) -> bool {
   if preimage_for_step(state, step).is_some() {
     return false;
   }
@@ -43,7 +43,7 @@ fn apply_snap_grid_press(state: &mut Edo31State, step: i16) -> bool {
   move_preimage_to_step(state, preimage, step)
 }
 
-fn move_preimage_to_step(state: &mut Edo31State, preimage: usize, step: i16) -> bool {
+fn move_preimage_to_step(state: &mut RemappableEdoState, preimage: usize, step: i16) -> bool {
   let current = state.map[preimage];
   let Some(delta) = move_delta(current, step, &state.map, state.config.edo) else {
     return false;
@@ -55,7 +55,7 @@ fn move_preimage_to_step(state: &mut Edo31State, preimage: usize, step: i16) -> 
   true
 }
 
-pub(crate) fn undo_remap(state: &mut Edo31State) -> bool {
+pub(crate) fn undo_remap(state: &mut RemappableEdoState) -> bool {
   let Some(snapshot) = state.history.pop() else {
     return false;
   };
@@ -66,11 +66,11 @@ pub(crate) fn undo_remap(state: &mut Edo31State) -> bool {
   true
 }
 
-pub(crate) fn preimage_for_step(state: &Edo31State, step: i16) -> Option<usize> {
+pub(crate) fn preimage_for_step(state: &RemappableEdoState, step: i16) -> Option<usize> {
   state.map.iter().position(|s| *s == step)
 }
 
-fn loose_neighbor_for_dark_step(step: i16, state: &Edo31State) -> Option<usize> {
+fn loose_neighbor_for_dark_step(step: i16, state: &RemappableEdoState) -> Option<usize> {
   let (lower, higher) = nearest_light_neighbors(step, &state.map, state.config.edo);
   match (
     state.loose[lower.preimage] == LooseState::Loose,

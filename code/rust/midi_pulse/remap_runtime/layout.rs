@@ -1,6 +1,6 @@
 use midi_pulse::monome_window;
 
-use super::config::EdoConfig;
+use super::config::RemapConfig;
 use super::{MAP_W, PREIMAGE_ROW_Y};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,11 +17,11 @@ pub(crate) struct GridRect {
   pub(crate) y1: i32,
 }
 
-pub(crate) fn grid_step(config: &EdoConfig, x: i32, y: i32) -> i16 {
+pub(crate) fn grid_step(config: &RemapConfig, x: i32, y: i32) -> i16 {
   ((config.x_step as i32 * x + config.y_step as i32 * y).rem_euclid(config.edo as i32)) as i16
 }
 
-pub(crate) fn map_rect(config: &EdoConfig) -> GridRect {
+pub(crate) fn map_rect(config: &RemapConfig) -> GridRect {
   let w = MAP_W.min(config.grid_w).max(0);
   let y0 = PREIMAGE_ROW_Y + 1;
   GridRect {
@@ -32,7 +32,7 @@ pub(crate) fn map_rect(config: &EdoConfig) -> GridRect {
   }
 }
 
-pub(crate) fn edo_local_cell(config: &EdoConfig, x: i32, y: i32) -> Option<(i32, i32)> {
+pub(crate) fn edo_local_cell(config: &RemapConfig, x: i32, y: i32) -> Option<(i32, i32)> {
   if window_for_cell(config, x, y) != Some(WindowId::Edo) {
     return None;
   }
@@ -44,11 +44,11 @@ pub(crate) fn edo_local_cell(config: &EdoConfig, x: i32, y: i32) -> Option<(i32,
   }
 }
 
-pub(crate) fn window_for_cell(config: &EdoConfig, x: i32, y: i32) -> Option<WindowId> {
+pub(crate) fn window_for_cell(config: &RemapConfig, x: i32, y: i32) -> Option<WindowId> {
   monome_window::window_for_cell(&monome_windows(config), (x, y))
 }
 
-pub(crate) fn monome_windows(config: &EdoConfig) -> Vec<monome_window::Window<WindowId>> {
+pub(crate) fn monome_windows(config: &RemapConfig) -> Vec<monome_window::Window<WindowId>> {
   let mut windows = vec![];
   if let Some(cell) = undo_cell(config) {
     windows.push(monome_window::Window {
@@ -66,7 +66,7 @@ pub(crate) fn monome_windows(config: &EdoConfig) -> Vec<monome_window::Window<Wi
   windows
 }
 
-pub(crate) fn undo_cell(config: &EdoConfig) -> Option<(i32, i32)> {
+pub(crate) fn undo_cell(config: &RemapConfig) -> Option<(i32, i32)> {
   if config.grid_w <= 0 || config.grid_h <= 0 {
     None
   } else {

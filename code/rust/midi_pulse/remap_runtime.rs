@@ -73,7 +73,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
   run(runtime_config, listen_port)
 }
 
-fn runtime_config(config: &Config) -> Result<config::EdoConfig, Box<dyn std::error::Error>> {
+fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::error::Error>> {
   let Some(piano) = &config.piano else {
     return Err("remappable_un12 runtime requires [piano.mapping]".into());
   };
@@ -104,7 +104,7 @@ fn runtime_config(config: &Config) -> Result<config::EdoConfig, Box<dyn std::err
     RemapIdiomConfig::Loose => config::RemapIdiom::Loose,
     RemapIdiomConfig::Snap => config::RemapIdiom::Snap,
   };
-  let mut result = config::EdoConfig::new(
+  let mut result = config::RemapConfig::new(
     tuning.fundamental_hz,
     tuning.edo,
     tuning.x_step,
@@ -126,14 +126,14 @@ fn runtime_config(config: &Config) -> Result<config::EdoConfig, Box<dyn std::err
 }
 
 fn run(
-  runtime_config: config::EdoConfig,
+  runtime_config: config::RemapConfig,
   listen_port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
   STOP_REQUESTED.store(false, Ordering::Relaxed);
-  let state: Arc<Mutex<state::Edo31State>> =
-    Arc::new(Mutex::new(state::Edo31State::new(runtime_config.clone())));
-  let sounding: Arc<Mutex<state::SoundingState>> =
-    Arc::new(Mutex::new(state::SoundingState::new(runtime_config.edo)));
+  let state: Arc<Mutex<state::RemappableEdoState>> =
+    Arc::new(Mutex::new(state::RemappableEdoState::new(runtime_config.clone())));
+  let sounding: Arc<Mutex<state::SoundingPitchCounts>> =
+    Arc::new(Mutex::new(state::SoundingPitchCounts::new(runtime_config.edo)));
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
@@ -197,7 +197,7 @@ fn install_sigint_handler() {
   }
 }
 
-fn print_startup_message(config: &config::EdoConfig) {
+fn print_startup_message(config: &config::RemapConfig) {
   println!("{}-EDO remappable un-12 runtime started", config.edo);
   println!("Press Enter to exit...");
 }

@@ -7,7 +7,7 @@ use super::{
 };
 
 #[derive(Clone)]
-pub(crate) struct EdoConfig {
+pub(crate) struct RemapConfig {
   pub(crate) lowest_hz: f64,
   pub(crate) edo: i16,
   pub(crate) x_step: i16,
@@ -24,9 +24,9 @@ pub(crate) enum RemapIdiom {
   Snap,
 }
 
-impl EdoConfig {
+impl RemapConfig {
   pub(crate) fn default() -> Self {
-    EdoConfig::new(
+    RemapConfig::new(
       DEFAULT_LOWEST_HZ,
       DEFAULT_EDO,
       DEFAULT_X_STEP,
@@ -46,7 +46,7 @@ impl EdoConfig {
     grid_w: i32,
     grid_h: i32,
   ) -> Self {
-    EdoConfig {
+    RemapConfig {
       lowest_hz,
       edo,
       x_step,
@@ -59,7 +59,7 @@ impl EdoConfig {
   }
 
   pub(crate) fn with_grid_size(&self, grid_w: i32, grid_h: i32) -> Self {
-    EdoConfig {
+    RemapConfig {
       lowest_hz: self.lowest_hz,
       edo: self.edo,
       x_step: self.x_step,
@@ -72,7 +72,7 @@ impl EdoConfig {
   }
 }
 
-pub(crate) fn parse_config() -> Result<EdoConfig, Box<dyn std::error::Error>> {
+pub(crate) fn parse_config() -> Result<RemapConfig, Box<dyn std::error::Error>> {
   let args: Vec<String> = std::env::args().skip(1).collect();
   if args.len() > 1 {
     return Err("usage: edo_un12_piano_monome [CONFIGS_FILE]".into());
@@ -114,7 +114,7 @@ impl ConfigRemapIdiom {
   }
 }
 
-pub(crate) fn load_config(name: &str) -> Result<EdoConfig, Box<dyn std::error::Error>> {
+pub(crate) fn load_config(name: &str) -> Result<RemapConfig, Box<dyn std::error::Error>> {
   if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
     return Err(format!("config file name must not be a path, got {name:?}").into());
   }
@@ -132,7 +132,7 @@ pub(crate) fn load_config(name: &str) -> Result<EdoConfig, Box<dyn std::error::E
   let parsed: ConfigToml =
     toml::from_str(&source).map_err(|e| format!("parse config {name:?}: {e}"))?;
   validate_config_toml(&parsed)?;
-  Ok(EdoConfig::new(
+  Ok(RemapConfig::new(
     parsed.lowest_hz,
     parsed.edo,
     parsed.between_columns,

@@ -1,12 +1,12 @@
 use midi_pulse::midi;
 use std::sync::{Arc, Mutex};
 
-use super::state::{Edo31State, SoundingState};
+use super::state::{RemappableEdoState, SoundingPitchCounts};
 use super::{LOWEST_C, MIN_CHANNEL_OUT, MIN_NOTE_OUT};
 
 pub(crate) fn edo_un12_instruction(
   original_note: u8,
-  state: &Arc<Mutex<Edo31State>>,
+  state: &Arc<Mutex<RemappableEdoState>>,
 ) -> (i16, i16) {
   let absolute_step = edo_un12_absolute_step(original_note, state);
   let edo = state.lock().unwrap().config.edo;
@@ -15,7 +15,7 @@ pub(crate) fn edo_un12_instruction(
   (channel, note)
 }
 
-fn edo_un12_absolute_step(original_note: u8, state: &Arc<Mutex<Edo31State>>) -> i16 {
+fn edo_un12_absolute_step(original_note: u8, state: &Arc<Mutex<RemappableEdoState>>) -> i16 {
   let normalized = original_note as i16 - LOWEST_C as i16;
   let channel_offset = normalized.div_euclid(12);
   let pitch_class = original_note % 12;
@@ -43,8 +43,8 @@ pub(crate) fn print_note_on_trace(input: &[u8], output: &[u8]) {
 
 pub(crate) fn update_sounding(
   message: &[u8],
-  state: &Arc<Mutex<Edo31State>>,
-  sounding: &Arc<Mutex<SoundingState>>,
+  state: &Arc<Mutex<RemappableEdoState>>,
+  sounding: &Arc<Mutex<SoundingPitchCounts>>,
 ) {
   if message.len() < 3 || !midi::is_note_event(message) {
     return;
@@ -65,12 +65,12 @@ pub(crate) fn update_sounding(
   }
 }
 
-fn sounding_step(original_note: u8, state: &Arc<Mutex<Edo31State>>) -> i16 {
+fn sounding_step(original_note: u8, state: &Arc<Mutex<RemappableEdoState>>) -> i16 {
   let pitch_class = (original_note % 12) as usize;
   state.lock().unwrap().map[pitch_class]
 }
 
-fn decrement_sounding_count(sounding: &mut SoundingState, step: i16) {
+fn decrement_sounding_count(sounding: &mut SoundingPitchCounts, step: i16) {
   let count = &mut sounding.counts[step as usize];
   if *count > 0 {
     *count -= 1;

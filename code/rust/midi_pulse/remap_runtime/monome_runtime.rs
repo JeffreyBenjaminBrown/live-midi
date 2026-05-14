@@ -12,7 +12,7 @@ use super::render::{
   blank_rendered_cols, led_phases, next_render_wait, render_to_monome, ColorClock, ANCHOR_COLOR,
   IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR,
 };
-use super::state::{Edo31State, SoundingState};
+use super::state::{RemappableEdoState, SoundingPitchCounts};
 use super::{PREFIX, STOP_REQUESTED, PREIMAGE_ROW_FLASH_MIN};
 
 pub(crate) struct PreimageRowState {
@@ -48,8 +48,8 @@ impl PreimageRowState {
 }
 
 pub(crate) fn run_monome_thread(
-  state: Arc<Mutex<Edo31State>>,
-  sounding: Arc<Mutex<SoundingState>>,
+  state: Arc<Mutex<RemappableEdoState>>,
+  sounding: Arc<Mutex<SoundingPitchCounts>>,
   listen_port: u16,
 ) {
   let sock = UdpSocket::bind(("0.0.0.0", listen_port))
@@ -212,7 +212,7 @@ pub(crate) fn run_monome_thread(
   monome::send_led_all(&sock, device, PREFIX, 0);
 }
 
-pub(crate) fn apply_monome_press(state: &mut Edo31State, x: i32, y: i32) -> bool {
+pub(crate) fn apply_monome_press(state: &mut RemappableEdoState, x: i32, y: i32) -> bool {
   match window_for_cell(&state.config, x, y) {
     Some(WindowId::Undo) => undo_remap(state),
     Some(WindowId::Edo) => apply_grid_press(state, x, y),
@@ -221,7 +221,7 @@ pub(crate) fn apply_monome_press(state: &mut Edo31State, x: i32, y: i32) -> bool
 }
 
 pub(crate) fn apply_monome_key(
-  state: &mut Edo31State,
+  state: &mut RemappableEdoState,
   preimage_row: &mut PreimageRowState,
   x: i32,
   y: i32,
@@ -242,7 +242,7 @@ pub(crate) fn apply_monome_key(
 }
 
 fn apply_edo_key_down(
-  state: &mut Edo31State,
+  state: &mut RemappableEdoState,
   preimage_row: &mut PreimageRowState,
   x: i32,
   y: i32,

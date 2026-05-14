@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use super::config::EdoConfig;
+use super::config::RemapConfig;
 
 #[derive(Clone)]
-pub(crate) struct Edo31State {
-  pub(crate) config: EdoConfig,
+pub(crate) struct RemappableEdoState {
+  pub(crate) config: RemapConfig,
   pub(crate) map: [i16; 12],
   pub(crate) deltas: [i16; 12],
   pub(crate) loose: [LooseState; 12],
@@ -24,9 +24,9 @@ pub(crate) enum LooseState {
   Fixed,
 }
 
-impl Edo31State {
-  pub(crate) fn new(config: EdoConfig) -> Self {
-    Edo31State {
+impl RemappableEdoState {
+  pub(crate) fn new(config: RemapConfig) -> Self {
+    RemappableEdoState {
       map: config.initial_map,
       config,
       deltas: [0; 12],
@@ -44,14 +44,14 @@ impl Edo31State {
   }
 }
 
-pub(crate) struct SoundingState {
+pub(crate) struct SoundingPitchCounts {
   pub(crate) by_original_note: HashMap<u8, i16>,
   pub(crate) counts: Vec<u16>,
 }
 
-impl SoundingState {
+impl SoundingPitchCounts {
   pub(crate) fn new(edo: i16) -> Self {
-    SoundingState {
+    SoundingPitchCounts {
       by_original_note: HashMap::new(),
       counts: vec![0; edo as usize],
     }
