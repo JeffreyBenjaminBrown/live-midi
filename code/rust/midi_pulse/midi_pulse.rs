@@ -38,6 +38,8 @@ mod voices;
 #[allow(dead_code)]
 mod windows;
 mod sawwave_runtime;
+#[allow(dead_code)]
+mod remap_runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config_name = std::env::args().nth(1).ok_or_else(|| {
@@ -45,7 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   })?;
   let config = config::load_named_config(&config_name)?;
   print_startup(&config);
-  if config.piano.is_some() {
+  if is_remap_config(&config) {
+    remap_runtime::run_from_config(&config)?;
+  } else if config.piano.is_some() {
     run_piano_runtime(&config)?;
   } else if is_monome_sawwave_config(&config) {
     sawwave_runtime::run_from_config(&config)?;
@@ -55,6 +59,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("No runnable runtime path is implemented for this config yet; config validation complete.");
   }
   Ok(())
+}
+
+fn is_remap_config(config: &Config) -> bool {
+  config.piano.as_ref().is_some_and(|piano| {
+    matches!(
+      piano.mapping,
+      midi_pulse::config::PianoMappingConfig::RemappableUn12 { .. }
+    )
+  }) && config.monome_windows.iter().any(|window| {
+    matches!(
+      window,
+      midi_pulse::config::MonomeWindowConfig::RemappableUn12Grid { .. }
+    )
+  })
 }
 
 fn is_monome_sawwave_config(config: &Config) -> bool {
