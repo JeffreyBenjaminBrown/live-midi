@@ -7,7 +7,7 @@ use midi_pulse::midi;
 use std::sync::mpsc;
 use std::{io, thread};
 
-#[path = "../monome_edo_midi/monome_edo_midi.rs"]
+#[path = "monome_edo_midi_runtime.rs"]
 mod monome_edo_midi_runtime;
 
 #[path = "sawwave/consts.rs"]
