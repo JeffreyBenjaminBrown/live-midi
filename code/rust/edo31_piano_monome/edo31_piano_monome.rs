@@ -40,13 +40,24 @@ const DEFAULT_GRID_W: i32 = 16;
 const DEFAULT_GRID_H: i32 = 8;
 const CONFIGS_DIR: &str = "code/rust/edo31_piano_monome/configs";
 const MAP_W: i32 = 10;
+
+const PREIMAGE_ROW_Y: i32 = 0;
 const LED_LEVEL_OFF: u8 = 0;
 const LED_LEVEL_IMAGE: u8 = 4;
 const LED_LEVEL_FULL: u8 = 15;
 const LED_LEVEL_UNDO: u8 = 8;
 const MONOME_REFRESH: Duration = Duration::from_millis(1);
+const PREIMAGE_ROW_FLASH_MIN: Duration = Duration::from_millis(300);
+const PREIMAGE_ROW_FLASH_WAVELENGTH: Duration = Duration::from_millis(120);
+const PREIMAGE_ROW_FLASH_FRACTION_ON: f64 = 0.5;
 
 const ANCHOR_PITCH_CLASSES: [usize; 3] = [0, 5, 7];
+const WHITE_KEYS: [bool; 12] = [
+  true, // C
+  false, // C sharp
+  true, false, true,
+  true, false, true, false, true, false, true,
+];
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 

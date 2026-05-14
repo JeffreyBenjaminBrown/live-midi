@@ -4,16 +4,17 @@ use std::time::{Duration, Instant};
 use crate::config::{evenly_spaced_map, load_config, EdoConfig, RemapIdiom};
 use crate::layout::{edo_local_cell, grid_step, map_rect, undo_cell, window_for_cell, GridRect, WindowId};
 use crate::midi_runtime::{edo31_instruction, update_sounding};
-use crate::monome_runtime::apply_monome_press;
+use crate::monome_runtime::{apply_monome_key, apply_monome_press, PreimageRowState};
 use crate::remap::{apply_grid_press, move_delta, undo_remap};
 use crate::render::{
-  next_render_wait, render_led_cols, render_led_levels, Color, ColorClock, LedPhases,
-  ANCHOR_COLOR, IMAGE_COLOR, SOUNDING_COLOR,
+  next_render_wait, render_led_cols, render_led_levels, render_led_levels_with_preimage_row, Color,
+  ColorClock, LedPhases, ANCHOR_COLOR, IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR,
 };
 use crate::state::{Edo31State, LooseState, SoundingState};
 use crate::{
   DEFAULT_EDO, DEFAULT_GRID_H, DEFAULT_GRID_W, DEFAULT_LOWEST_HZ, DEFAULT_X_STEP, DEFAULT_Y_STEP,
-  LED_LEVEL_UNDO, MIN_CHANNEL_OUT, MIN_NOTE_OUT, MONOME_REFRESH,
+  LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF, LED_LEVEL_UNDO, MIN_CHANNEL_OUT, MIN_NOTE_OUT,
+  MONOME_REFRESH, PREIMAGE_ROW_FLASH_MIN,
 };
 
 fn test_config() -> EdoConfig {
@@ -44,11 +45,23 @@ fn no_sounding() -> Vec<u16> {
   vec![0; test_config().edo as usize]
 }
 
+fn render_with_preimage_row(state: &Edo31State, preimage_row: &PreimageRowState, now: Instant) -> Vec<u8> {
+  render_led_levels_with_preimage_row(
+    state,
+    &vec![0; state.config.edo as usize],
+    &preimage_row.counts,
+    &preimage_row.flash_until,
+    now,
+    phases(true, true, true),
+  )
+}
+
 fn phases(sounding_on: bool, anchor_on: bool, image_on: bool) -> LedPhases {
   LedPhases {
     sounding_on,
     anchor_on,
     image_on,
+    preimage_row_flash_on: true,
   }
 }
 
@@ -65,15 +78,16 @@ fn grid_geometry_matches_requested_axes() {
 }
 
 #[test]
-fn map_rect_uses_all_rows_in_leftmost_ten_columns() {
+fn map_rect_reserves_preimage_row_and_uses_remaining_rows() {
   let config = EdoConfig::new(80.0, 58, 8, 1, RemapIdiom::Snap, 16, 16);
 
   assert_eq!(
     map_rect(&config),
-    GridRect { x0: 0, y0: 0, x1: 10, y1: 16 },
+    GridRect { x0: 0, y0: 1, x1: 10, y1: 16 },
   );
-  assert_eq!(edo_local_cell(&config, 0, 0), Some((0, 0)));
-  assert_eq!(edo_local_cell(&config, 9, 15), Some((9, 15)));
+  assert_eq!(edo_local_cell(&config, 0, 0), None);
+  assert_eq!(edo_local_cell(&config, 0, 1), Some((0, 0)));
+  assert_eq!(edo_local_cell(&config, 9, 15), Some((9, 14)));
   assert_eq!(edo_local_cell(&config, 10, 15), None);
   assert_eq!(window_for_cell(&config, 15, 15), Some(WindowId::Undo));
 }
@@ -209,7 +223,7 @@ fn snap_tie_moves_higher_image_down() {
 fn successful_remap_can_be_undone() {
   let mut state = snap_state();
 
-  assert!(apply_grid_press(&mut state, 0, 1));
+  assert!(apply_grid_press(&mut state, 0, 2));
   assert_eq!(state.map[0], 1);
   assert_eq!(state.history.len(), 1);
 
@@ -224,7 +238,7 @@ fn successful_remap_can_be_undone() {
 fn undo_button_uses_bottom_right_cell() {
   let mut state = snap_state();
   state.config = state.config.with_grid_size(16, 16);
-  apply_grid_press(&mut state, 0, 1);
+  apply_grid_press(&mut state, 0, 2);
 
   assert_eq!(undo_cell(&state.config), Some((15, 15)));
   assert!(apply_monome_press(&mut state, 15, 15));
@@ -337,12 +351,12 @@ fn render_hides_anchor_preimages_during_anchor_off_phase() {
   let on_cols = render_led_cols(&state, &sounding, phases(true, true, true));
   let off_cols = render_led_cols(&state, &sounding, phases(true, false, true));
 
-  assert_ne!(on_cols[0] & 1, 0);
-  assert_eq!(off_cols[0] & 1, 0);
-  assert_ne!(on_cols[1] & (1 << 7), 0);
-  assert_eq!(off_cols[1] & (1 << 7), 0);
-  assert_ne!(on_cols[3] & 1, 0);
-  assert_eq!(off_cols[3] & 1, 0);
+  assert_ne!(on_cols[0] & (1 << 1), 0);
+  assert_eq!(off_cols[0] & (1 << 1), 0);
+  assert_ne!(on_cols[2] & (1 << 2), 0);
+  assert_eq!(off_cols[2] & (1 << 2), 0);
+  assert_ne!(on_cols[3] & (1 << 1), 0);
+  assert_eq!(off_cols[3] & (1 << 1), 0);
 }
 
 #[test]
@@ -352,7 +366,7 @@ fn render_hides_non_anchor_image_during_image_off_phase() {
 
   let off_cols = render_led_cols(&state, &sounding, phases(true, true, false));
 
-  assert_eq!(off_cols[0] & (1 << 3), 0);
+  assert_eq!(off_cols[1] & (1 << 3), 0);
 }
 
 #[test]
@@ -362,7 +376,91 @@ fn render_keeps_non_anchor_image_during_image_on_phase() {
 
   let on_cols = render_led_cols(&state, &sounding, phases(true, true, true));
 
-  assert_ne!(on_cols[0] & (1 << 3), 0);
+  assert_ne!(on_cols[1] & (1 << 3), 0);
+}
+
+#[test]
+fn preimage_row_shows_black_keys_dim_and_white_keys_off_at_rest() {
+  let state = test_state();
+  let preimage_row = PreimageRowState::new();
+  let levels = render_with_preimage_row(&state, &preimage_row, Instant::now());
+
+  assert_eq!(levels[0], LED_LEVEL_OFF);
+  assert_eq!(levels[1], LED_LEVEL_IMAGE);
+  assert_eq!(levels[2], LED_LEVEL_OFF);
+  assert_eq!(levels[3], LED_LEVEL_IMAGE);
+}
+
+#[test]
+fn grid_key_down_flashes_preimage_for_at_least_300ms_after_short_press() {
+  let mut state = test_state();
+  let mut preimage_row = PreimageRowState::new();
+  let start = Instant::now();
+
+  assert!(apply_monome_key(&mut state, &mut preimage_row, 0, 1, 1, start));
+  assert!(apply_monome_key(
+    &mut state,
+    &mut preimage_row,
+    0,
+    1,
+    0,
+    start + Duration::from_millis(20),
+  ));
+
+  let still_flashing = render_with_preimage_row(
+    &state,
+    &preimage_row,
+    start + PREIMAGE_ROW_FLASH_MIN - Duration::from_millis(1),
+  );
+  let after_flash = render_with_preimage_row(&state, &preimage_row, start + PREIMAGE_ROW_FLASH_MIN);
+
+  assert_eq!(still_flashing[0], LED_LEVEL_FULL);
+  assert_eq!(after_flash[0], LED_LEVEL_OFF);
+}
+
+#[test]
+fn grid_key_mellows_to_on_until_key_up() {
+  let mut state = test_state();
+  let mut preimage_row = PreimageRowState::new();
+  let start = Instant::now();
+
+  assert!(apply_monome_key(&mut state, &mut preimage_row, 0, 1, 1, start));
+
+  let held = render_with_preimage_row(
+    &state,
+    &preimage_row,
+    start + PREIMAGE_ROW_FLASH_MIN + Duration::from_millis(1),
+  );
+  assert_eq!(held[0], LED_LEVEL_FULL);
+
+  assert!(apply_monome_key(
+    &mut state,
+    &mut preimage_row,
+    0,
+    1,
+    0,
+    start + PREIMAGE_ROW_FLASH_MIN + Duration::from_millis(2),
+  ));
+  let released = render_with_preimage_row(
+    &state,
+    &preimage_row,
+    start + PREIMAGE_ROW_FLASH_MIN + Duration::from_millis(3),
+  );
+
+  assert_eq!(released[0], LED_LEVEL_OFF);
+}
+
+#[test]
+fn black_grid_press_flashes_preimage_assigned_to_it() {
+  let mut state = snap_state();
+  let mut preimage_row = PreimageRowState::new();
+  let start = Instant::now();
+
+  assert!(apply_monome_key(&mut state, &mut preimage_row, 0, 2, 1, start));
+
+  let levels = render_with_preimage_row(&state, &preimage_row, start);
+  assert_eq!(state.map[0], 1);
+  assert_eq!(levels[0], LED_LEVEL_FULL);
 }
 
 #[test]
@@ -404,10 +502,18 @@ fn refresh_wait_uses_next_scheduled_color_transition() {
   let sounding_clock = ColorClock::new(SOUNDING_COLOR, start);
   let anchor_clock = ColorClock::new(ANCHOR_COLOR, start);
   let image_clock = ColorClock::new(IMAGE_COLOR, start);
+  let preimage_row_flash_clock = ColorClock::new(PREIMAGE_ROW_FLASH_COLOR, start);
   let (anchor_on, _) = ANCHOR_COLOR.duty_durations().unwrap();
 
   assert_eq!(
-    next_render_wait(start, sounding_clock, anchor_clock, image_clock),
+    next_render_wait(
+      start,
+      sounding_clock,
+      anchor_clock,
+      image_clock,
+      preimage_row_flash_clock,
+      &[None; 12],
+    ),
     anchor_on.min(MONOME_REFRESH),
   );
   assert_eq!(
@@ -416,6 +522,8 @@ fn refresh_wait_uses_next_scheduled_color_transition() {
       sounding_clock,
       anchor_clock,
       image_clock,
+      preimage_row_flash_clock,
+      &[None; 12],
     ),
     Duration::ZERO,
   );
@@ -431,8 +539,8 @@ fn sounding_pitch_clobbers_anchor_and_image_off_phases() {
 
   let off_cols = render_led_cols(&state, &sounding, phases(true, false, false));
 
-  assert_ne!(off_cols[5] & 1, 0);
-  assert_ne!(off_cols[0] & (1 << 3), 0);
+  assert_ne!(off_cols[5] & (1 << 1), 0);
+  assert_ne!(off_cols[0] & (1 << 4), 0);
 }
 
 #[test]

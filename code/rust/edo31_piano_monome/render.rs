@@ -9,7 +9,8 @@ use crate::remap::preimage_for_step;
 use crate::state::Edo31State;
 use crate::{
   ANCHOR_PITCH_CLASSES, LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF, LED_LEVEL_UNDO,
-  LED_TRACE_ENV, MONOME_REFRESH, PREFIX,
+  LED_TRACE_ENV, MONOME_REFRESH, PREFIX, PREIMAGE_ROW_FLASH_FRACTION_ON, PREIMAGE_ROW_FLASH_WAVELENGTH,
+  PREIMAGE_ROW_Y, WHITE_KEYS,
 };
 
 pub(crate) const SOUNDING_COLOR: Color = Color::AlwaysOn;
@@ -18,6 +19,10 @@ pub(crate) const ANCHOR_COLOR: Color = Color::Duty {
   fraction_on: 0.3,
 };
 pub(crate) const IMAGE_COLOR: Color = Color::AlwaysOn;
+pub(crate) const PREIMAGE_ROW_FLASH_COLOR: Color = Color::Duty {
+  period: PREIMAGE_ROW_FLASH_WAVELENGTH,
+  fraction_on: PREIMAGE_ROW_FLASH_FRACTION_ON,
+};
 
 static LED_TRACE_STARTED: OnceLock<Instant> = OnceLock::new();
 
@@ -151,6 +156,7 @@ pub(crate) struct LedPhases {
   pub(crate) sounding_on: bool,
   pub(crate) anchor_on: bool,
   pub(crate) image_on: bool,
+  pub(crate) preimage_row_flash_on: bool,
 }
 
 pub(crate) fn blank_rendered_cols(config: &EdoConfig) -> Vec<u8> {
@@ -166,11 +172,13 @@ pub(crate) fn led_phases(
   sounding_clock: ColorClock,
   anchor_clock: ColorClock,
   image_clock: ColorClock,
+  preimage_row_flash_clock: ColorClock,
 ) -> LedPhases {
   LedPhases {
     sounding_on: sounding_clock.is_on(),
     anchor_on: anchor_clock.is_on(),
     image_on: image_clock.is_on(),
+    preimage_row_flash_on: preimage_row_flash_clock.is_on(),
   }
 }
 
@@ -179,11 +187,20 @@ pub(crate) fn next_render_wait(
   sounding_clock: ColorClock,
   anchor_clock: ColorClock,
   image_clock: ColorClock,
+  preimage_row_flash_clock: ColorClock,
+  preimage_row_flash_until: &[Option<Instant>; 12],
 ) -> Duration {
   let next_transition = [
     sounding_clock.wait(now),
     anchor_clock.wait(now),
     image_clock.wait(now),
+    preimage_row_flash_clock.wait(now),
+    preimage_row_flash_until
+      .iter()
+      .flatten()
+      .filter(|deadline| **deadline > now)
+      .map(|deadline| deadline.duration_since(now))
+      .min(),
   ]
   .into_iter()
   .flatten()
@@ -198,10 +215,20 @@ pub(crate) fn render_to_monome(
   device: SocketAddr,
   state: &Edo31State,
   sounding_counts: &[u16],
+  preimage_row_counts: &[u16; 12],
+  preimage_row_flash_until: &[Option<Instant>; 12],
+  now: Instant,
   phases: LedPhases,
   rendered_cols: &mut Vec<u8>,
 ) {
-  let levels = render_led_levels(state, sounding_counts, phases);
+  let levels = render_led_levels_with_preimage_row(
+    state,
+    sounding_counts,
+    preimage_row_counts,
+    preimage_row_flash_until,
+    now,
+    phases,
+  );
   let trace_leds = led_trace_enabled();
   if rendered_cols.len() != levels.len() {
     *rendered_cols = vec![0; levels.len()];
@@ -253,7 +280,33 @@ pub(crate) fn render_led_levels(
   sounding_counts: &[u16],
   phases: LedPhases,
 ) -> Vec<u8> {
+  render_led_levels_with_preimage_row(
+    state,
+    sounding_counts,
+    &[0; 12],
+    &[None; 12],
+    Instant::now(),
+    phases,
+  )
+}
+
+pub(crate) fn render_led_levels_with_preimage_row(
+  state: &Edo31State,
+  sounding_counts: &[u16],
+  preimage_row_counts: &[u16; 12],
+  preimage_row_flash_until: &[Option<Instant>; 12],
+  now: Instant,
+  phases: LedPhases,
+) -> Vec<u8> {
   let mut levels = vec![LED_LEVEL_OFF; (state.config.grid_w * state.config.grid_h) as usize];
+  render_preimage_row(
+    state,
+    preimage_row_counts,
+    preimage_row_flash_until,
+    now,
+    phases,
+    &mut levels,
+  );
   let rect = map_rect(&state.config);
   let windows = monome_windows(&state.config);
   for y in rect.y0..rect.y1 {
@@ -276,6 +329,36 @@ pub(crate) fn render_led_levels(
     }
   }
   levels
+}
+
+fn render_preimage_row(
+  state: &Edo31State,
+  preimage_row_counts: &[u16; 12],
+  preimage_row_flash_until: &[Option<Instant>; 12],
+  now: Instant,
+  phases: LedPhases,
+  levels: &mut [u8],
+) {
+  if PREIMAGE_ROW_Y < 0 || PREIMAGE_ROW_Y >= state.config.grid_h {
+    return;
+  }
+  for pitch_class in 0..12.min(state.config.grid_w as usize) {
+    let flashing = preimage_row_flash_until[pitch_class].is_some_and(|deadline| now < deadline);
+    let level = if flashing {
+      if phases.preimage_row_flash_on {
+        LED_LEVEL_FULL
+      } else {
+        LED_LEVEL_OFF
+      }
+    } else if preimage_row_counts[pitch_class] > 0 {
+      LED_LEVEL_FULL
+    } else if !WHITE_KEYS[pitch_class] {
+      LED_LEVEL_IMAGE
+    } else {
+      LED_LEVEL_OFF
+    };
+    levels[(PREIMAGE_ROW_Y * state.config.grid_w + pitch_class as i32) as usize] = level;
+  }
 }
 
 fn rendered_level(

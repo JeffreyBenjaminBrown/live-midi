@@ -10,6 +10,7 @@ pitch classes into an arbitrary EDO.
     cargo run --bin edo31_piano_monome
     # or choose a config file:
     cargo run --bin edo31_piano_monome -- 31-loose.toml
+    cargo run --bin edo31_piano_monome -- 58-8-1-snap.toml
 *** In the host system, run
     ./code/rust/edo31_piano_monome/connect-midi.sh
 ** monome layout
@@ -17,9 +18,21 @@ The grid size is inferred from serialosc's device type. Known sizes:
 =monome 128= is 16x8, and =monome 256= is 16x16. The y coordinate
 has =y=0= at the top.
 
+The preimage row is currently =y=0=. Its first 12 keys are the pitch
+classes C through B from left to right. White-note keys are off at
+rest, and black-note keys are dim at rest.
+
+When a key in the EDO map is pressed, the corresponding key in the
+preimage row flashes for at least 300 ms, then stays steadily
+on until that physical EDO-map key is released. If the pressed EDO-map
+key already belongs to the current 12-EDO image, the flashed indicator
+is that key's preimage. If the pressed EDO-map key is dark and the
+press assigns a 12-EDO preimage to it, the flashed indicator is the
+newly assigned preimage.
+
 The EDO map is drawn across the 10 leftmost columns of the physical
-grid, using every available row. On a 16x16 monome that is =x=0..9=
-and =y=0..15=.
+grid, below the preimage row. On a 16x16 monome that is
+=x=0..9= and =y=1..15=.
 
 The bottom-right key is an undo button. It restores the previous
 remap state, including loose/fixed markings.
@@ -59,7 +72,7 @@ For 58-EDO:
 
   =0, 5, 10, 15, 19, 24, 29, 34, 39, 44, 48, 53=
 
-The LEDs use three visual priorities:
+The EDO-map LEDs use three visual priorities:
 
 - Sounding pitches are steady on.
 - The current images of C, F and G flash at full brightness.
@@ -67,7 +80,7 @@ The LEDs use three visual priorities:
   monome level-brightness API rather than software PWM.
 
 Higher-priority visuals clobber lower-priority visuals on the same
-physical key.
+physical key. The preimage row is separate from the EDO-map LEDs.
 
 There are two remap idioms.
 

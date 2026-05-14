@@ -1,7 +1,7 @@
 use midi_pulse::monome_window;
 
 use crate::config::EdoConfig;
-use crate::MAP_W;
+use crate::{MAP_W, PREIMAGE_ROW_Y};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WindowId {
@@ -23,11 +23,12 @@ pub(crate) fn grid_step(config: &EdoConfig, x: i32, y: i32) -> i16 {
 
 pub(crate) fn map_rect(config: &EdoConfig) -> GridRect {
   let w = MAP_W.min(config.grid_w).max(0);
+  let y0 = PREIMAGE_ROW_Y + 1;
   GridRect {
     x0: 0,
-    y0: 0,
+    y0,
     x1: w,
-    y1: config.grid_h,
+    y1: config.grid_h.max(y0),
   }
 }
 
