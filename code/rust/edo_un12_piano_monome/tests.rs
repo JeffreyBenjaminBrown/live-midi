@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{evenly_spaced_map, load_config, EdoConfig, RemapIdiom};
 use crate::layout::{edo_local_cell, grid_step, map_rect, undo_cell, window_for_cell, GridRect, WindowId};
-use crate::midi_runtime::{edo31_instruction, update_sounding};
+use crate::midi_runtime::{edo_un12_instruction, update_sounding};
 use crate::monome_runtime::{apply_monome_key, apply_monome_press, PreimageRowState};
 use crate::remap::{apply_grid_press, move_delta, undo_remap};
 use crate::render::{
@@ -263,7 +263,7 @@ fn undo_window_occludes_edo_on_small_grids() {
 }
 
 #[test]
-fn edo31_note_uses_current_pitch_class_mapping() {
+fn edo_un12_note_uses_current_pitch_class_mapping() {
   let state = test_state_arc();
   {
     let mut state = state.lock().unwrap();
@@ -271,7 +271,7 @@ fn edo31_note_uses_current_pitch_class_mapping() {
     state.deltas[0] = 1;
   }
 
-  let (_channel, note) = edo31_instruction(60, &state);
+  let (_channel, note) = edo_un12_instruction(60, &state);
 
   assert_eq!(note, MIN_NOTE_OUT as i16 + 1);
 }
@@ -287,14 +287,14 @@ fn move_delta_uses_shorter_arc_before_checking_blockers() {
 fn lowering_c_across_display_boundary_lowers_one_31_edo_step() {
   let state = test_state_arc();
   let edo = test_config().edo;
-  let (default_channel, default_note) = edo31_instruction(60, &state);
+  let (default_channel, default_note) = edo_un12_instruction(60, &state);
   {
     let mut state = state.lock().unwrap();
     state.map[0] = 30;
     state.deltas[0] = -1;
   }
 
-  let (channel, note) = edo31_instruction(60, &state);
+  let (channel, note) = edo_un12_instruction(60, &state);
 
   assert_eq!(
     encoded_output_step(channel, note, edo),
@@ -307,7 +307,7 @@ fn default_middle_octave_mapping_is_monotone_across_c_boundary() {
   let state = test_state_arc();
   let encoded: Vec<i16> = (60..72)
     .map(|note| {
-      let (channel, midi_note) = edo31_instruction(note, &state);
+      let (channel, midi_note) = edo_un12_instruction(note, &state);
       encoded_output_step(channel, midi_note, test_config().edo)
     })
     .collect();
@@ -322,7 +322,7 @@ fn output_residue_matches_displayed_pitch_class_mapping() {
 
   for note in 48..60 {
     let pitch_class = (note % 12) as usize;
-    let (channel, midi_note) = edo31_instruction(note, &state);
+    let (channel, midi_note) = edo_un12_instruction(note, &state);
     let residue = encoded_output_step(channel, midi_note, config.edo).rem_euclid(config.edo);
 
     assert_eq!(residue, config.initial_map[pitch_class]);
@@ -333,8 +333,8 @@ fn output_residue_matches_displayed_pitch_class_mapping() {
 fn eb_to_bb_output_interval_matches_58_edo_display_interval() {
   let config = EdoConfig::new(80.0, 58, 8, 1, RemapIdiom::Snap, 16, 16);
   let state = Arc::new(Mutex::new(Edo31State::new(config.clone())));
-  let (eb_channel, eb_note) = edo31_instruction(51, &state);
-  let (bb_channel, bb_note) = edo31_instruction(58, &state);
+  let (eb_channel, eb_note) = edo_un12_instruction(51, &state);
+  let (bb_channel, bb_note) = edo_un12_instruction(58, &state);
   let eb = encoded_output_step(eb_channel, eb_note, config.edo);
   let bb = encoded_output_step(bb_channel, bb_note, config.edo);
   let output_interval = (bb - eb).rem_euclid(config.edo);

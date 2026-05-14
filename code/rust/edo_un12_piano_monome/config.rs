@@ -75,7 +75,7 @@ impl EdoConfig {
 pub(crate) fn parse_config() -> Result<EdoConfig, Box<dyn std::error::Error>> {
   let args: Vec<String> = std::env::args().skip(1).collect();
   if args.len() > 1 {
-    return Err("usage: edo31_piano_monome [CONFIGS_FILE]".into());
+    return Err("usage: edo_un12_piano_monome [CONFIGS_FILE]".into());
   }
   let name = args.first().map(String::as_str).unwrap_or("default");
   load_config(name)

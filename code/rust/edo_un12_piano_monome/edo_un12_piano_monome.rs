@@ -38,7 +38,7 @@ const DEFAULT_Y_STEP: i16 = 1;
 const DEFAULT_LOWEST_HZ: f64 = 80.0;
 const DEFAULT_GRID_W: i32 = 16;
 const DEFAULT_GRID_H: i32 = 8;
-const CONFIGS_DIR: &str = "code/rust/edo31_piano_monome/configs";
+const CONFIGS_DIR: &str = "code/rust/edo_un12_piano_monome/configs";
 const MAP_W: i32 = 10;
 
 const PREIMAGE_ROW_Y: i32 = 0;
@@ -71,8 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
-  let midi_in: MidiInput = MidiInput::new("edo31_piano_monome-in")?;
-  let midi_out: MidiOutput = MidiOutput::new("edo31_piano_monome-out")?;
+  let midi_in: MidiInput = MidiInput::new("edo_un12_piano_monome-in")?;
+  let midi_out: MidiOutput = MidiOutput::new("edo_un12_piano_monome-out")?;
   let conn_out: MidiOutputConnection = midi_out.create_virtual("out")?;
   let (tx, rx): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) = mpsc::channel();
   let _out_thread: thread::JoinHandle<()> =
@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       for msg in piano_transform::transform_message(
         message,
         &ongoing_for_midi,
-        |original_note| midi_runtime::edo31_instruction(original_note, &state_for_midi),
+        |original_note| midi_runtime::edo_un12_instruction(original_note, &state_for_midi),
       ) {
         midi_runtime::print_note_on_trace(message, &msg);
         let _ = tx.send(msg);
@@ -136,8 +136,8 @@ fn print_startup_message(config: &config::EdoConfig) {
   println!("{}-EDO piano transformer with monome mapping started!", config.edo);
   println!();
   println!("Virtual ports created:");
-  println!("  - 'edo31_piano_monome-in:in' (input)");
-  println!("  - 'edo31_piano_monome-out:out' (output)");
+  println!("  - 'edo_un12_piano_monome-in:in' (input)");
+  println!("  - 'edo_un12_piano_monome-out:out' (output)");
   println!();
   println!("Monome {}-EDO map:", config.edo);
   println!("  - lowest Hz: {}", config.lowest_hz);

@@ -19,16 +19,16 @@ name = "sampler"
 path = "code/rust/sampler/sampler.rs"
 
 [[bin]]
-name = "edo72_piano"
-path = "code/rust/edo72_piano/edo72_piano.rs"
+name = "edo12n_piano"
+path = "code/rust/edo12n_piano/edo12n_piano.rs"
 
 [[bin]]
-name = "edo72_piano_monome"
-path = "code/rust/edo72_piano_monome/edo72_piano_monome.rs"
+name = "edo12n_piano_monome"
+path = "code/rust/edo12n_piano_monome/edo12n_piano_monome.rs"
 
 [[bin]]
-name = "edo31_piano_monome"
-path = "code/rust/edo31_piano_monome/edo31_piano_monome.rs"
+name = "edo_un12_piano_monome"
+path = "code/rust/edo_un12_piano_monome/edo_un12_piano_monome.rs"
 
 [[bin]]
 name = "triangle_chord"

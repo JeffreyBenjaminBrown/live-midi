@@ -68,9 +68,9 @@ fn current_total_shift() -> Option<i16> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let midi_in: MidiInput =
-    MidiInput::new("edo72_piano-in")?;
+    MidiInput::new("edo12n_piano-in")?;
   let midi_out: MidiOutput =
-    MidiOutput::new("edo72_piano-out")?;
+    MidiOutput::new("edo12n_piano-out")?;
   let conn_out: MidiOutputConnection =
     midi_out.create_virtual("out")?;
   let (tx, rx): (mpsc::Sender<Vec<u8>>,
@@ -106,8 +106,8 @@ fn print_startup_message() {
   println!("72-EDO transformer started!");
   println!();
   println!("Virtual ports created:");
-  println!("  - 'edo72_piano-in:in' (input)");
-  println!("  - 'edo72_piano-out:out' (output)");
+  println!("  - 'edo12n_piano-in:in' (input)");
+  println!("  - 'edo12n_piano-out:out' (output)");
   println!();
   println!("Config:");
   println!("  - min_channel: {}", MIN_CHANNEL_OUT);
@@ -175,7 +175,7 @@ fn handle_regular_note(
       pitch_class_shifts().lock().unwrap()
         .insert(pitch_class, total_shift as i8); }}
   let (new_channel, new_note): (i16, i16) =
-    edo72_instruction(original_note);
+    edo12n_instruction(original_note);
   let output_in_range: bool = // what the MIDI standard allows
     new_channel >= 0 && new_channel <= 15 &&
     new_note >= 0 && new_note <= 127;
@@ -210,7 +210,7 @@ fn handle_regular_note(
       results.push(vec![off_status, new_note as u8, velocity]); }}
   results }
 
-fn edo72_instruction(
+fn edo12n_instruction(
   original_note: u8
 ) -> (i16, // channel
       i16) { // note

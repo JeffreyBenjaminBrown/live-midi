@@ -8,9 +8,9 @@ this uses a monome 128.
 *** Connect the keyboard and monome 128.
 *** Start the docker container.
 *** In the docker container, from the project root, run
-    cargo run --bin edo72_piano_monome
+    cargo run --bin edo12n_piano_monome
 *** In the host system, run
-    ./code/rust/edo72_piano_monome/connect-midi.sh
+    ./code/rust/edo12n_piano_monome/connect-midi.sh
 ** to use it
 *** monome layout
 The grid is 16 columns by 8 rows, with =y=0 at the top.

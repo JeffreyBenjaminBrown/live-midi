@@ -1,18 +1,18 @@
 * EDO piano transformer with monome mapping
 ** purpose
-This is a variant of =edo72_piano_monome= that maps the twelve piano
+This is a variant of =edo12n_piano_monome= that maps the twelve piano
 pitch classes into an arbitrary EDO.
 
 ** to start it
 *** Connect the keyboard and monome.
 *** Start the docker container.
 *** In the docker container, from the project root, run
-    cargo run --bin edo31_piano_monome
+    cargo run --bin edo_un12_piano_monome
     # or choose a config file:
-    cargo run --bin edo31_piano_monome -- 31-loose.toml
-    cargo run --bin edo31_piano_monome -- 58-8-1-snap.toml
+    cargo run --bin edo_un12_piano_monome -- 31-loose.toml
+    cargo run --bin edo_un12_piano_monome -- 58-8-1-snap.toml
 *** In the host system, run
-    ./code/rust/edo31_piano_monome/connect-midi.sh
+    ./code/rust/edo_un12_piano_monome/connect-midi.sh
 ** monome layout
 The grid size is inferred from serialosc's device type. Known sizes:
 =monome 128= is 16x8, and =monome 256= is 16x16. The y coordinate
@@ -39,9 +39,9 @@ remap state, including loose/fixed markings.
 
 The only command-line argument is an optional config filename:
 
-  =cargo run --bin edo31_piano_monome -- [CONFIG_FILE]=
+  =cargo run --bin edo_un12_piano_monome -- [CONFIG_FILE]=
 
-Configs live in =code/rust/edo31_piano_monome/config=. If omitted,
+Configs live in =code/rust/edo_un12_piano_monome/config=. If omitted,
 the filename defaults to =default=. The app also accepts a config
 name without the =.toml= extension.
 

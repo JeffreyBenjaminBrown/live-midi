@@ -78,8 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
 
-  let midi_in: MidiInput = MidiInput::new("edo72_piano_monome-in")?;
-  let midi_out: MidiOutput = MidiOutput::new("edo72_piano_monome-out")?;
+  let midi_in: MidiInput = MidiInput::new("edo12n_piano_monome-in")?;
+  let midi_out: MidiOutput = MidiOutput::new("edo12n_piano_monome-out")?;
   let conn_out: MidiOutputConnection = midi_out.create_virtual("out")?;
   let (tx, rx): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) =
     mpsc::channel();
@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       for msg in piano_transform::transform_message(
         message,
         &ongoing_for_midi,
-        |original_note| edo72_instruction(original_note, &shifts_for_midi),
+        |original_note| edo12n_instruction(original_note, &shifts_for_midi),
       ) {
         let _ = tx.send(msg); }},
     (), )?;
@@ -143,8 +143,8 @@ fn print_startup_message() {
   println!("72-EDO piano transformer with monome offsets started!");
   println!();
   println!("Virtual ports created:");
-  println!("  - 'edo72_piano_monome-in:in' (input)");
-  println!("  - 'edo72_piano_monome-out:out' (output)");
+  println!("  - 'edo12n_piano_monome-in:in' (input)");
+  println!("  - 'edo12n_piano_monome-out:out' (output)");
   println!();
   println!("Monome offset columns:");
   println!("  - x=0..11 maps C..B");
@@ -164,7 +164,7 @@ fn note_on_pitch_class(message: &[u8]) -> Option<usize> {
   }
 }
 
-fn edo72_instruction(
+fn edo12n_instruction(
   original_note: u8,
   shifts: &Arc<Mutex<[i8; 12]>>,
 ) -> (i16, i16) {
@@ -525,10 +525,10 @@ mod tests {
   #[test]
   fn piano_note_uses_current_pitch_class_shift() {
     let shifts = shared_shifts();
-    let (_baseline_channel, baseline_note) = edo72_instruction(60, &shifts);
+    let (_baseline_channel, baseline_note) = edo12n_instruction(60, &shifts);
     apply_offset_press(0, 3, 1, &shifts);
 
-    let (_channel, note) = edo72_instruction(60, &shifts);
+    let (_channel, note) = edo12n_instruction(60, &shifts);
 
     assert_eq!(note, baseline_note + 1);
   }

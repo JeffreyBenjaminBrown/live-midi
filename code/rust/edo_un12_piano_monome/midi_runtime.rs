@@ -4,18 +4,18 @@ use std::sync::{Arc, Mutex};
 use crate::state::{Edo31State, SoundingState};
 use crate::{LOWEST_C, MIN_CHANNEL_OUT, MIN_NOTE_OUT};
 
-pub(crate) fn edo31_instruction(
+pub(crate) fn edo_un12_instruction(
   original_note: u8,
   state: &Arc<Mutex<Edo31State>>,
 ) -> (i16, i16) {
-  let absolute_step = edo31_absolute_step(original_note, state);
+  let absolute_step = edo_un12_absolute_step(original_note, state);
   let edo = state.lock().unwrap().config.edo;
   let channel = MIN_CHANNEL_OUT as i16 + absolute_step.div_euclid(edo);
   let note = MIN_NOTE_OUT as i16 + absolute_step.rem_euclid(edo);
   (channel, note)
 }
 
-fn edo31_absolute_step(original_note: u8, state: &Arc<Mutex<Edo31State>>) -> i16 {
+fn edo_un12_absolute_step(original_note: u8, state: &Arc<Mutex<Edo31State>>) -> i16 {
   let normalized = original_note as i16 - LOWEST_C as i16;
   let channel_offset = normalized.div_euclid(12);
   let pitch_class = original_note % 12;

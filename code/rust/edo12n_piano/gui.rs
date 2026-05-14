@@ -100,7 +100,7 @@ pub fn run_display_thread(rx: mpsc::Receiver<(u8, bool)>) {
   if std::env::var("DISPLAY").is_err() {
     std::env::set_var("DISPLAY", ":0"); }
   let mut window: Window = Window::new(
-      "edo72_piano", WIN_W, WIN_H,
+      "edo12n_piano", WIN_W, WIN_H,
       WindowOptions::default(),
     ).expect("Failed to create window");
   window.set_target_fps(20);
