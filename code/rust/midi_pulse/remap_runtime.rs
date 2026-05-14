@@ -1,9 +1,10 @@
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiOutput};
 use midi_pulse::config::{
-  Config, InitialMapConfig, MonomeWindowConfig, PianoMappingConfig, RemapIdiomConfig,
+  Config, InitialMapConfig, MonomeConfig, MonomeWindowConfig, PianoMappingConfig,
+  RemapIdiomConfig,
 };
-use midi_pulse::{midi, monome, piano_transform};
+use midi_pulse::{midi, piano_transform};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -22,7 +23,6 @@ const LOWEST_C: u8 = 24;
 const MIN_CHANNEL_OUT: u8 = 1;
 const MIN_NOTE_OUT: u8 = 28;
 
-const PREFIX: &str = "/128-1-cable";
 const LISTEN_PORT: u16 = 9000;
 const LED_TRACE_ENV: &str = "MIDI_PULSE_REMAP_LED_TRACE";
 const DEFAULT_GRID_W: i32 = 16;
@@ -59,12 +59,32 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   let runtime_config = runtime_config(config)?;
-  let listen_port = config
-    .monomes
-    .first()
-    .map(|monome| monome.listen_port)
-    .unwrap_or(LISTEN_PORT);
-  run(runtime_config, listen_port)
+  let monome = remap_monome(config)?;
+  let listen_port = monome.map(|monome| monome.listen_port).unwrap_or(LISTEN_PORT);
+  let prefix = monome
+    .map(|monome| monome.prefix.clone())
+    .unwrap_or_else(|| "/256-1-cable".to_string());
+  let select_size = monome.and_then(|monome| monome.select.size);
+  run(runtime_config, listen_port, prefix, select_size)
+}
+
+fn remap_monome(config: &Config) -> Result<Option<&MonomeConfig>, Box<dyn std::error::Error>> {
+  let Some(monome_id) = config.monome_windows.iter().find_map(|window| {
+    if let MonomeWindowConfig::RemappableUn12Grid { monome, .. } = window {
+      Some(monome)
+    } else {
+      None
+    }
+  }) else {
+    return Ok(None);
+  };
+  Ok(Some(
+    config
+      .monomes
+      .iter()
+      .find(|monome| monome.id == *monome_id)
+      .ok_or("remappable_un12_grid references unknown monome")?,
+  ))
 }
 
 fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::error::Error>> {
@@ -122,6 +142,8 @@ fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::e
 fn run(
   runtime_config: config::RemapConfig,
   listen_port: u16,
+  prefix: String,
+  select_size: Option<[i32; 2]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   STOP_REQUESTED.store(false, Ordering::Relaxed);
   let state: Arc<Mutex<state::RemappableEdoState>> =
@@ -159,7 +181,13 @@ fn run(
   let state_for_monome = Arc::clone(&state);
   let sounding_for_monome = Arc::clone(&sounding);
   let monome_thread = thread::spawn(move || {
-    monome_runtime::run_monome_thread(state_for_monome, sounding_for_monome, listen_port)
+    monome_runtime::run_monome_thread(
+      state_for_monome,
+      sounding_for_monome,
+      listen_port,
+      prefix,
+      select_size,
+    )
   });
 
   install_sigint_handler();
@@ -178,7 +206,6 @@ fn run(
   }
   STOP_REQUESTED.store(true, Ordering::Relaxed);
   let _ = monome_thread.join();
-  monome::black(PREFIX);
   Ok(())
 }
 

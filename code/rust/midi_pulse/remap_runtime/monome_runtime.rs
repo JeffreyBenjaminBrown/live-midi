@@ -13,7 +13,7 @@ use super::render::{
   IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR,
 };
 use super::state::{RemappableEdoState, SoundingPitchCounts};
-use super::{PREFIX, STOP_REQUESTED, PREIMAGE_ROW_FLASH_MIN};
+use super::{STOP_REQUESTED, PREIMAGE_ROW_FLASH_MIN};
 
 pub(crate) struct PreimageRowState {
   pub(crate) active_by_cell: HashMap<(i32, i32), usize>,
@@ -51,11 +51,13 @@ pub(crate) fn run_monome_thread(
   state: Arc<Mutex<RemappableEdoState>>,
   sounding: Arc<Mutex<SoundingPitchCounts>>,
   listen_port: u16,
+  prefix: String,
+  select_size: Option<[i32; 2]>,
 ) {
   let sock = UdpSocket::bind(("0.0.0.0", listen_port))
     .unwrap_or_else(|e| panic!("bind UDP :{listen_port}: {e}"));
   sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
-  let mut device_info = monome::discover_device_info(&sock, listen_port)
+  let mut device_info = discover_configured_device(&sock, listen_port, select_size)
     .expect("no monome found; is serialoscd running?");
   {
     let mut state = state.lock().unwrap();
@@ -68,7 +70,7 @@ pub(crate) fn run_monome_thread(
     device_info.id, device_info.type_name, device_info.port, device_info.grid_w, device_info.grid_h,
   );
   let mut device: SocketAddr = format!("127.0.0.1:{}", device_info.port).parse().unwrap();
-  monome::register(&sock, device, PREFIX, listen_port);
+  monome::register(&sock, device, &prefix, listen_port);
   let mut rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
   let mut sounding_clock = ColorClock::new(SOUNDING_COLOR, Instant::now());
   let mut anchor_clock = ColorClock::new(ANCHOR_COLOR, Instant::now());
@@ -86,6 +88,7 @@ pub(crate) fn run_monome_thread(
     &preimage_row.counts,
     &preimage_row.flash_until,
     now,
+    &prefix,
     led_phases(
       sounding_clock,
       anchor_clock,
@@ -96,7 +99,7 @@ pub(crate) fn run_monome_thread(
   );
   drop(sounding_guard);
   drop(state_guard);
-  let key_addr = format!("{PREFIX}/grid/key");
+  let key_addr = format!("{prefix}/grid/key");
   let mut buf = [0u8; 2048];
   while !STOP_REQUESTED.load(Ordering::Relaxed) {
     let now = Instant::now();
@@ -127,6 +130,7 @@ pub(crate) fn run_monome_thread(
       &preimage_row.counts,
       &preimage_row.flash_until,
       now,
+      &prefix,
       led_phases(
         sounding_clock,
         anchor_clock,
@@ -153,7 +157,7 @@ pub(crate) fn run_monome_thread(
         if p != device_info.port {
           device_info.port = p;
           device = format!("127.0.0.1:{p}").parse().unwrap();
-          monome::register(&sock, device, PREFIX, listen_port);
+          monome::register(&sock, device, &prefix, listen_port);
           rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
           let now = Instant::now();
           let state_guard = state.lock().unwrap();
@@ -166,6 +170,7 @@ pub(crate) fn run_monome_thread(
             &preimage_row.counts,
             &preimage_row.flash_until,
             now,
+            &prefix,
             led_phases(
               sounding_clock,
               anchor_clock,
@@ -199,6 +204,7 @@ pub(crate) fn run_monome_thread(
         &preimage_row.counts,
         &preimage_row.flash_until,
         Instant::now(),
+        &prefix,
         led_phases(
           sounding_clock,
           anchor_clock,
@@ -209,7 +215,29 @@ pub(crate) fn run_monome_thread(
       );
     }
   }
-  monome::send_led_all(&sock, device, PREFIX, 0);
+  monome::send_led_all(&sock, device, &prefix, 0);
+}
+
+fn discover_configured_device(
+  sock: &UdpSocket,
+  listen_port: u16,
+  select_size: Option<[i32; 2]>,
+) -> Option<midi_pulse::monome::DeviceInfo> {
+  let devices = monome::discover_devices(sock, listen_port);
+  let selected = devices.iter().rev().find(|device| {
+    select_size.is_none_or(|[w, h]| device.grid_w == w && device.grid_h == h)
+  });
+  if selected.is_none() && !devices.is_empty() {
+    eprintln!(
+      "no monome matched configured size {:?}; serialosc devices were: {:?}",
+      select_size,
+      devices
+        .iter()
+        .map(|device| format!("{} {} {}x{}", device.id, device.type_name, device.grid_w, device.grid_h))
+        .collect::<Vec<_>>()
+    );
+  }
+  selected.cloned()
 }
 
 pub(crate) fn apply_monome_press(state: &mut RemappableEdoState, x: i32, y: i32) -> bool {

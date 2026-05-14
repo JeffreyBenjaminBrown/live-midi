@@ -8,8 +8,9 @@ use super::layout::{map_rect, monome_windows, undo_cell, WindowId};
 use super::remap::preimage_for_step;
 use super::state::RemappableEdoState;
 use super::{
-  ANCHOR_PITCH_CLASSES, LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF, LED_LEVEL_UNDO,
-  LED_TRACE_ENV, MONOME_REFRESH, PREFIX, PREIMAGE_ROW_FLASH_FRACTION_ON, PREIMAGE_ROW_FLASH_WAVELENGTH,
+  ANCHOR_PITCH_CLASSES, LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF,
+  LED_LEVEL_UNDO, LED_TRACE_ENV, MONOME_REFRESH, PREIMAGE_ROW_FLASH_FRACTION_ON,
+  PREIMAGE_ROW_FLASH_WAVELENGTH,
   PREIMAGE_ROW_Y, WHITE_KEYS,
 };
 
@@ -218,6 +219,7 @@ pub(crate) fn render_to_monome(
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
   now: Instant,
+  prefix: &str,
   phases: LedPhases,
   rendered_cols: &mut Vec<u8>,
 ) {
@@ -245,7 +247,7 @@ pub(crate) fn render_to_monome(
           rendered_cols[i],
         );
       }
-      monome::send_led_level_set(sock, device, PREFIX, x, y, *level as i32);
+      monome::send_led_level_set(sock, device, prefix, x, y, *level as i32);
       rendered_cols[i] = *level;
     }
   }

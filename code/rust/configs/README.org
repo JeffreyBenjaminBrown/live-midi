@@ -8,6 +8,17 @@ cargo run --bin midi_pulse -- CONFIG_NAME
 
 ~CONFIG_NAME~ resolves to ~code/rust/configs/CONFIG_NAME.toml~.
 
+On the host, MIDI routing can use the same config name:
+
+#+begin_src sh
+./code/rust/connect-midi.sh CONFIG_NAME
+#+end_src
+
+That script reads ~[midi.input].virtual_name~ and
+~[midi.output].virtual_name~ from the TOML and connects the keyboard
+and Reaper MIDI ports accordingly. Configs without MIDI input or
+output simply skip that side.
+
 Every config is TOML and starts with:
 
 #+begin_src toml
@@ -196,22 +207,22 @@ For remappable un-12 behavior:
 #+begin_src toml
 [[monome_windows]]
 id = "preimage-row"
-monome = "little"
+monome = "big"
 kind = "preimage_row"
 rect = [0, 0, 11, 0]
 
 [[monome_windows]]
 id = "remap-grid"
-monome = "little"
+monome = "big"
 kind = "remappable_un12_grid"
-rect = [0, 1, 9, 7]
+rect = [0, 1, 9, 15]
 tuning = "main"
 
 [[monome_windows]]
 id = "undo"
-monome = "little"
+monome = "big"
 kind = "remap_undo_button"
-rect = [15, 7, 15, 7]
+rect = [15, 15, 15, 15]
 #+end_src
 
 * Optional display

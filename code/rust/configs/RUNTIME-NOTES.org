@@ -288,8 +288,20 @@ Mitigations:
 
 * MIDI connection recipes
 
-The old helper scripts all used ~code/rust/connect-midi-lib.sh~.
-Equivalent operations:
+Use the config-aware host script:
+
+#+begin_src sh
+./code/rust/connect-midi.sh CONFIG_NAME
+#+end_src
+
+For example:
+
+#+begin_src sh
+./code/rust/connect-midi.sh edo-un12-58-8-1-snap
+#+end_src
+
+The script reads the config's MIDI virtual port names and uses
+~code/rust/connect-midi-lib.sh~. Equivalent manual operations:
 
 For piano input configs:
 
