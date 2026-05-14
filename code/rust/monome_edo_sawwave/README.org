@@ -1,4 +1,4 @@
-#+TITLE: code/rust/monome/ — grid synth + hard-won ops notes
+#+TITLE: code/rust/monome_edo_sawwave/ — grid synth + hard-won ops notes
 
 This directory contains a tiny Rust synth driven by a monome grid,
 plus the scripts and notes from resurrecting Jeff's monome on NixOS
@@ -9,13 +9,13 @@ in April 2026.
 Inside the container:
 
 #+begin_src bash
-cd /home/ubuntu/code/rust/monome
-bash ./11-grid-synth.sh [FUND [EDO [X_STEP [Y_STEP]]]]
+cd /home/ubuntu/code/rust/monome_edo_sawwave
+bash ./grid-synth.sh [FUND [EDO [X_STEP [Y_STEP]]]]
 #+end_src
 
 Args default to =220 46 9 1= — i.e. =(0,0) = 220 Hz=, pitch rises
 9/46 of an octave per x step and 1/46 of an octave per y step. All
-four args are =f64=, so fractional EDOs work.
+args after =FUND= are integers.
 
 * Known gotcha: ghost /dev/ttyUSBN devices
 
@@ -142,15 +142,15 @@ distinct brightness levels.
 
 * Layout
 
-| Path                      | What it is                                    |
-|---------------------------+-----------------------------------------------|
-| =09-sound-test.sh=        | Compile + play =triangle_chord.rs=; audio sanity.|
-| =10-button-test.sh=       | Build + run =button_test/= (no-audio OSC dump).|
-| =11-grid-synth.sh=        | Build + run =grid_synth/= (the fun part).      |
-| =button_test/=            | Rust: registers with serialoscd, prints events.|
-| =grid_synth/=             | Rust: triangle-wave voice per pressed key.     |
-| =for-jeff-to-run.org=     | Step-by-step log of what to run and when.     |
-| =README.org=              | This file.                                    |
+| Path                                                            | What it is                                        |
+|-----------------------------------------------------------------+---------------------------------------------------|
+| =../demos-and-explorations/monome/09-sound-test.sh=             | Compile + play =triangle_chord.rs=; audio sanity. |
+| =../demos-and-explorations/monome/10-button-test.sh=            | Build + run =button_test/= (no-audio OSC dump).   |
+| =grid-synth.sh=                                                 | Build + run =grid_synth/= (the fun part).         |
+| =../demos-and-explorations/monome/button_test/=                 | Rust: registers with serialoscd, prints events.   |
+| =grid_synth/=                                                   | Rust: triangle-wave voice per pressed key.        |
+| =../demos-and-explorations/monome/for-jeff-to-run.org=          | Step-by-step log of what to run and when.         |
+| =README.org=                                                    | This file.                                        |
 
 * Architecture
 
@@ -249,8 +249,8 @@ reasonable starting set.
 To re-test on this device, or to characterise a different one:
 
 #+begin_src bash
-bash ./12-brightness-test.sh        # paint row 0 with 0..15
-bash ./12-brightness-test.sh 8      # row 8
+bash ../demos-and-explorations/monome/12-brightness-test.sh        # paint row 0 with 0..15
+bash ../demos-and-explorations/monome/12-brightness-test.sh 8      # row 8
 #+end_src
 
 (Best with =grid_synth= not running, so live presses don't

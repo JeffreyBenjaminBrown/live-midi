@@ -1,0 +1,42 @@
+#+TITLE: monome_edo_midi
+
+=monome_edo_midi= uses the same monome grid input model as
+=monome_edo_sawwave=, but sends MIDI note events instead of rendering
+audio itself.
+
+=monome_edo_midi= expects a 16x16 monome, such as =monome 256=. If
+serialoscd reports multiple connected grids, it ignores smaller ones.
+
+Run:
+
+#+begin_src bash
+cargo run --bin monome_edo_midi -- [EDO [X_STEP [Y_STEP]]]
+#+end_src
+
+Args default to =46 9 1=. Cell =(x,y)= maps to absolute EDO step
+=x_step*x + y_step*y=. MIDI output uses the same channel/note spread
+as the =edo_un12*= programs:
+
+#+begin_example
+channel = 1 + step div EDO
+note    = 28 + step mod EDO
+#+end_example
+
+The program creates this virtual MIDI port:
+
+#+begin_example
+monome_edo_midi-out:out
+#+end_example
+
+To connect it to Reaper:
+
+#+begin_src bash
+./code/rust/monome_edo_midi/connect-midi.sh
+#+end_src
+
+Environment overrides:
+
+| Variable                       | Meaning                             |
+|--------------------------------+-------------------------------------|
+| =MONOME_EDO_MIDI_LISTEN_PORT=  | UDP port for monome OSC input.      |
+| =MONOME_EDO_MIDI_DEVICE_PORT=  | Skip discovery and use this device. |

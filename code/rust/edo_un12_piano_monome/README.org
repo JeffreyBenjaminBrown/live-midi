@@ -110,6 +110,6 @@ On 2026-05-12 serialosc reported:
   =m0000102, monome 256=
 
 It also reported two device ports for that same id, which matches the
-ghost-tty issue described in =code/rust/monome/README.org=. The app
+ghost-tty issue described in =code/rust/monome_edo_sawwave/README.org=. The app
 chooses the last reply. If LEDs work but presses do not arrive, restart
 =serialoscd= on the host and reconnect the monome.

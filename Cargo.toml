@@ -8,11 +8,11 @@ path = "code/rust/midi_pulse/lib.rs"
 
 [[bin]]
 name = "polite_ping"
-path = "code/rust/demos/polite_ping.rs"
+path = "code/rust/demos-and-explorations/polite_ping.rs"
 
 [[bin]]
 name = "add_echo"
-path = "code/rust/demos/add_echo.rs"
+path = "code/rust/demos-and-explorations/add_echo.rs"
 
 [[bin]]
 name = "sampler"
@@ -29,6 +29,10 @@ path = "code/rust/edo12n_piano_monome/edo12n_piano_monome.rs"
 [[bin]]
 name = "edo_un12_piano_monome"
 path = "code/rust/edo_un12_piano_monome/edo_un12_piano_monome.rs"
+
+[[bin]]
+name = "monome_edo_midi"
+path = "code/rust/monome_edo_midi/monome_edo_midi.rs"
 
 [[bin]]
 name = "triangle_chord"

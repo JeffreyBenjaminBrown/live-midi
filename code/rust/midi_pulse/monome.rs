@@ -26,7 +26,13 @@ pub fn discover_device(sock: &UdpSocket, listen_port: u16) -> Option<u16> {
 }
 
 pub fn discover_device_info(sock: &UdpSocket, listen_port: u16) -> Option<DeviceInfo> {
-  let detector: SocketAddr = format!("127.0.0.1:{DETECTOR_PORT}").parse().ok()?;
+  discover_devices(sock, listen_port).last().cloned()
+}
+
+pub fn discover_devices(sock: &UdpSocket, listen_port: u16) -> Vec<DeviceInfo> {
+  let Ok(detector) = format!("127.0.0.1:{DETECTOR_PORT}").parse::<SocketAddr>() else {
+    return vec![];
+  };
   send_osc(sock, detector, "/serialosc/list", vec![
     OscType::String("127.0.0.1".into()),
     OscType::Int(listen_port as i32),
@@ -63,12 +69,12 @@ pub fn discover_device_info(sock: &UdpSocket, listen_port: u16) -> Option<Device
     let ports: Vec<u16> = devices.iter().map(|device| device.port).collect();
     eprintln!(
       "WARN: serialoscd reported {} device ports: {:?}. \
-       Picking the last reply, which is usually the newest live device.",
+       discover_device_info() will pick the last reply, which is usually the newest live device.",
       devices.len(),
       ports,
     );
   }
-  devices.last().cloned()
+  devices
 }
 
 fn grid_size_for_type(type_name: &str) -> (i32, i32) {

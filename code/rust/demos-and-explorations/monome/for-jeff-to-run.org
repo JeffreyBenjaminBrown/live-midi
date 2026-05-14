@@ -7,7 +7,7 @@ confirms sound output — compiles =code/rust/synth/triangle_chord.rs=
 
 Run:
 #+begin_src bash
-cd /home/ubuntu/code/rust/monome
+cd /home/ubuntu/code/rust/demos-and-explorations/monome
 bash ./09-sound-test.sh
 #+end_src
 
@@ -28,7 +28,7 @@ Expected lines in the output look like:
 
 Run:
 #+begin_src bash
-cd /home/ubuntu/code/rust/monome
+cd /home/ubuntu/code/rust/demos-and-explorations/monome
 bash ./10-button-test.sh
 #+end_src
 
@@ -39,7 +39,8 @@ arrived? timing felt responsive? any weird keys?).
 
 * Step 11 — Grid synth (the fun part)                             :pending:
 
-Single Rust program at =/home/ubuntu/code/rust/monome/grid_synth/=:
+Single Rust program at
+=/home/ubuntu/code/rust/monome_edo_sawwave/grid_synth/=:
 - Discovers the grid via serialoscd's detector (same as step 10).
 - Registers UDP :9000 as the receiver, sets prefix to /256-1-cable,
   clears all LEDs.
@@ -55,10 +56,10 @@ Single Rust program at =/home/ubuntu/code/rust/monome/grid_synth/=:
 
 Run:
 #+begin_src bash
-cd /home/ubuntu/code/rust/monome
-bash ./11-grid-synth.sh
+cd /home/ubuntu/code/rust/monome_edo_sawwave
+bash ./grid-synth.sh
 #+end_src
 
 Runs forever. Ctrl-C to quit. First build fetches cpal (~1 min).
 
-Output: =11-grid-synth.out= (mirrored tee of terminal output).
+Output: =grid-synth.out= (mirrored tee of terminal output).
