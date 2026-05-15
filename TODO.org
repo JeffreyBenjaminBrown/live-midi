@@ -1,3 +1,6 @@
+* Flash C, F and G only when no fingers are on piano.
+When they are, the latest note should be solid,
+the other ongoing notes flashing.
 * Save scale, given root.
 Predefined scales:
 ** Evenly spaced

@@ -1,3 +1,14 @@
+* to run something
+** about the file argument
+The file argument (to both commands) must exist in this folder.
+The path *to* this folder is not needed.
+** do both of these
+*** in docker
+cargo run --bin midi_pulse \
+  edo-un12-58-8-1-snap.toml
+*** outside
+./code/rust/connect-midi.sh \
+  edo-un12-58-8-1-snap.toml
 * midi_pulse config syntax
 
 Configs live in ~code/rust/configs/~ and are loaded by name:
