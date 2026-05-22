@@ -56,12 +56,15 @@ pub(crate) fn update_sounding(
     if let Some(old_step) = sounding.by_original_note.insert(original_note, step) {
       decrement_sounding_count(&mut sounding, old_step);
     }
+    remove_held_note(&mut sounding, original_note);
+    sounding.held_order.push(original_note);
     sounding.counts[step as usize] += 1;
   } else if midi::is_note_off(message) {
     let mut sounding = sounding.lock().unwrap();
     if let Some(old_step) = sounding.by_original_note.remove(&original_note) {
       decrement_sounding_count(&mut sounding, old_step);
     }
+    remove_held_note(&mut sounding, original_note);
   }
 }
 
@@ -74,5 +77,47 @@ fn decrement_sounding_count(sounding: &mut SoundingPitchCounts, step: i16) {
   let count = &mut sounding.counts[step as usize];
   if *count > 0 {
     *count -= 1;
+  }
+}
+
+fn remove_held_note(sounding: &mut SoundingPitchCounts, original_note: u8) {
+  if let Some(index) = sounding
+    .held_order
+    .iter()
+    .position(|held_note| *held_note == original_note)
+  {
+    sounding.held_order.remove(index);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use super::super::config::{RemapConfig, RemapIdiom};
+
+  fn test_state() -> Arc<Mutex<RemappableEdoState>> {
+    Arc::new(Mutex::new(RemappableEdoState::new(RemapConfig::new(
+      80.0,
+      12,
+      1,
+      0,
+      RemapIdiom::Snap,
+      12,
+      8,
+    ))))
+  }
+
+  #[test]
+  fn releasing_latest_note_restores_previous_held_note_as_most_recent() {
+    let state = test_state();
+    let sounding = Arc::new(Mutex::new(SoundingPitchCounts::new(12)));
+
+    update_sounding(&[0x90, 28, 64], &state, &sounding);
+    update_sounding(&[0x90, 31, 64], &state, &sounding);
+    update_sounding(&[0x80, 31, 0], &state, &sounding);
+
+    let sounding = sounding.lock().unwrap();
+    assert_eq!(sounding.held_order, vec![28]);
+    assert_eq!(sounding.most_recent_step(), Some(4));
   }
 }

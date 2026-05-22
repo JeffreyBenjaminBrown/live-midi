@@ -46,6 +46,7 @@ impl RemappableEdoState {
 
 pub(crate) struct SoundingPitchCounts {
   pub(crate) by_original_note: HashMap<u8, i16>,
+  pub(crate) held_order: Vec<u8>,
   pub(crate) counts: Vec<u16>,
 }
 
@@ -53,7 +54,20 @@ impl SoundingPitchCounts {
   pub(crate) fn new(edo: i16) -> Self {
     SoundingPitchCounts {
       by_original_note: HashMap::new(),
+      held_order: Vec::new(),
       counts: vec![0; edo as usize],
     }
+  }
+
+  pub(crate) fn has_held_notes(&self) -> bool {
+    !self.held_order.is_empty()
+  }
+
+  pub(crate) fn most_recent_step(&self) -> Option<i16> {
+    self
+      .held_order
+      .last()
+      .and_then(|note| self.by_original_note.get(note))
+      .copied()
   }
 }

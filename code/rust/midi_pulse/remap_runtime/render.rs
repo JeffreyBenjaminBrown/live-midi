@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::config::RemapConfig;
 use super::layout::{map_rect, monome_windows, undo_cell, WindowId};
 use super::remap::preimage_for_step;
-use super::state::RemappableEdoState;
+use super::state::{RemappableEdoState, SoundingPitchCounts};
 use super::{
   ANCHOR_PITCH_CLASSES, LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF,
   LED_LEVEL_UNDO, LED_TRACE_ENV, MONOME_REFRESH, PREIMAGE_ROW_FLASH_FRACTION_ON,
@@ -14,7 +14,10 @@ use super::{
   PREIMAGE_ROW_Y, WHITE_KEYS,
 };
 
-pub(crate) const SOUNDING_COLOR: Color = Color::AlwaysOn;
+pub(crate) const SOUNDING_COLOR: Color = Color::Duty {
+  period: Duration::from_micros(300_000),
+  fraction_on: 0.3,
+};
 pub(crate) const ANCHOR_COLOR: Color = Color::Duty {
   period: Duration::from_micros(300_000),
   fraction_on: 0.3,
@@ -215,7 +218,7 @@ pub(crate) fn render_to_monome(
   sock: &UdpSocket,
   device: SocketAddr,
   state: &RemappableEdoState,
-  sounding_counts: &[u16],
+  sounding: &SoundingPitchCounts,
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
   now: Instant,
@@ -225,7 +228,7 @@ pub(crate) fn render_to_monome(
 ) {
   let levels = render_led_levels_with_preimage_row(
     state,
-    sounding_counts,
+    sounding,
     preimage_row_counts,
     preimage_row_flash_until,
     now,
@@ -260,12 +263,12 @@ fn led_trace_enabled() -> bool {
 #[cfg(test)]
 pub(crate) fn render_led_cols(
   state: &RemappableEdoState,
-  sounding_counts: &[u16],
+  sounding: &SoundingPitchCounts,
   phases: LedPhases,
 ) -> Vec<u8> {
   let banks = col_bank_count(&state.config);
   let mut cols = vec![0u8; state.config.grid_w as usize * banks];
-  let levels = render_led_levels(state, sounding_counts, phases);
+  let levels = render_led_levels(state, sounding, phases);
   for y in 0..state.config.grid_h {
     for x in 0..state.config.grid_w {
       if levels[(y * state.config.grid_w + x) as usize] > 0 {
@@ -279,12 +282,12 @@ pub(crate) fn render_led_cols(
 
 pub(crate) fn render_led_levels(
   state: &RemappableEdoState,
-  sounding_counts: &[u16],
+  sounding: &SoundingPitchCounts,
   phases: LedPhases,
 ) -> Vec<u8> {
   render_led_levels_with_preimage_row(
     state,
-    sounding_counts,
+    sounding,
     &[0; 12],
     &[None; 12],
     Instant::now(),
@@ -294,7 +297,7 @@ pub(crate) fn render_led_levels(
 
 pub(crate) fn render_led_levels_with_preimage_row(
   state: &RemappableEdoState,
-  sounding_counts: &[u16],
+  sounding: &SoundingPitchCounts,
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
   now: Instant,
@@ -318,7 +321,7 @@ pub(crate) fn render_led_levels_with_preimage_row(
       }
       let step = super::layout::grid_step(&state.config, x - rect.x0, y - rect.y0);
       levels[(y * state.config.grid_w + x) as usize] =
-        rendered_level(state, sounding_counts, step, phases);
+        rendered_level(state, sounding, step, phases);
     }
   }
   if let Some((x, y)) = undo_cell(&state.config) {
@@ -365,19 +368,19 @@ fn render_preimage_row(
 
 fn rendered_level(
   state: &RemappableEdoState,
-  sounding_counts: &[u16],
+  sounding: &SoundingPitchCounts,
   step: i16,
   phases: LedPhases,
 ) -> u8 {
-  if sounding_counts[step as usize] > 0 {
-    return if phases.sounding_on {
+  if sounding.counts[step as usize] > 0 {
+    return if sounding.most_recent_step() == Some(step) || phases.sounding_on {
       LED_LEVEL_FULL
     } else {
       LED_LEVEL_OFF
     };
   }
   if let Some(preimage) = preimage_for_step(state, step) {
-    if is_anchor_pitch_class(preimage) {
+    if is_anchor_pitch_class(preimage) && !sounding.has_held_notes() {
       if phases.anchor_on {
         LED_LEVEL_FULL
       } else {
@@ -395,4 +398,74 @@ fn rendered_level(
 
 fn is_anchor_pitch_class(preimage: usize) -> bool {
   ANCHOR_PITCH_CLASSES.contains(&preimage)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use super::super::config::RemapIdiom;
+
+  fn test_state() -> RemappableEdoState {
+    RemappableEdoState::new(RemapConfig::new(
+      80.0,
+      12,
+      1,
+      0,
+      RemapIdiom::Snap,
+      12,
+      8,
+    ))
+  }
+
+  fn phases(sounding_on: bool, anchor_on: bool) -> LedPhases {
+    LedPhases {
+      sounding_on,
+      anchor_on,
+      image_on: true,
+      preimage_row_flash_on: false,
+    }
+  }
+
+  fn level_at_grid_step(levels: &[u8], step: usize) -> u8 {
+    levels[12 + step]
+  }
+
+  #[test]
+  fn anchors_flash_only_when_no_piano_notes_are_held() {
+    let state = test_state();
+    let mut sounding = SoundingPitchCounts::new(12);
+
+    let idle_levels = render_led_levels(&state, &sounding, phases(false, true));
+    assert_eq!(level_at_grid_step(&idle_levels, 0), LED_LEVEL_FULL);
+    assert_eq!(level_at_grid_step(&idle_levels, 5), LED_LEVEL_FULL);
+    assert_eq!(level_at_grid_step(&idle_levels, 7), LED_LEVEL_FULL);
+
+    sounding.by_original_note.insert(28, 4);
+    sounding.held_order.push(28);
+    sounding.counts[4] = 1;
+    let held_levels = render_led_levels(&state, &sounding, phases(false, true));
+    assert_eq!(level_at_grid_step(&held_levels, 0), LED_LEVEL_IMAGE);
+    assert_eq!(level_at_grid_step(&held_levels, 5), LED_LEVEL_IMAGE);
+    assert_eq!(level_at_grid_step(&held_levels, 7), LED_LEVEL_IMAGE);
+  }
+
+  #[test]
+  fn most_recent_held_note_is_solid_and_other_held_notes_flash() {
+    let state = test_state();
+    let mut sounding = SoundingPitchCounts::new(12);
+    sounding.by_original_note.insert(28, 4);
+    sounding.held_order.push(28);
+    sounding.counts[4] = 1;
+    sounding.by_original_note.insert(31, 7);
+    sounding.held_order.push(31);
+    sounding.counts[7] = 1;
+
+    let levels = render_led_levels(&state, &sounding, phases(false, true));
+    assert_eq!(level_at_grid_step(&levels, 4), LED_LEVEL_OFF);
+    assert_eq!(level_at_grid_step(&levels, 7), LED_LEVEL_FULL);
+
+    let levels = render_led_levels(&state, &sounding, phases(true, true));
+    assert_eq!(level_at_grid_step(&levels, 4), LED_LEVEL_FULL);
+    assert_eq!(level_at_grid_step(&levels, 7), LED_LEVEL_FULL);
+  }
 }

@@ -108,9 +108,10 @@ For 58-EDO:
 
 LED priorities:
 
-- sounding pitches are steady on
-- current images of C, F, and G flash at full brightness
-- other current image pitches are steady dim
+- with no piano notes held, current images of C, F, and G flash at full brightness
+- with piano notes held, the most recently keyed held pitch is steady on
+- other held pitches flash at full brightness
+- current image pitches that are not held are steady dim
 
 In the ~loose~ idiom, tapping a lit pitch makes its 12-EDO/EDO pair
 loose. If at least one neighboring lit pitch is loose, tapping a dark
