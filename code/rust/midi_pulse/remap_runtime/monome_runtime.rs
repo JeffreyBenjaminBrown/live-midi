@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::layout::{edo_local_cell, grid_step, window_for_cell, WindowId};
-use super::remap::{apply_grid_press, preimage_for_step, undo_remap};
+use super::record::{OutputSource, RecordRuntime, SharedOutputGate};
+use super::remap::{apply_grid_press, apply_snapshot, preimage_for_step, undo_remap};
 use super::render::{
   blank_rendered_cols, led_phases, next_render_wait, render_to_monome, ColorClock, ANCHOR_COLOR,
   IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR,
@@ -50,6 +51,8 @@ impl PreimageRowState {
 pub(crate) fn run_monome_thread(
   state: Arc<Mutex<RemappableEdoState>>,
   sounding: Arc<Mutex<SoundingPitchCounts>>,
+  recorder: Arc<Mutex<RecordRuntime>>,
+  output_gate: SharedOutputGate,
   listen_port: u16,
   prefix: String,
   select_size: Option<[i32; 2]>,
@@ -80,11 +83,13 @@ pub(crate) fn run_monome_thread(
   let now = Instant::now();
   let state_guard = state.lock().unwrap();
   let sounding_guard = sounding.lock().unwrap();
+  let recorder_guard = recorder.lock().unwrap();
   render_to_monome(
     &sock,
     device,
     &state_guard,
     &sounding_guard,
+    &recorder_guard,
     &preimage_row.counts,
     &preimage_row.flash_until,
     now,
@@ -97,6 +102,7 @@ pub(crate) fn run_monome_thread(
     ),
     &mut rendered_cols,
   );
+  drop(recorder_guard);
   drop(sounding_guard);
   drop(state_guard);
   let key_addr = format!("{prefix}/grid/key");
@@ -108,6 +114,23 @@ pub(crate) fn run_monome_thread(
     dirty |= anchor_clock.advance_if_due(now);
     dirty |= image_clock.advance_if_due(now);
     dirty |= preimage_row_flash_clock.advance_if_due(now);
+    {
+      let mut recorder_guard = recorder.lock().unwrap();
+      if recorder_guard.erase_ons_held {
+        if let Some(elapsed) = recorder_guard
+          .playback_start
+          .and_then(|start| recorder_guard.slot.loop_duration.map(|duration| (start, duration)))
+          .filter(|(_, duration)| !duration.is_zero())
+          .map(|(start, duration)| {
+            Duration::from_nanos(
+              (now.duration_since(start).as_nanos() % duration.as_nanos()) as u64,
+            )
+          })
+        {
+          recorder_guard.erase_swept_to(elapsed);
+        }
+      }
+    }
     let sounding_guard = sounding.lock().unwrap();
     sock
       .set_read_timeout(Some(next_render_wait(
@@ -122,11 +145,13 @@ pub(crate) fn run_monome_thread(
     drop(sounding_guard);
     let state_guard = state.lock().unwrap();
     let sounding_guard = sounding.lock().unwrap();
+    let recorder_guard = recorder.lock().unwrap();
     render_to_monome(
       &sock,
       device,
       &state_guard,
       &sounding_guard,
+      &recorder_guard,
       &preimage_row.counts,
       &preimage_row.flash_until,
       now,
@@ -139,6 +164,7 @@ pub(crate) fn run_monome_thread(
       ),
       &mut rendered_cols,
     );
+    drop(recorder_guard);
     drop(sounding_guard);
     drop(state_guard);
     let pkt = match sock.recv_from(&mut buf) {
@@ -162,11 +188,13 @@ pub(crate) fn run_monome_thread(
           let now = Instant::now();
           let state_guard = state.lock().unwrap();
           let sounding_guard = sounding.lock().unwrap();
+          let recorder_guard = recorder.lock().unwrap();
           render_to_monome(
             &sock,
             device,
             &state_guard,
             &sounding_guard,
+            &recorder_guard,
             &preimage_row.counts,
             &preimage_row.flash_until,
             now,
@@ -179,6 +207,7 @@ pub(crate) fn run_monome_thread(
             ),
             &mut rendered_cols,
           );
+          drop(recorder_guard);
         }
       }
       continue;
@@ -191,16 +220,29 @@ pub(crate) fn run_monome_thread(
       _ => continue,
     };
     let mut state = state.lock().unwrap();
-    if apply_monome_key(&mut state, &mut preimage_row, x, y, s, Instant::now()) {
+    let mut recorder_guard = recorder.lock().unwrap();
+    if apply_monome_key(
+      &mut state,
+      &mut recorder_guard,
+      &output_gate,
+      &mut preimage_row,
+      x,
+      y,
+      s,
+      Instant::now(),
+    ) {
       dirty = true;
     }
+    drop(recorder_guard);
     if dirty {
       let sounding_guard = sounding.lock().unwrap();
+      let recorder_guard = recorder.lock().unwrap();
       render_to_monome(
         &sock,
         device,
         &state,
         &sounding_guard,
+        &recorder_guard,
         &preimage_row.counts,
         &preimage_row.flash_until,
         Instant::now(),
@@ -213,6 +255,7 @@ pub(crate) fn run_monome_thread(
         ),
         &mut rendered_cols,
       );
+      drop(recorder_guard);
     }
   }
   monome::send_led_all(&sock, device, &prefix, 0);
@@ -244,12 +287,15 @@ pub(crate) fn apply_monome_press(state: &mut RemappableEdoState, x: i32, y: i32)
   match window_for_cell(&state.config, x, y) {
     Some(WindowId::Undo) => undo_remap(state),
     Some(WindowId::Edo) => apply_grid_press(state, x, y),
+    Some(WindowId::RecordControl(_)) => false,
     None => false,
   }
 }
 
 pub(crate) fn apply_monome_key(
   state: &mut RemappableEdoState,
+  recorder: &mut RecordRuntime,
+  output_gate: &SharedOutputGate,
   preimage_row: &mut PreimageRowState,
   x: i32,
   y: i32,
@@ -257,6 +303,9 @@ pub(crate) fn apply_monome_key(
   now: Instant,
 ) -> bool {
   if s == 0 {
+    if let Some(WindowId::RecordControl(control)) = window_for_cell(&state.config, x, y) {
+      return recorder.key_up(control);
+    }
     return preimage_row.release((x, y));
   }
   if s != 1 {
@@ -265,6 +314,16 @@ pub(crate) fn apply_monome_key(
   match window_for_cell(&state.config, x, y) {
     Some(WindowId::Undo) => undo_remap(state),
     Some(WindowId::Edo) => apply_edo_key_down(state, preimage_row, x, y, now),
+    Some(WindowId::RecordControl(control)) => {
+      let action = recorder.key_down(control, now, state.snapshot());
+      for (original_note, output) in action.release_playback {
+        output_gate.release_source(OutputSource::Playback { original_note }, output);
+      }
+      if let Some(snapshot) = action.apply_snapshot {
+        apply_snapshot(state, snapshot);
+      }
+      true
+    }
     None => false,
   }
 }
@@ -294,5 +353,70 @@ fn apply_edo_key_down(
 fn decrement_count(count: &mut u16) {
   if *count > 0 {
     *count -= 1;
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use super::super::config::{RemapConfig, RemapIdiom};
+  use std::sync::mpsc;
+
+  fn test_state() -> RemappableEdoState {
+    RemappableEdoState::new(RemapConfig::new(
+      80.0,
+      12,
+      1,
+      0,
+      RemapIdiom::Snap,
+      16,
+      8,
+    ))
+  }
+
+  #[test]
+  fn coordinate_dispatch_reaches_recording_control() {
+    let (tx, _rx) = mpsc::channel();
+    let gate = SharedOutputGate::new(tx);
+    let mut state = test_state();
+    let mut recorder = RecordRuntime::new();
+    let mut preimage_row = PreimageRowState::new();
+
+    assert!(apply_monome_key(
+      &mut state,
+      &mut recorder,
+      &gate,
+      &mut preimage_row,
+      13,
+      1,
+      1,
+      Instant::now(),
+    ));
+
+    assert!(recorder.armed);
+  }
+
+  #[test]
+  fn record_controls_do_not_invoke_edo_remap_actions() {
+    let (tx, _rx) = mpsc::channel();
+    let gate = SharedOutputGate::new(tx);
+    let mut state = test_state();
+    let before = state.snapshot();
+    let mut recorder = RecordRuntime::new();
+    let mut preimage_row = PreimageRowState::new();
+
+    apply_monome_key(
+      &mut state,
+      &mut recorder,
+      &gate,
+      &mut preimage_row,
+      13,
+      0,
+      1,
+      Instant::now(),
+    );
+
+    assert_eq!(state.snapshot(), before);
+    assert!(preimage_row.active_by_cell.is_empty());
   }
 }

@@ -15,6 +15,7 @@ mod config;
 mod layout;
 mod midi_runtime;
 mod monome_runtime;
+mod record;
 mod remap;
 mod render;
 mod state;
@@ -152,27 +153,48 @@ fn run(
     Arc::new(Mutex::new(state::SoundingPitchCounts::new(runtime_config.edo)));
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
+  let recorder: Arc<Mutex<record::RecordRuntime>> =
+    Arc::new(Mutex::new(record::RecordRuntime::new()));
 
   let midi_in = MidiInput::new("edo_un12_piano_monome-in")?;
   let midi_out = MidiOutput::new("edo_un12_piano_monome-out")?;
   let conn_out = midi_out.create_virtual("out")?;
   let (tx, rx): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) = mpsc::channel();
   let _out_thread = thread::spawn(move || midi::run_output_thread(conn_out, rx));
+  let output_gate = record::SharedOutputGate::new(tx.clone());
 
   let state_for_midi = Arc::clone(&state);
   let sounding_for_midi = Arc::clone(&sounding);
   let ongoing_for_midi = Arc::clone(&ongoing);
+  let recorder_for_midi = Arc::clone(&recorder);
+  let output_gate_for_midi = output_gate.clone();
   let _conn_in = midi_in.create_virtual(
     "in",
     move |_timestamp, message, _| {
       midi_runtime::update_sounding(message, &state_for_midi, &sounding_for_midi);
-      for msg in piano_transform::transform_message(
+      let original_note = if message.len() >= 3 && midi::is_note_event(message) {
+        Some(message[1])
+      } else {
+        None
+      };
+      let transformed = piano_transform::transform_message(
         message,
         &ongoing_for_midi,
         |original_note| midi_runtime::edo_un12_instruction(original_note, &state_for_midi),
-      ) {
+      );
+      if let Some(original_note) = original_note {
+        if let Some(event) = record::recorded_event_from_live_message(
+          message,
+          original_note,
+          &transformed,
+          &recorder_for_midi,
+        ) {
+          recorder_for_midi.lock().unwrap().record_live_event(event);
+        }
+      }
+      for msg in transformed {
         midi_runtime::print_note_on_trace(message, &msg);
-        let _ = tx.send(msg);
+        output_gate_for_midi.send_raw(msg);
       }
     },
     (),
@@ -180,14 +202,24 @@ fn run(
 
   let state_for_monome = Arc::clone(&state);
   let sounding_for_monome = Arc::clone(&sounding);
+  let recorder_for_monome = Arc::clone(&recorder);
+  let output_gate_for_monome = output_gate.clone();
   let monome_thread = thread::spawn(move || {
     monome_runtime::run_monome_thread(
       state_for_monome,
       sounding_for_monome,
+      recorder_for_monome,
+      output_gate_for_monome,
       listen_port,
       prefix,
       select_size,
     )
+  });
+  let recorder_for_playback = Arc::clone(&recorder);
+  let state_for_playback = Arc::clone(&state);
+  let output_gate_for_playback = output_gate.clone();
+  let playback_thread = thread::spawn(move || {
+    record::run_playback_thread(recorder_for_playback, state_for_playback, output_gate_for_playback)
   });
 
   install_sigint_handler();
@@ -206,6 +238,7 @@ fn run(
   }
   STOP_REQUESTED.store(true, Ordering::Relaxed);
   let _ = monome_thread.join();
+  let _ = playback_thread.join();
   Ok(())
 }
 

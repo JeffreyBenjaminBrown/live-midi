@@ -1,6 +1,6 @@
 use super::config::RemapIdiom;
 use super::layout::{edo_local_cell, grid_step};
-use super::state::{RemappableEdoState, LooseState};
+use super::state::{LooseState, RemapSnapshot, RemappableEdoState};
 
 pub(crate) fn apply_grid_press(state: &mut RemappableEdoState, x: i32, y: i32) -> bool {
   let Some((local_x, local_y)) = edo_local_cell(&state.config, x, y) else {
@@ -64,6 +64,12 @@ pub(crate) fn undo_remap(state: &mut RemappableEdoState) -> bool {
   state.loose = snapshot.loose;
   eprintln!("undo remap");
   true
+}
+
+pub(crate) fn apply_snapshot(state: &mut RemappableEdoState, snapshot: RemapSnapshot) {
+  state.map = snapshot.map;
+  state.deltas = snapshot.deltas;
+  state.loose = snapshot.loose;
 }
 
 pub(crate) fn preimage_for_step(state: &RemappableEdoState, step: i16) -> Option<usize> {

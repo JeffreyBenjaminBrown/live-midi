@@ -4,7 +4,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::config::RemapConfig;
-use super::layout::{map_rect, monome_windows, undo_cell, WindowId};
+use super::layout::{map_rect, monome_windows, record_control_cells, undo_cell, WindowId};
+use super::record::{RecordControl, RecordRuntime};
 use super::remap::preimage_for_step;
 use super::state::{RemappableEdoState, SoundingPitchCounts};
 use super::{
@@ -219,6 +220,7 @@ pub(crate) fn render_to_monome(
   device: SocketAddr,
   state: &RemappableEdoState,
   sounding: &SoundingPitchCounts,
+  recorder: &RecordRuntime,
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
   now: Instant,
@@ -229,6 +231,7 @@ pub(crate) fn render_to_monome(
   let levels = render_led_levels_with_preimage_row(
     state,
     sounding,
+    recorder,
     preimage_row_counts,
     preimage_row_flash_until,
     now,
@@ -264,11 +267,12 @@ fn led_trace_enabled() -> bool {
 pub(crate) fn render_led_cols(
   state: &RemappableEdoState,
   sounding: &SoundingPitchCounts,
+  recorder: &RecordRuntime,
   phases: LedPhases,
 ) -> Vec<u8> {
   let banks = col_bank_count(&state.config);
   let mut cols = vec![0u8; state.config.grid_w as usize * banks];
-  let levels = render_led_levels(state, sounding, phases);
+  let levels = render_led_levels(state, sounding, recorder, phases);
   for y in 0..state.config.grid_h {
     for x in 0..state.config.grid_w {
       if levels[(y * state.config.grid_w + x) as usize] > 0 {
@@ -283,11 +287,13 @@ pub(crate) fn render_led_cols(
 pub(crate) fn render_led_levels(
   state: &RemappableEdoState,
   sounding: &SoundingPitchCounts,
+  recorder: &RecordRuntime,
   phases: LedPhases,
 ) -> Vec<u8> {
   render_led_levels_with_preimage_row(
     state,
     sounding,
+    recorder,
     &[0; 12],
     &[None; 12],
     Instant::now(),
@@ -298,6 +304,7 @@ pub(crate) fn render_led_levels(
 pub(crate) fn render_led_levels_with_preimage_row(
   state: &RemappableEdoState,
   sounding: &SoundingPitchCounts,
+  recorder: &RecordRuntime,
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],
   now: Instant,
@@ -312,6 +319,7 @@ pub(crate) fn render_led_levels_with_preimage_row(
     phases,
     &mut levels,
   );
+  render_record_controls(state, recorder, now, phases, &mut levels);
   let rect = map_rect(&state.config);
   let windows = monome_windows(&state.config);
   for y in rect.y0..rect.y1 {
@@ -334,6 +342,48 @@ pub(crate) fn render_led_levels_with_preimage_row(
     }
   }
   levels
+}
+
+fn render_record_controls(
+  state: &RemappableEdoState,
+  recorder: &RecordRuntime,
+  now: Instant,
+  phases: LedPhases,
+  levels: &mut [u8],
+) {
+  for ((x, y), control) in record_control_cells(&state.config) {
+    let level = match control {
+      RecordControl::Arm => {
+        if recorder.armed { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
+      }
+      RecordControl::Start => {
+        if recorder.playback && phases.preimage_row_flash_on {
+          LED_LEVEL_FULL
+        } else {
+          LED_LEVEL_OFF
+        }
+      }
+      RecordControl::Stop => {
+        if recorder.stop_flash_until.is_some_and(|deadline| now < deadline) {
+          LED_LEVEL_FULL
+        } else {
+          LED_LEVEL_OFF
+        }
+      }
+      RecordControl::EraseOns => {
+        if recorder.erase_ons_held && phases.preimage_row_flash_on {
+          LED_LEVEL_FULL
+        } else {
+          LED_LEVEL_OFF
+        }
+      }
+      RecordControl::Rscm => {
+        if recorder.rscm { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
+      }
+      RecordControl::Loop | RecordControl::EndAll => LED_LEVEL_OFF,
+    };
+    levels[(y * state.config.grid_w + x) as usize] = level;
+  }
 }
 
 fn render_preimage_row(
@@ -412,7 +462,7 @@ mod tests {
       1,
       0,
       RemapIdiom::Snap,
-      12,
+      16,
       8,
     ))
   }
@@ -426,27 +476,28 @@ mod tests {
     }
   }
 
-  fn level_at_grid_step(levels: &[u8], step: usize) -> u8 {
-    levels[12 + step]
+  fn level_at_grid_step(state: &RemappableEdoState, levels: &[u8], step: usize) -> u8 {
+    levels[state.config.grid_w as usize + step]
   }
 
   #[test]
   fn anchors_flash_only_when_no_piano_notes_are_held() {
     let state = test_state();
     let mut sounding = SoundingPitchCounts::new(12);
+    let recorder = RecordRuntime::new();
 
-    let idle_levels = render_led_levels(&state, &sounding, phases(false, true));
-    assert_eq!(level_at_grid_step(&idle_levels, 0), LED_LEVEL_FULL);
-    assert_eq!(level_at_grid_step(&idle_levels, 5), LED_LEVEL_FULL);
-    assert_eq!(level_at_grid_step(&idle_levels, 7), LED_LEVEL_FULL);
+    let idle_levels = render_led_levels(&state, &sounding, &recorder, phases(false, true));
+    assert_eq!(level_at_grid_step(&state, &idle_levels, 0), LED_LEVEL_FULL);
+    assert_eq!(level_at_grid_step(&state, &idle_levels, 5), LED_LEVEL_FULL);
+    assert_eq!(level_at_grid_step(&state, &idle_levels, 7), LED_LEVEL_FULL);
 
     sounding.by_original_note.insert(28, 4);
     sounding.held_order.push(28);
     sounding.counts[4] = 1;
-    let held_levels = render_led_levels(&state, &sounding, phases(false, true));
-    assert_eq!(level_at_grid_step(&held_levels, 0), LED_LEVEL_IMAGE);
-    assert_eq!(level_at_grid_step(&held_levels, 5), LED_LEVEL_IMAGE);
-    assert_eq!(level_at_grid_step(&held_levels, 7), LED_LEVEL_IMAGE);
+    let held_levels = render_led_levels(&state, &sounding, &recorder, phases(false, true));
+    assert_eq!(level_at_grid_step(&state, &held_levels, 0), LED_LEVEL_IMAGE);
+    assert_eq!(level_at_grid_step(&state, &held_levels, 5), LED_LEVEL_IMAGE);
+    assert_eq!(level_at_grid_step(&state, &held_levels, 7), LED_LEVEL_IMAGE);
   }
 
   #[test]
@@ -459,13 +510,36 @@ mod tests {
     sounding.by_original_note.insert(31, 7);
     sounding.held_order.push(31);
     sounding.counts[7] = 1;
+    let recorder = RecordRuntime::new();
 
-    let levels = render_led_levels(&state, &sounding, phases(false, true));
-    assert_eq!(level_at_grid_step(&levels, 4), LED_LEVEL_OFF);
-    assert_eq!(level_at_grid_step(&levels, 7), LED_LEVEL_FULL);
+    let levels = render_led_levels(&state, &sounding, &recorder, phases(false, true));
+    assert_eq!(level_at_grid_step(&state, &levels, 4), LED_LEVEL_OFF);
+    assert_eq!(level_at_grid_step(&state, &levels, 7), LED_LEVEL_FULL);
 
-    let levels = render_led_levels(&state, &sounding, phases(true, true));
-    assert_eq!(level_at_grid_step(&levels, 4), LED_LEVEL_FULL);
-    assert_eq!(level_at_grid_step(&levels, 7), LED_LEVEL_FULL);
+    let levels = render_led_levels(&state, &sounding, &recorder, phases(true, true));
+    assert_eq!(level_at_grid_step(&state, &levels, 4), LED_LEVEL_FULL);
+    assert_eq!(level_at_grid_step(&state, &levels, 7), LED_LEVEL_FULL);
+  }
+
+  #[test]
+  fn record_control_leds_reflect_runtime_flags() {
+    let state = test_state();
+    let sounding = SoundingPitchCounts::new(12);
+    let mut recorder = RecordRuntime::new();
+    recorder.armed = true;
+    recorder.playback = true;
+    recorder.erase_ons_held = true;
+    recorder.rscm = true;
+    recorder.stop_flash_until = Some(Instant::now() + Duration::from_millis(50));
+    let mut phase = phases(false, false);
+    phase.preimage_row_flash_on = true;
+
+    let levels = render_led_levels(&state, &sounding, &recorder, phase);
+
+    assert_eq!(levels[13], LED_LEVEL_FULL);
+    assert_eq!(levels[14], LED_LEVEL_FULL);
+    assert_eq!(levels[13 + state.config.grid_w as usize], LED_LEVEL_FULL);
+    assert_eq!(levels[14 + state.config.grid_w as usize], LED_LEVEL_FULL);
+    assert_eq!(levels[15 + 2 * state.config.grid_w as usize], LED_LEVEL_FULL);
   }
 }

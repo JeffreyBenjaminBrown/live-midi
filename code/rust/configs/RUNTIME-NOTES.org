@@ -128,6 +128,27 @@ The runtime tracks signed lift for each pitch class. For example, in
 MIDI moves down by one EDO step rather than jumping around the octave
 ring.
 
+Recording controls for the ~edo-un12-*~ configs live at:
+
+| (13,0) start | (14,0) stop      | (15,0) loop    |
+| (13,1) arm   | (14,1) erase ons | (15,1) end all |
+|              |                  | (15,2) RSCM    |
+
+There is one in-memory recording slot per runtime process. ~arm~
+toggles recording readiness. With an empty slot, ~start~ begins a new
+recording if armed. With a non-empty slot, ~start~ begins playback; if
+armed, it also starts overdubbing. ~stop~ stops playback and recording,
+resets the playhead to zero, and disarms. During recording, ~loop~
+sets the loop duration, stops recording, disarms, and starts playback.
+Pressing ~start~ then ~loop~ within 100 ms clears the slot.
+
+While held during recording, ~erase ons~ removes note-ons swept by the
+playhead and removes their paired note-offs. ~end all~ writes note-offs
+for notes currently down in the recording pass without affecting live
+piano notes. ~RSCM~ means "recording slot clobbers map"; when lit,
+starting playback applies the slot's stored map to the active map, and
+turning it on during playback applies the stored map immediately.
+
 * Monome EDO MIDI
 
 ~monome-edo-midi~ uses the same grid/chord model as the sawwave

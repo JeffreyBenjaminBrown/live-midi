@@ -1,12 +1,14 @@
 use midi_pulse::monome_window;
 
 use super::config::RemapConfig;
+use super::record::RecordControl;
 use super::{MAP_W, PREIMAGE_ROW_Y};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WindowId {
   Undo,
   Edo,
+  RecordControl(RecordControl),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +65,12 @@ pub(crate) fn monome_windows(config: &RemapConfig) -> Vec<monome_window::Window<
       rect: ((rect.x0, rect.y0), (rect.x1 - 1, rect.y1 - 1)),
     });
   }
+  for (cell, control) in record_control_cells(config) {
+    windows.push(monome_window::Window {
+      id: WindowId::RecordControl(control),
+      rect: (cell, cell),
+    });
+  }
   windows
 }
 
@@ -72,4 +80,19 @@ pub(crate) fn undo_cell(config: &RemapConfig) -> Option<(i32, i32)> {
   } else {
     Some((config.grid_w - 1, config.grid_h - 1))
   }
+}
+
+pub(crate) fn record_control_cells(config: &RemapConfig) -> Vec<((i32, i32), RecordControl)> {
+  [
+    ((13, 0), RecordControl::Start),
+    ((14, 0), RecordControl::Stop),
+    ((15, 0), RecordControl::Loop),
+    ((13, 1), RecordControl::Arm),
+    ((14, 1), RecordControl::EraseOns),
+    ((15, 1), RecordControl::EndAll),
+    ((15, 2), RecordControl::Rscm),
+  ]
+  .into_iter()
+  .filter(|((x, y), _)| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
+  .collect()
 }
