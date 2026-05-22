@@ -1,0 +1,284 @@
+* scope
+Implement the recording controls for the ~edo-un12*.toml~ runtime path,
+which is the ~remap_runtime~ module family used by
+~kind = "remappable_un12"~ configs.
+
+Do not add persistence yet. There is one in-memory recording slot per
+runtime process.
+
+* source of truth
+Use ~TODO/record/vision.org~ as the behavioral spec, with these resolved
+choices:
+
+- controls use the exact coordinate layout from feedback round 1
+- RSCM lives at ~(15,2)~
+- the old unnumbered 2x3 control table is obsolete
+- the 50 ms clobber/grouping rule is obsolete
+- a note-on overdubbed onto an already-playing recorded note gets a
+  note-off inserted 10 ms before it, wrapping around the loop boundary
+- loops shorter than 10 ms are ignored and leave the slot empty
+- clearing by pressing start then loop within 100 ms clears duration,
+  events, stored map, playback, recording, playhead, and arm
+- each recording stop, including overdub stop, captures the then-active
+  map into the recording slot
+- RSCM clobbers the active map from the slot map when playback starts,
+  and when RSCM is toggled on during playback
+- live held notes are not remapped/retriggered when RSCM clobbers the
+  active map
+
+* control layout
+Reserve these monome cells in ~remap_runtime/layout.rs~:
+
+#+begin_example
+(13,0) start       (14,0) stop       (15,0) loop
+(13,1) arm         (14,1) erase ons  (15,1) end all
+                                     (15,2) RSCM
+#+end_example
+
+The existing EDO map occupies x=0..9, y=1..15, so these controls do not
+overlap the map. The existing undo button remains at bottom-right.
+
+Add a ~WindowId::RecordControl(RecordControl)~ or equivalent enum path.
+The monome dispatch should check recording controls before falling back
+to EDO/remap behavior.
+
+* modules
+Add a new module under ~code/rust/midi_pulse/remap_runtime/~:
+
+- ~record.rs~: recording slot data model, recorder/playback state
+  machine, control actions, event insertion/deletion, and tests.
+
+Likely touch:
+
+- ~remap_runtime.rs~: wire shared recorder state and playback worker into
+  ~run~, pass handles into MIDI and monome code.
+- ~midi_runtime.rs~: route live piano events through recorder capture and
+  source-aware MIDI output.
+- ~monome_runtime.rs~: dispatch record-control key presses/releases and
+  include recorder LEDs in rendering.
+- ~render.rs~: render control LEDs and include their flash clocks in the
+  render wait calculation.
+- ~layout.rs~: model recording-control cells and visibility.
+- ~state.rs~ / ~remap.rs~: expose a small helper to apply a stored
+  ~RemapSnapshot~ for RSCM clobbering.
+
+* data model
+Represent a recording event with:
+
+- elapsed time in the loop, as ~Duration~ in the half-open range
+  ~[0, loop_len)~
+- original 12-EDO MIDI note
+- recorded higher-EDO output channel/note
+- event kind: note-on or note-off
+- velocity
+
+Represent the slot with:
+
+- optional loop duration
+- sorted event list
+- stored ~RemapSnapshot~ captured whenever recording stops
+
+Represent active recorder runtime state with:
+
+- armed flag
+- recording flag
+- playback flag
+- recording-start instant
+- playback-start instant
+- erase-ons-held flag
+- RSCM flag
+- last-start-press instant, for the 100 ms clear gesture
+- per-original-note recorded-down state for the current recording pass
+- per-original-note playback-down state for currently sounding playback
+  notes
+
+Keep slot data and runtime state behind one ~Arc<Mutex<RecordRuntime>>~
+shared between the MIDI callback, monome thread, and playback scheduler.
+
+** TODO would Remap not be better than RemapSnapshot?
+It'll be clear from the fact that it's associated with the recording slot
+that it's distinct from the active map.
+
+* MIDI output ownership
+Replace direct sends of transformed live/playback MIDI with a small
+source-aware output gate.
+
+The output gate tracks active sources per output channel/note. A source
+can be:
+
+- live piano note, keyed by original MIDI note
+- playback note, keyed by original MIDI note
+
+On note-on:
+
+- if this is the first source for that output note, send note-on
+- otherwise record the extra source without sending a duplicate note-on
+
+On note-off:
+
+- remove the source
+- send note-off only when no sources remain for that output note
+
+This preserves live/playback overlap without premature note-offs.
+
+The gate can own or wrap the existing ~mpsc::Sender<Vec<u8>>~ used by
+~midi::run_output_thread~.
+
+* live MIDI path
+For each incoming piano MIDI note event:
+
+1. Compute the remappable-un12 output instruction once, using the active
+   map at that moment.
+2. Feed the message to the existing live sounding-state updater.
+3. If recording is active, record the event with original note,
+   transformed output channel/note, kind, velocity, and elapsed
+   recording/playhead time.
+4. Send live output through the source-aware output gate.
+
+For non-note MIDI events, preserve current pass-through behavior unless
+the existing remap runtime already ignores them.
+
+* recording start/stop/loop controls
+~arm~:
+
+- key-down toggles armed
+- lit when armed
+- key-up does nothing
+
+~start~:
+
+- records its press time for the 100 ms clear gesture
+- if the slot is empty and armed: start recording from time 0, playback
+  remains stopped
+- if the slot is non-empty: start playback from time 0
+- if armed and slot is non-empty: also start overdub recording
+- if RSCM is on and the slot has a stored map: apply it to active remap
+  state before playback begins
+
+~stop~:
+
+- stops playback in all playback states
+- if recording, finalizes the recording at elapsed time now, captures
+  the active map into the slot, and disarms
+- resets playhead to 0
+- sends note-offs for playback-owned output sources
+
+~loop~:
+
+- if pressed within 100 ms after start: clear the slot and leave
+  playback stopped, recording stopped, playhead 0, arm off
+- if recording: finalize loop at elapsed time now, capture active map,
+  disarm, reset playback to 0, and start playback
+- otherwise does nothing
+
+~erase ons~:
+
+- while held during recording, erase recorded note-ons swept by the
+  playhead; delete their matching note-offs too
+- key-up stops erasing
+- live piano remains heard and still records normally
+- flashes while held
+
+~end all~:
+
+- during recording, write note-offs for recording-state notes currently
+  down
+- remove each later corresponding note-off in the slot
+- does not affect live physical piano notes
+
+~RSCM~:
+
+- key-down toggles
+- lit when on
+- if toggled on while playback is active, immediately apply the slot map
+  to active remap state
+- key-up does nothing
+
+* overdub insertion rules
+When inserting a live note-on during overdub:
+
+- if that original note is already down in the recording at the insertion
+  time, insert a note-off 10 ms earlier
+- if insertion time is less than 10 ms, wrap the note-off to
+  ~loop_len - (10 ms - insertion_time)~
+- do not apply the old 50 ms clobber/grouping behavior
+
+When inserting or deleting events, keep slot events sorted by time.
+
+For note pairing, treat each original keyboard note as monophonic in the
+recording. A note-on starts that note; the next note-off for the same
+original note ends it, wrapping across the loop boundary if needed.
+
+* playback scheduler
+Add a playback worker loop or timer path that:
+
+- wakes for the next due recorded event or control/render deadline
+- emits due playback events through the source-aware output gate
+- wraps at loop duration and flashes the stop LED at each cycle boundary
+- maintains playback-down state so stop/clear can release all playback
+  sources
+
+A dedicated playback thread is probably simpler than overloading the
+monome UDP loop. It should share ~RecordRuntime~ through a mutex and use
+short sleeps or a condition channel for control changes.
+
+* LED rendering
+Extend rendering to include record controls:
+
+- arm: full on when armed, off otherwise
+- start/playback: off when playback off, 100 ms 50% flash when playback
+  on
+- stop: no steady meaning; flash briefly on loop cycle boundary
+- loop: no own light
+- erase ons: 100 ms 50% flash while held
+- end all: off
+- RSCM: full on when enabled, off otherwise
+
+Record controls should override any existing image/sounding rendering at
+their cells.
+
+* testing plan
+Add unit tests in ~record.rs~ for:
+
+- empty armed start begins recording without playback
+- non-empty armed start begins playback plus overdub
+- stop while overdubbing stops playback, stops recording, disarms, and
+  resets playhead
+- loop while recording finalizes and starts playback
+- start then loop within 100 ms clears slot and disarms
+- loops shorter than 10 ms are ignored
+- note-on over already-down recorded note inserts wrapped/non-wrapped
+  note-off 10 ms before
+- erase-ons removes swept note-ons and their paired note-offs
+- end-all inserts note-offs for recorded-down notes only
+- RSCM applies slot snapshot on playback start and on toggle during
+  playback
+
+Add output-gate tests for:
+
+- live and playback sources sharing one output note send one note-on and
+  one final note-off
+- releasing one of two sources does not emit note-off
+
+Add monome/control tests for:
+
+- coordinate dispatch reaches the expected recording control
+- record controls do not invoke EDO remap actions
+- LED states match arm/playback/erase/RSCM flags
+
+Run at least:
+
+#+begin_src sh
+cargo test --bin midi_pulse remap_runtime
+cargo test
+#+end_src
+
+* implementation order
+1. Add pure data model and tests in ~record.rs~.
+2. Add source-aware MIDI output gate and tests.
+3. Wire live MIDI capture and output gate into ~remap_runtime::run~.
+4. Add monome control layout/dispatch without playback scheduling yet.
+5. Add playback scheduler and stop/clear note release behavior.
+6. Add LED rendering for controls.
+7. Update ~configs/RUNTIME-NOTES.org~ with the final user-facing
+   recording-control summary.

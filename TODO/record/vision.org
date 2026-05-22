@@ -1,0 +1,360 @@
+I have responded to your feedback, marking each response TODO.
+I have also modified some of what I wrote earlier.
+In those cases I have marked it TODO, I hope.
+
+If any doubts are unresolved, or any new ones arise,
+please append a 'round 3' section.
+(Remember, the org tree you write does not have to be uniform-depth.)
+
+Otherwise, please write a new document, sibling to this one,
+called 'plan.org', where you plan the code.
+* the idea in brief
+I would like to implement some new features
+for the edo-un12*.toml family of configs at code/rust/configs/.
+(Each of those represents a slight variation on, essentially, the same program.)
+
+I would like some controls on the monome for recording from the piano.
+They should permit recording and playing-back of
+the whole finger-to-ear signal chain:
+- the 12-edo pitch
+- the mapped-to higher-edo pitch
+- note on, note off, velocity
+* controls
+** where
+Let's put them in the top-right, in a 2x3 grid:
+
+arm    block ons   end all
+start  stop        loop
+
+** arm recording
+Can be done during playback, which triggers overdub.
+** start playback
+and recording if armed.
+** TODO stop recording
+without triggering playback.
+Resets playhead to 0.
+** loop and unarm recording
+while recording, this sets the playhead to zero,
+effectively triggering playback,
+and discontinues recording.
+** silence note-ons
+While held during recording,
+this erases any note-ons that had been recorded.
+This is the only one of the six controls
+for which key-up does anything.
+** end all notes
+When pressed during recording,
+this writes a note-off to the recording for each note currently on.
+It also deletes the later note-off corresponding to that note-on.
+* nuances
+** playback before recording
+If the recording slot is empty --
+not just devoid of note ons,
+but devoid of the very time duration they would occupy --
+then pressing 'start playback' does nothing.
+** What is overdub?
+Let's treat each note on the keyboard as something that
+can either be down or up at one time.
+A note-on overdubbed onto a note already playing in the recording
+should be preceded by 10 ms by a note-up.
+If somehow a new note-on is played at exactly the same moment
+as a recorded one, the new one clobbers it.
+In fact even if the old one follows it,
+as long as it follows by less than 50 ms,
+the new one clobbers the old one -- the old one is removed.
+* feedback, round 1
+** Control placement and naming
+The "top-right, in a 2x3 grid" placement is probably enough for the
+current 16x16 edo-un12 configs, where the existing preimage row uses
+x=0..11 at y=0, the remap grid uses x=0..9 at y=1..15, and undo uses
+x=15,y=15. Still, it would help to spell out exact coordinates and
+orientation.
+*** TODO I changed my mind. Let's use:
+#+begin_example
+(13,0) start (14,0) stop      (15,0) loop
+(13,1) arm   (14,1) erase ons (15,1) end all
+#+end_example
+
+The user can erase the loop by pressing start and then loop
+within 100 ms of each other.
+** TODO Recording lifecycle
+*** (I replaced this question with my answers to it.)
+Let's have one recording slot per runtime,
+and not worry about persistence across sessions for now.
+*** an unclear case
+"start playback and recording if armed" plus "playback before recording
+does nothing" leaves one case unclear: if the recording slot is empty and
+recording is armed, should pressing start create a new recording from
+time zero even though playback cannot start?
+**** TODO yes
+In that case, start recording. There's nothing yet to play back.
+*** "stop recording without triggering playback" is clear for a stopped recording pass, but less clear during overdub.
+If playback is already
+running and recording is overdubbing, should stop end only the overdub
+and leave playback running, or should it also stop playback?
+**** TODO it should stop playback (and disarm recording)
+*** "loop and unarm recording"
+is specified for while recording. It is not
+specified what the loop button does while stopped, while playing without
+recording, or while armed but not yet recording.
+**** TODO In all of those other cases it does nothing.
+** Loop duration and timing
+The duration of the loop needs a precise source. I assume the loop length
+is the elapsed time from recording start to the "loop" press, but it
+could also be the duration of the first recorded event span or the
+previous loop duration during overdub.
+
+It would help to specify whether event times are stored as wall-clock
+instants, monotonic elapsed durations, or quantized ticks. This matters
+for the 10 ms inserted note-off and the 50 ms clobber window.
+*** TODO yes and instants normalized to zero
+It's the elapsed time from start to the earlier of stop or loop.
+start is time 0, and if the recording lasts 1 second,
+then it can include note events with any time value in [0,1).
+
+Define the 50ms groups greedily:
+As soon as an event is found,
+group everything within the next 50 ms with it.
+When near the end of the loop, grouping can wrap into the next iteration,
+so if a note-on is within 10 ms of the end of the recording
+it could be grouped with a note at time 0.
+** What exactly is recorded and replayed
+The request says to record the whole finger-to-ear signal chain:
+12-EDO pitch, mapped higher-EDO pitch, note on/off, and velocity. One
+important edge case is remapping after recording. Should playback emit
+the originally recorded higher-EDO output, or should it replay the
+original 12-EDO piano note through the current map? Recording both is
+useful, but one of them has to be authoritative at playback time.
+
+For note-offs, MIDI release velocity may exist, but many systems ignore
+or normalize it. If release velocity should be preserved, that should be
+stated explicitly.
+*** TODO good question
+The recording should have its own map.
+A new toggleable control, "recording slot clobbers map",
+is lit when on, dark when off, toggled by key down (key up does nothing).
+When RSCM is on, starting playback causes the recording slot
+to clobber the active map with its own.
+Similarly, while playback is on, turning RSCM on causes the same clobber.
+
+Let's still record, though, the original higher-edo pitch values
+alongside the 12-edo source values.
+I'll use them later, I think.
+** Interaction with live piano input
+*** 1
+During playback, should live piano input continue to pass through to the
+output in addition to playback? During recording or overdub, I assume
+live input is both heard immediately and written into the recording, but
+that is worth stating.
+**** TODO yes
+*** 2
+For "end all notes", "currently on" could mean notes currently held on
+the physical piano, notes currently sounding from playback, notes active
+in the recording pass, or the union. I assume it means live-recorded
+notes that are currently down in the recording state.
+**** TODO yes
+"end all" should have no effect on notes from the piano,
+just notes in the recording.
+** Erasing note-ons while held
+*** 1
+"While held during recording, this erases any note-ons that had been
+recorded" needs a time scope. I assume it erases note-ons in the time
+range swept by the playhead while the button is held, not all note-ons
+ever recorded in the whole loop.
+**** TODO yes
+*** 2
+When erasing a note-on, the corresponding note-off behavior should be
+specified. Should the note-off also be removed, kept, or converted into
+an "end all" style boundary event?
+**** TODO deleted alongside the on
+*** 3
+It is also unclear whether live piano note-ons played while this button
+is held should be blocked from being heard, blocked only from being
+recorded, or allowed through but erased from the recording.
+**** TODO it should not be affected
+It should be heard live, and if recording is armed,
+it should also write to the recording slot.
+** Overdub conflict rules
+*** 1
+The overdub rule is mostly clear, but the clobber windows are asymmetric:
+a new note-on removes an old note-on at the same time, and also removes
+an old one that follows within 50 ms. Does it also remove an old note-on
+that precedes the new one by less than 50 ms, aside from the separate
+10 ms inserted note-off rule?
+**** TODO actually i'm not sure about the clobber
+I can imagine playing intentional ghost notes that way.
+Let's forget about that.
+*** 2
+"A note-on overdubbed onto a note already playing in the recording should
+be preceded by 10 ms by a note-up" raises a boundary case near loop start.
+If the new note-on occurs less than 10 ms after time zero, should the
+inserted note-off wrap to the end of the loop, clamp to time zero, or be
+omitted?
+**** TODO let's wrap it
+*** 3
+The text uses "note-up" once and "note-off" elsewhere. I assume those are
+the same event.
+**** TODO yes
+** Visual feedback
+The controls need LED states. For example, arm, recording, playback,
+overdub, erase-held, and loop-active states probably need distinct
+brightness or flashing rules. Without that, the feature can work but may
+be hard to operate on the monome.
+*** TODO
+The arm button is a toggle.
+It should be lit when on, dark when off.
+
+The playback button should be dark when off,
+flashing at 100 ms (50% duty) when on.
+
+Stop recording does nothing with its own light,
+but turns off the playbkack button's flash,
+and turns off the arm button because it disarms recording.
+That's convenient: we can repurpose the 'stop' LED
+to flash every time the loop restarts.
+
+The loop button emits no light of its own,
+but similarly causes changes to the LEDs of the buttons for
+arm, play and (repurposed for cycle boundary) stop.
+
+"Silence ons" can flash (100 ms, 50%) while held.
+
+"End all notes" need not emit a light signal.
+* feedback, round 2
+** RSCM control placement
+The new "recording slot clobbers map" toggle needs a physical monome
+location. The current 2x3 control block uses x=13..15, y=0..1, and the
+existing undo button still uses x=15,y=15. I do not know where RSCM
+should live, or whether the control block should expand.
+*** TODO (15,2)
+** RSCM and recording-slot map timing
+The recording slot having its own map is clear in principle, but the
+capture point needs to be specified. I assume the slot stores the active
+map at the moment a new recording begins. During overdub, should the
+slot's stored map stay unchanged, be replaced by the active map at
+overdub start, or track remaps made during the overdub?
+
+If RSCM is on and starting playback clobbers the active map, this can
+change the live piano mapping while the performer is holding notes.
+Should that produce note-offs/re-ons for already-held live piano notes,
+or should held notes keep sounding with their old output mapping until
+released?
+*** TODO
+Let's actually capture the map that's in place at the moment recording stops.
+Notes held live should not be affected and can clash with the map.
+** What clears or replaces a recording
+*** 1
+The new erase gesture says the user can erase the loop by pressing start
+and then loop within 100 ms of each other. I assume this clears the whole
+recording slot, including duration, events, and stored map, and stops
+playback/recording. Please confirm.
+**** TODO confirmed
+*** 2
+It is also unclear whether starting a recording into an empty slot is the
+only way to create a new loop, or whether the same start-then-loop erase
+gesture is expected before replacing an existing loop from scratch.
+**** TODO the latter
+Once you clear a loop that way, you can start another there.
+** Stop versus loop when recording
+The text now says the loop length is elapsed time from start to the
+earlier of stop or loop. It also says "stop recording without triggering
+playback" and "loop and unarm recording" effectively triggers playback.
+I assume pressing stop while recording finalizes a recording but leaves
+playback stopped at playhead 0, while pressing loop finalizes it and
+immediately starts playback from 0. That distinction should be explicit.
+*** TODO yes
+** Playback playhead after stop
+"Stop recording" now says it resets playhead to 0, and the response says
+it should stop playback during overdub. Should there also be a way to
+stop playback when not recording? I assume the stop button stops playback
+and resets playhead to 0 in all playback states, not only while
+recording.
+*** TODO yes
+** Loop button outside recording
+Round 1 says loop does nothing while stopped, playing without recording,
+or armed but not yet recording. The new erase gesture, however, requires
+loop to do something after start if it happens within 100 ms. I assume
+the erase gesture is a special exception to the "loop does nothing"
+rule.
+*** TODO yes
+** Erase-ons and overdub source
+The erase-ons button erases note-ons "that had been recorded" in the
+time range swept by the playhead, while live piano note-ons are still
+heard and still recorded. During overdub, that means an erase-ons hold
+could erase old notes while simultaneously adding new live notes in the
+same time span. I think that is intended, but it is worth confirming
+because it is slightly non-obvious.
+*** TODO yes
+** Wrapped 10 ms note-off ordering
+For a note-on near loop start, the inserted note-off wraps to the end of
+the loop. If playback is continuous, this means the note is turned off at
+the end of the previous iteration before turning on near the start of the
+next one. That is coherent. The edge case is a very short loop, shorter
+than 10 ms; I assume such loops should either be rejected or treated as a
+minimum-duration loop.
+*** TODO such loops are physically unplayable
+so treat them however is simplest for a reader to understand
+** MIDI output ownership
+Playback will emit MIDI notes in addition to live piano input. The
+runtime needs to avoid sending duplicate or mismatched note-offs when a
+live note and a playback note map to the same output channel/note. I
+assume live and playback notes should be tracked as separate sources,
+with output note-off delayed until all sources for that output note are
+off.
+*** TODO good idea
+* feedback, round 3
+** Old control table now conflicts with exact coordinates
+The original control table still says:
+
+#+begin_example
+arm    block ons   end all
+start  stop        loop
+#+end_example
+
+But the later exact coordinates say:
+
+#+begin_example
+(13,0) start (14,0) stop      (15,0) loop
+(13,1) arm   (14,1) erase ons (15,1) end all
+#+end_example
+
+I assume the exact coordinates supersede the old visual table. It would
+be less error-prone to delete or update the old table before planning.
+*** TODO yes, use the one with numbers
+** 50 ms grouping may be obsolete
+Round 1 says to "forget about" the clobber rule, but the loop timing
+answer still defines 50 ms groups greedily and mentions wrapping near
+the end of the loop. If clobbering is gone, I do not know what the 50 ms
+groups are still for.
+
+I assume the whole 50 ms grouping rule should be removed, and only the
+10 ms inserted note-off rule remains.
+*** TODO yes
+** Recording replacement state
+The clear gesture is now confirmed: start then loop within 100 ms clears
+the slot. One small state question remains: after clearing, should the
+runtime be stopped and disarmed, or should it continue into a fresh
+recording if arm was on?
+
+I assume clearing leaves the slot empty, playback stopped, recording
+stopped, playhead at 0, and arm off.
+*** TODO yes
+** Map captured at recording stop
+Capturing the map at the moment recording stops is clear for first-pass
+recording. For overdub, "recording stops" could mean the end of an
+overdub pass. Should every overdub stop replace the recording slot's
+stored map with the then-current active map?
+
+I assume yes, because it follows the latest wording literally.
+*** TODO yes
+** RSCM LED feedback
+RSCM has a location and toggle behavior, and the earlier text says it is
+lit when on and dark when off. That is enough. I am noting only that it
+should be added to the visual-feedback summary so the plan does not miss
+it.
+** Very short loops
+"Treat them however is simplest for a reader to understand" is probably
+enough, but the simplest reader-facing rule should be written down. I
+would suggest: loops shorter than 10 ms are ignored and leave the slot
+empty.
+*** TODO sounds good!
