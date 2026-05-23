@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::layout::{edo_local_cell, grid_step, window_for_cell, WindowId};
-use super::record::{OutputSource, RecordRuntime, SharedOutputGate};
+use super::record::{self, OutputSource, RecordRuntime, SharedOutputGate};
 use super::remap::{apply_grid_press, apply_snapshot, preimage_for_step, undo_remap};
 use super::render::{
   blank_rendered_cols, led_phases, next_render_wait, render_to_monome, ColorClock, ANCHOR_COLOR,
@@ -304,7 +304,15 @@ pub(crate) fn apply_monome_key(
 ) -> bool {
   if s == 0 {
     if let Some(WindowId::RecordControl(control)) = window_for_cell(&state.config, x, y) {
-      return recorder.key_up(control);
+      let changed = recorder.key_up(control);
+      if changed {
+        record::trace_runtime(
+          &format!("control-up {control:?} x={x} y={y}"),
+          recorder,
+          now,
+        );
+      }
+      return changed;
     }
     return preimage_row.release((x, y));
   }
@@ -317,11 +325,23 @@ pub(crate) fn apply_monome_key(
     Some(WindowId::RecordControl(control)) => {
       let action = recorder.key_down(control, now, state.snapshot());
       for (original_note, output) in action.release_playback {
-        output_gate.release_source(OutputSource::Playback { original_note }, output);
+        if output_gate.release_source(OutputSource::Playback { original_note }, output) {
+          record::trace_midi_event(
+            "midi-output control-release",
+            &[0x80 | output.channel, output.note, 0],
+            recorder,
+            now,
+          );
+        }
       }
       if let Some(snapshot) = action.apply_snapshot {
         apply_snapshot(state, snapshot);
       }
+      record::trace_runtime(
+        &format!("control-down {control:?} x={x} y={y}"),
+        recorder,
+        now,
+      );
       true
     }
     None => false,

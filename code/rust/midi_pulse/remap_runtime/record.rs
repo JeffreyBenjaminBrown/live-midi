@@ -1,6 +1,7 @@
 use midi_pulse::midi;
 use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc, Mutex};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,9 @@ const OVERDUB_CUT_BACK: Duration = Duration::from_millis(10);
 const CLEAR_GESTURE_WINDOW: Duration = Duration::from_millis(100);
 const CONTROL_FLASH: Duration = Duration::from_millis(100);
 const PLAYBACK_SLEEP: Duration = Duration::from_millis(1);
+const RECORD_TRACE_ENV: &str = "MIDI_PULSE_RECORD_TRACE";
+
+static RECORD_TRACE_STARTED: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum OutputSource {
@@ -32,16 +36,16 @@ impl SharedOutputGate {
     }
   }
 
-  pub(crate) fn send_raw(&self, message: Vec<u8>) {
-    self.inner.lock().unwrap().send_raw(message);
+  pub(crate) fn send_raw(&self, message: Vec<u8>) -> bool {
+    self.inner.lock().unwrap().send_raw(message)
   }
 
-  pub(crate) fn send_note_message(&self, source: OutputSource, message: &[u8]) {
-    self.inner.lock().unwrap().send_note_message(source, message);
+  pub(crate) fn send_note_message(&self, source: OutputSource, message: &[u8]) -> bool {
+    self.inner.lock().unwrap().send_note_message(source, message)
   }
 
-  pub(crate) fn release_source(&self, source: OutputSource, output: OutputNote) {
-    self.inner.lock().unwrap().release_source(source, output, 0);
+  pub(crate) fn release_source(&self, source: OutputSource, output: OutputNote) -> bool {
+    self.inner.lock().unwrap().release_source(source, output, 0)
   }
 }
 
@@ -58,48 +62,53 @@ impl OutputGate {
     }
   }
 
-  fn send_raw(&mut self, message: Vec<u8>) {
-    let _ = self.tx.send(message);
+  fn send_raw(&mut self, message: Vec<u8>) -> bool {
+    self.tx.send(message).is_ok()
   }
 
-  fn send_note_message(&mut self, source: OutputSource, message: &[u8]) {
+  fn send_note_message(&mut self, source: OutputSource, message: &[u8]) -> bool {
     if message.len() < 3 || !midi::is_note_event(message) {
-      self.send_raw(message.to_vec());
-      return;
+      return self.send_raw(message.to_vec());
     }
     let output = OutputNote {
       channel: message[0] & 0x0f,
       note: message[1],
     };
     if midi::is_note_on(message) {
-      self.add_source(source, output, message[2]);
+      self.add_source(source, output, message[2])
     } else if midi::is_note_off(message) {
-      self.release_source(source, output, message[2]);
+      self.release_source(source, output, message[2])
+    } else {
+      false
     }
   }
 
-  fn add_source(&mut self, source: OutputSource, output: OutputNote, velocity: u8) {
+  fn add_source(&mut self, source: OutputSource, output: OutputNote, velocity: u8) -> bool {
     let sources = self.active.entry(output).or_default();
     let was_empty = sources.is_empty();
     sources.insert(source);
     if was_empty {
-      let _ = self
+      return self
         .tx
-        .send(vec![0x90 | output.channel, output.note, velocity]);
+        .send(vec![0x90 | output.channel, output.note, velocity])
+        .is_ok();
     }
+    false
   }
 
-  fn release_source(&mut self, source: OutputSource, output: OutputNote, velocity: u8) {
+  fn release_source(&mut self, source: OutputSource, output: OutputNote, velocity: u8) -> bool {
     let Some(sources) = self.active.get_mut(&output) else {
-      return;
+      return false;
     };
     sources.remove(&source);
     if sources.is_empty() {
       self.active.remove(&output);
-      let _ = self
+      return self
         .tx
-        .send(vec![0x80 | output.channel, output.note, velocity]);
+        .send(vec![0x80 | output.channel, output.note, velocity])
+        .is_ok();
     }
+    false
   }
 }
 
@@ -143,6 +152,80 @@ impl RecordedEvent {
       note: self.output_note,
     }
   }
+}
+
+pub(crate) fn trace_enabled() -> bool {
+  std::env::var_os(RECORD_TRACE_ENV).is_some()
+}
+
+pub(crate) fn trace_midi_event(
+  label: &str,
+  message: &[u8],
+  runtime: &RecordRuntime,
+  now: Instant,
+) {
+  if !trace_enabled() {
+    return;
+  }
+  trace_line(label, &format!("midi={}", format_midi_message(message)), runtime, now);
+}
+
+pub(crate) fn trace_runtime(label: &str, runtime: &RecordRuntime, now: Instant) {
+  if !trace_enabled() {
+    return;
+  }
+  trace_line(label, "", runtime, now);
+}
+
+fn trace_line(label: &str, detail: &str, runtime: &RecordRuntime, now: Instant) {
+  let trace_started = RECORD_TRACE_STARTED.get_or_init(Instant::now);
+  let duration = runtime.slot.loop_duration;
+  let phase = runtime.loop_phase(now);
+  eprintln!(
+    "record-trace {:.3}ms {label}{} playback={} recording={} armed={} erase={} rscm={} phase={} loop={} next={} events={} playback_down={}",
+    trace_started.elapsed().as_secs_f64() * 1000.0,
+    if detail.is_empty() {
+      String::new()
+    } else {
+      format!(" {detail}")
+    },
+    runtime.playback,
+    runtime.recording,
+    runtime.armed,
+    runtime.erase_ons_held,
+    runtime.rscm,
+    format_duration(phase),
+    format_duration(duration),
+    runtime.next_playback_event,
+    runtime.slot.events.len(),
+    runtime.playback_down.len(),
+  );
+}
+
+fn format_midi_message(message: &[u8]) -> String {
+  if message.len() >= 3 && midi::is_note_event(message) {
+    let kind = if midi::is_note_on(message) {
+      "on"
+    } else if midi::is_note_off(message) {
+      "off"
+    } else {
+      "note"
+    };
+    return format!(
+      "{kind} ch={} note={} vel={} raw={:02x?}",
+      (message[0] & 0x0f) + 1,
+      message[1],
+      message[2],
+      message
+    );
+  }
+  format!("raw={message:02x?}")
+}
+
+fn format_duration(duration: Option<Duration>) -> String {
+  duration
+    .map(|duration| format!("{:.3}ms", duration.as_secs_f64() * 1000.0))
+    .unwrap_or_else(|| "none".to_string())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -231,6 +314,19 @@ impl RecordRuntime {
         }
       }
     }
+  }
+
+  pub(crate) fn loop_phase(&self, now: Instant) -> Option<Duration> {
+    if self.playback {
+      let duration = self.slot.loop_duration?;
+      let start = self.playback_start?;
+      return Some(wrap_duration(now.duration_since(start), duration));
+    }
+    if self.recording {
+      let start = self.recording_start?;
+      return Some(now.duration_since(start));
+    }
+    Some(Duration::ZERO).filter(|_| self.slot.loop_duration.is_some())
   }
 
   pub(crate) fn key_up(&mut self, control: RecordControl) -> bool {
@@ -515,27 +611,56 @@ pub(crate) fn run_playback_thread(
 ) {
   while !STOP_REQUESTED.load(std::sync::atomic::Ordering::Relaxed) {
     let now = Instant::now();
-    let (events, releases, snapshot_to_apply) = {
+    let (events, releases, snapshot_to_apply, wrapped, trace_snapshot) = {
       let mut recorder = recorder.lock().unwrap();
-      playback_tick(&mut recorder, now)
+      let tick = playback_tick(&mut recorder, now);
+      let trace_snapshot = if trace_enabled() {
+        Some(recorder.clone())
+      } else {
+        None
+      };
+      (tick.0, tick.1, tick.2, tick.3, trace_snapshot)
     };
+    if wrapped {
+      if let Some(runtime) = &trace_snapshot {
+        trace_runtime("loop-cycle", runtime, Instant::now());
+      }
+    }
     if let Some(snapshot) = snapshot_to_apply {
       apply_remap_snapshot(&mut state.lock().unwrap(), snapshot);
     }
     for (original_note, output) in releases {
-      output_gate.release_source(OutputSource::Playback { original_note }, output);
+      if output_gate.release_source(OutputSource::Playback { original_note }, output) {
+        if let Some(runtime) = &trace_snapshot {
+          trace_midi_event(
+            "midi-output playback-release",
+            &[0x80 | output.channel, output.note, 0],
+            runtime,
+            Instant::now(),
+          );
+        }
+      }
     }
     for event in events {
       let status = match event.kind {
         RecordedEventKind::NoteOn => 0x90 | event.output_channel,
         RecordedEventKind::NoteOff => 0x80 | event.output_channel,
       };
-      output_gate.send_note_message(
+      if output_gate.send_note_message(
         OutputSource::Playback {
           original_note: event.original_note,
         },
         &[status, event.output_note, event.velocity],
-      );
+      ) {
+        if let Some(runtime) = &trace_snapshot {
+          trace_midi_event(
+            "midi-output playback",
+            &[status, event.output_note, event.velocity],
+            runtime,
+            Instant::now(),
+          );
+        }
+      }
     }
     thread::sleep(PLAYBACK_SLEEP);
   }
@@ -544,16 +669,21 @@ pub(crate) fn run_playback_thread(
 fn playback_tick(
   recorder: &mut RecordRuntime,
   now: Instant,
-) -> (Vec<RecordedEvent>, Vec<(u8, OutputNote)>, Option<RemapSnapshot>) {
+) -> (
+  Vec<RecordedEvent>,
+  Vec<(u8, OutputNote)>,
+  Option<RemapSnapshot>,
+  bool,
+) {
   if !recorder.playback {
-    return (vec![], vec![], None);
+    return (vec![], vec![], None, false);
   }
   let Some(duration) = recorder.slot.loop_duration else {
     recorder.playback = false;
-    return (vec![], vec![], None);
+    return (vec![], vec![], None, false);
   };
   let Some(start) = recorder.playback_start else {
-    return (vec![], vec![], None);
+    return (vec![], vec![], None, false);
   };
   let elapsed_total = now.duration_since(start);
   let elapsed = wrap_duration(elapsed_total, duration);
@@ -587,7 +717,7 @@ fn playback_tick(
     due.push(event);
     recorder.next_playback_event += 1;
   }
-  (due, vec![], None)
+  (due, vec![], None, wrapped)
 }
 
 fn wrap_duration(elapsed: Duration, duration: Duration) -> Duration {

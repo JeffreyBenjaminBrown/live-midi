@@ -1,3 +1,13 @@
+* lately using [[./code/rust/configs/README.org/]]
+* looping code, loose ends in
+** loop glitch at cycle boundary
+For instance, the config
+  edo-un12-58-8-1-snap.toml
+now includes buttons in the top-right corner for recording loops.
+Recording a loop seems (every time?)
+to cause an audio glitch once per cycle on the cycle boundary.
+** there is temporary profiling/debug code in the loop code
+* undo-redo style single-swap traversals between 12-to-edo maps
 * Recording can handle early notes!
 Each voice should record an onset time.
 Voices go away after note-off, but not before, because:

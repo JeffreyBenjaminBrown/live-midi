@@ -172,6 +172,10 @@ fn run(
     "in",
     move |_timestamp, message, _| {
       midi_runtime::update_sounding(message, &state_for_midi, &sounding_for_midi);
+      {
+        let recorder = recorder_for_midi.lock().unwrap();
+        record::trace_midi_event("midi-input live", message, &recorder, std::time::Instant::now());
+      }
       let original_note = if message.len() >= 3 && midi::is_note_event(message) {
         Some(message[1])
       } else {
@@ -194,6 +198,15 @@ fn run(
       }
       for msg in transformed {
         midi_runtime::print_note_on_trace(message, &msg);
+        {
+          let recorder = recorder_for_midi.lock().unwrap();
+          record::trace_midi_event(
+            "midi-output live",
+            &msg,
+            &recorder,
+            std::time::Instant::now(),
+          );
+        }
         output_gate_for_midi.send_raw(msg);
       }
     },
