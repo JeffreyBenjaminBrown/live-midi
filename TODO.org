@@ -7,6 +7,7 @@ now includes buttons in the top-right corner for recording loops.
 Recording a loop seems (every time?)
 to cause an audio glitch once per cycle on the cycle boundary.
 ** there is temporary profiling/debug code in the loop code
+from commit a481af4b6ebd981716441af5a6e7de1658dd391b
 * undo-redo style single-swap traversals between 12-to-edo maps
 * Recording can handle early notes!
 Each voice should record an onset time.
