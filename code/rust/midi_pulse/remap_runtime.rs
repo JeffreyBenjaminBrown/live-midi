@@ -19,6 +19,7 @@ mod record;
 mod remap;
 mod render;
 mod state;
+mod window_behavior;
 
 const LOWEST_C: u8 = 24;
 const MIN_CHANNEL_OUT: u8 = 1;

@@ -15,3 +15,5 @@
 Cargo.lock
 __pycache__/
 target/
+/TAGS
+/code/python/synth/play.py

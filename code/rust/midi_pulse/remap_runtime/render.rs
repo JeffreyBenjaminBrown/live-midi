@@ -4,10 +4,11 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::config::RemapConfig;
-use super::layout::{map_rect, monome_windows, record_control_cells, undo_cell, WindowId};
+use super::layout::{grid_step, map_rect, record_control_cells, undo_cell, WindowId};
 use super::record::{RecordControl, RecordRuntime};
 use super::remap::preimage_for_step;
 use super::state::{RemappableEdoState, SoundingPitchCounts};
+use super::window_behavior::{self, RenderContext};
 use super::{
   ANCHOR_PITCH_CLASSES, LED_LEVEL_FULL, LED_LEVEL_IMAGE, LED_LEVEL_OFF,
   LED_LEVEL_UNDO, LED_TRACE_ENV, MONOME_REFRESH, PREIMAGE_ROW_FLASH_FRACTION_ON,
@@ -311,82 +312,90 @@ pub(crate) fn render_led_levels_with_preimage_row(
   phases: LedPhases,
 ) -> Vec<u8> {
   let mut levels = vec![LED_LEVEL_OFF; (state.config.grid_w * state.config.grid_h) as usize];
-  render_preimage_row(
+  let windows = window_behavior::windows(&state.config);
+  let mut ctx = RenderContext {
     state,
+    sounding,
+    recorder,
     preimage_row_counts,
     preimage_row_flash_until,
     now,
     phases,
-    &mut levels,
-  );
-  render_record_controls(state, recorder, now, phases, &mut levels);
-  let rect = map_rect(&state.config);
-  let windows = monome_windows(&state.config);
-  for y in rect.y0..rect.y1 {
-    for x in rect.x0..rect.x1 {
-      if !monome_window::visible(&windows, WindowId::Edo, (x, y)) {
-        continue;
-      }
-      let step = super::layout::grid_step(&state.config, x - rect.x0, y - rect.y0);
-      levels[(y * state.config.grid_w + x) as usize] =
-        rendered_level(state, sounding, step, phases);
-    }
-  }
-  if let Some((x, y)) = undo_cell(&state.config) {
-    if monome_window::visible(&windows, WindowId::Undo, (x, y)) {
-      levels[(y * state.config.grid_w + x) as usize] = if state.history.is_empty() {
-        LED_LEVEL_OFF
-      } else {
-        LED_LEVEL_UNDO
-      };
-    }
-  }
+    windows: &windows,
+    levels: &mut levels,
+  };
+  window_behavior::render_all(&mut ctx);
   levels
 }
 
-fn render_record_controls(
-  state: &RemappableEdoState,
-  recorder: &RecordRuntime,
-  now: Instant,
-  phases: LedPhases,
-  levels: &mut [u8],
-) {
-  for ((x, y), control) in record_control_cells(&state.config) {
-    let level = match control {
-      RecordControl::Arm => {
-        if recorder.armed { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
+pub(crate) fn render_remappable_un12_grid(ctx: &mut RenderContext<'_>) {
+  let rect = map_rect(&ctx.state.config);
+  for y in rect.y0..rect.y1 {
+    for x in rect.x0..rect.x1 {
+      if !monome_window::visible(ctx.windows, WindowId::Edo, (x, y)) {
+        continue;
       }
-      RecordControl::Start => {
-        if recorder.playback && phases.preimage_row_flash_on {
-          LED_LEVEL_FULL
-        } else {
-          LED_LEVEL_OFF
-        }
-      }
-      RecordControl::Stop => {
-        if recorder.stop_flash_until.is_some_and(|deadline| now < deadline) {
-          LED_LEVEL_FULL
-        } else {
-          LED_LEVEL_OFF
-        }
-      }
-      RecordControl::EraseOns => {
-        if recorder.erase_ons_held && phases.preimage_row_flash_on {
-          LED_LEVEL_FULL
-        } else {
-          LED_LEVEL_OFF
-        }
-      }
-      RecordControl::Rscm => {
-        if recorder.rscm { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
-      }
-      RecordControl::Loop | RecordControl::EndAll => LED_LEVEL_OFF,
-    };
-    levels[(y * state.config.grid_w + x) as usize] = level;
+      let step = grid_step(&ctx.state.config, x - rect.x0, y - rect.y0);
+      ctx.levels[(y * ctx.state.config.grid_w + x) as usize] =
+        rendered_level(ctx.state, ctx.sounding, step, ctx.phases);
+    }
   }
 }
 
-fn render_preimage_row(
+pub(crate) fn render_remap_undo_button(ctx: &mut RenderContext<'_>) {
+  if let Some((x, y)) = undo_cell(&ctx.state.config) {
+    if monome_window::visible(ctx.windows, WindowId::Undo, (x, y)) {
+      ctx.levels[(y * ctx.state.config.grid_w + x) as usize] =
+        if ctx.state.history.is_empty() {
+          LED_LEVEL_OFF
+        } else {
+          LED_LEVEL_UNDO
+        };
+    }
+  }
+}
+
+pub(crate) fn render_record_control(ctx: &mut RenderContext<'_>, control: RecordControl) {
+  let Some(((x, y), _)) = record_control_cells(&ctx.state.config)
+    .into_iter()
+    .find(|(_, candidate)| *candidate == control)
+  else {
+    return;
+  };
+  let level = match control {
+    RecordControl::Arm => {
+      if ctx.recorder.armed { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
+    }
+    RecordControl::Start => {
+      if ctx.recorder.playback && ctx.phases.preimage_row_flash_on {
+        LED_LEVEL_FULL
+      } else {
+        LED_LEVEL_OFF
+      }
+    }
+    RecordControl::Stop => {
+      if ctx.recorder.stop_flash_until.is_some_and(|deadline| ctx.now < deadline) {
+        LED_LEVEL_FULL
+      } else {
+        LED_LEVEL_OFF
+      }
+    }
+    RecordControl::EraseOns => {
+      if ctx.recorder.erase_ons_held && ctx.phases.preimage_row_flash_on {
+        LED_LEVEL_FULL
+      } else {
+        LED_LEVEL_OFF
+      }
+    }
+    RecordControl::Rscm => {
+      if ctx.recorder.rscm { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
+    }
+    RecordControl::Loop | RecordControl::EndAll => LED_LEVEL_OFF,
+  };
+  ctx.levels[(y * ctx.state.config.grid_w + x) as usize] = level;
+}
+
+pub(crate) fn render_preimage_row(
   state: &RemappableEdoState,
   preimage_row_counts: &[u16; 12],
   preimage_row_flash_until: &[Option<Instant>; 12],

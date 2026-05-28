@@ -1,52 +1,18 @@
 use midi_pulse::monome;
 use rosc::{decoder, OscPacket, OscType};
-use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::layout::{edo_local_cell, grid_step, window_for_cell, WindowId};
-use super::record::{self, OutputSource, RecordRuntime, SharedOutputGate};
-use super::remap::{apply_grid_press, apply_snapshot, preimage_for_step, undo_remap};
+use super::record::{RecordRuntime, SharedOutputGate};
 use super::render::{
   blank_rendered_cols, led_phases, next_render_wait, render_to_monome, ColorClock, ANCHOR_COLOR,
   IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR,
 };
-use super::state::{RemappableEdoState, SoundingPitchCounts};
-use super::{STOP_REQUESTED, PREIMAGE_ROW_FLASH_MIN};
-
-pub(crate) struct PreimageRowState {
-  pub(crate) active_by_cell: HashMap<(i32, i32), usize>,
-  pub(crate) counts: [u16; 12],
-  pub(crate) flash_until: [Option<Instant>; 12],
-}
-
-impl PreimageRowState {
-  pub(crate) fn new() -> Self {
-    PreimageRowState {
-      active_by_cell: HashMap::new(),
-      counts: [0; 12],
-      flash_until: [None; 12],
-    }
-  }
-
-  fn press(&mut self, cell: (i32, i32), preimage: usize, now: Instant) {
-    if let Some(old_preimage) = self.active_by_cell.insert(cell, preimage) {
-      decrement_count(&mut self.counts[old_preimage]);
-    }
-    self.counts[preimage] += 1;
-    self.flash_until[preimage] = Some(now + PREIMAGE_ROW_FLASH_MIN);
-  }
-
-  fn release(&mut self, cell: (i32, i32)) -> bool {
-    let Some(preimage) = self.active_by_cell.remove(&cell) else {
-      return false;
-    };
-    decrement_count(&mut self.counts[preimage]);
-    true
-  }
-}
+use super::state::{PreimageRowState, RemappableEdoState, SoundingPitchCounts};
+use super::window_behavior::{behavior_for_cell, KeyContext, WindowBehavior};
+use super::STOP_REQUESTED;
 
 pub(crate) fn run_monome_thread(
   state: Arc<Mutex<RemappableEdoState>>,
@@ -284,12 +250,20 @@ fn discover_configured_device(
 }
 
 pub(crate) fn apply_monome_press(state: &mut RemappableEdoState, x: i32, y: i32) -> bool {
-  match window_for_cell(&state.config, x, y) {
-    Some(WindowId::Undo) => undo_remap(state),
-    Some(WindowId::Edo) => apply_grid_press(state, x, y),
-    Some(WindowId::RecordControl(_)) => false,
-    None => false,
-  }
+  let (tx, _rx) = std::sync::mpsc::channel();
+  let output_gate = SharedOutputGate::new(tx);
+  let mut recorder = RecordRuntime::new();
+  let mut preimage_row = PreimageRowState::new();
+  apply_monome_key(
+    state,
+    &mut recorder,
+    &output_gate,
+    &mut preimage_row,
+    x,
+    y,
+    1,
+    Instant::now(),
+  )
 }
 
 pub(crate) fn apply_monome_key(
@@ -302,78 +276,27 @@ pub(crate) fn apply_monome_key(
   s: i32,
   now: Instant,
 ) -> bool {
+  let Some(behavior) = behavior_for_cell(&state.config, x, y) else {
+    return if s == 0 {
+      preimage_row.release((x, y))
+    } else {
+      false
+    };
+  };
+  let mut ctx = KeyContext {
+    state,
+    recorder,
+    output_gate,
+    preimage_row,
+    now,
+  };
   if s == 0 {
-    if let Some(WindowId::RecordControl(control)) = window_for_cell(&state.config, x, y) {
-      let changed = recorder.key_up(control);
-      if changed {
-        record::trace_runtime(
-          &format!("control-up {control:?} x={x} y={y}"),
-          recorder,
-          now,
-        );
-      }
-      return changed;
-    }
-    return preimage_row.release((x, y));
+    return behavior.key_up(&mut ctx, x, y);
   }
   if s != 1 {
     return false;
   }
-  match window_for_cell(&state.config, x, y) {
-    Some(WindowId::Undo) => undo_remap(state),
-    Some(WindowId::Edo) => apply_edo_key_down(state, preimage_row, x, y, now),
-    Some(WindowId::RecordControl(control)) => {
-      let action = recorder.key_down(control, now, state.snapshot());
-      for (original_note, output) in action.release_playback {
-        if output_gate.release_source(OutputSource::Playback { original_note }, output) {
-          record::trace_midi_event(
-            "midi-output control-release",
-            &[0x80 | output.channel, output.note, 0],
-            recorder,
-            now,
-          );
-        }
-      }
-      if let Some(snapshot) = action.apply_snapshot {
-        apply_snapshot(state, snapshot);
-      }
-      record::trace_runtime(
-        &format!("control-down {control:?} x={x} y={y}"),
-        recorder,
-        now,
-      );
-      true
-    }
-    None => false,
-  }
-}
-
-fn apply_edo_key_down(
-  state: &mut RemappableEdoState,
-  preimage_row: &mut PreimageRowState,
-  x: i32,
-  y: i32,
-  now: Instant,
-) -> bool {
-  let Some((local_x, local_y)) = edo_local_cell(&state.config, x, y) else {
-    return false;
-  };
-  let step = grid_step(&state.config, local_x, local_y);
-  let preimage_before = preimage_for_step(state, step);
-  let changed = apply_grid_press(state, x, y);
-  let preimage_row_preimage = preimage_before.or_else(|| preimage_for_step(state, step));
-  if let Some(preimage) = preimage_row_preimage {
-    preimage_row.press((x, y), preimage, now);
-    true
-  } else {
-    changed
-  }
-}
-
-fn decrement_count(count: &mut u16) {
-  if *count > 0 {
-    *count -= 1;
-  }
+  behavior.key_down(&mut ctx, x, y)
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::config::RemapConfig;
 
@@ -22,6 +23,44 @@ pub(crate) struct RemapSnapshot {
 pub(crate) enum LooseState {
   Loose,
   Fixed,
+}
+
+pub(crate) struct PreimageRowState {
+  pub(crate) active_by_cell: HashMap<(i32, i32), usize>,
+  pub(crate) counts: [u16; 12],
+  pub(crate) flash_until: [Option<Instant>; 12],
+}
+
+impl PreimageRowState {
+  pub(crate) fn new() -> Self {
+    PreimageRowState {
+      active_by_cell: HashMap::new(),
+      counts: [0; 12],
+      flash_until: [None; 12],
+    }
+  }
+
+  pub(crate) fn press(&mut self, cell: (i32, i32), preimage: usize, now: Instant) {
+    if let Some(old_preimage) = self.active_by_cell.insert(cell, preimage) {
+      decrement_count(&mut self.counts[old_preimage]);
+    }
+    self.counts[preimage] += 1;
+    self.flash_until[preimage] = Some(now + super::PREIMAGE_ROW_FLASH_MIN);
+  }
+
+  pub(crate) fn release(&mut self, cell: (i32, i32)) -> bool {
+    let Some(preimage) = self.active_by_cell.remove(&cell) else {
+      return false;
+    };
+    decrement_count(&mut self.counts[preimage]);
+    true
+  }
+}
+
+fn decrement_count(count: &mut u16) {
+  if *count > 0 {
+    *count -= 1;
+  }
 }
 
 impl RemappableEdoState {

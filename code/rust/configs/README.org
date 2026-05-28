@@ -9,6 +9,31 @@ cargo run --bin midi_pulse \
 *** outside
 ./code/rust/connect-midi.sh \
   edo-un12-58-8-1-snap.toml
+* how to read a config
+** read the window arrangements
+The most informative, least obvious aspect of these configs is the
+~[[monome_windows]]~ array. In TOML, double-bracket tables are arrays of
+tables, so each ~[[monome_windows]]~ block adds one element to the
+~monome_windows~ list.
+
+Each element specifies a ~rect~, read as:
+
+#+begin_src toml
+rect = [left_x, top_y, right_x, bottom_y]
+#+end_src
+
+So you could read that as (x,y) (z,w)
+where the first pair is the top-left corner, etc.
+
+Both endpoints are included. For example, ~rect = [0, 1, 9, 15]~ covers
+columns 0 through 9 and rows 1 through 15.
+** jump to program definitions
+Each element has an ~id~ and a ~kind~. The ~id~ is the local name of that
+specific window inside this config. The ~kind~ is the program/window type:
+~preimage_row~, ~remappable_un12_grid~, ~remap_undo_button~, and so on.
+After running ~rebuild-etags~, the Rust behavior definition for a ~kind~
+value can be jumped to in Emacs with ~M-.~.
+
 * midi_pulse config syntax
 
 Configs live in ~code/rust/configs/~ and are loaded by name:

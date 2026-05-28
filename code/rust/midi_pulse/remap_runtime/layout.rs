@@ -1,11 +1,10 @@
-use midi_pulse::monome_window;
-
 use super::config::RemapConfig;
 use super::record::RecordControl;
 use super::{MAP_W, PREIMAGE_ROW_Y};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WindowId {
+  PreimageRow,
   Undo,
   Edo,
   RecordControl(RecordControl),
@@ -35,43 +34,12 @@ pub(crate) fn map_rect(config: &RemapConfig) -> GridRect {
 }
 
 pub(crate) fn edo_local_cell(config: &RemapConfig, x: i32, y: i32) -> Option<(i32, i32)> {
-  if window_for_cell(config, x, y) != Some(WindowId::Edo) {
-    return None;
-  }
   let rect = map_rect(config);
   if x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1 {
     Some((x - rect.x0, y - rect.y0))
   } else {
     None
   }
-}
-
-pub(crate) fn window_for_cell(config: &RemapConfig, x: i32, y: i32) -> Option<WindowId> {
-  monome_window::window_for_cell(&monome_windows(config), (x, y))
-}
-
-pub(crate) fn monome_windows(config: &RemapConfig) -> Vec<monome_window::Window<WindowId>> {
-  let mut windows = vec![];
-  if let Some(cell) = undo_cell(config) {
-    windows.push(monome_window::Window {
-      id: WindowId::Undo,
-      rect: (cell, cell),
-    });
-  }
-  let rect = map_rect(config);
-  if rect.x0 < rect.x1 && rect.y0 < rect.y1 {
-    windows.push(monome_window::Window {
-      id: WindowId::Edo,
-      rect: ((rect.x0, rect.y0), (rect.x1 - 1, rect.y1 - 1)),
-    });
-  }
-  for (cell, control) in record_control_cells(config) {
-    windows.push(monome_window::Window {
-      id: WindowId::RecordControl(control),
-      rect: (cell, cell),
-    });
-  }
-  windows
 }
 
 pub(crate) fn undo_cell(config: &RemapConfig) -> Option<(i32, i32)> {
