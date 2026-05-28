@@ -27,8 +27,11 @@ On the host, MIDI routing can use the same config name:
 
 That script reads ~[midi.input].virtual_name~ and
 ~[midi.output].virtual_name~ from the TOML and connects the keyboard
-and Reaper MIDI ports accordingly. Configs without MIDI input or
-output simply skip that side.
+and Reaper MIDI ports accordingly. It also connects Reaper audio to the
+best available built-in output, preferring ~Headphones~ when present and
+falling back to ~Speaker~. Rerun it after plugging or unplugging the
+1/8" audio jack. Configs without MIDI input or output simply skip that
+side.
 
 Every config is TOML and starts with:
 

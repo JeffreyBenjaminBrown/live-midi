@@ -62,4 +62,7 @@ else
 fi
 
 echo ""
+connect_reaper_to_primary_audio_out
+
+echo ""
 echo "Done!"

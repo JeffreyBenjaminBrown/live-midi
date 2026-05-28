@@ -50,3 +50,62 @@ connect_pipewire_midi() {
     return 1
   fi
 }
+
+pipewire_port_exists() {
+  local port="$1"
+
+  pw-link -i 2>/dev/null | grep -Fxq "$port"
+}
+
+connect_reaper_to_primary_audio_out() {
+  local reaper_l="REAPER:out1"
+  local reaper_r="REAPER:out2"
+  local sink_prefix="alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic"
+  local headphones="${sink_prefix}.HiFi__Headphones__sink"
+  local speaker="${sink_prefix}.HiFi__Speaker__sink"
+  local sink
+  local sink_label
+  local port
+
+  echo "=== JACK/PipeWire audio (Reaper -> output) ==="
+
+  if pipewire_port_exists "${headphones}:playback_FL"; then
+    sink="$headphones"
+    sink_label="Headphones"
+  elif pipewire_port_exists "${speaker}:playback_FL"; then
+    sink="$speaker"
+    sink_label="Speaker"
+  else
+    echo "  Warning: neither Headphones nor Speaker sink found."
+    echo "  Available sinks:"
+    pw-link -i 2>/dev/null | grep 'sink:playback' | sort -u | sed 's/^/    /' || true
+    return 0
+  fi
+
+  echo "  Found: $sink_label"
+
+  # Remove old Reaper-to-sink links first, so rerunning after plugging or
+  # unplugging the audio jack moves Reaper to the currently active sink.
+  while IFS= read -r port; do
+    pw-link -d "$reaper_l" "$port" 2>/dev/null || true
+    pw-link -d "$reaper_r" "$port" 2>/dev/null || true
+  done < <(pw-link -i 2>/dev/null | grep 'sink:playback' || true)
+
+  if pw-link "$reaper_l" "${sink}:playback_FL" 2>/tmp/connect-midi-pw-link-audio.err; then
+    echo "  Connected: $reaper_l -> ${sink_label}:playback_FL"
+  elif pw-link -l | grep -A20 -Fx "$reaper_l" | grep -Fxq "  |-> ${sink}:playback_FL"; then
+    echo "  Already connected: $reaper_l -> ${sink_label}:playback_FL"
+  else
+    cat /tmp/connect-midi-pw-link-audio.err
+    return 1
+  fi
+
+  if pw-link "$reaper_r" "${sink}:playback_FR" 2>/tmp/connect-midi-pw-link-audio.err; then
+    echo "  Connected: $reaper_r -> ${sink_label}:playback_FR"
+  elif pw-link -l | grep -A20 -Fx "$reaper_r" | grep -Fxq "  |-> ${sink}:playback_FR"; then
+    echo "  Already connected: $reaper_r -> ${sink_label}:playback_FR"
+  else
+    cat /tmp/connect-midi-pw-link-audio.err
+    return 1
+  fi
+}
