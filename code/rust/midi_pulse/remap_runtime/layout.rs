@@ -50,17 +50,14 @@ pub(crate) fn undo_cell(config: &RemapConfig) -> Option<(i32, i32)> {
   }
 }
 
+// Cells come from the TOML config (see `[[monome_windows]] kind =
+// "record_control"`) and are clamped to the discovered device size at use
+// time.
 pub(crate) fn record_control_cells(config: &RemapConfig) -> Vec<((i32, i32), RecordControl)> {
-  [
-    ((13, 0), RecordControl::Start),
-    ((14, 0), RecordControl::Stop),
-    ((15, 0), RecordControl::Loop),
-    ((13, 1), RecordControl::Arm),
-    ((14, 1), RecordControl::EraseOns),
-    ((15, 1), RecordControl::EndAll),
-    ((15, 2), RecordControl::Rscm),
-  ]
-  .into_iter()
-  .filter(|((x, y), _)| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
-  .collect()
+  config
+    .record_controls
+    .iter()
+    .filter(|(_, (x, y))| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
+    .map(|(control, cell)| (*cell, *control))
+    .collect()
 }

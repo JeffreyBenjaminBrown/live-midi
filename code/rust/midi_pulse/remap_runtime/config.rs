@@ -1,3 +1,5 @@
+use super::record::RecordControl;
+
 #[derive(Clone)]
 pub(crate) struct RemapConfig {
   pub(crate) lowest_hz: f64,
@@ -8,6 +10,10 @@ pub(crate) struct RemapConfig {
   pub(crate) grid_w: i32,
   pub(crate) grid_h: i32,
   pub(crate) initial_map: [i16; 12],
+  // Cells for the seven record-control buttons, sourced from the TOML so the
+  // config is the single source of truth for which monome cells the runtime
+  // owns. Tests use `default_record_controls()` to seed the canonical layout.
+  pub(crate) record_controls: Vec<(RecordControl, (i32, i32))>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,6 +41,7 @@ impl RemapConfig {
       grid_w,
       grid_h,
       initial_map: evenly_spaced_map(edo),
+      record_controls: default_record_controls(),
     }
   }
 
@@ -48,8 +55,29 @@ impl RemapConfig {
       grid_w,
       grid_h,
       initial_map: self.initial_map,
+      record_controls: self.record_controls.clone(),
     }
   }
+
+  pub(crate) fn with_record_controls(
+    mut self,
+    record_controls: Vec<(RecordControl, (i32, i32))>,
+  ) -> Self {
+    self.record_controls = record_controls;
+    self
+  }
+}
+
+pub(crate) fn default_record_controls() -> Vec<(RecordControl, (i32, i32))> {
+  vec![
+    (RecordControl::Start, (13, 0)),
+    (RecordControl::Stop, (14, 0)),
+    (RecordControl::Loop, (15, 0)),
+    (RecordControl::Arm, (13, 1)),
+    (RecordControl::EraseOns, (14, 1)),
+    (RecordControl::EndAll, (15, 1)),
+    (RecordControl::Rscm, (15, 2)),
+  ]
 }
 
 pub(crate) fn evenly_spaced_map(edo: i16) -> [i16; 12] {

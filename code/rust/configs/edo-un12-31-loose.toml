@@ -49,3 +49,52 @@ id = "undo"
 monome = "big"
 kind = "remap_undo_button"
 rect = [15, 15, 15, 15]
+
+[[monome_windows]]
+id = "record-start"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [13, 0, 13, 0]
+
+[[monome_windows]]
+id = "record-stop"
+monome = "big"
+kind = "record_control"
+control = "stop"
+rect = [14, 0, 14, 0]
+
+[[monome_windows]]
+id = "record-loop"
+monome = "big"
+kind = "record_control"
+control = "loop"
+rect = [15, 0, 15, 0]
+
+[[monome_windows]]
+id = "record-arm"
+monome = "big"
+kind = "record_control"
+control = "arm"
+rect = [13, 1, 13, 1]
+
+[[monome_windows]]
+id = "record-erase-ons"
+monome = "big"
+kind = "record_control"
+control = "erase_ons"
+rect = [14, 1, 14, 1]
+
+[[monome_windows]]
+id = "record-end-all"
+monome = "big"
+kind = "record_control"
+control = "end_all"
+rect = [15, 1, 15, 1]
+
+[[monome_windows]]
+id = "record-rscm"
+monome = "big"
+kind = "record_control"
+control = "rscm"
+rect = [15, 2, 15, 2]

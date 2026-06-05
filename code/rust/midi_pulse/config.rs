@@ -214,6 +214,24 @@ pub enum MonomeWindowConfig {
     monome: String,
     rect: [i32; 4],
   },
+  RecordControl {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    control: RecordControlKind,
+  },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordControlKind {
+  Start,
+  Stop,
+  Loop,
+  Arm,
+  EraseOns,
+  EndAll,
+  Rscm,
 }
 
 impl MonomeWindowConfig {
@@ -228,7 +246,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::TwelveEdoOffsetBoard { id, .. }
       | MonomeWindowConfig::PreimageRow { id, .. }
       | MonomeWindowConfig::RemappableUn12Grid { id, .. }
-      | MonomeWindowConfig::RemapUndoButton { id, .. } => id,
+      | MonomeWindowConfig::RemapUndoButton { id, .. }
+      | MonomeWindowConfig::RecordControl { id, .. } => id,
     }
   }
 
@@ -243,7 +262,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::TwelveEdoOffsetBoard { monome, .. }
       | MonomeWindowConfig::PreimageRow { monome, .. }
       | MonomeWindowConfig::RemappableUn12Grid { monome, .. }
-      | MonomeWindowConfig::RemapUndoButton { monome, .. } => monome,
+      | MonomeWindowConfig::RemapUndoButton { monome, .. }
+      | MonomeWindowConfig::RecordControl { monome, .. } => monome,
     }
   }
 
@@ -258,7 +278,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::TwelveEdoOffsetBoard { rect, .. }
       | MonomeWindowConfig::PreimageRow { rect, .. }
       | MonomeWindowConfig::RemappableUn12Grid { rect, .. }
-      | MonomeWindowConfig::RemapUndoButton { rect, .. } => *rect,
+      | MonomeWindowConfig::RemapUndoButton { rect, .. }
+      | MonomeWindowConfig::RecordControl { rect, .. } => *rect,
     }
   }
 }
@@ -386,6 +407,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
     }
   }
 
+  let mut record_control_kinds: HashSet<RecordControlKind> = HashSet::new();
   for window in &config.monome_windows {
     require_ref("monome_window.monome", window.monome(), &monome_ids)?;
     let [x0, y0, x1, y1] = window.rect();
@@ -399,6 +421,20 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
       }
       MonomeWindowConfig::RemappableUn12Grid { tuning, .. } => {
         require_ref("monome_window.tuning", tuning, &tuning_ids)?;
+      }
+      MonomeWindowConfig::RecordControl { id, rect, control, .. } => {
+        if rect[0] != rect[2] || rect[1] != rect[3] {
+          return Err(format!(
+            "record_control window {:?} rect must cover exactly one cell",
+            id,
+          ));
+        }
+        if !record_control_kinds.insert(*control) {
+          return Err(format!(
+            "duplicate record_control kind {:?} (in window {:?})",
+            control, id,
+          ));
+        }
       }
       _ => {}
     }
@@ -470,6 +506,59 @@ remap_idiom = "snap"
 "#).expect_err("mixed variant fields should fail");
 
     assert!(err.contains("unknown field") || err.contains("remap_idiom"), "{err}");
+  }
+
+  #[test]
+  fn record_control_rect_must_be_single_cell() {
+    let err = parse_config(r#"
+version = 1
+id = "bad-rect"
+title = "Bad Rect"
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "record-start"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [13, 0, 14, 0]
+"#).expect_err("multi-cell record_control rect should fail");
+
+    assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  #[test]
+  fn duplicate_record_control_kinds_are_rejected() {
+    let err = parse_config(r#"
+version = 1
+id = "dup-kind"
+title = "Dup Kind"
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "record-start"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [13, 0, 13, 0]
+
+[[monome_windows]]
+id = "record-start-again"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [14, 0, 14, 0]
+"#).expect_err("duplicate record_control kind should fail");
+
+    assert!(err.contains("duplicate record_control kind"), "{err}");
   }
 
   #[test]
