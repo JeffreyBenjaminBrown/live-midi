@@ -2,7 +2,7 @@ use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiOutput};
 use midi_pulse::config::{
   Config, InitialMapConfig, MonomeConfig, MonomeWindowConfig, PianoMappingConfig,
-  RecordControlKind, RemapIdiomConfig,
+  RecordControlKind, RemapIdiomConfig, ScaleControlKind,
 };
 use midi_pulse::{midi, piano_transform};
 use std::collections::HashMap;
@@ -18,6 +18,7 @@ mod monome_runtime;
 mod record;
 mod remap;
 mod render;
+mod scale;
 mod state;
 mod window_behavior;
 
@@ -60,7 +61,9 @@ const WHITE_KEYS: [bool; 12] = [
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  require_remap_windows(config)?;
+  if config.monome_windows.is_empty() {
+    return Err("remap runtime requires at least one [[monome_windows]]".into());
+  }
   let runtime_config = runtime_config(config)?;
   let monome = remap_monome(config)?;
   let listen_port = monome.map(|monome| monome.listen_port).unwrap_or(LISTEN_PORT);
@@ -69,62 +72,6 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     .unwrap_or_else(|| "/256-1-cable".to_string());
   let select_size = monome.and_then(|monome| monome.select.size);
   run(runtime_config, listen_port, prefix, select_size)
-}
-
-/// Every cell the remap runtime touches must be declared in the TOML so the
-/// config is the single source of truth for the monome layout.
-fn require_remap_windows(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  fn count_kind(
-    config: &Config,
-    predicate: impl Fn(&MonomeWindowConfig) -> bool,
-  ) -> usize {
-    config.monome_windows.iter().filter(|w| predicate(w)).count()
-  }
-  let preimage = count_kind(config, |w| matches!(w, MonomeWindowConfig::PreimageRow { .. }));
-  let grid = count_kind(config, |w| matches!(w, MonomeWindowConfig::RemappableUn12Grid { .. }));
-  let undo = count_kind(config, |w| matches!(w, MonomeWindowConfig::RemapUndoButton { .. }));
-  for (label, count) in [
-    ("preimage_row", preimage),
-    ("remappable_un12_grid", grid),
-    ("remap_undo_button", undo),
-  ] {
-    if count != 1 {
-      return Err(format!(
-        "remap runtime requires exactly one [[monome_windows]] of kind {label:?}, found {count}",
-      )
-      .into());
-    }
-  }
-  let required_controls = [
-    RecordControlKind::Start,
-    RecordControlKind::Stop,
-    RecordControlKind::Loop,
-    RecordControlKind::Arm,
-    RecordControlKind::EraseOns,
-    RecordControlKind::EndAll,
-    RecordControlKind::Rscm,
-  ];
-  let present: std::collections::HashSet<RecordControlKind> = config
-    .monome_windows
-    .iter()
-    .filter_map(|window| match window {
-      MonomeWindowConfig::RecordControl { control, .. } => Some(*control),
-      _ => None,
-    })
-    .collect();
-  let missing: Vec<RecordControlKind> = required_controls
-    .iter()
-    .copied()
-    .filter(|kind| !present.contains(kind))
-    .collect();
-  if !missing.is_empty() {
-    return Err(format!(
-      "remap runtime requires record_control windows for {:?}; config is missing {:?}",
-      required_controls, missing,
-    )
-    .into());
-  }
-  Ok(())
 }
 
 fn remap_monome(config: &Config) -> Result<Option<&MonomeConfig>, Box<dyn std::error::Error>> {
@@ -196,6 +143,8 @@ fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::e
     result = result.with_grid_size(grid_rect[2] - grid_rect[0] + 1, grid_rect[3] + 1);
   }
   result = result.with_record_controls(record_control_cells_from_config(config));
+  result = result.with_scale_slots(scale_slots_rect_from_config(config));
+  result = result.with_scale_controls(scale_controls_from_config(config));
   Ok(result)
 }
 
@@ -212,6 +161,35 @@ fn record_control_cells_from_config(
       _ => None,
     })
     .collect()
+}
+
+fn scale_slots_rect_from_config(config: &Config) -> Option<[i32; 4]> {
+  config.monome_windows.iter().find_map(|window| match window {
+    MonomeWindowConfig::ScaleSlots { rect, .. } => Some(*rect),
+    _ => None,
+  })
+}
+
+fn scale_controls_from_config(
+  config: &Config,
+) -> Vec<(scale::ScaleControl, (i32, i32))> {
+  config
+    .monome_windows
+    .iter()
+    .filter_map(|window| match window {
+      MonomeWindowConfig::ScaleControl { rect, control, .. } => {
+        Some((to_scale_control(*control), (rect[0], rect[1])))
+      }
+      _ => None,
+    })
+    .collect()
+}
+
+fn to_scale_control(kind: ScaleControlKind) -> scale::ScaleControl {
+  match kind {
+    ScaleControlKind::Store => scale::ScaleControl::Store,
+    ScaleControlKind::Empty => scale::ScaleControl::Empty,
+  }
 }
 
 fn to_record_control(kind: RecordControlKind) -> record::RecordControl {

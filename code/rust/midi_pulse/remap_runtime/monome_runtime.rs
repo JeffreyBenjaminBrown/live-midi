@@ -340,6 +340,35 @@ mod tests {
   }
 
   #[test]
+  fn dispatch_reaches_scale_controls_and_slots() {
+    use super::super::scale::ScaleControl;
+    let (tx, _rx) = mpsc::channel();
+    let gate = SharedOutputGate::new(tx);
+    let config = RemapConfig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 8)
+      .with_scale_slots(Some([12, 0, 15, 3]))
+      .with_scale_controls(vec![
+        (ScaleControl::Store, (15, 4)),
+        (ScaleControl::Empty, (14, 4)),
+      ]);
+    let mut state = RemappableEdoState::new(config);
+    let mut recorder = RecordRuntime::new();
+    let mut preimage_row = PreimageRowState::new();
+
+    // Press the store arm button at (15, 4).
+    assert!(apply_monome_key(
+      &mut state, &mut recorder, &gate, &mut preimage_row, 15, 4, 1, Instant::now(),
+    ));
+    assert_eq!(state.scale.armed, Some(ScaleControl::Store));
+
+    // Press slot 0 at (12, 0): stores the current scale and disarms.
+    assert!(apply_monome_key(
+      &mut state, &mut recorder, &gate, &mut preimage_row, 12, 0, 1, Instant::now(),
+    ));
+    assert!(state.scale.slots[0].is_some());
+    assert_eq!(state.scale.armed, None);
+  }
+
+  #[test]
   fn record_controls_do_not_invoke_edo_remap_actions() {
     let (tx, _rx) = mpsc::channel();
     let gate = SharedOutputGate::new(tx);

@@ -3,10 +3,12 @@ use std::time::Instant;
 
 use super::config::RemapConfig;
 use super::layout::{
-  edo_local_cell, grid_step, map_rect, record_control_cells, undo_cell, WindowId,
+  edo_local_cell, grid_step, map_rect, record_control_cells, scale_control_cells,
+  scale_slot_cells, scale_slots_rect, undo_cell, WindowId,
 };
 use super::record::{self, OutputSource, RecordControl, RecordRuntime, SharedOutputGate};
 use super::remap::{apply_grid_press, apply_snapshot, preimage_for_step, undo_remap};
+use super::scale::{self, ScaleControl};
 use super::render::{self, LedPhases};
 use super::state::{PreimageRowState, RemappableEdoState, SoundingPitchCounts};
 use super::PREIMAGE_ROW_Y;
@@ -210,11 +212,75 @@ impl WindowBehavior for RecordControlBehavior {
     render::render_record_control(ctx, self.control); }}
 
 #[derive(Clone, Copy)]
+pub(crate) struct ScaleSlotsBehavior;
+
+impl WindowBehavior for ScaleSlotsBehavior {
+  fn kind_name(&self) -> &'static str {
+    "scale_slots"
+  }
+
+  // Owns the flexible config-defined slot rect.
+  fn window(&self, config: &RemapConfig
+  ) -> Option<monome_window::Window<WindowId>> {
+    scale_slots_rect(config).map(|rect| monome_window::Window {
+      id: WindowId::ScaleSlots,
+      rect, } ) }
+
+  // Stores, empties, or recalls the pressed slot depending on the armed button.
+  fn key_down(&self, ctx: &mut KeyContext<'_>, x: i32, y: i32) -> bool {
+    let Some(index) = scale_slot_cells(&ctx.state.config)
+      .into_iter()
+      .position(|cell| cell == (x, y))
+    else {
+      return false; };
+    scale::press_slot(ctx.state, index) }
+
+  // Draws saved slots: active solid, other written slots flashing dimly.
+  fn render(&self, ctx: &mut RenderContext<'_>) {
+    render::render_scale_slots(ctx); }}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScaleControlBehavior {
+  control: ScaleControl,
+}
+
+impl ScaleControlBehavior {
+  pub(crate) fn new(control: ScaleControl) -> Self {
+    ScaleControlBehavior { control }
+  }
+}
+
+impl WindowBehavior for ScaleControlBehavior {
+  fn kind_name(&self) -> &'static str {
+    "scale_control"
+  }
+
+  // Owns the one configured cell for this particular scale arm button.
+  fn window(&self, config: &RemapConfig
+  ) -> Option<monome_window::Window<WindowId>> {
+    scale_control_cells(config)
+      .into_iter()
+      .find(|(_, control)| *control == self.control)
+      .map(|(cell, control)| monome_window::Window {
+        id: WindowId::ScaleControl(control),
+        rect: (cell, cell), } ) }
+
+  // Toggles this arm button (arming it disarms the sibling).
+  fn key_down(&self, ctx: &mut KeyContext<'_>, _x: i32, _y: i32) -> bool {
+    scale::toggle_arm(ctx.state, self.control) }
+
+  // Draws the arm button: flashing brightly when armed, dim otherwise.
+  fn render(&self, ctx: &mut RenderContext<'_>) {
+    render::render_scale_control(ctx, self.control); }}
+
+#[derive(Clone, Copy)]
 pub(crate) enum RemapWindowBehavior {
   PreimageRow(PreimageRowBehavior),
   RemappableUn12Grid(RemappableUn12GridBehavior),
   RemapUndoButton(RemapUndoButtonBehavior),
   RecordControl(RecordControlBehavior),
+  ScaleSlots(ScaleSlotsBehavior),
+  ScaleControl(ScaleControlBehavior),
 }
 
 impl WindowBehavior for RemapWindowBehavior {
@@ -225,6 +291,8 @@ impl WindowBehavior for RemapWindowBehavior {
       RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.kind_name(),
       RemapWindowBehavior::RemapUndoButton(behavior) => behavior.kind_name(),
       RemapWindowBehavior::RecordControl(behavior) => behavior.kind_name(),
+      RemapWindowBehavior::ScaleSlots(behavior) => behavior.kind_name(),
+      RemapWindowBehavior::ScaleControl(behavior) => behavior.kind_name(),
     }
   }
 
@@ -235,6 +303,8 @@ impl WindowBehavior for RemapWindowBehavior {
       RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.window(config),
       RemapWindowBehavior::RemapUndoButton(behavior) => behavior.window(config),
       RemapWindowBehavior::RecordControl(behavior) => behavior.window(config),
+      RemapWindowBehavior::ScaleSlots(behavior) => behavior.window(config),
+      RemapWindowBehavior::ScaleControl(behavior) => behavior.window(config),
     }
   }
 
@@ -245,6 +315,8 @@ impl WindowBehavior for RemapWindowBehavior {
       RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.key_down(ctx, x, y),
       RemapWindowBehavior::RemapUndoButton(behavior) => behavior.key_down(ctx, x, y),
       RemapWindowBehavior::RecordControl(behavior) => behavior.key_down(ctx, x, y),
+      RemapWindowBehavior::ScaleSlots(behavior) => behavior.key_down(ctx, x, y),
+      RemapWindowBehavior::ScaleControl(behavior) => behavior.key_down(ctx, x, y),
     }
   }
 
@@ -255,6 +327,8 @@ impl WindowBehavior for RemapWindowBehavior {
       RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.key_up(ctx, x, y),
       RemapWindowBehavior::RemapUndoButton(behavior) => behavior.key_up(ctx, x, y),
       RemapWindowBehavior::RecordControl(behavior) => behavior.key_up(ctx, x, y),
+      RemapWindowBehavior::ScaleSlots(behavior) => behavior.key_up(ctx, x, y),
+      RemapWindowBehavior::ScaleControl(behavior) => behavior.key_up(ctx, x, y),
     }
   }
 
@@ -265,6 +339,8 @@ impl WindowBehavior for RemapWindowBehavior {
       RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.render(ctx),
       RemapWindowBehavior::RemapUndoButton(behavior) => behavior.render(ctx),
       RemapWindowBehavior::RecordControl(behavior) => behavior.render(ctx),
+      RemapWindowBehavior::ScaleSlots(behavior) => behavior.render(ctx),
+      RemapWindowBehavior::ScaleControl(behavior) => behavior.render(ctx),
     }
   }
 }
@@ -280,6 +356,16 @@ pub(crate) fn behaviors(config: &RemapConfig) -> Vec<RemapWindowBehavior> {
       .into_iter()
       .map(|(_, control)| {
         RemapWindowBehavior::RecordControl(RecordControlBehavior::new(control))
+      }),
+  );
+  if scale_slots_rect(config).is_some() {
+    behaviors.push(RemapWindowBehavior::ScaleSlots(ScaleSlotsBehavior));
+  }
+  behaviors.extend(
+    scale_control_cells(config)
+      .into_iter()
+      .map(|(_, control)| {
+        RemapWindowBehavior::ScaleControl(ScaleControlBehavior::new(control))
       }),
   );
   behaviors

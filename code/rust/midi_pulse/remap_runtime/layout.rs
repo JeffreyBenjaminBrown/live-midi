@@ -1,5 +1,6 @@
 use super::config::RemapConfig;
 use super::record::RecordControl;
+use super::scale::ScaleControl;
 use super::{MAP_W, PREIMAGE_ROW_Y};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8,6 +9,8 @@ pub(crate) enum WindowId {
   Undo,
   Edo,
   RecordControl(RecordControl),
+  ScaleSlots,
+  ScaleControl(ScaleControl),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,4 +63,35 @@ pub(crate) fn record_control_cells(config: &RemapConfig) -> Vec<((i32, i32), Rec
     .filter(|(_, (x, y))| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
     .map(|(control, cell)| (*cell, *control))
     .collect()
+}
+
+// The scale-slot cells in config (row-major) order. Returned in full so a
+// slot's index is stable regardless of device size; callers guard the device
+// bounds when rendering and dispatching.
+pub(crate) fn scale_slot_cells(config: &RemapConfig) -> Vec<(i32, i32)> {
+  let Some([x0, y0, x1, y1]) = config.scale_slots else {
+    return vec![];
+  };
+  let mut cells = Vec::new();
+  for y in y0..=y1 {
+    for x in x0..=x1 {
+      cells.push((x, y));
+    }
+  }
+  cells
+}
+
+// The store/empty arm-button cells from the TOML, clamped to the device size.
+pub(crate) fn scale_control_cells(config: &RemapConfig) -> Vec<((i32, i32), ScaleControl)> {
+  config
+    .scale_controls
+    .iter()
+    .filter(|(_, (x, y))| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
+    .map(|(control, cell)| (*cell, *control))
+    .collect()
+}
+
+// The bounding rect of the scale-slot grid, if any, as ((x0, y0), (x1, y1)).
+pub(crate) fn scale_slots_rect(config: &RemapConfig) -> Option<((i32, i32), (i32, i32))> {
+  config.scale_slots.map(|[x0, y0, x1, y1]| ((x0, y0), (x1, y1)))
 }

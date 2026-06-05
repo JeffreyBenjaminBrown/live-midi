@@ -1,0 +1,100 @@
+version = 1
+id = "edo-un12_31_loose_recording"
+title = "EDO un-12 31 Loose Recording"
+
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+
+[midi.input]
+virtual_name = "edo_un12_piano_monome-in"
+
+[midi.output]
+virtual_name = "edo_un12_piano_monome-out"
+min_channel = 1
+min_note = 28
+
+[piano.mapping]
+kind = "remappable_un12"
+lowest_note = 24
+tuning = "main"
+remap_idiom = "loose"
+initial_map = "even"
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+select.size = [16, 16]
+select.type_contains = "256"
+
+[[monome_windows]]
+id = "preimage-row"
+monome = "big"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "big"
+kind = "remap_undo_button"
+rect = [15, 15, 15, 15]
+
+[[monome_windows]]
+id = "record-start"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [13, 0, 13, 0]
+
+[[monome_windows]]
+id = "record-stop"
+monome = "big"
+kind = "record_control"
+control = "stop"
+rect = [14, 0, 14, 0]
+
+[[monome_windows]]
+id = "record-loop"
+monome = "big"
+kind = "record_control"
+control = "loop"
+rect = [15, 0, 15, 0]
+
+[[monome_windows]]
+id = "record-arm"
+monome = "big"
+kind = "record_control"
+control = "arm"
+rect = [13, 1, 13, 1]
+
+[[monome_windows]]
+id = "record-erase-ons"
+monome = "big"
+kind = "record_control"
+control = "erase_ons"
+rect = [14, 1, 14, 1]
+
+[[monome_windows]]
+id = "record-end-all"
+monome = "big"
+kind = "record_control"
+control = "end_all"
+rect = [15, 1, 15, 1]
+
+[[monome_windows]]
+id = "record-rscm"
+monome = "big"
+kind = "record_control"
+control = "rscm"
+rect = [15, 2, 15, 2]

@@ -1,11 +1,11 @@
 version = 1
-id = "edo-un12-31-loose"
-title = "EDO un-12 31 Loose"
+id = "edo-un12_58-8-1_snap_recording"
+title = "EDO un-12 58 8 1 Snap Recording"
 
 [[tunings]]
 id = "main"
-edo = 31
-x_step = 6
+edo = 58
+x_step = 8
 y_step = 1
 fundamental_hz = 80
 
@@ -21,7 +21,7 @@ min_note = 28
 kind = "remappable_un12"
 lowest_note = 24
 tuning = "main"
-remap_idiom = "loose"
+remap_idiom = "snap"
 initial_map = "even"
 
 [[monomes]]

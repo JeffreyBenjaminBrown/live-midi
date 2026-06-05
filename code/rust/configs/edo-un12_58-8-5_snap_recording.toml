@@ -1,12 +1,12 @@
 version = 1
-id = "edo-un12-58-8-1-snap"
-title = "EDO un-12 58 8 1 Snap"
+id = "edo-un12_58-8-5_snap_recording"
+title = "EDO un-12 58 8 5 Snap Recording"
 
 [[tunings]]
 id = "main"
 edo = 58
 x_step = 8
-y_step = 1
+y_step = 5
 fundamental_hz = 80
 
 [midi.input]

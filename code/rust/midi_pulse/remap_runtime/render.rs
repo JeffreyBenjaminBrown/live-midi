@@ -4,9 +4,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::config::RemapConfig;
-use super::layout::{grid_step, map_rect, record_control_cells, undo_cell, WindowId};
+use super::layout::{
+  grid_step, map_rect, record_control_cells, scale_control_cells, scale_slot_cells, undo_cell,
+  WindowId,
+};
 use super::record::{RecordControl, RecordRuntime};
 use super::remap::preimage_for_step;
+use super::scale::{self, ScaleControl};
 use super::state::{RemappableEdoState, SoundingPitchCounts};
 use super::window_behavior::{self, RenderContext};
 use super::{
@@ -391,6 +395,54 @@ pub(crate) fn render_record_control(ctx: &mut RenderContext<'_>, control: Record
       if ctx.recorder.rscm { LED_LEVEL_FULL } else { LED_LEVEL_OFF }
     }
     RecordControl::Loop | RecordControl::EndAll => LED_LEVEL_OFF,
+  };
+  ctx.levels[(y * ctx.state.config.grid_w + x) as usize] = level;
+}
+
+pub(crate) fn render_scale_slots(ctx: &mut RenderContext<'_>) {
+  let grid_w = ctx.state.config.grid_w;
+  let grid_h = ctx.state.config.grid_h;
+  for (index, (x, y)) in scale_slot_cells(&ctx.state.config).into_iter().enumerate() {
+    if x < 0 || x >= grid_w || y < 0 || y >= grid_h {
+      continue;
+    }
+    if !monome_window::visible(ctx.windows, WindowId::ScaleSlots, (x, y)) {
+      continue;
+    }
+    let level = match ctx.state.scale.slots.get(index).copied().flatten() {
+      // Empty slot: dark.
+      None => LED_LEVEL_OFF,
+      // Filled slot: solid when it is the active scale, otherwise a dim flash.
+      Some(_) => {
+        if scale::slot_is_active(ctx.state, index) {
+          LED_LEVEL_FULL
+        } else if ctx.phases.preimage_row_flash_on {
+          LED_LEVEL_IMAGE
+        } else {
+          LED_LEVEL_OFF
+        }
+      }
+    };
+    ctx.levels[(y * grid_w + x) as usize] = level;
+  }
+}
+
+pub(crate) fn render_scale_control(ctx: &mut RenderContext<'_>, control: ScaleControl) {
+  let Some(((x, y), _)) = scale_control_cells(&ctx.state.config)
+    .into_iter()
+    .find(|(_, candidate)| *candidate == control)
+  else {
+    return;
+  };
+  // Armed: a bright flash. Idle: a dim solid so the button stays discoverable.
+  let level = if ctx.state.scale.armed == Some(control) {
+    if ctx.phases.preimage_row_flash_on {
+      LED_LEVEL_FULL
+    } else {
+      LED_LEVEL_OFF
+    }
+  } else {
+    LED_LEVEL_IMAGE
   };
   ctx.levels[(y * ctx.state.config.grid_w + x) as usize] = level;
 }

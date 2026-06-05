@@ -8,7 +8,7 @@ CONFIG_NAME="${1:-}"
 
 if [[ -z "$CONFIG_NAME" ]]; then
   echo "usage: $0 CONFIG_NAME" >&2
-  echo "example: $0 edo-un12-58-8-1-snap" >&2
+  echo "example: $0 edo-un12_58-8-1_snap_recording" >&2
   exit 2
 fi
 

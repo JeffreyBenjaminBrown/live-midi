@@ -1,12 +1,12 @@
 version = 1
-id = "edo-un12-58-8-5-snap"
-title = "EDO un-12 58 8 5 Snap"
+id = "edo-un12_58-8-1_snap_save-scales"
+title = "EDO un-12 58 8 1 Snap Save Scales"
 
 [[tunings]]
 id = "main"
 edo = 58
 x_step = 8
-y_step = 5
+y_step = 1
 fundamental_hz = 80
 
 [midi.input]
@@ -50,51 +50,27 @@ monome = "big"
 kind = "remap_undo_button"
 rect = [15, 15, 15, 15]
 
+# A 4x4 grid of scale slots in the top-right corner. The number of slots is
+# whatever this rect covers, so widen/narrow it to taste.
 [[monome_windows]]
-id = "record-start"
+id = "scale-slots"
 monome = "big"
-kind = "record_control"
-control = "start"
-rect = [13, 0, 13, 0]
+kind = "scale_slots"
+rect = [12, 0, 15, 3]
 
+# "Store current scale into the next slot pressed", just below the slots on the
+# right edge.
 [[monome_windows]]
-id = "record-stop"
+id = "scale-store"
 monome = "big"
-kind = "record_control"
-control = "stop"
-rect = [14, 0, 14, 0]
+kind = "scale_control"
+control = "store"
+rect = [15, 4, 15, 4]
 
+# "Empty the next slot pressed", right next to the store button.
 [[monome_windows]]
-id = "record-loop"
+id = "scale-empty"
 monome = "big"
-kind = "record_control"
-control = "loop"
-rect = [15, 0, 15, 0]
-
-[[monome_windows]]
-id = "record-arm"
-monome = "big"
-kind = "record_control"
-control = "arm"
-rect = [13, 1, 13, 1]
-
-[[monome_windows]]
-id = "record-erase-ons"
-monome = "big"
-kind = "record_control"
-control = "erase_ons"
-rect = [14, 1, 14, 1]
-
-[[monome_windows]]
-id = "record-end-all"
-monome = "big"
-kind = "record_control"
-control = "end_all"
-rect = [15, 1, 15, 1]
-
-[[monome_windows]]
-id = "record-rscm"
-monome = "big"
-kind = "record_control"
-control = "rscm"
-rect = [15, 2, 15, 2]
+kind = "scale_control"
+control = "empty"
+rect = [14, 4, 14, 4]

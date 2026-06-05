@@ -220,6 +220,20 @@ pub enum MonomeWindowConfig {
     rect: [i32; 4],
     control: RecordControlKind,
   },
+  // A flexible grid of scale slots. The number of slots is whatever the rect
+  // covers, so the config alone decides how many scales can be saved.
+  ScaleSlots {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell arm button for the scale-saving feature (store/empty).
+  ScaleControl {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    control: ScaleControlKind,
+  },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -232,6 +246,15 @@ pub enum RecordControlKind {
   EraseOns,
   EndAll,
   Rscm,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaleControlKind {
+  /// Arms "the next slot pressed is written with the current scale".
+  Store,
+  /// Arms "the next slot pressed is emptied".
+  Empty,
 }
 
 impl MonomeWindowConfig {
@@ -247,7 +270,9 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::PreimageRow { id, .. }
       | MonomeWindowConfig::RemappableUn12Grid { id, .. }
       | MonomeWindowConfig::RemapUndoButton { id, .. }
-      | MonomeWindowConfig::RecordControl { id, .. } => id,
+      | MonomeWindowConfig::RecordControl { id, .. }
+      | MonomeWindowConfig::ScaleSlots { id, .. }
+      | MonomeWindowConfig::ScaleControl { id, .. } => id,
     }
   }
 
@@ -263,7 +288,9 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::PreimageRow { monome, .. }
       | MonomeWindowConfig::RemappableUn12Grid { monome, .. }
       | MonomeWindowConfig::RemapUndoButton { monome, .. }
-      | MonomeWindowConfig::RecordControl { monome, .. } => monome,
+      | MonomeWindowConfig::RecordControl { monome, .. }
+      | MonomeWindowConfig::ScaleSlots { monome, .. }
+      | MonomeWindowConfig::ScaleControl { monome, .. } => monome,
     }
   }
 
@@ -279,7 +306,9 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::PreimageRow { rect, .. }
       | MonomeWindowConfig::RemappableUn12Grid { rect, .. }
       | MonomeWindowConfig::RemapUndoButton { rect, .. }
-      | MonomeWindowConfig::RecordControl { rect, .. } => *rect,
+      | MonomeWindowConfig::RecordControl { rect, .. }
+      | MonomeWindowConfig::ScaleSlots { rect, .. }
+      | MonomeWindowConfig::ScaleControl { rect, .. } => *rect,
     }
   }
 }
@@ -408,6 +437,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   }
 
   let mut record_control_kinds: HashSet<RecordControlKind> = HashSet::new();
+  let mut scale_control_kinds: HashSet<ScaleControlKind> = HashSet::new();
   for window in &config.monome_windows {
     require_ref("monome_window.monome", window.monome(), &monome_ids)?;
     let [x0, y0, x1, y1] = window.rect();
@@ -436,11 +466,154 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
           ));
         }
       }
+      MonomeWindowConfig::ScaleControl { id, rect, control, .. } => {
+        if rect[0] != rect[2] || rect[1] != rect[3] {
+          return Err(format!(
+            "scale_control window {:?} rect must cover exactly one cell",
+            id,
+          ));
+        }
+        if !scale_control_kinds.insert(*control) {
+          return Err(format!(
+            "duplicate scale_control kind {:?} (in window {:?})",
+            control, id,
+          ));
+        }
+      }
       _ => {}
     }
   }
 
+  validate_window_groups(config)?;
+
   Ok(())
+}
+
+/// Windows come in all-or-nothing groups, and a group may depend on another
+/// group. A config is modular -- it may omit a whole group -- but any group it
+/// declares must appear in its entirety, and a group's dependencies must also be
+/// present. (A config with no recording buttons is valid; it just launches a
+/// program with no recording abilities.)
+fn validate_window_groups(config: &Config) -> Result<(), String> {
+  let groups = window_groups(config);
+  // Each group is all-or-nothing: declaring any member requires all of them.
+  for group in &groups {
+    if group.active() {
+      let missing = group.missing();
+      if !missing.is_empty() {
+        return Err(format!(
+          "the {:?} window group is all-or-nothing; it is missing {:?}",
+          group.label, missing,
+        ));
+      }
+    }
+  }
+  // Inter-group dependencies: an active group needs its dependencies active too.
+  for group in &groups {
+    if !group.active() {
+      continue;
+    }
+    for dep in &group.depends_on {
+      let dep_active = groups.iter().any(|g| g.label == *dep && g.active());
+      if !dep_active {
+        return Err(format!(
+          "the {:?} window group requires the {:?} window group, which the config does not declare",
+          group.label, dep,
+        ));
+      }
+    }
+  }
+  Ok(())
+}
+
+/// A set of windows that must appear together, plus the groups it depends on.
+struct WindowGroup {
+  label: &'static str,
+  /// Each member is named (for error messages) and marked present-or-not.
+  members: Vec<(&'static str, bool)>,
+  depends_on: Vec<&'static str>,
+}
+
+impl WindowGroup {
+  /// A group is "active" once any of its members is declared.
+  fn active(&self) -> bool {
+    self.members.iter().any(|(_, present)| *present)
+  }
+
+  fn missing(&self) -> Vec<&'static str> {
+    self
+      .members
+      .iter()
+      .filter(|(_, present)| !present)
+      .map(|(name, _)| *name)
+      .collect()
+  }
+}
+
+fn window_groups(config: &Config) -> Vec<WindowGroup> {
+  let has_kind =
+    |pred: fn(&MonomeWindowConfig) -> bool| config.monome_windows.iter().any(pred);
+  let has_control = |control: RecordControlKind| {
+    config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::RecordControl { control: c, .. } if *c == control)
+    })
+  };
+  let has_scale_control = |control: ScaleControlKind| {
+    config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::ScaleControl { control: c, .. } if *c == control)
+    })
+  };
+  vec![
+    // The remap group: the big edo grid, the 12-edo row that labels it, and the
+    // undo button that reverts remaps.
+    WindowGroup {
+      label: "remap",
+      members: vec![
+        (
+          "remappable_un12_grid",
+          has_kind(|w| matches!(w, MonomeWindowConfig::RemappableUn12Grid { .. })),
+        ),
+        (
+          "preimage_row",
+          has_kind(|w| matches!(w, MonomeWindowConfig::PreimageRow { .. })),
+        ),
+        (
+          "remap_undo_button",
+          has_kind(|w| matches!(w, MonomeWindowConfig::RemapUndoButton { .. })),
+        ),
+      ],
+      depends_on: vec![],
+    },
+    // The record group: the seven recording buttons. They only make sense
+    // alongside the remap group, so it depends on "remap".
+    WindowGroup {
+      label: "record",
+      members: vec![
+        ("record_control(start)", has_control(RecordControlKind::Start)),
+        ("record_control(stop)", has_control(RecordControlKind::Stop)),
+        ("record_control(loop)", has_control(RecordControlKind::Loop)),
+        ("record_control(arm)", has_control(RecordControlKind::Arm)),
+        ("record_control(erase_ons)", has_control(RecordControlKind::EraseOns)),
+        ("record_control(end_all)", has_control(RecordControlKind::EndAll)),
+        ("record_control(rscm)", has_control(RecordControlKind::Rscm)),
+      ],
+      depends_on: vec!["remap"],
+    },
+    // The scale group: the slot grid plus the store/empty arm buttons. Saving a
+    // scale only makes sense alongside the remap group, so it depends on it.
+    WindowGroup {
+      label: "scale",
+      members: vec![
+        (
+          "scale_slots",
+          has_kind(|w| matches!(w, MonomeWindowConfig::ScaleSlots { .. })),
+        ),
+        ("scale_control(store)", has_scale_control(ScaleControlKind::Store)),
+        ("scale_control(empty)", has_scale_control(ScaleControlKind::Empty)),
+      ],
+      depends_on: vec!["remap"],
+    },
+  ]
 }
 
 fn require_unique<'a, I, S>(label: &str, values: I) -> Result<(), String>
@@ -559,6 +732,355 @@ rect = [14, 0, 14, 0]
 "#).expect_err("duplicate record_control kind should fail");
 
     assert!(err.contains("duplicate record_control kind"), "{err}");
+  }
+
+  #[test]
+  fn config_without_recording_buttons_is_valid() {
+    // A modular config that omits the recording feature entirely must parse:
+    // it just launches a program with no recording abilities.
+    parse_config(r#"
+version = 1
+id = "no-record"
+title = "No Record"
+
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "preimage-row"
+monome = "big"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "big"
+kind = "remap_undo_button"
+rect = [15, 15, 15, 15]
+"#).expect("a config without recording buttons should be valid");
+  }
+
+  #[test]
+  fn partial_remap_group_is_rejected() {
+    // The remap group is all-or-nothing: a grid without its 12-edo row and undo
+    // button is invalid.
+    let err = parse_config(r#"
+version = 1
+id = "lonely-grid"
+title = "Lonely Grid"
+
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+"#).expect_err("a grid without preimage_row/undo should fail");
+
+    assert!(err.contains("all-or-nothing"), "{err}");
+    assert!(err.contains("preimage_row"), "{err}");
+  }
+
+  #[test]
+  fn partial_record_group_is_rejected() {
+    // The record group is all-or-nothing: declaring some recording buttons but
+    // not all of them is invalid, even with the remap group fully present.
+    let err = parse_config(r#"
+version = 1
+id = "partial-record"
+title = "Partial Record"
+
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "preimage-row"
+monome = "big"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "big"
+kind = "remap_undo_button"
+rect = [15, 15, 15, 15]
+
+[[monome_windows]]
+id = "record-start"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [13, 0, 13, 0]
+
+[[monome_windows]]
+id = "record-stop"
+monome = "big"
+kind = "record_control"
+control = "stop"
+rect = [14, 0, 14, 0]
+"#).expect_err("a partial record group should fail");
+
+    assert!(err.contains("all-or-nothing"), "{err}");
+    assert!(err.contains("record_control(arm)"), "{err}");
+  }
+
+  #[test]
+  fn record_group_requires_remap_group() {
+    // The full record group is present, but it depends on the remap group,
+    // which this config omits entirely.
+    let err = parse_config(r#"
+version = 1
+id = "record-no-remap"
+title = "Record No Remap"
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "record-start"
+monome = "big"
+kind = "record_control"
+control = "start"
+rect = [13, 0, 13, 0]
+
+[[monome_windows]]
+id = "record-stop"
+monome = "big"
+kind = "record_control"
+control = "stop"
+rect = [14, 0, 14, 0]
+
+[[monome_windows]]
+id = "record-loop"
+monome = "big"
+kind = "record_control"
+control = "loop"
+rect = [15, 0, 15, 0]
+
+[[monome_windows]]
+id = "record-arm"
+monome = "big"
+kind = "record_control"
+control = "arm"
+rect = [13, 1, 13, 1]
+
+[[monome_windows]]
+id = "record-erase-ons"
+monome = "big"
+kind = "record_control"
+control = "erase_ons"
+rect = [14, 1, 14, 1]
+
+[[monome_windows]]
+id = "record-end-all"
+monome = "big"
+kind = "record_control"
+control = "end_all"
+rect = [15, 1, 15, 1]
+
+[[monome_windows]]
+id = "record-rscm"
+monome = "big"
+kind = "record_control"
+control = "rscm"
+rect = [15, 2, 15, 2]
+"#).expect_err("a record group without the remap group should fail");
+
+    assert!(err.contains("requires the \"remap\""), "{err}");
+  }
+
+  #[test]
+  fn scale_slots_config_is_valid() {
+    // The remap group plus a complete scale group (slot grid + store + empty).
+    parse_config(r#"
+version = 1
+id = "save-scales"
+title = "Save Scales"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "preimage-row"
+monome = "big"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "big"
+kind = "remap_undo_button"
+rect = [15, 15, 15, 15]
+
+[[monome_windows]]
+id = "scale-slots"
+monome = "big"
+kind = "scale_slots"
+rect = [12, 0, 15, 3]
+
+[[monome_windows]]
+id = "scale-store"
+monome = "big"
+kind = "scale_control"
+control = "store"
+rect = [15, 4, 15, 4]
+
+[[monome_windows]]
+id = "scale-empty"
+monome = "big"
+kind = "scale_control"
+control = "empty"
+rect = [14, 4, 14, 4]
+"#).expect("a remap + complete scale config should be valid");
+  }
+
+  #[test]
+  fn partial_scale_group_is_rejected() {
+    // Slot grid present, but the store/empty arm buttons are missing.
+    let err = parse_config(r#"
+version = 1
+id = "partial-scale"
+title = "Partial Scale"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "preimage-row"
+monome = "big"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "big"
+kind = "remap_undo_button"
+rect = [15, 15, 15, 15]
+
+[[monome_windows]]
+id = "scale-slots"
+monome = "big"
+kind = "scale_slots"
+rect = [12, 0, 15, 3]
+"#).expect_err("a scale group without its arm buttons should fail");
+
+    assert!(err.contains("all-or-nothing"), "{err}");
+    assert!(err.contains("scale_control(store)"), "{err}");
+  }
+
+  #[test]
+  fn scale_group_requires_remap_group() {
+    // A complete scale group, but no remap group to make scales with.
+    let err = parse_config(r#"
+version = 1
+id = "scale-no-remap"
+title = "Scale No Remap"
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+
+[[monome_windows]]
+id = "scale-slots"
+monome = "big"
+kind = "scale_slots"
+rect = [12, 0, 15, 3]
+
+[[monome_windows]]
+id = "scale-store"
+monome = "big"
+kind = "scale_control"
+control = "store"
+rect = [15, 4, 15, 4]
+
+[[monome_windows]]
+id = "scale-empty"
+monome = "big"
+kind = "scale_control"
+control = "empty"
+rect = [14, 4, 14, 4]
+"#).expect_err("a scale group without the remap group should fail");
+
+    assert!(err.contains("requires the \"remap\""), "{err}");
   }
 
   #[test]

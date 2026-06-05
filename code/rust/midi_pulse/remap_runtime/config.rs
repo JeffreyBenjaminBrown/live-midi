@@ -1,4 +1,5 @@
 use super::record::RecordControl;
+use super::scale::ScaleControl;
 
 #[derive(Clone)]
 pub(crate) struct RemapConfig {
@@ -14,6 +15,11 @@ pub(crate) struct RemapConfig {
   // config is the single source of truth for which monome cells the runtime
   // owns. Tests use `default_record_controls()` to seed the canonical layout.
   pub(crate) record_controls: Vec<(RecordControl, (i32, i32))>,
+  // The scale-slot grid rect [x0, y0, x1, y1] (inclusive), and the store/empty
+  // arm-button cells, all sourced from the TOML. `None`/empty means the config
+  // has no scale-saving feature.
+  pub(crate) scale_slots: Option<[i32; 4]>,
+  pub(crate) scale_controls: Vec<(ScaleControl, (i32, i32))>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +48,8 @@ impl RemapConfig {
       grid_h,
       initial_map: evenly_spaced_map(edo),
       record_controls: default_record_controls(),
+      scale_slots: None,
+      scale_controls: vec![],
     }
   }
 
@@ -56,6 +64,8 @@ impl RemapConfig {
       grid_h,
       initial_map: self.initial_map,
       record_controls: self.record_controls.clone(),
+      scale_slots: self.scale_slots,
+      scale_controls: self.scale_controls.clone(),
     }
   }
 
@@ -65,6 +75,29 @@ impl RemapConfig {
   ) -> Self {
     self.record_controls = record_controls;
     self
+  }
+
+  pub(crate) fn with_scale_slots(mut self, scale_slots: Option<[i32; 4]>) -> Self {
+    self.scale_slots = scale_slots;
+    self
+  }
+
+  pub(crate) fn with_scale_controls(
+    mut self,
+    scale_controls: Vec<(ScaleControl, (i32, i32))>,
+  ) -> Self {
+    self.scale_controls = scale_controls;
+    self
+  }
+
+  /// Number of scale slots, derived from the `scale_slots` rect (row-major).
+  pub(crate) fn scale_slot_count(&self) -> usize {
+    match self.scale_slots {
+      Some([x0, y0, x1, y1]) => {
+        ((x1 - x0 + 1).max(0) * (y1 - y0 + 1).max(0)) as usize
+      }
+      None => 0,
+    }
   }
 }
 

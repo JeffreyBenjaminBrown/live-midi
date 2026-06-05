@@ -5,10 +5,10 @@ The path *to* this folder is not needed.
 ** do both of these
 *** in docker
 cargo run --bin midi_pulse \
-  edo-un12-58-8-1-snap.toml
+  edo-un12_58-8-1_snap_save-scales.toml
 *** outside
 ./code/rust/connect-midi.sh \
-  edo-un12-58-8-1-snap.toml
+  edo-un12_58-8-1_snap_save-scales.toml
 * how to read a config
 ** read the window arrangements
 The most informative, least obvious aspect of these configs is the
