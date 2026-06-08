@@ -110,14 +110,14 @@ rect = [2, 3, 2, 3]
 id = "loop-remap-mode"
 monome = "loops"
 kind = "loop_remap_mode_toggle"
-rect = [5, 0, 5, 0]
+rect = [14, 0, 14, 0]
 
 # Copy a slot to another: press this, then 'from' slot, then 'to' slot.
 [[monome_windows]]
 id = "loop-copy"
 monome = "loops"
 kind = "loop_copy_button"
-rect = [5, 1, 5, 1]
+rect = [15, 1, 15, 1]
 
 # One-press undo of the last loop remap (fine or coarse). Its own looper kind --
 # shares the undo mechanism in code, not the entangled remap_undo_button kind.
@@ -125,7 +125,7 @@ rect = [5, 1, 5, 1]
 id = "loop-remap-undo"
 monome = "loops"
 kind = "loop_remap_undo"
-rect = [5, 2, 5, 2]
+rect = [15, 0, 15, 0]
 
 # The loop display compound: one rect derives a left row-picker column, a top
 # column-picker row, a reserved corner (0,5), and the main time x pitch area.

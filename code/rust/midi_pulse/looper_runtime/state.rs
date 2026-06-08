@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use super::display::build_display;
-use super::edo::{register_delta, shift_for_cell, step_for_cell};
+use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::remap::{apply_coarse, apply_fine, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
@@ -227,7 +227,12 @@ impl LooperState {
         let class = step_for_cell(self.x_step, self.y_step, self.register, x, y).rem_euclid(self.edo);
         if classes.contains(&class) {
           levels[idx] = LEVEL_FULL;
-        } else if shift_for_cell(self.shift_rect, (x, y)).is_some() {
+        } else if matches!(
+          shift_for_cell(self.shift_rect, (x, y)),
+          Some(Shift::Up | Shift::Down | Shift::Left | Shift::Right)
+        ) {
+          // Only the four arrows are findable-dim; the octave corners stay dark,
+          // so the pad reads like the arrow-key cluster on a keyboard.
           levels[idx] = LEVEL_DIM;
         }
       }
@@ -681,7 +686,12 @@ mod tests {
   #[test]
   fn shift_pad_does_not_play_and_shows_dim() {
     let mut s = state();
-    assert_eq!(level_at(&s.edo_levels(), 14, 15), LEVEL_DIM);
+    let levels = s.edo_levels();
+    // The four arrows are dim; the two octave corners are dark (keyboard-like).
+    assert_eq!(level_at(&levels, 14, 15), LEVEL_DIM, "down arrow dim");
+    assert_eq!(level_at(&levels, 13, 15), LEVEL_DIM, "left arrow dim");
+    assert_eq!(level_at(&levels, 13, 14), LEVEL_OFF, "octave-down corner dark");
+    assert_eq!(level_at(&levels, 15, 14), LEVEL_OFF, "octave-up corner dark");
     assert!(s.edo_key(14, 15, true, ms(0)));
     assert!(s.down.is_empty());
     assert_eq!(s.register(), 1); // down-shift = +y_step

@@ -131,22 +131,25 @@ can't play; no loss).
 Shift pad =edo_shift_pad= ~[13,14,15,15]~ -- each arrow shifts by one cell, the
 corners by an octave:
 
-| cell    | label | effect                       |
-|---------+-------+------------------------------|
-| (13,14) | Od    | octave down (-58 steps)      |
-| (14,14) | ^     | up: pressed notes -1 step    |
-| (15,14) | Ou    | octave up (+58 steps)        |
-| (13,15) | <     | left: pressed notes -8 steps |
-| (14,15) | v     | down: pressed notes +1 step  |
+| cell    | label | effect                        |
+|---------+-------+-------------------------------|
+| (13,14) | Od    | octave down (-58 steps)       |
+| (14,14) | ^     | up: pressed notes -1 step     |
+| (15,14) | Ou    | octave up (+58 steps)         |
+| (13,15) | <     | left: pressed notes -8 steps  |
+| (14,15) | v     | down: pressed notes +1 step   |
 | (15,15) | >     | right: pressed notes +8 steps |
+
+Only the four arrows light (dim), so the pad reads like a keyboard's arrow-key
+cluster; the two octave corners (Od, Ou) stay dark.
 
 ** grid 2 -- loops (prefix /looper-loops)
 
 #+begin_example
         x: 0   1   2   3    4   5   6 ............. 15
- y=0   [ S   S   S   S    .   T   .  .  .  .  .  . ]
- y=1   [ S   S   S   S    .   C   .  .  .  .  .  . ]
- y=2   [ S   S   S   S    .   U   .  .  .  .  .  . ]
+ y=0   [ S   S   S   S    .   .   .  .  .  .  F  U ]
+ y=1   [ S   S   S   S    .   .   .  .  .  .  .  C ]
+ y=2   [ S   S   S   S    .   .   .  .  .  .  .  . ]
  y=3   [ a   o   p   S    .   .   .  .  .  .  .  . ]
  y=4   [ .   .   .   .    .   .   .  .  .  .  .  . ]
  y=5   [ *   c   c   c    c   c   c  c  c  c  c  c ]   <- column pickers
@@ -163,9 +166,9 @@ corners by an octave:
   - ~a~ (0,3) *start* -- record into the active slot.
   - ~o~ (1,3) *stop* -- stop the active slot's recording or playback.
   - ~p~ (2,3) *play* -- loop the active slot as the sole sounding loop.
-- ~T~ (5,0) -- *fine/coarse toggle* =loop_remap_mode_toggle=.
-- ~C~ (5,1) -- *copy* =loop_copy_button= (copy, then from, then to).
-- ~U~ (5,2) -- *remap undo* =loop_remap_undo=.
+- ~F~ (14,0) -- *fine* (or else coarse) =loop_remap_mode_toggle=.
+- ~U~ (15,0) -- *remap undo* =loop_remap_undo=.
+- ~C~ (15,1) -- *copy* =loop_copy_button= (copy, then from, then to).
 - *loop display* =loop_display= ~[0,5,15,15]~:
   - ~*~ (0,5) -- reserved (unused for now).
   - ~c~ -- *column pickers* (top row): select a whole time-column.

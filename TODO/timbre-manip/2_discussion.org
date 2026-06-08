@@ -251,6 +251,24 @@ because even with sustain-the-edits off, a fingerd value affects new note-ons.)
 D sounds as normal. The next time C happens, and thereafter,
 it is a saw wave. None of the other parameters of the loop's notes
 were affected by these timbre ops.
+****** claude: destructive it is -- model locked
+Both modes write the loop's stored per-note timbre; the failsafe duplicate slot
+(+ copy-back) is the undo. So loop-note storage is mutable after record, and
+"sustain-the-edits" (lit solid; key-down toggles) governs whether *released*
+edits keep rewriting new note-ons -- while a *held* row always does. Two things
+I'll carry into the plan as decisions (flag if wrong):
+- *Timing/scope:* edits bake in at *note-on*, as the playhead triggers each note;
+  a selection just *filters* which note-ons get rewritten (no selection = all).
+- *Controls:* "sustain-the-edits" is its own toggle in the timbre window; the
+  loop-display corner cell stays *clear-selection only* (the two don't merge --
+  one is a toggle, one is momentary).
+The failsafe-duplicate slot is a *looper-side* addition (it's a loop slot), so the
+plan lists it as a dependency on the looper work you have in flight.
+******* TODO
+Timing is irrelevant if there is a selection.
+In that case the edits apply to everything selected immediately.
+
+Yes, they should be two distinct buttons.
 ** 1d. The overlay's footprint collides with both grids' existing windows.
 The window is ~7 rows tall (waveform/slots row + volume + five FX rows) anchored
 at the top-left, and it can sit on *either* monome. Two problems:
@@ -321,6 +339,12 @@ Start as the four waveforms.
 As timbres are saved, replace them with those saved timbres --
 the first saved timbre overwrites the first slot (no matter where
 that first timbre was saved), the second does similarly, etc.
+******** claude: locked
+Folded strip's four cells start as the four waveforms, then the first four *saved*
+timbres overwrite them in save-order. Plan assumes only the first four (later
+saves don't displace them); say so if you want a rolling most-recent-4.
+********* TODO ooh, rolling is a good idea
+let's do that
 ******  2. *Does the underlying window resize at runtime?*
 "Begins just under" reads as
 the loop/edo window's *top tracking the timbre window's current height* -- so
@@ -351,6 +375,13 @@ But on the other one, the "foldable edo-grid timbre window + loop" window
 has to be defined as a single window with two (non-configurable) sub-windows.
 Any windows that need to occlude it can be placed
 relative to it, or relative to either of its sub-windows.
+******** claude: locked -- relative coords + one compound window
+Clear. The plan adds: (1) window rects may be *relative to another window*, with
+negative indices counting from the far edge ((-1,-1) = bottom-right); (2) on the
+loop monome, a single compound "timbre+loop" window with two non-configurable
+sub-windows, the loop sub-window's top pinned under the timbre sub-window so it
+reflows on fold; (3) the edo monome stays all-absolute -- the loop-timbre window
+just occludes the (big) grid. I'll propose the exact TOML syntax in the plan.
 ******  3. *Fold state machine.* The strip has an "unfold" cell; what *folds* the
    unfolded window, and how does that relate to the activate-timbre-window button
    -- does that button now cycle closed -> folded -> unfolded, or open/close while
@@ -360,6 +391,13 @@ log row at a smaller width, consistent with the tagged-range model at 1a.)
 ******* TODO the same button unfolds
 If I forgot to count that fold/unfold button in the button count,
 make it the top-left button of the window in either state.
+******** claude: locked -- folded is the resting state
+So the window's top-left cell is the *only* fold control: unfold when folded, fold
+when unfolded. Reconciling with the vision: "displaying the timbre window" =
+unfolding; "pressing it again deactivates" = folding back. So *folded* (the 1-row
+strip) is the deactivated/resting state -- there's no separate hidden state, the
+strip is always present. That also retires the old "activate button covers the
+window's dead corner" worry: the top-left cell simply *is* the fold/unfold control.
 * 2. Contradictions and overloaded labels
 
 ** 2a. "a panel to control which controls are controllable" vs. "show them all."
