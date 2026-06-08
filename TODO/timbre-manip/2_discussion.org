@@ -1,0 +1,511 @@
+* discussion: timbre manipulation
+This responds to =TODO/timbre-manip/1_vision.org=. I've also read
+=code/rust/configs/README.org=, =RUNTIME-NOTES.org=, the =monome-looper=
+=1_vision.org= and =2_discussion.org= (since the vision says this builds on the
+looper), and the actual sawwave synth source -- =sawwave/osc.rs=,
+=sawwave/voices.rs=, =sawwave/types.rs= -- so the implementation notes below
+describe what the runtime does today, not what its names imply.
+
+(Filing note: every other feature keeps =1_vision.org= and =2_discussion.org= in
+the *same* directory. The vision lives in =timbre-manip/= but you asked for this
+in =timbre-remap/=. I've written it where you asked; if =timbre-remap= was a slip
+for =timbre-manip=, move it so the pair stays together.)
+
+The vision is musically clear and the parameter set is well chosen. What's missing
+is almost entirely *mechanism*: the document specifies what each parameter
+*means* but never how a row of buttons *reads* a value or *shows* one, and the
+headline feature -- "apply to a selection from the loop" -- needs a synth that
+does not exist yet (today every voice shares one global timbre, and it's a
+triangle, not even the saw its sink is named for). I've ordered the notes by how
+much each blocks a build.
+
+* 1. The biggest gaps (a build can't start without these)
+
+** 1a. The row-control idiom is never defined.
+*** q
+Every parameter except waveform is "a row" mapped to a range -- volume (6 dB
+steps), AM/FM frequency (2x steps), AM amplitude (linear 0..1), AM shape, FM
+amplitude (2x cents). But the document never says the two things a row needs:
+
+1. *How a press sets the value.* Is pressing the k-th cell "set this parameter to
+   its k-th value" (a detent / radio button), or is it a thermometer (cells 0..k
+   lit, press k to fill to k)? Waveform *must* be radio (four exclusive values).
+   The cleanest, most consistent choice is: *every row is radio -- one lit cell =
+   the current value, press a cell to jump there.* Confirm.
+2. *How the current value is shown.* With radio rows this is one solid cell per
+   row; with thermometer it's a bar. This matters for the LED budget (2f) and is
+   the difference between a row you can read at a glance and one you can't.
+**** TODO
+Radio buttons, one solid cell per bar.
+***** TODO claude: locked
+Radio, one solid cell per row. ("Per bar" -- same thing: one lit cell marks the
+value, the rest of the row is dark.)
+*** the range blows up if the row is the full grid width
+This is the load-bearing consequence of (1a) and it's quietly broken as written.
+The vision's numbers all assume *8 buttons*: "if 8 buttons, the highest value is
+32 Hz" (0.25 x 2^7). But the timbre window spans the grid, so a row is plausibly
+*16* wide. With a fixed 0.25 Hz floor and a fixed 2x factor, 16 cells put AM/FM
+frequency at 0.25 x 2^15 ~ 8 kHz -- audio rate, absurd for "slow" modulation. The
+same blows up volume (16 x 6 dB = 90 dB) and FM depth (5 cents x 2^15 ~ 27 000
+cents).
+
+So one of these has to give, and the choice should be stated:
+- *Fix both endpoints, derive the factor from the cell count* (e.g. 0.25 Hz to
+  32 Hz across however many cells; factor = (top/bottom)^(1/(n-1))). This is the
+  looper's own instinct -- counts come from the rect (looper 1c/3e), not from a
+  separate field -- so the .toml carries =[low, high]= per row and the per-cell
+  step falls out of the row's width.
+- *Or fix the factor and the floor, and make the rows 8 wide* (half the grid),
+  accepting the vision's literal "if 8 buttons" everywhere.
+
+I'd take the first: endpoints in the .toml, width from the rect, factor computed.
+Either way "if 8 buttons, 32 Hz" can't survive as a literal on a 16-wide row.
+**** TODO not really that important
+This will surely be changed later.
+Let's make it user-configurable.
+Some values are linear; in that case, give min and max.
+Other values are logarithmic; in that case,
+give the least value and the multiplier from one button to the next.
+If it extends into audio rate that will actually probably be fun; not a problem.
+***** TODO claude: so each row carries a tagged range in the .toml
+Then each parameter row's config is one of:
+- linear -> [min, max]
+- log    -> [least, multiplier]
+with the cell count coming from the rect. Waveform and AM-shape-family aren't
+ranges at all -- they're enums -- so a row's "kind" is really
+{linear | log | enum}. I'll model it that way in the .toml.
+** 1b. There is no per-voice timbre today -- this is the core new work.
+The vision's first sentence makes timbre *per-note*: "applied live to every
+fingered note, or ... to a selection from the loop." A loop selection with its own
+timbre means loop note A can be a fast-AM square while live note B is a slow-FM
+sine, *sounding at once*. That is polytimbral synthesis, and the current engine is
+strictly monotimbral:
+
+#+begin_src rust
+// sawwave/voices.rs -- the entire oscillator
+mix += triangle(v.phase) * v.env * amplitude;   // one global `amplitude`, one waveform
+#+end_src
+
+#+begin_src rust
+// sawwave/types.rs -- a voice carries no timbre at all
+pub struct VoiceState { id, freq, phase, env, target_env, ramp_per_sample }
+#+end_src
+
+Consequences worth naming before any .toml is drafted:
+*** Waveform, volume, AM and FM all have to move
+onto =VoiceState=* (a waveform
+enum, a per-voice gain, AM/FM LFO phase + params), and =render_block= has to
+branch on waveform and apply the modulators per voice. None of that exists.
+*** "saw" isn't implemented either.
+Despite the =cpal_sawwave= sink name, the
+oscillator is =triangle()=. So of the four baseline waveforms, *one* (triangle)
+exists, and it's misfiled under a "saw" name. Sine/square/saw are all new, and
+the sink (or its name) should be reconciled.
+**** TODO yes, let's correct any lies
+***** TODO claude: locked
+The =cpal_sawwave= sink renders a triangle. I'll rename the sink/kind, fix its
+comments to match the wave it makes, and add the missing oscillators. (Same
+correction you ask for at 3a -- I'll track it once, here.)
+*** Loop notes need a timbre payload.
+The looper stores loop notes as events with
+no timbre; per-note loop timbre adds a field (likely a timbre-slot reference, so
+a loop note stores "slot 3," not a full parameter snapshot -- cheaper, and it
+tracks edits to that slot... unless you want loops frozen against later slot
+edits; decide which).
+**** TODO I'm pretty sure we can afford per-note parameters.
+If and when performance becomes an issue, we can revisit the decision.
+***** TODO claude: per-note snapshot, noted -- one consequence
+A full per-note snapshot (not a slot reference) means a recorded note is *frozen*
+against later edits to the slot it came from: re-saving slot 3 won't touch notes
+already recorded with slot 3's old timbre. Right default for a recording -- just
+naming it. (Where those per-note values come *from* is the open question at 1c.)
+** 1c. The loop-application gesture is unspecified.
+"or (similarly to pitch remap) to a selection from the loop" leans entirely on the
+analogy, but pitch remap and timbre application are only similar in their *first*
+half:
+- *Selection* -- reuse the looper's row/column/cell pickers on the loops grid.
+  Plausible and good (the looper already built rows-XOR-columns-XOR-cells with
+  immediate mode-switching).
+- *Application* -- here they diverge. Pitch remap repicks *each* selected note's
+  pitch, lowest-first, N presses. Timbre is *one* value for the *whole* selection,
+  so it's a single stamp, not a serial per-note edit. The cardinality is totally
+  different, so "similarly to pitch remap" undersells how much simpler this is.
+
+What's actually undefined: *after* selecting a loop region, what stamps the
+timbre onto it? Candidates:
+- press a *timbre slot* -> that slot's timbre is written onto the selection, or
+- the selection adopts the *current live* timbre via some "apply" press.
+
+I'd propose: select region (loops grid), then press a timbre slot to stamp it
+(reuses the slot buttons; no new control). Confirm, and say whether the stamp
+stores a slot-reference or a snapshot (ties to 1b).
+*** TODO
+The timbre manip can affect the loop or the grid.
+We'll need a new toggle button for that.
+If it affects the edo grid, what to do is clear (I think; push back if not).
+If the timbre manip affects instead the loop,
+it should update the six parameter rows
+to reflect the lowest still-sounding note from the current note group column.
+The user can play that stuff; any key they press on that row
+changes that parameter, but only affects future note-ons.
+These are toggles; when the user lifts their finger, the value stays there.
+Similarly if they press a 'recall whole timbre' button.
+There should be yet another (momentary -- key up does nothing)
+key to 'forget' the parameters the user was manipulating going forward --
+the next note played from the loop reverts the displayed timbre settings
+to whatever the loop has stored for that note.
+**** TODO claude: a different model than I proposed -- and it turns on one question
+Two parts settle cleanly, one needs nailing down.
+- *Edo-grid target is clear -- agreed, no pushback.* The rows show and set the
+  current *live* timbre; pressing a row sets it; it applies to every note
+  fingered afterward.
+- *This supersedes my "select a region" idea.* Your model follows the *playhead*
+  (rows track "the lowest still-sounding note of the current note-group column"),
+  so there's no row/column/cell selection of the loop for timbre at all -- the
+  looper's pickers aren't reused here. Confirm I should drop the selection
+  framing.
+- *The open question -- destructive, or a live overlay?* "Forget ... reverts to
+  whatever the loop has stored" only makes sense if your manipulations did *not*
+  write the loop's stored per-note timbre (else forget would revert to your own
+  edits and do nothing). So it reads as a *non-destructive live override*. If so:
+  1. Where do a note's stored per-note timbres (1b) come from, if manipulation
+     never writes them? Natural answer: *captured at record time* -- each note
+     remembers the live timbre it was played with. Yes?
+  2. Is there ever a way to *permanently* rewrite a recorded note's timbre (a
+     "commit"), or is per-note timbre only ever set at record time and otherwise
+     only overridden live?
+  3. The override is global ("future note-ons") while the display reads one note
+     (the lowest), so you can't re-timbre one pitch of a column without the rest.
+     Per-note granularity lives in *storage*, not in the live override -- right?
+**** TODO jeff
+Right on (3).
+
+Oh I forgot about the row/column/cell picking functions.
+If any of those are active, timbre changes only affect them.
+This is the natural place to use that corner cell we hadn't defined:
+it turns off all selection in the loop.
+
+If there is no seleection in the loop,
+then playing the timbre affects all future note ons.
+That corner key can play double-duty to 'forget' the played timbres
+and revert to whatever the future note-ons had stored.
+
+Each note should indeed have its timbre captured at record time.
+** 1d. The overlay's footprint collides with both grids' existing windows.
+The window is ~7 rows tall (waveform/slots row + volume + five FX rows) anchored
+at the top-left, and it can sit on *either* monome. Two problems:
+
+1. *It occludes whatever is under it.* On the edo monome those top rows are
+   *playable notes*; on the loops monome they're the loop-display compound (whose
+   top row is the looper's column-picker). So opening the overlay clobbers either
+   live play or the loop display -- yet "applied live to every fingered note"
+   implies you sometimes want to tweak timbre *while* playing. Is interaction
+   under the overlay suspended while it's open, and is that acceptable given you
+   can only edit timbre on the grid you're not playing?
+2. *The activate button reserves (0,0) on both grids, permanently.* On the loops
+   grid that's exactly the "top-left button I haven't decided how to use yet" the
+   looper left open (looper 1c) -- so timbre-activate is a natural tenant for it.
+   On the edo grid (0,0) is a live note today; reserving it is the same
+   "no-harm" cell sacrifice the looper made for its shift window, just noted.
+
+Also clarify the overlap at the window's own corner: "the activate button is drawn
+on top ... below it is the timbre window's top-left corner." Read with Z-order
+(README: windows are back-to-front), the activate button *covers* the window's
+(0,0), so that one cell of the timbre window is dead. Intended? (Probably yes --
+just confirming the corner is sacrificed, not double-booked.)
+*** TODO the occlude is fine
+If I want to manipulate the live notes, I'll probably open it over the loop grid,
+and if I want to manipulate the loop, I'll probably open it over the edo grid.
+Ooh that actually means I don't need a toggle button to indicate
+which of those two things it affects --
+and I can even have two of them open, to manipulate both at the same time.
+**** TODO claude: your insight kills the 1c toggle -- but trips one vision line
+- *The 1c toggle is now unnecessary.* Which monome the overlay sits on *is* the
+  loop-vs-grid switch, so drop the "new toggle button" from your 1c answer.
+- *"Two open at once" contradicts the vision.* =1_vision.org= says "Activating
+  the timbre window on one of them disables it on the other." Wanting both open
+  overturns that -- the rule has to become "each grid may hold one, and which
+  grid it's on decides what it targets," not mutual exclusion.
+- It stays practical because the overlay is only ~7 rows tall: even with one on
+  each grid, the bottom rows of both stay live for playing / seeing the loop.
+***** TODO right
+The exclusivity is gone. We just have one button on each monome
+to open a window for manipulating timbres from the other monome.
+*** TODO What do you mean 'the activate button'?
+There's lots of stuff to activate, isn't there?
+I'm not finding 'the activate button is drawn on top'
+in any document except this one.
+**** TODO claude: my shorthand for your own vision line
+"The activate button" = your =1_vision.org= layout line, verbatim: "The 'activate
+timbre window' button is drawn on top." It's the top-left button on each monome
+that shows/hides the timbre window. I shortened "activate timbre window button"
+to "the activate button"; since (as you note) lots of things get activated, I'll
+write it out as the "activate-timbre-window button" from here on.
+**** TODO ah
+The loop window should begin just under the timbre window.
+Similarly for the edo grid.
+If the timbre window is 'folded', let's still have it occupy one row,
+with these controls:
+-unfold window
+-the four timbres
+-the rest are the amplitude row, scaled for that range (still logarithmic)
+* 2. Contradictions and overloaded labels
+
+** 2a. "a panel to control which controls are controllable" vs. "show them all."
+The intro says "There will be a lot of controls, so we'll use some panel to
+control which controls are controllable." The layout says the opposite: "for now
+we can afford to show them all at once," and "If we get more parameters I'll
+eventually have to make those windows hideable, but for now..." These are the same
+idea (a meta-panel that hides/shows parameter rows), and the layout correctly
+defers it. So the intro sentence overstates v1. Recommend: soften the intro to
+"eventually" -- there is no selection panel in the first build.
+
+*** TODO sure
+correct the intro
+**** TODO claude: locked
+Intro softened to "eventually"; no parameter-selection panel in v1.
+
+** 2b. "save timbre slot" vs. "arm timbre storage button."
+Storage calls it "a special 'save timbre' slot ... changes the meaning of the
+timbre slots." Layout makes it a *separate* button ("the 'arm timbre storage'
+button, and the rest in that row are timbre slots"). So is it one of the slots or
+its own cell? Layout's reading is cleaner (a dedicated arm cell, then N slots) and
+matches the =scale_control= store idiom. Recommend: it's a separate "arm" button,
+not a slot; fix the storage prose to match.
+
+*** TODO Right, it is separate
+They are not the same kind. All docs should reflect that.
+**** TODO claude: locked
+Two distinct kinds: an "arm timbre storage" button, and the timbre slots. The
+storage prose (which called the arm a "slot") gets fixed to match the layout.
+
+** 2c. "Amplitude" means a different thing in each place it appears.
+Three uses, two of them surprising:
+- *AM amplitude* "controls the least value of the wave ... 0 to 1." That's the
+  modulation *floor*, and depth = (1 - amplitude): turning this *up* makes the
+  tremolo *shallower*, and at 1.0 there is no AM at all. Labelling the floor
+  "amplitude" is backwards from what a performer expects. Call it *floor* or
+  *depth* (and pick a direction).
+- *FM amplitude* "from 5 cents to whatever ... in increments that double." That's
+  a peak *deviation* in cents -- an actual depth, and it grows the *opposite*
+  way from AM "amplitude."
+So the same row label denotes "floor (inverse depth)" on the AM rows and "peak
+depth" on the FM rows. Rename so the two read consistently (e.g. AM: floor; FM:
+depth).
+
+*** TODO overruled :)
+Amplitude is the standard term used in all three contexts.
+If a user doesn't know what context they're in, that's their fault.
+**** TODO claude: name stands -- one wiring note, not a spelling
+Keeping "amplitude" everywhere is fine. The only thing the docs/code must pin so
+it's built the right way round is the *direction* of AM amplitude: you defined it
+as the wave's *least value*, so amplitude *up* = AM *shallower* (1.0 = no AM). An
+implementer who reads only "amplitude, 0 to 1" will likely wire it backwards
+(up = deeper). One sentence of direction in the docs prevents that.
+***** TODO oh but that is more natural
+You're right -- "more AM" should mean "wider AM".
+So let's reverse its direction.
+** 2d. AM row order disagrees with itself.
+The "slow AM" section defines the rows *Frequency, Amplitude, Shape*; the layout
+lists them *amp, freq, shape*. Minor, but pick one order and use it in both the
+prose and the .toml so the config reads top-to-bottom the way the document does.
+
+*** TODO alphabetical
+**** TODO claude: locked
+AM rows: amp, freq, shape. FM rows: amp, freq. (Both already alphabetical in the
+layout; the "slow AM" prose gets reordered to match.)
+
+** 2e. "Slow" AM/FM both reach 32 Hz.
+Both modulators top out at 32 Hz (8-cell assumption). 32 Hz is well past tremolo/
+vibrato into audible-sideband (ring-mod / FM-synthesis) territory, so "slow" is a
+misnomer at the top of the range. Not a bug -- just flag the name, or cap the top
+lower if "slow" is meant literally. (This interacts with 1a: whatever you pick for
+the row's top endpoint settles it.)
+
+*** TODO it's fine
+Even higher is fine, as noted above.
+The user will be easily able to change this in the config.
+**** TODO claude: locked
+Top end is configurable and may exceed audio rate by design. I'll keep "slow" as
+a loose label but drop any doc claim of an upper bound.
+
+* 3. Per-parameter concrete notes
+
+** 3a. Waveform.
+Radio over {sine, triangle, square, saw}; one solid cell = current. Synth reality
+(1b): only triangle exists, and the sink is misnamed "saw." All four want real
+oscillators; band-limiting square/saw (PolyBLEP or similar) avoids aliasing,
+especially once FM moves the pitch around -- worth budgeting, the current naive
+triangle doesn't alias much but a raw square/saw will.
+
+*** TODO agreed
+and all names, comments and docs should be corrected to reflect reality
+**** TODO claude: locked -- same correction as 1b
+The synth's names/comments/docs get reconciled to what it actually renders
+(triangle today, plus the new sine/square/saw). Tracked once, at 1b.
+
+** 3b. Volume.
+- *Anchor and headroom.* "Logarithmic, 6 dB steps" needs a 0-dB reference. Is the
+  top cell unity (= today's global =amplitude=0.15=) with lower cells attenuating,
+  or does the top *boost* above it? The mixer hard-clips at +-0.95
+  (=voices.rs=), and per-note timbres mean many voices sum, so boosting invites
+  clipping. I'd anchor the top cell at the current sink amplitude and only
+  attenuate below it.
+- *Is volume really part of a saved timbre?* The vision says yes ("waveform,
+  volume, AM, FM ... a timbre slot records them all"). Consequence: recalling a
+  patch *jumps the volume*, which can be startling mid-performance, and it's the
+  one "parameter" that's arguably a performance control, not a tone color.
+  Worth confirming you want recall to move volume; if not, volume becomes a global
+  fader excluded from the snapshot.
+
+*** TODO
+Agreed on headroom.
+Amplitude really should be part of a saved timbre.
+**** TODO claude: locked
+Top cell = unity (today's sink amplitude), attenuate below; volume rides in the
+snapshot. Accept one consequence: in loop mode the volume row, like the others,
+jumps to each note's stored value as the playhead moves across it.
+
+** 3c. Slow AM -- and the answer to "is there something like that?"
+Yes. You asked for a one-parameter family from sine to square; the standard cheap
+answer is a *tanh-shaped sine*:
+
+#+begin_example
+y(p) = tanh(k * sin(2*pi*p)) / tanh(k)
+#+end_example
+
+As k -> 0 this is a pure sine; as k -> inf it approaches sign(sin) = square; it's
+monotonic in k and smooth in between. Map the shape cell index to k (e.g.
+k = t/(1-t) for t in [0,1)). For the *unipolar* AM multiplier, scale the result
+into =[floor, 1]=.
+
+Two corrections to the vision's own asides:
+- *Iterating sine does NOT approach a square.* sin(sin(sin(...))) *flattens and
+  shrinks* toward zero -- it gets rounder and quieter, the opposite of square. So
+  that fallback is unsound; drop it.
+- *Cost is a non-issue here regardless.* The modulator is a 0.25-32 Hz LFO, not an
+  audio-rate oscillator, so even an expensive shape is negligible -- and you can
+  precompute each shape as a small wavetable. So choose the shape for *sound*, not
+  cost.
+
+If you'd rather keep the cheaper *triangle<->square* fallback you describe (widen
+the triangle's points into flats until the sides go vertical), that's a clean
+trapezoid wave -- exact, piecewise-linear, monotonic in one parameter. It's a fine
+choice; just note its endpoints are triangle and square, *not* sine and square, so
+"sine at one extreme" would have to give. Pick which morph you want; the tanh form
+is the one that actually hits *sine* at the soft end.
+
+*** TODO let's use tanh but
+make this user-configurable too:
+"AM shape family" has two values, "sin-to-square" and "tri-to-square",
+defaulting to sin-to-square.
+**** TODO claude: locked -- one scoping question
+tanh for sin-to-square, trapezoid for tri-to-square; the "AM shape family" enum
+defaults to sin-to-square, and the shape *row* morphs within the chosen family.
+Is the family a *config-level* setting (fixed per .toml, like the row ranges), or
+a per-timbre saved parameter? I'll assume config-level unless you want it
+performable.
+***** TODO config-level
+** 3d. Slow FM.
+- Depth in cents (5 -> doubling) is clear; confirm it's the *peak* deviation
+  (so 5 cents = +-5 cents vibrato).
+- The modulator is locked to sine ("FM is driven by a sine wave") -- so FM has no
+  shape row, while AM does. That asymmetry is fine, just intentional and worth a
+  word (you may later want FM shape for symmetry; not now).
+
+*** TODO correct
+**** TODO claude: locked
+FM depth = peak deviation in cents; FM modulator is sine -- no shape row.
+
+** 3e. LFO phase: retrigger or free-run?
+New question the vision doesn't touch, but it shapes the *feel*: when a note
+starts, does its AM/FM LFO reset to phase 0 (retriggered tremolo/vibrato, tight
+and rhythmic) or read a free-running global LFO (notes share one continuous
+sweep)? For per-note loop timbres especially: do all notes of the same timbre
+share one phase, or each its own? I'd default to per-voice retrigger (simplest,
+and each =VoiceState= already owns a =phase=); flag it so it's a decision, not an
+accident.
+
+*** TODO per-voice
+**** TODO claude: locked
+Each note retriggers its own AM/FM LFO from phase 0 at note-on -- modulation is
+phase-locked to each onset.
+
+** 3f. Storage.
+*** *Slot count* comes from the row width
+(16 - the corner - 4 waveform - 1 arm ~
+10 slots on a 16-wide grid). Keep it implicit in the rect, like the looper's
+counts (looper 1c/3e); don't add an =n_slots= field.
+**** TODO yes
+***** TODO claude: locked
+Slot count stays implicit in the rect; no =n_slots= field.
+*** *Empty slots.* What does pressing a never-saved slot do -- nothing, or load a
+  default timbre? And how do empty/occupied/current show? The looper's loop-slot
+  ordering is the obvious template: current = solid, occupied = dim, empty = off
+  (=RUNTIME-NOTES= brightness gives you Off/Dim/Mid/Bright; Dim/Mid are unused
+  today, so there's room).
+**** TODO yes
+It should do nothing if empty, and be dark.
+If filled, it should be dim (or bright if it's the active one).
+***** TODO claude: locked
+Empty = off; occupied = dim; current/active = bright -- three of the four
+brightness buckets, and the dirtiness flash below is the bright one blinking.
+*** *Does capture auto-disarm?*
+The vision only gives *manual* disarm ("pressing it again disarms").
+After you arm and then capture into a slot, does save-mode stay
+armed (capture into several slots in a row) or auto-disarm after one (like
+=scale_control= store and the looper's copy gesture)? I'd auto-disarm after one
+capture; confirm.
+**** TODO yes, auto-disarm
+***** TODO claude: locked
+Arm captures exactly one slot, then disarms -- like =scale_control= store.
+*** *Live vs. stored divergence.*
+Pressing a slot "switches to it," but then you
+tweak a row -- is that slot still shown as current even though the live timbre
+now differs from what's stored? This is the looper's exact active-vs-stored
+problem. Cleanest: a slot stays "current" (solid) but the moment you edit, the
+live timbre is dirty/unanchored until re-saved. Decide whether to show that
+dirtiness at all.
+**** TODO I like it.
+We can show dirtiness via 50ms on / 50 ms off flashing.
+***** TODO claude: locked -- one edge
+The current slot flashes 50/50 once the live timbre is edited away from it. Edge:
+if you recalled *no* slot and just tweaked from scratch, no slot is current, so
+nothing flashes -- there's nothing to be dirty against. Fine; just naming it.
+* 4. Reuse and implementation notes
+"These should build on the code in =configs/= and =monome-looper=" -- the
+build/borrow split as the code stands:
+
+** Reusable:
+*** *Slot store/recall* is the =scale_slots= / =scale_control= idiom from
+=..._save-scales.toml= (arm, then press a slot to capture; press to recall),
+the same shape as the looper's copy gesture. The arm-timbre button and timbre
+slots should lift it directly.
+*** *Single-lit-cell rows*
+resemble the offset board's row selection -- a known pattern.
+*** *Loop-region selection*
+reuses the looper's rows/columns/cells pickers and their
+mode-exclusivity wholesale; only the *application* step is new (1c).
+*** *Window Z-order / overlay*
+uses the existing back-to-front compositor (README),
+so "activate button drawn on top" needs no new mechanism -- just a toggleable
+window whose visibility is mutually exclusive across the two monomes.
+** Genuinely new (nothing today does these):
+*** *Polytimbral voices* -- waveform/gain/AM/FM per =VoiceState=, and a
+  =render_block= that branches and modulates per voice (1b). The biggest piece.
+*** *AM and FM DSP* -- per-voice (or shared) LFOs, the sine<->square shape morph
+(3c), cents-based FM depth.
+*** *Real sine/square/saw oscillators*, band-limited, replacing the lone triangle
+(and reconciling the "saw" sink name).
+*** *Per-note timbre in the loop* -- a timbre field on stored loop notes plus the
+routing so loop playback voices carry it (1b/1c).
+*** *A timbre overlay that can move between the two monomes* and suspends/occludes
+what's under it (1d).
+*** *Loop-mode timbre performance* (1c) -- a playhead-following read head that
+drives the six rows from the lowest still-sounding note's stored timbre, plus
+three controls: a per-row live override (toggle; value persists on key-up), a
+"recall whole timbre," and a momentary "forget" that drops the override. Whether
+it also *writes* the loop is the open question at 1c.
+*** *Record-time timbre capture* (likely; pending 1c) -- each recorded loop note
+remembering the live timbre it was played with is probably the only thing that
+ever writes per-note storage.

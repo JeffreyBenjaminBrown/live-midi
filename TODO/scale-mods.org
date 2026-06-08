@@ -1,0 +1,76 @@
+* TODO scale mods for 12edo-to-higher-edo programs
+** select root from the 12-edo bar
+IIRC the 12-edo row on the monome is readonly.
+I would like it to become very slightly writeable:
+Exactly one note flashes in a pattern that means "I'm the root."
+When the user pushes a different one, key-down changes it to that one.
+The flash pattern is 50 ms on, 50 ms off twice (200 ms total)
+then 200 ms on, 200 ms off (so the full cycle is 600 ms).
+** absolute scale mods
+*** what it is
+A 'scale mod' is a way to modify a scale.
+It is represented as a series of (degree, higher edo value) pairs,
+where 'degree' is a number in [1,11] (the root cannot be remapped,
+that would be madness) and 'higher edo value' is in [1,e-1]
+where e is the higher edo (usually 58 for me).
+
+A scale mod is "applied" to the root,
+as dictated by the 12-edo row on the monome.
+
+For instance, suppose we're using 58-edo,
+the scale mod is 'major chord' [ (4,19), (7,34) ]
+and the root is C, which maps to some value R in 58-edo.
+Then applying the scale mod to the root
+causes E to map to R+19 and G to map to R+34,
+both taken modulo 58.
+*** the absolute scale mods to define
+**** TODO evenly spaced = panic
+**** major
+4,19
+6,29
+9,43
+11,53
+**** minor
+1,5
+3,15
+8,39
+10,49
+**** perfect
+2,10
+5,24
+7,34
+**** harmonics
+2,10
+4,19
+6,27
+7,34
+8,41
+10,47
+11.53
+** relative scale mods
+Recall that an absolute scale mod is a set of pairs (degree, higher-edo value).
+A relative scale mod is a set of pairs (degree, higher-edo offset).
+I would like four of them.
+*** major degrees up
+(4,+1) (6,+1) (9,+1) (11,+1)
+*** major degrees down
+(4,-1) (6,-1) (9,-1) (11,-1)
+*** minor degrees up
+(1,+1) (3,+1) (8,+1) (10,+1)
+*** minor degrees down
+(1,-1) (3,-1) (8,-1) (10,-1)
+** window positioning
+Let's have the scale mod buttons in the bottom-right,
+like this:
+
+| major      | minor      | perfect
+| major up   | minor up   | harmonics
+| major down | minor down | undo
+
+We can model this as two windows, a 3x3 scale mod window
+and a 1x1 undo window on top of it.
+The bottom-right corner of the scale mod window does nothing.
+** the monotonicity/invertibility problem
+Applying scale mods could cause the map to lose monotonicity or invertibility.
+If that would happen, refuse, signaling the error by
+making all the scale mod buttons light up at once for 100 ms.

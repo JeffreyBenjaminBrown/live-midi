@@ -1,0 +1,280 @@
+* layout + first config: monome looper
+This turns the decisions in =2_discussion.org= into (1) a window map of both
+grids and (2) a first =.toml= that, per your rule, encodes every window so a
+reader can see at a glance how the app is used.
+
+Status of the open question from round 3: *remap undo is IN* -- as a looper
+=loop_remap_undo= kind that shares the undo *mechanism* of =remap_undo_button=
+without reusing the kind itself (which is entangled in the shared "remap" window
+group; see =6_plan.org=). Everything else was settled in =2_discussion.org=.
+
+Caveat: this config uses several *new* window kinds and a new =[looper]= table,
+so it will not parse against today's =midi_pulse= (which rejects unknown kinds
+and fields). It's a target to build toward, not a runnable config yet -- see
+"what to build" at the end. When the kinds and the looper runtime exist, this
+becomes =code/rust/configs/monome-looper-58-8-1.toml=.
+
+* the two grids at a glance
+
+** grid 1 -- "edo": play surface, loop reflection, remap pitch-picker
+The whole grid is one =edo_note_grid=. The looper runtime also reflects the
+ACTIVE loop on it (sounding notes flash) and repurposes it as the pitch-picker
+during remap. A 3x2 shift pad overlays the lower-right six cells.
+
+#+begin_example
+ GRID 1  "edo"
+ +-----------------------------------------------+
+ |                                               |
+ |   edo_note_grid          [0,0 .. 15,15]       |
+ |     - plays 58-EDO notes -> saw sink          |
+ |     - reflects the ACTIVE loop (flash)        |
+ |     - becomes the pitch-picker during remap   |
+ |                                               |
+ |                              +----------+     |
+ |                              | Od  ^  Ou |  y=14
+ |                              | <   v  >  |  y=15
+ |                              +----------+     |
+ |                                x=13 14 15     |
+ +-----------------------------------------------+
+
+ shift pad  (edo_shift_pad  [13,14 .. 15,15]):
+   <  v  >   shift the pitch image left / down / right by one CELL
+      ^      shift the image up by one cell
+   Od / Ou   shift down / up by a whole octave
+   (one cell vertically = 1 step, horizontally = x_step = 8 steps;
+    an octave = 58 steps. The loop reflection re-anchors with the shift.)
+#+end_example
+
+** grid 2 -- "loops": slots, transport, the loop display, remap controls
+One slot is ACTIVE (the target of the controls, the display, and remap); active
+is *not* the same as sounding, and only one slot sounds at a time (no layering).
+
+#+begin_example
+ GRID 2  "loops"
+        x: 0   1   2   3    4    5    6 ............ 15
+ y=0      S   S   S   S    .    T    .  .  .  .  .  .
+ y=1      S   S   S   S    .    C    .  .  .  .  .  .
+ y=2      S   S   S   S    .    U    .  .  .  .  .  .
+ y=3      a   o   p   S    .    .    .  .  .  .  .  .
+ y=4      .   .   .   .    .    .    .  .  .  .  .  .
+ y=5      *   c   c   c    c    c    c  c  c  c  c  c     <- column-pickers
+ y=6      R   +----------------------------------------+
+  .       R   |          main loop display             |   time -> , pitch ^
+ y=15     R   +----------------------------------------+
+          ^
+       row-pickers
+
+   S        loop_slots [0,0 .. 3,3] -- 16 slots; ACTIVE = solid, recorded = dim,
+            playing-not-active = flash, empty = dark
+   a o p    transport (loop_control), overlaying the bottom slot row:
+              a (0,3) start recording   o (1,3) stop = record OR play
+              p (2,3) play (stop recording, loop the active slot)
+   T (5,0)   fine/coarse remap toggle (toggling back to fine also ENDS coarse)
+   C (5,1)   copy slot:  press C, then 'from' slot, then 'to' slot
+   U (5,2)   remap undo (last fine or coarse remap)
+   loop_display [0,5 .. 15,15] -- ONE window, four derived regions:
+     * (0,5)        reserved corner (unassigned for now)
+     c  top row     column-pickers      R  left col   row-pickers
+     main [1,6 .. 15,15]  = 15 time-columns x 10 pitch-rows
+#+end_example
+
+* the config
+
+#+begin_src toml
+version = 1
+id = "monome-looper-58-8-1"
+title = "Monome Looper 58 8 1"
+
+# ---------------------------------------------------------------------------
+# Two 16x16 grids, no piano. One is the EDO play/remap surface ("edo"), the
+# other is the LOOPS surface ("loops"). Both match select.size = [16,16]; the
+# runtime hands each config monome a DISTINCT unclaimed grid in config order
+# (so the first-discovered grid is "edo", the second "loops"). We don't care
+# which physical grid is which.
+# ---------------------------------------------------------------------------
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+# cpal sawwave sink, same params as monome-edo-sawwave. BOTH live play and loop
+# playback emit note events into this synth.
+[[sinks]]
+id = "saw"
+kind = "cpal_sawwave"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.050
+accretion_level = 0.5
+
+# Looper-wide scalars (all ms unless noted). NEW table.
+[looper]
+quantize_record_ms = 70    # events within this of the loop boundary snap to it
+cluster_display_ms = 100   # notes within this of each other = one display column
+flash_ms = 50              # reflection / equivalent flash half-period (50 on / 50 off)
+remap_center = [7, 7]      # edo-grid cell meaning "unison" in coarse remap
+                           # (geometric middle, rounded up-and-left)
+
+[[monomes]]
+id = "edo"
+listen_port = 9000
+prefix = "/looper-edo"
+select.size = [16, 16]
+
+[[monomes]]
+id = "loops"
+listen_port = 9001
+prefix = "/looper-loops"
+select.size = [16, 16]
+
+# ===========================================================================
+# GRID 1 -- "edo": play surface, loop reflection, remap pitch-picker.
+# ===========================================================================
+
+# Whole grid plays EDO notes. The looper runtime also reflects the ACTIVE loop
+# (sounding notes flash at flash_ms) and repurposes it as the remap pitch-picker.
+# Reused as-is from the sawwave runtime.
+[[monome_windows]]
+id = "edo-grid"
+monome = "edo"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "saw"
+
+# 3x2 shift pad overlaid on the lower-right (covered cells stop playing notes --
+# "no harm"). Listed AFTER edo-grid so it sits on top. NEW kind.
+#        x=13         x=14        x=15
+#  y=14  octave-down  shift-up    octave-up
+#  y=15  shift-left   shift-down  shift-right
+[[monome_windows]]
+id = "edo-shift-pad"
+monome = "edo"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+
+# ===========================================================================
+# GRID 2 -- "loops": slots, transport, loop display, remap controls.
+# ===========================================================================
+
+# 4x4 slot grid (16 slots). One is ACTIVE (control/display/remap target; active
+# != sounding). The three transport windows overlay its bottom row, so those
+# three slots are unreachable ("no harm"). NEW kind.
+[[monome_windows]]
+id = "loop-slots"
+monome = "loops"
+kind = "loop_slots"
+rect = [0, 0, 3, 3]
+
+# Transport, overlaying the bottom slot row. Multi-slot evolution of
+# record_control; all three act on the ACTIVE slot. NEW kind.
+[[monome_windows]]
+id = "loop-start"     # begin recording into the active slot (overwrites it)
+monome = "loops"
+kind = "loop_control"
+control = "start"
+rect = [0, 3, 0, 3]
+
+[[monome_windows]]
+id = "loop-stop"      # stop the active slot's current activity -- record OR play
+monome = "loops"
+kind = "loop_control"
+control = "stop"
+rect = [1, 3, 1, 3]
+
+[[monome_windows]]
+id = "loop-play"      # stop recording (if any) and loop the active slot
+monome = "loops"
+kind = "loop_control"
+control = "play"
+rect = [2, 3, 2, 3]
+
+# Remap-mode toggle: fine (re-pitch each selected note one-for-one) vs coarse
+# (transpose the selection; multiple fingers DUPLICATE voices). Both destructive.
+# Toggling back to fine also ENDS a coarse session. NEW kind.
+[[monome_windows]]
+id = "loop-remap-mode"
+monome = "loops"
+kind = "loop_remap_mode_toggle"
+rect = [5, 0, 5, 0]
+
+# Copy a slot to another: press this, then 'from' slot, then 'to' slot. Copy
+# onto a playing slot takes effect at that slot's next boundary. NEW kind.
+[[monome_windows]]
+id = "loop-copy"
+monome = "loops"
+kind = "loop_copy_button"
+rect = [5, 1, 5, 1]
+
+# One-press undo of the last loop remap (fine or coarse). Its own looper kind
+# (NOT remap_undo_button, which is entangled in the shared "remap" window group);
+# it shares the undo snapshot/push/pop mechanism as factored code, not the kind.
+[[monome_windows]]
+id = "loop-remap-undo"
+monome = "loops"
+kind = "loop_remap_undo"
+rect = [5, 2, 5, 2]
+
+# Loop display COMPOUND -- one rectangle, four derived sub-regions (the user
+# cannot place them separately). NEW kind.
+#   left column (x=0, y=6..15)   row-pickers     (select whole pitch-rows)
+#   top row     (x=1..15, y=5)   column-pickers  (select whole time-columns)
+#   corner      (0,5)            reserved
+#   main area   [1,6 .. 15,15]   the 2D loop: time across (15 cols), pitch up (10)
+# The main area's size sets the caps: >10 distinct pitches merge nearest, >15
+# note-groups merge nearest (no separate row/col fields). Rows = distinct pitches
+# actually played; columns = note-groups. Rows / columns / cells are mutually
+# exclusive selections; selecting any of the loop puts the edo grid into remap
+# mode, and the first edo-grid press freezes the selection.
+[[monome_windows]]
+id = "loop-display"
+monome = "loops"
+kind = "loop_display"
+rect = [0, 5, 15, 15]
+#+end_src
+
+* what to build (reuse vs new)
+
+(=6_plan.org= supersedes the build detail below; this is the high-level sketch.)
+
+Reused (as-is where callable, else factored into a shared module without changing
+existing behavior -- see the no-regressions invariant in =6_plan.org=):
+- =edo_note_grid= (the play surface) and the =cpal_sawwave= sink params.
+- the undo snapshot/push/pop *mechanism* of =remap_undo_button= (shared as code;
+  the looper exposes its own =loop_remap_undo= kind, not the entangled button).
+- the =[[tunings]] / [[monomes]] / [[sinks]] / [[monome_windows]]= plumbing.
+- the recording timestamp + note-event types (=RecordedEvent=, =wrap_duration=,
+  the playback stepping core) -- factored, then a *fresh* =LoopStore= built on top.
+
+New window kinds + table to implement:
+- =edo_shift_pad=, =loop_slots=, =loop_control= (start/stop/play),
+  =loop_remap_mode_toggle=, =loop_copy_button=, =loop_remap_undo=,
+  =loop_display= (the compound), and the =[looper]= table.
+
+New runtime mechanisms (none of these exist today -- see section 4 of
+=2_discussion.org=):
+- *Multi-monome orchestration* + distinct-device assignment in config order
+  (the =discover_configured_device= fix from 1b).
+- *Cross-grid routing*: a press on "loops" drives LEDs / mode on "edo".
+- *The loop engine*: record with boundary quantize (=quantize_record_ms=),
+  strip notes held the whole pass, cut notes still held at the boundary,
+  single-sounding playback, slot copy at the next boundary, stop = halt
+  record-or-play. No overdub, no slot-erase.
+- *The 2D display*: pitch merge-nearest and time merge-nearest overflow, with a
+  non-uniform (per-note-group) playhead.
+- *Remap modes*: fine (absolute, count-matched, lowest-first) and coarse
+  (relative, additive, destructive), with selection-accumulate-then-freeze and
+  one-press undo.
+- *Edo-grid LED arbitration*: play-mode (fingered solid > reflection flash) and
+  remap-mode (selected/center/playing solid > octave-equivalent flash) tables.
+
+* next step
+If you want, I can hand the "what to build" list to a planning pass to scope the
+Rust work (new kinds in =config.rs=, the looper runtime module, the cross-grid
+router), or start on any one piece. Otherwise this is a complete, buildable
+spec + target config.

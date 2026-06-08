@@ -294,20 +294,6 @@ bash code/rust/demos-and-explorations/monome/12-brightness-test.sh
 bash code/rust/demos-and-explorations/monome/12-brightness-test.sh 8
 #+end_src
 
-* Latency
-
-One sawwave session showed roughly 100 ms between button press and
-audible sound, while LEDs responded immediately. PipeWire buffer
-defaults are the most likely cause; Docker without realtime scheduling
-may also contribute.
-
-Mitigations:
-
-- request a smaller cpal buffer
-- run on the host rather than in Docker
-- grant the container ~CAP_SYS_NICE~ and ~--ulimit rtprio=99~
-- consider JACK bindings via PipeWire's JACK interface
-
 * MIDI connection recipes
 
 Use the config-aware host script:

@@ -5,6 +5,21 @@
 
 Source: https://github.com/JeffreyBenjaminBrown/montevideo/tree/master/Montevideo/Synth
 
+* Glossary
+
+- WM (width modulation) :: Time-varying modulation of the pulse
+  oscillator's /duty cycle/ -- the fraction =w= of each cycle that
+  =aPulse= sits "high". The duty cycle is what sets the harmonic
+  spectrum: the nth harmonic has magnitude proportional to
+  =|sin(π·n·w)| / n=, so =w=0.5= yields only odd harmonics (a square
+  wave, the default) and =w -> 0= approaches a bright, impulse-like
+  spike with all harmonics present. WM adds a control signal to =w=
+  (=w(t) = w + wm-m·sin(2π·wm-f·freq·t) + wm-b·fb_11=), which slides
+  the spectral nulls and re-weights every harmonic over time -- this
+  is classic pulse-width modulation (PWM). Driven by =fb_11=; see the
+  =*wm*= bullet under "1. Building the modulators." Inaudible when
+  =pulse=0=, since then only =aSin= is heard.
+
 * Overview
 
 The =Montevideo/Synth= directory is a small Haskell library of
@@ -256,15 +271,15 @@ the result starts harmonic).
 
 ** Filters
 
-| param    | default | role                            |
-|----------+---------+---------------------------------|
-| =lpf=    | =filterFreqMax= | LP cutoff, ×=freq=, clamped to [10, 22050] |
-| =lpf-m=  | 0       | LP wet/dry                      |
-| =bpf=    | 7       | BP center freq, ×=freq=         |
-| =bpf-m=  | 0       | BP wet/dry                      |
-| =bpf-q=  | 0.5     | BP Q (small Q = narrow band)    |
-| =hpf=    | 1       | HP cutoff, ×=freq=              |
-| =hpf-m=  | 0       | HP wet/dry                      |
+| param   |         default | role                                       |
+|---------+-----------------+--------------------------------------------|
+| =lpf=   | =filterFreqMax= | LP cutoff, ×=freq=, clamped to [10, 22050] |
+| =lpf-m= |               0 | LP wet/dry                                 |
+| =bpf=   |               7 | BP center freq, ×=freq=                    |
+| =bpf-m= |               0 | BP wet/dry                                 |
+| =bpf-q= |             0.5 | BP Q (small Q = narrow band)               |
+| =hpf=   |               1 | HP cutoff, ×=freq=                         |
+| =hpf-m= |               0 | HP wet/dry                                 |
 
 ** Distortion / shifter / delay
 

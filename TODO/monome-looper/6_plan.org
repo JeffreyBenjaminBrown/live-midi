@@ -1,0 +1,364 @@
+* implementation plan v2: monome looper
+*Supersedes =4_plan.org=.* This folds in all sixteen findings from
+=5_critique.org= (which were verified against the real =midi_pulse= source). The
+shape is the same phased build; the substance changed where the critique caught
+over-claimed reuse, a concurrency gap, or a dropped decision. Two genuinely-open
+UI choices are flagged =TODO= at the end -- everything else is determined.
+
+What changed from v1, in one breath: the looper is a *fresh* runtime borrowing
+three pure pieces (not an "evolved remap_runtime"); the sink is a *pitch-keyed*
+=NoteSink= (not a retargeted MIDI =OutputGate=); the loop store is a *fresh*
+=LoopStore= (not an evolved =RecordRuntime=); there is an explicit *lock
+discipline*; Phase 0 gets real *validation predicates + dispatch order*; the
+two-grid runtime gets *pre-flight + teardown*; and the dropped *column-remap* and
+*play-register* details are restored. A finding-by-finding changelog is at the
+bottom.
+
+* guiding invariant: no regressions to existing configs
+Per your note on =5_critique.org=: nothing here may change the behavior of the
+existing configs in =code/rust/configs/= or the runtimes that load them. Reuse is
+*additive or factored*, never mutate-in-place:
+- New config kinds and the new =[looper]= table are additive (serde tag variants;
+  existing configs never name them).
+- Shared *pure* logic (the playback stepping core, =RecordedEvent=, =wrap_duration=,
+  =render_block=, the freq math, the =ColorClock= shape) is *factored into a shared
+  module* via behavior-preserving refactors -- the existing runtimes keep calling
+  it unchanged. Where a piece is already callable in place, reuse it as-is.
+- Where literal reuse would entangle shared machinery (the =remap_undo_button=
+  case below), the looper gets its *own* kind and shares the *code*, leaving the
+  shared machinery untouched.
+- The guard: =loads_default_configs= and the existing runtime unit tests must stay
+  green after every extraction. If a change would break an existing config, factor
+  the common part out instead.
+
+* architecture
+
+** a fresh runtime that borrows three pure pieces
+=looper_runtime/= is new: a fresh =LooperState= + =run()= + its own per-grid
+window dispatch. It does *not* evolve =remap_runtime= (whose =run()= is built
+around a virtual MIDI input, an =OutputGate -> mpsc -> MIDI-output= thread, and a
+MIDI-emitting playback thread -- the looper has no MIDI at all). What it genuinely
+reuses are three *pure* pieces:
+- =render_block= + the freq-for-pitch math (=sawwave/=);
+- the =ColorClock=/diff-render *shape* (=render.rs:91-195=, =:223-263=);
+- the recording timestamp-and-wrap *stepping* (=record.rs:669-721='s core),
+  *factored* into a shared pure fn that =RecordRuntime= and the looper both call
+  (a behavior-preserving extraction, not a copy and not a mutation).
+remap_runtime's =RecordRuntime= / =RecordControl= / =OutputGate= are left
+untouched for the piano recorder.
+
+** two grids: shared state, compute-under-lock / send-unlocked
+Two monome threads, each owning its own =UdpSocket=/port/prefix (cf.
+=remap_runtime.rs:284-294=), over shared state. The cross-grid effect (a press on
+"loops" lighting "edo") is automatic via shared state -- but the lock must *not*
+be held across I/O. The model we copy holds its locks across a full UDP LED burst
+(=monome_runtime.rs:112-135=, up to 256 blocking =send_led_level_set= per
+repaint, =render.rs:249-262=); with two grids that serializes both renders and
+the playback thread behind each grid's I/O. So each grid thread must:
+1. compute the LED level vector under the lock via the pure
+   =render_led_levels_with_preimage_row=-style fn (=render.rs:309-333=),
+2. *drop the lock*,
+3. run its thread-local =rendered_cols= diff + UDP sends unlocked.
+Memoize the per-grid window/behavior list once at thread start, not per tick
+(=render.rs:318-319= rebuilds it every call today).
+
+** the NoteSink seam (pitch-keyed, its own ref-count)
+This is the load-bearing new code. The sawwave engine keys voices by
+=VoiceSource::Fingered { xy: cell }= (=sawwave/state.rs:99=, looked up by cell at
+=:147,183=) -- there is no note->voice index, and loop playback has only a stored
+pitch, no cell. So a =note_on(note)/note_off(note)= sink *cannot* be backed by the
+existing engine via cells, and =OutputGate= (which parses MIDI bytes and
+ref-counts by =OutputNote { channel, note }=, =record.rs:73-83=) is the wrong
+thing to retarget. Instead:
+- A *thin saw =NoteSink= keyed by pitch/step*, owning its *own* per-pitch
+  source-set ref-count (reuse =OutputGate='s ref-count *pattern* only -- so live
+  play and loop playback can hold the same pitch -- not its MIDI types).
+- It keeps its *own* pitch-keyed voice store (or maps pitch -> a synthetic
+  =VoiceSource=); no MIDI anywhere.
+- Used *directly* by both the edo key handler and the playback stepping fn.
+
+** the loop store (fresh, small)
+A fresh =LoopStore { slots: Vec<LoopSlot>, active: usize, sounding: Option<usize> }=,
+=LoopSlot { loop_duration: Option<Duration>, events: Vec<RecordedEvent>, history:
+Vec<Vec<RecordedEvent>> }=. It reuses =RecordedEvent= (=record.rs:138-146=) and
+=wrap_duration= and the =playback_tick= stepping -- the last *factored into a
+shared pure core* (so =RecordRuntime= keeps using it unchanged) and *re-indexed*
+to the sounding slot (it is slot-*bound* today, not slot-agnostic).
+It does *not* carry =RecordRuntime='s =armed=/overdub/=rscm=/=stored_map=/
+=erase_ons=/=end_all= machinery (=record.rs:245-260=), none of which the looper
+uses.
+
+** locks (the discipline, named once)
+Three locks, with a fixed order, none held across I/O:
+- =LoopStore= + UI/remap state -- the "control" lock. Held *briefly* to read/mutate
+  state and to *compute* an LED level vector; dropped before UDP sends.
+- per-grid =rendered_cols= -- thread-local, no lock.
+- =voices= -- owned by the realtime audio thread, which locks it every buffer
+  (=sawwave_runtime.rs:336-338=). This is the *innermost* lock, held briefly, and
+  *never nested under the control lock*. Every =NoteSink= call (live + playback)
+  acquires ONLY =voices=, computed *after* the control lock is dropped. The audio
+  callback's critical section stays =render_block= only.
+This avoids the priority inversion / deadlock the v1 plan never named (it listed
+one mutex and omitted the audio-thread-owned =voices= lock).
+
+* reuse map (corrected)
+| concern              | what to reuse                                                   | source |
+|----------------------+-----------------------------------------------------------------+--------|
+| device discovery     | =discover_devices= (extend: dedupe by id, not port)             | =monome.rs:32-53= |
+| LED + OSC I/O        | =send_led_level_set= / =send_led_all=, incremental diff          | =monome.rs:116,146=, =render.rs:249-263= |
+| flash / playhead     | =ColorClock=, =next_render_wait=, dynamic recv timeout           | =render.rs:91-195= |
+| note value           | =RecordedEvent= struct + =wrap_duration= (PURE)                  | =record.rs:138-146= |
+| playback stepping    | =playback_tick='s core *factored* into a shared fn, *re-indexed* | =record.rs:669-721= |
+| source ref-count     | =OutputGate='s ref-count PATTERN only, pitch-keyed               | =record.rs:73-83= |
+| window dispatch      | =monome_window::window_for_cell= hit-test PATTERN               | =monome_window.rs:16= |
+| voice engine         | =render_block= + freq math (PURE); a new pitch-keyed sink store  | =sawwave/= |
+| LED levels           | only 0/4/8/15 (OFF/IMAGE/UNDO/FULL)                              | =remap_runtime.rs:35-39= |
+Corrected from v1: note storage is a *fresh* =LoopStore= (not evolved
+=RecordRuntime=); playback stepping is *re-indexed* (not "already slot-agnostic");
+the sink is a *new pitch-keyed* =NoteSink= (drop "retarget OutputGate" / "sawwave
+synth as-is"); dispatch reuses =window_for_cell= (not =behavior_for_cell=, which
+is =RemapConfig=/single-grid bound, =window_behavior.rs:381-391=).
+
+* phases
+
+** Phase 0 -- config parse + dispatch + VALIDATION
+Goal: =cargo run -- monome-looper-58-8-1= validates + prints the window
+inventory, and =loads_default_configs= stays green.
+
+- =config.rs:153-237=: add =MonomeWindowConfig= variants =EdoShiftPad=,
+  =LoopSlots=, =LoopControl { control: LoopControlKind }=, =LoopRemapModeToggle=,
+  =LoopCopyButton=, =LoopRemapUndo=, =LoopDisplay=; add
+  =LoopControlKind { Start, Stop, Play }=; update the =id()=/=monome()=/=rect()=
+  matches (=:261-312=).
+- =config.rs:5-25=: add =pub looper: Option<LooperConfig>= (=quantize_record_ms=,
+  =cluster_display_ms=, =flash_ms=, =remap_center: [i32;2]=).
+- *Undo without touching shared machinery* (resolves the critique's high-severity
+  gap, and honors the no-regressions invariant): the looper gets its *own*
+  =loop_remap_undo= kind instead of literally reusing =remap_undo_button=. The
+  literal kind is a member of the all-or-nothing "remap" =WindowGroup=
+  (=config.rs:569-586=), so reusing it would force gating that shared group and
+  risk the un-12 configs; a distinct looper kind leaves the "remap" group and
+  every existing config *untouched*. The undo *mechanism* (snapshot/push/pop) is
+  shared as factored code, not the window kind.
+- *Validation*: add a looper =WindowGroup= (members: =loop_slots=, =loop_display=,
+  the three =loop_control= kinds, =loop_remap_undo=; =depends_on: vec![]=) and
+  explicit predicates: =loop_display= rect width >= 2 and height >= 2; exactly one
+  =loop_slots= and one =loop_display=; the three =loop_control= kinds all present
+  and unique (mirror =config.rs:462-467=); =remap_center= inside the
+  =edo_note_grid= rect (which must exist); both =[[monomes]]= declared and each
+  referenced by >= 1 window; the three =[looper]= scalars > 0. The existing
+  "remap"/"record"/"scale" groups are unchanged, so =loads_default_configs=
+  (=config.rs:650-658=) stays green.
+- *Dispatch order* (load-bearing): insert =is_looper_config()= -- keyed on the
+  looper-only =LoopDisplay= kind -- *above* =is_monome_sawwave_config= in
+  =midi_pulse.rs:54-66= (the looper config is a superset of the sawwave predicate,
+  =:114-123=, so appending it after would route the looper to =sawwave_runtime=).
+- Move the =3_layout.org= TOML into =code/rust/configs/monome-looper-58-8-1.toml=
+  *only after* validation passes.
+
+Milestone: config round-trips, prints, and the default-configs test passes.
+
+** Phase 1 -- two grids + edo play + NoteSink + teardown
+Goal: both grids light; the edo grid plays through the saw sink; one missing grid
+fails cleanly (no zombie).
+
+- *Distinct-device assignment* (1b, corrected): =discover_devices= dedupes by
+  *port*, and serialosc can report one id on several ports where only the newest
+  is live (=monome.rs:53=, =RUNTIME-NOTES.org:263-271=). So: group
+  =/serialosc/device= replies by id, keep only the newest port per id, require
+  >= 2 distinct live ids of the configured size, assign in config order, and
+  *fail loudly* if fewer than 2 distinct live ids -- never pick two ports of one
+  id. Add this as a *new* helper (e.g. =discover_distinct_devices_by_id=); leave
+  =discover_device= / =discover_configured_device= untouched, since the single-grid
+  runtimes depend on their current behavior (no-regressions invariant).
+- *Pre-flight + teardown* (the critique's high-severity gap): require 2 distinct
+  grids before spawning any thread (return a clean =Err= naming what was seen, not
+  =panic!= as =monome_runtime.rs:26-30= does). On a fatal error/panic in either
+  grid thread, set the shared =STOP_REQUESTED=, join both, blank *both* grids
+  (=send_led_all 0=), and drop the cpal stream so the process exits fully dark.
+- =NoteSink= (pitch-keyed, per the architecture); edo-grid press -> step ->
+  =note_on=; release -> =note_off=. Establish the lock discipline here.
+- Edo LED render: fingered note + all octave-equivalents solid; idle dark.
+- =edo_shift_pad=: the six cells mutate a stored *play register* added to the
+  step; arrows = one cell (vertical = 1 step, horizontal = =x_step= = 8 steps),
+  corners = one octave. The loop reflection is computed in *pitch* space and
+  rendered through this same shift offset, so it *re-anchors* when the register
+  changes (restored coupling).
+
+Milestone: play + transpose on the edo grid; a single-grid startup fails clean.
+
+** Phase 2 -- loop engine (fresh LoopStore), single-sounding
+Goal: record into the active slot, loop it, switch active, record another, switch
+which sounds. Edo reflects the active slot.
+
+- =LoopStore= as above. =loop_slots= LED order (active solid > playing flash >
+  recorded dim > empty dark).
+- =loop_control=: =start= records into =active= (overwrites; no overdub); =stop=
+  halts =active='s current activity -- record *or* play; =play= stops recording
+  and makes =active= the sole =sounding= slot, cutting the previous one.
+  *Edge cases*: =play=/=stop= on an empty slot (=loop_duration = None=) is a
+  harmless no-op (matching =record.rs:681-684=); =play= with nothing recording
+  just loops the idle slot.
+- *Recording feed* (corrected -- a rewrite, not a relocate): there is no MIDI
+  message to derive from, so =RecordedEvent= must be *synthesized directly* from
+  the edo step/pitch/velocity (replacing =recorded_event_from_live_message=,
+  =record.rs:575-605=, not relocating it). Timestamp from the active slot's own
+  =recording_start= via =Instant= -- *never* a playback-wrapped phase
+  (=current_record_elapsed=, =record.rs:474-481=), so the slot being recorded must
+  not share the sounding slot's playback flag.
+- *Recording rules*: boundary-quantize an event within =quantize_record_ms= of the
+  boundary by snapping it *forward to =Duration::ZERO=* (next-pass start), never to
+  == duration (=normalize_events= drops =elapsed >= duration=, =record.rs:553-557=);
+  strip notes held the whole pass; write note-offs for notes still held at the
+  boundary (3d).
+- *Playback* (corrected): the copied stepping fn is *re-indexed* to the sounding
+  slot (it reads =recorder.slot= singular + a global held-note set today,
+  =record.rs:681,691-714=). On a sounding switch, emit note-offs for the
+  *outgoing* slot's held notes before resetting the cursor, or saw voices hang.
+- *Reflection of the active slot*: when active *is* sounding, flash notes at the
+  playhead; when active is *not* sounding, see =TODO 1= below. Re-anchors with the
+  shift (above).
+
+Milestone: multi-slot record/play with single-sounding switching; edo reflects
+active; switching sounding mid-pass emits the outgoing slot's note-offs.
+
+** Phase 3 -- 2D loop display + pickers
+Goal: the active slot is visualized (time x pitch) with a non-uniform playhead;
+overflow merges.
+
+- =loop_display= compound: derive the row-picker column, column-picker row,
+  reserved corner (=TODO 2=), and main area from the one rect (per 1c -- not
+  separately placeable).
+- Display model (pure, unit-tested): cluster note-ons within =cluster_display_ms=
+  (greedy) -> note-groups; columns = groups, *merge nearest adjacent groups* if >
+  width; rows = distinct pitches, *merge nearest pitches* if > height (2a, the
+  merge-nearest we chose over modulo-wrap); playhead column lingers proportional
+  to group duration.
+
+Milestone: live visualization with merging + non-uniform playhead.
+
+** Phase 4 -- remap (fine + coarse), selection, freeze, undo
+Goal: select rows/columns/cells and remap their pitches on the edo grid, both
+idioms, with undo.
+
+- =LooperState= gains =remap: { None, Fine, Coarse }=, a selection, and per-slot
+  =history=. Selection: pickers accumulate; rows XOR columns XOR cells (switching
+  mode clears); selecting anything puts the edo grid into remap mode; the *first*
+  edo press *freezes* the selection.
+- *Per-idiom resolution* (restored -- v1 flattened this): a *row* -> that row's
+  pitch(es) across all time; a *column* -> the distinct pitches of every original
+  note-group merged into that displayed column (the chord at that time-slice;
+  remapping it rewrites *every* original time-group the displayed column
+  represents); a *cell* -> the pitch(es) under that cell. Then dedup, sort, remap
+  lowest-first.
+- Edo grid in remap mode: presses pick destinations (no play/record); LEDs:
+  selected/center solid, octave-equivalents flash, currently-playing notes
+  promoted to solid (2c).
+- *Fine*: destinations lowest-first; each press sets that note's =output_note=
+  absolutely, live; after the last, exit to play. The auto-octave-shift (lowest
+  selected note into the first octave) is computed *on the fly*; =edo_shift_pad=
+  stays *live during remap*; the *stored play register is restored* on return to
+  play mode (restored -- v1 dropped both).
+- *Coarse*: the fixed center cell =remap_center= (=[7,7]=, round up-and-left)
+  solid; each press transposes the selection by =(pressed_step - center_step)=;
+  multiple presses *duplicate* voices (destructive, additive -- bake once per held
+  chord, not compounding); idle = original; exit by toggling back to fine. (Coarse
+  uses the fixed center, no auto-octave-shift.)
+- *Undo*: snapshot =slots[active].events= before each remap; the =loop_remap_undo=
+  window pops it. It is a *distinct looper kind* (not =remap_undo_button=), so the
+  existing "remap" group and every existing config stay untouched; it shares the
+  factored snapshot/push/pop *mechanism*, not the kind.
+
+Milestone: fine + coarse remap with one-press undo; shift stays live and the play
+register is restored on exit.
+
+** Phase 5 -- copy + toggle + polish
+Goal: feature-complete per =3_layout.org=.
+
+- =loop_copy_button=: copy -> from -> to. Copy onto a *playing* slot lands at that
+  slot's next boundary. *Edges*: =from= empty -> no-op (never erase =to=, per the
+  no-erase design); =to == from= -> no-op. *Invariant*: the gesture overwrites only
+  =to='s stored events and leaves =active= and =sounding= unchanged (restored).
+- =loop_remap_mode_toggle= window (fine/coarse).
+- Final LED arbitration for both grids; everything in {0,4,8,15}.
+- Docs: =RUNTIME-NOTES.org= section + =README.org= entry for the new kinds;
+  =rebuild-etags= so the kinds are =M-.=-jumpable.
+
+Milestone: the whole spec runs on the two grids.
+
+* risks (updated)
+- *NoteSink seam* is still the load-bearing new code, but now correctly scoped
+  (pitch-keyed, own ref-count, voices-lock-only). If even that is awkward, the
+  loop can fall back to emitting through =edo_press/edo_release= with synthetic
+  cells -- but the pitch-keyed store is cleaner.
+- *Recording feed is a rewrite*, not a relocation (synthesize =RecordedEvent= from
+  the grid press) -- budget Phase 2 accordingly.
+- *Merged-column remap* must rewrite every original group the column represents --
+  easy to get subtly wrong; unit-test it.
+- *Ghost serialosc ports*: the residual risk is the *initial* pick, handled by
+  dedupe-by-id (the mid-session "grids swap" worry is refuted -- the crate never
+  subscribes to =/serialosc/notify=).
+- *No-hardware testing*: add a virtual-serialosc / loopback harness so the
+  two-grid integration can run without the physical grids (otherwise Phases 1-2
+  are only testable on hardware).
+
+* TODO -- the two open choices (yours, not mine)
+These are the only points in the whole critique that are genuine taste calls
+rather than determined fixes. I've given each a default so nothing is blocked.
+** TODO 1: reflection of the active slot when it is recorded but NOT sounding
+Node 86 settles *which* loop the edo grid shows (always the active one) but not
+*how* to render it when that slot is loaded yet idle. Options:
+- (default) flash its full pitch-set at =flash_ms= -- reuses the existing flash,
+  no new level, but looks similar to a playing loop;
+- show its pitch-set steady *dim* -- distinguishes "loaded, idle" from "playing,"
+  at the cost of using the dim level on the edo grid;
+- show nothing until it plays.
+I'll take the first unless you say otherwise; settle it in Phase 2.
+*** TODO I don't think it needs to be different.
+Whether it is playing or not, it is solid.
+If it is playing, nothing else will be flashing,
+so the user will know that it's playing.
+** TODO 2: the reserved loop_display top-left corner
+You said you'd decide its use "soon." Until then it is a lit-able but inert cell
+(the compound derives it but binds no behavior). Tell me when you have a use and
+it slots into Phase 3.
+*** TODO none yet
+We can leave it unused for now.
+* test strategy
+- *Unit tests* (the crate tests pure logic, e.g. =sawwave/state.rs=): boundary
+  quantize-to-ZERO, held-note strip + boundary cut, cluster + merge-nearest on
+  *both* axes, per-idiom remap resolution *including the merged column*, coarse
+  bake-once, undo snapshot/restore, and the sounding-switch note-offs.
+- *No-hardware harness*: a virtual serialosc that answers =/serialosc/list= with
+  two distinct ids so the two-grid runtime can be exercised in CI.
+- *Manual / hardware*: the per-phase milestones above, on the two grids.
+- *No-regressions guard*: after each shared-code extraction (the playback
+  stepping core, any =RecordedEvent=/=wrap_duration= move, any =sawwave= helper
+  pulled into a shared module), run the existing runtime unit tests +
+  =loads_default_configs=; they must stay green. That green is the proof the
+  refactor is behavior-preserving -- if it ever requires changing an existing
+  config, factor the common part out instead.
+
+* changelog: every 5_critique finding -> where it lands
+- remap_undo_button window-group collision -> resolved by a distinct
+  =loop_remap_undo= kind, so the existing "remap" group stays untouched (Phase 0/4).
+- dispatch order before sawwave -> Phase 0 dispatch.
+- two-grid error/teardown -> Phase 1 pre-flight + teardown.
+- empty-slot / copy edges -> Phase 2 (play/stop) + Phase 5 (copy).
+- evolve RecordRuntime -> fresh LoopStore -> architecture + Phase 2.
+- "evolved remap_runtime" framing -> architecture (fresh runtime, three pure pieces).
+- lock-held-during-IO -> architecture (compute-under-lock/send-unlocked) + locks section.
+- NoteSink can't be note-keyed / OutputGate wrong -> architecture (pitch-keyed sink).
+- voices is a 2nd realtime lock -> architecture locks section.
+- playback_tick is slot-bound -> reuse map + Phase 2 (re-index + note-offs on switch).
+- boundary-quantize drop + timestamp-source -> Phase 2 (snap to ZERO; recording_start).
+- device dedupe by id -> Phase 1 distinct-device assignment.
+- column-remap time-slice semantics -> Phase 4 per-idiom resolution.
+- play-register restore + shift-during-remap -> Phase 4 fine.
+- behavior_for_cell vs window_for_cell -> reuse map + Phase 4.
+- reflection-on-shift + copy invariant -> Phase 1/2 (reflection) + Phase 5 (copy).
+
+* next step
+Phase 0 remains the self-contained starting point (parse + validate + dispatch +
+a config that loads without breaking =loads_default_configs=). Say the word and I
+build it.
