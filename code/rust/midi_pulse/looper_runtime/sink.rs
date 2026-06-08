@@ -17,11 +17,13 @@ use std::sync::{Arc, Mutex};
 use crate::pitch::freq_for_pitch;
 use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
 
-/// Who is asking for a pitch to sound.
+/// Who is asking for a pitch to sound. `Live` carries the edo cell so that two
+/// distinct held cells whose steps collide to the same absolute pitch are two
+/// independent ref-holders (releasing one must not silence the other).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NoteSource {
-  /// Live playing on the edo grid.
-  Live,
+  /// Live playing on the edo grid, keyed by the held cell.
+  Live(i32, i32),
   /// Playback of loop slot `n`.
   Slot(usize),
 }
@@ -70,7 +72,8 @@ impl SawNoteSink {
     }
     let id = self.next_id;
     self.next_id += 1;
-    let mut voices = self.voices.lock().unwrap();
+    // Recover from poisoning: a panicked thread must not permanently break audio.
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     voices.insert(
       voice_key(pitch),
       VoiceState {
@@ -95,7 +98,7 @@ impl SawNoteSink {
       return; // still held by another source.
     }
     self.refs.remove(&pitch);
-    let mut voices = self.voices.lock().unwrap();
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = voices.get_mut(&voice_key(pitch)) {
       state.target_env = 0.0;
       // Ramp the remaining envelope down over release_secs (matches the engine's
@@ -145,7 +148,7 @@ mod tests {
   #[test]
   fn note_on_spawns_one_voice_at_full_target() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live);
+    s.note_on(30, NoteSource::Live(0, 0));
     assert_eq!(voice_count(&s), 1);
     assert_eq!(target_env(&s, 30), Some(1.0));
   }
@@ -153,11 +156,11 @@ mod tests {
   #[test]
   fn two_sources_on_same_pitch_share_one_voice() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live);
+    s.note_on(30, NoteSource::Live(0, 0));
     s.note_on(30, NoteSource::Slot(2));
     assert_eq!(voice_count(&s), 1, "same pitch must be one ref-counted voice");
     // First source releases: still held by the slot, so not yet ramping down.
-    s.note_off(30, NoteSource::Live);
+    s.note_off(30, NoteSource::Live(0, 0));
     assert_eq!(target_env(&s, 30), Some(1.0), "still held by Slot(2)");
     // Last source releases: now it rings out.
     s.note_off(30, NoteSource::Slot(2));
@@ -167,15 +170,15 @@ mod tests {
   #[test]
   fn distinct_pitches_get_distinct_voices() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live);
-    s.note_on(35, NoteSource::Live);
+    s.note_on(30, NoteSource::Live(0, 0));
+    s.note_on(35, NoteSource::Live(0, 0));
     assert_eq!(voice_count(&s), 2);
   }
 
   #[test]
   fn note_off_unknown_pitch_is_a_noop() {
     let mut s = sink();
-    s.note_off(99, NoteSource::Live); // must not panic
+    s.note_off(99, NoteSource::Live(0, 0)); // must not panic
     assert_eq!(voice_count(&s), 0);
   }
 
@@ -184,7 +187,7 @@ mod tests {
     let mut s = sink();
     s.note_on(30, NoteSource::Slot(0));
     s.note_on(35, NoteSource::Slot(0));
-    s.note_on(40, NoteSource::Live);
+    s.note_on(40, NoteSource::Live(0, 0));
     s.release_source(NoteSource::Slot(0));
     assert_eq!(target_env(&s, 30), Some(0.0));
     assert_eq!(target_env(&s, 35), Some(0.0));
@@ -194,9 +197,23 @@ mod tests {
   #[test]
   fn shared_pitch_survives_release_source_of_one_holder() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live);
+    s.note_on(30, NoteSource::Live(0, 0));
     s.note_on(30, NoteSource::Slot(1));
     s.release_source(NoteSource::Slot(1));
     assert_eq!(target_env(&s, 30), Some(1.0), "Live still holds 30");
+  }
+
+  #[test]
+  fn two_distinct_cells_on_one_pitch_dont_collapse() {
+    // The 58-8-1 collision: cells (0,8) and (1,0) both sound step 8. Each is a
+    // distinct Live source, so releasing one must not silence the other.
+    let mut s = sink();
+    s.note_on(8, NoteSource::Live(0, 8));
+    s.note_on(8, NoteSource::Live(1, 0));
+    assert_eq!(voice_count(&s), 1);
+    s.note_off(8, NoteSource::Live(0, 8));
+    assert_eq!(target_env(&s, 8), Some(1.0), "still held by the other cell");
+    s.note_off(8, NoteSource::Live(1, 0));
+    assert_eq!(target_env(&s, 8), Some(0.0), "last cell released");
   }
 }

@@ -40,6 +40,27 @@ use state::{Grid, LooperState};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
+/// Dropped at the end of every grid thread -- clean return, early return, or panic
+/// unwind. Setting STOP releases the sibling thread from its recv loop, so one
+/// thread's death tears the whole runtime down instead of leaving a zombie.
+struct StopOnExit;
+impl Drop for StopOnExit {
+  fn drop(&mut self) {
+    STOP.store(true, Ordering::SeqCst);
+  }
+}
+
+/// Blank a grid from an ephemeral socket (used by run() after the threads join, so
+/// a panicked thread that skipped its own blank still leaves its grid dark).
+fn blank_grid(device_port: u16, prefix: &str) {
+  if let (Ok(sock), Ok(addr)) = (
+    UdpSocket::bind(("0.0.0.0", 0)),
+    format!("127.0.0.1:{device_port}").parse::<SocketAddr>(),
+  ) {
+    monome::send_led_all(&sock, addr, prefix, 0);
+  }
+}
+
 pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   print_inventory(config);
   run(config)
@@ -188,6 +209,14 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     "looper: edo -> id={:?} port={}; loops -> id={:?} port={}",
     edo_dev.id, edo_dev_port, loops_dev.id, loops_dev_port,
   );
+  let edo_dev_id = edo_dev.id.clone();
+  let loops_dev_id = loops_dev.id.clone();
+
+  // Drain leftover /serialosc/device enumeration replies queued on the discovery
+  // socket (every connected grid replied to this port), so the edo thread's first
+  // recv is a key event, not a stale reply that could rebind it to the other grid.
+  let mut drain = [0u8; 2048];
+  while edo_sock.recv_from(&mut drain).is_ok() {}
 
   let loops_sock = UdpSocket::bind(("0.0.0.0", s.loops_listen_port))
     .map_err(|e| format!("bind UDP :{}: {e}", s.loops_listen_port))?;
@@ -211,13 +240,18 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   let st_edo = Arc::clone(&looper_state);
   let st_loops = Arc::clone(&looper_state);
   let edo_thread = thread::spawn(move || {
-    grid_thread(Grid::Edo, edo_sock, edo_prefix, edo_listen, edo_dev_port, grid_w, st_edo);
+    grid_thread(Grid::Edo, edo_sock, edo_prefix, edo_listen, edo_dev_id, edo_dev_port, grid_w, st_edo);
   });
   let loops_thread = thread::spawn(move || {
-    grid_thread(Grid::Loops, loops_sock, loops_prefix, loops_listen, loops_dev_port, grid_w, st_loops);
+    grid_thread(Grid::Loops, loops_sock, loops_prefix, loops_listen, loops_dev_id, loops_dev_port, grid_w, st_loops);
   });
   let _ = edo_thread.join();
   let _ = loops_thread.join();
+  // Authoritative teardown: a thread fault sets STOP via its Drop guard, freeing
+  // the sibling, so both joins return; here we blank BOTH grids and stop audio no
+  // matter how the threads exited.
+  blank_grid(edo_dev_port, &s.edo_prefix);
+  blank_grid(loops_dev_port, &s.loops_prefix);
   drop(audio);
   println!("looper stopped.");
   Ok(())
@@ -238,10 +272,13 @@ fn grid_thread(
   sock: UdpSocket,
   prefix: String,
   listen_port: u16,
+  device_id: String,
   mut device_port: u16,
   grid_w: i32,
   state: Arc<Mutex<LooperState>>,
 ) {
+  // Any exit (clean, early-return, or panic) sets STOP, releasing the sibling.
+  let _stop_on_exit = StopOnExit;
   let Ok(mut device) = format!("127.0.0.1:{device_port}").parse::<SocketAddr>() else {
     return;
   };
@@ -262,16 +299,23 @@ fn grid_thread(
     };
     // serialosc may re-announce the device on a new port (ghost re-enumeration).
     if msg.addr == "/serialosc/device" && msg.args.len() >= 3 {
-      if let Some(OscType::Int(port)) = msg.args.get(2) {
-        let port = *port as u16;
-        if port != device_port {
-          device_port = port;
-          if let Ok(addr) = format!("127.0.0.1:{port}").parse::<SocketAddr>() {
-            device = addr;
+      // Only adopt a re-announcement of OUR OWN device id; a stray reply for the
+      // other grid must never hijack this one. (Discovery only queries on the edo
+      // socket, so a loops-grid ghost can't actually be recovered this way -- it
+      // needs a serialoscd restart; see RUNTIME-NOTES.org.)
+      let mine = matches!(msg.args.first(), Some(OscType::String(id)) if *id == device_id);
+      if mine {
+        if let Some(OscType::Int(port)) = msg.args.get(2) {
+          let port = *port as u16;
+          if port != device_port {
+            device_port = port;
+            if let Ok(addr) = format!("127.0.0.1:{port}").parse::<SocketAddr>() {
+              device = addr;
+            }
+            monome::register(&sock, device, &prefix, listen_port);
+            last.clear();
+            paint(role, &sock, device, &prefix, grid_w, &state, &mut last);
           }
-          monome::register(&sock, device, &prefix, listen_port);
-          last.clear();
-          paint(role, &sock, device, &prefix, grid_w, &state, &mut last);
         }
       }
       continue;
@@ -284,10 +328,19 @@ fn grid_thread(
     else {
       continue;
     };
+    // serialosc sends s in {0,1}; ignore anything else rather than treating a
+    // malformed value as a release.
+    let press = match *down {
+      1 => true,
+      0 => false,
+      _ => continue,
+    };
     if role == Grid::Edo {
+      // No I/O may run while this lock is held: compute the LED vector, drop the
+      // lock, then send unlocked.
       let result = {
-        let mut st = state.lock().unwrap();
-        if st.edo_key(*x, *y, *down == 1) {
+        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.edo_key(*x, *y, press) {
           Some((st.edo_levels(), st.live_pitch_count()))
         } else {
           None
@@ -313,7 +366,7 @@ fn paint(
   last: &mut Vec<i32>,
 ) {
   let levels = {
-    let st = state.lock().unwrap();
+    let st = state.lock().unwrap_or_else(|e| e.into_inner());
     match role {
       Grid::Edo => st.edo_levels(),
       Grid::Loops => st.loops_levels(),

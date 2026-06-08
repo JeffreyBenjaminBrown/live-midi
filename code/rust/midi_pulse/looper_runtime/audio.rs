@@ -53,7 +53,9 @@ pub fn start(
   let stream = device.build_output_stream(
     &stream_config,
     move |data: &mut [f32], _| {
-      let mut voices = voices.lock().unwrap();
+      // Recover from poisoning so a panicked grid thread can't permanently kill
+      // audio output.
+      let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
       render_block_with_amplitude(&mut voices, data, channels, sample_rate, amplitude);
     },
     |error| eprintln!("looper audio stream error: {error:?}"),

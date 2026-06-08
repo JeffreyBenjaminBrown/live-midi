@@ -693,14 +693,27 @@ fn validate_looper(config: &Config) -> Result<(), String> {
     }
   }
 
-  // remap_center must lie inside an edo_note_grid (the coarse-remap "unison" key).
-  let edo_rect = config.monome_windows.iter().find_map(|w| match w {
-    MonomeWindowConfig::EdoNoteGrid { rect, .. } => Some(*rect),
+  // The edo_note_grid rect must fit its monome's grid (an oversized rect would let
+  // a press land on a cell the LED render never iterates -- an invisible, stuck
+  // voice), and the coarse-remap "unison" key (remap_center) must lie inside it.
+  let edo = config.monome_windows.iter().find_map(|w| match w {
+    MonomeWindowConfig::EdoNoteGrid { monome, rect, .. } => Some((monome.clone(), *rect)),
     _ => None,
   });
-  let Some([ex0, ey0, ex1, ey1]) = edo_rect else {
+  let Some((edo_monome_id, [ex0, ey0, ex1, ey1])) = edo else {
     return Err("a looper config needs an edo_note_grid window".to_string());
   };
+  let [gw, gh] = config
+    .monomes
+    .iter()
+    .find(|m| m.id == edo_monome_id)
+    .and_then(|m| m.select.size)
+    .unwrap_or([16, 16]);
+  if ex0 < 0 || ey0 < 0 || ex1 >= gw || ey1 >= gh {
+    return Err(format!(
+      "edo_note_grid rect [{ex0}, {ey0}, {ex1}, {ey1}] must fit the {gw}x{gh} grid",
+    ));
+  }
   let [cx, cy] = looper.remap_center;
   if cx < ex0 || cx > ex1 || cy < ey0 || cy > ey1 {
     return Err(format!(

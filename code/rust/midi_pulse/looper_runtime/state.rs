@@ -80,13 +80,19 @@ impl LooperState {
       }
       if in_rect(self.edo_rect, x, y) {
         let pitch = step_for_cell(self.x_step, self.y_step, self.register, x, y);
-        self.down.insert((x, y), pitch);
-        self.sink.note_on(pitch, NoteSource::Live);
+        // A re-press of an already-held cell (e.g. a dropped release plus a
+        // register shift) must release the prior pitch, or its voice is orphaned.
+        if let Some(old) = self.down.insert((x, y), pitch) {
+          if old != pitch {
+            self.sink.note_off(old, NoteSource::Live(x, y));
+          }
+        }
+        self.sink.note_on(pitch, NoteSource::Live(x, y));
         return true;
       }
       false
     } else if let Some(pitch) = self.down.remove(&(x, y)) {
-      self.sink.note_off(pitch, NoteSource::Live);
+      self.sink.note_off(pitch, NoteSource::Live(x, y));
       true
     } else {
       false // release of a shift-pad cell or an empty cell.
