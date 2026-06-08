@@ -135,6 +135,22 @@ logged here. Working on branch =monome-looper= (off =main=).
   auto-octave-shift on remap entry, and richer remap-mode LEDs (selection
   highlight on the loops grid, coarse center + flashing equivalents).
 
+- *Docs done* (Phase 5): a "Looper" section in =configs/README.org= (window kinds,
+  the =[looper]= table, how to play it) and =configs/RUNTIME-NOTES.org=
+  (architecture, lock discipline, teardown, the flood-recovery note).
+- *FEATURE-COMPLETE and live-verified.* Comprehensive smoke test on the grids
+  exercised record -> play -> switch active slot (active != sounding) -> copy a
+  slot -> play the copy (single-sounding switch) -> select a row -> undo: 0
+  panics, clean teardown, 162 tests across all targets. The looper does everything
+  in the spec: two-grid play, record, multi-slot transport, the 2D display, remap
+  (fine + coarse), undo, copy, the fine/coarse toggle, and the shift pad.
+- *What's left is LED/UX polish that needs eyes on the grid* (I can't see LEDs):
+  the non-uniform playhead, the auto-octave-shift on remap entry, and richer
+  remap-mode LEDs (selection highlight on the loops grid; coarse center solid +
+  octave-equivalents flashing rather than all-solid). All reversible. And one
+  thing to confirm: the *coarse commit* interpretation (per-press additive re-bake
+  -- my pick for the ambiguity flagged back in 2_discussion).
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
