@@ -6,6 +6,8 @@ mod sink;
 mod device;
 #[allow(dead_code)]
 mod edo;
+#[allow(dead_code)]
+mod loop_store;
 
 /// Phase 0 stub. The config has already been validated by `parse_config`; here we
 /// just print the resolved two-grid window inventory and exit cleanly. The real

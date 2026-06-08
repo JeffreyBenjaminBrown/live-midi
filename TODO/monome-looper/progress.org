@@ -28,6 +28,14 @@ logged here. Working on branch =monome-looper= (off =main=).
   or verified on this headless box -- so it is being written last, on top of
   these tested cores.
 
+- *Phase 2 loop-store core done* (pure + unit-tested): =looper_runtime/loop_store.rs=
+  -- a fresh =LoopSlot { loop_duration, events, history }=; =finalize_recording=
+  (boundary-quantize to next-pass start, strip the ambient held-note release);
+  and a =Playback= playhead whose wrap emits =ReleaseAll= -- which is how a note
+  still held at the loop end gets cut at the boundary (no stored end-of-loop
+  note-offs). 7 tests. The slot model, transport state machine, and the wiring
+  of all this through the =NoteSink= come with the runtime glue.
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
@@ -55,6 +63,14 @@ logged here. Working on branch =monome-looper= (off =main=).
   (down/right raise, up/left lower); the *left/right* pitch direction is the one
   bit the vision left unstated -- chose "right = higher." Trivially flippable if
   it feels wrong on the grid.
+- The looper uses its *own* small =LoopEvent= type rather than reusing
+  remap_runtime's =pub(crate)= =RecordedEvent= (which is entangled and not visible
+  outside =remap_runtime=). Reuses the *shape*, not the type -- zero changes to
+  =record.rs=, per the no-regressions invariant.
+- The boundary cut (notes held at the loop end) is implemented by *playback
+  releasing everything on wrap*, not by storing end-of-loop note-offs. Simpler,
+  and it sidesteps the =normalize_events= "drop elapsed >= duration" trap the
+  critique flagged.
 
 * major design choices
 (none yet -- I stop and flag you the moment this section gains an entry.)
