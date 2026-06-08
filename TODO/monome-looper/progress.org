@@ -46,6 +46,17 @@ logged here. Working on branch =monome-looper= (off =main=).
   *verifiable on this box* (grids + audio both present); I can drive it with
   synthetic =/grid/key= packets.
 
+- *Phase 1 runtime complete and EMPIRICALLY VERIFIED on the grids.* Added
+  =state.rs= (the pure edo play/shift/LED core, 5 tests), =audio.rs= (the cpal
+  stream), and the two-grid event loop + teardown in =mod.rs=. Ran the binary
+  against the two grids + audio and drove it with synthetic =/grid/key= packets:
+  it bound both grids, opened the audio stream, played edo notes (the sounding
+  count tracked press/release), correctly treated the octave-up shift-pad cell as
+  a shift (not a note), and shut down cleanly on SIGINT. Lock discipline as
+  designed: a grid thread holds the control lock only to apply a key + compute the
+  LED vector, then drops it before the UDP sends; the audio thread locks only
+  =voices=. (Next: an adversarial review of this glue before Phase 2 builds on it.)
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
