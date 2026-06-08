@@ -36,6 +36,16 @@ logged here. Working on branch =monome-looper= (off =main=).
   note-offs). 7 tests. The slot model, transport state machine, and the wiring
   of all this through the =NoteSink= come with the runtime glue.
 
+- *Connectivity proven end-to-end.* Wired the Phase 1 *pre-flight* into
+  =looper_runtime= (discover -> =assign_distinct_devices= -> register + blank each
+  grid, in config order, fail loudly otherwise) and RAN it against the two grids
+  Jeff reconnected. The binary discovered both =monome 256= grids and bound
+  =m0000102= -> edo and =m256-282= -> loops, blanked both, exited 0. The
+  central risk ("can we drive two monomes at once?") is retired. Both grids are
+  virtual (no USB FTDI) but fully serialosc-visible, so the runtime is now
+  *verifiable on this box* (grids + audio both present); I can drive it with
+  synthetic =/grid/key= packets.
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
