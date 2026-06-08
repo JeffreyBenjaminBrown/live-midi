@@ -1,0 +1,71 @@
+* timbre manipulation
+These controls can be applied live to every fingered note,
+or (similarly to pitch remap) to a selection from the loop.
+There will be a lot of controls, so we'll use some panel
+to control which controls are controllable.
+
+These should build on the code in code/rust/configs/
+and TODO/monome-looper/.
+** baseline waveform
+Four values: sine, triangle, square, saw.
+** volume
+It is logarithmic, in increments of 6 db.
+** slow AM
+There might be three AM rows: frequency, amplitude and shape.
+*** Frequency
+varies from 0.25 hz on the low side to whatever on the high side,
+by factors of 2x (so if 8 buttons, the highest value is 32 Hz).
+*** Amplitude
+controls the least value of the wave,
+and varies linearly from 0 to 1.
+*** Shape
+should be some family of curves that gives
+a square wave at one extreme and a sinewave on the other.
+Is there something like that?
+(We could just apply the sine function to itself repeatedly,
+to get an approximation, but that would be expensive.)
+If that's hard, we can do something simpler,
+ranging between triangle and square,
+where the extremes of the triangle wave widen from points to be
+flat regions, getting wider and wider linearly
+until the transition between them is instantaneous.
+** slow FM
+FM is driven by a sine wave.
+*** Frequency
+varies from 0.25 hz on the low side to whatever on the high side,
+by factors of 2x (so if 8 buttons, the highest value is 32 Hz).
+*** Amplitude
+varies from a low value of 5 cents
+to a high value of whatever the row permits,
+in increments that double.
+** storage
+There are some 'timbre slots'.
+All of the above parameters -- waveform, volume, AM, FM,
+more if I add them -- are parameters of timbre;
+a timbre slot records them all.
+Pressing a timbre slot usually switches to it.
+However, there is a special 'save timbre' slot,
+which when pressed, changes the meaning of the timbre slots;
+the next one pressed will capture the current timbre.
+Arming 'save timbre' colors it solid; pressing it again disarms it.
+** layout
+*Both* monomes have a button in the top-left for displaying the timbre window.
+Activating the timbre window on one of them disables it on the other.
+Pressing it again deactivates it.
+
+The 'activate timbre window' button is drawn on top.
+Below it, if the timbre window is activated, is the timbre window's top-left corner.
+The next four buttons in that row are the waveform.
+After that in the same row is the 'arm timbre storage' button,
+and the rest in that row are timbre slots.
+
+The volume row is after that. It is always present.
+Then the five FX rows:
+Slow AM: amp
+Slow AM: freq
+Slow AM: shape
+Slow FM: amp
+Slow FM: freq
+
+If we get more parameters I'll eventually have to make those windows hideable,
+but for now we can afford to show them all at once.

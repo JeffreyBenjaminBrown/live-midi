@@ -1,0 +1,118 @@
+* vision: monome looper
+This program would not use the piano at all, just monomes.
+** prior art
+This code should resemble that of the configs already in code/rust/configs/README.org.
+It should reuse as much code as possible.
+The config file should encode every window the app uses,
+so a reader can see at a glance how it is used.
+** monomes
+They are both 16x16.
+They are already connected, hence hopefully discoverable by you.
+One monome is mostly the edo grid for playing and (below) remapping loops.
+The other monome is mostly for loops.
+** one big monome edo grid for playing
+to start, 58 edo, 8/58 crossing columns, 1/58 crossing rows
+** edo grid
+*** fingered notes are solid
+If note N is being pressed,
+every note edo-equivalent to N is lit solid in the edo-grid.
+*** reflect loop in edo grid
+The edo grid reflects the loop with flashing notes
+(50 ms on, 50 ms off).
+*** window shift
+A grid 3 wide by 2 tall in the lower right hand corner of the edo grid
+is for shifting it. The bottom three keys, and the top middle one,
+shift the image in the edo grid in that direction by 1.
+(So pushing up moves the image *up*, not down --
+up effectively means 'look lower'.)
+The top-left button in the shift window moves the display down a full octave --
+notes pressed now sound lower. The top-right button does the opposite.
+
+The edo grid can be defined as a rectangle,
+with this smaller rectangle overlaid on it.
+No harm done.
+** record buttons
+*** start recording
+Held notes at loop-start are okay.
+If they are being held when the loop ends,
+but they were held the whole time, they are stripped from the loop.
+If they are being held when the loop ends,
+but they were triggered (note-on) at least once during the loop,
+then that's how the loop goes. Nothing special happens to that note
+at the loop boundary.
+*** stop recording
+*** stop recording and begin loop
+if recording is not happening, this just begins the loop
+*** across-time quantization in recording
+Any even (note-on, note-off) played within 70 ms of loop boundary
+is quantized to the loop boundary.
+*** across-time quantization of notes in display
+Any cluster of notes within 100 ms of each other
+displays as a single column of the loop display.
+A greedy algorithm should work for grouping notes.
+Notes within a column group still (probably, unless my timing is perfect)
+start at different times; this is only for display purposes.
+*** across-pitch quantization in display
+The display only has so many rows.
+Each distinct pitch in the loop corresponds to a single row.
+There are no in-between rows; each row corresponds to a pitch
+actually played in the loop.
+
+If there are more distinct pitches than there are rows in the loop display,
+wrap them in pitch-space. E.g. suppose there are 8 rows
+(but really the size of the window will be configurable in the .toml file);
+then pitch 9 maps to row 1, pitch 10 maps to row 2, etc.
+*** quantization *of time* in display
+Just as with the rows, we can't afford to spend a column
+on every moment in the loop; there are too many moments.
+Instead, every note-group corresponds to a moment.
+Time therefore probably moves non-uniformly across the columns:
+if note group G lasts longer than group H, then the active column
+will linger longer on G than on H.
+** loop manipulation
+*** whether loop row remap is fine-grained or coarse
+This is a toggle button.
+*** remap pitch of loop row, fine-grained
+A column next to the loop display is for selecting pitches from the loop.
+When the user presses that button, the note corresponding to it becomes solid
+in the edo grid. The user can pick a different button in the edo grid
+to change that pitch.
+
+This disables the usual 'fingered button = sounding note'
+meaning of the edo grid. As soon as the user picks a new note,
+though, the edo grid returns to its usual interpretation.
+
+If there are multiple notes associated with the row,
+the user has to remap them in serial, lowest pitch first.
+They don't have to map each note to a new note; they can map it back to itself,
+which is like saying "I don't want to change this note (but maybe some others)."
+Until they have pressed enough keys to remap every note assigned to that row,
+the edo grid will be in 'remap loop row mode' rather than 'play mode'.
+
+The loop might occur in a different register than the one
+the edo grid is currently using for play mode.
+In this case, once it enters 'remap loop row' mode,
+the grid is shifted by a whole number of octaves
+so that the lowest note of the loop occupies the first octave.
+The notes from the loop are only displayed solid in the octave they occupy --
+their octave-equivalents only flash.
+
+If the highest note is then off-screen, tough cookies.
+It can still be remapped, but it can't be seen solid.
+
+The usual window-shift buttons can still be applied to the edo grid
+while it is in remap loop row mode.
+When the user returns to play mode, the window reverts to that register --
+that is, there is a stored register for playing.
+(There is no stored register for loop row remap;
+it is calculated on the fly based on the loop.)
+*** remap pitch of loop cells, fine-grained
+This works just like remaping the pitch of an entire loop row.
+The difference is the entry point: Rather than pressing one of the
+'whole row' buttons in the special 'rows' column,
+the user presses individual buttons within the 2d loop display
+(where time is horizontal and pitch is vertical).
+Doing this effectively selects a collection of pitches.
+They are highlighted on the edo-grid just like in whole row remap,
+and the user has to push that number of buttons in the edo grid
+to remap them all, in order from lowest to highest.

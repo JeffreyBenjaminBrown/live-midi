@@ -1,0 +1,773 @@
+* discussion: monome looper
+This responds to =1_vision.org=. I've also read =code/rust/configs/README.org=,
+=RUNTIME-NOTES.org=, the existing =edo-un12_58-8-1_snap_recording.toml=, and the
+relevant =midi_pulse= source so the notes below match what the runtime actually
+does today, not just what the README claims.
+
+The vision is coherent and the hard part -- the loop-remap interaction -- is
+described in real detail. The gaps are mostly at the two ends: the big-picture
+shape (how many loops, which grid is which, what the loops grid looks like) and a
+handful of local contradictions in the display/remap rules. I've ordered these by
+how much they block a build.
+
+* 1. The biggest gaps (a build can't start without these)
+
+** 1a. How many loops are there?
+*** q
+The program is a *looper* and the second grid is "mostly for loops" (plural), but
+the entire document describes exactly *one* loop: "the loop," "the loop display,"
+"reflect the loop." Nothing says whether there are 2, 4, 16, how you select the
+active one, whether they play simultaneously or layer, whether they can have
+different lengths (polymeter), or how recording targets a particular slot.
+
+This is the single most load-bearing unanswered question, because almost
+everything downstream depends on it:
+- The reflect-in-edo-grid rule ("the edo grid reflects the loop with flashing
+  notes") is ambiguous the moment there is more than one loop -- all of them? the
+  selected one? the ones currently sounding?
+- The loops-grid layout (1c) can't be drawn without knowing how many slots and
+  selectors it must hold.
+- The record state machine (3d) changes shape if you can record into slot 2 while
+  slot 1 plays.
+
+The existing record model is explicitly *one* in-memory slot per process
+(=RUNTIME-NOTES.org=, "Recording slot ... There is one in-memory recording slot
+per runtime process"). So "a looper with many loops" is a genuine extension of the
+current model, not a config of it. Worth deciding now: is this a one-loop looper
+with rich editing, or a multi-loop looper?
+*** a
+Good question. Let's keep a 'loops' window on the loop monome.
+To start it can be 4x4, with the bottom-left button to start recording,
+the one right next to it (same row) to stop recording,
+and the third one in that row is "stop recording + play".
+(That can be one rectangle on top of another;
+if some of the loops are unreachable because the controls are on top of them,
+it's no harm.)
+
+To start, each loop slot is empty and dark,
+except the 'active slot', which is solid.
+Active means neither sounding nor recording --
+it just means the loop controls are directed at that slot.
+As loops are recorded to slots, those slots become dimly lit,
+but being active always dominates in the display (solid overrides dim).
+
+The user changes the active slot by pressing a new loop button.
+(For thses actions, key up has no effect.)
+
+If a loop is running and the user selects another loop,
+the new active loop is solid,
+and the old still-playing loop changes to flash at 50ms on/50ms off.
+(That fits into the override ordering as follows:
+active solid > flashing playing > dim occupied but not playing > dark empty).
+**** claude: this resolves slot selection, but layering opens three holes
+Your "the old still-playing loop keeps flashing while a new one goes active"
+means loops *layer* -- several can sound at once. Good, but that's a real
+decision the three transport buttons don't yet cover:
+
+1. *Nothing stops or erases a playing loop.* start / stop / "stop+play" all act
+   on the active slot's *recording*. Once a loop is looping there's no button
+   that halts it or empties its slot. To silence loop A you'd select A active
+   and press... "stop" -- which only works if "stop" means "stop whatever the
+   active slot is doing, record *or* play." I think that's the fix. Erase
+   (empty a slot) is still missing -- cf. the =scale_control= "empty" button in
+   =..._save-scales.toml=; want the same for loops?
+2. *Which loop does the edo grid reflect?* "Reflect the loop" was singular.
+   With N loops sounding, does the edo grid flash the *active* slot only, or
+   every sounding slot superimposed? (Superimposing several could fill it.)
+3. *Do layered loops share a length?* Recording length is set by when you hit
+   "stop+play," so by default every slot has its *own* length and they drift
+   out of phase (free polymeter). Many loopers instead lock later loops to a
+   multiple of the first. Which do you want? This is the biggest open
+   consequence of layering.
+
+Two confirmations: the time x pitch *display* and all remap modes target the
+*active* slot (yes?); and a slot mid-*recording* has no distinct LED in your
+ordering -- fine to leave it solid-as-active, just noting it.
+**** TODO
+Remember that active does not mean sounding.
+It just means that's the loop controlled by the loop controls.
+The edo grid should show the active loop.
+It only shows the sounding loop if that's equal to the active loop.
+***** claude: clear -- the edo grid is a workspace for the *active* slot
+That settles "which loop the edo grid reflects" (my hole #2): always the active
+slot's content, even when a *different* slot is the one sounding. So if you're
+remapping slot B (active) while slot A plays, the edo grid shows B and your
+edits target B; A's playback simply isn't drawn there. Right call for an
+editor. (This pairs with your "loops don't layer" note at 3c -- I've put the
+model restatement and the one remaining gap there.)
+
+** 1b. Which physical grid is the edo grid and which is the loops grid?
+"They are both 16x16 ... already connected, hence hopefully discoverable by you."
+Discoverable, yes -- but *indistinguishable*. The current device picker only
+matches on size:
+
+#+begin_src rust
+// remap_runtime/monome_runtime.rs
+let selected = devices.iter().rev().find(|device| {
+  select_size.is_none_or(|[w, h]| device.grid_w == w && device.grid_h == h)
+});
+#+end_src
+
+Two 16x16 grids both satisfy =select.size = [16, 16]=, so this picks the same
+physical device (the newest serialosc reply) for *both* config monomes. The config
+struct does have a =select.id_contains= field (=config.rs=, =MonomeSelect=), which
+is exactly what you'd use to pin a grid by serial -- but the picker above ignores
+it. So today there is no way to say "edo grid is *this* serial, loops grid is
+*that* one."
+
+Two consequences for the vision:
+- The runtime needs a small change: honor =id_contains= (and ideally
+  =type_contains=) in =discover_configured_device=, not just =size=. Then the
+  config can carry each grid's serial.
+- You then have to *know* each serial, and the ghost-tty / re-enumeration note in
+  =RUNTIME-NOTES.org= warns those can churn across replug. So "discoverable by you"
+  is true for *a* grid but not for *assigning roles to two identical* grids; that
+  assignment has to be written down somewhere stable.
+*** DONE I don't care which is which.
+Do whatever feels natural.
+**** claude: "don't care" is fine, but the runtime still needs one fix
+Not caring removes the need to pick serials -- but not the underlying bug:
+today both config monomes resolve to the *same* physical grid (the picker does
+=.rev().find(size)= independently for each). So "do whatever feels natural"
+still requires teaching the runtime to hand each config monome a *distinct,
+not-yet-claimed* grid of the right size, in config order. That sidesteps
+=id_contains= entirely -- no serials to write down -- which is the natural
+reading of "don't care." Only caveat: if the two grids re-enumerate in the
+other order after a replug, the roles swap; since you don't care, that's
+harmless as long as both still bind.
+
+** 1c. The loops grid has no window inventory.
+The vision's own rule is "the config file should encode every window the app
+uses, so a reader can see at a glance how it is used." For the *edo* grid we can
+almost draw that today (grid + 3x2 shift window). For the *loops* grid we can't:
+the document names a "2d loop display (time horizontal, pitch vertical)," a
+"column next to the loop display" of row-select buttons, and the record buttons --
+but never gives rectangles, sizes, or how they pack into 16x16, and never says how
+many loops occupy it (see 1a). I'd want, before writing the .toml, a back-of-
+envelope map of the loops grid: display rect, row-select column, record cluster,
+and loop-slot selectors.
+*** DONE this should be configurable
+The config should permit the user to define a single loop rectangle,
+which simulatenously defines three windows:
+- a row-picking column at left,
+- a column-picking row at top,
+- and the main loop display area.
+The user should not be able to define those three separately.
+I haven't decided how to use that top-left button yet but I probably will soon.
+**** claude: good -- and it quietly fixes a double-specification risk
+Deriving the row-picker column, column-picker row, and display area from one
+rectangle is clean. Note the knock-on: the display area's height and width
+then *are* the row-count and column-count caps that drive pitch-overflow (2a)
+and time-overflow (3f). So those counts should come *only* from the rect --
+don't also expose =rows = 8= as a separate field (see 3e), or a config could
+contradict itself. Same instinct as "the user shouldn't define the three
+sub-windows separately."
+
+For the undecided top-left corner: it's the natural home for a "clear the
+current remap selection / exit remap" press. That would also give *coarse*
+remap the explicit "done" it otherwise lacks (1e) without adding a "cancel"
+button (which you've ruled out at 3g). A candidate, not a demand.
+
+** DONE that reminds me
+We need to be able to remap columns just like rows,
+using the column picker. The mechanics are the same.
+Those three modes (rows, columns or cells)
+are mutually exclusive. For instance,
+if the user activates some of the rows with the row-picker,
+and then presses some cells in the loop grid,
+the rows deactivate immediately.
+**** claude: column-remap is coherent -- it re-voices the chord at that moment
+A column is a time-slice, so "remap a column" = repick the pitch of every note
+sounding at that moment, lowest-first (same serial rule as rows). Good.
+Mode-exclusivity (rows XOR columns XOR cells; switching clears the prior
+selection) also quietly answers half of my 3g worry about mixed selections.
+
+One tension to pin down between this and your 3g "act on each chosen note
+immediately": "activate some of the rows ... then press cells, the rows
+deactivate" implies you can *accumulate* a multi-row selection that persists
+until you switch modes -- select-then-sweep. "Act immediately" could instead
+mean each pick drops you straight into remapping that one before you can pick
+another. They only coexist under one reading: *selection accumulates on the
+loops grid; then each new-pitch press on the **edo** grid commits live*, with
+no final commit step. Is that it? I flag the same fork at 3g.
+
+(Minor: once columns can be merged for overflow (3f), a displayed column may
+stand for several original time-groups; column-remap then acts on the whole
+merged column.)
+**** DONE
+As soon as any of the loop is selected for remap,
+the edo grid switches to loop remap mode.
+Once the user starts pushing buttons in the remap grid,
+the loop will not let them select any more of it to remap.
+***** claude: that fully closes the remap-flow fork
+With your 3g "correct," the sequence is now unambiguous: select rows/cells (the
+edo grid is already in remap mode, lighting them), then the *first* edo press
+freezes the selection and you remap lowest-first, each press live. One
+consequence to accept: once remapping has begun you can't add a forgotten row --
+you finish, re-enter, and select it. Fine by me; just flagging it.
+
+** 1d. Where does the sound go?
+"No piano at all, just monomes" removes =[midi.input]= / =[piano.mapping]=, which
+is clean -- the edo grid becomes the instrument. But every =edo_note_grid= window
+in the existing configs references a =sink= (=monome-edo-midi= -> MIDI to Reaper,
+=monome-edo-sawwave= -> cpal audio). The vision never says which. And it matters
+more than usual here: loop playback presumably emits through the same sink as
+live play, and remapping a loop note changes the *note it sends* -- so the output
+path needs to exist before remap means anything. My assumption is MIDI-to-Reaper
+like the un-12 configs; confirm.
+*** DONE there's some other app that does this
+Maybe monome-edo-sawwave.toml?
+Whatever it is, please do what that one does.
+**** claude: sawwave sink it is -- one latency heads-up
+So the sink is =cpal_sawwave= with the params from =monome-edo-sawwave.toml=; a
+recorded loop is stored as note events and re-emitted into the synth, so
+layered loops and live play all sum as voices. Fine. Heads-up from
+=RUNTIME-NOTES.org= ("Latency"): sawwave showed ~100 ms press-to-sound. That
+affects the *feel* of playing a part in, but not the loop's *timing* -- note
+timestamps are taken at the monome press, upstream of the audio path, so
+recorded rhythm stays accurate (record and playback share the offset). Worth a
+small =buffer_frames= anyway. (The *sink* is reusable; the *runtime* still is
+not -- =sawwave_runtime= binds a single grid, per section 4.)
+**** the latency note is stale
+I deleted it. There were no latency problems last time I tried.
+***** claude: noted -- dropping the latency caveat
+Good -- then ignore my buffer-size aside; the =cpal_sawwave= sink stands as-is,
+and I'll stop citing the (now-removed) RUNTIME-NOTES latency section.
+
+** 1e. The "coarse" half of the remap toggle is never defined.
+"whether loop row remap is fine-grained or coarse -- This is a toggle button." The
+document then describes *only* the fine-grained behavior, twice (row and cell).
+The coarse behavior is never specified at all. Either describe it or drop the
+toggle.
+*** TODO oh right
+For this, the edo grid changes its meaning again.
+It highlights a note in the center as solid,
+and its octave equivalents are flashing.
+When the user presses a button,
+the loop is transposed by the interval from the center note to the fingered one.
+If the user presses multiple buttons, the voices are copied --
+so if the targeted section of the loop consists of 2 notes,
+and the user fingers 3 pitches, we hear 6 notes.
+**** claude: this defines the toggle well -- it's "how," not "what"
+Read with the pickers, the toggle now means: the row/column/cell picker chooses
+*what* to edit, and fine/coarse chooses *how* the edo-grid gesture edits it --
+fine = set each note's absolute pitch, coarse = transpose the whole selection
+by (fingered - center). Clean factoring; confirm that's the intent.
+
+Two things to pin, plus a new hole:
+***** *Define "center."* "a note in the center" -- which cell/pitch is the
+  zero-interval reference? Geometric middle of the grid, or a configured cell?
+  Pressing it = transpose by 0.
+****** TODO geometric middle
+***** *Count-semantics now differ by mode.* Fine needs *exactly* one press per
+  selected note (replace, lowest-first). Coarse accepts *any* number, and each
+  press *adds* a transposed copy (your 2 notes x 3 fingers = 6). Worth stating
+  outright -- it's the whole reason to have the toggle.
+****** TODO right
+But also note that if the user is pressing no notes,
+it sounds as normal rather than being silenced.
+It's as if they're always pressing that center note,
+unless they are pressing another note.
+***** *NEW: coarse mode never ends on its own.* Fine self-terminates -- after the
+  Nth press you're back in play mode. Coarse has no N (any number of
+  intervals), so it needs an explicit "done," or you can't return to play
+  mode. Exactly the job for the reserved top-left corner (1c). (A commit/exit,
+  not a "cancel," so it doesn't reopen 3g.)
+****** TODO good point
+Let's terminate it by switching back to fine-grained.
+**** claude: two follow-ups on coarse -- the center, and "is it an edit at all?"
+Your three answers (geometric-middle center, "no notes = sounds as normal," exit
+by toggling to fine) actually reshape what coarse *is*:
+
+1. *"Sounds as normal when nothing is pressed" makes coarse look non-destructive.*
+   If idle = the loop at its original pitch, and fingering intervals transposes /
+   copies the selection only *while held*, then coarse isn't an *edit* -- it's a
+   *live transposer/harmonizer* you play over the loop, reverting on release.
+   That's very different from *fine*, which permanently rewrites stored pitches.
+   So the fine/coarse "toggle" is really *edit* vs *perform*. Is that right --
+   does leaving coarse mode leave the loop's stored notes unchanged? (If coarse
+   were meant to *commit* a transposition, "which finger-state gets committed?"
+   has no clean answer -- itself a hint that it's live.)
+2. *"Geometric middle" needs an exact cell.* A 16-wide grid has no center cell
+   (it falls between columns 7 and 8); pick one, and note it's the center of the
+   *edo-grid window* rect. It only sets which key = unison, so it's purely
+   ergonomic -- but it has to be pinned.
+
+Exit-by-toggling-to-fine is clean; I'll take it (and it reinforces #1: a mode you
+toggle out of, leaving the loop untouched, is a live layer, not an edit).
+***** TODO
+Coarse remap should be destructive, too.
+If the user presses multiple notes, then the number of notes
+at that slot/those slots expands.
+
+If the center is ambiguous, round up and/or to the left.
+****** claude: got it -- both modes are destructive; I had coarse wrong
+Then scrap my "edit vs perform" framing: *both* remaps permanently change the
+loop. The fine/coarse split is only *how* -- fine re-pitches each selected note
+one-for-one; coarse transposes the selection and, with multiple fingers, *grows*
+the note count (2 selected x 3 fingered -> 6, baked in). "Sounds normal when
+nothing is pressed" is just the idle/unison state, not a revert. Center = round
+up-and-left -> column 7, row 7 of the edo-grid rect. Settled.
+
+This surfaces one thing: with *both* modes destructive and *no cancel* (3g), a
+mis-remap is unrecoverable. The un-12 grid already ships =remap_undo_button= --
+reuse it here for a one-press undo of the last remap, fine or coarse? It's the
+higher-value cousin of the slot-erase you just declined, since a bad remap can't
+be re-recorded away. (Impl note for later: bake each held chord *once* off the
+original selection, so the count grows 2->6, not 2->6->18 on a second press.)
+******* TODO yes, let's do that!
+* 2. Contradictions and overloaded signals
+
+** 2a. "each row = one pitch" collides with the pitch-wrap.
+Two rules that can't both hold:
+- "Each distinct pitch in the loop corresponds to a single row ... each row
+  corresponds to a pitch actually played in the loop."
+- "If there are more distinct pitches than there are rows ... wrap them. E.g. 8
+  rows; pitch 9 maps to row 1, pitch 10 maps to row 2."
+
+Under the wrap, row 1 is *both* pitch 1 and pitch 9. So a row no longer
+corresponds to one pitch; the display becomes ambiguous to *read* (when row 1
+flashes, which pitch is sounding?), and the modulo mapping also destroys vertical
+pitch ordering (row position stops meaning "higher = higher"). The "remap them in
+serial, lowest first" complication in section 1f exists *only* as a consequence of
+this collision -- a row holds multiple pitches precisely because of the wrap.
+
+This is the design knot I'd most want to untie. Options worth weighing instead of
+modulo-wrap: (a) make the display tall enough that wide loops are rare and accept
+clipping the rest; (b) scroll/page pitch so each visible row is still one pitch;
+(c) keep the wrap but commit to it honestly -- then drop the "each row = one pitch"
+sentence and accept that reading and remapping rows is inherently many-to-one.
+
+*** TODO Can't be done.
+Agreed, the documentation, comments etc. should all be accurate.
+But there's no way to control what a user plays,
+to ensure that it fits on the monome.
+**** claude: agreed you can't bound the input -- so make the two axes consistent
+Accepting many-to-one rows and fixing the prose is right. But notice you made
+*opposite* choices on the two axes: time overflow (3f) *merges nearest* groups,
+while pitch overflow here *modulo-wraps* (pitch 9 -> row 1). Merging nearest
+*pitches* would be both more consistent and strictly more readable:
+- it keeps the vertical axis monotonic -- a shared row holds only *adjacent*
+  pitches, never a low+high pair, so "higher cell = higher pitch" survives;
+- it only loses resolution where pitches are *dense*, exactly like the time
+  axis; whereas modulo-wrap is just (sorted-pitch-index mod rows), which has no
+  musical meaning and scrambles pitch order.
+Remap is unaffected (a row's 1-2 pitches, lowest-first). I'd switch pitch to
+the same merge-nearest rule you gave time. Either way, "each row = one pitch"
+has to go.
+***** TODO I like it! Yes please.
+****** claude: resolved
+Pitch and time now both merge-nearest -- consistent. A row may still hold two
+*adjacent* pitches (remap handles them lowest-first), and "each row = one pitch"
+gets dropped. Done.
+
+** 2b. "all edo-equivalents solid" vs "only the occupied octave solid."
+Play mode: "every note edo-equivalent to N is lit solid in the edo-grid." Remap
+mode: "notes from the loop are only displayed solid in the octave they occupy --
+their octave-equivalents only flash." These are deliberately different, which is
+fine, but it means the equivalence-lighting rule silently flips between modes, and
+a performer has to learn two readings of the same grid. Worth stating as an
+explicit mode difference rather than leaving the reader to notice the conflict.
+*** TODO agreed, please document it
+**** claude: noted -- and your later answers already make it one clean rule
+2b, 2c and 1e now agree: *play mode* lights a fingered note and all its
+octave-equivalents solid; *every remap variant* lights the actual (or center)
+note(s) solid and their equivalents flashing. So it documents as a single
+two-line rule, not a pile of exceptions. I'll write it that way. (One snag
+about flashing *during* remap -- see 2c.)
+
+** 2c. Flashing carries two meanings.
+"Flash" already means "this note is in the loop" (50 ms on / 50 ms off). In remap
+mode it *also* means "this is an octave-equivalent of a loop note." If both can
+appear on the grid at once (and they can -- the loop keeps playing while you
+remap), the performer can't tell a loop reflection from an octave-equivalent. You
+likely need a second distinguishable signal, but note the hardware constraint in
+2d below before assuming you can.
+*** TODO good point!
+In loop-remap mode, notes from the loop should be solid,
+and their octave equivalents flashing.
+**** claude: solid-vs-flash fixes the static picture; one dynamic case left
+If the loop is still *playing* while you remap, its live 50/50 reflection flash
+and the octave-equivalent flash become the same signal -- the collision I
+worried about, just relocated. Clean fix: in remap mode, *suppress the live
+reflection* -- the loop's notes are already shown solid, so you lose nothing,
+and flashing is then unambiguously "octave-equivalent." OK to do that?
+***** TODO in that case
+let's promote the playing notes up to solid.
+(Or do they collide in that case, too?)
+****** claude: your version is better than mine -- and no, they don't collide
+Promoting playing notes to *solid* beats my "suppress" idea: it makes playback
+(solid) and octave-equivalent (flash) *different* signals, so the flash-vs-flash
+ambiguity I worried about is simply gone. What's left is only that "solid" now
+covers two things -- "selected for remap" and "currently sounding" -- but those
+are distinguishable in motion: selected cells sit steady, sounding cells flicker
+as the playhead sweeps past. No harmful collision. Net remap order: selected /
+center (solid) = playing (solid) > octave-equivalent (flash) > off.
+
+** 2d. The LED vocabulary may exceed the hardware.
+=RUNTIME-NOTES.org= ("Brightness"): Jeff's grid shows roughly *four* visible
+brightness buckets (use 0/4/8/15), not sixteen. The design already wants: solid
+(fingered), dim (current image, if carried over from the un-12 idiom), flash-A
+(loop reflection), and flash-B (octave-equivalent in remap). Plus a priority rule
+for cells that are several of these at once (fingered + in-loop + equivalent),
+which the document never gives. The un-12 grid solved exactly this with an
+explicit priority list (=RUNTIME-NOTES.org=, "LED priorities"). The looper needs
+its own such list, and it has to fit inside ~4 brightness levels plus on/off
+flashing.
+*** ONGOING Did I solve this at 1a?
+**** claude: partly -- 1a covered the *loops* grid; the *edo* grid still needs its own
+Your 1a ordering (active > playing > occupied > empty) is exactly right -- for
+the *loops* grid. 2d was about the *edo* grid. Good news there: because this is
+the plain =edo_note_grid=, not the un-12 *remappable* grid, there's no dim
+"current image" layer to juggle, so the edo grid only ever uses solid /
+flashing / off -- comfortably inside the ~4 buckets. It just needs its own
+priority list, parallel to yours:
+- *Play:* fingered (solid) > loop reflection (flash) > off.
+- *Remap:* note-to-remap / center (solid) > octave-equivalent (flash) > off,
+  with live reflection suppressed (2c).
+A cell that's both fingered and in the loop shows solid -- you lose its flash,
+which is fine. (Optional 4th level: light the six shift-control cells dim so
+they're findable.)
+**** TODO do you have more questions, then?
+***** claude: no -- 2d is closed. Here's the consolidated edo-grid LED spec
+Nothing left to ask. After your 2c decision the edo grid uses only solid / flash
+/ off:
+- *Play mode:* fingered note + octave-equivalents = solid; loop reflection =
+  flash; else off.
+- *Remap mode:* selected-to-remap / center / currently-playing = solid;
+  octave-equivalent = flash; else off.
+Flash means different things across the two modes (play: "sounding now"; remap:
+"octave-equivalent") but never two things *within* a mode, so it stays
+unambiguous. No dim level needed. Only optional dim use: making the six
+shift-control cells findable -- your call.
+
+** 2e. "no piano" but the record/remap machinery is piano-shaped.
+Not a contradiction so much as a porting cost to name: the existing record model
+(arm/overdub, =held_offset_control= regions, the remap idioms) is built around
+piano MIDI input. Reusing it under "monomes only" means the edo grid has to feed
+the recorder the way the piano does now. Cheap, but it's real wiring, not a config
+toggle.
+*** TODO agreed
+**** claude: yes -- purely a wiring task
+Concretely: the recorder currently ingests piano MIDI note-on/off; here it
+ingests the edo grid's note-on/off instead. Same event shape, new source -- no
+new concepts, just the plumbing (it's in the section 4 "new" list).
+
+* 3. Smaller, concrete per-section notes
+
+** 3a. Division of labor across the two grids is ambiguous.
+"One monome is mostly the edo grid for playing and (below) remapping loops. The
+other monome is mostly for loops." But the remap interaction is described as
+*cross-grid*: you press a row-select button "next to the loop display" (loops
+grid) and the pitch lights "in the edo grid" (edo grid). So remap spans both
+grids, and "(below) remapping loops" on the edo grid is unclear -- what, exactly,
+lives below the edo grid on grid 1? If the answer is "nothing; the edo grid just
+doubles as the pitch-picker during remap," say that; the "(below)" phrasing reads
+like there's a second control region that isn't described.
+
+*** TODO correct; it plays double-duty
+
+**** claude: good -- that settles the whole two-grid split
+So grid 1 is *only* the edo grid plus the 3x2 shift overlay; it owns no picker
+-- remap just borrows it to light pitches. Everything else (the 4x4
+loops/transport block from 1a, the loop-display compound from 1c, the
+fine/coarse toggle, and the new copy control from 3g) lives on grid 2. Clean,
+and it finally makes the layout drawable. Two controls -- the toggle and copy
+-- still need cells budgeted on grid 2; I'll place them when I draft the map.
+
+** 3b. Window shift: "by 1" is three different amounts.
+=edo_note_grid= maps =step = x_step*x + y_step*y=, and the starting tuning is
+=x_step=8, y_step=1=. So "shift by 1 cell" means: up/down = 1 step (=y_step=),
+left/right = 8 steps (=x_step=), and the corner octave buttons = 58 steps. That's
+actually a nice fine/medium/coarse set -- but the document says "by 1" as if
+uniform. Confirm the horizontal shift is meant to jump 8 steps, and state the
+three granularities. Also: when you shift the grid, does the *loop reflection*
+move with it (it should, if reflection is pitch-anchored) -- worth saying so.
+
+*** TODO you understood right
+If it's ambiguous, clarify that we mean 'by one space in the edo grid'
+for the four "arrow keys" and "by one octave" for the other two keys.
+
+**** claude: right -- just say "one cell," not "one step"
+The only wording trap: "one space" = one *cell*, but a cell is x_step (=8)
+steps wide and y_step (=1) step tall, so a left/right arrow moves the pitch by
+8 steps and an up/down arrow by 1. So write "by one cell" (and "by one octave"
+for the corners) -- never "by one step," which is wrong horizontally. Net
+granularities: 1 / 8 / 58 steps, fine/medium/coarse. And "you understood right"
+confirms the loop reflection re-anchors along with the shift (it tracks pitch,
+not cells). Resolved.
+
+** 3c. Record buttons: the state machine is incomplete.
+The vision names three controls (start / stop / "stop and begin loop"), but the
+existing =record_control= kind already ships seven: =start=, =stop=, =loop=,
+=arm=, =erase_ons=, =end_all=, =rscm= (see =edo-un12_58-8-1_snap_recording.toml=
+and =RUNTIME-NOTES.org=). Open questions:
+- Does the looper keep =arm= (the existing model *requires* arming before =start=
+  records), or does "start recording" record immediately?
+- Is overdub in scope? The current model overdubs when you =start= during playback
+  while armed. The vision doesn't mention it.
+- What does plain "stop recording" *leave you with* -- a recorded-but-idle buffer,
+  and if so how do you then start it playing? The lifecycle of the three buttons
+  isn't a closed loop.
+
+*** TODO I feel like this is easier than that.
+I don't remember why that had so many buttons, but I think this is all we need.
+There is no overdub in this.
+
+**** claude: fewer buttons is fine -- but two needs survive the cut
+Dropping arm and overdub is reasonable, and three buttons *do* close the
+record->play loop, *provided* "stop+play" with nothing recording just plays an
+idle slot (your own 1_vision line). But because loops layer (1a), two things
+three record-only buttons don't cover still bite:
+1. *Stopping a playing loop.* Let "stop" mean "stop the active slot's current
+   activity -- record *or* play." Then select the loop, press stop, it halts.
+   Otherwise a looping slot can never be silenced.
+2. *Erasing a slot.* Nothing empties a recorded slot. Reuse the =scale_control=
+   "empty" idiom (press empty, then a slot)?
+Neither is arm or overdub -- they're the minimum to make a *multi*-loop looper
+controllable. (Same hole as 1a-#1; flagged here too since this is the
+transport.)
+
+**** TODO loops don't layer
+At least not yet. See my response in 1a.
+***** claude: good -- that simplifies things, but two transport gaps remain
+No layering is a real simplification, so let me restate the model to be sure I
+have it: *at most one slot sounds at a time*; "active" is just the
+controls/display/remap target and may differ from the sounding slot; pressing
+"stop+play" on the active slot makes it the sole sounding loop (cutting off
+whatever was sounding); merely *selecting* a slot changes only "active," not
+what sounds. Right? (This also retires my polymeter worry -- old section-6 #3 --
+since loops never sound together.)
+
+But dropping layering doesn't fill the two holes from my 3c note; if anything it
+sharpens them:
+1. *Stop to silence.* With start / stop / stop+play, and "stop" = stop
+   *recording*, there's no way to make the one sounding loop go *quiet*. Cleanest
+   fix (cleaner now that only one loop sounds): "stop" stops the active slot's
+   current activity, record *or* play -- to go silent, make the sounding loop
+   active and press stop.
+2. *Erase a slot.* Re-recording overwrites, but nothing returns a slot to
+   *empty*. Reuse =scale_control= "empty" (press empty, then a slot)?
+Neither is layering or overdub -- just the minimum to stop and to clear.
+
+***** TODO
+Yes to 1. No need to be able to empty a slot.
+****** claude: clean -- that closes the transport
+So "stop" stops the active slot's current activity, record *or* play (to go
+silent: make the sounding loop active, press stop), and there's no erase --
+slots are reused by re-recording over them (start-record on an occupied active
+slot overwrites, since there's no overdub); they just never return to dark. Good
+by me. The three-button transport is now closed.
+
+** 3d. Held-note rules don't cover the mid-loop note.
+"start recording" handles a note held from before the loop began (stripped if held
+the whole time, kept if re-triggered). But it doesn't cover a note that *starts*
+mid-loop and is *still held* at the boundary: does its note-off get written at the
+boundary, or does it sustain into the next pass? (=end_all= exists for exactly this
+in the current model -- decide whether the boundary does it automatically.)
+
+*** DONE good point!
+It sohuld end at the loop end.
+
+**** claude: agreed -- but it contradicts 1_vision, so one of them must yield
+Cutting the note at the boundary is the safe choice (otherwise a note still
+held at the end has no note-off in the loop -> it hangs, and re-triggers every
+pass -> a stuck, stacking note). Heads-up though: this *contradicts*
+=1_vision.org= lines 39-42, which say a note note-on'd during the loop and
+still held at the end gets "nothing special ... at the loop boundary" -- i.e.
+explicitly *not* cut. Your 3d rule is the better one, so it should win and that
+vision sentence should be reworded. I'll treat 3d as authoritative unless you
+say otherwise.
+
+** 3e. Quantization thresholds and flash rate belong in the .toml.
+70 ms (record-to-boundary), 100 ms (display clustering), 50/50 ms (flash), and the
+loop-display row count are all magic numbers in prose. The vision already says the
+row count "will be configurable in the .toml file" -- the others should be too, for
+the same reason. Also: typo, "Any *even* (note-on, note-off)" should be "Any
+*event*."
+
+*** DONE I like it!
+Yes please, make those all configurable.
+
+**** claude: yes -- but counts come from the rect, not from numbers
+Make the *scalars* configurable: record-boundary ms (70), display-cluster ms
+(100), flash half-period (50). But *don't* add =rows=/=cols= fields -- those are
+already fixed by the loop-display rectangle (1c). Deriving them twice lets a
+config disagree with itself. So: three time/flash scalars in the TOML; grid
+dimensions stay implicit in the rect.
+
+** 3f. Time-in-display has the same overflow question as pitch.
+"every note-group corresponds to a moment ... time moves non-uniformly across the
+columns." Fine -- but what happens when there are more note-groups than columns?
+The pitch axis answered this (with the problematic wrap, 2a); the time axis is
+silent. Same decision to make: clip, scroll, or compress.
+
+*** DONE In that case, merge note groups.
+Find the two note groups that are closest in time to each other,
+and merge them. No wrapping around the loop border.
+If there's a tie, take the first.
+Repeat until they fit.
+**** claude: clear -- two footnotes
+That's agglomerative clustering, consistent with the 100 ms greedy grouping
+already used. Since you've barred wrap, only *adjacent* groups can merge, so
+"closest in time" = smallest gap between *consecutive* groups (next.start -
+prev.end); tie -> leftmost, as you said. And this is precisely the rule I'd copy
+onto the *pitch* axis (2a) so the two overflow behaviors match.
+
+** 3g. Remap has no cancel, and cell-remap's scope is ambiguous.
+- *No abort.* "Until they have pressed enough keys to remap every note assigned to
+  that row, the edo grid will be in remap mode." There's no described way out if
+  you change your mind mid-remap -- you can only no-op each note (map it to itself),
+  but you still must press all N keys. An explicit cancel (e.g. re-press the
+  triggering button) would help.
+- *Cell remap: one note or the whole pitch?* "remap pitch of loop cells" lets you
+  press individual cells in the 2D display, which "effectively selects a collection
+  of pitches." But does remapping a cell move *that one occurrence* (splitting the
+  row, so the loop now has the old pitch at other times and the new pitch here) or
+  *every occurrence of that pitch*? The phrase "selects a collection of pitches"
+  suggests pitch-wide; "remap pitch of loop cells" suggests per-cell. These give
+  very different instruments. And per-cell remap would further break "each row =
+  one pitch" (2a).
+- *When does multi-select commit?* For cell remap you "press individual buttons" to
+  build the selection -- but nothing says when selection ends and the edo-grid
+  remapping begins. Is there a commit press, or does the first edo-grid press end
+  selection?
+*** TODO let's not have a cancel button
+*** TODO regarding which pitches to remap
+Suppose cell C corresponds to pitch Pc,
+and cell D corresponds to pitches Pd1 and Pd2.
+Then if we have selected C and D, we see all three of those pitches,
+assuming they are distinct. But if, say, Pc = Pd1,
+then we can only display two pitches in the edo grid,
+so we do, and the user only needs to pick two new pitches.
+*** TODO let's act on each chosen note immediately
+**** claude: two of these are settled; "act immediately" still forks
+- *No cancel:* fine for *fine* remap -- it self-terminates after the Nth pitch.
+  But *coarse* remap doesn't self-terminate (1e), so it still needs a "done."
+  That's a commit/exit, not a cancel, so it doesn't reopen this.
+- *Which pitches:* your dedup-set rule fully answers my "one occurrence or the
+  whole pitch?" -- it's the *whole pitch*: gather the distinct pitches under the
+  selected cells, collapse duplicates, remap each once, lowest-first. Clean and
+  unambiguous.
+- *Act immediately:* this is the one to nail down, because it can mean two
+  things and one of them fights your own "select C and D, *then* see all three
+  pitches" (that's select-*then*-act). The reading that keeps everything
+  consistent: *selection accumulates on the loops grid; then each new-pitch
+  press on the **edo** grid commits live, with no batch "commit" step.* If you
+  instead mean "touching a row/cell immediately remaps that one before you can
+  pick another," it contradicts the C-and-D description. Which did you mean?
+  (Same fork as the column-remap TODO above.)
+**** TODO correct
+Accumulate selections in the loop display;
+act immediately in the edo grid when remapping those selections.
+***** claude: resolved -- the remap flow is fully pinned
+Accumulate on the loops grid, act live on the edo grid -- consistent with your
+node above ("selection freezes once edo-remapping begins"). Nothing left here.
+
+** TODO we need another control
+to copy a loop from one loop cell to another.
+Press this, then press 'from', then press 'to'.
+This does not change the active or playing loops.
+**** claude: useful -- define the "copy onto a busy slot" edge
+The press-copy-then-from-then-to gesture mirrors =scale_control= "store," so it
+reuses a known idiom. Define one edge: what if *to* is currently *playing*?
+Options: swap its data at the next loop boundary (least jarring), swap instantly
+(may click), or disallow copy onto a playing slot. "Doesn't change the active or
+playing loops" reads like you lean toward not disturbing it -- so I'd take effect
+at the next boundary, or refuse. (Also: it needs its own cell on grid 2,
+alongside the fine/coarse toggle.)
+**** TODO sure, the next boundary
+***** claude: good -- next boundary it is
+So copy onto a *playing* slot swaps its data at that slot's next loop boundary;
+the sounding loop finishes its current pass uninterrupted. Settled.
+
+* 4. Reuse and implementation notes
+
+Since "reuse as much code as possible" is an explicit goal, here's the rough
+build/borrow split as the code stands:
+
+Reusable largely as-is:
+- =edo_note_grid= window for the playing grid (it already maps cells to steps and
+  drives a sink).
+- =record_control= kinds and the recording slot for the transport, *if* one loop
+  is enough (see 1a).
+- The un-12 remap *interaction pattern* -- "tap a lit pitch, then tap its new home"
+  -- is conceptually the same gesture as loop-row remap and is worth lifting from
+  =remap_runtime= rather than reinventing.
+- The =scale_slots= / =scale_control= pattern (=..._save-scales.toml=) is a good
+  template for loop-slot selectors if loops become multi-slot.
+
+Genuinely new (no existing runtime does these):
+- *Multi-monome orchestration.* Every current runtime binds exactly one monome --
+  it =find=s the single grid its primary window references (=sawwave_runtime.rs=,
+  =remap_runtime.rs=) and drives only that. Nothing today spawns two grids, and
+  nothing routes a *press on grid B* to an *LED on grid A*, which the loop-remap
+  flow requires. This cross-grid event/LED routing is the core new mechanism.
+- The =id_contains= fix in =discover_configured_device= (1b).
+- The 2D loop display with non-uniform (per-note-group) time and the lingering
+  playhead.
+- The 50/50 ms loop reflection on the edo grid and its LED-priority arbitration
+  against fingered/dim/equivalent states (2c, 2d).
+
+* 5. The few decisions that unblock everything else
+
+If you answer these, most of the rest falls out:
+
+1. *How many loops*, and if more than one: how are they selected, do they layer,
+   can lengths differ? (1a)
+2. *Pitch-axis overflow*: keep the modulo-wrap (and drop "one row = one pitch"), or
+   switch to clip/scroll so a row stays one pitch? (2a)
+3. *Cell remap scope*: move one occurrence, or the whole pitch? (3g)
+4. *Record transport*: keep arm + overdub, or simplify to record-immediately; and
+   what does plain "stop" leave behind? (3c, 3d)
+5. *Sink*: MIDI-to-Reaper, or audio? (1d)
+6. *Grid assignment*: how do you pin "edo = serial X, loops = serial Y" given two
+   identical 256s? (1b)
+
+Once those are settled I can draft the loops-grid window map (1c) and a first
+=.toml= that, per your own rule, shows every window at a glance.
+
+* 6. Still open after this round (claude)
+** round-2 update (claude)
+Most of last round's list is now settled. *Resolved this round:* edo reflects
+the *active* slot (1a); *no layering* -> the polymeter question is moot (1a/3c);
+pitch overflow uses *merge-nearest* like time (2a); the remap flow is
+*accumulate-then-sweep, frozen once edo-remapping begins* (1c/3g); remap LEDs
+*promote playing notes to solid* so flash is unambiguous (2c); held notes *cut
+at the loop boundary*, overriding the vision line (3d, marked DONE); copy lands
+at the *next boundary* (copy TODO); coarse *exits by toggling to fine* (1e);
+runtime hands each config monome a *distinct unclaimed grid in config order*
+(1b, DONE).
+
+*Genuinely still open -- a short list:*
+
+1. *Stop to silence + erase a slot* (3c/1a): three record-only buttons still
+   can't make the sounding loop go quiet or empty a slot. Proposal: "stop" stops
+   the active slot's record *or* play, plus a =scale_control=-style "empty."
+   This is the one real functional gap.
+2. *Is coarse destructive or live?* (1e): "sounds as normal when nothing is
+   pressed" reads like coarse is a *live transposer* (perform over the loop,
+   revert on release), not an *edit*. If so the fine/coarse toggle is really
+   *edit vs perform*. Confirm.
+3. *Confirm the no-layering model* (3c): one slot sounds at a time; "active" is
+   only the control/display target; "stop+play" makes the active slot the sole
+   sounding loop. Right?
+4. *Pick the exact center cell* (1e): "geometric middle" falls between columns
+   on a 16-wide grid -- choose one. Trivial.
+
+Answer 1-3 and I can draft the loops-grid window map and a first =.toml= that,
+per your rule, shows every window at a glance.
+
+** round-3: converged (claude)
+All four are now answered: "stop" also halts playback and there's no erase --
+slots are reused by overwriting (3c); *both* remaps are destructive, coarse
+being an additive transposer (1e); the no-layering model stands (3c); center =
+column 7, row 7 (1e). The behavior is fully specified.
+
+Just one question left, and it's optional:
+- *Remap undo?* Both remaps are destructive with no cancel -- reuse the existing
+  =remap_undo_button= for a one-press undo of the last remap (yes/no)?
+
+Nothing else blocks me. If you're happy, my next step is to draft the edo-grid +
+loops-grid window map and a first =.toml= per your "encode every window" rule --
+say the word (and whether undo is in).

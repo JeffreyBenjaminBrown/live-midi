@@ -1,4 +1,11 @@
-* lately using [[./code/rust/configs/README.org/]]
+* lately using [[./code/rust/configs/README.org]]
+* ONGOING [[./TODO/monome-looper]]
+* ONGOING [[./TODO/timbre-manip]]
+* [[./TODO/scale-mods.org]]
+* sing while piano
+long tones, few notes
+* Must store maps from 12 to the higher edo to buttons.
+* Need an arithmetic on sequences (of maps, ..).
 * looping code, loose ends in
 ** loop glitch at cycle boundary
 For instance, the config
