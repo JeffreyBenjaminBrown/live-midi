@@ -104,6 +104,18 @@ logged here. Working on branch =monome-looper= (off =main=).
   state corruption, no log spam) and let real transport keys through. The flood is
   a hardware fault worth Jeff knowing about, but the runtime now tolerates it.
 
+- *Phase 3 glue done* -- =loops_levels= paints the active slot's 2D display
+  (row/column pickers dim, reserved corner dark, notes in the main area) via the
+  =build_display= core. Unit-tested (132 bin tests); LEDs not live-verifiable here.
+- *Blocked on the loops grid for Phase 4 (remap).* Remap is driven entirely on the
+  loops grid (select rows/cells there, watch the edo grid) -- but =m256-282= is
+  flooding, so it can't be driven or seen. The remap *algorithms* are unit-tested
+  (=remap.rs=); the interactive glue is the only thing left and it needs a working
+  loops grid to build against and verify. Flagged to Jeff: fix/swap =m256-282=
+  (serialosc restart, re-flash, or a different grid). Also to confirm when I build
+  remap: the *coarse* commit timing (bake-once-per-chord vs per-press) -- a small
+  reversible choice I'll pick if unanswered.
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
