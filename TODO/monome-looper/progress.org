@@ -57,6 +57,17 @@ logged here. Working on branch =monome-looper= (off =main=).
   LED vector, then drops it before the UDP sends; the audio thread locks only
   =voices=. (Next: an adversarial review of this glue before Phase 2 builds on it.)
 
+- *All four phase cores now built and unit-tested* (pure logic, independent of the
+  runtime glue): Phase 2 transport (=loop_store.rs= =LoopStore=, 9 tests), Phase 3
+  display (=display.rs= cluster + merge-nearest, 6 tests), Phase 4 remap
+  (=remap.rs= selection resolution + fine/coarse edits, 7 tests). With the Phase 1
+  edo/sink/device cores, the entire algorithmic substance of the looper is done
+  and green. What remains is *glue* -- wiring transport/display/remap into the
+  two-grid runtime (Phase 2/3/4 integration) + Phase 5 polish/docs. While these
+  cores were being built, an adversarial multi-agent review of the Phase 1 runtime
+  glue was running; I'll apply its findings before wiring the cores in (so the
+  glue is reviewed before more is layered on it).
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).

@@ -29,6 +29,8 @@ mod edo;
 mod display;
 #[allow(dead_code)]
 mod loop_store;
+#[allow(dead_code)]
+mod remap;
 // Slot / release_source are used by the Phase 2 playback path (next).
 #[allow(dead_code)]
 mod sink;
