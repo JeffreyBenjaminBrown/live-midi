@@ -350,3 +350,44 @@ for left and right channels and connect:
 pw-link "REAPER:out1" "$left_sink"
 pw-link "REAPER:out2" "$right_sink"
 #+end_src
+
+* Looper
+
+~monome-looper-58-8-1~ is a two-monome instrument (no piano). Code lives in
+~code/rust/midi_pulse/looper_runtime/~. The pure logic (the note sink, device
+assignment, the edo play/shift math, the loop store + playback, the display
+model, the remap resolution, and the LooperState key/LED logic) is all
+unit-tested; the rest is the I/O shell.
+
+** Architecture
+
+- *Two grids, shared state.* Three threads run over one ~Arc<Mutex<LooperState>>~:
+  one event loop per grid plus a playback ticker (~3 ms). Both grid threads
+  repaint every iteration, so a change from any thread shows on both grids within
+  a tick -- no message bus.
+- *Lock discipline.* A thread holds the control lock only to mutate state and/or
+  compute an LED vector (no I/O), then drops it before the UDP LED sends. The cpal
+  audio callback locks only the voice map. ~control -> voices~ is the single,
+  brief nesting; the realtime thread never waits on the control lock. All locks
+  recover from poisoning so one panic can't cascade or kill audio.
+- *Teardown.* A ~StopOnExit~ Drop guard makes any thread's exit (clean or panic)
+  set the shared STOP, freeing the others; ~run()~ then blanks both grids and
+  drops the audio stream. A startup that can't find two distinct grids fails
+  cleanly before spawning anything.
+- *Audio.* A ~cpal_sawwave~ sink. Both live edo play and loop playback drive one
+  ~VoiceMap~ through the unchanged sawwave ~render_block~; the looper's ~NoteSink~
+  is pitch-keyed and ref-counts sources (live + each slot), so a pitch wanted by
+  several sources is one voice.
+- *Devices.* Discovery dedupes serialosc replies by id (keeping the newest port),
+  requires two distinct live ids of the configured size, and assigns them in
+  config order. Key events are debounced (one press / one release per cell), so a
+  stuck or echoing grid can't corrupt state.
+
+** When a grid floods
+
+A faulty/echoing grid can spew ~/grid/key~ events (we saw a ~256 flood (0,0)
+presses at ~276k/sec). The debounce keeps the runtime stable, but real input is
+drowned. The fix is host-side: *unplug the monomes, restart serialosc, reconnect
+them.* To check a grid's health, send ~/serialosc/list~ to UDP 12002, register to
+each device port, and count inbound messages for ~1 s -- a healthy grid sends ~0,
+a flooding one thousands.
