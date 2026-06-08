@@ -68,6 +68,24 @@ logged here. Working on branch =monome-looper= (off =main=).
   glue was running; I'll apply its findings before wiring the cores in (so the
   glue is reviewed before more is layered on it).
 
+- *Phase 1 runtime adversarially reviewed and hardened.* A 4-lens multi-agent
+  review (concurrency, correctness, no-regressions, robustness) of the runtime
+  glue *confirmed the lock discipline is correct* (no I/O under any lock; single
+  control->voices order; no deadlock/priority-inversion path) and surfaced 7
+  off-the-happy-path bugs, all now fixed + committed:
+  - *teardown*: a =StopOnExit= Drop guard makes any grid-thread exit (incl. panic)
+    set =STOP=, freeing the sibling; run() then blanks both grids + drops audio --
+    no more zombie on a fault (the contract 6_plan promised);
+  - *poison-safe locks* everywhere so one panic can't cascade or kill audio;
+  - *rebind id-guard* + draining stale discovery replies (no cross-grid hijack);
+  - *per-cell =NoteSource::Live=* -- fixes a real bug where two cells colliding to
+    one pitch (e.g. (0,8) & (1,0) in 58-8-1) collapsed and releasing one silenced
+    both; *verified fixed on the grids* (2 sounding, release one -> 1 left);
+  - re-press releases the old pitch; a =/grid/key= with s not in {0,1} is ignored;
+    =validate_looper= rejects an edo rect bigger than its grid.
+  131 bin + 28 lib tests green; happy path + collision + malformed re-verified on
+  hardware. This is the reviewed foundation the Phase 2 playback thread builds on.
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
