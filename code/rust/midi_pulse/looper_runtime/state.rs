@@ -127,12 +127,6 @@ impl LooperState {
     self.down.len()
   }
 
-  pub fn grid_w(&self) -> i32 {
-    self.grid_w
-  }
-  pub fn grid_h(&self) -> i32 {
-    self.grid_h
-  }
   #[cfg(test)]
   pub fn register(&self) -> i32 {
     self.register

@@ -27,6 +27,8 @@ mod device;
 mod edo;
 #[allow(dead_code)]
 mod loop_store;
+// Slot / release_source are used by the Phase 2 playback path (next).
+#[allow(dead_code)]
 mod sink;
 mod state;
 

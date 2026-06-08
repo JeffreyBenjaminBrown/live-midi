@@ -15,9 +15,8 @@ use crate::voices::render_block_with_amplitude;
 
 pub struct Audio {
   /// Kept alive for the run; dropping it stops the stream.
-  pub stream: cpal::Stream,
+  _stream: cpal::Stream,
   pub sample_rate: f32,
-  pub channels: usize,
 }
 
 pub fn start(
@@ -61,5 +60,5 @@ pub fn start(
     None,
   )?;
   stream.play()?;
-  Ok(Audio { stream, sample_rate, channels })
+  Ok(Audio { _stream: stream, sample_rate })
 }
