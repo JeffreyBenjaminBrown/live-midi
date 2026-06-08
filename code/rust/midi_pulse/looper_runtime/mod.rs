@@ -101,6 +101,7 @@ struct Settings {
   loop_start: (i32, i32),
   loop_stop: (i32, i32),
   loop_play: (i32, i32),
+  loop_display_rect: [i32; 4],
   x_step: i32,
   y_step: i32,
   edo: i32,
@@ -112,6 +113,7 @@ struct Settings {
   release: f32,
   flash_ms: u64,
   quantize: Duration,
+  cluster: Duration,
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -133,11 +135,11 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       _ => None,
     })
     .unwrap_or([-1, -1, -1, -1]);
-  let loops_monome = config
+  let (loops_monome, loop_display_rect) = config
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowConfig::LoopDisplay { monome, .. } => Some(monome.clone()),
+      MonomeWindowConfig::LoopDisplay { monome, rect, .. } => Some((monome.clone(), *rect)),
       _ => None,
     })
     .ok_or("looper needs a loop_display window")?;
@@ -195,6 +197,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     loop_start,
     loop_stop,
     loop_play,
+    loop_display_rect,
     x_step: tuning.x_step as i32,
     y_step: tuning.y_step as i32,
     edo: tuning.edo as i32,
@@ -206,6 +209,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     release: *release_secs,
     flash_ms: looper.flash_ms,
     quantize: Duration::from_millis(looper.quantize_record_ms),
+    cluster: Duration::from_millis(looper.cluster_display_ms),
   })
 }
 
@@ -259,7 +263,9 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       loop_start: s.loop_start,
       loop_stop: s.loop_stop,
       loop_play: s.loop_play,
+      loop_display_rect: s.loop_display_rect,
       quantize: s.quantize,
+      cluster: s.cluster,
     },
   )));
 

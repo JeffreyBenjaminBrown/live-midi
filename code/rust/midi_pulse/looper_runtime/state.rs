@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use super::display::build_display;
 use super::edo::{register_delta, shift_for_cell, step_for_cell};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::sink::{NoteSource, SawNoteSink};
@@ -38,7 +39,9 @@ pub struct LooperParams {
   pub loop_start: (i32, i32),
   pub loop_stop: (i32, i32),
   pub loop_play: (i32, i32),
+  pub loop_display_rect: [i32; 4],
   pub quantize: Duration,
+  pub cluster: Duration,
 }
 
 /// The slot currently sounding, with its playhead and the epoch time it started.
@@ -62,6 +65,8 @@ pub struct LooperState {
   loop_start: (i32, i32),
   loop_stop: (i32, i32),
   loop_play: (i32, i32),
+  loop_display_rect: [i32; 4],
+  cluster: Duration,
 
   register: i32,
   down: HashMap<(i32, i32), i32>,
@@ -87,6 +92,8 @@ impl LooperState {
       loop_start: p.loop_start,
       loop_stop: p.loop_stop,
       loop_play: p.loop_play,
+      loop_display_rect: p.loop_display_rect,
+      cluster: p.cluster,
       register: 0,
       down: HashMap::new(),
       loops: LoopStore::new(n_slots, p.quantize),
@@ -239,7 +246,36 @@ impl LooperState {
         self.slot_level(slot, flash_on)
       };
     }
+    self.render_loop_display(&mut levels);
     levels
+  }
+
+  /// Paint the active slot's 2D display into its compound rect: the row-picker
+  /// column and column-picker row show dim (findable), the reserved corner stays
+  /// dark, and the main area lights the loop's notes (time across, pitch up, row 0
+  /// lowest at the bottom).
+  fn render_loop_display(&self, levels: &mut [i32]) {
+    let [dx0, dy0, dx1, dy1] = self.loop_display_rect;
+    if dx1 - dx0 < 1 || dy1 - dy0 < 1 {
+      return;
+    }
+    for y in (dy0 + 1)..=dy1 {
+      levels[(y * self.grid_w + dx0) as usize] = LEVEL_DIM; // row pickers
+    }
+    for x in (dx0 + 1)..=dx1 {
+      levels[(dy0 * self.grid_w + x) as usize] = LEVEL_DIM; // column pickers
+    }
+    let width = (dx1 - dx0) as usize;
+    let height = (dy1 - dy0) as usize;
+    let events = &self.loops.slots[self.loops.active].events;
+    let display = build_display(events, self.cluster, height, width);
+    for (row, col) in display.lit_cells() {
+      let sx = dx0 + 1 + col as i32;
+      let sy = dy1 - row as i32; // row 0 (lowest pitch) at the bottom
+      if sx >= dx0 + 1 && sx <= dx1 && sy >= dy0 + 1 && sy <= dy1 {
+        levels[(sy * self.grid_w + sx) as usize] = LEVEL_FULL;
+      }
+    }
   }
 
   fn slot_level(&self, slot: usize, flash_on: bool) -> i32 {
@@ -318,7 +354,9 @@ mod tests {
         loop_start: (0, 3),
         loop_stop: (1, 3),
         loop_play: (2, 3),
+        loop_display_rect: [0, 5, 15, 15],
         quantize: ms(70),
+        cluster: ms(100),
       },
     )
   }
@@ -383,6 +421,25 @@ mod tests {
     assert_eq!(level_at(&levels, 0, 0), LEVEL_DIM, "recorded idle slot dim");
     // a transport cell shows dim.
     assert_eq!(level_at(&levels, 0, 3), LEVEL_DIM);
+  }
+
+  #[test]
+  fn the_active_loop_renders_into_the_display_area() {
+    let mut s = state();
+    // Record one note (pitch 0) into the active slot (slot 0).
+    s.loops_key(0, 3, true, ms(0)); // start
+    s.edo_key(0, 0, true, ms(10));
+    s.edo_key(0, 0, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000)); // stop -> stored in slot 0 (active)
+    let levels = s.loops_levels(false);
+    // Display rect [0,5,15,15]: row pickers at x=0 (y>=6), column pickers at y=5
+    // (x>=1), one note -> one lit cell in the main area (bottom row, first col).
+    assert_eq!(level_at(&levels, 0, 6), LEVEL_DIM, "row-picker column is findable");
+    assert_eq!(level_at(&levels, 1, 5), LEVEL_DIM, "column-picker row is findable");
+    assert_eq!(level_at(&levels, 0, 5), LEVEL_OFF, "reserved corner stays dark");
+    // The single note is the lowest pitch (row 0 -> bottom y=15) at the first
+    // column (x=1).
+    assert_eq!(level_at(&levels, 1, 15), LEVEL_FULL, "the loop's note");
   }
 
   #[test]
