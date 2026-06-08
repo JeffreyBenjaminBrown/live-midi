@@ -1,5 +1,12 @@
 use midi_pulse::config::Config;
 
+#[allow(dead_code)]
+mod sink;
+#[allow(dead_code)]
+mod device;
+#[allow(dead_code)]
+mod edo;
+
 /// Phase 0 stub. The config has already been validated by `parse_config`; here we
 /// just print the resolved two-grid window inventory and exit cleanly. The real
 /// two-monome runtime (shared state, the pitch-keyed NoteSink, the loop store)

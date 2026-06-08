@@ -17,6 +17,17 @@ logged here. Working on branch =monome-looper= (off =main=).
   green). Build location note: the crate manifest is =/home/ubuntu/Cargo.toml=
   (lib at =code/rust/midi_pulse/lib.rs=); build/test/run from =/home/ubuntu=.
 
+- *Phase 1 pure cores done* (the verifiable hearts of Phase 1, each unit-tested):
+  =looper_runtime/sink.rs= -- the pitch-keyed ref-counted =NoteSink= over the
+  unchanged sawwave engine; =looper_runtime/device.rs= -- distinct-device
+  assignment (dedupe by id, newest port, fail if < 2 distinct live ids);
+  =looper_runtime/edo.rs= -- cell -> step with a play register + the 3x2 shift
+  pad. 16 new tests; 97 bin tests green. Converted =looper_runtime= to a
+  directory module. The remaining Phase 1 *runtime glue* (cpal stream, two OSC
+  threads, LED render, pre-flight/teardown) is hardware-gated -- it can't be run
+  or verified on this headless box -- so it is being written last, on top of
+  these tested cores.
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
@@ -35,6 +46,15 @@ logged here. Working on branch =monome-looper= (off =main=).
 - Added a =kind_name()= helper to =MonomeWindowConfig= (for the inventory print).
 - Looper configs forbid *orphan monomes* (every declared monome must be used by
   some window); scoped to looper configs, so existing configs are unaffected.
+- The =NoteSink= owns its *own* =VoiceMap=, keyed by the =Accreted= =VoiceSource=
+  used purely as an opaque per-pitch handle (=render_block= ignores the key). So
+  the sawwave engine is reused *unchanged*. One ref-counted voice per pitch
+  across sources (live + a slot can share a pitch).
+- Shift-pad sign convention: the octave corners are anchored by =1_vision= (top-
+  left = down an octave / sounds lower). The arrows follow consistently
+  (down/right raise, up/left lower); the *left/right* pitch direction is the one
+  bit the vision left unstated -- chose "right = higher." Trivially flippable if
+  it feels wrong on the grid.
 
 * major design choices
 (none yet -- I stop and flag you the moment this section gains an entry.)
