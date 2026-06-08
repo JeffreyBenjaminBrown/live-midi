@@ -194,6 +194,63 @@ That corner key can play double-duty to 'forget' the played timbres
 and revert to whatever the future note-ons had stored.
 
 Each note should indeed have its timbre captured at record time.
+***** ONGOING claude: selection is back in -- one thing still hangs on persistence
+Good corrections: the row/col/cell pickers *are* reused (my "drop selection" was
+wrong), record-time capture is in, and the loop-display corner cell does
+double-duty (clear selection / forget). The one thing left, and it's load-bearing:
+
+*Are selection-scoped edits destructive, while no-selection edits are not?* Your
+no-selection case is explicitly a revertible live override (the corner "forgets"
+back to stored). But the selection case has no "forget" -- which only makes sense
+if a selection-scoped change *persists*: it rewrites the selected notes' stored
+per-note timbre, surviving deselect and looping. That also matches the vision's
+"apply to a selection from the loop" (a lasting edit). If that's right:
+- loop-note timbre storage is *mutable after record* (not only set at record
+  time), and selection-scoped editing is the write path -- so the selection *is*
+  the "commit" I asked about above;
+- the corner's "clear selection" then just stops scoping; the edits are already
+  written, so there's nothing to discard.
+Confirm: selection = persistent edit, no-selection = revertible override? (This
+also leans on the looper corner-cell work you said is in flight.)
+***** ONGOING no, both should be destructive
+But we can jerry rig a simple 'massive undo' for loops:
+The last loop slot is always equal to what the most recently pressed slot was
+when it was pressed.
+It is overwritten every time another loop is triggered (to play).
+This, plus the ability to copy that last slot --
+call it the failsafe duplicate slot --
+to another one effectively lets the user undo all their edits to a slot.
+
+What I meant by 'forgetting' was this:
+The user can manipulate a loop's timbre in two ways:
+with selection and without.
+If manipulating without selection, everything they do to the timbre controls
+applies to every note-on after that.
+(If the user has only manipulated amplitude,
+then the other parameters are still updated when new note-ons happen,
+but the amplitude is now fixed at the value the user chose,
+and applies to all new note-ons.)
+The 'forget' button is "disregard the user's timbre edits going forward;
+they no longer affect new note-ons'.
+
+We should call it something else, because 'forget' is opaque.
+I'm thinking 'sustain-the-edits'.
+When lit solid, sustain-the-edits is happening; otherwise it's not.
+(Key down toggles it; key up has no effect.)
+****** example
+So for instance, suppose the loop has four notes A B C D.
+In the middle of B, with no loop subset selected,
+the user changes timbre to saw.
+B continues to sound, as whatever it was.
+Then C sounds, as a saw wave, and it edited permanently in that loop
+to be saw thereafter.
+Then the user turns sustain-the-edits off,
+*and* removes their finger from the amplitude row.
+(Otherwise the amplitude change would still affect new notes,
+because even with sustain-the-edits off, a fingerd value affects new note-ons.)
+D sounds as normal. The next time C happens, and thereafter,
+it is a saw wave. None of the other parameters of the loop's notes
+were affected by these timbre ops.
 ** 1d. The overlay's footprint collides with both grids' existing windows.
 The window is ~7 rows tall (waveform/slots row + volume + five FX rows) anchored
 at the top-left, and it can sit on *either* monome. Two problems:

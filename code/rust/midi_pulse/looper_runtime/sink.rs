@@ -108,6 +108,11 @@ impl SawNoteSink {
     }
   }
 
+  /// How many voices are currently in the shared map (live + playback).
+  pub fn voice_count(&self) -> usize {
+    self.voices.lock().unwrap_or_else(|e| e.into_inner()).len()
+  }
+
   /// Release everything a source holds (e.g. when a loop stops sounding).
   pub fn release_source(&mut self, source: NoteSource) {
     let held: Vec<i32> = self

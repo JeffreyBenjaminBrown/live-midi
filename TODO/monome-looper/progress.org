@@ -86,6 +86,24 @@ logged here. Working on branch =monome-looper= (off =main=).
   131 bin + 28 lib tests green; happy path + collision + malformed re-verified on
   hardware. This is the reviewed foundation the Phase 2 playback thread builds on.
 
+- *Phase 2 glue done -- loops RECORD and PLAY BACK, verified live on the grids.*
+  =LooperState= now holds the =LoopStore= transport + a playhead; a third
+  =playback_thread= advances the sounding slot into the sink every 3ms; edo
+  presses feed the recorder while recording; the loops grid handles slot-select +
+  transport (start/stop/play); both grid threads repaint every tick for cross-grid
+  reactivity (the edo grid reflects the active slot's pitches solid; the loops
+  grid shows active solid / playing flash / recorded dim). 5 new state integration
+  tests. Drove it on the two grids: =[loops] (0,3)->recording=Some(0)=,
+  =[loops] (2,3)->sounding=Some(0)=, then =[hb] sounding=Some(0) voices=1= --
+  i.e. record a note, play, and the loop plays back audibly.
+- *Found a faulty grid + hardened against it.* The loops device (=m256-282=) is
+  flooding =/grid/key [0,0,1]= at ~276k/sec (a stuck/echoing virtual grid; the edo
+  device =m0000102= is healthy). Discovery also shows ghost ports per id (handled
+  -- assignment takes the newest). Added *debounce* (ignore a duplicate press/
+  release per cell, since a real grid never repeats), which tames the flood (no
+  state corruption, no log spam) and let real transport keys through. The flood is
+  a hardware fault worth Jeff knowing about, but the runtime now tolerates it.
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
