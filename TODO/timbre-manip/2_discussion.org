@@ -309,6 +309,57 @@ with these controls:
 -unfold window
 -the four timbres
 -the rest are the amplitude row, scaled for that range (still logarithmic)
+***** TODO claude: the fold idea opens three things to pin down
+The folded one-row strip and "the loop/edo window begins just under the timbre
+window" are clear in spirit; three mechanics aren't:
+******  *"The four timbres"*
+-- four timbre *slots* (a quick-access subset, and which
+four?) or the four *waveforms*? The unfolded top row had 4 waveforms + arm +
+~10 slots, so folding has to choose what survives into the strip.
+******* TODO good point
+Start as the four waveforms.
+As timbres are saved, replace them with those saved timbres --
+the first saved timbre overwrites the first slot (no matter where
+that first timbre was saved), the second does similarly, etc.
+******  2. *Does the underlying window resize at runtime?*
+"Begins just under" reads as
+the loop/edo window's *top tracking the timbre window's current height* -- so
+folding (7 rows -> 1) hands rows 1-6 back to the loop/edo grid live. That's a
+window whose rect changes while running, which nothing does today (rects are
+static). Confirm that's the intent, vs. a fixed top with blank rows when
+folded.
+******* TODO D'oh! Yes, thatś my intent.
+but it conflicts with the nature of the config file.
+I guess we need them both to be a single window.
+But it would be nice if they were represented nonetheless
+as a collection of windows bound into one.
+In the config the user just says where the one window goes.
+
+I think I have a system for it.
+Window coordinates can be absolute (defined w/r/t the monome)
+or relative w/r/t another window.
+If relative, positive numbers mean the usual thing,
+but negative numbers are also feasible,
+and they count from the other direction --
+so (-1,-1) is the bottom-right corner.
+
+On the big edo grid monome, all windows can be absolute.
+The timbre manip for loop (which appears on the edo-grid monome,
+not the loop monome) just occludes the grid below. No harm; the grid is big.
+
+But on the other one, the "foldable edo-grid timbre window + loop" window
+has to be defined as a single window with two (non-configurable) sub-windows.
+Any windows that need to occlude it can be placed
+relative to it, or relative to either of its sub-windows.
+******  3. *Fold state machine.* The strip has an "unfold" cell; what *folds* the
+   unfolded window, and how does that relate to the activate-timbre-window button
+   -- does that button now cycle closed -> folded -> unfolded, or open/close while
+   a separate cell folds? Spell out the three states and their transitions.
+(The folded amplitude row "scaled, still logarithmic" is fine -- it's the same
+log row at a smaller width, consistent with the tagged-range model at 1a.)
+******* TODO the same button unfolds
+If I forgot to count that fold/unfold button in the button count,
+make it the top-left button of the window in either state.
 * 2. Contradictions and overloaded labels
 
 ** 2a. "a panel to control which controls are controllable" vs. "show them all."
