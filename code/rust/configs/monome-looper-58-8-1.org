@@ -1,0 +1,183 @@
+#+title: Monome Looper 58 8 1
+
+A two-monome looping instrument: one grid plays notes in 58-EDO, the other
+records, plays back, and edits loops. No piano. Defined by
+=monome-looper-58-8-1.toml=; runtime in =code/rust/midi_pulse/looper_runtime/=.
+
+* glossary
+
+- *edo grid* :: The first 16x16 monome -- the play surface. Each cell sounds a
+  note; it also reflects the active loop and doubles as the pitch-picker during
+  remap. (Config monome ~edo~, prefix ~/looper-edo~.)
+- *loops grid* :: The second 16x16 monome -- the loops. Slots, transport, the
+  loop display, and the remap controls live here. (Config monome ~loops~, prefix
+  ~/looper-loops~.) The runtime decides which physical grid is which; it doesn't
+  matter.
+- *58-EDO* :: The tuning: the octave split into 58 equal steps. A cell ~(x, y)~
+  sounds step ~8*x + 1*y + register~ (so moving right is +8 steps, up/down is
+  +/-1 step). One octave is 58 steps.
+- *register* :: A transpose offset added to every edo cell, moved by the shift
+  pad. There is one stored register for play; remap computes its own and restores
+  the play register when it ends.
+- *slot* :: One loop's worth of storage. This config has a 4x4 grid = 16 slots.
+- *active slot* :: The slot the controls, the display, and remap point at. Lit
+  solid on the loops grid. *Active is not the same as sounding* -- you can edit one
+  slot while another plays.
+- *sounding slot* :: The slot currently playing. At most one sounds at a time
+  (there is no layering). Lit flashing on the loops grid when it isn't also the
+  active slot.
+- *recording* :: Capturing edo-grid notes into the active slot. Notes within
+  70 ms of the loop boundary snap to it; a note held the whole pass (from before
+  recording) is dropped; a note still held at the end is cut at the boundary.
+- *loop display* :: The 2D picture of the active slot: time runs left-to-right
+  (one column per note-group -- notes within 100 ms cluster into one column),
+  pitch runs bottom-to-top (one row per distinct pitch). If a loop has more
+  pitches/columns than fit, the nearest are merged.
+- *picker* :: The cells that select part of the loop for remap -- a *row picker*
+  (left column of the display) selects a whole pitch-row, a *column picker* (top
+  row) selects a whole time-column (the chord at that moment), and a *cell* in the
+  main area selects one pitch at one time.
+- *remap* :: Re-pitching the selected notes using the edo grid. *Fine* sets each
+  selected pitch to the exact cell you press (lowest pitch first). *Coarse*
+  transposes/duplicates the selection by the interval from the *center* cell to the
+  cell you press (so fingering several cells copies the selection to each).
+- *center* :: The edo cell that means "no change" (unison) in coarse remap. Here
+  it is ~(7, 7)~.
+- *target* :: A pitch currently up for remap (resolved from the selection,
+  lowest-first).
+- *shift pad* :: The 3x2 block of cells in the lower-right of the edo grid that
+  transposes the play surface.
+
+* usage
+
+** run it
+
+#+begin_src sh
+cargo run --bin midi_pulse -- monome-looper-58-8-1
+#+end_src
+
+Both 16x16 grids must be connected. Ctrl-C to quit (it blanks both grids and
+stops audio). If a grid starts spewing events, unplug the monomes, restart
+serialosc, and reconnect -- see =RUNTIME-NOTES.org=.
+
+** play
+
+Press cells on the edo grid to sound notes. A held note lights every one of its
+octave-equivalents solid. The shift pad (lower-right) transposes: the four arrows
+move the pitch by one cell (down/right = higher, up/left = lower), and the two top
+corners by a whole octave.
+
+** record a loop
+
+1. Press a *slot* on the loops grid to choose where to record (it lights solid).
+2. Press *start* -- recording begins.
+3. Play your part on the edo grid.
+4. Press *play* to close the loop and start it looping, or *stop* to keep it
+   without playing.
+
+The active slot's notes reflect solid on the edo grid, so you can see what's in
+it. Recording into a slot overwrites whatever was there (there is no overdub).
+
+** switch, stop, and silence
+
+- Press another *slot* to make it active (this does *not* change what's sounding).
+- Press *play* on an active, recorded slot to make it the sole sounding loop --
+  whatever was sounding stops (one loop at a time).
+- To go silent: make the sounding slot active, then press *stop*.
+- There is no erase; reuse a slot by recording over it.
+
+** remap (edit pitches)
+
+1. On the loop display, pick what to edit: press *row pickers* (left column),
+   *column pickers* (top row), or *cells* in the main area. Rows, columns, and
+   cells are mutually exclusive -- starting one clears the others. The edo grid
+   switches to remap mode (it shows the selected pitches; presses now pick, they
+   don't play).
+2. *Fine* mode (default): press an edo cell for each selected pitch, lowest first.
+   Each press sets that pitch to the cell's note. After the last, the edit is
+   applied and you return to play.
+3. *Coarse* mode (press the *toggle*): the edo grid shows the *center* cell. Each
+   cell you press transposes the selection by the interval from center to that
+   cell; pressing several cells copies the selection to each (2 notes x 3 cells =
+   6 notes). Toggle back to fine to end.
+4. The shift pad still works during remap; the play register is restored on exit.
+5. Press *undo* to revert the last remap on the active slot.
+
+** copy a loop
+
+Press *copy*, then the *from* slot, then the *to* slot. The contents move; the
+active and sounding slots are unchanged. Copying from an empty slot, or onto
+itself, does nothing.
+
+* layout
+
+Cells are ~(x, y)~ with ~(0, 0)~ at the top-left; ~y~ increases downward.
+
+** grid 1 -- edo (prefix /looper-edo)
+
+The whole grid plays. The shift pad overlays the lower-right six cells (those six
+can't play; no loss).
+
+#+begin_example
+        x: 0 .................................. 15
+ y=0   [ . . . . . . . . . . . . . . . . ]
+  .      the edo play grid: cell (x,y) sounds 58-EDO step
+  .      8*x + y + register; a sounding pitch lights all its
+ y=13  [ . . . . . . . . . . . . . . . . ]   octave-equivalents solid
+ y=14  [ . . . . . . . . . . . . . Od ^  Ou]
+ y=15  [ . . . . . . . . . . . . . <  v  > ]
+#+end_example
+
+Shift pad =edo_shift_pad= ~[13,14,15,15]~ -- each arrow shifts by one cell, the
+corners by an octave:
+
+| cell    | label | effect                       |
+|---------+-------+------------------------------|
+| (13,14) | Od    | octave down (-58 steps)      |
+| (14,14) | ^     | up: pressed notes -1 step    |
+| (15,14) | Ou    | octave up (+58 steps)        |
+| (13,15) | <     | left: pressed notes -8 steps |
+| (14,15) | v     | down: pressed notes +1 step  |
+| (15,15) | >     | right: pressed notes +8 steps |
+
+** grid 2 -- loops (prefix /looper-loops)
+
+#+begin_example
+        x: 0   1   2   3    4   5   6 ............. 15
+ y=0   [ S   S   S   S    .   T   .  .  .  .  .  . ]
+ y=1   [ S   S   S   S    .   C   .  .  .  .  .  . ]
+ y=2   [ S   S   S   S    .   U   .  .  .  .  .  . ]
+ y=3   [ a   o   p   S    .   .   .  .  .  .  .  . ]
+ y=4   [ .   .   .   .    .   .   .  .  .  .  .  . ]
+ y=5   [ *   c   c   c    c   c   c  c  c  c  c  c ]   <- column pickers
+ y=6   [ R   +-------------------------------------+
+  .    [ R   |        main loop display            |    time -> , pitch ^
+ y=15  [ R   +-------------------------------------+
+         ^
+       row pickers
+#+end_example
+
+- ~S~ -- *slots* =loop_slots= ~[0,0,3,3]~ (16 slots, row-major). Active = solid,
+  sounding = flash, recorded = dim, empty = dark.
+- *transport* =loop_control= (overlaying the bottom slot row):
+  - ~a~ (0,3) *start* -- record into the active slot.
+  - ~o~ (1,3) *stop* -- stop the active slot's recording or playback.
+  - ~p~ (2,3) *play* -- loop the active slot as the sole sounding loop.
+- ~T~ (5,0) -- *fine/coarse toggle* =loop_remap_mode_toggle=.
+- ~C~ (5,1) -- *copy* =loop_copy_button= (copy, then from, then to).
+- ~U~ (5,2) -- *remap undo* =loop_remap_undo=.
+- *loop display* =loop_display= ~[0,5,15,15]~:
+  - ~*~ (0,5) -- reserved (unused for now).
+  - ~c~ -- *column pickers* (top row): select a whole time-column.
+  - ~R~ -- *row pickers* (left column): select a whole pitch-row.
+  - main area ~[1,6,15,15]~ (15 wide x 10 tall): the loop's notes, time across,
+    pitch up (lowest pitch on the bottom row).
+
+** the [looper] settings
+
+| key                  | value | meaning                                          |
+|----------------------+-------+--------------------------------------------------|
+| ~quantize_record_ms~ |    70 | events within this of the loop boundary snap to it |
+| ~cluster_display_ms~ |   100 | note-ons within this of each other = one column  |
+| ~flash_ms~           |    50 | flash half-period (sounding slot, remap)         |
+| ~remap_center~       | (7,7) | the "unison" edo cell for coarse remap           |
