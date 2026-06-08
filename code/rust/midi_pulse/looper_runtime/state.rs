@@ -13,6 +13,7 @@ use std::time::Duration;
 use super::display::build_display;
 use super::edo::{register_delta, shift_for_cell, step_for_cell};
 use super::loop_store::{LoopStore, PlayAction, Playback};
+use super::remap::{apply_coarse, apply_fine, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
@@ -40,6 +41,10 @@ pub struct LooperParams {
   pub loop_stop: (i32, i32),
   pub loop_play: (i32, i32),
   pub loop_display_rect: [i32; 4],
+  pub loop_toggle: (i32, i32),
+  pub loop_copy: (i32, i32),
+  pub loop_undo: (i32, i32),
+  pub remap_center: (i32, i32),
   pub quantize: Duration,
   pub cluster: Duration,
 }
@@ -66,6 +71,10 @@ pub struct LooperState {
   loop_stop: (i32, i32),
   loop_play: (i32, i32),
   loop_display_rect: [i32; 4],
+  loop_toggle: (i32, i32),
+  loop_copy: (i32, i32),
+  loop_undo: (i32, i32),
+  remap_center: (i32, i32),
   cluster: Duration,
 
   register: i32,
@@ -73,6 +82,41 @@ pub struct LooperState {
 
   loops: LoopStore,
   playing: Option<Playing>,
+
+  /// Remap toggle: false = fine (set each note's absolute pitch), true = coarse
+  /// (transpose/duplicate the selection by an interval).
+  coarse: bool,
+  /// An in-progress remap, if any.
+  remap: Option<Remap>,
+  /// Copy gesture: Some(from) after 'copy' then a 'from' slot, awaiting 'to'.
+  copy_arming: bool,
+  copy_from: Option<usize>,
+}
+
+/// An in-progress loop remap. While present, the edo grid is in remap mode (its
+/// presses pick destinations, not notes). Selection accumulates until the first
+/// edo press freezes it.
+struct Remap {
+  selection: Selection,
+  frozen: bool,
+  /// Resolved at freeze, ascending: the pitches to remap (fine) or transpose
+  /// (coarse).
+  targets: Vec<i32>,
+  /// Fine: index of the next target to remap.
+  next: usize,
+  /// Fine: accumulated old -> new substitutions.
+  mapping: Vec<(i32, i32)>,
+  /// True for a coarse session (transpose/duplicate) vs fine.
+  coarse: bool,
+  /// The play register at freeze, restored on exit.
+  saved_register: i32,
+}
+
+/// A press in the loop display: a whole pitch-row, a whole time-column, or a cell.
+enum Pick {
+  Row(usize),
+  Col(usize),
+  Cell(usize, usize),
 }
 
 impl LooperState {
@@ -93,11 +137,19 @@ impl LooperState {
       loop_stop: p.loop_stop,
       loop_play: p.loop_play,
       loop_display_rect: p.loop_display_rect,
+      loop_toggle: p.loop_toggle,
+      loop_copy: p.loop_copy,
+      loop_undo: p.loop_undo,
+      remap_center: p.remap_center,
       cluster: p.cluster,
       register: 0,
       down: HashMap::new(),
       loops: LoopStore::new(n_slots, p.quantize),
       playing: None,
+      coarse: false,
+      remap: None,
+      copy_arming: false,
+      copy_from: None,
     }
   }
 
@@ -110,6 +162,15 @@ impl LooperState {
       if let Some(shift) = shift_for_cell(self.shift_rect, (x, y)) {
         self.register += register_delta(shift, self.x_step, self.y_step, self.edo);
         return true;
+      }
+      // The shift pad keeps working during remap; other edo presses pick remap
+      // destinations instead of playing.
+      if self.remap.is_some() {
+        if in_rect(self.edo_rect, x, y) {
+          self.edo_remap_press(x, y);
+          return true;
+        }
+        return false;
       }
       if in_rect(self.edo_rect, x, y) {
         let pitch = step_for_cell(self.x_step, self.y_step, self.register, x, y);
@@ -137,13 +198,28 @@ impl LooperState {
   /// live-held notes plus the active loop's content (solid whether or not it is
   /// playing, per the design).
   pub fn edo_levels(&self) -> Vec<i32> {
-    let mut classes: HashSet<i32> =
-      self.down.values().map(|p| p.rem_euclid(self.edo)).collect();
-    for event in &self.loops.slots[self.loops.active].events {
-      if event.on {
-        classes.insert(event.pitch.rem_euclid(self.edo));
+    let classes: HashSet<i32> = if let Some(r) = &self.remap {
+      // Remap mode: light what's being remapped (or the coarse center).
+      let pitches = if r.frozen {
+        if r.coarse {
+          vec![step_for_cell(self.x_step, self.y_step, self.register, self.remap_center.0, self.remap_center.1)]
+        } else {
+          r.targets.get(r.next..).map(<[i32]>::to_vec).unwrap_or_default()
+        }
+      } else {
+        selected_pitches(&self.build_active_display(), &r.selection)
+      };
+      pitches.iter().map(|p| p.rem_euclid(self.edo)).collect()
+    } else {
+      // Play mode: live-held notes plus the active loop's content.
+      let mut c: HashSet<i32> = self.down.values().map(|p| p.rem_euclid(self.edo)).collect();
+      for event in &self.loops.slots[self.loops.active].events {
+        if event.on {
+          c.insert(event.pitch.rem_euclid(self.edo));
+        }
       }
-    }
+      c
+    };
     let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
     for y in 0..self.grid_h {
       for x in 0..self.grid_w {
@@ -167,6 +243,27 @@ impl LooperState {
     if !press {
       return false;
     }
+    // Copy gesture: press copy, then a 'from' slot, then a 'to' slot. While armed
+    // it intercepts slot presses (so they aren't treated as active-slot changes).
+    if (x, y) == self.loop_copy {
+      self.copy_arming = true;
+      self.copy_from = None;
+      return true;
+    }
+    if self.copy_arming {
+      if let Some(slot) = self.slot_at(x, y) {
+        self.copy_from = Some(slot);
+        self.copy_arming = false;
+      }
+      return true;
+    }
+    if let Some(from) = self.copy_from {
+      if let Some(to) = self.slot_at(x, y) {
+        self.copy_slot(from, to);
+      }
+      self.copy_from = None;
+      return true;
+    }
     if (x, y) == self.loop_start {
       self.loops.start_recording(now);
       self.reconcile_playback(now);
@@ -182,11 +279,213 @@ impl LooperState {
       self.reconcile_playback(now);
       return true;
     }
+    if (x, y) == self.loop_undo {
+      let slot = self.loops.active;
+      if let Some(prev) = self.loops.slots[slot].history.pop() {
+        self.loops.slots[slot].events = prev;
+      }
+      return true;
+    }
+    if (x, y) == self.loop_toggle {
+      self.coarse = !self.coarse;
+      // Toggling back to fine ends an active coarse session (already baked).
+      if !self.coarse && self.remap.as_ref().is_some_and(|r| r.coarse) {
+        self.exit_remap();
+      }
+      return true;
+    }
+    if let Some(pick) = self.display_pick(x, y) {
+      self.add_pick(pick);
+      return true;
+    }
     if let Some(slot) = self.slot_at(x, y) {
       self.loops.set_active(slot);
       return true;
     }
     false
+  }
+
+  // ---- remap ----
+
+  fn build_active_display(&self) -> super::display::LoopDisplay {
+    let [dx0, dy0, dx1, dy1] = self.loop_display_rect;
+    let width = (dx1 - dx0).max(1) as usize;
+    let height = (dy1 - dy0).max(1) as usize;
+    build_display(&self.loops.slots[self.loops.active].events, self.cluster, height, width)
+  }
+
+  /// Which display pick a loops-grid cell is, if any (row picker / column picker /
+  /// main-area cell). Row 0 is the bottom of the main area.
+  fn display_pick(&self, x: i32, y: i32) -> Option<Pick> {
+    let [dx0, dy0, dx1, dy1] = self.loop_display_rect;
+    if dx1 - dx0 < 1 || dy1 - dy0 < 1 {
+      return None;
+    }
+    if x == dx0 && y > dy0 && y <= dy1 {
+      return Some(Pick::Row((dy1 - y) as usize));
+    }
+    if y == dy0 && x > dx0 && x <= dx1 {
+      return Some(Pick::Col((x - dx0 - 1) as usize));
+    }
+    if x > dx0 && x <= dx1 && y > dy0 && y <= dy1 {
+      return Some(Pick::Cell((dy1 - y) as usize, (x - dx0 - 1) as usize));
+    }
+    None
+  }
+
+  /// Add a pick to the selection: start a remap session, extend it (same mode), or
+  /// switch mode (clearing the prior selection). Ignored once frozen.
+  fn add_pick(&mut self, pick: Pick) {
+    if self.remap.as_ref().is_some_and(|r| r.frozen) {
+      return;
+    }
+    let extend = matches!(
+      (&self.remap, &pick),
+      (Some(Remap { selection: Selection::Rows(_), .. }), Pick::Row(_))
+        | (Some(Remap { selection: Selection::Columns(_), .. }), Pick::Col(_))
+        | (Some(Remap { selection: Selection::Cells(_), .. }), Pick::Cell(..))
+    );
+    if extend {
+      let r = self.remap.as_mut().unwrap();
+      match (&mut r.selection, pick) {
+        (Selection::Rows(v), Pick::Row(i)) => {
+          if !v.contains(&i) {
+            v.push(i);
+          }
+        }
+        (Selection::Columns(v), Pick::Col(i)) => {
+          if !v.contains(&i) {
+            v.push(i);
+          }
+        }
+        (Selection::Cells(v), Pick::Cell(rr, cc)) => {
+          if !v.contains(&(rr, cc)) {
+            v.push((rr, cc));
+          }
+        }
+        _ => {}
+      }
+    } else {
+      let selection = match pick {
+        Pick::Row(i) => Selection::Rows(vec![i]),
+        Pick::Col(i) => Selection::Columns(vec![i]),
+        Pick::Cell(rr, cc) => Selection::Cells(vec![(rr, cc)]),
+      };
+      self.remap = Some(Remap {
+        selection,
+        frozen: false,
+        targets: vec![],
+        next: 0,
+        mapping: vec![],
+        coarse: self.coarse,
+        saved_register: 0,
+      });
+    }
+  }
+
+  /// An edo-grid press during a remap session: freeze the selection on the first
+  /// press, then pick this destination (fine) or interval (coarse).
+  fn edo_remap_press(&mut self, x: i32, y: i32) {
+    let pressed_step = step_for_cell(self.x_step, self.y_step, self.register, x, y);
+    if !self.remap.as_ref().is_some_and(|r| r.frozen) {
+      self.freeze_remap();
+    }
+    if self.remap.as_ref().is_none_or(|r| r.targets.is_empty()) {
+      self.exit_remap();
+      return;
+    }
+    if self.remap.as_ref().is_some_and(|r| r.coarse) {
+      self.coarse_press(pressed_step);
+    } else {
+      self.fine_press(pressed_step);
+    }
+  }
+
+  fn freeze_remap(&mut self) {
+    let display = self.build_active_display();
+    let targets = selected_pitches(&display, &self.remap.as_ref().unwrap().selection);
+    let saved = self.register;
+    let coarse = self.coarse;
+    let r = self.remap.as_mut().unwrap();
+    r.frozen = true;
+    r.targets = targets;
+    r.next = 0;
+    r.mapping = vec![];
+    r.coarse = coarse;
+    r.saved_register = saved;
+  }
+
+  fn fine_press(&mut self, pressed_step: i32) {
+    let done = {
+      let r = self.remap.as_mut().unwrap();
+      if r.next < r.targets.len() {
+        let old = r.targets[r.next];
+        r.mapping.push((old, pressed_step));
+        r.next += 1;
+      }
+      r.next >= r.targets.len()
+    };
+    if done {
+      let (mapping, saved) = {
+        let r = self.remap.as_ref().unwrap();
+        (r.mapping.clone(), r.saved_register)
+      };
+      self.apply_to_active(|events| apply_fine(events, &mapping));
+      self.register = saved;
+      self.remap = None;
+    }
+  }
+
+  fn coarse_press(&mut self, pressed_step: i32) {
+    // Each press transposes the selection by (pressed - center); accumulating
+    // intervals re-bakes from the snapshot, so N presses over M notes -> N*M.
+    let center = step_for_cell(self.x_step, self.y_step, self.register, self.remap_center.0, self.remap_center.1);
+    let interval = pressed_step - center;
+    let (targets, mut intervals) = {
+      let r = self.remap.as_ref().unwrap();
+      (r.targets.clone(), r.mapping.iter().map(|(_, i)| *i).collect::<Vec<_>>())
+    };
+    intervals.push(interval);
+    // Stash the new interval in `mapping` (reusing it as the interval list).
+    self.remap.as_mut().unwrap().mapping.push((0, interval));
+    // Re-bake from the snapshot stored in history (push it once, on the first press).
+    let slot = self.loops.active;
+    if intervals.len() == 1 {
+      let snapshot = self.loops.slots[slot].events.clone();
+      self.loops.slots[slot].history.push(snapshot);
+    }
+    let base = self.loops.slots[slot].history.last().cloned().unwrap_or_default();
+    self.loops.slots[slot].events = apply_coarse(&base, &targets, &intervals);
+  }
+
+  /// Snapshot the active slot's events for undo, then replace them.
+  fn apply_to_active(&mut self, f: impl FnOnce(&[super::loop_store::LoopEvent]) -> Vec<super::loop_store::LoopEvent>) {
+    let slot = self.loops.active;
+    let events = self.loops.slots[slot].events.clone();
+    self.loops.slots[slot].history.push(events.clone());
+    self.loops.slots[slot].events = f(&events);
+  }
+
+  fn exit_remap(&mut self) {
+    if let Some(r) = &self.remap {
+      if r.frozen {
+        self.register = r.saved_register;
+      }
+    }
+    self.remap = None;
+  }
+
+  /// Copy `from`'s contents onto `to`, leaving active and sounding unchanged. A
+  /// no-op if from == to or `from` is empty (never erase `to`).
+  /// TODO: when `to` is sounding, defer to its next boundary; today it swaps now.
+  fn copy_slot(&mut self, from: usize, to: usize) {
+    if from == to || self.loops.slots[from].loop_duration.is_none() {
+      return;
+    }
+    let events = self.loops.slots[from].events.clone();
+    let duration = self.loops.slots[from].loop_duration;
+    self.loops.slots[to].events = events;
+    self.loops.slots[to].loop_duration = duration;
   }
 
   /// Advance the sounding slot's playhead, emitting its due notes into the sink.
@@ -355,6 +654,10 @@ mod tests {
         loop_stop: (1, 3),
         loop_play: (2, 3),
         loop_display_rect: [0, 5, 15, 15],
+        loop_toggle: (5, 0),
+        loop_copy: (5, 1),
+        loop_undo: (5, 2),
+        remap_center: (7, 7),
         quantize: ms(70),
         cluster: ms(100),
       },
@@ -440,6 +743,39 @@ mod tests {
     // The single note is the lowest pitch (row 0 -> bottom y=15) at the first
     // column (x=1).
     assert_eq!(level_at(&levels, 1, 15), LEVEL_FULL, "the loop's note");
+  }
+
+  #[test]
+  fn fine_remap_changes_a_row_pitch_and_undo_restores() {
+    let mut s = state();
+    // Record a one-note loop (pitch 0) into the active slot.
+    s.loops_key(0, 3, true, ms(0)); // start
+    s.edo_key(0, 0, true, ms(10));
+    s.edo_key(0, 0, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000)); // stop
+    assert!(s.loops.slots[0].events.iter().all(|e| e.pitch == 0));
+    // Select the (single, bottom) display row via its picker at (0, 15).
+    s.loops_key(0, 15, true, ms(1100));
+    assert!(s.remap.is_some(), "selecting a row enters remap mode");
+    // Press edo cell (1,0) = step 8 -> remap pitch 0 to 8.
+    s.edo_key(1, 0, true, ms(1200));
+    assert!(s.remap.is_none(), "a single-target fine remap completes on one press");
+    assert!(s.loops.slots[0].events.iter().all(|e| e.pitch == 8), "0 -> 8");
+    // Undo restores the original pitch.
+    s.loops_key(5, 2, true, ms(1300));
+    assert!(s.loops.slots[0].events.iter().all(|e| e.pitch == 0), "undo restores 0");
+  }
+
+  #[test]
+  fn remap_press_does_not_play_a_live_note() {
+    let mut s = state();
+    s.loops_key(0, 3, true, ms(0));
+    s.edo_key(0, 0, true, ms(10));
+    s.edo_key(0, 0, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000));
+    s.loops_key(0, 15, true, ms(1100)); // select row -> remap mode
+    s.edo_key(2, 0, true, ms(1200)); // a remap destination press, NOT a played note
+    assert_eq!(s.down.len(), 0, "edo presses in remap mode don't sound live notes");
   }
 
   #[test]

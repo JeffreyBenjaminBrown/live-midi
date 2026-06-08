@@ -102,6 +102,10 @@ struct Settings {
   loop_stop: (i32, i32),
   loop_play: (i32, i32),
   loop_display_rect: [i32; 4],
+  loop_toggle: (i32, i32),
+  loop_copy: (i32, i32),
+  loop_undo: (i32, i32),
+  remap_center: (i32, i32),
   x_step: i32,
   y_step: i32,
   edo: i32,
@@ -162,6 +166,17 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
   let loop_start = control_cell(LoopControlKind::Start).ok_or("looper needs loop_control start")?;
   let loop_stop = control_cell(LoopControlKind::Stop).ok_or("looper needs loop_control stop")?;
   let loop_play = control_cell(LoopControlKind::Play).ok_or("looper needs loop_control play")?;
+  // Optional single-cell controls; an impossible cell means "not configured".
+  let kind_cell = |pred: fn(&MonomeWindowConfig) -> bool| {
+    config
+      .monome_windows
+      .iter()
+      .find_map(|w| if pred(w) { let r = w.rect(); Some((r[0], r[1])) } else { None })
+      .unwrap_or((-1, -1))
+  };
+  let loop_toggle = kind_cell(|w| matches!(w, MonomeWindowConfig::LoopRemapModeToggle { .. }));
+  let loop_copy = kind_cell(|w| matches!(w, MonomeWindowConfig::LoopCopyButton { .. }));
+  let loop_undo = kind_cell(|w| matches!(w, MonomeWindowConfig::LoopRemapUndo { .. }));
 
   let tuning = config
     .tunings
@@ -198,6 +213,10 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     loop_stop,
     loop_play,
     loop_display_rect,
+    loop_toggle,
+    loop_copy,
+    loop_undo,
+    remap_center: (looper.remap_center[0], looper.remap_center[1]),
     x_step: tuning.x_step as i32,
     y_step: tuning.y_step as i32,
     edo: tuning.edo as i32,
@@ -264,6 +283,10 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       loop_stop: s.loop_stop,
       loop_play: s.loop_play,
       loop_display_rect: s.loop_display_rect,
+      loop_toggle: s.loop_toggle,
+      loop_copy: s.loop_copy,
+      loop_undo: s.loop_undo,
+      remap_center: s.remap_center,
       quantize: s.quantize,
       cluster: s.cluster,
     },

@@ -116,6 +116,25 @@ logged here. Working on branch =monome-looper= (off =main=).
   remap: the *coarse* commit timing (bake-once-per-chord vs per-press) -- a small
   reversible choice I'll pick if unanswered.
 
+- *Grid flood fixed* (Jeff's unplug / restart-serialosc / reconnect cleared it;
+  both grids now ~0 msgs/s). Pinned the recovery to memory.
+- *Phase 4 (remap) + Phase 5 (copy/toggle) glue done; verified live.* The remap
+  state machine: loops-grid pickers accumulate a row/column/cell selection
+  (mode-exclusive); the first edo press FREEZES it; fine remap sets each target's
+  pitch lowest-first then exits (restoring the play register); coarse transposes/
+  duplicates the selection by (pressed - center), re-baked from a snapshot so N
+  presses over M notes -> N*M; =loop_remap_undo= pops the slot's history; the
+  =loop_remap_mode_toggle= flips fine/coarse (toggling to fine ends a coarse
+  session); during remap the edo grid is in remap mode (presses pick, don't play;
+  the shift pad still works). Copy: press copy -> from -> to, leaving active/
+  sounding unchanged. 4 new state tests (134 bin total). Drove it on the grids:
+  record -> select row -> edo remap press -> play the remapped loop, no crash.
+  The looper is now feature-complete for the spec.
+  Coarse commit timing (the ambiguity) = per-press additive re-bake (my pick).
+  Deferred refinements (reversible LED/UX polish): the non-uniform playhead, the
+  auto-octave-shift on remap entry, and richer remap-mode LEDs (selection
+  highlight on the loops grid, coarse center + flashing equivalents).
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
   playing or idle (Phase 2).
