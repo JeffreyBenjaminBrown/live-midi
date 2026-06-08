@@ -22,6 +22,23 @@ pub struct Config {
   pub monome_windows: Vec<MonomeWindowConfig>,
   #[serde(default)]
   pub display: Option<DisplayConfig>,
+  #[serde(default)]
+  pub looper: Option<LooperConfig>,
+}
+
+/// Looper-wide scalars (see the loop windows below). All durations in
+/// milliseconds. Present iff the config declares the looper windows.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LooperConfig {
+  /// Events within this of a loop boundary snap to it (to the next pass start).
+  pub quantize_record_ms: u64,
+  /// Note-ons within this of each other display as one column of the loop.
+  pub cluster_display_ms: u64,
+  /// Reflection / octave-equivalent flash half-period (on for this, off for this).
+  pub flash_ms: u64,
+  /// The edo-grid cell that means "unison" in coarse remap.
+  pub remap_center: [i32; 2],
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -234,6 +251,54 @@ pub enum MonomeWindowConfig {
     rect: [i32; 4],
     control: ScaleControlKind,
   },
+  // ---- Looper windows (see 6_plan.org). ----
+  // The 3x2 shift pad overlaid on the lower-right of the edo grid.
+  EdoShiftPad {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // The grid of loop slots; one slot is active. The number of slots is whatever
+  // the rect covers.
+  LoopSlots {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell transport button acting on the active slot (start/stop/play).
+  LoopControl {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    control: LoopControlKind,
+  },
+  // Toggles fine vs coarse loop-remap.
+  LoopRemapModeToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // Copy a loop slot to another (press, then 'from', then 'to').
+  LoopCopyButton {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // One-press undo of the last loop remap. Its own kind (NOT remap_undo_button,
+  // which is entangled in the all-or-nothing "remap" window group); it shares the
+  // undo *mechanism* in code, not the window kind.
+  LoopRemapUndo {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // The 2D loop display compound: one rect derives a row-picker column, a
+  // column-picker row, a reserved corner, and the main time x pitch area.
+  LoopDisplay {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -257,6 +322,17 @@ pub enum ScaleControlKind {
   Empty,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopControlKind {
+  /// Begin recording into the active slot (overwrites it).
+  Start,
+  /// Stop the active slot's current activity -- recording OR playback.
+  Stop,
+  /// Stop recording and loop the active slot as the sole sounding loop.
+  Play,
+}
+
 impl MonomeWindowConfig {
   pub fn id(&self) -> &str {
     match self {
@@ -272,7 +348,14 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::RemapUndoButton { id, .. }
       | MonomeWindowConfig::RecordControl { id, .. }
       | MonomeWindowConfig::ScaleSlots { id, .. }
-      | MonomeWindowConfig::ScaleControl { id, .. } => id,
+      | MonomeWindowConfig::ScaleControl { id, .. }
+      | MonomeWindowConfig::EdoShiftPad { id, .. }
+      | MonomeWindowConfig::LoopSlots { id, .. }
+      | MonomeWindowConfig::LoopControl { id, .. }
+      | MonomeWindowConfig::LoopRemapModeToggle { id, .. }
+      | MonomeWindowConfig::LoopCopyButton { id, .. }
+      | MonomeWindowConfig::LoopRemapUndo { id, .. }
+      | MonomeWindowConfig::LoopDisplay { id, .. } => id,
     }
   }
 
@@ -290,7 +373,14 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::RemapUndoButton { monome, .. }
       | MonomeWindowConfig::RecordControl { monome, .. }
       | MonomeWindowConfig::ScaleSlots { monome, .. }
-      | MonomeWindowConfig::ScaleControl { monome, .. } => monome,
+      | MonomeWindowConfig::ScaleControl { monome, .. }
+      | MonomeWindowConfig::EdoShiftPad { monome, .. }
+      | MonomeWindowConfig::LoopSlots { monome, .. }
+      | MonomeWindowConfig::LoopControl { monome, .. }
+      | MonomeWindowConfig::LoopRemapModeToggle { monome, .. }
+      | MonomeWindowConfig::LoopCopyButton { monome, .. }
+      | MonomeWindowConfig::LoopRemapUndo { monome, .. }
+      | MonomeWindowConfig::LoopDisplay { monome, .. } => monome,
     }
   }
 
@@ -308,7 +398,40 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::RemapUndoButton { rect, .. }
       | MonomeWindowConfig::RecordControl { rect, .. }
       | MonomeWindowConfig::ScaleSlots { rect, .. }
-      | MonomeWindowConfig::ScaleControl { rect, .. } => *rect,
+      | MonomeWindowConfig::ScaleControl { rect, .. }
+      | MonomeWindowConfig::EdoShiftPad { rect, .. }
+      | MonomeWindowConfig::LoopSlots { rect, .. }
+      | MonomeWindowConfig::LoopControl { rect, .. }
+      | MonomeWindowConfig::LoopRemapModeToggle { rect, .. }
+      | MonomeWindowConfig::LoopCopyButton { rect, .. }
+      | MonomeWindowConfig::LoopRemapUndo { rect, .. }
+      | MonomeWindowConfig::LoopDisplay { rect, .. } => *rect,
+    }
+  }
+
+  /// A human-readable kind label (matches the config `kind = "..."` tag).
+  pub fn kind_name(&self) -> &'static str {
+    match self {
+      MonomeWindowConfig::EdoNoteGrid { .. } => "edo_note_grid",
+      MonomeWindowConfig::ChordWipeButton { .. } => "chord_wipe_button",
+      MonomeWindowConfig::ChordAccreteToggle { .. } => "chord_accrete_toggle",
+      MonomeWindowConfig::ChordEmitModeToggle { .. } => "chord_emit_mode_toggle",
+      MonomeWindowConfig::ChordTargetButton { .. } => "chord_target_button",
+      MonomeWindowConfig::ChordSlotButtons { .. } => "chord_slot_buttons",
+      MonomeWindowConfig::TwelveEdoOffsetBoard { .. } => "twelve_edo_offset_board",
+      MonomeWindowConfig::PreimageRow { .. } => "preimage_row",
+      MonomeWindowConfig::RemappableUn12Grid { .. } => "remappable_un12_grid",
+      MonomeWindowConfig::RemapUndoButton { .. } => "remap_undo_button",
+      MonomeWindowConfig::RecordControl { .. } => "record_control",
+      MonomeWindowConfig::ScaleSlots { .. } => "scale_slots",
+      MonomeWindowConfig::ScaleControl { .. } => "scale_control",
+      MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
+      MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
+      MonomeWindowConfig::LoopControl { .. } => "loop_control",
+      MonomeWindowConfig::LoopRemapModeToggle { .. } => "loop_remap_mode_toggle",
+      MonomeWindowConfig::LoopCopyButton { .. } => "loop_copy_button",
+      MonomeWindowConfig::LoopRemapUndo { .. } => "loop_remap_undo",
+      MonomeWindowConfig::LoopDisplay { .. } => "loop_display",
     }
   }
 }
@@ -438,6 +561,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
 
   let mut record_control_kinds: HashSet<RecordControlKind> = HashSet::new();
   let mut scale_control_kinds: HashSet<ScaleControlKind> = HashSet::new();
+  let mut loop_control_kinds: HashSet<LoopControlKind> = HashSet::new();
   for window in &config.monome_windows {
     require_ref("monome_window.monome", window.monome(), &monome_ids)?;
     let [x0, y0, x1, y1] = window.rect();
@@ -480,11 +604,129 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
           ));
         }
       }
+      MonomeWindowConfig::LoopControl { id, rect, control, .. } => {
+        if rect[0] != rect[2] || rect[1] != rect[3] {
+          return Err(format!(
+            "loop_control window {:?} rect must cover exactly one cell",
+            id,
+          ));
+        }
+        if !loop_control_kinds.insert(*control) {
+          return Err(format!(
+            "duplicate loop_control kind {:?} (in window {:?})",
+            control, id,
+          ));
+        }
+      }
       _ => {}
     }
   }
 
   validate_window_groups(config)?;
+  validate_looper(config)?;
+
+  Ok(())
+}
+
+/// The looper feature is all-or-nothing in its own right, with richer constraints
+/// than the generic window-group mechanism can express (exact counts, a minimum
+/// display size, the remap-center bounds). It deliberately does NOT touch the
+/// existing "remap"/"record"/"scale" groups: the looper has its own
+/// `loop_remap_undo` kind, so no existing config's validation changes.
+fn validate_looper(config: &Config) -> Result<(), String> {
+  let count = |pred: fn(&MonomeWindowConfig) -> bool| {
+    config.monome_windows.iter().filter(|w| pred(w)).count()
+  };
+  let loop_slots = count(|w| matches!(w, MonomeWindowConfig::LoopSlots { .. }));
+  let loop_displays = count(|w| matches!(w, MonomeWindowConfig::LoopDisplay { .. }));
+  let any_loop_window = config.monome_windows.iter().any(|w| {
+    matches!(
+      w,
+      MonomeWindowConfig::EdoShiftPad { .. }
+        | MonomeWindowConfig::LoopSlots { .. }
+        | MonomeWindowConfig::LoopControl { .. }
+        | MonomeWindowConfig::LoopRemapModeToggle { .. }
+        | MonomeWindowConfig::LoopCopyButton { .. }
+        | MonomeWindowConfig::LoopRemapUndo { .. }
+        | MonomeWindowConfig::LoopDisplay { .. }
+    )
+  });
+
+  // The [looper] table and the looper windows imply each other.
+  if any_loop_window && config.looper.is_none() {
+    return Err("looper windows require a [looper] table".to_string());
+  }
+  if config.looper.is_some() && !any_loop_window {
+    return Err("a [looper] table requires the looper windows".to_string());
+  }
+  let Some(looper) = &config.looper else {
+    return Ok(());
+  };
+
+  // Core windows: a slot grid, a display, and the three transport controls. The
+  // shift pad, mode toggle, copy and undo are optional add-ons.
+  if loop_slots != 1 {
+    return Err(format!("a looper config needs exactly one loop_slots window, found {loop_slots}"));
+  }
+  if loop_displays != 1 {
+    return Err(format!("a looper config needs exactly one loop_display window, found {loop_displays}"));
+  }
+  for control in [LoopControlKind::Start, LoopControlKind::Stop, LoopControlKind::Play] {
+    let present = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::LoopControl { control: c, .. } if *c == control)
+    });
+    if !present {
+      return Err(format!("a looper config needs a loop_control with control = {control:?}"));
+    }
+  }
+
+  // The display rect must be at least 2x2 so the row-picker column, the
+  // column-picker row, and a main area can be derived from it.
+  for window in &config.monome_windows {
+    if let MonomeWindowConfig::LoopDisplay { id, rect, .. } = window {
+      let [x0, y0, x1, y1] = *rect;
+      if x1 - x0 < 1 || y1 - y0 < 1 {
+        return Err(format!(
+          "loop_display window {id:?} rect must be at least 2x2 (cols x rows)",
+        ));
+      }
+    }
+  }
+
+  // remap_center must lie inside an edo_note_grid (the coarse-remap "unison" key).
+  let edo_rect = config.monome_windows.iter().find_map(|w| match w {
+    MonomeWindowConfig::EdoNoteGrid { rect, .. } => Some(*rect),
+    _ => None,
+  });
+  let Some([ex0, ey0, ex1, ey1]) = edo_rect else {
+    return Err("a looper config needs an edo_note_grid window".to_string());
+  };
+  let [cx, cy] = looper.remap_center;
+  if cx < ex0 || cx > ex1 || cy < ey0 || cy > ey1 {
+    return Err(format!(
+      "looper remap_center {:?} must lie inside the edo_note_grid rect [{ex0}, {ey0}, {ex1}, {ey1}]",
+      looper.remap_center,
+    ));
+  }
+
+  // The looper scalars must be positive.
+  for (name, value) in [
+    ("quantize_record_ms", looper.quantize_record_ms),
+    ("cluster_display_ms", looper.cluster_display_ms),
+    ("flash_ms", looper.flash_ms),
+  ] {
+    if value == 0 {
+      return Err(format!("looper {name} must be positive"));
+    }
+  }
+
+  // No orphan monomes: every declared monome must be used by some window.
+  for monome in &config.monomes {
+    let used = config.monome_windows.iter().any(|w| w.monome() == monome.id);
+    if !used {
+      return Err(format!("looper config declares monome {:?} but no window uses it", monome.id));
+    }
+  }
 
   Ok(())
 }
@@ -1104,5 +1346,158 @@ initial_map = "even"
 "#).expect_err("missing tuning should fail");
 
     assert!(err.contains("unknown id \"main\""), "{err}");
+  }
+
+  // ---- Looper config validation. ----
+
+  const LOOPER_HEADER: &str = r#"version = 1
+id = "looper"
+title = "Looper"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[sinks]]
+id = "saw"
+kind = "cpal_sawwave"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.05
+accretion_level = 0.5
+
+"#;
+  const LOOPER_TABLE: &str = r#"[looper]
+quantize_record_ms = 70
+cluster_display_ms = 100
+flash_ms = 50
+remap_center = [7, 7]
+
+"#;
+  const LOOPER_MONOMES: &str = r#"[[monomes]]
+id = "edo"
+listen_port = 9000
+prefix = "/looper-edo"
+
+[[monomes]]
+id = "loops"
+listen_port = 9001
+prefix = "/looper-loops"
+
+"#;
+  const LOOPER_EDO_GRID: &str = r#"[[monome_windows]]
+id = "edo-grid"
+monome = "edo"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "saw"
+
+"#;
+  const LOOPER_SLOTS: &str = r#"[[monome_windows]]
+id = "loop-slots"
+monome = "loops"
+kind = "loop_slots"
+rect = [0, 0, 3, 3]
+
+"#;
+  const LOOPER_START: &str = r#"[[monome_windows]]
+id = "loop-start"
+monome = "loops"
+kind = "loop_control"
+control = "start"
+rect = [0, 3, 0, 3]
+
+"#;
+  const LOOPER_STOP: &str = r#"[[monome_windows]]
+id = "loop-stop"
+monome = "loops"
+kind = "loop_control"
+control = "stop"
+rect = [1, 3, 1, 3]
+
+"#;
+  const LOOPER_PLAY: &str = r#"[[monome_windows]]
+id = "loop-play"
+monome = "loops"
+kind = "loop_control"
+control = "play"
+rect = [2, 3, 2, 3]
+
+"#;
+  const LOOPER_DISPLAY: &str = r#"[[monome_windows]]
+id = "loop-display"
+monome = "loops"
+kind = "loop_display"
+rect = [0, 5, 15, 15]
+"#;
+
+  fn valid_looper_toml() -> String {
+    format!(
+      "{LOOPER_HEADER}{LOOPER_TABLE}{LOOPER_MONOMES}{LOOPER_EDO_GRID}{LOOPER_SLOTS}{LOOPER_START}{LOOPER_STOP}{LOOPER_PLAY}{LOOPER_DISPLAY}",
+    )
+  }
+
+  #[test]
+  fn looper_config_is_valid() {
+    parse_config(&valid_looper_toml()).expect("a complete looper config should be valid");
+  }
+
+  #[test]
+  fn looper_windows_require_looper_table() {
+    let err = parse_config(&valid_looper_toml().replace(LOOPER_TABLE, ""))
+      .expect_err("looper windows without a [looper] table should fail");
+    assert!(err.contains("[looper] table"), "{err}");
+  }
+
+  #[test]
+  fn looper_table_requires_looper_windows() {
+    // A [looper] table atop a plain sawwave grid (no loop_* windows) is invalid.
+    let toml = format!("{LOOPER_HEADER}{LOOPER_TABLE}{LOOPER_MONOMES}{LOOPER_EDO_GRID}");
+    let err = parse_config(&toml).expect_err("a [looper] table without looper windows should fail");
+    assert!(err.contains("requires the looper windows"), "{err}");
+  }
+
+  #[test]
+  fn loop_display_must_be_at_least_2x2() {
+    let err = parse_config(&valid_looper_toml().replace("rect = [0, 5, 15, 15]", "rect = [0, 5, 0, 5]"))
+      .expect_err("a 1x1 loop_display should fail");
+    assert!(err.contains("at least 2x2"), "{err}");
+  }
+
+  #[test]
+  fn remap_center_must_be_inside_edo_grid() {
+    let err = parse_config(&valid_looper_toml().replace("remap_center = [7, 7]", "remap_center = [20, 20]"))
+      .expect_err("an out-of-bounds remap_center should fail");
+    assert!(err.contains("must lie inside"), "{err}");
+  }
+
+  #[test]
+  fn looper_requires_all_three_transport_controls() {
+    let err = parse_config(&valid_looper_toml().replace(LOOPER_PLAY, ""))
+      .expect_err("a looper missing the play control should fail");
+    assert!(err.contains("control = Play"), "{err}");
+  }
+
+  #[test]
+  fn duplicate_loop_control_kind_is_rejected() {
+    let dup = valid_looper_toml().replace(
+      "control = \"play\"\nrect = [2, 3, 2, 3]",
+      "control = \"start\"\nrect = [2, 3, 2, 3]",
+    );
+    let err = parse_config(&dup).expect_err("duplicate loop_control kind should fail");
+    assert!(err.contains("duplicate loop_control kind"), "{err}");
+  }
+
+  #[test]
+  fn loop_control_rect_must_be_single_cell() {
+    let err = parse_config(&valid_looper_toml().replace("rect = [0, 3, 0, 3]", "rect = [0, 3, 1, 3]"))
+      .expect_err("a multi-cell loop_control rect should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
   }
 }

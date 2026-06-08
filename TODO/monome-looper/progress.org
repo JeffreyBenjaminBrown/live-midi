@@ -1,0 +1,40 @@
+* progress: monome looper implementation
+Live log of building the looper (=1_vision.org= -> =6_plan.org=). Per the build
+brief: implement freely, commit often, stop only for a *major* design choice (one
+that would be costly to reverse). Minor/reversible choices are just made and
+logged here. Working on branch =monome-looper= (off =main=).
+
+* what happened (in serial)
+- Established a green baseline on a fresh =monome-looper= branch: =cargo test=
+  passes (81 tests), all bins compile.
+- *Phase 0 done* (config parse + validate + dispatch). Added the seven looper
+  window kinds, =LoopControlKind=, and the =[looper]= table to =config.rs=; a
+  =validate_looper= pass; the =is_looper_config= dispatch arm (before sawwave);
+  a stub =looper_runtime= that prints the two-grid window inventory; and the
+  runnable config =configs/monome-looper-58-8-1.toml=. Added 8 config tests.
+  =cargo test= green (89 total); =cargo run -- monome-looper-58-8-1= prints the
+  inventory and exits. Existing configs/tests untouched (no-regressions guard
+  green). Build location note: the crate manifest is =/home/ubuntu/Cargo.toml=
+  (lib at =code/rust/midi_pulse/lib.rs=); build/test/run from =/home/ubuntu=.
+
+* recorded answers for later phases (from your 6_plan TODOs)
+- Active-loop reflection on the edo grid is *solid*, the same whether the slot is
+  playing or idle (Phase 2).
+- The loop_display reserved top-left corner stays *inert* for now (Phase 3).
+
+* minor design choices made
+- Branch =monome-looper= off =main= (branch-first; reversible).
+- Looper validation is an explicit =validate_looper= fn rather than a generic
+  =WindowGroup= entry: it can express what the group mechanism cannot (exact
+  counts, the >=2x2 display, =remap_center= bounds). The existing
+  "remap"/"record"/"scale" groups are left exactly as they were.
+- The looper's *required core* is one =loop_slots=, one =loop_display=, and the
+  three =loop_control= kinds; the shift pad, mode toggle, copy, and undo are
+  *optional* add-ons (a looper can be configured without them). Slightly more
+  modular than 6_plan's "include loop_remap_undo in the group."
+- Added a =kind_name()= helper to =MonomeWindowConfig= (for the inventory print).
+- Looper configs forbid *orphan monomes* (every declared monome must be used by
+  some window); scoped to looper configs, so existing configs are unaffected.
+
+* major design choices
+(none yet -- I stop and flag you the moment this section gains an entry.)
