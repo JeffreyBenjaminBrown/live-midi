@@ -60,7 +60,7 @@ logged here. Working on branch =monome-looper= (off =main=).
 - *All four phase cores now built and unit-tested* (pure logic, independent of the
   runtime glue): Phase 2 transport (=loop_store.rs= =LoopStore=, 9 tests), Phase 3
   display (=display.rs= cluster + merge-nearest, 6 tests), Phase 4 remap
-  (=remap.rs= selection resolution + fine/coarse edits, 7 tests). With the Phase 1
+  (=remap.rs= selection resolution + fine/group transpose edits, 7 tests). With the Phase 1
   edo/sink/device cores, the entire algorithmic substance of the looper is done
   and green. What remains is *glue* -- wiring transport/display/remap into the
   two-grid runtime (Phase 2/3/4 integration) + Phase 5 polish/docs. While these
@@ -113,7 +113,7 @@ logged here. Working on branch =monome-looper= (off =main=).
   (=remap.rs=); the interactive glue is the only thing left and it needs a working
   loops grid to build against and verify. Flagged to Jeff: fix/swap =m256-282=
   (serialosc restart, re-flash, or a different grid). Also to confirm when I build
-  remap: the *coarse* commit timing (bake-once-per-chord vs per-press) -- a small
+  remap: the *group transpose* commit timing (bake-once-per-chord vs per-press) -- a small
   reversible choice I'll pick if unanswered.
 
 - *Grid flood fixed* (Jeff's unplug / restart-serialosc / reconnect cleared it;
@@ -121,19 +121,19 @@ logged here. Working on branch =monome-looper= (off =main=).
 - *Phase 4 (remap) + Phase 5 (copy/toggle) glue done; verified live.* The remap
   state machine: loops-grid pickers accumulate a row/column/cell selection
   (mode-exclusive); the first edo press FREEZES it; fine remap sets each target's
-  pitch lowest-first then exits (restoring the play register); coarse transposes/
+  pitch lowest-first then exits (restoring the play register); group transpose transposes/
   duplicates the selection by (pressed - center), re-baked from a snapshot so N
   presses over M notes -> N*M; =loop_remap_undo= pops the slot's history; the
-  =loop_remap_mode_toggle= flips fine/coarse (toggling to fine ends a coarse
+  =loop_remap_mode_toggle= flips fine/group transpose (toggling to fine ends a group transpose
   session); during remap the edo grid is in remap mode (presses pick, don't play;
   the shift pad still works). Copy: press copy -> from -> to, leaving active/
   sounding unchanged. 4 new state tests (134 bin total). Drove it on the grids:
   record -> select row -> edo remap press -> play the remapped loop, no crash.
   The looper is now feature-complete for the spec.
-  Coarse commit timing (the ambiguity) = per-press additive re-bake (my pick).
+  Group transpose commit timing (the ambiguity) = per-press additive re-bake (my pick).
   Deferred refinements (reversible LED/UX polish): the non-uniform playhead, the
   auto-octave-shift on remap entry, and richer remap-mode LEDs (selection
-  highlight on the loops grid, coarse center + flashing equivalents).
+  highlight on the loops grid, group transpose center + flashing equivalents).
 
 - *Docs done* (Phase 5): a "Looper" section in =configs/README.org= (window kinds,
   the =[looper]= table, how to play it) and =configs/RUNTIME-NOTES.org=
@@ -143,12 +143,12 @@ logged here. Working on branch =monome-looper= (off =main=).
   slot -> play the copy (single-sounding switch) -> select a row -> undo: 0
   panics, clean teardown, 162 tests across all targets. The looper does everything
   in the spec: two-grid play, record, multi-slot transport, the 2D display, remap
-  (fine + coarse), undo, copy, the fine/coarse toggle, and the shift pad.
+  (fine + group transpose), undo, copy, the fine/group transpose toggle, and the shift pad.
 - *What's left is LED/UX polish that needs eyes on the grid* (I can't see LEDs):
   the non-uniform playhead, the auto-octave-shift on remap entry, and richer
-  remap-mode LEDs (selection highlight on the loops grid; coarse center solid +
+  remap-mode LEDs (selection highlight on the loops grid; group transpose center solid +
   octave-equivalents flashing rather than all-solid). All reversible. And one
-  thing to confirm: the *coarse commit* interpretation (per-press additive re-bake
+  thing to confirm: the *group transpose commit* interpretation (per-press additive re-bake
   -- my pick for the ambiguity flagged back in 2_discussion).
 
 * recorded answers for later phases (from your 6_plan TODOs)

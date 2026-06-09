@@ -70,7 +70,7 @@ Time therefore probably moves non-uniformly across the columns:
 if note group G lasts longer than group H, then the active column
 will linger longer on G than on H.
 ** loop manipulation
-*** whether loop row remap is fine-grained or coarse
+*** whether loop row remap is fine-grained or group transpose
 This is a toggle button.
 *** remap pitch of loop row, fine-grained
 A column next to the loop display is for selecting pitches from the loop.
