@@ -151,9 +151,32 @@ logged here. Working on branch =monome-looper= (off =main=).
   thing to confirm: the *group transpose commit* interpretation (per-press additive re-bake
   -- my pick for the ambiguity flagged back in 2_discussion).
 
+- *Post-completion request set (=request.org=) done.* Four follow-ups after
+  feature-completion, all committed (live on branch =monome-looper=):
+  - *coarse -> group transpose* renamed across the runtime, config, the reference
+    docs, and this design-doc series -- a name that says what it does. (The
+    adjectival "fine/medium/coarse" granularity phrasing in =2_discussion= is a
+    different sense and was left alone.)
+  - *Copy* button lights solid while armed, dim when idle; pressing it again
+    mid-gesture cancels and forgets any picked origin (=loops_key= + =loops_levels=).
+  - *Fine* (the remap-mode toggle) lights solid in fine, dim in group transpose,
+    so it starts lit.
+  - *Edo reflection reworked* -- the edo grid now reflects the *sounding* loop
+    (not the active one): its notes are a dim backdrop, each lit solid only while
+    it is individually sounding (=SawNoteSink::pitches_held_by=); =edo_levels= no
+    longer flashes; an active-but-silent loop shows nothing. *Supersedes the
+    "reflection is solid" recorded answer below.*
+  5 new state tests (59 looper tests green). Also added =ORIENTATION.org= (a thin
+  Claude-facing repo map) at the repo root.
+- *Open, beyond the plan:* the deferred LED/UX polish above still needs your eyes
+  + a few taste calls; written up with exactly what I need in =7_discussion.org=.
+  None of it blocks "feature-complete."
+
 * recorded answers for later phases (from your 6_plan TODOs)
 - Active-loop reflection on the edo grid is *solid*, the same whether the slot is
-  playing or idle (Phase 2).
+  playing or idle (Phase 2). *[SUPERSEDED by the request.org rework: the edo grid
+  now reflects the SOUNDING loop -- dim backdrop, each note solid only while it
+  sounds -- not the active loop.]*
 - The loop_display reserved top-left corner stays *inert* for now (Phase 3).
 
 * minor design choices made
