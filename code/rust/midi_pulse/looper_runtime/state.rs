@@ -551,6 +551,11 @@ impl LooperState {
       };
     }
     self.render_loop_display(&mut levels);
+    // The undo button always flashes 50/50 (driven by the caller's flash phase).
+    let (ux, uy) = self.loop_undo;
+    if ux >= 0 && ux < self.grid_w && uy >= 0 && uy < self.grid_h {
+      levels[(uy * self.grid_w + ux) as usize] = if flash_on { LEVEL_FULL } else { LEVEL_OFF };
+    }
     levels
   }
 
@@ -786,6 +791,13 @@ mod tests {
     s.loops_key(0, 15, true, ms(1100)); // select row -> remap mode
     s.edo_key(2, 0, true, ms(1200)); // a remap destination press, NOT a played note
     assert_eq!(s.down.len(), 0, "edo presses in remap mode don't sound live notes");
+  }
+
+  #[test]
+  fn the_undo_button_flashes() {
+    let s = state(); // loop_undo is (5,2) in the test geometry.
+    assert_eq!(level_at(&s.loops_levels(true), 5, 2), LEVEL_FULL);
+    assert_eq!(level_at(&s.loops_levels(false), 5, 2), LEVEL_OFF);
   }
 
   #[test]
