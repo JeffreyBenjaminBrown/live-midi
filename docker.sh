@@ -25,7 +25,7 @@ CONTAINER_NAME="midi-$(basename "$HOST")"
 # lacking the baked env, Claude falls back to the ephemeral ~/.claude.
 
 docker run --name "$CONTAINER_NAME" -it -d               \
-  -e PIPEWIRE_RUNTIME_DIR=/run/user/1000                 \
+  -v /run/user/1000/pipewire-0:/run/user/1000/pipewire-0 \
   -v /tmp/.X11-unix:/tmp/.X11-unix                       \
   -e DISPLAY="${DISPLAY:-:0}"                            \
   -v /nix/store:/nix/store:ro                            \
