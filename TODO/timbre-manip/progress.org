@@ -75,7 +75,15 @@ rig (see =MOCK-MONOME.org=): =cargo run --bin mock_monome= +
   config*. AM is inert until the editor can set depth>0 anyway.
 - Tests: shape morphs, multiplier floor/ceiling, fm octave at 1200 cents, AM cuts
   RMS, FM changes samples. 151 bin tests green.
+** DONE C0 -- rename the sink kind cpal_sawwave -> cpal_synth
+Done out of plan-order (after C1/C2) since it's cosmetic. Renamed the serde
+variant =CpalSawwave=->=CpalSynth= and the kind string across config.rs,
+sawwave_runtime.rs, midi_pulse.rs, looper_runtime/mod.rs, the 3 toml configs, and
+README/RUNTIME-NOTES. No alias (per "correct the lies"). =loads_default_configs=
++ full suite green. NOTE: this lives only on the =timbre-manip= branch; when the
+=monome-looper= branch merges, its =cpal_sawwave= references must be reconciled
+(it's the same shared sink kind).
 ** (next) C3 -- timbre editor window + live editing (target=live)
-   Needs: config schema (param-row kinds + timbre_editor window kind), then
-   wiring rows to LooperState.live_timbre and routing presses. This is where the
-   config.rs / state.rs / display.rs work begins.
+   Needs: config schema (param-row kinds + timbre_editor window kind + am.shape
+   family), then wiring rows to LooperState.live_timbre and routing presses /
+   LEDs. This is the big config.rs / mod.rs / state.rs / display.rs integration.

@@ -148,7 +148,7 @@ pub enum SinkConfig {
   Midi {
     id: String,
   },
-  CpalSawwave {
+  CpalSynth {
     id: String,
     sample_rate: u32,
     buffer_frames: u32,
@@ -162,7 +162,7 @@ pub enum SinkConfig {
 impl SinkConfig {
   pub fn id(&self) -> &str {
     match self {
-      SinkConfig::Midi { id } | SinkConfig::CpalSawwave { id, .. } => id,
+      SinkConfig::Midi { id } | SinkConfig::CpalSynth { id, .. } => id,
     }
   }
 }
@@ -534,7 +534,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   }
 
   for sink in &config.sinks {
-    if let SinkConfig::CpalSawwave {
+    if let SinkConfig::CpalSynth {
       sample_rate,
       buffer_frames,
       amplitude,
@@ -1376,7 +1376,7 @@ fundamental_hz = 80
 
 [[sinks]]
 id = "saw"
-kind = "cpal_sawwave"
+kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
 amplitude = 0.15

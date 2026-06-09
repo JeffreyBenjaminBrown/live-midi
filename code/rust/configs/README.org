@@ -186,7 +186,7 @@ kind = "midi"
 
 [[sinks]]
 id = "saw"
-kind = "cpal_sawwave"
+kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
 amplitude = 0.15
@@ -363,7 +363,7 @@ physical grid is which).
 ** Looper window kinds
 
 - ~edo_note_grid~ -- the play surface (also reflects the active loop and doubles
-  as the remap pitch-picker). References a ~tuning~ and a ~cpal_sawwave~ ~sink~.
+  as the remap pitch-picker). References a ~tuning~ and a ~cpal_synth~ ~sink~.
 - ~edo_shift_pad~ -- a 3x2 pad overlaying the edo grid's lower-right. The four
   arrows shift the pitch image by one cell, the two top corners by an octave.
 - ~loop_slots~ -- the slot grid; one slot is active. The number of slots is

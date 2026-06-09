@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_piano_runtime(&config)?;
   } else if is_looper_config(&config) {
     // Must precede the sawwave arm: a looper config is a superset of the sawwave
-    // predicate (it also has an edo_note_grid + cpal_sawwave sink).
+    // predicate (it also has an edo_note_grid + cpal_synth sink).
     looper_runtime::run_from_config(&config)?;
   } else if is_monome_sawwave_config(&config) {
     sawwave_runtime::run_from_config(&config)?;
@@ -124,7 +124,7 @@ fn is_monome_sawwave_config(config: &Config) -> bool {
     && config
       .sinks
       .iter()
-      .any(|sink| matches!(sink, midi_pulse::config::SinkConfig::CpalSawwave { .. }))
+      .any(|sink| matches!(sink, midi_pulse::config::SinkConfig::CpalSynth { .. }))
 }
 
 /// Keyed on the looper-only `loop_display` kind, so it is strictly more specific

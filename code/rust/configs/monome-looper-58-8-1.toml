@@ -21,7 +21,7 @@ fundamental_hz = 80
 # playback emit note events into this synth.
 [[sinks]]
 id = "saw"
-kind = "cpal_sawwave"
+kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
 amplitude = 0.15

@@ -50,7 +50,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     .iter()
     .find(|sink| sink.id() == edo_window.2.as_str())
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSawwave {
+  let SinkConfig::CpalSynth {
     sample_rate,
     buffer_frames,
     amplitude,
@@ -60,7 +60,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     ..
   } = sink
   else {
-    return Err("sawwave runtime requires a cpal_sawwave sink".into());
+    return Err("sawwave runtime requires a cpal_synth sink".into());
   };
   let grid_size = monome_config.select.size.unwrap_or([16, 16]);
   run(RuntimeSettings {

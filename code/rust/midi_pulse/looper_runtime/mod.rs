@@ -188,9 +188,9 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .iter()
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSawwave { sample_rate, buffer_frames, amplitude, attack_secs, release_secs, .. } = sink
+  let SinkConfig::CpalSynth { sample_rate, buffer_frames, amplitude, attack_secs, release_secs, .. } = sink
   else {
-    return Err("looper requires a cpal_sawwave sink".into());
+    return Err("looper requires a cpal_synth sink".into());
   };
   let looper = config.looper.as_ref().ok_or("looper config needs a [looper] table")?;
   let edo_cfg = config.monomes.iter().find(|m| m.id == edo_monome).ok_or("the edo monome is not declared")?;

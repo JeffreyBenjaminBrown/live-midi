@@ -18,7 +18,7 @@ select.type_contains = "256"
 
 [[sinks]]
 id = "saw"
-kind = "cpal_sawwave"
+kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
 amplitude = 0.15
