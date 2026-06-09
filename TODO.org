@@ -1,12 +1,8 @@
 * lately using [[./code/rust/configs/README.org]]
 * AWAITS [[./TODO/monome-looper]]
 claude --dangerously-skip-permissions --resume 31806765-010a-499b-a578-972782fd9b21
-** TODO NEXT prompt
-Is all of TODO/monome-looper/ done,
-or did you never do phase 0? If it's done please update it.
-** more
-*** loops must be overlappable
-*** edit a number of repeats of a loop
+** loops must be overlappable
+** edit a number of repeats of a loop
 Requires overriding record and stop.
 * AWAITS [[./TODO/timbre-manip]]
 Ready to write a definitive plan.
