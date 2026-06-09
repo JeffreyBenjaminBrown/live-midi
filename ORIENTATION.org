@@ -5,11 +5,11 @@ file just points you at the right doors and records the few facts that otherwise
 live only in Claude's memory. Follow the links for depth.
 
 * where you are
-- This repo lives at =/home/ubuntu/prod/= inside a *Docker container* (UID 1000);
-  the container's home is =/home/ubuntu=. (It used to BE the home dir; it was moved
-  down a level so git worktrees are tidy -- see [[./how-to-parallelize-dev.org]].
-  Launch =claude= from =/home/ubuntu/prod=, not =/home/ubuntu=.) Jeff works on the
-  *host* (NixOS); you're inside the container, which bind-mounts the project root.
+- This repo *is* the home dir (=/home/ubuntu=) of a *Docker container* (UID 1000).
+  Jeff works on the *host* (NixOS); you're inside the container, which bind-mounts
+  the project root. Git worktrees go under =/home/ubuntu/worktrees/= (git-ignored);
+  the separate PR repos live in =/home/ubuntu/other-projects/=. See
+  [[./how-to-parallelize-dev.org]] for the worktree workflow.
 - The project's point: read/write MIDI and audio between container and host.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).

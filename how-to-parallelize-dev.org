@@ -41,12 +41,11 @@ One repo, many directories, one branch each, *shared history*. Adding a worktree
 does not copy the object database, so it's near-instant and disk-cheap.
 
 ** Already set up
-The repo used to live directly in your home dir (=/home/ubuntu=), which made this
-awkward. It now lives one level down in *=/home/ubuntu/prod/=* (the main worktree),
-=worktrees/= is git-ignored, and an example =worktrees/dev= already exists. So you
-can just add more:
+The repo root is your home dir (=/home/ubuntu=). Worktrees live in a git-ignored
+=worktrees/= folder under it, and an example =worktrees/dev= already exists. Add
+more from the repo root:
 #+begin_src sh
-cd /home/ubuntu/prod
+cd /home/ubuntu
 
 git worktree add worktrees/dev2 -b dev2           # new branch 'dev2'
 # or base one on an existing branch:
@@ -58,48 +57,40 @@ git worktree list
 git worktree remove worktrees/dev2     # when done (must be clean, or --force)
 git worktree prune                     # tidy stale entries
 #+end_src
-(The home dir now holds only =prod/=, your non-repo dotfiles, =target/=, and the
-separate PR repos =libmonome-pr/= / =serialosc-pr/= / =nix-jbb/=.)
+(The separate PR repos =libmonome-pr/= / =serialosc-pr/= / =nix-jbb/= now live in
+=/home/ubuntu/other-projects/=, out of the way.)
 
 ** Point a Claude at each
 Open a terminal per worktree and just launch the CLI there:
 #+begin_src sh
-cd /home/ubuntu/prod/worktrees/dev  && claude
+cd /home/ubuntu/worktrees/dev  && claude
 # (another terminal)
-cd /home/ubuntu/prod/worktrees/dev2 && claude
+cd /home/ubuntu/worktrees/dev2 && claude
 #+end_src
-Each session is independent and sees only its directory's branch. (Launch from
-=/home/ubuntu/prod= for the main line of work; a Claude launched from the old
-=/home/ubuntu= would be a different, emptier project.)
+Each session is independent and sees only its directory's branch. (The main line of
+work is just =/home/ubuntu= itself.)
 
 ** Why it's the right default
 - Branches *can't* collide -- each lives in its own directory.
-- One shared object store: commit in =dev=, and =git log= in =prod= sees it
-  immediately (no push/pull between them). Merging is ordinary local git.
+- One shared object store: commit in =dev=, and =git log= in the main checkout sees
+  it immediately (no push/pull between them). Merging is ordinary local git.
 - Deleting a worktree never touches your branches or history.
 
 ** Caveats specific to this repo
-- *Build dir (important):* =~/.cargo/config.toml= sets =build.target-dir =
-  "/home/ubuntu/target"= (absolute), so *every* worktree builds into that one
-  shared dir by default. That saves disk and re-uses cached dependencies, but it
-  has two sharp edges when two worktrees hold *different* code:
-  1. There's only one =target/debug/midi_pulse=, so alternating =cargo run/test=
-     between worktrees rebuilds each time (the other worktree clobbered it) -- and
-     two =cargo= runs at the same instant block on one build lock.
-  2. =config_dir()= bakes =CARGO_MANIFEST_DIR= in at *compile* time, and cargo
-     won't rebuild on a path-only change. So a binary can keep pointing at another
-     worktree's =configs/=. Harmless if the configs are identical; if you edit a
-     config in one worktree and it "doesn't take", =touch= a =.rs= file to force a
-     rebuild.
-  *To avoid both, give each worktree its own target dir* -- the clean way to run
-  two branches in parallel:
-  #+begin_src sh
-  cd /home/ubuntu/prod/worktrees/dev
-  export CARGO_TARGET_DIR=/home/ubuntu/target-dev   # per-shell; first build is full
-  #+end_src
-  (Or drop a =worktrees/dev/.cargo/config.toml= with its own =build.target-dir=.)
-  Trade-off: a one-time full rebuild (deps included) per isolated target. Worth it
-  when both worktrees are actively building; skip it if one is just for reading.
+- *Build dir:* there is no longer a shared absolute =target-dir= (the old
+  =.cargo/config.toml= that forced =/home/ubuntu/target= was removed), so each
+  worktree builds into its *own* =target/= (e.g. =worktrees/dev/target/=). That's
+  the isolation you want -- two branches never clobber each other's binary. Cost:
+  the first build in a fresh worktree is full (it recompiles dependencies too --
+  minutes, a couple GB). If a throwaway worktree isn't worth that, point it back at
+  the main cache for that shell with =export CARGO_TARGET_DIR=/home/ubuntu/target=
+  -- but then expect rebuild churn when you alternate worktrees, since they'd again
+  share one =target/debug= binary.
+- *Config path:* =config_dir()= bakes =CARGO_MANIFEST_DIR= in at *compile* time, so
+  a built binary looks for =configs/= under the worktree it was built in. With
+  per-worktree targets (the default now) that's automatic. The one gotcha: if you
+  *move* a checkout, cargo won't rebuild on a path-only change, so =touch= a =.rs=
+  to force the embedded path to update (this is exactly what bit the =prod/= move).
 - *Shared memory dir:* my memory lives in =~/.claude/...=, which is the same files
   for every worktree (home is shared). That's mostly fine, but two Claudes writing
   =MEMORY.md= at once can clobber each other. If both are journaling heavily,
@@ -109,27 +100,23 @@ Each session is independent and sees only its directory's branch. (Launch from
   in this container =/home/ubuntu= is the writable root, so keep them under it.
 
 * Way 3 -- separate clones (your "copy it" idea, done right)
-This is your "stuff it all into =prod=, copy to =dev=, =dev2=" plan -- and the
-=prod/= move above is exactly the first half of it. It works, and it's the *most
-isolated* (fully independent object stores -- a =git gc= or a catastrophe in one
-can't touch another). Two refinements:
+This is your "copy everything including =.git= into =dev=, =dev2=" plan. It works,
+and it's the *most isolated* (fully independent object stores -- a =git gc= or a
+catastrophe in one can't touch another). Two refinements:
 
-- *Use =git clone=, not =cp -r=.* A clone gives each copy a real =origin= pointing
-  back at =prod=, so you can =git pull=/=git push= between them like normal remotes:
+- *Use =git clone=, not =cp -r=.* =git clone= copies only the tracked repo (not the
+  pile of non-repo cruft in your home dir), and gives each copy a real =origin= you
+  can =git pull=/=git push= across:
   #+begin_src sh
-  git clone /home/ubuntu/prod /home/ubuntu/dev    # 'origin' -> prod
-  git clone /home/ubuntu/prod /home/ubuntu/dev2
-  cd /home/ubuntu/dev && git switch -c dev
+  git clone /home/ubuntu /home/ubuntu/other-projects/looper-dev   # 'origin' -> here
+  cd /home/ubuntu/other-projects/looper-dev && git switch -c dev
   #+end_src
-- *If you do copy by hand,* exclude the junk or you'll duplicate gigabytes and copy
-  build output / lock files:
-  #+begin_src sh
-  rsync -a --exclude target/ /home/ubuntu/prod/ /home/ubuntu/dev/
-  #+end_src
-  =cp -r= would also drag along the shared =target/= (large) etc. -- avoid. Note
-  each clone is its own repo, so it does *not* inherit =prod='s shared target dir;
-  it builds into its own =./target= (full first build), which is the isolation you
-  wanted.
+  (Put clones *outside* the repo tree -- e.g. under =other-projects/= -- so they
+  don't show up as untracked files inside =/home/ubuntu=.)
+- *Avoid =cp -r= of the home dir:* it would drag along =target/= (large), =.cache=,
+  =.ssh=, the editor lock, etc. If you must hand-copy, =rsync -a --exclude target/=
+  from a clean checkout, not from =/home/ubuntu=. Each clone is its own repo, so it
+  builds into its own =./target= (full first build) -- the isolation you wanted.
 
 *Cost vs. worktree:* a clone duplicates the entire history (this repo's is modest,
 so it's not huge) and gives you a second remote to push/pull across, which is more
@@ -148,13 +135,14 @@ one serialosc, one audio out. Concretely:
   matter how many branches you have.
 - *This is what the mock fixes.* The mock is a virtual serialosc + virtual grids on
   alternate localhost ports; a looper pointed at it grabs *no* real hardware. So a
-  mock-driven instance in =dev= can run at the same time as your real session in
-  =prod=. See =MOCK-MONOME.org= (next to this file) for how to launch it.
+  mock-driven instance in =worktrees/dev= can run at the same time as your real
+  session in the main checkout. See =MOCK-MONOME.org= (next to this file) for how to
+  launch it.
 
 * My suggestion
-Use *Way 2 (worktree)* as the default, which is now set up: =prod= (the main
-checkout) on your live branch, =prod/worktrees/dev= for the experiment, a Claude in
-each. Give the actively-building worktree its own =CARGO_TARGET_DIR= (see the build
-caveat). Keep real-grid runs in one and give the other the *mock* so both can "run
-the instrument" at once. Drop to *Way 3 (clones)* only if you want bullet-proof
+Use *Way 2 (worktree)* as the default, which is set up: =/home/ubuntu= (the main
+checkout) on your live branch, =worktrees/dev= for the experiment, a Claude in each.
+Each worktree now builds into its own =target/=, so they won't clobber each other.
+Keep real-grid runs in one and give the other the *mock* so both can "run the
+instrument" at once. Drop to *Way 3 (clones)* only if you want bullet-proof
 isolation between the two lines of work.
