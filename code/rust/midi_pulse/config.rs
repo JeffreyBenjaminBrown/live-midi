@@ -37,7 +37,7 @@ pub struct LooperConfig {
   pub cluster_display_ms: u64,
   /// Reflection / octave-equivalent flash half-period (on for this, off for this).
   pub flash_ms: u64,
-  /// The edo-grid cell that means "unison" in coarse remap.
+  /// The edo-grid cell that means "unison" in group-transpose remap.
   pub remap_center: [i32; 2],
 }
 
@@ -272,7 +272,7 @@ pub enum MonomeWindowConfig {
     rect: [i32; 4],
     control: LoopControlKind,
   },
-  // Toggles fine vs coarse loop-remap.
+  // Toggles fine vs group-transpose loop-remap.
   LoopRemapModeToggle {
     id: String,
     monome: String,
@@ -695,7 +695,7 @@ fn validate_looper(config: &Config) -> Result<(), String> {
 
   // The edo_note_grid rect must fit its monome's grid (an oversized rect would let
   // a press land on a cell the LED render never iterates -- an invisible, stuck
-  // voice), and the coarse-remap "unison" key (remap_center) must lie inside it.
+  // voice), and the group-transpose "unison" key (remap_center) must lie inside it.
   let edo = config.monome_windows.iter().find_map(|w| match w {
     MonomeWindowConfig::EdoNoteGrid { monome, rect, .. } => Some((monome.clone(), *rect)),
     _ => None,

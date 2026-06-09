@@ -13,7 +13,7 @@ use std::time::Duration;
 use super::display::build_display;
 use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
-use super::remap::{apply_coarse, apply_fine, selected_pitches, Selection};
+use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
@@ -83,9 +83,9 @@ pub struct LooperState {
   loops: LoopStore,
   playing: Option<Playing>,
 
-  /// Remap toggle: false = fine (set each note's absolute pitch), true = coarse
-  /// (transpose/duplicate the selection by an interval).
-  coarse: bool,
+  /// Remap toggle: false = fine (set each note's absolute pitch), true = group
+  /// transpose (transpose/duplicate the whole selection by an interval).
+  group_transpose: bool,
   /// An in-progress remap, if any.
   remap: Option<Remap>,
   /// Copy gesture: Some(from) after 'copy' then a 'from' slot, awaiting 'to'.
@@ -100,14 +100,14 @@ struct Remap {
   selection: Selection,
   frozen: bool,
   /// Resolved at freeze, ascending: the pitches to remap (fine) or transpose
-  /// (coarse).
+  /// (group transpose).
   targets: Vec<i32>,
   /// Fine: index of the next target to remap.
   next: usize,
   /// Fine: accumulated old -> new substitutions.
   mapping: Vec<(i32, i32)>,
-  /// True for a coarse session (transpose/duplicate) vs fine.
-  coarse: bool,
+  /// True for a group-transpose session (transpose/duplicate) vs fine.
+  group_transpose: bool,
   /// The play register at freeze, restored on exit.
   saved_register: i32,
 }
@@ -146,7 +146,7 @@ impl LooperState {
       down: HashMap::new(),
       loops: LoopStore::new(n_slots, p.quantize),
       playing: None,
-      coarse: false,
+      group_transpose: false,
       remap: None,
       copy_arming: false,
       copy_from: None,
@@ -195,16 +195,18 @@ impl LooperState {
   }
 
   /// Edo LEDs. A live-held note lights all its octave-equivalents solid. The
-  /// active loop's notes *flash* while that slot is sounding and show *dim* while
-  /// it is silent (live wins over the loop). In remap mode, the cells being
-  /// remapped (or the coarse center) are solid. The four shift-pad arrows are dim.
-  pub fn edo_levels(&self, flash_on: bool) -> Vec<i32> {
+  /// *sounding* loop (not the active one) shows its notes *dim* throughout, and
+  /// each note lights *solid* only while it is individually sounding -- so two
+  /// notes in one loop light at their own separate times. Live wins over the
+  /// loop. In remap mode, the cells being remapped (or the group-transpose
+  /// center) are solid. The four shift-pad arrows are dim.
+  pub fn edo_levels(&self) -> Vec<i32> {
     let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
 
-    // Remap mode: solid for the pitches being remapped (or the coarse center).
+    // Remap mode: solid for the pitches being remapped (or the transpose center).
     if let Some(r) = &self.remap {
       let pitches = if r.frozen {
-        if r.coarse {
+        if r.group_transpose {
           vec![step_for_cell(self.x_step, self.y_step, self.register, self.remap_center.0, self.remap_center.1)]
         } else {
           r.targets.get(r.next..).map(<[i32]>::to_vec).unwrap_or_default()
@@ -223,29 +225,33 @@ impl LooperState {
       return levels;
     }
 
-    // Play mode: live notes solid; the active loop's notes flash while sounding,
-    // dim while silent.
+    // Play mode: live notes solid; the sounding loop's notes are a dim backdrop,
+    // each lit solid while it is actually sounding (an individual note-on still
+    // in flight, read from the sink's ref-counts).
     let live: HashSet<i32> = self.down.values().map(|p| p.rem_euclid(self.edo)).collect();
-    let loop_classes: HashSet<i32> = self.loops.slots[self.loops.active]
-      .events
-      .iter()
-      .filter(|e| e.on)
-      .map(|e| e.pitch.rem_euclid(self.edo))
-      .collect();
-    let loop_level = if self.loops.sounding == Some(self.loops.active) {
-      if flash_on {
-        LEVEL_FULL
-      } else {
-        LEVEL_OFF
+    let (loop_classes, sounding_now): (HashSet<i32>, HashSet<i32>) = match self.loops.sounding {
+      Some(slot) => {
+        let backdrop = self.loops.slots[slot]
+          .events
+          .iter()
+          .filter(|e| e.on)
+          .map(|e| e.pitch.rem_euclid(self.edo))
+          .collect();
+        let now = self
+          .sink
+          .pitches_held_by(NoteSource::Slot(slot))
+          .into_iter()
+          .map(|p| p.rem_euclid(self.edo))
+          .collect();
+        (backdrop, now)
       }
-    } else {
-      LEVEL_DIM
+      None => (HashSet::new(), HashSet::new()),
     };
     self.paint_classes(&mut levels, |class| {
-      if live.contains(&class) {
+      if live.contains(&class) || sounding_now.contains(&class) {
         Some(LEVEL_FULL)
       } else if loop_classes.contains(&class) {
-        Some(loop_level)
+        Some(LEVEL_DIM)
       } else {
         None
       }
@@ -283,9 +289,14 @@ impl LooperState {
     }
     // Copy gesture: press copy, then a 'from' slot, then a 'to' slot. While armed
     // it intercepts slot presses (so they aren't treated as active-slot changes).
+    // Pressing copy again mid-gesture cancels it, forgetting any picked origin.
     if (x, y) == self.loop_copy {
-      self.copy_arming = true;
-      self.copy_from = None;
+      if self.copy_arming || self.copy_from.is_some() {
+        self.copy_arming = false;
+        self.copy_from = None;
+      } else {
+        self.copy_arming = true;
+      }
       return true;
     }
     if self.copy_arming {
@@ -325,9 +336,9 @@ impl LooperState {
       return true;
     }
     if (x, y) == self.loop_toggle {
-      self.coarse = !self.coarse;
-      // Toggling back to fine ends an active coarse session (already baked).
-      if !self.coarse && self.remap.as_ref().is_some_and(|r| r.coarse) {
+      self.group_transpose = !self.group_transpose;
+      // Toggling back to fine ends an active group-transpose session (already baked).
+      if !self.group_transpose && self.remap.as_ref().is_some_and(|r| r.group_transpose) {
         self.exit_remap();
       }
       return true;
@@ -415,14 +426,14 @@ impl LooperState {
         targets: vec![],
         next: 0,
         mapping: vec![],
-        coarse: self.coarse,
+        group_transpose: self.group_transpose,
         saved_register: 0,
       });
     }
   }
 
   /// An edo-grid press during a remap session: freeze the selection on the first
-  /// press, then pick this destination (fine) or interval (coarse).
+  /// press, then pick this destination (fine) or interval (group transpose).
   fn edo_remap_press(&mut self, x: i32, y: i32) {
     let pressed_step = step_for_cell(self.x_step, self.y_step, self.register, x, y);
     if !self.remap.as_ref().is_some_and(|r| r.frozen) {
@@ -432,8 +443,8 @@ impl LooperState {
       self.exit_remap();
       return;
     }
-    if self.remap.as_ref().is_some_and(|r| r.coarse) {
-      self.coarse_press(pressed_step);
+    if self.remap.as_ref().is_some_and(|r| r.group_transpose) {
+      self.group_transpose_press(pressed_step);
     } else {
       self.fine_press(pressed_step);
     }
@@ -443,13 +454,13 @@ impl LooperState {
     let display = self.build_active_display();
     let targets = selected_pitches(&display, &self.remap.as_ref().unwrap().selection);
     let saved = self.register;
-    let coarse = self.coarse;
+    let group_transpose = self.group_transpose;
     let r = self.remap.as_mut().unwrap();
     r.frozen = true;
     r.targets = targets;
     r.next = 0;
     r.mapping = vec![];
-    r.coarse = coarse;
+    r.group_transpose = group_transpose;
     r.saved_register = saved;
   }
 
@@ -474,7 +485,7 @@ impl LooperState {
     }
   }
 
-  fn coarse_press(&mut self, pressed_step: i32) {
+  fn group_transpose_press(&mut self, pressed_step: i32) {
     // Each press transposes the selection by (pressed - center); accumulating
     // intervals re-bakes from the snapshot, so N presses over M notes -> N*M.
     let center = step_for_cell(self.x_step, self.y_step, self.register, self.remap_center.0, self.remap_center.1);
@@ -493,7 +504,7 @@ impl LooperState {
       self.loops.slots[slot].history.push(snapshot);
     }
     let base = self.loops.slots[slot].history.last().cloned().unwrap_or_default();
-    self.loops.slots[slot].events = apply_coarse(&base, &targets, &intervals);
+    self.loops.slots[slot].events = apply_group_transpose(&base, &targets, &intervals);
   }
 
   /// Snapshot the active slot's events for undo, then replace them.
@@ -564,7 +575,9 @@ impl LooperState {
   }
 
   /// Loops-grid LEDs: active solid > sounding(non-active) flash > recorded dim >
-  /// empty dark. The transport cells show dim so they are findable.
+  /// empty dark. The transport cells show dim so they are findable. The copy
+  /// button is solid while a copy is armed (dim otherwise); the remap-mode toggle
+  /// is solid in fine mode (dim in group transpose); undo always flashes.
   pub fn loops_levels(&self, flash_on: bool) -> Vec<i32> {
     let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
     let [x0, y0, x1, y1] = self.loop_slots_rect;
@@ -584,6 +597,20 @@ impl LooperState {
       };
     }
     self.render_loop_display(&mut levels);
+    // The copy button: solid while a copy is armed (copy pressed, awaiting from or
+    // to), dim and findable otherwise.
+    let (cx, cy) = self.loop_copy;
+    if cx >= 0 && cx < self.grid_w && cy >= 0 && cy < self.grid_h {
+      let armed = self.copy_arming || self.copy_from.is_some();
+      levels[(cy * self.grid_w + cx) as usize] = if armed { LEVEL_FULL } else { LEVEL_DIM };
+    }
+    // The remap-mode toggle: solid in fine mode (the default, so it starts lit),
+    // dim in group-transpose mode.
+    let (tx, ty) = self.loop_toggle;
+    if tx >= 0 && tx < self.grid_w && ty >= 0 && ty < self.grid_h {
+      levels[(ty * self.grid_w + tx) as usize] =
+        if self.group_transpose { LEVEL_DIM } else { LEVEL_FULL };
+    }
     // The undo button always flashes 50/50 (driven by the caller's flash phase).
     let (ux, uy) = self.loop_undo;
     if ux >= 0 && ux < self.grid_w && uy >= 0 && uy < self.grid_h {
@@ -715,7 +742,7 @@ mod tests {
   fn pressing_a_cell_lights_octave_equivalents_solid() {
     let mut s = state();
     s.edo_key(0, 0, true, ms(0));
-    let levels = s.edo_levels(false);
+    let levels = s.edo_levels();
     assert_eq!(level_at(&levels, 0, 0), LEVEL_FULL);
     assert_eq!(level_at(&levels, 7, 2), LEVEL_FULL); // step 58 = octave of step 0
     assert_eq!(level_at(&levels, 1, 0), LEVEL_OFF);
@@ -724,7 +751,7 @@ mod tests {
   #[test]
   fn shift_pad_does_not_play_and_shows_dim() {
     let mut s = state();
-    let levels = s.edo_levels(false);
+    let levels = s.edo_levels();
     // The four arrows are dim; the two octave corners are dark (keyboard-like).
     assert_eq!(level_at(&levels, 14, 15), LEVEL_DIM, "down arrow dim");
     assert_eq!(level_at(&levels, 13, 15), LEVEL_DIM, "left arrow dim");
@@ -736,7 +763,7 @@ mod tests {
   }
 
   #[test]
-  fn record_then_play_makes_a_slot_sound_and_reflect_on_edo() {
+  fn sounding_loop_dims_and_each_note_lights_solid_while_it_sounds() {
     let mut s = state();
     // Select slot 5 on the loops grid, record an edo note, then play.
     let cell = |slot: i32| ((slot % 4), (slot / 4)); // 4-wide slot grid
@@ -747,16 +774,34 @@ mod tests {
     s.edo_key(0, 0, false, ms(300));
     s.loops_key(2, 3, true, ms(1000)); // play -> slot 5 sounds
     assert_eq!(s.loops.sounding, Some(5));
-    // While the active slot is sounding its notes FLASH on the edo grid.
-    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_FULL, "flash on");
-    assert_eq!(level_at(&s.edo_levels(false), 0, 0), LEVEL_OFF, "flash off");
-    // The playhead emits the note into the sink as time advances.
-    s.playback_tick(ms(1100)); // 100ms into the loop -> note-on at 20ms is due
+    // Before the playhead reaches the note it is a DIM backdrop (not yet sounding).
+    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_DIM, "sounding loop: dim backdrop");
+    // The playhead reaches the note-on -> it lights SOLID as an individual note.
+    s.playback_tick(ms(1100)); // 100ms into the loop -> note-on at 0ms is due
     assert!(s.sink.voice_count() >= 1);
-    // Turn it off: the slot is now silent, so its notes go DIM -- not stuck solid.
+    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_FULL, "solid while sounding");
+    // Its octave-equivalent lights solid too (step 58 = cell (7,2)).
+    assert_eq!(level_at(&s.edo_levels(), 7, 2), LEVEL_FULL, "octave-equivalent solid");
+    // After its note-off it drops back to the dim backdrop (still in the loop).
+    s.playback_tick(ms(1300)); // 290ms in -> note-off at 290ms is due
+    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_DIM, "dim again after note-off");
+    // Stop: the loop no longer sounds, so it leaves NO backdrop (we reflect the
+    // sounding loop, not the active one).
     s.loops_key(1, 3, true, ms(2000)); // stop (active slot 5 was sounding)
     assert_eq!(s.loops.sounding, None);
-    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_DIM, "silent loop dims, not stuck");
+    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_OFF, "silent: no backdrop");
+  }
+
+  #[test]
+  fn the_active_but_silent_loop_does_not_reflect_on_edo() {
+    let mut s = state();
+    // Record a note into slot 0 and stop (occupied, active, but NOT sounding).
+    s.loops_key(0, 3, true, ms(0)); // start (slot 0 active)
+    s.edo_key(0, 0, true, ms(10));
+    s.edo_key(0, 0, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000)); // stop -> slot 0 occupied, silent
+    // The active loop is not sounding, so the edo grid shows nothing for it.
+    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_OFF, "active-but-silent: dark");
   }
 
   #[test]
@@ -835,6 +880,66 @@ mod tests {
     let s = state(); // loop_undo is (5,2) in the test geometry.
     assert_eq!(level_at(&s.loops_levels(true), 5, 2), LEVEL_FULL);
     assert_eq!(level_at(&s.loops_levels(false), 5, 2), LEVEL_OFF);
+  }
+
+  #[test]
+  fn the_fine_toggle_starts_lit_and_dims_in_group_transpose() {
+    let mut s = state(); // loop_toggle is (5,0) in the test geometry.
+    // Fine is the default, so the toggle starts lit (solid).
+    assert_eq!(level_at(&s.loops_levels(true), 5, 0), LEVEL_FULL, "fine starts lit");
+    // Toggle to group transpose -> dim (still findable).
+    s.loops_key(5, 0, true, ms(0));
+    assert_eq!(level_at(&s.loops_levels(true), 5, 0), LEVEL_DIM, "group transpose dims it");
+    // Toggle back to fine -> lit again.
+    s.loops_key(5, 0, true, ms(10));
+    assert_eq!(level_at(&s.loops_levels(true), 5, 0), LEVEL_FULL, "back to fine, lit");
+  }
+
+  #[test]
+  fn the_copy_button_lights_while_armed_and_a_re_press_cancels() {
+    let mut s = state(); // loop_copy is (5,1) in the test geometry.
+    // Idle: dim and findable.
+    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_DIM, "idle copy dim");
+    // Arm copy -> solid.
+    s.loops_key(5, 1, true, ms(0));
+    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_FULL, "armed copy solid");
+    // Pick a 'from' slot (slot 0): still mid-gesture (awaiting 'to') -> still solid.
+    s.loops_key(0, 0, true, ms(10));
+    assert_eq!(s.copy_from, Some(0), "origin picked");
+    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_FULL, "from picked, still solid");
+    // Press copy again -> cancels and forgets the picked origin -> dim again.
+    s.loops_key(5, 1, true, ms(20));
+    assert_eq!(s.copy_from, None, "origin forgotten");
+    assert!(!s.copy_arming, "disarmed");
+    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_DIM, "re-press cancels");
+  }
+
+  #[test]
+  fn copy_moves_a_loop_into_another_slot() {
+    let mut s = state();
+    // Record a loop into the active slot (slot 0) and stop.
+    s.loops_key(0, 3, true, ms(0)); // start
+    s.edo_key(0, 0, true, ms(10));
+    s.edo_key(0, 0, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000)); // stop -> slot 0 occupied
+    assert!(s.loops.is_occupied(0) && !s.loops.is_occupied(7));
+    // Copy: press copy, then 'from' = slot 0, then 'to' = slot 7 (cell (3,1)).
+    s.loops_key(5, 1, true, ms(1100));
+    s.loops_key(0, 0, true, ms(1110)); // from
+    s.loops_key(3, 1, true, ms(1120)); // to (slot 7)
+    assert!(s.loops.is_occupied(7), "slot 7 received the loop");
+    assert_eq!(s.loops.slots[7].events, s.loops.slots[0].events, "contents copied");
+    assert_eq!(s.loops.active, 0, "active unchanged by copy");
+  }
+
+  #[test]
+  fn a_cancelled_copy_leaves_a_later_slot_press_to_set_active() {
+    let mut s = state();
+    s.loops_key(5, 1, true, ms(0)); // arm copy
+    s.loops_key(5, 1, true, ms(10)); // re-press cancels (nothing picked yet)
+    // With the gesture cancelled, a slot press is a normal active-slot change.
+    s.loops_key(3, 1, true, ms(20)); // slot 7
+    assert_eq!(s.loops.active, 7, "slot press sets active after a cancel");
   }
 
   #[test]

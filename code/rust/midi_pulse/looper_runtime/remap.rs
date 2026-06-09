@@ -1,11 +1,11 @@
 //! Loop-remap resolution: turn a row/column/cell selection into the pitches to
 //! remap, and the two destructive edits -- fine (set each selected pitch to a new
-//! absolute pitch) and coarse (replace the selection with a transposed copy at
-//! each fingered interval).
+//! absolute pitch) and group transpose (replace the selection with a transposed
+//! copy at each fingered interval).
 //!
 //! All pure transforms over a slot's events; the runtime supplies the selection,
-//! the lowest-first fine destinations, and the coarse intervals (relative to the
-//! center). See 6_plan.org Phase 4.
+//! the lowest-first fine destinations, and the group-transpose intervals (relative
+//! to the center). See 6_plan.org Phase 4.
 
 use std::collections::{HashMap, HashSet};
 
@@ -71,11 +71,11 @@ pub fn apply_fine(events: &[LoopEvent], mapping: &[(i32, i32)]) -> Vec<LoopEvent
     .collect()
 }
 
-/// Coarse remap: replace the selected notes with a transposed copy at each fingered
-/// interval (relative to the center). N intervals over M selected notes yields N*M
-/// notes. Destructive and additive; non-selected notes are untouched. With no
-/// intervals (idle), the loop is unchanged.
-pub fn apply_coarse(events: &[LoopEvent], selected: &[i32], intervals: &[i32]) -> Vec<LoopEvent> {
+/// Group transpose: replace the selected notes with a transposed copy at each
+/// fingered interval (relative to the center). N intervals over M selected notes
+/// yields N*M notes. Destructive and additive; non-selected notes are untouched.
+/// With no intervals (idle), the loop is unchanged.
+pub fn apply_group_transpose(events: &[LoopEvent], selected: &[i32], intervals: &[i32]) -> Vec<LoopEvent> {
   if intervals.is_empty() {
     return events.to_vec();
   }
@@ -133,7 +133,7 @@ mod tests {
   }
 
   #[test]
-  fn coarse_remap_duplicates_the_selection_at_each_interval() {
+  fn group_transpose_duplicates_the_selection_at_each_interval() {
     // 2 selected notes, 3 intervals -> 6 note-ons (the "2 x 3 fingers = 6" case).
     let events = vec![
       LoopEvent::on(ms(0), 10),
@@ -141,7 +141,7 @@ mod tests {
       LoopEvent::on(ms(0), 20),
       LoopEvent::off(ms(100), 20),
     ];
-    let out = apply_coarse(&events, &[10, 20], &[0, 5, 7]);
+    let out = apply_group_transpose(&events, &[10, 20], &[0, 5, 7]);
     let ons: Vec<i32> = out.iter().filter(|e| e.on).map(|e| e.pitch).collect();
     let mut got = ons.clone();
     got.sort_unstable();
@@ -150,17 +150,17 @@ mod tests {
   }
 
   #[test]
-  fn coarse_remap_leaves_non_selected_notes_alone() {
+  fn group_transpose_leaves_non_selected_notes_alone() {
     let events = vec![LoopEvent::on(ms(0), 10), LoopEvent::on(ms(0), 99)];
-    let out = apply_coarse(&events, &[10], &[5]);
+    let out = apply_group_transpose(&events, &[10], &[5]);
     let mut ons: Vec<i32> = out.iter().filter(|e| e.on).map(|e| e.pitch).collect();
     ons.sort_unstable();
     assert_eq!(ons, vec![15, 99], "10 -> 15, 99 untouched");
   }
 
   #[test]
-  fn coarse_remap_with_no_intervals_is_a_noop() {
+  fn group_transpose_with_no_intervals_is_a_noop() {
     let events = vec![LoopEvent::on(ms(0), 10)];
-    assert_eq!(apply_coarse(&events, &[10], &[]), events);
+    assert_eq!(apply_group_transpose(&events, &[10], &[]), events);
   }
 }

@@ -113,6 +113,17 @@ impl SawNoteSink {
     self.voices.lock().unwrap_or_else(|e| e.into_inner()).len()
   }
 
+  /// The pitches `source` is currently holding down (its individual notes that
+  /// are sounding right now). Used by the edo grid to light a sounding loop's
+  /// notes one at a time, in time with playback.
+  pub fn pitches_held_by(&self, source: NoteSource) -> Vec<i32> {
+    self
+      .refs
+      .iter()
+      .filter_map(|(pitch, sources)| sources.contains(&source).then_some(*pitch))
+      .collect()
+  }
+
   /// Release everything a source holds (e.g. when a loop stops sounding).
   pub fn release_source(&mut self, source: NoteSource) {
     let held: Vec<i32> = self
