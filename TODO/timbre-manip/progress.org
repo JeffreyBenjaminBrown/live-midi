@@ -1,0 +1,66 @@
+#+title: timbre-manip -- execution progress
+Running log of the autonomous build of =6_plan.org=. Newest decisions/TODOs near
+the top of each section. Jeff: scan =* TODO (need Jeff)= first.
+
+* TODO (need Jeff)
+Non-reversible / taste decisions I deliberately did NOT make. Everything not
+blocked on these is being built around them.
+(none yet)
+
+* Re-grounding vs 6_plan.org (important)
+6_plan was written against =sawwave/= as "the synth". Reality on disk:
+- The *looper is already built*: =looper_runtime/= (state/sink/loop_store/remap/
+  display/mod, + a =mock_monome= test rig). So the looper-dependent commits
+  (C5c/C6/C7) are *not* blocked on a future looper -- the pieces exist.
+- The looper's =SawNoteSink= (=looper_runtime/sink.rs=) owns its own =VoiceMap=
+  but *renders through the shared sawwave engine*: =voices::render_block_with_amplitude=
+  + =types::VoiceState=. So C1/C2 (per-voice timbre + DSP) land in
+  =sawwave/types.rs= + =sawwave/voices.rs= (shared by both runtimes) and
+  =looper_runtime/sink.rs= -- exactly the files 6_plan named, just confirmed shared.
+- Both the old =sawwave_runtime= and the looper render triangle via that engine and
+  use the =cpal_sawwave= sink kind (configs: monome-edo-sawwave, monome-looper-58-8-1,
+  -mock). So C0's rename touches config.rs + 3 toml + 2 runtimes.
+
+* Plan adaptation (decisions, all reversible -- mine to make)
+- *Commit order:* do the functional, well-grounded, fully-unit-testable synth work
+  (C1, C2) FIRST; do C0 (cosmetic =cpal_sawwave=->=cpal_synth= rename) later as its
+  own mechanical commit (or defer). Rationale: a cross-cutting rename has
+  build-break risk and zero functional value; not worth front-loading in an
+  unattended run. 6_plan's "each commit independent" allows the reorder.
+- *Timbre data lives in =sawwave/types.rs=* (=Waveform=, =Am=, =Fm=, =Timbre=),
+  embedded in =VoiceState= (+ runtime =am_phase=/=fm_phase=). The engine must see
+  them to render; the looper imports them.
+- *=note_on= takes an explicit =timbre: Timbre=* (not a stateful setter), so loop
+  playback can pass each note's stored timbre in C6 without re-churn.
+- *Same-pitch collision:* voices stay keyed by pitch (the existing ref-count
+  model), so if two sources sound the *same* pitch at once with *different*
+  timbres, the first holder's timbre wins (one shared voice). Different pitches --
+  the common case -- are unaffected. Reversible (key by source+pitch later) if it
+  ever matters; noted, not blocking.
+- *Band-limited square/saw* via PolyBLEP (per 6_plan 2.5); sine/triangle naive.
+
+* Testing
+No hardware needed for the synth: =cargo test -p midi_pulse= exercises the pure
+=render_block= and sink logic. Device-layer / play-through uses the =mock_monome=
+rig (see =MOCK-MONOME.org=): =cargo run --bin mock_monome= +
+=MIDI_PULSE_DETECTOR_PORT=. Real audio/grids are Jeff's to verify.
+
+* Progress log
+** DONE C1 -- polytimbral voice core
+- =sawwave/types.rs=: added =Waveform=, =Am=, =Fm=, =AmShapeFamily=, =Timbre=
+  (Default = triangle/unity/no-mod); =VoiceState= gains =timbre=, =am_phase=,
+  =fm_phase=.
+- =sawwave/voices.rs=: =osc(waveform, phase, dt)= (sine/triangle naive;
+  square/saw PolyBLEP band-limited); =render_block= now =osc(...) * env *
+  gain * amplitude=. AM/FM not applied yet (depth 0) -- that's C2.
+- =looper_runtime/sink.rs=: =note_on(pitch, source, timbre)= stamps the timbre
+  (LFOs retriggered at phase 0); ref-count unchanged -> first-timbre-wins on a
+  same-pitch collision (tested).
+- =looper_runtime/state.rs=: =LooperState.live_timbre= (Default); fingered notes
+  and (interim) loop playback stamp it.
+- =sawwave/state.rs=: the two legacy-runtime VoiceState literals carry default
+  timbre (fingered) / inherit it (accretion transform).
+- Tests: osc shapes, gain halving, PolyBLEP bounds, timbre stamping,
+  first-timbre-wins. Full suite green (145 bin + 29 lib). Existing triangle test
+  still passes -> default behaviour identical.
+** (next) C2 -- AM + FM + shape DSP

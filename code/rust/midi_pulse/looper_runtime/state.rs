@@ -15,6 +15,7 @@ use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
+use crate::types::Timbre;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
@@ -91,6 +92,10 @@ pub struct LooperState {
   /// Copy gesture: Some(from) after 'copy' then a 'from' slot, awaiting 'to'.
   copy_arming: bool,
   copy_from: Option<usize>,
+
+  /// The live timbre stamped onto fingered notes (set by the live-timbre editor).
+  /// Until per-note loop timbre lands (C6), loop playback uses it too.
+  live_timbre: Timbre,
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -150,6 +155,7 @@ impl LooperState {
       remap: None,
       copy_arming: false,
       copy_from: None,
+      live_timbre: Timbre::default(),
     }
   }
 
@@ -180,7 +186,7 @@ impl LooperState {
             self.loops.record_note(now, old, false);
           }
         }
-        self.sink.note_on(pitch, NoteSource::Live(x, y));
+        self.sink.note_on(pitch, NoteSource::Live(x, y), self.live_timbre);
         self.loops.record_note(now, pitch, true);
         return true;
       }
@@ -550,7 +556,7 @@ impl LooperState {
     let source = NoteSource::Slot(slot);
     for action in actions {
       match action {
-        PlayAction::On(pitch) => self.sink.note_on(pitch, source),
+        PlayAction::On(pitch) => self.sink.note_on(pitch, source, self.live_timbre),
         PlayAction::Off(pitch) => self.sink.note_off(pitch, source),
         PlayAction::ReleaseAll => self.sink.release_source(source),
       }
