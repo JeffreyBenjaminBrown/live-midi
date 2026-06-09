@@ -2,6 +2,30 @@
 Running log of the autonomous build of =6_plan.org=. Newest decisions/TODOs near
 the top of each section. Jeff: scan =* TODO (need Jeff)= first.
 
+* Session 1 summary (overnight, unattended)
+*Done + committed on branch timbre-manip (all unit-tested; binaries build clean):*
+- docs: =6_plan.org= (definitive plan).
+- *C0* rename =cpal_sawwave= -> =cpal_synth= (correct the lie).
+- *C1* per-voice timbre (Waveform/Am/Fm/Timbre on VoiceState; osc dispatch w/
+  PolyBLEP square+saw; per-voice gain).
+- *C2* AM + FM + shape DSP (retriggered LFOs; tanh / trapezoid shape families).
+- *C3a* pure param-row value math (=timbre_rows.rs=).
+- *C6* per-note loop timbre + record-time capture (loop notes carry their colour
+  through record, playback, and pitch-remap).
+Tests: 158 binary + 29 lib, all green. The whole *synth/DSP/data foundation is
+done*; default timbres = identical sound, so nothing audibly changed yet.
+
+*Not done -- it's all UI wiring into the existing looper, and the gating pieces
+need your call (see =* TODO (need Jeff)=):* C3b editor runtime wiring, C4 slots,
+C5a/b/c window system (relative coords + fold + reflow), C7 loop manipulation.
+I stopped here rather than guess at the user-facing config syntax and the exact
+on-grid editor layout -- those are yours. Everything not blocked on them is built.
+
+*Resume:* answer the 3 TODOs below, then C3b (editor wiring) is the next commit;
+the =* Remaining roadmap= section has the concrete integration approach. Verify
+UI work with the =mock_monome= rig (the synth changes so far needed no live run --
+they're behind unit tests and change no behaviour).
+
 * TODO (need Jeff)
 Non-reversible / taste decisions I deliberately did NOT make. Everything not
 blocked on these has been built; these gate the runtime UI wiring (C3b onward).

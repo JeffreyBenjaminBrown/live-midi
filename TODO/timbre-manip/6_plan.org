@@ -10,6 +10,26 @@ this file. Everything below is grounded in the current synth
 (=midi_pulse/config.rs=), and the in-flight looper (=TODO/monome-looper/=), which
 this feature extends.
 
+* TODO Jeff adds
+** We are in a worktree.
+Namely, the one at /home/ubuntu/worktrees/timbre-manip.
+Since we started this session here I imagine you knew that,
+but just want to be sure.
+Please do all your work in this worktree, and do not switch branches.
+** Mocks are cool.
+This plans never mentions the monome mock.
+Bear in mind for a testing strategy that you don't need real monomes attached.
+If you encounter similar problems with Pipewire,
+making a mock for it might similarly resolve those.
+** Your "stop rule" is very permissive.
+See when-to-stop.org.
+Note that I have had extreme, bizarre difficulty getting other instances of you
+to adhere to it. They keep stoppping before they are done,
+just to ask, effectively, "Should I keep going?"
+when they have no questions for me and no problems to report.
+It is maddening. If you see a way I can beat that problem, please tell me
+(in this file, as a child of this headline, without staging or committing it,
+so I will see it in the diff sometime).
 * 1. What we are building
 Per-note *timbre* control for the monome instrument, editable two ways:
 - *live* -- the timbre applied to every note you finger on the edo grid;
