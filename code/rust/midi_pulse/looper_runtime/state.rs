@@ -15,7 +15,7 @@ use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
-use super::timbre_editor::TimbreEditor;
+use super::timbre_editor::{EditorAction, EditorView, TimbreEditor};
 use crate::types::Timbre;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
@@ -105,6 +105,14 @@ pub struct LooperState {
   /// presses (radio param rows) and overlays its LEDs over the play grid. In C3b
   /// both editor targets edit `live_timbre`; C7 splits `target = loop`.
   timbre_editor: Option<TimbreEditor>,
+
+  /// Timbre slot store (C4). One entry per editor slot cell; `None` = empty. A slot
+  /// press recalls into `live_timbre`; with `timbre_armed` set, the press instead
+  /// captures `live_timbre` and auto-disarms. `timbre_current` is the last
+  /// recalled/saved slot (its LED is bright, flashing when the live timbre diverges).
+  timbre_slots: Vec<Option<Timbre>>,
+  timbre_armed: bool,
+  timbre_current: Option<usize>,
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -137,6 +145,7 @@ impl LooperState {
   pub fn new(sink: SawNoteSink, p: LooperParams) -> Self {
     let [sx0, sy0, sx1, sy1] = p.loop_slots_rect;
     let n_slots = (((sx1 - sx0 + 1).max(0)) * ((sy1 - sy0 + 1).max(0))) as usize;
+    let n_timbre_slots = p.timbre_editor.as_ref().map_or(0, TimbreEditor::slot_count);
     LooperState {
       sink,
       x_step: p.x_step,
@@ -166,6 +175,9 @@ impl LooperState {
       copy_from: None,
       live_timbre: Timbre::default(),
       timbre_editor: p.timbre_editor,
+      timbre_slots: vec![None; n_timbre_slots],
+      timbre_armed: false,
+      timbre_current: None,
     }
   }
 
@@ -176,12 +188,16 @@ impl LooperState {
   pub fn edo_key(&mut self, x: i32, y: i32, press: bool, now: Duration) -> bool {
     if press {
       // The timbre editor occludes its rect: a press inside it drives a radio param
-      // row (mutating the live timbre) or, on a blank/inert cell, is simply swallowed
-      // so it never plays or remaps. A release falls through harmlessly (editor cells
+      // row, the arm latch, or a slot (C4); a blank/inert cell is simply swallowed so
+      // it never plays or remaps. A release falls through harmlessly (editor cells
       // were never recorded in `self.down`). C7 will branch on `target = loop`.
-      if let Some(ed) = self.timbre_editor.as_ref().filter(|ed| ed.contains(x, y)) {
-        if let Some(param) = ed.press(x, y) {
-          param.apply(&mut self.live_timbre);
+      let action = self.timbre_editor.as_ref().filter(|ed| ed.contains(x, y)).map(|ed| ed.press(x, y));
+      if let Some(action) = action {
+        match action {
+          Some(EditorAction::Param(p)) => p.apply(&mut self.live_timbre),
+          Some(EditorAction::ToggleArm) => self.timbre_armed = !self.timbre_armed,
+          Some(EditorAction::Slot(i)) => self.timbre_slot_press(i),
+          None => {} // fold / sustain / save-undo / blank: consumed, no effect
         }
         return true;
       }
@@ -226,12 +242,35 @@ impl LooperState {
   /// notes in one loop light at their own separate times. Live wins over the
   /// loop. In remap mode, the cells being remapped (or the group-transpose
   /// center) are solid. The four shift-pad arrows are dim.
-  pub fn edo_levels(&self) -> Vec<i32> {
+  /// A timbre-slot press (C4): recall the slot into the live timbre, or -- if armed
+  /// -- capture the live timbre into the slot and auto-disarm. Either way the slot
+  /// becomes current. Pressing an empty slot unarmed is a no-op (nothing to recall).
+  fn timbre_slot_press(&mut self, i: usize) {
+    if i >= self.timbre_slots.len() {
+      return;
+    }
+    if self.timbre_armed {
+      self.timbre_slots[i] = Some(self.live_timbre);
+      self.timbre_current = Some(i);
+      self.timbre_armed = false;
+    } else if let Some(t) = self.timbre_slots[i] {
+      self.live_timbre = t;
+      self.timbre_current = Some(i);
+    }
+  }
+
+  pub fn edo_levels(&self, flash_on: bool) -> Vec<i32> {
     let mut levels = self.edo_levels_base();
     // The editor overlays last so its occluding rect always wins over the play grid
     // (edo_levels_base has an early return in remap mode, hence the wrapper).
     if let Some(ed) = &self.timbre_editor {
-      ed.paint(&self.live_timbre, &mut levels, self.grid_w);
+      let view = EditorView {
+        timbre: &self.live_timbre,
+        slots: &self.timbre_slots,
+        current: self.timbre_current,
+        armed: self.timbre_armed,
+      };
+      ed.paint(&view, &mut levels, self.grid_w, flash_on);
     }
     levels
   }
@@ -777,8 +816,7 @@ mod tests {
     use super::super::timbre_editor::TimbreEditor;
     use midi_pulse::config::TimbreTarget;
     use super::super::timbre_rows::RowRange;
-    let mut s = state();
-    s.timbre_editor = Some(TimbreEditor::new(
+    let editor = TimbreEditor::new(
       [0, 0, 15, 6],
       TimbreTarget::Loop,
       RowRange::LogRange { least: 0.0009, greatest: 0.15 },
@@ -787,7 +825,11 @@ mod tests {
       RowRange::Linear { min: 0.0, max: 1.0 },
       RowRange::LogFactor { least: 5.0, multiplier: 2.0 },
       RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
-    ));
+    );
+    let mut s = state();
+    // Match what `new()` does from LooperParams: size the slot store to the editor.
+    s.timbre_slots = vec![None; editor.slot_count()];
+    s.timbre_editor = Some(editor);
     s
   }
 
@@ -799,7 +841,7 @@ mod tests {
   fn pressing_a_cell_lights_octave_equivalents_solid() {
     let mut s = state();
     s.edo_key(0, 0, true, ms(0));
-    let levels = s.edo_levels();
+    let levels = s.edo_levels(true);
     assert_eq!(level_at(&levels, 0, 0), LEVEL_FULL);
     assert_eq!(level_at(&levels, 7, 2), LEVEL_FULL); // step 58 = octave of step 0
     assert_eq!(level_at(&levels, 1, 0), LEVEL_OFF);
@@ -808,7 +850,7 @@ mod tests {
   #[test]
   fn shift_pad_does_not_play_and_shows_dim() {
     let mut s = state();
-    let levels = s.edo_levels();
+    let levels = s.edo_levels(true);
     // The four arrows are dim; the two octave corners are dark (keyboard-like).
     assert_eq!(level_at(&levels, 14, 15), LEVEL_DIM, "down arrow dim");
     assert_eq!(level_at(&levels, 13, 15), LEVEL_DIM, "left arrow dim");
@@ -832,21 +874,21 @@ mod tests {
     s.loops_key(2, 3, true, ms(1000)); // play -> slot 5 sounds
     assert_eq!(s.loops.sounding, Some(5));
     // Before the playhead reaches the note it is a DIM backdrop (not yet sounding).
-    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_DIM, "sounding loop: dim backdrop");
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_DIM, "sounding loop: dim backdrop");
     // The playhead reaches the note-on -> it lights SOLID as an individual note.
     s.playback_tick(ms(1100)); // 100ms into the loop -> note-on at 0ms is due
     assert!(s.sink.voice_count() >= 1);
-    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_FULL, "solid while sounding");
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_FULL, "solid while sounding");
     // Its octave-equivalent lights solid too (step 58 = cell (7,2)).
-    assert_eq!(level_at(&s.edo_levels(), 7, 2), LEVEL_FULL, "octave-equivalent solid");
+    assert_eq!(level_at(&s.edo_levels(true), 7, 2), LEVEL_FULL, "octave-equivalent solid");
     // After its note-off it drops back to the dim backdrop (still in the loop).
     s.playback_tick(ms(1300)); // 290ms in -> note-off at 290ms is due
-    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_DIM, "dim again after note-off");
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_DIM, "dim again after note-off");
     // Stop: the loop no longer sounds, so it leaves NO backdrop (we reflect the
     // sounding loop, not the active one).
     s.loops_key(1, 3, true, ms(2000)); // stop (active slot 5 was sounding)
     assert_eq!(s.loops.sounding, None);
-    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_OFF, "silent: no backdrop");
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_OFF, "silent: no backdrop");
   }
 
   #[test]
@@ -858,7 +900,7 @@ mod tests {
     s.edo_key(0, 0, false, ms(200));
     s.loops_key(1, 3, true, ms(1000)); // stop -> slot 0 occupied, silent
     // The active loop is not sounding, so the edo grid shows nothing for it.
-    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_OFF, "active-but-silent: dark");
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_OFF, "active-but-silent: dark");
   }
 
   #[test]
@@ -1036,11 +1078,11 @@ mod tests {
   }
 
   #[test]
-  fn editor_blank_cell_swallows_the_press() {
+  fn editor_inert_cell_swallows_the_press() {
     let mut s = state_with_editor();
-    // x=10,y=0 is a slot placeholder in the control row -- inert in C3b, but inside
-    // the editor rect, so it must be swallowed (no note, no fall-through).
-    assert!(s.edo_key(10, 0, true, ms(0)), "consumed");
+    // x=6,y=0 is the sustain cell -- inert until C7, but inside the editor rect, so
+    // it must be swallowed (no note, no fall-through).
+    assert!(s.edo_key(6, 0, true, ms(0)), "consumed");
     assert!(s.down.is_empty(), "no note played");
     assert_eq!(s.live_timbre, Timbre::default(), "nothing changed");
   }
@@ -1048,7 +1090,7 @@ mod tests {
   #[test]
   fn editor_overlays_edo_leds_and_occludes_the_top_rows() {
     let s = state_with_editor();
-    let levels = s.edo_levels();
+    let levels = s.edo_levels(true);
     // Default waveform Triangle = control cell x=2 lit; fold cell x=0 = Mid.
     assert_eq!(level_at(&levels, 0, 0), LEVEL_MID, "fold cell findable");
     assert_eq!(level_at(&levels, 2, 0), LEVEL_FULL, "triangle lit");
@@ -1069,5 +1111,68 @@ mod tests {
     s.loops_key(1, 3, true, ms(1000)); // stop
     let on = s.loops.slots[0].events.iter().find(|e| e.on).expect("an on event");
     assert_eq!(on.timbre.waveform, Waveform::Square, "recorded note carries editor timbre");
+  }
+
+  // ---- C4: timbre slots + save/recall ----
+
+  #[test]
+  fn slot_save_recall_round_trips_a_full_timbre_and_auto_disarms() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    // Dial a non-default timbre: Saw + a non-unity amplitude + AM depth.
+    s.edo_key(4, 0, true, ms(0)); // Saw
+    s.edo_key(8, 1, true, ms(1)); // amplitude row, some mid cell
+    s.edo_key(15, 2, true, ms(2)); // AM depth = 1.0
+    let saved = s.live_timbre;
+    assert_ne!(saved, Timbre::default(), "we actually changed the timbre");
+    // Arm, then capture into slot 0.
+    s.edo_key(5, 0, true, ms(3)); // arm cell
+    assert!(s.timbre_armed, "armed");
+    s.edo_key(8, 0, true, ms(4)); // slot 0
+    assert!(!s.timbre_armed, "auto-disarms after one capture");
+    assert_eq!(s.timbre_slots[0], Some(saved), "slot 0 holds the captured timbre");
+    assert_eq!(s.timbre_current, Some(0));
+    // Move the live timbre away, then recall slot 0.
+    s.edo_key(1, 0, true, ms(5)); // Sine
+    assert_eq!(s.live_timbre.waveform, Waveform::Sine);
+    s.edo_key(8, 0, true, ms(6)); // recall slot 0 (unarmed)
+    assert_eq!(s.live_timbre, saved, "recall restores the full timbre incl. amplitude + AM");
+  }
+
+  #[test]
+  fn pressing_an_empty_slot_unarmed_is_a_noop() {
+    let mut s = state_with_editor();
+    s.edo_key(4, 0, true, ms(0)); // Saw
+    let before = s.live_timbre;
+    s.edo_key(9, 0, true, ms(1)); // empty slot 1, unarmed
+    assert_eq!(s.live_timbre, before, "nothing recalled");
+    assert_eq!(s.timbre_current, None, "empty recall does not set current");
+  }
+
+  #[test]
+  fn slot_leds_show_empty_occupied_current_and_dirty_flash() {
+    let mut s = state_with_editor();
+    // Save the default into slot 0 (current=0), then a Saw into slot 1 (current=1).
+    s.edo_key(5, 0, true, ms(0)); // arm
+    s.edo_key(8, 0, true, ms(1)); // save slot 0
+    s.edo_key(4, 0, true, ms(2)); // Saw
+    s.edo_key(5, 0, true, ms(3)); // arm
+    s.edo_key(9, 0, true, ms(4)); // save slot 1 (current, live == slot1 -> clean)
+    let levels = s.edo_levels(true);
+    assert_eq!(level_at(&levels, 8, 0), LEVEL_DIM, "occupied non-current dim");
+    assert_eq!(level_at(&levels, 9, 0), LEVEL_FULL, "current clean bright");
+    assert_eq!(level_at(&levels, 10, 0), LEVEL_OFF, "empty slot off");
+    // Diverge the live timbre from slot 1 -> the current slot flashes 50/50.
+    s.edo_key(1, 0, true, ms(5)); // Sine, != slot 1 (Saw)
+    assert_eq!(level_at(&s.edo_levels(true), 9, 0), LEVEL_FULL, "dirty current bright on flash");
+    assert_eq!(level_at(&s.edo_levels(false), 9, 0), LEVEL_OFF, "dirty current dark off flash");
+  }
+
+  #[test]
+  fn arm_cell_lights_while_armed() {
+    let mut s = state_with_editor();
+    assert_eq!(level_at(&s.edo_levels(true), 5, 0), LEVEL_DIM, "arm idle dim");
+    s.edo_key(5, 0, true, ms(0)); // arm
+    assert_eq!(level_at(&s.edo_levels(true), 5, 0), LEVEL_FULL, "armed bright");
   }
 }

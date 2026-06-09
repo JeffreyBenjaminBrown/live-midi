@@ -1,6 +1,7 @@
-//! The on-grid timbre editor: a stack of radio parameter rows that read and write a
-//! `Timbre`. Pure layout + value mapping (no I/O); `state.rs` owns placing it on a
-//! grid and routing presses/LEDs through here. See 6_plan 2.6 / 2.7.
+//! The on-grid timbre editor: a stack of radio parameter rows plus a control row of
+//! waveform / arm / slot cells. Pure layout + value mapping (no I/O, no stored
+//! state); `state.rs` owns the live timbre, the slot store, and arm state, and
+//! routes presses/LEDs through here. See 6_plan 2.3 / 2.6 / 2.7 / 2.9.
 //!
 //! Rows (top to bottom, 6_plan 2.7); each value row is a radio strip whose width is
 //! the editor rect's width, so the number of steps scales with the rect:
@@ -12,20 +13,21 @@
 //!   row 5  FM amplitude (cents)  -- log_factor
 //!   row 6  FM frequency          -- log_factor
 //!
-//! In C3b only the four waveform cells and rows 1..6 are live; the fold cell (C5b),
-//! arm + slots (C4), and sustain + save-undo (C7) are present-but-inert placeholders
-//! so later commits drop in without shifting the layout. The editor OCCLUDES its
-//! rect: `paint` overwrites every covered cell and `state.rs` consumes every press
-//! inside the rect (so an inert cell eats the press rather than playing a note).
+//! Live in C3b: the four waveform cells + rows 1..6. Added in C4: the arm cell and
+//! the slot cells (recall on press; arm -> capture one -> auto-disarm). Still inert
+//! placeholders: fold (C5b), sustain + save-undo (C7). The editor OCCLUDES its rect:
+//! `paint` overwrites every covered cell and `state.rs` consumes every press inside
+//! the rect (an inert cell eats the press rather than playing a note).
 
 use midi_pulse::config::TimbreTarget;
 
-use super::state::{LEVEL_FULL, LEVEL_MID, LEVEL_OFF};
+use super::state::{LEVEL_DIM, LEVEL_FULL, LEVEL_MID, LEVEL_OFF};
 use super::timbre_rows::RowRange;
 use crate::types::{Timbre, Waveform};
 
-/// One radio change the editor produces. Applied to a `Timbre` -- the live timbre in
-/// C3b, a loop note's stored timbre in C7 -- so it stays target-agnostic.
+/// One radio change a value row / waveform cell produces. Applied to a `Timbre` --
+/// the live timbre in C3b/C4, a loop note's stored timbre in C7 -- so it stays
+/// target-agnostic.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TimbreParam {
   Waveform(Waveform),
@@ -52,6 +54,18 @@ impl TimbreParam {
   }
 }
 
+/// What a press resolves to inside the editor rect. `state.rs` applies it (a blank /
+/// inert cell yields None but the press is still consumed -- occlusion).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EditorAction {
+  /// A radio change to the edited timbre.
+  Param(TimbreParam),
+  /// Toggle the arm latch (next slot press captures instead of recalls). [C4]
+  ToggleArm,
+  /// A timbre-slot cell (0-based). Recall, or capture-then-disarm if armed. [C4]
+  Slot(usize),
+}
+
 // Local row offsets within the editor rect (y - rect.top).
 const ROW_CONTROL: i32 = 0;
 const ROW_AMPLITUDE: i32 = 1;
@@ -65,17 +79,29 @@ const ROW_FM_FREQ: i32 = 6;
 #[allow(dead_code)] // C5b uses this for the fold/unfold height swap.
 pub const EDITOR_ROWS: i32 = 7;
 
-/// The four waveform cells occupy local x 1..=4 of the control row (after the fold
-/// cell at local x 0), in `Waveform` enum order.
+// Control-row local x layout (6_plan 2.7): fold | 4 waveforms | arm | sustain |
+// save-undo | slots... .
+const FOLD_X: i32 = 0;
 const WAVEFORM_X0: i32 = 1;
 const WAVEFORMS: [Waveform; 4] =
   [Waveform::Sine, Waveform::Triangle, Waveform::Square, Waveform::Saw];
+const ARM_X: i32 = 5;
+const SLOTS_X0: i32 = 8;
+
+/// The mutable timbre state `state.rs` owns, borrowed for painting: the displayed
+/// timbre, the slot store, the current slot, and the arm latch.
+pub struct EditorView<'a> {
+  pub timbre: &'a Timbre,
+  pub slots: &'a [Option<Timbre>],
+  pub current: Option<usize>,
+  pub armed: bool,
+}
 
 /// A timbre editor placed at an absolute rect on one grid. `target` selects what it
-/// edits once C6/C7 land; in C3b both targets edit the live timbre.
+/// edits once C7 lands; in C3b/C4 both targets edit the live timbre.
 pub struct TimbreEditor {
   pub rect: [i32; 4],
-  /// C3b edits the live timbre for both targets; C7 reads this to branch loop edits.
+  /// C3b/C4 edit the live timbre for both targets; C7 reads this to branch loop edits.
   #[allow(dead_code)]
   pub target: TimbreTarget,
   amplitude: RowRange,
@@ -110,8 +136,14 @@ impl TimbreEditor {
     (self.rect[2] - self.rect[0] + 1).max(1) as usize
   }
 
+  /// How many timbre slots the control row holds: the cells from SLOTS_X0 to the
+  /// right edge (6_plan: "slots = width - 8" on a 16-wide editor).
+  pub fn slot_count(&self) -> usize {
+    (self.width() as i32 - SLOTS_X0).max(0) as usize
+  }
+
   /// The fixed-value RowRange for a value-row offset (rows 1..6); None for the
-  /// control row, which the caller special-cases.
+  /// control row, which `press` special-cases.
   fn value_row(&self, local_y: i32) -> Option<RowRange> {
     match local_y {
       ROW_AMPLITUDE => Some(self.amplitude),
@@ -137,24 +169,37 @@ impl TimbreEditor {
     })
   }
 
-  /// The radio change a press at absolute (x, y) makes, or None for a blank / inert
-  /// cell inside the rect (the caller still consumes the press -- occlusion).
-  pub fn press(&self, x: i32, y: i32) -> Option<TimbreParam> {
+  /// The control-row action for a local x: a waveform set, the arm toggle, a slot,
+  /// or None for fold / sustain / save-undo / past the last slot.
+  fn control_action(&self, local_x: i32) -> Option<EditorAction> {
+    let wf_index = local_x - WAVEFORM_X0;
+    if (0..WAVEFORMS.len() as i32).contains(&wf_index) {
+      return Some(EditorAction::Param(TimbreParam::Waveform(WAVEFORMS[wf_index as usize])));
+    }
+    if local_x == ARM_X {
+      return Some(EditorAction::ToggleArm);
+    }
+    let slot = local_x - SLOTS_X0;
+    if (0..self.slot_count() as i32).contains(&slot) {
+      return Some(EditorAction::Slot(slot as usize));
+    }
+    None // fold / sustain / save-undo: inert until C5b / C7
+  }
+
+  /// The action a press at absolute (x, y) makes, or None for a blank / inert cell
+  /// inside the rect (the caller still consumes the press -- occlusion).
+  pub fn press(&self, x: i32, y: i32) -> Option<EditorAction> {
     if !self.contains(x, y) {
       return None;
     }
     let local_x = x - self.rect[0];
     let local_y = y - self.rect[1];
     if local_y == ROW_CONTROL {
-      let wf_index = local_x - WAVEFORM_X0;
-      if (0..WAVEFORMS.len() as i32).contains(&wf_index) {
-        return Some(TimbreParam::Waveform(WAVEFORMS[wf_index as usize]));
-      }
-      return None; // fold / arm / sustain / save-undo / slots: inert in C3b
+      return self.control_action(local_x);
     }
     let row = self.value_row(local_y)?;
     let value = row.value_at(local_x as usize, self.width());
-    Self::make_param(local_y, value)
+    Self::make_param(local_y, value).map(EditorAction::Param)
   }
 
   /// The control-row local x lit for the current waveform.
@@ -164,9 +209,11 @@ impl TimbreEditor {
   }
 
   /// Overwrite the editor's whole rect into `levels` (occlusion): blank everything
-  /// covered, then light each row's radio cell (Full) plus the fold cell (Mid,
-  /// findable). Called last in `edo_levels`, after the play/remap painting.
-  pub fn paint(&self, t: &Timbre, levels: &mut [i32], grid_w: i32) {
+  /// covered, then light the radio cell of each row plus the control-row state
+  /// (fold = Mid, current waveform = Full, arm = Full when armed, slots per 6_plan
+  /// 2.9: empty Off / occupied Dim / current Full, the current flashing 50/50 when
+  /// the live timbre has diverged from it). Called last in `edo_levels`.
+  pub fn paint(&self, view: &EditorView, levels: &mut [i32], grid_w: i32, flash_on: bool) {
     let [x0, y0, x1, y1] = self.rect;
     let width = self.width();
     let put = |levels: &mut [i32], lx: i32, ly: i32, level: i32| {
@@ -185,17 +232,32 @@ impl TimbreEditor {
         put(levels, lx, ly, LEVEL_OFF);
       }
     }
-    // 2. Control row: fold cell findable (Mid), current waveform lit (Full).
-    put(levels, 0, ROW_CONTROL, LEVEL_MID);
-    put(levels, Self::waveform_cell(t), ROW_CONTROL, LEVEL_FULL);
+    // 2. Control row.
+    put(levels, FOLD_X, ROW_CONTROL, LEVEL_MID); // findable, distinct from values
+    put(levels, Self::waveform_cell(view.timbre), ROW_CONTROL, LEVEL_FULL);
+    put(levels, ARM_X, ROW_CONTROL, if view.armed { LEVEL_FULL } else { LEVEL_DIM });
+    let dirty = view
+      .current
+      .and_then(|c| view.slots.get(c))
+      .is_some_and(|s| s.as_ref() != Some(view.timbre));
+    for i in 0..self.slot_count() {
+      let level = if view.current == Some(i) {
+        if dirty && !flash_on { LEVEL_OFF } else { LEVEL_FULL }
+      } else if view.slots.get(i).is_some_and(Option::is_some) {
+        LEVEL_DIM
+      } else {
+        LEVEL_OFF
+      };
+      put(levels, SLOTS_X0 + i as i32, ROW_CONTROL, level);
+    }
     // 3. Value rows: the radio cell matching the current value.
     let lit = |row: RowRange, value: f32| row.cell_for(value, width) as i32;
-    put(levels, lit(self.amplitude, t.gain), ROW_AMPLITUDE, LEVEL_FULL);
-    put(levels, lit(self.am_depth, t.am.depth), ROW_AM_DEPTH, LEVEL_FULL);
-    put(levels, lit(self.am_freq, t.am.freq), ROW_AM_FREQ, LEVEL_FULL);
-    put(levels, lit(self.am_shape, t.am.shape), ROW_AM_SHAPE, LEVEL_FULL);
-    put(levels, lit(self.fm_depth, t.fm.depth_cents), ROW_FM_DEPTH, LEVEL_FULL);
-    put(levels, lit(self.fm_freq, t.fm.freq), ROW_FM_FREQ, LEVEL_FULL);
+    put(levels, lit(self.amplitude, view.timbre.gain), ROW_AMPLITUDE, LEVEL_FULL);
+    put(levels, lit(self.am_depth, view.timbre.am.depth), ROW_AM_DEPTH, LEVEL_FULL);
+    put(levels, lit(self.am_freq, view.timbre.am.freq), ROW_AM_FREQ, LEVEL_FULL);
+    put(levels, lit(self.am_shape, view.timbre.am.shape), ROW_AM_SHAPE, LEVEL_FULL);
+    put(levels, lit(self.fm_depth, view.timbre.fm.depth_cents), ROW_FM_DEPTH, LEVEL_FULL);
+    put(levels, lit(self.fm_freq, view.timbre.fm.freq), ROW_FM_FREQ, LEVEL_FULL);
   }
 }
 
@@ -217,26 +279,42 @@ mod tests {
     )
   }
 
+  fn param(a: Option<EditorAction>) -> TimbreParam {
+    match a {
+      Some(EditorAction::Param(p)) => p,
+      other => panic!("expected a param, got {other:?}"),
+    }
+  }
+
   #[test]
   fn waveform_cells_select_each_waveform() {
     let ed = editor([0, 0, 15, 6]);
-    assert_eq!(ed.press(1, 0), Some(TimbreParam::Waveform(Waveform::Sine)));
-    assert_eq!(ed.press(2, 0), Some(TimbreParam::Waveform(Waveform::Triangle)));
-    assert_eq!(ed.press(3, 0), Some(TimbreParam::Waveform(Waveform::Square)));
-    assert_eq!(ed.press(4, 0), Some(TimbreParam::Waveform(Waveform::Saw)));
+    assert_eq!(param(ed.press(1, 0)), TimbreParam::Waveform(Waveform::Sine));
+    assert_eq!(param(ed.press(2, 0)), TimbreParam::Waveform(Waveform::Triangle));
+    assert_eq!(param(ed.press(3, 0)), TimbreParam::Waveform(Waveform::Square));
+    assert_eq!(param(ed.press(4, 0)), TimbreParam::Waveform(Waveform::Saw));
   }
 
   #[test]
-  fn control_row_fold_and_later_commit_cells_are_inert() {
+  fn control_row_inert_cells_are_none() {
     let ed = editor([0, 0, 15, 6]);
-    assert_eq!(ed.press(0, 0), None, "fold cell inert in C3b");
-    assert_eq!(ed.press(5, 0), None, "arm cell inert until C4");
+    assert_eq!(ed.press(0, 0), None, "fold cell inert until C5b");
+    assert_eq!(ed.press(6, 0), None, "sustain inert until C7");
     assert_eq!(ed.press(7, 0), None, "save-undo inert until C7");
   }
 
-  fn gain_of(p: Option<TimbreParam>) -> f32 {
-    match p {
-      Some(TimbreParam::Gain(g)) => g,
+  #[test]
+  fn arm_and_slot_cells_resolve() {
+    let ed = editor([0, 0, 15, 6]);
+    assert_eq!(ed.press(5, 0), Some(EditorAction::ToggleArm));
+    assert_eq!(ed.press(8, 0), Some(EditorAction::Slot(0)), "first slot");
+    assert_eq!(ed.press(15, 0), Some(EditorAction::Slot(7)), "last of 8 slots");
+    assert_eq!(ed.slot_count(), 8, "16-wide editor -> 8 slots");
+  }
+
+  fn gain_of(a: Option<EditorAction>) -> f32 {
+    match param(a) {
+      TimbreParam::Gain(g) => g,
       other => panic!("expected a gain, got {other:?}"),
     }
   }
@@ -244,8 +322,6 @@ mod tests {
   #[test]
   fn amplitude_row_endpoints_map_to_range() {
     let ed = editor([0, 0, 15, 6]);
-    // 16-wide amplitude row: cell 0 = least, cell 15 = greatest (log endpoints are
-    // only approximate at the top, hence the tolerance).
     assert!((gain_of(ed.press(0, 1)) - 0.0009).abs() < 1e-6, "floor = least");
     assert!((gain_of(ed.press(15, 1)) - 0.15).abs() < 1e-4, "ceil ~= greatest");
   }
@@ -253,12 +329,12 @@ mod tests {
   #[test]
   fn fx_rows_map_to_their_params() {
     let ed = editor([0, 0, 15, 6]);
-    assert_eq!(ed.press(0, 2), Some(TimbreParam::AmDepth(0.0)), "AM depth floor");
-    assert_eq!(ed.press(15, 2), Some(TimbreParam::AmDepth(1.0)), "AM depth ceil");
-    assert!(matches!(ed.press(0, 3), Some(TimbreParam::AmFreq(_))));
-    assert!(matches!(ed.press(7, 4), Some(TimbreParam::AmShape(_))));
-    assert!(matches!(ed.press(0, 5), Some(TimbreParam::FmDepthCents(_))));
-    assert!(matches!(ed.press(0, 6), Some(TimbreParam::FmFreq(_))));
+    assert_eq!(param(ed.press(0, 2)), TimbreParam::AmDepth(0.0), "AM depth floor");
+    assert_eq!(param(ed.press(15, 2)), TimbreParam::AmDepth(1.0), "AM depth ceil");
+    assert!(matches!(param(ed.press(0, 3)), TimbreParam::AmFreq(_)));
+    assert!(matches!(param(ed.press(7, 4)), TimbreParam::AmShape(_)));
+    assert!(matches!(param(ed.press(0, 5)), TimbreParam::FmDepthCents(_)));
+    assert!(matches!(param(ed.press(0, 6)), TimbreParam::FmFreq(_)));
   }
 
   #[test]
@@ -268,36 +344,55 @@ mod tests {
     assert_eq!(ed.press(0, 15), None);
   }
 
+  fn view<'a>(t: &'a Timbre, slots: &'a [Option<Timbre>], current: Option<usize>, armed: bool) -> EditorView<'a> {
+    EditorView { timbre: t, slots, current, armed }
+  }
+
   #[test]
-  fn apply_then_paint_round_trips_the_lit_cell() {
+  fn paint_lights_waveform_fold_and_slots() {
     let ed = editor([0, 0, 15, 6]);
-    let mut t = Timbre::default();
-    // Set a saw + a mid amplitude, then confirm paint lights those cells.
-    ed.press(4, 0).unwrap().apply(&mut t); // Saw
-    if let Some(p) = ed.press(8, 1) {
-      p.apply(&mut t); // some amplitude cell 8
-    }
+    let t = Timbre { waveform: Waveform::Saw, ..Timbre::default() };
+    let mut slots = vec![None; 8];
+    slots[0] = Some(t); // occupied + current
+    slots[1] = Some(Timbre::default()); // occupied, not current
     let mut levels = vec![LEVEL_OFF; 16 * 16];
-    ed.paint(&t, &mut levels, 16);
-    // Saw is the 4th waveform -> control-row cell WAVEFORM_X0 + 3 = 4.
-    assert_eq!(levels[4], LEVEL_FULL, "saw cell lit");
-    assert_eq!(levels[0], LEVEL_MID, "fold cell findable");
-    // Amplitude row (y=1) lights exactly the cell we set.
-    let row1: Vec<i32> = (0..16).map(|x| levels[16 + x as usize]).collect();
-    assert_eq!(row1.iter().filter(|&&l| l == LEVEL_FULL).count(), 1, "one lit amp cell");
-    assert_eq!(levels[16 + 8], LEVEL_FULL, "amp cell 8 lit");
+    ed.paint(&view(&t, &slots, Some(0), false), &mut levels, 16, true);
+    assert_eq!(levels[FOLD_X as usize], LEVEL_MID, "fold findable");
+    assert_eq!(levels[4], LEVEL_FULL, "saw waveform lit");
+    assert_eq!(levels[ARM_X as usize], LEVEL_DIM, "arm idle dim");
+    assert_eq!(levels[SLOTS_X0 as usize], LEVEL_FULL, "current slot bright");
+    assert_eq!(levels[SLOTS_X0 as usize + 1], LEVEL_DIM, "occupied slot dim");
+    assert_eq!(levels[SLOTS_X0 as usize + 2], LEVEL_OFF, "empty slot off");
+  }
+
+  #[test]
+  fn dirty_current_slot_flashes() {
+    let ed = editor([0, 0, 15, 6]);
+    let live = Timbre { waveform: Waveform::Square, ..Timbre::default() };
+    let mut slots = vec![None; 8];
+    slots[3] = Some(Timbre::default()); // current slot holds a DIFFERENT timbre
+    let on = {
+      let mut l = vec![LEVEL_OFF; 16 * 16];
+      ed.paint(&view(&live, &slots, Some(3), false), &mut l, 16, true);
+      l[SLOTS_X0 as usize + 3]
+    };
+    let off = {
+      let mut l = vec![LEVEL_OFF; 16 * 16];
+      ed.paint(&view(&live, &slots, Some(3), false), &mut l, 16, false);
+      l[SLOTS_X0 as usize + 3]
+    };
+    assert_eq!(on, LEVEL_FULL, "dirty current bright on flash-on");
+    assert_eq!(off, LEVEL_OFF, "dirty current dark on flash-off (50/50)");
   }
 
   #[test]
   fn paint_occludes_underlying_cells() {
     let ed = editor([0, 0, 15, 6]);
     let t = Timbre::default();
-    // Pretend the grid lit everything; the editor must blank its rect first.
+    let slots = vec![None; 8];
     let mut levels = vec![LEVEL_FULL; 16 * 16];
-    ed.paint(&t, &mut levels, 16);
-    // A blank control-row cell (x=10, a slot placeholder) is now off.
-    assert_eq!(levels[10], LEVEL_OFF, "occluded blank cell is dark");
-    // A cell below the editor (y=7) is untouched (still full).
+    ed.paint(&view(&t, &slots, None, false), &mut levels, 16, true);
+    assert_eq!(levels[6], LEVEL_OFF, "occluded inert cell dark");
     assert_eq!(levels[16 * 7], LEVEL_FULL, "outside the rect untouched");
   }
 }

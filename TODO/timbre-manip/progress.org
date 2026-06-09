@@ -235,10 +235,25 @@ already-built looper. Key facts I confirmed for whoever continues:
   to switch waveform, lower rows to dial AM/FM/amp/shape; finger notes on edo rows
   y>=7 and hear the change. (Synth math was already unit-tested in C1/C2.)
 
-** TODO C4 -- timbre slots + save/recall
-=timbre_slot= + =timbre_arm= cells; recall on press; arm->capture one->auto-disarm;
-LEDs empty/occupied/current + 50/50 dirty flash. Mirror the =scale_slots= /
-=scale_control= store idiom already in config.rs/state.rs.
+** DONE C4 -- timbre slots + save/recall
+The slots live in the editor's control row (cells 8..width-1 -> 8 slots on a 16-wide
+editor), with the arm cell at x=5 (6_plan 2.7), so NO new window kind was needed --
+the editor already occupies row 0. (Deviation from the roadmap note, which expected
+separate =timbre_slot=/=timbre_arm= cells mirroring =scale_slots=; folding them into
+the editor row matches 6_plan 2.7 and avoids a second window. Reversible.)
+- =timbre_editor.rs=: =press()= now returns =EditorAction= (=Param= | =ToggleArm= |
+  =Slot(i)=); =slot_count()= = width-8; =paint= takes an =EditorView= (live timbre +
+  slot store + current + armed) and a flash phase.
+- =state.rs=: =LooperState= gains =timbre_slots: Vec<Option<Timbre>>=, =timbre_armed=,
+  =timbre_current=, sized from the editor in =new()=. =timbre_slot_press(i)=: armed ->
+  capture live + auto-disarm; else recall (empty unarmed = no-op). =edo_levels(flash_on)=
+  now takes the flash phase (threaded from =grid_thread=, like =loops_levels=) so the
+  current slot can flash 50/50 when the live timbre diverges. LEDs per 6_plan 2.9:
+  empty Off / occupied Dim / current Full (flashing if dirty); arm Full when armed
+  (Dim idle).
+- Tests: 176 bin + 35 lib green. Round-trips a full timbre (waveform+amplitude+AM),
+  auto-disarm, dirty flash, empty-recall no-op all covered. The existing
+  =monome-looper-58-8-1-timbre.toml= already yields 8 slots (no config change).
 
 ** TODO C5a/b/c -- window system: relative coords + relayout, fold, loop reflow
 C5a: implement the relative-coordinate parser (pending the syntax TODO) + a
