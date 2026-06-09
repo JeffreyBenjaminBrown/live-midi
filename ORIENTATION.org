@@ -5,11 +5,15 @@ file just points you at the right doors and records the few facts that otherwise
 live only in Claude's memory. Follow the links for depth.
 
 * where you are
-- This repo *is* the home dir (=/home/ubuntu=) of a *Docker container* (UID 1000).
-  Jeff works on the *host* (NixOS); you're inside the container, which bind-mounts
-  the project root. Git worktrees go under =/home/ubuntu/worktrees/= (git-ignored);
-  the separate PR repos live in =/home/ubuntu/other-projects/=. See
-  [[./how-to-parallelize-dev.org]] for the worktree workflow.
+- This is a *bare* git repo: =/home/ubuntu/.bare= is the repo, and the actual
+  checkouts are git worktrees under =/home/ubuntu/worktrees/= -- work in
+  =worktrees/prod= (branch monome-looper) or =worktrees/dev=. The home dir
+  =/home/ubuntu= itself holds no tracked files (just =.bare=, a =.git= file
+  pointing at it, and your home dotfiles).
+- It's a *Docker container* (UID 1000); Jeff works on the *host* (NixOS), which
+  bind-mounts this tree (host =/home/jeff/code/midi= -> container =/home/ubuntu=).
+  Worktree links are *relative*, so git/magit work from both sides. Separate PR
+  repos live in =/home/ubuntu/other-projects/=. See [[./how-to-parallelize-dev.org]].
 - The project's point: read/write MIDI and audio between container and host.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).

@@ -40,35 +40,36 @@ git switch monome-looper
 One repo, many directories, one branch each, *shared history*. Adding a worktree
 does not copy the object database, so it's near-instant and disk-cheap.
 
-** Already set up
-The repo root is your home dir (=/home/ubuntu=). Worktrees live in a git-ignored
-=worktrees/= folder under it, and an example =worktrees/dev= already exists. Add
-more from the repo root:
+** Already set up (bare repo + worktrees)
+The repo is *bare*: =/home/ubuntu/.bare= holds the history, =/home/ubuntu/.git= is
+a one-line file (=gitdir: ./.bare=) so git works from the root, and the real
+checkouts are worktrees under =/home/ubuntu/worktrees/=:
+- =worktrees/prod= -- branch =monome-looper= (the main line of work)
+- =worktrees/dev=  -- branch =dev=
+No tracked files live at =/home/ubuntu= anymore, so nothing is duplicated between
+"root" and a worktree. Add more from anywhere in the repo:
 #+begin_src sh
-cd /home/ubuntu
-
-git worktree add worktrees/dev2 -b dev2           # new branch 'dev2'
-# or base one on an existing branch:
-git worktree add worktrees/exp monome-looper      # checks out the existing branch
-#+end_src
-List / remove them:
-#+begin_src sh
+git worktree add /home/ubuntu/worktrees/dev2 -b dev2     # new branch
+git worktree add /home/ubuntu/worktrees/exp monome-looper # existing branch
 git worktree list
-git worktree remove worktrees/dev2     # when done (must be clean, or --force)
-git worktree prune                     # tidy stale entries
+git worktree remove /home/ubuntu/worktrees/dev2          # when done (clean, or --force)
 #+end_src
-(The separate PR repos =libmonome-pr/= / =serialosc-pr/= / =nix-jbb/= now live in
-=/home/ubuntu/other-projects/=, out of the way.)
+*Relative links (important):* worktrees were created with =--relative-paths=
+(=worktree.useRelativePaths=true=), so the =.git= pointers are =../../.bare/...=
+not absolute =/home/ubuntu/...=. That's what lets the *host* use them too: the same
+tree is =/home/jeff/code/midi= on the host (NixOS) and =/home/ubuntu= in the
+container, so magit/git on the host resolve the worktrees correctly. Always create
+worktrees with =--relative-paths= (it's the default here) or host tools break.
 
-** Point a Claude at each
-Open a terminal per worktree and just launch the CLI there:
+** Point a Claude (or magit) at each
+Open a terminal per worktree and launch the CLI there:
 #+begin_src sh
-cd /home/ubuntu/worktrees/dev  && claude
+cd /home/ubuntu/worktrees/prod && claude    # main line
 # (another terminal)
-cd /home/ubuntu/worktrees/dev2 && claude
+cd /home/ubuntu/worktrees/dev  && claude     # experiment
 #+end_src
-Each session is independent and sees only its directory's branch. (The main line of
-work is just =/home/ubuntu= itself.)
+Each session sees only its directory's branch. Open magit on a *worktree*
+(=worktrees/prod= / =worktrees/dev=), not on the bare root =/home/ubuntu=.
 
 ** Why it's the right default
 - Branches *can't* collide -- each lives in its own directory.
@@ -140,9 +141,9 @@ one serialosc, one audio out. Concretely:
   launch it.
 
 * My suggestion
-Use *Way 2 (worktree)* as the default, which is set up: =/home/ubuntu= (the main
-checkout) on your live branch, =worktrees/dev= for the experiment, a Claude in each.
-Each worktree now builds into its own =target/=, so they won't clobber each other.
+Use *Way 2 (worktree)* as the default, which is set up: =worktrees/prod= (branch
+monome-looper) for your live work, =worktrees/dev= for the experiment, a Claude in
+each. Each worktree builds into its own =target/=, so they won't clobber each other.
 Keep real-grid runs in one and give the other the *mock* so both can "run the
 instrument" at once. Drop to *Way 3 (clones)* only if you want bullet-proof
 isolation between the two lines of work.
