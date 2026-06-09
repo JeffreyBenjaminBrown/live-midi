@@ -446,7 +446,7 @@ fn grid_thread(
     let levels = {
       let st = state.lock().unwrap_or_else(|e| e.into_inner());
       match role {
-        Grid::Edo => st.edo_levels(),
+        Grid::Edo => st.edo_levels(flash_on),
         Grid::Loops => st.loops_levels(flash_on),
       }
     };

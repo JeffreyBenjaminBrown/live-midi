@@ -75,8 +75,9 @@ corners by a whole octave.
 4. Press *play* to close the loop and start it looping, or *stop* to keep it
    without playing.
 
-The active slot's notes reflect solid on the edo grid, so you can see what's in
-it. Recording into a slot overwrites whatever was there (there is no overdub).
+The active slot's notes reflect on the edo grid -- flashing while it plays, dim
+while it's silent -- so you can see what's in it. Recording into a slot overwrites
+whatever was there (there is no overdub).
 
 ** switch, stop, and silence
 

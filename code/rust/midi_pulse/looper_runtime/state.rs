@@ -194,12 +194,15 @@ impl LooperState {
     }
   }
 
-  /// Edo LEDs: every octave-equivalent of a sounding pitch is solid. Sounding =
-  /// live-held notes plus the active loop's content (solid whether or not it is
-  /// playing, per the design).
-  pub fn edo_levels(&self) -> Vec<i32> {
-    let classes: HashSet<i32> = if let Some(r) = &self.remap {
-      // Remap mode: light what's being remapped (or the coarse center).
+  /// Edo LEDs. A live-held note lights all its octave-equivalents solid. The
+  /// active loop's notes *flash* while that slot is sounding and show *dim* while
+  /// it is silent (live wins over the loop). In remap mode, the cells being
+  /// remapped (or the coarse center) are solid. The four shift-pad arrows are dim.
+  pub fn edo_levels(&self, flash_on: bool) -> Vec<i32> {
+    let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
+
+    // Remap mode: solid for the pitches being remapped (or the coarse center).
+    if let Some(r) = &self.remap {
       let pitches = if r.frozen {
         if r.coarse {
           vec![step_for_cell(self.x_step, self.y_step, self.register, self.remap_center.0, self.remap_center.1)]
@@ -209,35 +212,65 @@ impl LooperState {
       } else {
         selected_pitches(&self.build_active_display(), &r.selection)
       };
-      pitches.iter().map(|p| p.rem_euclid(self.edo)).collect()
-    } else {
-      // Play mode: live-held notes plus the active loop's content.
-      let mut c: HashSet<i32> = self.down.values().map(|p| p.rem_euclid(self.edo)).collect();
-      for event in &self.loops.slots[self.loops.active].events {
-        if event.on {
-          c.insert(event.pitch.rem_euclid(self.edo));
+      let classes: HashSet<i32> = pitches.iter().map(|p| p.rem_euclid(self.edo)).collect();
+      self.paint_classes(&mut levels, |class| {
+        if classes.contains(&class) {
+          Some(LEVEL_FULL)
+        } else {
+          None
         }
+      });
+      return levels;
+    }
+
+    // Play mode: live notes solid; the active loop's notes flash while sounding,
+    // dim while silent.
+    let live: HashSet<i32> = self.down.values().map(|p| p.rem_euclid(self.edo)).collect();
+    let loop_classes: HashSet<i32> = self.loops.slots[self.loops.active]
+      .events
+      .iter()
+      .filter(|e| e.on)
+      .map(|e| e.pitch.rem_euclid(self.edo))
+      .collect();
+    let loop_level = if self.loops.sounding == Some(self.loops.active) {
+      if flash_on {
+        LEVEL_FULL
+      } else {
+        LEVEL_OFF
       }
-      c
+    } else {
+      LEVEL_DIM
     };
-    let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
+    self.paint_classes(&mut levels, |class| {
+      if live.contains(&class) {
+        Some(LEVEL_FULL)
+      } else if loop_classes.contains(&class) {
+        Some(loop_level)
+      } else {
+        None
+      }
+    });
+    levels
+  }
+
+  /// For each cell, set its level from `level_for(pitch_class)`; cells with no
+  /// pitch-class level fall back to a dim shift-pad arrow, else dark.
+  fn paint_classes(&self, levels: &mut [i32], level_for: impl Fn(i32) -> Option<i32>) {
     for y in 0..self.grid_h {
       for x in 0..self.grid_w {
         let idx = (y * self.grid_w + x) as usize;
         let class = step_for_cell(self.x_step, self.y_step, self.register, x, y).rem_euclid(self.edo);
-        if classes.contains(&class) {
-          levels[idx] = LEVEL_FULL;
+        if let Some(level) = level_for(class) {
+          levels[idx] = level;
         } else if matches!(
           shift_for_cell(self.shift_rect, (x, y)),
           Some(Shift::Up | Shift::Down | Shift::Left | Shift::Right)
         ) {
-          // Only the four arrows are findable-dim; the octave corners stay dark,
-          // so the pad reads like the arrow-key cluster on a keyboard.
+          // Only the four arrows are findable-dim; the octave corners stay dark.
           levels[idx] = LEVEL_DIM;
         }
       }
     }
-    levels
   }
 
   // ---- loops grid ----
@@ -682,7 +715,7 @@ mod tests {
   fn pressing_a_cell_lights_octave_equivalents_solid() {
     let mut s = state();
     s.edo_key(0, 0, true, ms(0));
-    let levels = s.edo_levels();
+    let levels = s.edo_levels(false);
     assert_eq!(level_at(&levels, 0, 0), LEVEL_FULL);
     assert_eq!(level_at(&levels, 7, 2), LEVEL_FULL); // step 58 = octave of step 0
     assert_eq!(level_at(&levels, 1, 0), LEVEL_OFF);
@@ -691,7 +724,7 @@ mod tests {
   #[test]
   fn shift_pad_does_not_play_and_shows_dim() {
     let mut s = state();
-    let levels = s.edo_levels();
+    let levels = s.edo_levels(false);
     // The four arrows are dim; the two octave corners are dark (keyboard-like).
     assert_eq!(level_at(&levels, 14, 15), LEVEL_DIM, "down arrow dim");
     assert_eq!(level_at(&levels, 13, 15), LEVEL_DIM, "left arrow dim");
@@ -714,12 +747,16 @@ mod tests {
     s.edo_key(0, 0, false, ms(300));
     s.loops_key(2, 3, true, ms(1000)); // play -> slot 5 sounds
     assert_eq!(s.loops.sounding, Some(5));
-    // The active slot's content reflects solid on the edo grid even before the
-    // playhead reaches it.
-    assert_eq!(level_at(&s.edo_levels(), 0, 0), LEVEL_FULL);
+    // While the active slot is sounding its notes FLASH on the edo grid.
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_FULL, "flash on");
+    assert_eq!(level_at(&s.edo_levels(false), 0, 0), LEVEL_OFF, "flash off");
     // The playhead emits the note into the sink as time advances.
     s.playback_tick(ms(1100)); // 100ms into the loop -> note-on at 20ms is due
     assert!(s.sink.voice_count() >= 1);
+    // Turn it off: the slot is now silent, so its notes go DIM -- not stuck solid.
+    s.loops_key(1, 3, true, ms(2000)); // stop (active slot 5 was sounding)
+    assert_eq!(s.loops.sounding, None);
+    assert_eq!(level_at(&s.edo_levels(true), 0, 0), LEVEL_DIM, "silent loop dims, not stuck");
   }
 
   #[test]
