@@ -1,8 +1,8 @@
 * lately using [[./code/rust/configs/README.org]]
 * ONGOING , maybe done : [[./TODO/DONE/timbre-manip]]
-claude --resume b0b9fbc0-fae2-428a-be43-fad8a16900b8
-* AWAITS [[./TODO/monome-looper]]
-claude --dangerously-skip-permissions --resume 31806765-010a-499b-a578-972782fd9b21
+* AWAITS looper improvements
+** the old plans
+[[./TODO/DONE/monome-looper]]
 ** loops must be overlappable
 ** edit a number of repeats of a loop
 Requires overriding record and stop.
