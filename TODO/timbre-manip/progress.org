@@ -375,8 +375,34 @@ machinery and history-undo.
 - C7 is COMPLETE: all three 6_plan-C7 done-criteria pass (selection stamp on a stopped
   loop; single/double save-undo; play-along rewrite).
 
-** TODO C5c -- loop reflow (loops monome live editor)  [deferred past C7; see Session 2 reorder]
-Add the live-timbre editor on the loops monome + anchor the loop display under it via
-=relayout.rs= (built in C5a) so it reflows on fold. Deferred behind C7 because the
-headline loop-manipulation is higher value than the reflow polish (reversible reorder
-per when-to-stop.org; the engine it needs, C5a, is already done).
+** DONE C5c (mechanism) -- loops-monome live editor + loop-display reflow
+The runtime mechanism is built and unit-tested; it wires the C5a resolver (now no
+longer dead code):
+- =state.rs=: =loops_timbre_editor= (target=live) + its own =loops_timbre_folded= +
+  =loop_display_base=. =loops_key= intercepts the loops editor's rect (occlusion):
+  a press edits the live timbre, or folds -> =reflow_loops()=. =reflow_loops= rebuilds
+  the loop-display rect via =relayout::resolve_layout= with the display anchored
+  =top = "__loops_editor.bottom + 1"= (folded editor = 1 row, unfolded = 7), so the
+  display reflows live. =loops_levels= overlays the loops editor last. =ToggleFold= is
+  now routed per-editor (each grid toggles its own fold).
+- =mod.rs=: =resolve_settings= resolves a second editor on the loops monome.
+- Tests: 207 bin + 38 lib. Folding the loops editor moves =loop_display_rect.top=
+  (1 folded / 7 unfolded / 1 re-folded); the loops editor edits the live timbre and
+  occludes its rect. Plus a multi-pass play-along idempotency test (closes the gap the
+  review's verifier noted).
+*** TODO (need Jeff) C5c production CONFIG layout -- a genuine layout decision
+The MECHANISM is done, but I did NOT ship a runnable loops-monome config, because the
+loops grid is already full and a 7-row (unfolded) editor cannot coexist with the
+looper's slots + transport + copy/undo + loop display without relocating them. 6_plan
+5 sketches a loops monome with ONLY the editor + (reflowing) display and is silent on
+where the slots/transport go -- that relocation is a user-facing decision I won't make
+unilaterally (the previous session flagged loops-monome layout for you too). Options:
+ (a) Keep the looper controls; the live editor lives on a THIRD small region / stays
+     folded-only (1 row) so it never occludes them. Minimal disruption.
+ (b) Editor on top [0,0,15,6]; move slots+transport+copy/undo into the bottom rows
+     and let the (reflowing) display take the middle. A real loops-grid redesign.
+ (c) Drop the loops-monome live editor entirely -- the EDO editor can already be
+     target=live (it edits live when no selection); the reflow is then unused.
+I lean (a) (least disruption, keeps the working looper). Say which and I'll write the
+config + a mock-rig check. Until then the synth + every other commit run unchanged on
+the existing configs.

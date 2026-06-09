@@ -35,7 +35,6 @@ mod display;
 mod loop_store;
 #[allow(dead_code)]
 mod remap;
-#[allow(dead_code)] // resolver is wired into the loop-display reflow in C5c.
 mod relayout;
 mod sink;
 mod state;
@@ -128,9 +127,10 @@ struct Settings {
   quantize: Duration,
   cluster: Duration,
   am_shape_family: AmShapeFamily,
-  /// The timbre editor on the edo monome, if configured (C3b occludes the edo
-  /// grid). A loops-monome live editor arrives with the reflow in C5c.
+  /// The timbre editor on the edo monome (C3b, occludes the edo grid) and the
+  /// live-timbre editor on the loops monome (C5c, the loop display reflows under it).
   timbre_editor: Option<TimbreEditor>,
+  loops_timbre_editor: Option<TimbreEditor>,
 }
 
 fn to_row_range(c: RowRangeConfig) -> RowRange {
@@ -148,11 +148,11 @@ fn to_am_shape_family(c: AmShapeFamilyConfig) -> AmShapeFamily {
   }
 }
 
-/// Build the edo-monome timbre editor from its window config, converting the
-/// lib-side row specs into runtime `RowRange`s.
-fn resolve_timbre_editor(config: &Config, edo_monome: &str) -> Option<TimbreEditor> {
+/// Build the timbre editor on the given monome from its window config, converting
+/// the lib-side row specs into runtime `RowRange`s.
+fn resolve_timbre_editor(config: &Config, monome: &str) -> Option<TimbreEditor> {
   config.monome_windows.iter().find_map(|w| {
-    if w.monome() != edo_monome {
+    if w.monome() != monome {
       return None;
     }
     let (target, rows) = w.timbre_editor_rows()?;
@@ -250,6 +250,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
   let am_shape_family =
     to_am_shape_family(config.am.as_ref().map(|a| a.shape.family).unwrap_or_default());
   let timbre_editor = resolve_timbre_editor(config, &edo_monome);
+  let loops_timbre_editor = resolve_timbre_editor(config, &loops_monome);
   Ok(Settings {
     edo_monome,
     loops_monome,
@@ -285,6 +286,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     cluster: Duration::from_millis(looper.cluster_display_ms),
     am_shape_family,
     timbre_editor,
+    loops_timbre_editor,
   })
 }
 
@@ -350,6 +352,7 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       // 6_plan 5 has save_undo_double_ms on the editor; defaulting to 200 ms here
       // until that field is threaded through config (a trivial follow-up).
       save_undo_window: Duration::from_millis(200),
+      loops_timbre_editor: s.loops_timbre_editor,
     },
   )));
 

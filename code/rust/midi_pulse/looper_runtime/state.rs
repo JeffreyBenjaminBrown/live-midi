@@ -13,11 +13,12 @@ use std::time::Duration;
 use super::display::build_display;
 use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
+use super::relayout::resolve_layout;
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
 use super::timbre_editor::{EditorAction, EditorView, ParamKind, TimbreEditor, TimbreParam};
 use crate::types::Timbre;
-use midi_pulse::config::TimbreTarget;
+use midi_pulse::config::{EdgeSpecConfig, RectSpecConfig, TimbreTarget};
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
@@ -55,6 +56,9 @@ pub struct LooperParams {
   pub timbre_editor: Option<TimbreEditor>,
   /// save-undo double-press window (6_plan 2.8, default 200 ms).
   pub save_undo_window: Duration,
+  /// The live-timbre editor on the loops monome (C5c), if configured; the loop
+  /// display reflows under it.
+  pub loops_timbre_editor: Option<TimbreEditor>,
 }
 
 /// The slot currently sounding, with its playhead and the epoch time it started.
@@ -136,6 +140,14 @@ pub struct LooperState {
   /// released ones (held stay until released); toggling on is not retroactive.
   timbre_overrides: HashMap<ParamKind, (TimbreParam, bool)>,
   timbre_sustain: bool,
+
+  /// The live-timbre editor on the loops monome (C5c, 6_plan 2.2), with its own fold
+  /// state. The loop display reflows under it: `loop_display_base` is its config rect
+  /// (the left/right/bottom reference + the unfolded position); `loop_display_rect`
+  /// is recomputed from the editor's fold height via the relayout resolver.
+  loops_timbre_editor: Option<TimbreEditor>,
+  loops_timbre_folded: bool,
+  loop_display_base: [i32; 4],
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -168,8 +180,12 @@ impl LooperState {
   pub fn new(sink: SawNoteSink, p: LooperParams) -> Self {
     let [sx0, sy0, sx1, sy1] = p.loop_slots_rect;
     let n_slots = (((sx1 - sx0 + 1).max(0)) * ((sy1 - sy0 + 1).max(0))) as usize;
-    let n_timbre_slots = p.timbre_editor.as_ref().map_or(0, TimbreEditor::slot_count);
-    LooperState {
+    let n_timbre_slots = p
+      .timbre_editor
+      .as_ref()
+      .or(p.loops_timbre_editor.as_ref())
+      .map_or(0, TimbreEditor::slot_count);
+    let mut state = LooperState {
       sink,
       x_step: p.x_step,
       y_step: p.y_step,
@@ -207,7 +223,12 @@ impl LooperState {
       save_undo_window: p.save_undo_window,
       timbre_overrides: HashMap::new(),
       timbre_sustain: false,
-    }
+      loops_timbre_editor: p.loops_timbre_editor,
+      loops_timbre_folded: true, // folded is the resting state (6_plan 2.7)
+      loop_display_base: p.loop_display_rect,
+    };
+    state.reflow_loops(); // place the loop display under the (folded) loops editor
+    state
   }
 
   // ---- edo grid ----
@@ -227,7 +248,11 @@ impl LooperState {
         .filter(|ed| ed.occludes(x, y, folded))
         .map(|ed| (ed.target, ed.press(x, y, folded)));
       if let Some((target, action)) = hit {
-        self.apply_editor_action(target, action, now);
+        if matches!(action, Some(EditorAction::ToggleFold)) {
+          self.timbre_folded = !self.timbre_folded;
+        } else {
+          self.apply_editor_action(target, action, now);
+        }
         return true;
       }
       if let Some(shift) = shift_for_cell(self.shift_rect, (x, y)) {
@@ -303,7 +328,7 @@ impl LooperState {
       Some(EditorAction::Param(p)) => self.editor_param(target, p),
       Some(EditorAction::ToggleArm) => self.timbre_armed = !self.timbre_armed,
       Some(EditorAction::Slot(i)) => self.editor_slot(target, i),
-      Some(EditorAction::ToggleFold) => self.timbre_folded = !self.timbre_folded,
+      Some(EditorAction::ToggleFold) => {} // fold is per-editor; the key router handles it
       Some(EditorAction::QuickCell(i)) => self.editor_quick(target, i),
       Some(EditorAction::SaveUndo) => {
         if target == TimbreTarget::Loop {
@@ -346,6 +371,38 @@ impl LooperState {
       return Vec::new();
     }
     self.timbre_overrides.values().map(|(p, _)| *p).collect()
+  }
+
+  /// Recompute `loop_display_rect` so the display sits just under the loops-monome
+  /// live editor (C5c reflow, 6_plan 2.7/4.2). The editor's current rect (folded -> 1
+  /// row) anchors the display's top via the relayout resolver. A no-op without a
+  /// loops editor -- every existing config -- so the display rect is unchanged there.
+  fn reflow_loops(&mut self) {
+    let Some(ed) = self.loops_timbre_editor.as_ref() else {
+      return;
+    };
+    let ed_bottom = if self.loops_timbre_folded { ed.rect[1] } else { ed.rect[3] };
+    let [bx0, _, bx1, by1] = self.loop_display_base;
+    let specs = vec![
+      (
+        "__loops_editor".to_string(),
+        RectSpecConfig::Absolute([ed.rect[0], ed.rect[1], ed.rect[2], ed_bottom]),
+      ),
+      (
+        "__loop_display".to_string(),
+        RectSpecConfig::PerEdge {
+          top: EdgeSpecConfig::Expr("__loops_editor.bottom + 1".to_string()),
+          bottom: EdgeSpecConfig::Absolute(by1),
+          left: EdgeSpecConfig::Absolute(bx0),
+          right: EdgeSpecConfig::Absolute(bx1),
+        },
+      ),
+    ];
+    if let Ok(rects) = resolve_layout(&specs, self.grid_w, self.grid_h) {
+      if let Some(r) = rects.get("__loop_display") {
+        self.loop_display_rect = *r;
+      }
+    }
   }
 
   /// The save-undo button (6_plan 2.8): a lone tap sets a restore point on the active
@@ -608,6 +665,23 @@ impl LooperState {
   pub fn loops_key(&mut self, x: i32, y: i32, press: bool, now: Duration) -> bool {
     if !press {
       return false;
+    }
+    // The loops-monome live editor occludes its rect (C5c): a press edits the live
+    // timbre, or folds/unfolds -- which reflows the loop display under it.
+    let folded = self.loops_timbre_folded;
+    let hit = self
+      .loops_timbre_editor
+      .as_ref()
+      .filter(|ed| ed.occludes(x, y, folded))
+      .map(|ed| (ed.target, ed.press(x, y, folded)));
+    if let Some((target, action)) = hit {
+      if matches!(action, Some(EditorAction::ToggleFold)) {
+        self.loops_timbre_folded = !self.loops_timbre_folded;
+        self.reflow_loops();
+      } else {
+        self.apply_editor_action(target, action, now);
+      }
+      return true;
     }
     // Copy gesture: press copy, then a 'from' slot, then a 'to' slot. While armed
     // it intercepts slot presses (so they aren't treated as active-slot changes).
@@ -971,6 +1045,19 @@ impl LooperState {
     if ux >= 0 && ux < self.grid_w && uy >= 0 && uy < self.grid_h {
       levels[(uy * self.grid_w + ux) as usize] = if flash_on { LEVEL_FULL } else { LEVEL_OFF };
     }
+    // The loops-monome live editor overlays last (C5c), occluding whatever it covers.
+    if let Some(ed) = &self.loops_timbre_editor {
+      let displayed = self.displayed_timbre(ed.target); // live target -> live timbre
+      let view = EditorView {
+        timbre: &displayed,
+        slots: &self.timbre_slots,
+        current: self.timbre_current,
+        armed: self.timbre_armed,
+        quick: &self.timbre_quick,
+        sustain: self.timbre_sustain,
+      };
+      ed.paint(&view, self.loops_timbre_folded, &mut levels, self.grid_w, flash_on);
+    }
     levels
   }
 
@@ -1087,6 +1174,7 @@ mod tests {
         cluster: ms(100),
         timbre_editor: None,
         save_undo_window: ms(200),
+        loops_timbre_editor: None,
       },
     )
   }
@@ -1124,6 +1212,29 @@ mod tests {
   /// play-along (C7).
   fn state_with_loop_editor() -> LooperState {
     state_with_target(TimbreTarget::Loop)
+  }
+
+  /// A state with a live-target editor on the LOOPS monome (C5c): the loop display
+  /// reflows under it. The display base is the test geometry [0,5,15,15].
+  fn state_with_loops_editor() -> LooperState {
+    use super::super::timbre_editor::TimbreEditor;
+    use super::super::timbre_rows::RowRange;
+    let editor = TimbreEditor::new(
+      [0, 0, 15, 6],
+      TimbreTarget::Live,
+      RowRange::LogRange { least: 0.0009, greatest: 0.15 },
+      RowRange::Linear { min: 0.0, max: 1.0 },
+      RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
+      RowRange::Linear { min: 0.0, max: 1.0 },
+      RowRange::LogFactor { least: 5.0, multiplier: 2.0 },
+      RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
+    );
+    let mut s = state();
+    s.timbre_slots = vec![None; editor.slot_count()];
+    s.loops_timbre_editor = Some(editor);
+    s.loops_timbre_folded = true;
+    s.reflow_loops(); // place the display under the folded editor
+    s
   }
 
   fn level_at(levels: &[i32], x: i32, y: i32) -> i32 {
@@ -1741,5 +1852,53 @@ mod tests {
     s.loops_key(2, 3, true, ms(1100)); // play
     s.playback_tick(ms(1110)); // playhead reaches the note-on -> it sounds
     assert_eq!(level_at(&s.edo_levels(true), 4, 0), LEVEL_FULL, "display tracks the sounding saw note");
+  }
+
+  #[test]
+  fn play_along_override_is_idempotent_across_loop_passes() {
+    // The review flagged (and its verifier refuted) a "cumulative drift on wrap" risk.
+    // apply() is absolute assignment, so re-stamping each pass is stable -- prove it.
+    let mut s = state_with_loop_editor();
+    record_and_play_saw(&mut s); // loop duration ~1000 ms; note at elapsed 0
+    s.edo_key(8, 1, true, ms(1050)); // hold a gain override (amplitude row, cell 8)
+    s.playback_tick(ms(1110)); // pass 1: the note's gain is rewritten to the override
+    let g1 = s.loops.slots[0].events.iter().find(|e| e.on).unwrap().timbre.gain;
+    for t in [2110u64, 3110, 4110] {
+      s.playback_tick(ms(t)); // passes 2..4 (each wraps the loop)
+    }
+    let g4 = s.loops.slots[0].events.iter().find(|e| e.on).unwrap().timbre.gain;
+    assert_eq!(g1, g4, "gain override is idempotent across passes -- no cumulative drift");
+  }
+
+  // ---- C5c: loops-monome live editor + reflow ----
+
+  #[test]
+  fn loops_editor_fold_reflows_the_loop_display() {
+    let mut s = state_with_loops_editor();
+    // Folded (resting): the 1-row strip sits at y=0, so the display starts at y=1.
+    assert_eq!(s.loop_display_rect[1], 1, "folded: display top = editor.bottom(0)+1");
+    // Unfold via the loops editor's fold cell (0,0) on the LOOPS grid.
+    assert!(s.loops_key(0, 0, true, ms(0)));
+    assert!(!s.loops_timbre_folded, "unfolded");
+    assert_eq!(s.loop_display_rect[1], 7, "unfolded: display top = editor.bottom(6)+1");
+    // Fold again -> the display reflows back up.
+    s.loops_key(0, 0, true, ms(1));
+    assert_eq!(s.loop_display_rect[1], 1, "re-folded: display reflows up");
+  }
+
+  #[test]
+  fn loops_editor_edits_the_live_timbre() {
+    use crate::types::Waveform;
+    let mut s = state_with_loops_editor();
+    s.loops_key(0, 0, true, ms(0)); // unfold (value rows reachable)
+    s.loops_key(4, 0, true, ms(1)); // Saw waveform cell on the loops editor
+    assert_eq!(s.live_timbre.waveform, Waveform::Saw, "the loops editor edits the live timbre");
+  }
+
+  #[test]
+  fn loops_editor_occludes_its_rect_on_the_loops_grid() {
+    let s = state_with_loops_editor(); // folded
+    let levels = s.loops_levels(true);
+    assert_eq!(level_at(&levels, 0, 0), LEVEL_MID, "fold cell findable on the loops grid");
   }
 }
