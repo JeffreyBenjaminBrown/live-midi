@@ -15,6 +15,7 @@
 
 use midi_pulse::config::{
   AmShapeFamilyConfig, Config, LoopControlKind, MonomeWindowConfig, RowRangeConfig, SinkConfig,
+  TimbreTarget,
 };
 use crate::types::AmShapeFamily;
 use midi_pulse::monome;
@@ -136,6 +137,9 @@ struct Settings {
   /// live-timbre editor on the loops monome (C5c, the loop display reflows under it).
   timbre_editor: Option<TimbreEditor>,
   loops_timbre_editor: Option<TimbreEditor>,
+  /// The save-undo double-press window, from the loop editor's `save_undo_double_ms`
+  /// (6_plan 2.8/5), default 200 ms.
+  save_undo_window: Duration,
 }
 
 fn to_row_range(c: RowRangeConfig) -> RowRange {
@@ -256,6 +260,15 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     to_am_shape_family(config.am.as_ref().map(|a| a.shape.family).unwrap_or_default());
   let timbre_editor = resolve_timbre_editor(config, &edo_monome);
   let loops_timbre_editor = resolve_timbre_editor(config, &loops_monome);
+  // save-undo is loop-editor only; take its window (default 200 ms).
+  let save_undo_window = Duration::from_millis(
+    config
+      .monome_windows
+      .iter()
+      .filter_map(MonomeWindowConfig::timbre_editor_save_undo_ms)
+      .find_map(|(target, ms)| (target == TimbreTarget::Loop).then_some(ms))
+      .unwrap_or(200),
+  );
   Ok(Settings {
     edo_monome,
     loops_monome,
@@ -292,6 +305,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     am_shape_family,
     timbre_editor,
     loops_timbre_editor,
+    save_undo_window,
   })
 }
 
@@ -354,9 +368,7 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       quantize: s.quantize,
       cluster: s.cluster,
       timbre_editor: s.timbre_editor,
-      // 6_plan 5 has save_undo_double_ms on the editor; defaulting to 200 ms here
-      // until that field is threaded through config (a trivial follow-up).
-      save_undo_window: Duration::from_millis(200),
+      save_undo_window: s.save_undo_window, // from the loop editor's save_undo_double_ms
       loops_timbre_editor: s.loops_timbre_editor,
     },
   )));
@@ -559,5 +571,7 @@ mod tests {
     assert!(s.loops_timbre_editor.is_some(), "loops live-timbre editor resolved");
     // The loop-display rect is the unfolded position; the runtime reflows it.
     assert_eq!(s.loop_display_rect, [0, 9, 15, 15]);
+    // save_undo_double_ms is omitted in the config, so it defaults to 200 ms.
+    assert_eq!(s.save_undo_window, Duration::from_millis(200));
   }
 }

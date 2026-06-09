@@ -494,6 +494,9 @@ pub enum MonomeWindowConfig {
     fm_amplitude: RowRangeConfig,
     #[serde(default = "default_fm_frequency_row")]
     fm_frequency: RowRangeConfig,
+    // The save-undo double-press window in ms (6_plan 2.8/5). Loop-editor only.
+    #[serde(default = "default_save_undo_ms")]
+    save_undo_double_ms: u64,
   },
 }
 
@@ -515,6 +518,9 @@ fn default_fm_amplitude_row() -> RowRangeConfig {
 }
 fn default_fm_frequency_row() -> RowRangeConfig {
   RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }
+}
+fn default_save_undo_ms() -> u64 {
+  200
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -675,6 +681,17 @@ impl MonomeWindowConfig {
         *target,
         [*amplitude, *am_amplitude, *am_frequency, *am_shape, *fm_amplitude, *fm_frequency],
       )),
+      _ => None,
+    }
+  }
+
+  /// A timbre_editor's target + its save-undo double-press window (ms), or None for
+  /// other window kinds. Used by `resolve_settings` (save-undo is loop-editor only).
+  pub fn timbre_editor_save_undo_ms(&self) -> Option<(TimbreTarget, u64)> {
+    match self {
+      MonomeWindowConfig::TimbreEditor { target, save_undo_double_ms, .. } => {
+        Some((*target, *save_undo_double_ms))
+      }
       _ => None,
     }
   }
@@ -1869,6 +1886,22 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
     ))
     .expect("am.shape should parse");
     assert_eq!(with.am.unwrap().shape.family, AmShapeFamilyConfig::TriToSquare);
+  }
+
+  #[test]
+  fn save_undo_double_ms_parses_and_defaults() {
+    let su = |toml: &str| {
+      parse_config(toml)
+        .unwrap()
+        .monome_windows
+        .iter()
+        .find_map(MonomeWindowConfig::timbre_editor_save_undo_ms)
+    };
+    // Omitted -> default 200 ms.
+    assert_eq!(su(&looper_with_editor(TIMBRE_EDITOR_MIN)), Some((TimbreTarget::Loop, 200)));
+    // Explicit value parses.
+    let explicit = format!("{TIMBRE_EDITOR_MIN}save_undo_double_ms = 350\n");
+    assert_eq!(su(&looper_with_editor(&explicit)), Some((TimbreTarget::Loop, 350)));
   }
 
   #[test]

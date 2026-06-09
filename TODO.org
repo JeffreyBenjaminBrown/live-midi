@@ -9,8 +9,6 @@ or did you never do phase 0? If it's done please update it.
 *** edit a number of repeats of a loop
 Requires overriding record and stop.
 * AWAITS [[./TODO/timbre-manip]]
-Ready to write a definitive plan.
-claude --dangerously-skip-permissions --resume 9e94e238-1e8d-42c5-b842-340e634d30ab
 * TODO by AI
 ** ONGOING write a mock monome for tests
 ** ? write a mock pipewire for tests

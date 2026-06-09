@@ -78,8 +78,8 @@ the items below are notes + verify-on-hardware pointers, not blockers.
   the resized display. All minor + reversible.
 - "hold last on rests" in the playhead display is approximated by the live timbre
   (a stored last-displayed would be exact). Reversible.
-- =save_undo_double_ms= is hardcoded to 200 ms in =mod.rs::run= rather than read from
-  the editor config (6_plan 5). Trivial follow-up.
+- (FIXED) =save_undo_double_ms= is now a per-editor config field (default 200), read
+  off the loop editor in =resolve_settings=; the =mod.rs::run= literal is gone.
 - Play-along edits are reverted by the save-undo checkpoint, not the per-edit loop-undo
   button (play-along does not spam =history=). Intended, but worth knowing.
 
@@ -96,9 +96,9 @@ the items below are notes + verify-on-hardware pointers, not blockers.
 Jeff chose 7_layout.org (the looper stack reflows under the live editor); implemented
 and tested. Nothing is blocked. The only remaining work is *verify-on-hardware* (the
 synth/DSP is unit-tested; the on-grid UI wants a mock-rig or real-monome pass -- see the
-VERIFY pointers in each commit's roadmap entry). Two trivial follow-ups if you want them:
-thread =save_undo_double_ms= from config (now hardcoded 200 ms); exact "hold last on
-rests" display.
+VERIFY pointers in each commit's roadmap entry). Follow-ups (=hey-jeff.org=): #1 thread
+=save_undo_double_ms= from config -- DONE; #2 exact "hold last on rests" display -- open
+(Jeff's call; see hey-jeff.org).
 
 ** A note on beating the premature-stop problem
 Per your request I wrote a suggestion as a child of "** Your \"stop rule\" is very
