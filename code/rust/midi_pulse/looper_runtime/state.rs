@@ -13,12 +13,13 @@ use std::time::Duration;
 use super::display::build_display;
 use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
-use super::relayout::resolve_layout;
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
-use super::timbre_editor::{EditorAction, EditorView, ParamKind, TimbreEditor, TimbreParam};
+use super::timbre_editor::{
+  EditorAction, EditorView, ParamKind, TimbreEditor, TimbreParam, EDITOR_ROWS,
+};
 use crate::types::Timbre;
-use midi_pulse::config::{EdgeSpecConfig, RectSpecConfig, TimbreTarget};
+use midi_pulse::config::TimbreTarget;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
@@ -141,13 +142,29 @@ pub struct LooperState {
   timbre_overrides: HashMap<ParamKind, (TimbreParam, bool)>,
   timbre_sustain: bool,
 
-  /// The live-timbre editor on the loops monome (C5c, 6_plan 2.2), with its own fold
-  /// state. The loop display reflows under it: `loop_display_base` is its config rect
-  /// (the left/right/bottom reference + the unfolded position); `loop_display_rect`
-  /// is recomputed from the editor's fold height via the relayout resolver.
+  /// The live-timbre editor on the loops monome (C5c, 6_plan 2.2 / 7_layout), with
+  /// its own fold state. The whole looper stack (slots, transport, copy/undo/remap,
+  /// and the loop display) sits BELOW it and reflows down together when it unfolds:
+  /// `loops_reflow` holds the unfolded (config) positions, and `reflow_loops` shifts
+  /// them by the editor's fold-height delta. `None` = no loops editor (every existing
+  /// config), so the looper layout is fixed.
   loops_timbre_editor: Option<TimbreEditor>,
   loops_timbre_folded: bool,
-  loop_display_base: [i32; 4],
+  loops_reflow: Option<LoopsReflow>,
+}
+
+/// The unfolded (config) positions of every loops-monome window that reflows under the
+/// live editor. `reflow_loops` shifts them up when the editor folds (7_layout.org).
+#[derive(Clone, Copy)]
+struct LoopsReflow {
+  slots: [i32; 4],
+  start: (i32, i32),
+  stop: (i32, i32),
+  play: (i32, i32),
+  copy: (i32, i32),
+  undo: (i32, i32),
+  toggle: (i32, i32),
+  display: [i32; 4],
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -185,6 +202,18 @@ impl LooperState {
       .as_ref()
       .or(p.loops_timbre_editor.as_ref())
       .map_or(0, TimbreEditor::slot_count);
+    // Capture the unfolded looper-stack positions (config) so the loops editor can
+    // reflow them under itself. Only when a loops editor is present.
+    let loops_reflow = p.loops_timbre_editor.as_ref().map(|_| LoopsReflow {
+      slots: p.loop_slots_rect,
+      start: p.loop_start,
+      stop: p.loop_stop,
+      play: p.loop_play,
+      copy: p.loop_copy,
+      undo: p.loop_undo,
+      toggle: p.loop_toggle,
+      display: p.loop_display_rect,
+    });
     let mut state = LooperState {
       sink,
       x_step: p.x_step,
@@ -225,9 +254,9 @@ impl LooperState {
       timbre_sustain: false,
       loops_timbre_editor: p.loops_timbre_editor,
       loops_timbre_folded: true, // folded is the resting state (6_plan 2.7)
-      loop_display_base: p.loop_display_rect,
+      loops_reflow,
     };
-    state.reflow_loops(); // place the loop display under the (folded) loops editor
+    state.reflow_loops(); // slide the looper stack under the (folded) loops editor
     state
   }
 
@@ -373,36 +402,28 @@ impl LooperState {
     self.timbre_overrides.values().map(|(p, _)| *p).collect()
   }
 
-  /// Recompute `loop_display_rect` so the display sits just under the loops-monome
-  /// live editor (C5c reflow, 6_plan 2.7/4.2). The editor's current rect (folded -> 1
-  /// row) anchors the display's top via the relayout resolver. A no-op without a
-  /// loops editor -- every existing config -- so the display rect is unchanged there.
+  /// Slide the looper stack (slots, transport, copy/undo/remap, loop display) so it
+  /// sits just under the loops-monome live editor (C5c reflow, 7_layout.org). The
+  /// editor is 7 rows unfolded / 1 folded, so folding moves the whole stack up by
+  /// `EDITOR_ROWS - 1`; the display's top moves with it but its bottom stays at the
+  /// grid edge (it grows). A no-op without a loops editor -- every existing config.
   fn reflow_loops(&mut self) {
-    let Some(ed) = self.loops_timbre_editor.as_ref() else {
+    let Some(base) = self.loops_reflow else {
       return;
     };
-    let ed_bottom = if self.loops_timbre_folded { ed.rect[1] } else { ed.rect[3] };
-    let [bx0, _, bx1, by1] = self.loop_display_base;
-    let specs = vec![
-      (
-        "__loops_editor".to_string(),
-        RectSpecConfig::Absolute([ed.rect[0], ed.rect[1], ed.rect[2], ed_bottom]),
-      ),
-      (
-        "__loop_display".to_string(),
-        RectSpecConfig::PerEdge {
-          top: EdgeSpecConfig::Expr("__loops_editor.bottom + 1".to_string()),
-          bottom: EdgeSpecConfig::Absolute(by1),
-          left: EdgeSpecConfig::Absolute(bx0),
-          right: EdgeSpecConfig::Absolute(bx1),
-        },
-      ),
-    ];
-    if let Ok(rects) = resolve_layout(&specs, self.grid_w, self.grid_h) {
-      if let Some(r) = rects.get("__loop_display") {
-        self.loop_display_rect = *r;
-      }
-    }
+    let shift = if self.loops_timbre_folded { -(EDITOR_ROWS - 1) } else { 0 };
+    let cell = |(x, y): (i32, i32)| (x, y + shift);
+    let rect = |[x0, y0, x1, y1]: [i32; 4]| [x0, y0 + shift, x1, y1 + shift];
+    self.loop_slots_rect = rect(base.slots);
+    self.loop_start = cell(base.start);
+    self.loop_stop = cell(base.stop);
+    self.loop_play = cell(base.play);
+    self.loop_copy = cell(base.copy);
+    self.loop_undo = cell(base.undo);
+    self.loop_toggle = cell(base.toggle);
+    // The display's top shifts with the stack; its bottom stays anchored to the grid.
+    let [dx0, dy0, dx1, dy1] = base.display;
+    self.loop_display_rect = [dx0, dy0 + shift, dx1, dy1];
   }
 
   /// The save-undo button (6_plan 2.8): a lone tap sets a restore point on the active
@@ -1231,9 +1252,20 @@ mod tests {
     );
     let mut s = state();
     s.timbre_slots = vec![None; editor.slot_count()];
+    // 7_layout.org: the looper stack's UNFOLDED positions (below a 7-row editor).
+    s.loops_reflow = Some(LoopsReflow {
+      slots: [0, 7, 15, 8],
+      start: (0, 8),
+      stop: (1, 8),
+      play: (2, 8),
+      copy: (15, 7),
+      undo: (15, 8),
+      toggle: (14, 8),
+      display: [0, 9, 15, 15],
+    });
     s.loops_timbre_editor = Some(editor);
     s.loops_timbre_folded = true;
-    s.reflow_loops(); // place the display under the folded editor
+    s.reflow_loops(); // -> the folded positions (stack slides up by 6)
     s
   }
 
@@ -1873,17 +1905,23 @@ mod tests {
   // ---- C5c: loops-monome live editor + reflow ----
 
   #[test]
-  fn loops_editor_fold_reflows_the_loop_display() {
+  fn loops_editor_fold_reflows_the_whole_looper_stack() {
     let mut s = state_with_loops_editor();
-    // Folded (resting): the 1-row strip sits at y=0, so the display starts at y=1.
-    assert_eq!(s.loop_display_rect[1], 1, "folded: display top = editor.bottom(0)+1");
-    // Unfold via the loops editor's fold cell (0,0) on the LOOPS grid.
+    // Folded (resting): strip row 0, slots rows 1-2, transport row 2, display rows 3-15.
+    assert_eq!(s.loop_slots_rect, [0, 1, 15, 2], "folded slots");
+    assert_eq!(s.loop_start, (0, 2), "folded record");
+    assert_eq!(s.loop_play, (2, 2), "folded play");
+    assert_eq!(s.loop_display_rect, [0, 3, 15, 15], "folded display (top reflows, bottom fixed)");
+    // Unfold via the loops editor's fold cell (0,0): the whole stack slides down by 6.
     assert!(s.loops_key(0, 0, true, ms(0)));
     assert!(!s.loops_timbre_folded, "unfolded");
-    assert_eq!(s.loop_display_rect[1], 7, "unfolded: display top = editor.bottom(6)+1");
-    // Fold again -> the display reflows back up.
+    assert_eq!(s.loop_slots_rect, [0, 7, 15, 8], "unfolded slots");
+    assert_eq!(s.loop_start, (0, 8), "unfolded record");
+    assert_eq!(s.loop_display_rect, [0, 9, 15, 15], "unfolded display (shrinks)");
+    // Fold again -> the stack slides back up.
     s.loops_key(0, 0, true, ms(1));
-    assert_eq!(s.loop_display_rect[1], 1, "re-folded: display reflows up");
+    assert_eq!(s.loop_slots_rect, [0, 1, 15, 2], "re-folded slots");
+    assert_eq!(s.loop_display_rect, [0, 3, 15, 15], "re-folded display");
   }
 
   #[test]

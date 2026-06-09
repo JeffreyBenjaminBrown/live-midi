@@ -1,0 +1,160 @@
+#+title: layout-thoughts -- windows on the two monomes, and the loops-monome crowding
+Written for Jeff to make the one open C5c decision ("No room for timbre and looper").
+Coordinates are =rect = [x0, y0, x1, y1]=, inclusive, x = column, y = row, (0,0) =
+top-left. Both grids are 16x16.
+
+* The two monomes and why each editor wants the OTHER one
+6_plan 2.2: you edit the timbre for X on the *not-X* monome, so X stays visible while
+you tweak it. So the design wants:
+- the *live-timbre editor* on the *loops* monome (the edo play grid stays free to finger);
+- the *loop-timbre editor* on the *edo* monome (the loop display stays visible).
+The loop-timbre editor on edo is built and fine (see below). The live-timbre editor on
+*loops* is where the trouble is.
+
+* Window inventory -- EDO monome
+| window              | kind               | rect             | size                | purpose                       |
+|---------------------+--------------------+------------------+---------------------+-------------------------------|
+| edo-grid            | edo_note_grid      | [0, 0, 15, 15]   | 16x16 (whole grid)  | the pitch play surface        |
+| edo-shift-pad       | edo_shift_pad      | [13, 14, 15, 15] | 3x2 (lower-right)   | shift the pitch image         |
+| loop-timbre editor* | timbre_editor loop | [0, 0, 15, 6]    | 16x7, folds to 16x1 | edit the active loop's timbre |
+(* added by this feature; occludes the top of the play grid.)
+
+The edo monome is essentially ONE big uniform window (the pitch field) plus a tiny
+shift pad. Occluding the top 7 rows is cheap: you still have a 16x9 pitch field below to
+finger, and the shift pad slides the pitch image so any pitch is still reachable. 6_plan
+2.7 accepts this ("the grid is big"). Folded, the editor costs only row 0.
+
+#+begin_example
+EDO (with the loop-timbre editor, occlusion):       legend: E=editor  g=play grid  ^=shift arrow
+       0123456789012345
+   0   EEEEEEEEEEEEEEEE   editor row 0: fold | S T Sq Sw | arm | sustain | save | slots...
+   1   EEEEEEEEEEEEEEEE   amplitude
+   2   EEEEEEEEEEEEEEEE   AM amplitude
+   3   EEEEEEEEEEEEEEEE   AM frequency
+   4   EEEEEEEEEEEEEEEE   AM shape
+   5   EEEEEEEEEEEEEEEE   FM amplitude
+   6   EEEEEEEEEEEEEEEE   FM frequency
+   7   gggggggggggggggg   <- still 16x9 of playable pitches
+   8   gggggggggggggggg
+   .   ................
+  13   gggggggggggggggg
+  14   ggggggggggggg^^^   <- shift pad at [13,14,15,15]
+  15   ggggggggggggg^^^
+#+end_example
+
+* Window inventory -- LOOPS monome
+| window            | kind                    | rect            | size            | purpose                          |
+|-------------------+-------------------------+-----------------+-----------------+----------------------------------|
+| loop-slots        | loop_slots              | [0, 0, 3, 3]    | 4x4 (16 slots)  | pick / activate a loop slot      |
+| loop-start        | loop_control (start)    | [0, 3, 0, 3]    | 1 cell          | begin recording                  |
+| loop-stop         | loop_control (stop)     | [1, 3, 1, 3]    | 1 cell          | stop record / play               |
+| loop-play         | loop_control (play)     | [2, 3, 2, 3]    | 1 cell          | loop the active slot             |
+| loop-remap-mode   | loop_remap_mode_toggle  | [14, 3, 14, 3]  | 1 cell          | fine vs group-transpose          |
+| loop-copy         | loop_copy_button        | [15, 2, 15, 2]  | 1 cell          | copy a slot to another           |
+| loop-remap-undo   | loop_remap_undo         | [15, 3, 15, 3]  | 1 cell          | undo the last remap              |
+| loop-display      | loop_display            | [0, 4, 15, 15]  | 16x12           | the loop's notes + row/col pickers + corner |
+| live-timbre editor*| timbre_editor live     | [0, 0, 15, 6]   | 16x7, folds to 16x1| edit the live timbre (6_plan)  |
+(* the one we cannot place. The transport overlays slots 12-14, so 13 slots are usable.)
+
+Unlike the edo grid, the loops monome is a *dense mosaic of small, function-specific
+windows*. Every cell does a distinct job, and they fill the grid: the top 4 rows are the
+slots + transport + copy/undo/remap, and the bottom 12 rows are the loop display. There
+is essentially no empty space.
+
+#+begin_example
+LOOPS, as it is now (no editor):   legend: s=slot  R=record S=stop P=play  c=copy m=remap-mode u=undo  D=loop display  .=empty
+       0123456789012345
+   0   ssss............   slots 0-3
+   1   ssss............   slots 4-7
+   2   ssss...........c   slots 8-11,           copy at (15,2)
+   3   RSPs..........mu   transport over slots 12-14, slot 15, remap-mode (14,3), undo (15,3)
+   4   DDDDDDDDDDDDDDDD   loop display (top row = column-picker, left col = row-picker, (0,4) = corner)
+   5   DDDDDDDDDDDDDDDD
+   .   ................
+  15   DDDDDDDDDDDDDDDD
+#+end_example
+
+** TODO solution
+Let's change the layout when timbre control is folded to this:
+```
+       0123456789012345
+   0   <folded timbre control>
+   1   sssssssssssssssc   slots and c
+   2   RSPsssssssssssmu   transport, slots, m and u
+   3   DDDDDDDDDDDDDDDD   loop display (top row = column-picker, left col = row-picker, (0,4) = corner)
+   4   DDDDDDDDDDDDDDDD
+   .   ................
+  15   DDDDDDDDDDDDDDDD
+```
+
+And when it's unfolded, this:
+```
+       0123456789012345
+   0   <unfolded timbre control>
+   ... <unfolded timbre control>
+   6   <unfolded timbre control>
+   7   sssssssssssssssc   slots and c
+   8   RSPsssssssssssmu   transport, slots, m and u
+   9   DDDDDDDDDDDDDDDD   loop display (top row = column-picker, left col = row-picker, (0,4) = corner)
+  10   DDDDDDDDDDDDDDDD
+   .   ................
+  15   DDDDDDDDDDDDDDDD
+```
+
+When it's unfolded, recalculate where notes lie, so that the loop display is still accurate.
+
+Somewhere there is code for making coordinates in one window relative to those in another.
+That might be useful here; I don't know.
+* The problem
+Drop the 16x7 live-timbre editor onto the loops monome at [0,0,15,6] and it *buries the
+entire control cluster*:
+
+#+begin_example
+LOOPS, live editor UNFOLDED at [0,0,15,6]:   E=editor  D=display  (controls gone)
+       0123456789012345
+   0   EEEEEEEEEEEEEEEE   <- editor covers ALL of: 16 slots, record/stop/play,
+   1   EEEEEEEEEEEEEEEE      copy, undo, remap-mode -- every looper control is now
+   2   EEEEEEEEEEEEEEEE      unreachable.
+   3   EEEEEEEEEEEEEEEE
+   4   EEEEEEEEEEEEEEEE   <- and the top 3 rows of the loop display too
+   5   EEEEEEEEEEEEEEEE
+   6   EEEEEEEEEEEEEEEE
+   7   DDDDDDDDDDDDDDDD   <- the display reflows to here (top = editor.bottom + 1)
+   .   ................      so it shrinks from 16x12 to 16x9
+  15   DDDDDDDDDDDDDDDD
+#+end_example
+
+Why this is fine on edo but not on loops:
+- On *edo*, occluding the top is harmless -- the play grid is interchangeable pitch keys,
+  and the shift pad keeps every pitch reachable. You lose nothing essential.
+- On *loops*, the occluded cells are *unique controls*. Burying "record" or "play" or the
+  slots breaks the looper. They are not interchangeable, and there is no shift pad to slide
+  them out from under the editor.
+- Even *folded* (1 row), the editor's strip sits on row 0 and covers slots 0-3.
+
+6_plan 5 sketches the loops monome with *only* the live editor + a reflowing display, and
+says nothing about where the slots/transport/copy/undo go. That silence is the decision:
+to host a live editor on the loops monome, the looper's own controls must be relocated,
+shrunk, or dropped -- a user-facing change to a surface you already play.
+
+* The reflow itself already works
+The C5c *mechanism* is built and unit-tested: a loops-monome editor + the loop display
+anchored at =top = "editor.bottom + 1"=, recomputed via the relayout resolver, so folding
+the editor moves the display (verified: display top = 1 folded, 7 unfolded). The only
+missing piece is a *config* that places everything without collisions -- i.e. the layout
+decision above.
+
+* Options (my read)
+- (a) *Minimal / folded-resting.* Put the live editor's 1-row strip somewhere and accept
+  that *unfolding* transiently hides the controls under it (you fold back to play). Shifts
+  the looper down by one row. Least disruption; the looper stays intact.
+- (b) *Redesign the loops grid.* Editor on top [0,0,15,6]; move slots + transport +
+  copy/undo into the bottom rows; the reflowing display takes the middle. Cleanest editor,
+  but relocates controls you know by muscle memory.
+- (c) *Drop the loops-monome live editor.* The edo editor can already be =target=live= (it
+  edits the live timbre when there's no selection), so live editing already works on one
+  surface. The reflow stays as a tested engine for any future anchored window.
+
+I lean (a): it keeps the working looper and still gives a live editor. But this is your
+instrument and your muscle memory, so it's your call. Tell me which and I'll write the
+config + verify it on the mock rig.

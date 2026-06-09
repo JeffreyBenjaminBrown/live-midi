@@ -1,13 +1,18 @@
 version = 1
 id = "monome-looper-58-8-1-timbre"
-title = "Monome Looper 58 8 1 (timbre editor)"
+title = "Monome Looper 58 8 1 (timbre)"
 
 # ---------------------------------------------------------------------------
-# The 58-8-1 looper plus the C3b timbre editor occluding the top 7 rows of the
-# edo grid (6_plan 2.7, option (a): edo-monome editor, simple occlusion). Dial
-# waveform / amplitude / AM / FM / shape here and hear it on live play (the lower
-# 9 edo rows stay playable). The editor's `target = "loop"` matches 6_plan's eventual
-# placement; until C7 it edits the global live timbre like a live editor. See 6_plan.org.
+# The full timbre instrument (6_plan + 7_layout.org). Two timbre editors:
+#  - EDO monome: the loop-timbre editor (target=loop), occluding the top of the
+#    play grid. Select notes on the loop display, then dial params here to stamp
+#    them; with no selection + a playing loop, hold a param to play-along.
+#  - LOOPS monome: the live-timbre editor (target=live), with the whole looper
+#    stack (slots, transport, copy/undo/remap, loop display) reflowing DOWN under
+#    it. Both editors rest FOLDED (a 1-row strip); unfolding the loops editor
+#    slides the looper stack down by 6 rows (7_layout.org). Edit X's timbre on the
+#    not-X monome so X stays visible (6_plan 2.2).
+# Loops rects below are the UNFOLDED positions; the runtime starts folded.
 # ---------------------------------------------------------------------------
 
 [[tunings]]
@@ -86,56 +91,74 @@ kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
 
 # ===========================================================================
-# GRID 2 -- "loops": slots, transport, loop display, remap controls.
+# GRID 2 -- "loops": the live-timbre editor on top, then the looper stack
+# (slots, transport, copy/undo/remap, loop display) reflowing under it. Rects are
+# the UNFOLDED positions (editor = rows 0..6, stack rows 7..15); folded, the stack
+# slides up by 6 (strip row 0, slots 1..2, display 3..15). See 7_layout.org.
 # ===========================================================================
 
+# The live-timbre editor: edits the live timbre (what fingered edo notes use).
+[[monome_windows]]
+id = "live-timbre"
+monome = "loops"
+kind = "timbre_editor"
+target = "live"
+rect = [0, 0, 15, 6]
+amplitude    = { kind = "log_range",  least = 0.0009, greatest = 0.15 }
+am_amplitude = { kind = "linear",     min = 0.0, max = 1.0 }
+am_frequency = { kind = "log_factor", least = 0.25, multiplier = 2.0 }
+am_shape     = { kind = "linear",     min = 0.0, max = 1.0 }
+fm_amplitude = { kind = "log_factor", least = 5.0,  multiplier = 2.0 }
+fm_frequency = { kind = "log_factor", least = 0.25, multiplier = 2.0 }
+
+# Two rows of loop slots (rows 7-8); transport + copy/undo/remap overlay them.
 [[monome_windows]]
 id = "loop-slots"
 monome = "loops"
 kind = "loop_slots"
-rect = [0, 0, 3, 3]
+rect = [0, 7, 15, 8]
+
+[[monome_windows]]
+id = "loop-copy"
+monome = "loops"
+kind = "loop_copy_button"
+rect = [15, 7, 15, 7]
 
 [[monome_windows]]
 id = "loop-start"
 monome = "loops"
 kind = "loop_control"
 control = "start"
-rect = [0, 3, 0, 3]
+rect = [0, 8, 0, 8]
 
 [[monome_windows]]
 id = "loop-stop"
 monome = "loops"
 kind = "loop_control"
 control = "stop"
-rect = [1, 3, 1, 3]
+rect = [1, 8, 1, 8]
 
 [[monome_windows]]
 id = "loop-play"
 monome = "loops"
 kind = "loop_control"
 control = "play"
-rect = [2, 3, 2, 3]
+rect = [2, 8, 2, 8]
 
 [[monome_windows]]
 id = "loop-remap-mode"
 monome = "loops"
 kind = "loop_remap_mode_toggle"
-rect = [14, 3, 14, 3]
-
-[[monome_windows]]
-id = "loop-copy"
-monome = "loops"
-kind = "loop_copy_button"
-rect = [15, 2, 15, 2]
+rect = [14, 8, 14, 8]
 
 [[monome_windows]]
 id = "loop-remap-undo"
 monome = "loops"
 kind = "loop_remap_undo"
-rect = [15, 3, 15, 3]
+rect = [15, 8, 15, 8]
 
 [[monome_windows]]
 id = "loop-display"
 monome = "loops"
 kind = "loop_display"
-rect = [0, 4, 15, 15]
+rect = [0, 9, 15, 15]

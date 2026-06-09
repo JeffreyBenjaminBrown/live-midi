@@ -35,6 +35,11 @@ mod display;
 mod loop_store;
 #[allow(dead_code)]
 mod remap;
+// A general per-edge relative-coordinate resolver (C5a). The shipped loops layout is
+// a uniform vertical stack (7_layout.org), reflowed by a direct shift, so this richer
+// engine is currently unused at runtime -- kept (and tested) for future per-edge
+// anchoring where a simple shift won't do.
+#[allow(dead_code)]
 mod relayout;
 mod sink;
 mod state;
@@ -537,4 +542,22 @@ fn send_diffs(
     }
   }
   *last = levels.to_vec();
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use midi_pulse::config::load_named_config;
+
+  #[test]
+  fn timbre_config_resolves_both_editors() {
+    // The full instrument config resolves a loop-timbre editor on edo and a
+    // live-timbre editor on loops (7_layout.org), and threads the AM shape family.
+    let config = load_named_config("monome-looper-58-8-1-timbre").expect("config loads");
+    let s = resolve_settings(&config).expect("resolves without hardware");
+    assert!(s.timbre_editor.is_some(), "edo loop-timbre editor resolved");
+    assert!(s.loops_timbre_editor.is_some(), "loops live-timbre editor resolved");
+    // The loop-display rect is the unfolded position; the runtime reflows it.
+    assert_eq!(s.loop_display_rect, [0, 9, 15, 15]);
+  }
 }

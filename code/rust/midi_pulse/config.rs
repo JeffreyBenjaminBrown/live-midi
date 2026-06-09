@@ -1935,6 +1935,24 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
   }
 
   #[test]
+  fn timbre_looper_config_has_both_editors() {
+    // The full instrument (7_layout.org): a loop-timbre editor on edo + a live-timbre
+    // editor on loops, with the looper stack at its unfolded positions.
+    let config = load_named_config("monome-looper-58-8-1-timbre").expect("timbre config loads");
+    let editors: Vec<(String, TimbreTarget)> = config
+      .monome_windows
+      .iter()
+      .filter_map(|w| w.timbre_editor_rows().map(|(t, _)| (w.monome().to_string(), t)))
+      .collect();
+    assert_eq!(editors.len(), 2, "two timbre editors");
+    assert!(editors.iter().any(|(m, t)| m == "edo" && *t == TimbreTarget::Loop), "edo loop editor");
+    assert!(editors.iter().any(|(m, t)| m == "loops" && *t == TimbreTarget::Live), "loops live editor");
+    // The loop display is at its unfolded position (reflowed up at runtime).
+    let display = config.monome_windows.iter().find(|w| w.kind_name() == "loop_display").unwrap();
+    assert_eq!(display.rect(), [0, 9, 15, 15], "loop display sits below the unfolded editor");
+  }
+
+  #[test]
   fn rect_spec_rejects_a_bad_edge_expr() {
     #[derive(serde::Deserialize)]
     struct W {
