@@ -13,7 +13,10 @@
 //! compute an LED vector (no I/O), then drops it before UDP sends. The audio
 //! thread locks only `voices`. control -> voices is the single, brief nesting.
 
-use midi_pulse::config::{Config, LoopControlKind, MonomeWindowConfig, SinkConfig};
+use midi_pulse::config::{
+  AmShapeFamilyConfig, Config, LoopControlKind, MonomeWindowConfig, RowRangeConfig, SinkConfig,
+};
+use crate::types::AmShapeFamily;
 use midi_pulse::monome;
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
@@ -34,10 +37,12 @@ mod loop_store;
 mod remap;
 mod sink;
 mod state;
-#[allow(dead_code)] // wired into the editor in a later commit; pure math for now
+mod timbre_editor;
 mod timbre_rows;
 
 use state::{Grid, LooperParams, LooperState};
+use timbre_editor::TimbreEditor;
+use timbre_rows::RowRange;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -120,6 +125,47 @@ struct Settings {
   flash_ms: u64,
   quantize: Duration,
   cluster: Duration,
+  am_shape_family: AmShapeFamily,
+  /// The timbre editor on the edo monome, if configured (C3b occludes the edo
+  /// grid). A loops-monome live editor arrives with the reflow in C5c.
+  timbre_editor: Option<TimbreEditor>,
+}
+
+fn to_row_range(c: RowRangeConfig) -> RowRange {
+  match c {
+    RowRangeConfig::Linear { min, max } => RowRange::Linear { min, max },
+    RowRangeConfig::LogFactor { least, multiplier } => RowRange::LogFactor { least, multiplier },
+    RowRangeConfig::LogRange { least, greatest } => RowRange::LogRange { least, greatest },
+  }
+}
+
+fn to_am_shape_family(c: AmShapeFamilyConfig) -> AmShapeFamily {
+  match c {
+    AmShapeFamilyConfig::SinToSquare => AmShapeFamily::SinToSquare,
+    AmShapeFamilyConfig::TriToSquare => AmShapeFamily::TriToSquare,
+  }
+}
+
+/// Build the edo-monome timbre editor from its window config, converting the
+/// lib-side row specs into runtime `RowRange`s.
+fn resolve_timbre_editor(config: &Config, edo_monome: &str) -> Option<TimbreEditor> {
+  config.monome_windows.iter().find_map(|w| {
+    if w.monome() != edo_monome {
+      return None;
+    }
+    let (target, rows) = w.timbre_editor_rows()?;
+    let r = |i: usize| to_row_range(rows[i]);
+    Some(TimbreEditor::new(
+      w.rect(),
+      target,
+      r(0), // amplitude
+      r(1), // am amplitude (depth)
+      r(2), // am frequency
+      r(3), // am shape
+      r(4), // fm amplitude (cents)
+      r(5), // fm frequency
+    ))
+  })
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -198,6 +244,10 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
   let edo_cfg = config.monomes.iter().find(|m| m.id == edo_monome).ok_or("the edo monome is not declared")?;
   let loops_cfg = config.monomes.iter().find(|m| m.id == loops_monome).ok_or("the loops monome is not declared")?;
   let size = edo_cfg.select.size.unwrap_or([16, 16]);
+  // Resolve the editor + shape family before moving `edo_monome` into Settings.
+  let am_shape_family =
+    to_am_shape_family(config.am.as_ref().map(|a| a.shape.family).unwrap_or_default());
+  let timbre_editor = resolve_timbre_editor(config, &edo_monome);
   Ok(Settings {
     edo_monome,
     loops_monome,
@@ -231,6 +281,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     flash_ms: looper.flash_ms,
     quantize: Duration::from_millis(looper.quantize_record_ms),
     cluster: Duration::from_millis(looper.cluster_display_ms),
+    am_shape_family,
+    timbre_editor,
   })
 }
 
@@ -267,7 +319,8 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   loops_sock.set_read_timeout(Some(Duration::from_millis(50)))?;
 
   let voices = Arc::new(Mutex::new(HashMap::new()));
-  let audio = audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude)?;
+  let audio =
+    audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude, s.am_shape_family)?;
   let looper_sink =
     sink::SawNoteSink::new(Arc::clone(&voices), s.fund, s.edo, audio.sample_rate, s.attack, s.release);
   let looper_state = Arc::new(Mutex::new(LooperState::new(
@@ -291,6 +344,7 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       remap_center: s.remap_center,
       quantize: s.quantize,
       cluster: s.cluster,
+      timbre_editor: s.timbre_editor,
     },
   )));
 

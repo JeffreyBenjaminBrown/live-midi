@@ -2,6 +2,49 @@
 Running log of the autonomous build of =6_plan.org=. Newest decisions/TODOs near
 the top of each section. Jeff: scan =* TODO (need Jeff)= first.
 
+* Session 2 (resuming) -- deciding the gating TODOs, then C3b..C7
+Jeff asked a fresh instance to resume the plan and -- per =when-to-stop.org= -- to
+make the reversible calls myself instead of stopping to ask. Session 1's three
+=TODO (need Jeff)= items were all flagged by Session 1 itself as reversible taste
+decisions, so I am deciding them (below) and proceeding through C3b -> C4 ->
+C5a/b/c -> C7. Every decision here is reversible: adjust any and I will re-flow.
+
+** DECISION (was TODO C5a syntax): relative-coordinate config = string form
+Adopt the stringly-typed per-edge form Session 1 proposed and 6_plan 4.1 sketches:
+=rect.top = "live-timbre.bottom + 1"=. An integer edge stays absolute (=-1= = far
+edge). The existing whole-rect array =rect = [x0,y0,x1,y1]= remains valid
+(back-compat), so only windows that opt into anchoring use the table form.
+Rationale: matches 6_plan's own illustrative spelling; least ceremony for the
+author. Built in C5a.
+
+** DECISION (was TODO layout + C5-vs-C3b): option (a), editor on the edo monome
+Build C3b on the EDO monome first (occlusion, no reflow needed), proving the editor
+end to end, then C5 + the loops-monome live editor (Session 1 leaned (a); I concur:
+the loops-monome editor needs the reflow, so building it pre-C5 is throwaway).
+Rect: the editor occupies the TOP 7 rows of the 16x16 edo grid, =rect = [0,0,15,6]=,
+occluding edo-grid rows 0..6. The shift pad (y=14..15) is untouched and 9 instrument
+rows (y=7..15) stay playable, satisfying C3's "hear it on live play". Unfolded row
+layout (6_plan 2.7): row0 controls =[fold | 4 waveforms | arm | sustain | save-undo
+| slots...]=; row1 amplitude (=log_range=); rows2..6 AM amp/freq/shape, FM amp/freq.
+In C3b only the four waveform cells + amplitude + the five FX rows are live; fold
+(C5b), arm/slots (C4), sustain/save-undo (C7) render as present-but-inert
+placeholders so the layout never shifts under later commits.
+
+** DECISION: am.shape family is a top-level =[am.shape]= config table
+Per 6_plan 5 and the types.rs note ("config-level, one per instrument"), the AM
+shape *family* is instrument-wide, not per-window or part of saved =Timbre=. Add an
+optional top-level =[am.shape] family = "sin_to_square" | "tri_to_square"= to the
+lib =Config=; =resolve_settings= reads it and threads it into =audio::start= ->
+=render_block_with_amplitude=, replacing the C2 hardcoded =AmShapeFamily::default()=.
+The editor's shape *row* still sets the per-note =am.shape= morph position (0..1).
+
+** DECISION: per-row =RowRange= lives in config as a lib-local spec, converted in the binary
+=timbre_rows::RowRange= is in the looper binary; =config.rs= is in the =midi_pulse=
+lib and cannot see it. So config deserializes each row into a lib-local
+=RowRangeConfig= ({ kind = "linear"|"log_factor"|"log_range", .. }); =resolve_settings=
+maps it to =RowRange= (mirroring the existing =ScaleControlKind -> scale::ScaleControl=
+conversion). Default per-row ranges = 6_plan 5's numbers.
+
 * Session 1 summary (overnight, unattended)
 *Done + committed on branch timbre-manip (all unit-tested; binaries build clean):*
 - docs: =6_plan.org= (definitive plan).
@@ -26,9 +69,11 @@ the =* Remaining roadmap= section has the concrete integration approach. Verify
 UI work with the =mock_monome= rig (the synth changes so far needed no live run --
 they're behind unit tests and change no behaviour).
 
-* TODO (need Jeff)
-Non-reversible / taste decisions I deliberately did NOT make. Everything not
-blocked on these has been built; these gate the runtime UI wiring (C3b onward).
+* TODO (need Jeff)  [ALL THREE RESOLVED IN SESSION 2 -- see "* Session 2" above]
+Session 1 left these for Jeff. Session 2, per =when-to-stop.org=, decided all three
+(they were reversible): string-form relative coords; option (a) edo-monome editor at
+=rect [0,0,15,6]=; and C3b-before-C5. Kept below for the record; none still block.
+Non-reversible / taste decisions Session 1 deliberately did NOT make.
 
 ** TODO relative-coordinate config syntax (C5a) -- a user-facing config API
 6_plan 4.1 wants per-edge rects: each edge absolute (int; -1 = far edge) or
@@ -161,15 +206,34 @@ already-built looper. Key facts I confirmed for whoever continues:
 - Selection pickers, loop display, copy/undo, remap (fine + group-transpose) all
   already exist in state.rs -> C7 reuses them.
 
-** TODO C3b -- editor runtime wiring (live-timbre editor, one monome)
-Add a =timbre_editor= window kind to =config.rs::MonomeWindowConfig= (id, monome,
-rect, target, per-row =RowRange= params, am.shape family) + validation + a test
-config. Parse it in mod.rs. In state.rs: intercept editor-rect presses ->
-=RowRange::cell_for/value_at= -> mutate =live_timbre= (waveform/amplitude/AM/FM/
-shape rows, radio LEDs one-lit). Wire the am.shape family from config into
-=audio::start= -> =render_block= (replacing the C2 hardcoded default). Verify with
-the mock rig. Done-criterion (6_plan C3): dial params, hear it on live play.
-Gated by the two TODOs above (layout + which-monome-first).
+** DONE C3b -- editor runtime wiring (timbre editor on the edo monome)
+- New =looper_runtime/timbre_editor.rs=: pure =TimbreEditor= (rect, target, six
+  =RowRange=s) with =press(x,y) -> Option<TimbreParam>= and =paint(timbre, levels)=.
+  Row layout per 6_plan 2.7: row0 controls =[fold | Sine Triangle Square Saw | arm |
+  sustain | save-undo | slots..]=, row1 amplitude, rows2..6 AM amp/freq/shape + FM
+  amp/freq. =TimbreParam::apply(&mut Timbre)= is target-agnostic (C7 reuses it).
+- =config.rs=: new =timbre_editor= window kind (target + 6 per-row =RowRangeConfig=
+  with 6_plan 5 defaults) + a top-level =[am.shape] family= table. Dropped =Eq= from
+  =MonomeWindowConfig= (now carries f32 rows, like =LoopEvent= in C6). Validation:
+  editor rect >= 5 wide and >= 7 tall, each row range finite/monotonic.
+- =mod.rs::resolve_settings=: builds the edo-monome =TimbreEditor= (RowRangeConfig ->
+  RowRange) and threads the am.shape family into =audio::start= -> =render_block=
+  (replaces the C2 hardcoded =AmShapeFamily::default()=).
+- =state.rs=: =LooperState= holds =timbre_editor=; =edo_key= intercepts editor-rect
+  presses FIRST (radio rows mutate =live_timbre=; blank/inert cells swallow the press
+  -- occlusion, never a stray note); =edo_levels= overlays =paint= LAST over the play
+  grid. Added =LEVEL_MID= (8) for the fold cell.
+- Config: =configs/monome-looper-58-8-1-timbre.toml= (runnable; editor occludes edo
+  rows 0..6, 9 instrument rows remain) + 6 config unit tests + 12 runtime tests.
+- Tests: 170 bin + 35 lib green; default configs unchanged -> identical sound.
+- DEVIATIONS (per stop-rule, plan unchanged): (1) both editor targets edit
+  =live_timbre= in C3b -- the target=loop split is C7; (2) only the edo-monome editor
+  is wired (option (a)); the loops-monome live editor + reflow is C5c; (3) fold/arm/
+  sustain/save-undo/slots render as inert placeholders so C4/C5b/C7 slot in without
+  moving the layout.
+- VERIFY (Jeff/mock): run =monome-looper-58-8-1-timbre=; press top-row cells x=1..4
+  to switch waveform, lower rows to dial AM/FM/amp/shape; finger notes on edo rows
+  y>=7 and hear the change. (Synth math was already unit-tested in C1/C2.)
 
 ** TODO C4 -- timbre slots + save/recall
 =timbre_slot= + =timbre_arm= cells; recall on press; arm->capture one->auto-disarm;

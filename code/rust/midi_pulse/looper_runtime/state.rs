@@ -15,11 +15,13 @@ use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
+use super::timbre_editor::TimbreEditor;
 use crate::types::Timbre;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
 pub const LEVEL_DIM: i32 = 4;
+pub const LEVEL_MID: i32 = 8;
 pub const LEVEL_FULL: i32 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +50,8 @@ pub struct LooperParams {
   pub remap_center: (i32, i32),
   pub quantize: Duration,
   pub cluster: Duration,
+  /// The timbre editor occluding the edo grid (C3b), if configured.
+  pub timbre_editor: Option<TimbreEditor>,
 }
 
 /// The slot currently sounding, with its playhead and the epoch time it started.
@@ -96,6 +100,11 @@ pub struct LooperState {
   /// The live timbre stamped onto fingered notes (set by the live-timbre editor).
   /// Until per-note loop timbre lands (C6), loop playback uses it too.
   live_timbre: Timbre,
+
+  /// The timbre editor occluding the edo grid (C3b). Its rect intercepts edo
+  /// presses (radio param rows) and overlays its LEDs over the play grid. In C3b
+  /// both editor targets edit `live_timbre`; C7 splits `target = loop`.
+  timbre_editor: Option<TimbreEditor>,
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -156,6 +165,7 @@ impl LooperState {
       copy_arming: false,
       copy_from: None,
       live_timbre: Timbre::default(),
+      timbre_editor: p.timbre_editor,
     }
   }
 
@@ -165,6 +175,16 @@ impl LooperState {
   /// note. Returns true if the edo LEDs may have changed.
   pub fn edo_key(&mut self, x: i32, y: i32, press: bool, now: Duration) -> bool {
     if press {
+      // The timbre editor occludes its rect: a press inside it drives a radio param
+      // row (mutating the live timbre) or, on a blank/inert cell, is simply swallowed
+      // so it never plays or remaps. A release falls through harmlessly (editor cells
+      // were never recorded in `self.down`). C7 will branch on `target = loop`.
+      if let Some(ed) = self.timbre_editor.as_ref().filter(|ed| ed.contains(x, y)) {
+        if let Some(param) = ed.press(x, y) {
+          param.apply(&mut self.live_timbre);
+        }
+        return true;
+      }
       if let Some(shift) = shift_for_cell(self.shift_rect, (x, y)) {
         self.register += register_delta(shift, self.x_step, self.y_step, self.edo);
         return true;
@@ -207,6 +227,16 @@ impl LooperState {
   /// loop. In remap mode, the cells being remapped (or the group-transpose
   /// center) are solid. The four shift-pad arrows are dim.
   pub fn edo_levels(&self) -> Vec<i32> {
+    let mut levels = self.edo_levels_base();
+    // The editor overlays last so its occluding rect always wins over the play grid
+    // (edo_levels_base has an early return in remap mode, hence the wrapper).
+    if let Some(ed) = &self.timbre_editor {
+      ed.paint(&self.live_timbre, &mut levels, self.grid_w);
+    }
+    levels
+  }
+
+  fn edo_levels_base(&self) -> Vec<i32> {
     let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
 
     // Remap mode: solid for the pitches being remapped (or the transpose center).
@@ -736,8 +766,29 @@ mod tests {
         remap_center: (7, 7),
         quantize: ms(70),
         cluster: ms(100),
+        timbre_editor: None,
       },
     )
+  }
+
+  /// A state whose edo grid carries a timbre editor occluding the top 7 rows
+  /// (rect [0,0,15,6]), with the 6_plan 5 default row ranges.
+  fn state_with_editor() -> LooperState {
+    use super::super::timbre_editor::TimbreEditor;
+    use midi_pulse::config::TimbreTarget;
+    use super::super::timbre_rows::RowRange;
+    let mut s = state();
+    s.timbre_editor = Some(TimbreEditor::new(
+      [0, 0, 15, 6],
+      TimbreTarget::Loop,
+      RowRange::LogRange { least: 0.0009, greatest: 0.15 },
+      RowRange::Linear { min: 0.0, max: 1.0 },
+      RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
+      RowRange::Linear { min: 0.0, max: 1.0 },
+      RowRange::LogFactor { least: 5.0, multiplier: 2.0 },
+      RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
+    ));
+    s
   }
 
   fn level_at(levels: &[i32], x: i32, y: i32) -> i32 {
@@ -959,5 +1010,64 @@ mod tests {
     let (bx, by) = one(7);
     s.loops_key(bx, by, true, ms(600)); // make slot 7 active
     assert_eq!(s.loops.sounding, Some(0), "sounding unchanged by active switch");
+  }
+
+  // ---- C3b: timbre editor on the edo monome ----
+
+  #[test]
+  fn editor_waveform_press_sets_live_timbre_and_plays_no_note() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    assert_eq!(s.live_timbre.waveform, Waveform::Triangle, "default");
+    // Control row cell x=4 = Saw (fold=0, Sine/Triangle/Square/Saw = 1..4).
+    assert!(s.edo_key(4, 0, true, ms(0)), "editor press repaints");
+    assert_eq!(s.live_timbre.waveform, Waveform::Saw, "waveform dialed to saw");
+    assert!(s.down.is_empty(), "an editor press never plays a live note");
+  }
+
+  #[test]
+  fn editor_amplitude_press_sets_gain() {
+    let mut s = state_with_editor();
+    // Amplitude row (y=1), 16 wide: cell 0 = least (0.0009), cell 15 = greatest (0.15).
+    s.edo_key(0, 1, true, ms(0));
+    assert!((s.live_timbre.gain - 0.0009).abs() < 1e-5, "min amplitude");
+    s.edo_key(15, 1, true, ms(1));
+    assert!((s.live_timbre.gain - 0.15).abs() < 1e-5, "max amplitude = unity");
+  }
+
+  #[test]
+  fn editor_blank_cell_swallows_the_press() {
+    let mut s = state_with_editor();
+    // x=10,y=0 is a slot placeholder in the control row -- inert in C3b, but inside
+    // the editor rect, so it must be swallowed (no note, no fall-through).
+    assert!(s.edo_key(10, 0, true, ms(0)), "consumed");
+    assert!(s.down.is_empty(), "no note played");
+    assert_eq!(s.live_timbre, Timbre::default(), "nothing changed");
+  }
+
+  #[test]
+  fn editor_overlays_edo_leds_and_occludes_the_top_rows() {
+    let s = state_with_editor();
+    let levels = s.edo_levels();
+    // Default waveform Triangle = control cell x=2 lit; fold cell x=0 = Mid.
+    assert_eq!(level_at(&levels, 0, 0), LEVEL_MID, "fold cell findable");
+    assert_eq!(level_at(&levels, 2, 0), LEVEL_FULL, "triangle lit");
+    assert_eq!(level_at(&levels, 1, 0), LEVEL_OFF, "sine dark");
+  }
+
+  #[test]
+  fn note_fingered_below_the_editor_carries_the_edited_timbre() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    s.edo_key(3, 0, true, ms(0)); // editor: set Square (control cell x=3)
+    assert_eq!(s.live_timbre.waveform, Waveform::Square);
+    // Record a note on an open instrument row (y=8, below the 7-row editor).
+    s.loops_key(0, 3, true, ms(10)); // start recording (slot 0)
+    s.edo_key(0, 8, true, ms(20)); // finger a note -- plays AND records
+    assert_eq!(s.down.len(), 1, "a real note sounded below the editor");
+    s.edo_key(0, 8, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000)); // stop
+    let on = s.loops.slots[0].events.iter().find(|e| e.on).expect("an on event");
+    assert_eq!(on.timbre.waveform, Waveform::Square, "recorded note carries editor timbre");
   }
 }

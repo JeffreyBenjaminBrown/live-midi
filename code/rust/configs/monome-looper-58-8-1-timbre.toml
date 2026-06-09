@@ -1,0 +1,141 @@
+version = 1
+id = "monome-looper-58-8-1-timbre"
+title = "Monome Looper 58 8 1 (timbre editor)"
+
+# ---------------------------------------------------------------------------
+# The 58-8-1 looper plus the C3b timbre editor occluding the top 7 rows of the
+# edo grid (6_plan 2.7, option (a): edo-monome editor, simple occlusion). Dial
+# waveform / amplitude / AM / FM / shape here and hear it on live play (the lower
+# 9 edo rows stay playable). The editor's `target = "loop"` matches 6_plan's eventual
+# placement; until C7 it edits the global live timbre like a live editor. See 6_plan.org.
+# ---------------------------------------------------------------------------
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[sinks]]
+id = "saw"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.050
+accretion_level = 0.5
+
+# Instrument-wide AM shape morph family (6_plan 2.5). The editor's shape row sweeps
+# the per-note morph position within this family.
+[am.shape]
+family = "sin_to_square"
+
+[looper]
+quantize_record_ms = 70
+cluster_display_ms = 100
+flash_ms = 50
+remap_center = [7, 7]
+
+[[monomes]]
+id = "edo"
+listen_port = 9000
+prefix = "/looper-edo"
+select.size = [16, 16]
+
+[[monomes]]
+id = "loops"
+listen_port = 9001
+prefix = "/looper-loops"
+select.size = [16, 16]
+
+# ===========================================================================
+# GRID 1 -- "edo": play surface (lower rows), timbre editor (top 7 rows).
+# ===========================================================================
+
+[[monome_windows]]
+id = "edo-grid"
+monome = "edo"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "saw"
+
+# The timbre editor, listed AFTER edo-grid so it occludes the top 7 rows. Row 0 is
+# the control row (fold | Sine Triangle Square Saw | arm | sustain | save-undo |
+# slots..), then amplitude, then AM amp/freq/shape and FM amp/freq. Row ranges are
+# the 6_plan 5 defaults, spelled out here to exercise the explicit-range path.
+[[monome_windows]]
+id = "edo-timbre"
+monome = "edo"
+kind = "timbre_editor"
+target = "loop"
+rect = [0, 0, 15, 6]
+amplitude    = { kind = "log_range",  least = 0.0009, greatest = 0.15 }
+am_amplitude = { kind = "linear",     min = 0.0, max = 1.0 }
+am_frequency = { kind = "log_factor", least = 0.25, multiplier = 2.0 }
+am_shape     = { kind = "linear",     min = 0.0, max = 1.0 }
+fm_amplitude = { kind = "log_factor", least = 5.0,  multiplier = 2.0 }
+fm_frequency = { kind = "log_factor", least = 0.25, multiplier = 2.0 }
+
+[[monome_windows]]
+id = "edo-shift-pad"
+monome = "edo"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+
+# ===========================================================================
+# GRID 2 -- "loops": slots, transport, loop display, remap controls.
+# ===========================================================================
+
+[[monome_windows]]
+id = "loop-slots"
+monome = "loops"
+kind = "loop_slots"
+rect = [0, 0, 3, 3]
+
+[[monome_windows]]
+id = "loop-start"
+monome = "loops"
+kind = "loop_control"
+control = "start"
+rect = [0, 3, 0, 3]
+
+[[monome_windows]]
+id = "loop-stop"
+monome = "loops"
+kind = "loop_control"
+control = "stop"
+rect = [1, 3, 1, 3]
+
+[[monome_windows]]
+id = "loop-play"
+monome = "loops"
+kind = "loop_control"
+control = "play"
+rect = [2, 3, 2, 3]
+
+[[monome_windows]]
+id = "loop-remap-mode"
+monome = "loops"
+kind = "loop_remap_mode_toggle"
+rect = [14, 3, 14, 3]
+
+[[monome_windows]]
+id = "loop-copy"
+monome = "loops"
+kind = "loop_copy_button"
+rect = [15, 2, 15, 2]
+
+[[monome_windows]]
+id = "loop-remap-undo"
+monome = "loops"
+kind = "loop_remap_undo"
+rect = [15, 3, 15, 3]
+
+[[monome_windows]]
+id = "loop-display"
+monome = "loops"
+kind = "loop_display"
+rect = [0, 4, 15, 15]
