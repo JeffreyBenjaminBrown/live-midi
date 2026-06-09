@@ -1,0 +1,281 @@
+* plan: timbre manipulation
+This is the build plan that follows =1_vision.org= and the resolved =2_discussion.org=.
+Every decision below is settled in =2_discussion.org=; section 5 lists the few
+small things I decided at plan time (flag any you disagree with). Grounding is in
+the real synth (=sawwave/voices.rs=, =types.rs=, =osc.rs=), the config loader
+(=config.rs=, =README.org=), and the looper (=TODO/monome-looper/=), which is
+being built in parallel and which this feature extends.
+
+Naming used throughout:
+- *live-timbre window* -- sits on the *loop* monome, edits the *edo grid's* live
+  voices.
+- *loop-timbre window* -- sits on the *edo* monome, edits the *loop's* notes.
+(Each monome's top-left button opens the window that targets the *other* monome.
+The two are no longer mutually exclusive -- both may be open.)
+
+* 0. Dependencies on the looper
+This feature can't land before these looper pieces exist (all are in the looper
+plan already, or are small additions it should absorb):
+- *Loop note storage* -- the per-note event list this feature hangs a timbre
+  field on (2.6). The looper owns the recording; we add a field.
+- *Loop-display corner cell* -- the looper's undefined top-left loop-display cell
+  becomes "clear all loop selection" (2.5). The looper plan reserved it; we
+  define it.
+- *Row/column/cell selection pickers* -- reused verbatim to scope loop edits.
+- *Loop slots + the copy gesture* -- reused for the *failsafe duplicate slot*
+  undo (2.5). Needs one looper addition: the last loop slot is kept equal to the
+  most-recently-triggered loop as it was at trigger time.
+
+If the looper isn't far enough along, commits C1-C5 below stand alone (they need
+only the synth and the edo grid); C6-C7 are the ones that wait on the looper.
+
+* 1. Build order (commits)
+Each commit is independently runnable and testable.
+
+** C1. Polytimbral oscillator core
+Move timbre onto the voice and branch the renderer.
+- Add to =VoiceState= (=types.rs=): =waveform=, =gain= (linear), and (stubbed
+  for now) AM/FM params + LFO phase. Today it is
+  =VoiceState { id, freq, phase, env, target_env, ramp_per_sample }=.
+- =render_block= (=voices.rs=): replace the single =triangle(v.phase)= with a
+  =osc(v.waveform, v.phase)= dispatch; multiply by =v.gain=. Add band-limited
+  =square= and =saw= (PolyBLEP); keep =triangle= and add =sine=.
+- Rename the sink: =cpal_sawwave= renders a triangle, so call it =cpal_synth=
+  (or =cpal_voices=); fix the comments/README/RUNTIME-NOTES that say "saw".
+- Drive every voice from a single global "current timbre" for now (no UI yet).
+- *Done when:* the existing sawwave configs sound identical (default = triangle),
+  and flipping the global waveform constant audibly changes all voices, alias-free.
+
+** C2. AM + FM + shape DSP
+Per-voice modulation, retriggered at note-on.
+- Per voice: an AM LFO and an FM LFO, each with its own phase reset to 0 at
+  note-on (per-voice retrigger -- 2.3).
+- AM multiplies the carrier by a unipolar wave in =[1 - amp, 1]= (amp = depth;
+  see 2.2). FM adds a sine vibrato in cents (peak deviation = the FM amp).
+- AM shape morph per the config's *shape family* (2.2): tanh-of-sine or
+  trapezoid; precompute each as a small wavetable (the LFO is sub-audio, cost is
+  irrelevant).
+- *Done when:* with the global timbre, AM/FM/shape audibly behave per spec and
+  each note's modulation starts in phase with its onset.
+
+** C3. The timbre window + live editing
+The UI for the live (edo-grid) timbre.
+- Config: the tagged parameter-row kinds {linear|log|enum} (2.1) and a
+  =timbre_window= window kind that lays out: waveform row, volume row, five FX
+  rows (2.6). Radio behavior, one lit cell.
+- Wire the rows to the global current timbre; new edo-grid note-ons use it.
+- Place a live-timbre window on the loop monome and a loop-timbre window on the
+  edo monome (both editing the *global* timbre for now -- loop targeting is C6/C7).
+- *Done when:* you can dial waveform/volume/AM/FM/shape from the grid and hear it
+  on live play.
+
+** C4. Timbre slots + save/recall
+- =timbre_slot= cells and a =timbre_arm= button (distinct kinds -- 2.4).
+- Recall on press; arm-then-press captures one slot then auto-disarms.
+- LEDs: empty=off, occupied=dim, current=bright; current flashes 50/50 when the
+  live timbre has diverged from it (2.4, 2.7).
+- *Done when:* save/recall round-trips a full timbre (incl. volume), dirtiness
+  shows, arm auto-disarms.
+
+** C5. Fold/unfold + relative window coordinates
+The window-system work (2.6).
+- Add relative window coordinates to the config (rect relative to another window;
+  negative indices count from the far edge).
+- Add the *folded* state: a 1-row strip = [fold/unfold cell][4 quick-timbre
+  cells][amplitude row across the rest]. The window's top-left cell toggles
+  fold/unfold; folded is the resting state.
+- On the loop monome, bind the live-timbre window + loop display into one
+  compound window with two non-configurable sub-windows; the loop sub-window's
+  top is pinned under the timbre sub-window so it reflows on fold.
+- On the edo monome, the loop-timbre window stays absolute and simply occludes
+  the grid.
+- *Done when:* folding the loop-monome window reflows the loop display live;
+  folding the edo-monome window reveals the grid beneath; the four quick-timbre
+  cells track the first four saved timbres.
+
+** C6. Per-note loop timbre (storage + playback)
+- Add a per-note timbre *snapshot* field to loop notes (full params, not a slot
+  reference -- 2.6).
+- *Record-time capture:* each recorded note stores the live timbre active when it
+  was played.
+- Loop-playback voices carry their note's stored timbre into the synth (C1-C2
+  already accept per-voice timbre).
+- *Done when:* a loop recorded while changing the live timbre plays back with the
+  per-note colours it was recorded with.
+
+** C7. Loop-timbre manipulation (destructive) + undo
+The headline feature (2.5).
+- The loop-timbre window's rows track the lowest still-sounding note of the
+  current note-group column.
+- Editing is *destructive at note-on*: while a parameter is active (held, or
+  released-with-sustain-the-edits-on), each note-on the playhead triggers has
+  that parameter rewritten in storage. A selection (rows/cols/cells) *filters*
+  which note-ons are affected; no selection = all.
+- =sustain_the_edits= toggle (lit solid; key-down toggles): on = released edits
+  keep rewriting new note-ons; off = they stop (a *held* row always rewrites).
+- Loop-display corner cell = clear selection.
+- Undo via the looper's *failsafe duplicate slot* (last loop slot mirrors the
+  most-recently-triggered loop at trigger time) + copy-back.
+- *Done when:* the =2_discussion.org= A-B-C-D worked example reproduces exactly,
+  and copy-from-failsafe restores a slot.
+
+* 2. Reference specs
+
+** 2.1 Parameter rows
+- *Idiom:* radio. One lit cell = current value; press a cell to jump there. No
+  thermometer.
+- *Cell count* comes from the row's rect width, never a separate field.
+- *Tagged kind* per row in the .toml:
+  - =linear= -> =[min, max]=, value = lerp across cells.
+  - =log= -> =[least, multiplier]=, value(k) = least * multiplier^k. (Top may
+    run into audio rate by design; that's fine.)
+  - =enum= -> an ordered list of named values (waveform; AM shape family is a
+    *config* enum, not a row -- see 2.2).
+
+** 2.2 The parameters (final units & directions)
+- *Waveform* -- enum {sine, triangle, square, saw}. Band-limit square/saw.
+- *Volume* -- log row, 6 dB/cell. Top cell = unity (= today's sink
+  =amplitude=0.15=); cells below attenuate. Part of the saved timbre. Mixer still
+  hard-clips at +-0.95, so never boost above unity.
+- *AM amplitude (depth)* -- linear 0..1. **Direction reversed from the vision:**
+  more = wider AM. The AM multiplier swings in =[1 - amp, 1]=, so amp=0 -> no AM
+  (constant 1.0), amp=1 -> full depth (down to 0). Document the direction.
+- *AM frequency* -- log row (e.g. 0.25 Hz x2/cell).
+- *AM shape* -- row that morphs within the config-level *AM shape family* enum
+  {=sin-to-square= (tanh-of-sine; default), =tri-to-square= (trapezoid)}.
+  - tanh form: =y(p) = tanh(k*sin(2*pi*p)) / tanh(k)=, k from the cell index.
+- *FM amplitude (depth)* -- log row in cents, peak deviation (e.g. 5 cents
+  x2/cell).
+- *FM frequency* -- log row, same shape as AM frequency.
+- FM modulator is always a sine; FM has no shape row.
+- Row order (alphabetical, both prose and .toml): AM = amp, freq, shape; FM =
+  amp, freq.
+
+** 2.3 Synth / voice model
+- =VoiceState= gains: =waveform=, =gain=, =am={depth,freq,shape}=, =fm={depth_cents,freq}=,
+  =am_phase=, =fm_phase=. AM/FM phases reset to 0 at note-on (per-voice retrigger).
+- =render_block= per sample per voice: advance carrier phase; advance AM/FM LFO
+  phases; carrier_freq *= 2^(fm_depth_cents*sin(2*pi*fm_phase)/1200); sample =
+  osc(waveform, phase) * env * gain * am_mult, where am_mult in [1-depth, 1]
+  shaped by the family. Sum, then clamp.
+- Shape families precomputed as wavetables.
+
+** 2.4 Timbre slots
+- ~10 slots (count from rect): a =timbre_slot= kind; a separate =timbre_arm= kind.
+- Press a slot = recall (load into the live timbre). Armed: next slot press
+  captures the live timbre, then auto-disarms (like =scale_control= store).
+- LEDs: empty=off, occupied=dim, current=bright. The current slot flashes 50/50
+  once the live timbre is edited away from it. (If no slot is current -- edited
+  from scratch -- nothing flashes.)
+
+** 2.5 Loop-timbre manipulation
+- *Two windows, by placement* (see naming at top). The loop-timbre window
+  (edo monome) is where loop editing happens; the loop itself is watched on the
+  loop monome.
+- *Display:* rows reflect the lowest still-sounding note of the current
+  note-group column; untouched rows keep tracking as the playhead moves.
+- *Destructive, at note-on:* an active parameter (held, or
+  released-while-sustain-the-edits-on) rewrites the stored timbre of each note-on
+  the playhead triggers. A *held* row is always active regardless of the toggle.
+- *Selection filters:* with a loop selection active, only selected notes are
+  rewritten; with none, all future note-ons are. Selection uses the looper's
+  row/col/cell pickers; the loop-display corner cell clears it.
+- *sustain-the-edits:* a toggle in the timbre window. Lit solid = on. Key-down
+  toggles, key-up nothing. Off + finger lifted = new note-ons revert to their
+  stored timbre.
+- *Undo (failsafe duplicate slot):* the last loop slot always mirrors the
+  most-recently-triggered loop at the moment it was triggered (overwritten each
+  trigger). Copying it onto a slot reverts all edits to that slot. (Looper-side.)
+- Worked example to honour: =2_discussion.org= 1c, notes A-B-C-D.
+
+** 2.6 Window system
+- *Relative coordinates.* A window's rect may be expressed relative to another
+  window (or a named sub-window). Negative indices count from the far edge:
+  =(-1,-1)= is bottom-right. Absolute rects (today's only mode) still work.
+- *Compound foldable window* (loop monome only): one config window declares the
+  live-timbre + loop pair; it owns two non-configurable sub-windows
+  (=timbre= on top, =loop= below). The loop sub-window's top tracks the timbre
+  sub-window's current height, so fold (7 rows <-> 1 row) reflows the loop live.
+  Other windows may anchor relative to the compound window or either sub-window.
+- *Edo monome:* all-absolute. The loop-timbre window simply occludes the (large)
+  edo grid when unfolded; the grid persists underneath.
+- *Folded strip (1 row):* [fold/unfold cell at top-left][4 quick-timbre cells]
+  [amplitude row across the remaining cells, log-scaled to that width]. The four
+  quick cells start as the four waveforms; the first four *saved* timbres
+  overwrite them in save order.
+- *Unfolded (~7 rows):* row0 = [fold/unfold][4 waveforms][timbre_arm]
+  [sustain_the_edits][timbre slots...]; then volume; then the five FX rows.
+  (sustain_the_edits is inert in the live-timbre window; meaningful only when the
+  window targets the loop.)
+- The fold/unfold cell is the window's only open/close control; "folded" is the
+  resting/deactivated state (no separate hidden state). This subsumes the
+  vision's "activate button drawn on top" -- there is no separate activate cell.
+
+** 2.7 LED priority (timbre window)
+Only solid / dim / off / 50-50-flash are used -- inside the ~4 brightness buckets
+(=RUNTIME-NOTES= "Brightness"; =Brightness= enum in =types.rs=).
+- Each parameter row: current value = solid (bright); others off.
+- Slots: current = bright (flashing if dirty); occupied = dim; empty = off.
+- Toggles (=sustain_the_edits=): solid when on, off when off.
+- Fold/unfold cell: always lit (findable), distinct from a value cell.
+
+* 3. Config (.toml) sketch
+Illustrative, not final field names:
+
+#+begin_src toml
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"          # was cpal_sawwave; renders the per-voice waveform
+sample_rate = 48000
+buffer_frames = 128
+
+[am.shape]
+family = "sin_to_square"     # or "tri_to_square"; config-level
+
+# loop monome: one compound window; loop reflows under the (foldable) timbre strip
+[[monome_windows]]
+id = "live-timbre+loop"
+monome = "loops"
+kind = "timbre_loop_compound"
+rect = [0, 0, 15, 15]        # absolute placement of the whole pair
+# sub-windows "timbre" (top, foldable) and "loop" (below) are derived, not configured
+
+# edo monome: loop-timbre window, absolute, occludes the grid when unfolded
+[[monome_windows]]
+id = "loop-timbre"
+monome = "edo"
+kind = "timbre_window"
+rect = [0, 0, 15, 6]
+
+# a parameter row, tagged kind, count from width
+[[monome_windows]]
+id = "am-freq"
+kind = "param_row_log"
+relative_to = "loop-timbre"  # rect interpreted within that window
+rect = [0, 3, -1, 3]         # full width, 4th row; -1 = last column
+least = 0.25
+multiplier = 2.0
+#+end_src
+
+* 4. Reuse map
+- =edo_note_grid= -- unchanged as the instrument; just feeds the recorder and now
+  carries the current live timbre.
+- =scale_slots= / =scale_control= store idiom -- template for =timbre_slot= /
+  =timbre_arm=.
+- Looper row/col/cell pickers, loop slots, copy gesture, corner cell -- reused for
+  loop selection and the failsafe-duplicate undo.
+- Back-to-front window compositor -- extended with relative coords + the compound
+  window; no new dispatch model.
+
+* 5. Assumptions made at plan time (flag any you reject)
+1. Loop edits bake in *at note-on* (playhead-driven) in both modes; a selection
+   only filters which note-ons are rewritten. (2.5)
+2. =sustain_the_edits= is a *dedicated toggle* in the timbre window; the
+   loop-display corner cell is *clear-selection only*. (2.5)
+3. The folded strip's four quick cells hold the *first four* saved timbres (not a
+   rolling most-recent-4). (2.6)
+4. Both timbre windows share one layout/kind; =sustain_the_edits= is simply inert
+   in the live-timbre window. (2.6)
+5. The four-waveform default in the folded strip, and the full waveform row when
+   unfolded, coexist -- the strip's four cells are a *separate* quick palette, not
+   the waveform selector. (2.6)

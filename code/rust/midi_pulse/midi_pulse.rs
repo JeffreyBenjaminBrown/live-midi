@@ -44,6 +44,7 @@ mod windows;
 mod sawwave_runtime;
 #[allow(dead_code)]
 mod remap_runtime;
+mod looper_runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config_name = std::env::args().nth(1).ok_or_else(|| {
@@ -59,6 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     edo12n_piano_runtime::run_from_config(&config)?;
   } else if config.piano.is_some() {
     run_piano_runtime(&config)?;
+  } else if is_looper_config(&config) {
+    // Must precede the sawwave arm: a looper config is a superset of the sawwave
+    // predicate (it also has an edo_note_grid + cpal_sawwave sink).
+    looper_runtime::run_from_config(&config)?;
   } else if is_monome_sawwave_config(&config) {
     sawwave_runtime::run_from_config(&config)?;
   } else if is_monome_midi_config(&config) {
@@ -120,6 +125,15 @@ fn is_monome_sawwave_config(config: &Config) -> bool {
       .sinks
       .iter()
       .any(|sink| matches!(sink, midi_pulse::config::SinkConfig::CpalSawwave { .. }))
+}
+
+/// Keyed on the looper-only `loop_display` kind, so it is strictly more specific
+/// than the sawwave predicate. Dispatch order makes this matter (see `main`).
+fn is_looper_config(config: &Config) -> bool {
+  config
+    .monome_windows
+    .iter()
+    .any(|window| matches!(window, midi_pulse::config::MonomeWindowConfig::LoopDisplay { .. }))
 }
 
 fn print_startup(config: &Config) {

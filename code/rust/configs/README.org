@@ -344,3 +344,69 @@ rect = [0, 0, 15, 13]
 tuning = "main"
 sink = "midi"
 #+end_src
+
+* Looper
+
+The looper is a two-monome instrument (no piano): one grid is the EDO play
+surface, the other holds loops. Run it like any other config:
+
+#+begin_src sh
+cargo run --bin midi_pulse -- monome-looper-58-8-1
+#+end_src
+
+It is selected when the config declares a ~loop_display~ window (the dispatch
+checks this *before* the sawwave path, since a looper config is a superset of
+the sawwave one). It needs *two* ~[[monomes]]~ of the same ~select.size~; the
+runtime hands each a distinct grid in config order (it does not matter which
+physical grid is which).
+
+** Looper window kinds
+
+- ~edo_note_grid~ -- the play surface (also reflects the active loop and doubles
+  as the remap pitch-picker). References a ~tuning~ and a ~cpal_sawwave~ ~sink~.
+- ~edo_shift_pad~ -- a 3x2 pad overlaying the edo grid's lower-right. The four
+  arrows shift the pitch image by one cell, the two top corners by an octave.
+- ~loop_slots~ -- the slot grid; one slot is active. The number of slots is
+  whatever the rect covers.
+- ~loop_control~ with ~control = "start" | "stop" | "play"~ -- single-cell
+  transport, acting on the active slot. ~start~ records (overwriting); ~stop~
+  halts the active slot's record *or* play; ~play~ loops the active slot as the
+  sole sounding loop. (Only one loop sounds at a time; no layering.)
+- ~loop_remap_mode_toggle~ -- fine vs group-transpose remap (lit solid in fine,
+  dim in group transpose).
+- ~loop_copy_button~ -- copy a slot: press it, then a 'from' slot, then a 'to'.
+  Lit solid while armed; pressing it again mid-copy cancels.
+- ~loop_remap_undo~ -- undo the last loop remap (its own kind, so it does not
+  pull in the un-12 "remap" window group).
+- ~loop_display~ -- the 2D display compound. One rect derives a left row-picker
+  column, a top column-picker row, a reserved top-left corner, and the main
+  time x pitch area. (The pickers select rows/columns/cells to remap.)
+
+The core windows (~loop_slots~, ~loop_display~, the three ~loop_control~ kinds)
+are required together; the shift pad, toggle, copy and undo are optional. The
+~edo_note_grid~ rect must fit its grid, and ~remap_center~ must lie inside it.
+
+** The ~[looper]~ table
+
+#+begin_src toml
+[looper]
+quantize_record_ms = 70   # events within this of the loop boundary snap to it
+cluster_display_ms = 100  # note-ons within this of each other = one display column
+flash_ms = 50             # reflection / equivalent flash half-period
+remap_center = [7, 7]     # the edo-grid cell meaning "unison" in group-transpose remap
+#+end_src
+
+The table and the looper windows imply each other; declaring one without the
+other is rejected.
+
+** Playing it
+
+- *Play* on the edo grid; the shift pad transposes. A sounding pitch lights all
+  its octave-equivalents solid.
+- *Record*: select a slot, press ~start~, play, then ~play~ to loop it (or
+  ~stop~ to keep it without playing). The *sounding* loop reflects on the edo grid
+  -- dim throughout, each note solid while it individually sounds.
+- *Remap*: pick rows/columns/cells in the loop display (mutually exclusive); the
+  edo grid enters remap mode. *Fine* sets each selected pitch to the edo cell you
+  press (lowest-first); *group transpose* transposes/duplicates the selection by
+  the interval from ~remap_center~ to the cell you press. ~loop_remap_undo~ reverts.

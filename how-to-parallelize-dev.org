@@ -1,0 +1,149 @@
+#+title: How to work on this code in two (or more) parallel branches
+#+author: notes for Jeff, written by Claude
+
+* TL;DR
+- You *cannot* have two branches "live" in one working directory at once. Git has
+  exactly one checked-out branch per working tree.
+- The thing Anthropic told you about is *=git worktree=*: one repository, several
+  working directories, each on its own branch, all sharing the *same* =.git=
+  object store. It's the right tool and it's cheap. See [[*Way 2 -- git worktree (recommended)][Way 2]].
+- Your instinct -- "copy everything including =.git= into =prod=, =dev=, =dev2=" --
+  also works, and is the most isolated option, but it's heavier and you should do
+  it with =git clone= rather than =cp -r=. See [[*Way 3 -- separate clones (your "copy it" idea, done right)][Way 3]].
+- A *distinct Claude* is just =claude= launched in a different directory. Point one
+  at each worktree/clone and they run independently.
+- *The catch that applies to every method:* there is only one pair of physical
+  grids and one audio device. Two Claudes can *edit and unit-test* in parallel all
+  day, but only one can *run the real looper* at a time. That is exactly what the
+  monome *mock* (built alongside this doc) removes: a mock-driven instance needs no
+  hardware, so it can run beside your real session. See [[*The shared-hardware catch (read this)][the catch]].
+
+* Why one checkout can't hold two branches
+A git "working tree" is the directory of actual files plus one =HEAD= pointing at
+one branch. =git switch dev= *rewrites the files in place* to match =dev=. If a
+second Claude were looking at those same files, they'd change underneath it. So
+"two branches at once" always means "two directories." The methods below differ
+only in how those directories relate to each other.
+
+* Way 1 -- switch branches in place (simplest, but serial)
+The zero-setup baseline. One directory (this one), one branch at a time:
+#+begin_src sh
+git switch -c dev      # create + move onto dev
+# ...work, commit...
+git switch monome-looper
+#+end_src
+- *Good for:* one person/Claude doing one thing at a time; quick context flips.
+- *Not good for:* two Claudes at once -- they'd fight over the same files. Use this
+  only if "parallel" really means "I'll alternate."
+
+* Way 2 -- git worktree (recommended)
+One repo, many directories, one branch each, *shared history*. Adding a worktree
+does not copy the object database, so it's near-instant and disk-cheap.
+
+** Already set up (bare repo + worktrees)
+The repo is *bare*: =/home/ubuntu/.bare= holds the history, =/home/ubuntu/.git= is
+a one-line file (=gitdir: ./.bare=) so git works from the root, and the real
+checkouts are worktrees under =/home/ubuntu/worktrees/=:
+- =worktrees/prod= -- branch =monome-looper= (the main line of work)
+- =worktrees/dev=  -- branch =dev=
+No tracked files live at =/home/ubuntu= anymore, so nothing is duplicated between
+"root" and a worktree. Add more from anywhere in the repo:
+#+begin_src sh
+git worktree add /home/ubuntu/worktrees/dev2 -b dev2     # new branch
+git worktree add /home/ubuntu/worktrees/exp monome-looper # existing branch
+git worktree list
+git worktree remove /home/ubuntu/worktrees/dev2          # when done (clean, or --force)
+#+end_src
+*Relative links (important):* worktrees were created with =--relative-paths=
+(=worktree.useRelativePaths=true=), so the =.git= pointers are =../../.bare/...=
+not absolute =/home/ubuntu/...=. That's what lets the *host* use them too: the same
+tree is =/home/jeff/code/midi= on the host (NixOS) and =/home/ubuntu= in the
+container, so magit/git on the host resolve the worktrees correctly. Always create
+worktrees with =--relative-paths= (it's the default here) or host tools break.
+
+** Point a Claude (or magit) at each
+Open a terminal per worktree and launch the CLI there:
+#+begin_src sh
+cd /home/ubuntu/worktrees/prod && claude    # main line
+# (another terminal)
+cd /home/ubuntu/worktrees/dev  && claude     # experiment
+#+end_src
+Each session sees only its directory's branch. Open magit on a *worktree*
+(=worktrees/prod= / =worktrees/dev=), not on the bare root =/home/ubuntu=.
+
+** Why it's the right default
+- Branches *can't* collide -- each lives in its own directory.
+- One shared object store: commit in =dev=, and =git log= in the main checkout sees
+  it immediately (no push/pull between them). Merging is ordinary local git.
+- Deleting a worktree never touches your branches or history.
+
+** Caveats specific to this repo
+- *Build dir:* there is no longer a shared absolute =target-dir= (the old
+  =.cargo/config.toml= that forced =/home/ubuntu/target= was removed), so each
+  worktree builds into its *own* =target/= (e.g. =worktrees/dev/target/=). That's
+  the isolation you want -- two branches never clobber each other's binary. Cost:
+  the first build in a fresh worktree is full (it recompiles dependencies too --
+  minutes, a couple GB). If a throwaway worktree isn't worth that, point it back at
+  the main cache for that shell with =export CARGO_TARGET_DIR=/home/ubuntu/target=
+  -- but then expect rebuild churn when you alternate worktrees, since they'd again
+  share one =target/debug= binary.
+- *Config path:* =config_dir()= bakes =CARGO_MANIFEST_DIR= in at *compile* time, so
+  a built binary looks for =configs/= under the worktree it was built in. With
+  per-worktree targets (the default now) that's automatic. The one gotcha: if you
+  *move* a checkout, cargo won't rebuild on a path-only change, so =touch= a =.rs=
+  to force the embedded path to update (this is exactly what bit the =prod/= move).
+- *Shared memory dir:* my memory lives in =~/.claude/...=, which is the same files
+  for every worktree (home is shared). That's mostly fine, but two Claudes writing
+  =MEMORY.md= at once can clobber each other. If both are journaling heavily,
+  expect the occasional lost line.
+- *Where to put them:* inside =worktrees/= (git-ignored, as above) is simplest. If
+  =/home= itself were writable you could use a sibling like =/home/looper-dev=, but
+  in this container =/home/ubuntu= is the writable root, so keep them under it.
+
+* Way 3 -- separate clones (your "copy it" idea, done right)
+This is your "copy everything including =.git= into =dev=, =dev2=" plan. It works,
+and it's the *most isolated* (fully independent object stores -- a =git gc= or a
+catastrophe in one can't touch another). Two refinements:
+
+- *Use =git clone=, not =cp -r=.* =git clone= copies only the tracked repo (not the
+  pile of non-repo cruft in your home dir), and gives each copy a real =origin= you
+  can =git pull=/=git push= across:
+  #+begin_src sh
+  git clone /home/ubuntu /home/ubuntu/other-projects/looper-dev   # 'origin' -> here
+  cd /home/ubuntu/other-projects/looper-dev && git switch -c dev
+  #+end_src
+  (Put clones *outside* the repo tree -- e.g. under =other-projects/= -- so they
+  don't show up as untracked files inside =/home/ubuntu=.)
+- *Avoid =cp -r= of the home dir:* it would drag along =target/= (large), =.cache=,
+  =.ssh=, the editor lock, etc. If you must hand-copy, =rsync -a --exclude target/=
+  from a clean checkout, not from =/home/ubuntu=. Each clone is its own repo, so it
+  builds into its own =./target= (full first build) -- the isolation you wanted.
+
+*Cost vs. worktree:* a clone duplicates the entire history (this repo's is modest,
+so it's not huge) and gives you a second remote to push/pull across, which is more
+ceremony than worktrees' shared store. Reach for clones when you want hard
+isolation; reach for worktrees for everyday parallel work.
+
+* The shared-hardware catch (read this)
+None of the above multiplies your *hardware*. There is one pair of 16x16 grids,
+one serialosc, one audio out. Concretely:
+- Any number of worktrees/clones can run =cargo test= and edit code at once. The
+  pure looper logic (=looper_runtime/state.rs= etc.) is fully unit-tested with no
+  device -- that parallelizes for free.
+- Only *one* instance can =cargo run --bin midi_pulse -- monome-looper-58-8-1= for
+  real. Serialosc registration is global per grid: a second instance that registers
+  *steals the grid's output* away from the first. So "real runs" stay serial no
+  matter how many branches you have.
+- *This is what the mock fixes.* The mock is a virtual serialosc + virtual grids on
+  alternate localhost ports; a looper pointed at it grabs *no* real hardware. So a
+  mock-driven instance in =worktrees/dev= can run at the same time as your real
+  session in the main checkout. See =MOCK-MONOME.org= (next to this file) for how to
+  launch it.
+
+* My suggestion
+Use *Way 2 (worktree)* as the default, which is set up: =worktrees/prod= (branch
+monome-looper) for your live work, =worktrees/dev= for the experiment, a Claude in
+each. Each worktree builds into its own =target/=, so they won't clobber each other.
+Keep real-grid runs in one and give the other the *mock* so both can "run the
+instrument" at once. Drop to *Way 3 (clones)* only if you want bullet-proof
+isolation between the two lines of work.

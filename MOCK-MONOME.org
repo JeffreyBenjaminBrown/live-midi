@@ -1,0 +1,86 @@
+#+title: The monome mock -- test/run the looper without hardware
+#+author: notes for Jeff, written by Claude
+
+* What it is
+A *virtual monome rig*: an in-process fake =serialoscd= plus N fake 16x16 grids,
+speaking the exact UDP/OSC protocol the real grids do. It lets you exercise --
+*and play* -- the looper with *no physical grids* and *without disturbing a live
+session*, because it lives on its own localhost ports.
+
+This is the answer to "the tests can only run by interrupting me." The pure logic
+(=looper_runtime/state.rs= etc.) was always testable hardware-free, but the
+*device layer* -- discovery, registration, LED output, key input -- could only be
+exercised by grabbing the real grids, which steals them from whatever's running.
+The mock removes that.
+
+* Why a mock is even needed (the detector-port seam)
+Discovery is hardwired to ask =serialoscd= at =127.0.0.1:12002=. In this container
+that port is the *host's* real serialosc (reachable via host networking). So you
+can't just "not connect" -- any real run hits real hardware. The one production
+change is a seam: =monome::discover_devices= now honors =MIDI_PULSE_DETECTOR_PORT=
+(default still 12002). Set it, and the looper asks the *mock* serialosc instead.
+Tests use =monome::discover_devices_via(.., detector_port)= directly, so they never
+touch the env var (no cross-test races).
+
+* Two ways to use it
+** A. As an automated test (no hardware, runs in `cargo test`)
+The round-trip test in =code/rust/midi_pulse/mock_monome.rs= drives the whole
+device layer against the mock: discover -> register -> an LED write lands in the
+mock's buffer -> an injected key press arrives back as =<prefix>/grid/key=.
+#+begin_src sh
+cd /home/ubuntu
+cargo test --lib mock_monome      # ~2s (the discovery window), no grids touched
+#+end_src
+Build new device-layer tests on =MockRig= the same way; they run alongside your
+live session.
+
+** B. As a standalone virtual rig (play the whole looper by hand)
+Two terminals (or two worktrees -- see =how-to-parallelize-dev.org=):
+#+begin_src sh
+# terminal A: the virtual grids
+cargo run --bin mock_monome -- --detector-port 17002
+
+# terminal B: the REAL looper, aimed at the mock, on the mock config
+MIDI_PULSE_DETECTOR_PORT=17002 cargo run --bin midi_pulse -- monome-looper-58-8-1-mock
+#+end_src
+Terminal A prints each grid as ASCII whenever its LEDs change, and reads key
+presses from stdin:
+#+begin_example
+  <grid> <x> <y>         tap (press+release)     e.g.  edo 0 0   |   1 14 3
+  <grid> <x> <y> down    press and hold
+  <grid> <x> <y> up      release
+  render | r             reprint all grids
+  ids                    show grid ids/ports
+  help | h               help
+  quit | q               exit
+  (grid = index 0,1,... or name: edo=0, loops=1)
+#+end_example
+Brightness is bucketed ` .:+#`. Press a cell on grid 0 (edo) to sound a note and
+watch its octave-equivalents light; press transport cells on grid 1 (loops) to
+record/play. It behaves like the real instrument because it *is* the real runtime
+-- only the grids are fake.
+
+* Why this is safe to run beside your real session
+- The mock config (=monome-looper-58-8-1-mock.toml=) uses listen ports *9100/9101*
+  and prefixes =/mock-edo=, =/mock-loops= -- not your live *9000/9001*. Two loopers
+  can run at once.
+- =MIDI_PULSE_DETECTOR_PORT=17002= means the mock looper talks to the *mock*
+  serialosc, never the real one on 12002. It never enumerates or registers a real
+  grid, so it can't steal them.
+
+* The one thing it does NOT mock: audio
+The looper still opens a real =cpal= stream. Under the container's
+ALSA->PipeWire routing (=~/.asoundrc=) PipeWire mixes, so a second instance
+coexists fine -- but if you *press note keys* in terminal A it makes sound. For a
+silent check, just let it paint LEDs (startup lights the loops controls) without
+pressing edo cells. (Mocking audio too would be a separate, larger job.)
+
+* Where the code is
+- =code/rust/midi_pulse/mock_monome.rs= -- the library: =GridSpec=, =MockRig=,
+  =MockGrid= (=press=/=release=/=tap=, =levels=/=level_at=/=render=), =wait_until=,
+  and the round-trip test.
+- =code/rust/midi_pulse/mock_monome_bin.rs= -- the =mock_monome= binary (the
+  interactive rig above).
+- =code/rust/midi_pulse/monome.rs= -- the =MIDI_PULSE_DETECTOR_PORT= seam
+  (=detector_port()=, =discover_devices_via=).
+- =code/rust/configs/monome-looper-58-8-1-mock.toml= -- the non-colliding config.

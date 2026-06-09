@@ -237,11 +237,11 @@ overflow merges.
 
 Milestone: live visualization with merging + non-uniform playhead.
 
-** Phase 4 -- remap (fine + coarse), selection, freeze, undo
+** Phase 4 -- remap (fine + group transpose), selection, freeze, undo
 Goal: select rows/columns/cells and remap their pitches on the edo grid, both
 idioms, with undo.
 
-- =LooperState= gains =remap: { None, Fine, Coarse }=, a selection, and per-slot
+- =LooperState= gains =remap: { None, Fine, GroupTranspose }=, a selection, and per-slot
   =history=. Selection: pickers accumulate; rows XOR columns XOR cells (switching
   mode clears); selecting anything puts the edo grid into remap mode; the *first*
   edo press *freezes* the selection.
@@ -259,17 +259,17 @@ idioms, with undo.
   selected note into the first octave) is computed *on the fly*; =edo_shift_pad=
   stays *live during remap*; the *stored play register is restored* on return to
   play mode (restored -- v1 dropped both).
-- *Coarse*: the fixed center cell =remap_center= (=[7,7]=, round up-and-left)
+- *Group transpose*: the fixed center cell =remap_center= (=[7,7]=, round up-and-left)
   solid; each press transposes the selection by =(pressed_step - center_step)=;
   multiple presses *duplicate* voices (destructive, additive -- bake once per held
-  chord, not compounding); idle = original; exit by toggling back to fine. (Coarse
+  chord, not compounding); idle = original; exit by toggling back to fine. (Group transpose
   uses the fixed center, no auto-octave-shift.)
 - *Undo*: snapshot =slots[active].events= before each remap; the =loop_remap_undo=
   window pops it. It is a *distinct looper kind* (not =remap_undo_button=), so the
   existing "remap" group and every existing config stay untouched; it shares the
   factored snapshot/push/pop *mechanism*, not the kind.
 
-Milestone: fine + coarse remap with one-press undo; shift stays live and the play
+Milestone: fine + group transpose remap with one-press undo; shift stays live and the play
 register is restored on exit.
 
 ** Phase 5 -- copy + toggle + polish
@@ -279,7 +279,7 @@ Goal: feature-complete per =3_layout.org=.
   slot's next boundary. *Edges*: =from= empty -> no-op (never erase =to=, per the
   no-erase design); =to == from= -> no-op. *Invariant*: the gesture overwrites only
   =to='s stored events and leaves =active= and =sounding= unchanged (restored).
-- =loop_remap_mode_toggle= window (fine/coarse).
+- =loop_remap_mode_toggle= window (fine/group transpose).
 - Final LED arbitration for both grids; everything in {0,4,8,15}.
 - Docs: =RUNTIME-NOTES.org= section + =README.org= entry for the new kinds;
   =rebuild-etags= so the kinds are =M-.=-jumpable.
@@ -327,7 +327,7 @@ We can leave it unused for now.
 * test strategy
 - *Unit tests* (the crate tests pure logic, e.g. =sawwave/state.rs=): boundary
   quantize-to-ZERO, held-note strip + boundary cut, cluster + merge-nearest on
-  *both* axes, per-idiom remap resolution *including the merged column*, coarse
+  *both* axes, per-idiom remap resolution *including the merged column*, group transpose
   bake-once, undo snapshot/restore, and the sounding-switch note-offs.
 - *No-hardware harness*: a virtual serialosc that answers =/serialosc/list= with
   two distinct ids so the two-grid runtime can be exercised in CI.

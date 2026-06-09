@@ -2,7 +2,20 @@ use rosc::{decoder, encoder, OscMessage, OscPacket, OscType};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
+/// The serialosc detector (serialoscd) UDP port. Defaults to the well-known
+/// 12002. Override with the `MIDI_PULSE_DETECTOR_PORT` env var to aim discovery
+/// at a mock serialosc (see the `mock_monome` module/binary) instead of the real
+/// one -- the only way to test the device layer without grabbing live grids,
+/// since 12002 is the host's serialoscd.
 pub const DETECTOR_PORT: u16 = 12002;
+
+/// The detector port to use: the env override if set and parseable, else 12002.
+pub fn detector_port() -> u16 {
+  std::env::var("MIDI_PULSE_DETECTOR_PORT")
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(DETECTOR_PORT)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceInfo {
@@ -30,7 +43,14 @@ pub fn discover_device_info(sock: &UdpSocket, listen_port: u16) -> Option<Device
 }
 
 pub fn discover_devices(sock: &UdpSocket, listen_port: u16) -> Vec<DeviceInfo> {
-  let Ok(detector) = format!("127.0.0.1:{DETECTOR_PORT}").parse::<SocketAddr>() else {
+  discover_devices_via(sock, listen_port, detector_port())
+}
+
+/// Like `discover_devices`, but queries the detector at an explicit port. Lets a
+/// test point discovery at an in-process mock without setting the process-wide
+/// env var (which would race other tests running in the same process).
+pub fn discover_devices_via(sock: &UdpSocket, listen_port: u16, detector_port: u16) -> Vec<DeviceInfo> {
+  let Ok(detector) = format!("127.0.0.1:{detector_port}").parse::<SocketAddr>() else {
     return vec![];
   };
   send_osc(sock, detector, "/serialosc/list", vec![

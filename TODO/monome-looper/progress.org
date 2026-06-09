@@ -1,0 +1,191 @@
+* progress: monome looper implementation
+Live log of building the looper (=1_vision.org= -> =6_plan.org=). Per the build
+brief: implement freely, commit often, stop only for a *major* design choice (one
+that would be costly to reverse). Minor/reversible choices are just made and
+logged here. Working on branch =monome-looper= (off =main=).
+
+* what happened (in serial)
+- Established a green baseline on a fresh =monome-looper= branch: =cargo test=
+  passes (81 tests), all bins compile.
+- *Phase 0 done* (config parse + validate + dispatch). Added the seven looper
+  window kinds, =LoopControlKind=, and the =[looper]= table to =config.rs=; a
+  =validate_looper= pass; the =is_looper_config= dispatch arm (before sawwave);
+  a stub =looper_runtime= that prints the two-grid window inventory; and the
+  runnable config =configs/monome-looper-58-8-1.toml=. Added 8 config tests.
+  =cargo test= green (89 total); =cargo run -- monome-looper-58-8-1= prints the
+  inventory and exits. Existing configs/tests untouched (no-regressions guard
+  green). Build location note: the crate manifest is =/home/ubuntu/Cargo.toml=
+  (lib at =code/rust/midi_pulse/lib.rs=); build/test/run from =/home/ubuntu=.
+
+- *Phase 1 pure cores done* (the verifiable hearts of Phase 1, each unit-tested):
+  =looper_runtime/sink.rs= -- the pitch-keyed ref-counted =NoteSink= over the
+  unchanged sawwave engine; =looper_runtime/device.rs= -- distinct-device
+  assignment (dedupe by id, newest port, fail if < 2 distinct live ids);
+  =looper_runtime/edo.rs= -- cell -> step with a play register + the 3x2 shift
+  pad. 16 new tests; 97 bin tests green. Converted =looper_runtime= to a
+  directory module. The remaining Phase 1 *runtime glue* (cpal stream, two OSC
+  threads, LED render, pre-flight/teardown) is hardware-gated -- it can't be run
+  or verified on this headless box -- so it is being written last, on top of
+  these tested cores.
+
+- *Phase 2 loop-store core done* (pure + unit-tested): =looper_runtime/loop_store.rs=
+  -- a fresh =LoopSlot { loop_duration, events, history }=; =finalize_recording=
+  (boundary-quantize to next-pass start, strip the ambient held-note release);
+  and a =Playback= playhead whose wrap emits =ReleaseAll= -- which is how a note
+  still held at the loop end gets cut at the boundary (no stored end-of-loop
+  note-offs). 7 tests. The slot model, transport state machine, and the wiring
+  of all this through the =NoteSink= come with the runtime glue.
+
+- *Connectivity proven end-to-end.* Wired the Phase 1 *pre-flight* into
+  =looper_runtime= (discover -> =assign_distinct_devices= -> register + blank each
+  grid, in config order, fail loudly otherwise) and RAN it against the two grids
+  Jeff reconnected. The binary discovered both =monome 256= grids and bound
+  =m0000102= -> edo and =m256-282= -> loops, blanked both, exited 0. The
+  central risk ("can we drive two monomes at once?") is retired. Both grids are
+  virtual (no USB FTDI) but fully serialosc-visible, so the runtime is now
+  *verifiable on this box* (grids + audio both present); I can drive it with
+  synthetic =/grid/key= packets.
+
+- *Phase 1 runtime complete and EMPIRICALLY VERIFIED on the grids.* Added
+  =state.rs= (the pure edo play/shift/LED core, 5 tests), =audio.rs= (the cpal
+  stream), and the two-grid event loop + teardown in =mod.rs=. Ran the binary
+  against the two grids + audio and drove it with synthetic =/grid/key= packets:
+  it bound both grids, opened the audio stream, played edo notes (the sounding
+  count tracked press/release), correctly treated the octave-up shift-pad cell as
+  a shift (not a note), and shut down cleanly on SIGINT. Lock discipline as
+  designed: a grid thread holds the control lock only to apply a key + compute the
+  LED vector, then drops it before the UDP sends; the audio thread locks only
+  =voices=. (Next: an adversarial review of this glue before Phase 2 builds on it.)
+
+- *All four phase cores now built and unit-tested* (pure logic, independent of the
+  runtime glue): Phase 2 transport (=loop_store.rs= =LoopStore=, 9 tests), Phase 3
+  display (=display.rs= cluster + merge-nearest, 6 tests), Phase 4 remap
+  (=remap.rs= selection resolution + fine/group transpose edits, 7 tests). With the Phase 1
+  edo/sink/device cores, the entire algorithmic substance of the looper is done
+  and green. What remains is *glue* -- wiring transport/display/remap into the
+  two-grid runtime (Phase 2/3/4 integration) + Phase 5 polish/docs. While these
+  cores were being built, an adversarial multi-agent review of the Phase 1 runtime
+  glue was running; I'll apply its findings before wiring the cores in (so the
+  glue is reviewed before more is layered on it).
+
+- *Phase 1 runtime adversarially reviewed and hardened.* A 4-lens multi-agent
+  review (concurrency, correctness, no-regressions, robustness) of the runtime
+  glue *confirmed the lock discipline is correct* (no I/O under any lock; single
+  control->voices order; no deadlock/priority-inversion path) and surfaced 7
+  off-the-happy-path bugs, all now fixed + committed:
+  - *teardown*: a =StopOnExit= Drop guard makes any grid-thread exit (incl. panic)
+    set =STOP=, freeing the sibling; run() then blanks both grids + drops audio --
+    no more zombie on a fault (the contract 6_plan promised);
+  - *poison-safe locks* everywhere so one panic can't cascade or kill audio;
+  - *rebind id-guard* + draining stale discovery replies (no cross-grid hijack);
+  - *per-cell =NoteSource::Live=* -- fixes a real bug where two cells colliding to
+    one pitch (e.g. (0,8) & (1,0) in 58-8-1) collapsed and releasing one silenced
+    both; *verified fixed on the grids* (2 sounding, release one -> 1 left);
+  - re-press releases the old pitch; a =/grid/key= with s not in {0,1} is ignored;
+    =validate_looper= rejects an edo rect bigger than its grid.
+  131 bin + 28 lib tests green; happy path + collision + malformed re-verified on
+  hardware. This is the reviewed foundation the Phase 2 playback thread builds on.
+
+- *Phase 2 glue done -- loops RECORD and PLAY BACK, verified live on the grids.*
+  =LooperState= now holds the =LoopStore= transport + a playhead; a third
+  =playback_thread= advances the sounding slot into the sink every 3ms; edo
+  presses feed the recorder while recording; the loops grid handles slot-select +
+  transport (start/stop/play); both grid threads repaint every tick for cross-grid
+  reactivity (the edo grid reflects the active slot's pitches solid; the loops
+  grid shows active solid / playing flash / recorded dim). 5 new state integration
+  tests. Drove it on the two grids: =[loops] (0,3)->recording=Some(0)=,
+  =[loops] (2,3)->sounding=Some(0)=, then =[hb] sounding=Some(0) voices=1= --
+  i.e. record a note, play, and the loop plays back audibly.
+- *Found a faulty grid + hardened against it.* The loops device (=m256-282=) is
+  flooding =/grid/key [0,0,1]= at ~276k/sec (a stuck/echoing virtual grid; the edo
+  device =m0000102= is healthy). Discovery also shows ghost ports per id (handled
+  -- assignment takes the newest). Added *debounce* (ignore a duplicate press/
+  release per cell, since a real grid never repeats), which tames the flood (no
+  state corruption, no log spam) and let real transport keys through. The flood is
+  a hardware fault worth Jeff knowing about, but the runtime now tolerates it.
+
+- *Phase 3 glue done* -- =loops_levels= paints the active slot's 2D display
+  (row/column pickers dim, reserved corner dark, notes in the main area) via the
+  =build_display= core. Unit-tested (132 bin tests); LEDs not live-verifiable here.
+- *Blocked on the loops grid for Phase 4 (remap).* Remap is driven entirely on the
+  loops grid (select rows/cells there, watch the edo grid) -- but =m256-282= is
+  flooding, so it can't be driven or seen. The remap *algorithms* are unit-tested
+  (=remap.rs=); the interactive glue is the only thing left and it needs a working
+  loops grid to build against and verify. Flagged to Jeff: fix/swap =m256-282=
+  (serialosc restart, re-flash, or a different grid). Also to confirm when I build
+  remap: the *group transpose* commit timing (bake-once-per-chord vs per-press) -- a small
+  reversible choice I'll pick if unanswered.
+
+- *Grid flood fixed* (Jeff's unplug / restart-serialosc / reconnect cleared it;
+  both grids now ~0 msgs/s). Pinned the recovery to memory.
+- *Phase 4 (remap) + Phase 5 (copy/toggle) glue done; verified live.* The remap
+  state machine: loops-grid pickers accumulate a row/column/cell selection
+  (mode-exclusive); the first edo press FREEZES it; fine remap sets each target's
+  pitch lowest-first then exits (restoring the play register); group transpose transposes/
+  duplicates the selection by (pressed - center), re-baked from a snapshot so N
+  presses over M notes -> N*M; =loop_remap_undo= pops the slot's history; the
+  =loop_remap_mode_toggle= flips fine/group transpose (toggling to fine ends a group transpose
+  session); during remap the edo grid is in remap mode (presses pick, don't play;
+  the shift pad still works). Copy: press copy -> from -> to, leaving active/
+  sounding unchanged. 4 new state tests (134 bin total). Drove it on the grids:
+  record -> select row -> edo remap press -> play the remapped loop, no crash.
+  The looper is now feature-complete for the spec.
+  Group transpose commit timing (the ambiguity) = per-press additive re-bake (my pick).
+  Deferred refinements (reversible LED/UX polish): the non-uniform playhead, the
+  auto-octave-shift on remap entry, and richer remap-mode LEDs (selection
+  highlight on the loops grid, group transpose center + flashing equivalents).
+
+- *Docs done* (Phase 5): a "Looper" section in =configs/README.org= (window kinds,
+  the =[looper]= table, how to play it) and =configs/RUNTIME-NOTES.org=
+  (architecture, lock discipline, teardown, the flood-recovery note).
+- *FEATURE-COMPLETE and live-verified.* Comprehensive smoke test on the grids
+  exercised record -> play -> switch active slot (active != sounding) -> copy a
+  slot -> play the copy (single-sounding switch) -> select a row -> undo: 0
+  panics, clean teardown, 162 tests across all targets. The looper does everything
+  in the spec: two-grid play, record, multi-slot transport, the 2D display, remap
+  (fine + group transpose), undo, copy, the fine/group transpose toggle, and the shift pad.
+- *What's left is LED/UX polish that needs eyes on the grid* (I can't see LEDs):
+  the non-uniform playhead, the auto-octave-shift on remap entry, and richer
+  remap-mode LEDs (selection highlight on the loops grid; group transpose center solid +
+  octave-equivalents flashing rather than all-solid). All reversible. And one
+  thing to confirm: the *group transpose commit* interpretation (per-press additive re-bake
+  -- my pick for the ambiguity flagged back in 2_discussion).
+
+* recorded answers for later phases (from your 6_plan TODOs)
+- Active-loop reflection on the edo grid is *solid*, the same whether the slot is
+  playing or idle (Phase 2).
+- The loop_display reserved top-left corner stays *inert* for now (Phase 3).
+
+* minor design choices made
+- Branch =monome-looper= off =main= (branch-first; reversible).
+- Looper validation is an explicit =validate_looper= fn rather than a generic
+  =WindowGroup= entry: it can express what the group mechanism cannot (exact
+  counts, the >=2x2 display, =remap_center= bounds). The existing
+  "remap"/"record"/"scale" groups are left exactly as they were.
+- The looper's *required core* is one =loop_slots=, one =loop_display=, and the
+  three =loop_control= kinds; the shift pad, mode toggle, copy, and undo are
+  *optional* add-ons (a looper can be configured without them). Slightly more
+  modular than 6_plan's "include loop_remap_undo in the group."
+- Added a =kind_name()= helper to =MonomeWindowConfig= (for the inventory print).
+- Looper configs forbid *orphan monomes* (every declared monome must be used by
+  some window); scoped to looper configs, so existing configs are unaffected.
+- The =NoteSink= owns its *own* =VoiceMap=, keyed by the =Accreted= =VoiceSource=
+  used purely as an opaque per-pitch handle (=render_block= ignores the key). So
+  the sawwave engine is reused *unchanged*. One ref-counted voice per pitch
+  across sources (live + a slot can share a pitch).
+- Shift-pad sign convention: the octave corners are anchored by =1_vision= (top-
+  left = down an octave / sounds lower). The arrows follow consistently
+  (down/right raise, up/left lower); the *left/right* pitch direction is the one
+  bit the vision left unstated -- chose "right = higher." Trivially flippable if
+  it feels wrong on the grid.
+- The looper uses its *own* small =LoopEvent= type rather than reusing
+  remap_runtime's =pub(crate)= =RecordedEvent= (which is entangled and not visible
+  outside =remap_runtime=). Reuses the *shape*, not the type -- zero changes to
+  =record.rs=, per the no-regressions invariant.
+- The boundary cut (notes held at the loop end) is implemented by *playback
+  releasing everything on wrap*, not by storing end-of-loop note-offs. Simpler,
+  and it sidesteps the =normalize_events= "drop elapsed >= duration" trap the
+  critique flagged.
+
+* major design choices
+(none yet -- I stop and flag you the moment this section gains an entry.)

@@ -1,0 +1,70 @@
+#+title: Orientation for Claude
+
+A thin map, not a manual. This repo is already documented unusually well; this
+file just points you at the right doors and records the few facts that otherwise
+live only in Claude's memory. Follow the links for depth.
+
+* where you are
+- This is a *bare* git repo: =/home/ubuntu/.bare= is the repo, and the actual
+  checkouts are git worktrees under =/home/ubuntu/worktrees/= -- work in
+  =worktrees/prod= (branch monome-looper) or =worktrees/dev=. The home dir
+  =/home/ubuntu= itself holds no tracked files (just =.bare=, a =.git= file
+  pointing at it, and your home dotfiles).
+- It's a *Docker container* (UID 1000); Jeff works on the *host* (NixOS), which
+  bind-mounts this tree (host =/home/jeff/code/midi= -> container =/home/ubuntu=).
+  Worktree links are *relative*, so git/magit work from both sides. Separate PR
+  repos live in =/home/ubuntu/other-projects/=. See [[./how-to-parallelize-dev.org]].
+- The project's point: read/write MIDI and audio between container and host.
+- Background: [[./architecture.org]] (docker setup, audio routing, host system)
+  and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
+
+* the active work: monome-looper-58-8-1
+A two-grid looping instrument in 58-EDO; no piano. One grid plays notes, the
+other records / plays back / edits loops.
+- *Canonical reference (read this first):*
+  [[./code/rust/configs/monome-looper-58-8-1.org]] -- glossary, usage, layout,
+  settings. It is the source of truth for how the instrument behaves.
+- Config: =code/rust/configs/monome-looper-58-8-1.toml=.
+- Runtime: =code/rust/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
+  unit-tested key/LED/playback logic -- change behavior here). =sink.rs= = audio
+  voices; =loop_store.rs= = slots + playback; =remap.rs= = pitch edits;
+  =display.rs= = the 2D loop picture; =mod.rs= = the I/O shell (threads, sockets).
+- Design history: =TODO/monome-looper/= (=1_vision= .. =6_plan=, =progress=). The
+  *last* plan supersedes earlier ones (see its =README.org=).
+
+* build / run / test
+#+begin_src sh
+cd code/rust
+cargo test -p midi_pulse looper_runtime              # fast, no hardware
+cargo run  --bin midi_pulse -- monome-looper-58-8-1  # needs BOTH 16x16 grids
+#+end_src
+Most logic is testable without hardware; do that. Running for real needs the
+grids and audio routing (below). Ctrl-C blanks both grids and stops audio.
+
+To exercise the *device layer* (discovery/registration/LED/key) -- or play the
+whole instrument -- without real grids and without interrupting a live session,
+use the *monome mock*: =cargo run --bin mock_monome= + =MIDI_PULSE_DETECTOR_PORT=.
+See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev.org]].
+
+* operational facts (these otherwise live only in memory)
+- *Audio routing*: synths run in the container, where ALSA "default" wasn't wired
+  to host PipeWire -- so =cpal= grabbed the raw card and blocked sound. Fixed with
+  =~/.asoundrc= (default -> pipewire) + a self-reaping beep hook. Restart a synth
+  to pick up routing.
+- *Serialosc flood*: if a monome floods or serialosc freaks out, STOP and ask
+  Jeff to unplug, restart serialosc, and reconnect -- he's on the host, you're in
+  the container and can't.
+- *Hardware*: both 16x16 grids must be connected to run the looper for real, and
+  you usually can't watch them yourself -- ask Jeff to verify on the grids.
+
+* working style (learned)
+- When told to proceed autonomously, keep building and committing; don't wrap at a
+  milestone just to ask permission. Do ask a *blocking* question when genuinely
+  stuck or when an instruction contradicts what's on disk.
+- Commit in natural, bite-sized chunks.
+
+* deeper pointers
+- [[./code/rust/configs/README.org]] -- the config system (windows, kinds, the
+  =[looper]= table).
+- [[./architecture.org]] -- container/audio architecture in full.
+- Claude's persistent memory index: =~/.claude/projects/-home-ubuntu/memory/MEMORY.md=.

@@ -142,12 +142,12 @@ Changes:
 Milestone: live visualization of the active loop with merging + non-uniform
 playhead. No remap yet.
 
-** Phase 4 -- remap (fine + coarse), selection, freeze, undo
+** Phase 4 -- remap (fine + group transpose), selection, freeze, undo
 Goal: select rows/columns/cells and remap their pitches on the edo grid, both
 idioms, with undo.
 
 Changes:
-- =LooperState= gains =remap: RemapMode { None, Fine, Coarse }=, a selection
+- =LooperState= gains =remap: RemapMode { None, Fine, GroupTranspose }=, a selection
   (rows XOR columns XOR cells → resolved, deduped pitch list, lowest-first), and
   a per-slot =history: Vec<Vec<RecordedEvent>>= for undo.
 - Selection on the loops grid: pickers accumulate; switching mode clears (1c);
@@ -159,7 +159,7 @@ Changes:
   promoted to solid (2c); suppress nothing.
   - *Fine*: destinations lowest-first, each press sets that note's =output_note=
     absolutely, live; after the last, exit to play mode.
-  - *Coarse*: center (cell =remap_center=, =[7,7]=) solid; each press transposes
+  - *Group transpose*: center (cell =remap_center=, =[7,7]=) solid; each press transposes
     the selection by =(pressed_step - center_step)=; multiple presses *duplicate*
     voices (destructive, additive -- bake once per held chord, not compounding);
     idle = original; exit by toggling back to fine.
@@ -170,7 +170,7 @@ Reuse: the snapshot/push/pop undo pattern (=remap.rs:5-67=) and =behavior_for_ce
 dispatch -- but the mutation target is =RecordedEvent= pitches, not the =[i16;12]=
 pitch-class map, so it's the *pattern* that's reused, not the type.
 
-Milestone: fine + coarse remap of a recorded loop, with one-press undo.
+Milestone: fine + group transpose remap of a recorded loop, with one-press undo.
 
 ** Phase 5 -- copy + polish
 Goal: feature-complete per =3_layout.org=.
@@ -178,7 +178,7 @@ Goal: feature-complete per =3_layout.org=.
 Changes:
 - =loop_copy_button=: 3-press gesture (copy → from → to); copy onto a *playing*
   slot lands at that slot's next boundary (per the copy decision).
-- =loop_remap_mode_toggle= window (fine/coarse).
+- =loop_remap_mode_toggle= window (fine/group transpose).
 - Final LED arbitration pass for both grids; keep everything in {0,4,8,15}.
 - Docs: a =RUNTIME-NOTES.org= section + a =README.org= entry for the new kinds;
   =rebuild-etags= so the kinds are jump-to-able (per the README's =M-.= note).
@@ -197,7 +197,7 @@ Milestone: the whole spec runs on the two grids.
 - *Edo grid's two roles*: input instrument vs. remap picker. A clean mode flag in
   =LooperState= must gate the key handler so presses are interpreted correctly,
   and so remap-mode presses don't leak into the recorder or the saw sink.
-- *Coarse accumulation*: bake each held chord once off the original selection
+- *Group transpose accumulation*: bake each held chord once off the original selection
   (2->6, not 2->6->18) -- already noted at 1e; enforce in the gesture handler.
 - *Brightness*: four visible buckets only; verify the play/remap priority tables
   never need a fifth level.
@@ -205,7 +205,7 @@ Milestone: the whole spec runs on the two grids.
 * test strategy
 - *Unit tests* (the crate already tests pure logic, e.g. =sawwave/state.rs=): the
   boundary-quantizer, held-note strip + boundary cut, the cluster + merge-nearest
-  for pitch and time, the fine/coarse remap math (absolute set; interval +
+  for pitch and time, the fine/group transpose remap math (absolute set; interval +
   duplication), and the undo snapshot/restore. These are the bug-prone bits and
   are all pure functions.
 - *Manual / hardware* (the =verify= and =run= skills): per-phase milestones above,

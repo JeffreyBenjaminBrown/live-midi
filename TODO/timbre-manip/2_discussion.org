@@ -35,9 +35,9 @@ amplitude (2x cents). But the document never says the two things a row needs:
 2. *How the current value is shown.* With radio rows this is one solid cell per
    row; with thermometer it's a bar. This matters for the LED budget (2f) and is
    the difference between a row you can read at a glance and one you can't.
-**** TODO
+**** DONE
 Radio buttons, one solid cell per bar.
-***** TODO claude: locked
+***** DONE claude: locked
 Radio, one solid cell per row. ("Per bar" -- same thing: one lit cell marks the
 value, the rest of the row is dark.)
 *** the range blows up if the row is the full grid width
@@ -60,14 +60,14 @@ So one of these has to give, and the choice should be stated:
 
 I'd take the first: endpoints in the .toml, width from the rect, factor computed.
 Either way "if 8 buttons, 32 Hz" can't survive as a literal on a 16-wide row.
-**** TODO not really that important
+**** ONGOING not really that important
 This will surely be changed later.
 Let's make it user-configurable.
 Some values are linear; in that case, give min and max.
 Other values are logarithmic; in that case,
 give the least value and the multiplier from one button to the next.
 If it extends into audio rate that will actually probably be fun; not a problem.
-***** TODO claude: so each row carries a tagged range in the .toml
+***** ONGOING claude: so each row carries a tagged range in the .toml
 Then each parameter row's config is one of:
 - linear -> [min, max]
 - log    -> [least, multiplier]
@@ -101,8 +101,8 @@ Despite the =cpal_sawwave= sink name, the
 oscillator is =triangle()=. So of the four baseline waveforms, *one* (triangle)
 exists, and it's misfiled under a "saw" name. Sine/square/saw are all new, and
 the sink (or its name) should be reconciled.
-**** TODO yes, let's correct any lies
-***** TODO claude: locked
+**** DONE yes, let's correct any lies
+***** DONE claude: locked
 The =cpal_sawwave= sink renders a triangle. I'll rename the sink/kind, fix its
 comments to match the wave it makes, and add the missing oscillators. (Same
 correction you ask for at 3a -- I'll track it once, here.)
@@ -112,9 +112,9 @@ no timbre; per-note loop timbre adds a field (likely a timbre-slot reference, so
 a loop note stores "slot 3," not a full parameter snapshot -- cheaper, and it
 tracks edits to that slot... unless you want loops frozen against later slot
 edits; decide which).
-**** TODO I'm pretty sure we can afford per-note parameters.
+**** DONE I'm pretty sure we can afford per-note parameters.
 If and when performance becomes an issue, we can revisit the decision.
-***** TODO claude: per-note snapshot, noted -- one consequence
+***** DONE claude: per-note snapshot, noted -- one consequence
 A full per-note snapshot (not a slot reference) means a recorded note is *frozen*
 against later edits to the slot it came from: re-saving slot 3 won't touch notes
 already recorded with slot 3's old timbre. Right default for a recording -- just
@@ -154,7 +154,7 @@ There should be yet another (momentary -- key up does nothing)
 key to 'forget' the parameters the user was manipulating going forward --
 the next note played from the loop reverts the displayed timbre settings
 to whatever the loop has stored for that note.
-**** TODO claude: a different model than I proposed -- and it turns on one question
+**** DONE claude: a different model than I proposed -- and it turns on one question
 Two parts settle cleanly, one needs nailing down.
 - *Edo-grid target is clear -- agreed, no pushback.* The rows show and set the
   current *live* timbre; pressing a row sets it; it applies to every note
@@ -177,13 +177,16 @@ Two parts settle cleanly, one needs nailing down.
   3. The override is global ("future note-ons") while the display reads one note
      (the lowest), so you can't re-timbre one pitch of a column without the rest.
      Per-note granularity lives in *storage*, not in the live override -- right?
-**** TODO jeff
+**** DONE jeff
 Right on (3).
 
 Oh I forgot about the row/column/cell picking functions.
 If any of those are active, timbre changes only affect them.
-This is the natural place to use that corner cell we hadn't defined:
+This is the natural place to use that corner cell
+in the loop display whose use we hadn't defined:
 it turns off all selection in the loop.
+(That cell is described somewhere in TODO/monome-looper/ at least once.
+Note that that plan is being executed as we speak.)
 
 If there is no seleection in the loop,
 then playing the timbre affects all future note ons.
@@ -191,6 +194,81 @@ That corner key can play double-duty to 'forget' the played timbres
 and revert to whatever the future note-ons had stored.
 
 Each note should indeed have its timbre captured at record time.
+***** ONGOING claude: selection is back in -- one thing still hangs on persistence
+Good corrections: the row/col/cell pickers *are* reused (my "drop selection" was
+wrong), record-time capture is in, and the loop-display corner cell does
+double-duty (clear selection / forget). The one thing left, and it's load-bearing:
+
+*Are selection-scoped edits destructive, while no-selection edits are not?* Your
+no-selection case is explicitly a revertible live override (the corner "forgets"
+back to stored). But the selection case has no "forget" -- which only makes sense
+if a selection-scoped change *persists*: it rewrites the selected notes' stored
+per-note timbre, surviving deselect and looping. That also matches the vision's
+"apply to a selection from the loop" (a lasting edit). If that's right:
+- loop-note timbre storage is *mutable after record* (not only set at record
+  time), and selection-scoped editing is the write path -- so the selection *is*
+  the "commit" I asked about above;
+- the corner's "clear selection" then just stops scoping; the edits are already
+  written, so there's nothing to discard.
+Confirm: selection = persistent edit, no-selection = revertible override? (This
+also leans on the looper corner-cell work you said is in flight.)
+***** ONGOING no, both should be destructive
+But we can jerry rig a simple 'massive undo' for loops:
+The last loop slot is always equal to what the most recently pressed slot was
+when it was pressed.
+It is overwritten every time another loop is triggered (to play).
+This, plus the ability to copy that last slot --
+call it the failsafe duplicate slot --
+to another one effectively lets the user undo all their edits to a slot.
+
+What I meant by 'forgetting' was this:
+The user can manipulate a loop's timbre in two ways:
+with selection and without.
+If manipulating without selection, everything they do to the timbre controls
+applies to every note-on after that.
+(If the user has only manipulated amplitude,
+then the other parameters are still updated when new note-ons happen,
+but the amplitude is now fixed at the value the user chose,
+and applies to all new note-ons.)
+The 'forget' button is "disregard the user's timbre edits going forward;
+they no longer affect new note-ons'.
+
+We should call it something else, because 'forget' is opaque.
+I'm thinking 'sustain-the-edits'.
+When lit solid, sustain-the-edits is happening; otherwise it's not.
+(Key down toggles it; key up has no effect.)
+****** example
+So for instance, suppose the loop has four notes A B C D.
+In the middle of B, with no loop subset selected,
+the user changes timbre to saw.
+B continues to sound, as whatever it was.
+Then C sounds, as a saw wave, and it edited permanently in that loop
+to be saw thereafter.
+Then the user turns sustain-the-edits off,
+*and* removes their finger from the amplitude row.
+(Otherwise the amplitude change would still affect new notes,
+because even with sustain-the-edits off, a fingerd value affects new note-ons.)
+D sounds as normal. The next time C happens, and thereafter,
+it is a saw wave. None of the other parameters of the loop's notes
+were affected by these timbre ops.
+****** claude: destructive it is -- model locked
+Both modes write the loop's stored per-note timbre; the failsafe duplicate slot
+(+ copy-back) is the undo. So loop-note storage is mutable after record, and
+"sustain-the-edits" (lit solid; key-down toggles) governs whether *released*
+edits keep rewriting new note-ons -- while a *held* row always does. Two things
+I'll carry into the plan as decisions (flag if wrong):
+- *Timing/scope:* edits bake in at *note-on*, as the playhead triggers each note;
+  a selection just *filters* which note-ons get rewritten (no selection = all).
+- *Controls:* "sustain-the-edits" is its own toggle in the timbre window; the
+  loop-display corner cell stays *clear-selection only* (the two don't merge --
+  one is a toggle, one is momentary).
+The failsafe-duplicate slot is a *looper-side* addition (it's a loop slot), so the
+plan lists it as a dependency on the looper work you have in flight.
+******* TODO
+Timing is irrelevant if there is a selection.
+In that case the edits apply to everything selected immediately.
+
+Yes, they should be two distinct buttons.
 ** 1d. The overlay's footprint collides with both grids' existing windows.
 The window is ~7 rows tall (waveform/slots row + volume + five FX rows) anchored
 at the top-left, and it can sit on *either* monome. Two problems:
@@ -213,13 +291,13 @@ on top ... below it is the timbre window's top-left corner." Read with Z-order
 (README: windows are back-to-front), the activate button *covers* the window's
 (0,0), so that one cell of the timbre window is dead. Intended? (Probably yes --
 just confirming the corner is sacrificed, not double-booked.)
-*** TODO the occlude is fine
+*** the occlude is fine
 If I want to manipulate the live notes, I'll probably open it over the loop grid,
 and if I want to manipulate the loop, I'll probably open it over the edo grid.
 Ooh that actually means I don't need a toggle button to indicate
 which of those two things it affects --
 and I can even have two of them open, to manipulate both at the same time.
-**** TODO claude: your insight kills the 1c toggle -- but trips one vision line
+**** claude: your insight kills the 1c toggle -- but trips one vision line
 - *The 1c toggle is now unnecessary.* Which monome the overlay sits on *is* the
   loop-vs-grid switch, so drop the "new toggle button" from your 1c answer.
 - *"Two open at once" contradicts the vision.* =1_vision.org= says "Activating
@@ -228,14 +306,14 @@ and I can even have two of them open, to manipulate both at the same time.
   grid it's on decides what it targets," not mutual exclusion.
 - It stays practical because the overlay is only ~7 rows tall: even with one on
   each grid, the bottom rows of both stay live for playing / seeing the loop.
-***** TODO right
+***** right
 The exclusivity is gone. We just have one button on each monome
 to open a window for manipulating timbres from the other monome.
-*** TODO What do you mean 'the activate button'?
+*** ONGOING What do you mean 'the activate button'?
 There's lots of stuff to activate, isn't there?
 I'm not finding 'the activate button is drawn on top'
 in any document except this one.
-**** TODO claude: my shorthand for your own vision line
+**** claude: my shorthand for your own vision line
 "The activate button" = your =1_vision.org= layout line, verbatim: "The 'activate
 timbre window' button is drawn on top." It's the top-left button on each monome
 that shows/hides the timbre window. I shortened "activate timbre window button"
@@ -249,6 +327,77 @@ with these controls:
 -unfold window
 -the four timbres
 -the rest are the amplitude row, scaled for that range (still logarithmic)
+***** TODO claude: the fold idea opens three things to pin down
+The folded one-row strip and "the loop/edo window begins just under the timbre
+window" are clear in spirit; three mechanics aren't:
+******  *"The four timbres"*
+-- four timbre *slots* (a quick-access subset, and which
+four?) or the four *waveforms*? The unfolded top row had 4 waveforms + arm +
+~10 slots, so folding has to choose what survives into the strip.
+******* TODO good point
+Start as the four waveforms.
+As timbres are saved, replace them with those saved timbres --
+the first saved timbre overwrites the first slot (no matter where
+that first timbre was saved), the second does similarly, etc.
+******** claude: locked
+Folded strip's four cells start as the four waveforms, then the first four *saved*
+timbres overwrite them in save-order. Plan assumes only the first four (later
+saves don't displace them); say so if you want a rolling most-recent-4.
+********* TODO ooh, rolling is a good idea
+let's do that
+******  2. *Does the underlying window resize at runtime?*
+"Begins just under" reads as
+the loop/edo window's *top tracking the timbre window's current height* -- so
+folding (7 rows -> 1) hands rows 1-6 back to the loop/edo grid live. That's a
+window whose rect changes while running, which nothing does today (rects are
+static). Confirm that's the intent, vs. a fixed top with blank rows when
+folded.
+******* TODO D'oh! Yes, thatś my intent.
+but it conflicts with the nature of the config file.
+I guess we need them both to be a single window.
+But it would be nice if they were represented nonetheless
+as a collection of windows bound into one.
+In the config the user just says where the one window goes.
+
+I think I have a system for it.
+Window coordinates can be absolute (defined w/r/t the monome)
+or relative w/r/t another window.
+If relative, positive numbers mean the usual thing,
+but negative numbers are also feasible,
+and they count from the other direction --
+so (-1,-1) is the bottom-right corner.
+
+On the big edo grid monome, all windows can be absolute.
+The timbre manip for loop (which appears on the edo-grid monome,
+not the loop monome) just occludes the grid below. No harm; the grid is big.
+
+But on the other one, the "foldable edo-grid timbre window + loop" window
+has to be defined as a single window with two (non-configurable) sub-windows.
+Any windows that need to occlude it can be placed
+relative to it, or relative to either of its sub-windows.
+******** claude: locked -- relative coords + one compound window
+Clear. The plan adds: (1) window rects may be *relative to another window*, with
+negative indices counting from the far edge ((-1,-1) = bottom-right); (2) on the
+loop monome, a single compound "timbre+loop" window with two non-configurable
+sub-windows, the loop sub-window's top pinned under the timbre sub-window so it
+reflows on fold; (3) the edo monome stays all-absolute -- the loop-timbre window
+just occludes the (big) grid. I'll propose the exact TOML syntax in the plan.
+******  3. *Fold state machine.* The strip has an "unfold" cell; what *folds* the
+   unfolded window, and how does that relate to the activate-timbre-window button
+   -- does that button now cycle closed -> folded -> unfolded, or open/close while
+   a separate cell folds? Spell out the three states and their transitions.
+(The folded amplitude row "scaled, still logarithmic" is fine -- it's the same
+log row at a smaller width, consistent with the tagged-range model at 1a.)
+******* TODO the same button unfolds
+If I forgot to count that fold/unfold button in the button count,
+make it the top-left button of the window in either state.
+******** claude: locked -- folded is the resting state
+So the window's top-left cell is the *only* fold control: unfold when folded, fold
+when unfolded. Reconciling with the vision: "displaying the timbre window" =
+unfolding; "pressing it again deactivates" = folding back. So *folded* (the 1-row
+strip) is the deactivated/resting state -- there's no separate hidden state, the
+strip is always present. That also retires the old "activate button covers the
+window's dead corner" worry: the top-left cell simply *is* the fold/unfold control.
 * 2. Contradictions and overloaded labels
 
 ** 2a. "a panel to control which controls are controllable" vs. "show them all."
@@ -260,9 +409,9 @@ idea (a meta-panel that hides/shows parameter rows), and the layout correctly
 defers it. So the intro sentence overstates v1. Recommend: soften the intro to
 "eventually" -- there is no selection panel in the first build.
 
-*** TODO sure
+*** DONE sure
 correct the intro
-**** TODO claude: locked
+**** DONE claude: locked
 Intro softened to "eventually"; no parameter-selection panel in v1.
 
 ** 2b. "save timbre slot" vs. "arm timbre storage button."
@@ -273,9 +422,9 @@ its own cell? Layout's reading is cleaner (a dedicated arm cell, then N slots) a
 matches the =scale_control= store idiom. Recommend: it's a separate "arm" button,
 not a slot; fix the storage prose to match.
 
-*** TODO Right, it is separate
+*** DONE Right, it is separate
 They are not the same kind. All docs should reflect that.
-**** TODO claude: locked
+**** DONE claude: locked
 Two distinct kinds: an "arm timbre storage" button, and the timbre slots. The
 storage prose (which called the arm a "slot") gets fixed to match the layout.
 
@@ -293,16 +442,16 @@ So the same row label denotes "floor (inverse depth)" on the AM rows and "peak
 depth" on the FM rows. Rename so the two read consistently (e.g. AM: floor; FM:
 depth).
 
-*** TODO overruled :)
+*** DONE overruled :)
 Amplitude is the standard term used in all three contexts.
 If a user doesn't know what context they're in, that's their fault.
-**** TODO claude: name stands -- one wiring note, not a spelling
+**** DONE claude: name stands -- one wiring note, not a spelling
 Keeping "amplitude" everywhere is fine. The only thing the docs/code must pin so
 it's built the right way round is the *direction* of AM amplitude: you defined it
 as the wave's *least value*, so amplitude *up* = AM *shallower* (1.0 = no AM). An
 implementer who reads only "amplitude, 0 to 1" will likely wire it backwards
 (up = deeper). One sentence of direction in the docs prevents that.
-***** TODO oh but that is more natural
+***** DONE oh but that is more natural
 You're right -- "more AM" should mean "wider AM".
 So let's reverse its direction.
 ** 2d. AM row order disagrees with itself.
@@ -310,8 +459,8 @@ The "slow AM" section defines the rows *Frequency, Amplitude, Shape*; the layout
 lists them *amp, freq, shape*. Minor, but pick one order and use it in both the
 prose and the .toml so the config reads top-to-bottom the way the document does.
 
-*** TODO alphabetical
-**** TODO claude: locked
+*** DONE alphabetical
+**** DONE claude: locked
 AM rows: amp, freq, shape. FM rows: amp, freq. (Both already alphabetical in the
 layout; the "slow AM" prose gets reordered to match.)
 
@@ -322,10 +471,10 @@ misnomer at the top of the range. Not a bug -- just flag the name, or cap the to
 lower if "slow" is meant literally. (This interacts with 1a: whatever you pick for
 the row's top endpoint settles it.)
 
-*** TODO it's fine
+*** DONE it's fine
 Even higher is fine, as noted above.
 The user will be easily able to change this in the config.
-**** TODO claude: locked
+**** DONE claude: locked
 Top end is configurable and may exceed audio rate by design. I'll keep "slow" as
 a loose label but drop any doc claim of an upper bound.
 
@@ -338,9 +487,9 @@ oscillators; band-limiting square/saw (PolyBLEP or similar) avoids aliasing,
 especially once FM moves the pitch around -- worth budgeting, the current naive
 triangle doesn't alias much but a raw square/saw will.
 
-*** TODO agreed
+*** DONE agreed
 and all names, comments and docs should be corrected to reflect reality
-**** TODO claude: locked -- same correction as 1b
+**** DONE claude: locked -- same correction as 1b
 The synth's names/comments/docs get reconciled to what it actually renders
 (triangle today, plus the new sine/square/saw). Tracked once, at 1b.
 
@@ -358,10 +507,10 @@ The synth's names/comments/docs get reconciled to what it actually renders
   Worth confirming you want recall to move volume; if not, volume becomes a global
   fader excluded from the snapshot.
 
-*** TODO
+*** DONE
 Agreed on headroom.
 Amplitude really should be part of a saved timbre.
-**** TODO claude: locked
+**** DONE claude: locked
 Top cell = unity (today's sink amplitude), attenuate below; volume rides in the
 snapshot. Accept one consequence: in loop mode the volume row, like the others,
 jumps to each note's stored value as the playhead moves across it.
@@ -395,11 +544,11 @@ choice; just note its endpoints are triangle and square, *not* sine and square, 
 "sine at one extreme" would have to give. Pick which morph you want; the tanh form
 is the one that actually hits *sine* at the soft end.
 
-*** TODO let's use tanh but
+*** DONE let's use tanh but
 make this user-configurable too:
 "AM shape family" has two values, "sin-to-square" and "tri-to-square",
 defaulting to sin-to-square.
-**** TODO claude: locked -- one scoping question
+**** DONE claude: locked -- one scoping question
 tanh for sin-to-square, trapezoid for tri-to-square; the "AM shape family" enum
 defaults to sin-to-square, and the shape *row* morphs within the chosen family.
 Is the family a *config-level* setting (fixed per .toml, like the row ranges), or
@@ -413,8 +562,8 @@ performable.
   shape row, while AM does. That asymmetry is fine, just intentional and worth a
   word (you may later want FM shape for symmetry; not now).
 
-*** TODO correct
-**** TODO claude: locked
+*** DONE correct
+**** DONE claude: locked
 FM depth = peak deviation in cents; FM modulator is sine -- no shape row.
 
 ** 3e. LFO phase: retrigger or free-run?
@@ -426,8 +575,8 @@ share one phase, or each its own? I'd default to per-voice retrigger (simplest,
 and each =VoiceState= already owns a =phase=); flag it so it's a decision, not an
 accident.
 
-*** TODO per-voice
-**** TODO claude: locked
+*** DONE per-voice
+**** DONE claude: locked
 Each note retriggers its own AM/FM LFO from phase 0 at note-on -- modulation is
 phase-locked to each onset.
 
@@ -436,18 +585,18 @@ phase-locked to each onset.
 (16 - the corner - 4 waveform - 1 arm ~
 10 slots on a 16-wide grid). Keep it implicit in the rect, like the looper's
 counts (looper 1c/3e); don't add an =n_slots= field.
-**** TODO yes
-***** TODO claude: locked
+**** DONE yes
+***** DONE claude: locked
 Slot count stays implicit in the rect; no =n_slots= field.
 *** *Empty slots.* What does pressing a never-saved slot do -- nothing, or load a
   default timbre? And how do empty/occupied/current show? The looper's loop-slot
   ordering is the obvious template: current = solid, occupied = dim, empty = off
   (=RUNTIME-NOTES= brightness gives you Off/Dim/Mid/Bright; Dim/Mid are unused
   today, so there's room).
-**** TODO yes
+**** DONE yes
 It should do nothing if empty, and be dark.
 If filled, it should be dim (or bright if it's the active one).
-***** TODO claude: locked
+***** DONE claude: locked
 Empty = off; occupied = dim; current/active = bright -- three of the four
 brightness buckets, and the dirtiness flash below is the bright one blinking.
 *** *Does capture auto-disarm?*
@@ -456,8 +605,8 @@ After you arm and then capture into a slot, does save-mode stay
 armed (capture into several slots in a row) or auto-disarm after one (like
 =scale_control= store and the looper's copy gesture)? I'd auto-disarm after one
 capture; confirm.
-**** TODO yes, auto-disarm
-***** TODO claude: locked
+**** DONE yes, auto-disarm
+***** DONE claude: locked
 Arm captures exactly one slot, then disarms -- like =scale_control= store.
 *** *Live vs. stored divergence.*
 Pressing a slot "switches to it," but then you
@@ -466,9 +615,9 @@ now differs from what's stored? This is the looper's exact active-vs-stored
 problem. Cleanest: a slot stays "current" (solid) but the moment you edit, the
 live timbre is dirty/unanchored until re-saved. Decide whether to show that
 dirtiness at all.
-**** TODO I like it.
+**** DONE I like it.
 We can show dirtiness via 50ms on / 50 ms off flashing.
-***** TODO claude: locked -- one edge
+***** DONE claude: locked -- one edge
 The current slot flashes 50/50 once the live timbre is edited away from it. Edge:
 if you recalled *no* slot and just tweaked from scratch, no slot is current, so
 nothing flashes -- there's nothing to be dirty against. Fine; just naming it.

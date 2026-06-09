@@ -1,6 +1,27 @@
 * lately using [[./code/rust/configs/README.org]]
-* ONGOING [[./TODO/monome-looper]]
-* ONGOING [[./TODO/timbre-manip]]
+* AWAITS [[./TODO/monome-looper]]
+claude --dangerously-skip-permissions --resume 31806765-010a-499b-a578-972782fd9b21
+** TODO NEXT prompt
+Is all of TODO/monome-looper/ done,
+or did you never do phase 0? If it's done please update it.
+** more
+*** loops must be overlappable
+*** edit a number of repeats of a loop
+Requires overriding record and stop.
+* AWAITS [[./TODO/timbre-manip]]
+Ready to write a definitive plan.
+claude --dangerously-skip-permissions --resume 9e94e238-1e8d-42c5-b842-340e634d30ab
+* TODO by AI
+** ONGOING write a mock monome for tests
+** ? write a mock pipewire for tests
+so the tests don't sound while I'm playing
+** see [[./request.org]]
+** for a cross-section, rules then types
+'write down the rules for <cross-section of system>, and determine whether they suggest a new kind of abstraction, or changes in the abstractions (types, and things that could be types in a sufficiently expressive language)"
+* lyrical samples ?fun to mix
+"What if we're all a metaphor."
+"Self-awareness ..." (like trying to finish the sentence and can't)
+  [pitch 4 7 0 4]
 * [[./TODO/scale-mods.org]]
 * sing while piano
 long tones, few notes
