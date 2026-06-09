@@ -4,8 +4,41 @@ the top of each section. Jeff: scan =* TODO (need Jeff)= first.
 
 * TODO (need Jeff)
 Non-reversible / taste decisions I deliberately did NOT make. Everything not
-blocked on these is being built around them.
-(none yet)
+blocked on these has been built; these gate the runtime UI wiring (C3b onward).
+
+** TODO relative-coordinate config syntax (C5a) -- a user-facing config API
+6_plan 4.1 wants per-edge rects: each edge absolute (int; -1 = far edge) or
+relative (=other.edge + offset=). That's a *new .toml surface users will write*,
+so I don't want to unilaterally freeze it. Proposal to approve/adjust:
+#+begin_src toml
+rect.top    = "live-timbre.bottom + 1"   # string: "<window-id>.<edge> [+/- n]"
+rect.bottom = -1                          # int: absolute (-1 = last row)
+rect.left   = 0
+rect.right  = -1
+#+end_src
+Alternatives: a typed table =rect.top = { rel = "live-timbre.bottom", offset = 1 }=
+(more verbose, less stringly-typed). Pick one and I'll build the parser + the
+runtime relayout pass.
+
+** TODO concrete editor cell-layout on each monome (C3b)
+The loops monome is already full (loop slots, transport, display, toggle/copy/undo)
+and the edo monome is the instrument. The editor *occludes* whatever it covers.
+6_plan 2.7 says: row0 = [fold | 4 waveforms | arm | sustain | save-undo | slots],
+then amplitude, then 5 FX rows -- ~7 rows tall, top-anchored. Before I wire presses
++ LEDs I need your sign-off on the *exact rects* on each grid (which rows, and
+that it's OK for the live-timbre editor to hide the loop display while open, and
+the loop-timbre editor to hide the top of the edo grid). A mock-grid mockup is
+cheap once you confirm the intent. (I can also just pick rects and you adjust --
+say the word and I'll treat this as reversible.)
+
+** TODO does the C5 window system come before or after a crude C3b?
+6_plan sequences C5 (fold + relative coords) AFTER C3. But on the *loops* monome
+the editor must coexist with the loop display via the reflow (C5c), so a
+"C3-first, absolute-rect, occlude-everything" editor there is partly throwaway.
+Options: (a) build C3b only on the *edo* monome first (loop-timbre editor, simple
+occlusion -- no reflow needed), proving the editor end to end, then do C5 + the
+loops-monome live editor; or (b) do C5a (relative coords) first, then both editors
+cleanly. I lean (a). Confirm.
 
 * Re-grounding vs 6_plan.org (important)
 6_plan was written against =sawwave/= as "the synth". Reality on disk:
@@ -83,7 +116,63 @@ README/RUNTIME-NOTES. No alias (per "correct the lies"). =loads_default_configs=
 + full suite green. NOTE: this lives only on the =timbre-manip= branch; when the
 =monome-looper= branch merges, its =cpal_sawwave= references must be reconciled
 (it's the same shared sink kind).
-** (next) C3 -- timbre editor window + live editing (target=live)
-   Needs: config schema (param-row kinds + timbre_editor window kind + am.shape
-   family), then wiring rows to LooperState.live_timbre and routing presses /
-   LEDs. This is the big config.rs / mod.rs / state.rs / display.rs integration.
+** DONE C3a -- param-row value math (looper_runtime/timbre_rows.rs)
+Pure, runtime-free =RowRange= { Linear[min,max] | LogFactor[least,mult] |
+LogRange[least,greatest] } with =value_at(k, width)= and =cell_for(value, width)=
+(radio snap). Round-trips tested; "8 cells -> 32 Hz" verified; LogRange holds its
+endpoints across widths (folded vs unfolded amplitude). 157 bin tests green. This
+is the backbone the editor wiring will use; deliberately NOT coupled to config yet
+(config syntax for relative coords is a Jeff decision -- see TODO).
+
+* Remaining roadmap (what's left, with the integration approach I've mapped)
+The synth + value math are done and tested. What remains is UI wiring into the
+already-built looper. Key facts I confirmed for whoever continues:
+- The looper has NO generic window compositor at runtime: =mod.rs::resolve_settings=
+  picks specific window *kinds* out of config into cells/rects (=Settings= ->
+  =LooperParams= -> =LooperState=); presses go to =state.rs::edo_key= /
+  =loops_key=; LEDs are a full =Vec<i32>= per grid from =edo_levels()= /
+  =loops_levels(flash_on)=, diffed by =send_diffs=. So adding the editor =
+  (1) parse its window in resolve_settings, (2) intercept its rect at the top of
+  the relevant *_key, (3) overlay its cells at the end of the relevant *_levels.
+- Selection pickers, loop display, copy/undo, remap (fine + group-transpose) all
+  already exist in state.rs -> C7 reuses them.
+
+** TODO C3b -- editor runtime wiring (live-timbre editor, one monome)
+Add a =timbre_editor= window kind to =config.rs::MonomeWindowConfig= (id, monome,
+rect, target, per-row =RowRange= params, am.shape family) + validation + a test
+config. Parse it in mod.rs. In state.rs: intercept editor-rect presses ->
+=RowRange::cell_for/value_at= -> mutate =live_timbre= (waveform/amplitude/AM/FM/
+shape rows, radio LEDs one-lit). Wire the am.shape family from config into
+=audio::start= -> =render_block= (replacing the C2 hardcoded default). Verify with
+the mock rig. Done-criterion (6_plan C3): dial params, hear it on live play.
+Gated by the two TODOs above (layout + which-monome-first).
+
+** TODO C4 -- timbre slots + save/recall
+=timbre_slot= + =timbre_arm= cells; recall on press; arm->capture one->auto-disarm;
+LEDs empty/occupied/current + 50/50 dirty flash. Mirror the =scale_slots= /
+=scale_control= store idiom already in config.rs/state.rs.
+
+** TODO C5a/b/c -- window system: relative coords + relayout, fold, loop reflow
+C5a: implement the relative-coordinate parser (pending the syntax TODO) + a
+relayout pass (recompute absolute rects on fold). C5b: fold state + 1-row folded
+strip (fold cell =Mid=, 4 rolling quick-timbres, amplitude row LogRange) +
+edo-monome occlusion. C5c: on the loops monome, anchor the loop display under the
+live editor so it reflows on fold. Nothing in the runtime resizes a window today,
+so the relayout pass is the real new mechanism.
+
+** TODO C6 -- per-note loop timbre (storage + record-time capture)
+Add a =Timbre= field to recorded loop notes in =loop_store.rs=; capture
+=live_timbre= at record time; loop playback stamps each note's own timbre (removes
+the C1 interim where Slot playback used live_timbre). Unit-testable at the
+loop_store/state level independent of the editor UI -- a good standalone commit if
+you want per-note storage before the loop editor.
+
+** TODO C7 -- loop-timbre manipulation (target=loop)
+The headline. loop-timbre editor (edo monome) edits the ACTIVE loop: playhead-
+tracking display (lowest sounding note; hold on rests; lowest selected under a
+selection); two paths -- selection = immediate stamp on all selected (works
+stopped), no-selection = rewrite each note-on as the playhead hits it;
+sustain-the-edits toggle (no-selection only); slot press = recall-whole-timbre;
+arm = capture displayed; corner cell clears selection; the save-undo button
+(single = checkpoint, double<200ms = revert to prior checkpoint, init = as-recorded).
+Reuses the existing selection/remap machinery.

@@ -34,6 +34,8 @@ mod loop_store;
 mod remap;
 mod sink;
 mod state;
+#[allow(dead_code)] // wired into the editor in a later commit; pure math for now
+mod timbre_rows;
 
 use state::{Grid, LooperParams, LooperState};
 
