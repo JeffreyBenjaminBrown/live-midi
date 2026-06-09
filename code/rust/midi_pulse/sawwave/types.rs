@@ -62,6 +62,63 @@ pub enum VoiceSource {
   Accreted { chord: ChordId, pitch: i32 },
 }
 
+// === Timbre =============================================================
+
+// The tone-colour of a voice: waveform + per-voice gain + slow AM + slow FM.
+// Captured per note (the live timbre at note-on; a per-note snapshot for loop
+// notes). `Default` is the pre-timbre instrument -- a triangle at unity gain with
+// no modulation -- so existing configs sound identical until a timbre is set.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waveform { Sine, Triangle, Square, Saw }
+
+impl Default for Waveform {
+  fn default() -> Self { Waveform::Triangle }
+}
+
+// Slow amplitude modulation (tremolo). `depth` in [0,1] is the modulation depth:
+// the carrier is multiplied by a unipolar wave in [1-depth, 1], so depth 0 = no
+// AM and depth 1 = dips to silence. `freq` is the LFO rate (Hz). `shape` in [0,1]
+// morphs the LFO wave within the config-level `AmShapeFamily`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Am { pub depth: f32, pub freq: f32, pub shape: f32 }
+
+impl Default for Am {
+  fn default() -> Self { Am { depth: 0.0, freq: 1.0, shape: 0.0 } }
+}
+
+// Slow frequency modulation (vibrato), driven by a sine. `depth_cents` is the peak
+// pitch deviation in cents; `freq` is the LFO rate (Hz). depth 0 = no FM.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fm { pub depth_cents: f32, pub freq: f32 }
+
+impl Default for Fm {
+  fn default() -> Self { Fm { depth_cents: 0.0, freq: 1.0 } }
+}
+
+// The instrument-wide choice of AM-shape morph family ([D 3c]: config-level, one
+// per instrument). The `shape` value (0..1) sweeps within the chosen family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmShapeFamily { SinToSquare, TriToSquare }
+
+impl Default for AmShapeFamily {
+  fn default() -> Self { AmShapeFamily::SinToSquare }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Timbre {
+  pub waveform: Waveform,
+  pub gain:     f32,   // linear per-voice gain; 1.0 = unity
+  pub am:       Am,
+  pub fm:       Fm,
+}
+
+impl Default for Timbre {
+  fn default() -> Self {
+    Timbre { waveform: Waveform::Triangle, gain: 1.0, am: Am::default(), fm: Fm::default() }
+  }
+}
+
 // Per-voice audio state. The envelope is "ramp env toward target_env
 // by ramp_per_sample each sample, clamping at target." A voice is
 // removed once env=0 AND target_env=0.
@@ -73,6 +130,11 @@ pub struct VoiceState {
   pub env:             f32,
   pub target_env:      f32,
   pub ramp_per_sample: f32,
+  // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
+  // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
+  pub timbre:          Timbre,
+  pub am_phase:        f32,
+  pub fm_phase:        f32,
 }
 
 pub type VoiceMap = HashMap<VoiceSource, VoiceState>;

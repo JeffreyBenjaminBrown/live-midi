@@ -10,19 +10,29 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use crate::types::Timbre;
+
+/// A note-on/off in a loop. On-events carry the timbre captured at record time
+/// (6_plan C6); off-events' timbre is unused. (No `Eq`: `Timbre` holds f32s.)
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopEvent {
   pub elapsed: Duration,
   pub pitch: i32,
   pub on: bool,
+  pub timbre: Timbre,
 }
 
 impl LoopEvent {
+  /// A note-on with the default timbre (handy in tests).
   pub fn on(elapsed: Duration, pitch: i32) -> Self {
-    LoopEvent { elapsed, pitch, on: true }
+    LoopEvent { elapsed, pitch, on: true, timbre: Timbre::default() }
+  }
+  /// A note-on carrying a captured timbre.
+  pub fn on_with(elapsed: Duration, pitch: i32, timbre: Timbre) -> Self {
+    LoopEvent { elapsed, pitch, on: true, timbre }
   }
   pub fn off(elapsed: Duration, pitch: i32) -> Self {
-    LoopEvent { elapsed, pitch, on: false }
+    LoopEvent { elapsed, pitch, on: false, timbre: Timbre::default() }
   }
 }
 
@@ -34,6 +44,10 @@ pub struct LoopSlot {
   pub events: Vec<LoopEvent>,
   /// Snapshots of `events` before each remap, for one-press undo (Phase 4).
   pub history: Vec<Vec<LoopEvent>>,
+  /// The save-undo checkpoints (C7, 6_plan 2.8): the last committed timbres and the
+  /// one before it. Both start at the as-recorded events ("save 0") on finalize.
+  pub committed: Vec<LoopEvent>,
+  pub prev_committed: Option<Vec<LoopEvent>>,
 }
 
 /// Turn raw recorded events + the chosen loop length into the finalized loop.
@@ -75,9 +89,9 @@ pub fn finalize_recording(
 }
 
 /// One action playback asks of the note sink, in order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlayAction {
-  On(i32),
+  On(i32, Timbre),
   Off(i32),
   /// The loop wrapped: release everything this slot is sounding (this is what
   /// cuts notes held at the loop boundary), then the following `On`s start the
@@ -104,6 +118,12 @@ impl Playback {
       cursor: 0,
       started: false,
     }
+  }
+
+  /// The index of the next event to emit. C7c reads this around `step` to find which
+  /// note-ons the playhead just crossed (for the play-along destructive rewrite).
+  pub fn cursor(&self) -> usize {
+    self.cursor
   }
 
   pub fn step(&mut self, events: &[LoopEvent], total: Duration) -> Vec<PlayAction> {
@@ -139,7 +159,7 @@ impl Playback {
     while self.cursor < events.len() && events[self.cursor].elapsed.as_nanos() <= pos_nanos {
       let event = events[self.cursor];
       out.push(if event.on {
-        PlayAction::On(event.pitch)
+        PlayAction::On(event.pitch, event.timbre)
       } else {
         PlayAction::Off(event.pitch)
       });
@@ -204,10 +224,16 @@ impl LoopStore {
     self.recording = Some(Recording { slot: self.active, start: now, buffer: vec![] });
   }
 
-  /// Capture a live note while recording (a no-op otherwise).
+  /// Capture a live note (default timbre) while recording (a no-op otherwise).
   pub fn record_note(&mut self, now: Duration, pitch: i32, on: bool) {
+    self.record_note_with(now, pitch, on, Timbre::default());
+  }
+
+  /// Capture a live note carrying `timbre` (the live timbre at this instant);
+  /// off-events ignore it. This is the record-time per-note capture (6_plan C6).
+  pub fn record_note_with(&mut self, now: Duration, pitch: i32, on: bool, timbre: Timbre) {
     if let Some(rec) = &mut self.recording {
-      rec.buffer.push(LoopEvent { elapsed: now.saturating_sub(rec.start), pitch, on });
+      rec.buffer.push(LoopEvent { elapsed: now.saturating_sub(rec.start), pitch, on, timbre });
     }
   }
 
@@ -240,7 +266,11 @@ impl LoopStore {
       return None;
     }
     self.slots[rec.slot].loop_duration = Some(duration);
-    self.slots[rec.slot].events = finalize_recording(rec.buffer, duration, self.quantize);
+    let finalized = finalize_recording(rec.buffer, duration, self.quantize);
+    // "save 0": the checkpoints start at the as-recorded timbres.
+    self.slots[rec.slot].committed = finalized.clone();
+    self.slots[rec.slot].prev_committed = None;
+    self.slots[rec.slot].events = finalized;
     Some(rec.slot)
   }
 }
@@ -299,7 +329,7 @@ mod tests {
     let events = vec![LoopEvent::on(ms(100), 30), LoopEvent::off(ms(400), 30)];
     let mut pb = Playback::new(ms(1000));
     assert_eq!(pb.step(&events, ms(50)), vec![]); // before the on
-    assert_eq!(pb.step(&events, ms(150)), vec![PlayAction::On(30)]);
+    assert_eq!(pb.step(&events, ms(150)), vec![PlayAction::On(30, Timbre::default())]);
     assert_eq!(pb.step(&events, ms(300)), vec![]); // between on and off
     assert_eq!(pb.step(&events, ms(450)), vec![PlayAction::Off(30)]);
   }
@@ -312,7 +342,7 @@ mod tests {
     let _ = pb.step(&events, ms(450)); // Off(30)
     // Jump past the boundary into the next pass (1000 + 150 = 1150).
     let out = pb.step(&events, ms(1150));
-    assert_eq!(out, vec![PlayAction::ReleaseAll, PlayAction::On(30)]);
+    assert_eq!(out, vec![PlayAction::ReleaseAll, PlayAction::On(30, Timbre::default())]);
   }
 
   #[test]
@@ -321,7 +351,7 @@ mod tests {
     // cuts it -- the boundary cut, with no stored end-of-loop note-off.
     let events = vec![LoopEvent::on(ms(800), 12)];
     let mut pb = Playback::new(ms(1000));
-    assert_eq!(pb.step(&events, ms(850)), vec![PlayAction::On(12)]);
+    assert_eq!(pb.step(&events, ms(850)), vec![PlayAction::On(12, Timbre::default())]);
     let out = pb.step(&events, ms(1050));
     assert_eq!(out[0], PlayAction::ReleaseAll);
   }
@@ -411,6 +441,21 @@ mod tests {
     s.play(ms(105)); // 5 ms < MIN_LOOP
     assert!(!s.is_occupied(0));
     assert_eq!(s.sounding, None);
+  }
+
+  #[test]
+  fn record_captures_the_timbre_and_playback_carries_it() {
+    use crate::types::Waveform;
+    let saw = Timbre { waveform: Waveform::Saw, ..Timbre::default() };
+    let mut s = store();
+    s.start_recording(ms(0));
+    s.record_note_with(ms(100), 30, true, saw);
+    s.record_note(ms(400), 30, false); // off keeps the default timbre
+    s.play(ms(1000));
+    let on = s.slots[0].events.iter().find(|e| e.on).unwrap();
+    assert_eq!(on.timbre.waveform, Waveform::Saw, "on-event keeps the captured timbre");
+    let mut pb = Playback::new(ms(1000));
+    assert_eq!(pb.step(&s.slots[0].events, ms(150)), vec![PlayAction::On(30, saw)]);
   }
 
   #[test]

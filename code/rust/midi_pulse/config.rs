@@ -24,6 +24,179 @@ pub struct Config {
   pub display: Option<DisplayConfig>,
   #[serde(default)]
   pub looper: Option<LooperConfig>,
+  /// Instrument-wide AM settings (6_plan 5). Today only the shape family lives here;
+  /// it is the config-level morph family the per-note `am.shape` value sweeps within.
+  #[serde(default)]
+  pub am: Option<AmConfig>,
+}
+
+/// `[am]` table: instrument-wide amplitude-modulation settings. The shape *family*
+/// is config-level (one per instrument, 6_plan 2.5 / D 3c); the per-note `am.shape`
+/// value (set by the editor's shape row) is the morph position within it.
+#[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AmConfig {
+  #[serde(default)]
+  pub shape: AmShapeConfig,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AmShapeConfig {
+  #[serde(default)]
+  pub family: AmShapeFamilyConfig,
+}
+
+/// Mirrors the runtime `sawwave::types::AmShapeFamily` (which the lib cannot see);
+/// `resolve_settings` converts. Default = `sin_to_square`, matching the runtime.
+#[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AmShapeFamilyConfig {
+  #[default]
+  SinToSquare,
+  TriToSquare,
+}
+
+/// Which timbre a `timbre_editor` window edits (6_plan 2.2). In C3b both edit the
+/// live timbre; C7 makes `loop` edit the active loop's per-note timbre.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimbreTarget {
+  Live,
+  Loop,
+}
+
+/// A parameter row's value<->cell mapping, declared per row in a `timbre_editor`
+/// window (6_plan 2.6). Mirrors the runtime `timbre_rows::RowRange` (in the binary);
+/// `resolve_settings` converts. Holds f32s, so it is `PartialEq` but not `Eq`.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RowRangeConfig {
+  /// value = lerp(min, max) across the row.
+  Linear { min: f32, max: f32 },
+  /// value(k) = least * multiplier^k -- the top grows with the row width.
+  LogFactor { least: f32, multiplier: f32 },
+  /// value spans [least, greatest] at any width -- the step count scales instead.
+  LogRange { least: f32, greatest: f32 },
+}
+
+// === Relative window coordinates (6_plan 4.1) ===========================
+
+/// One side of a rect. `Top`/`Bottom` are y edges; `Left`/`Right` are x edges.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeName {
+  Top,
+  Bottom,
+  Left,
+  Right,
+}
+
+/// A reference to another window's edge, plus an offset: `live-timbre.bottom + 1`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeRef {
+  pub target: String,
+  pub edge: EdgeName,
+  pub offset: i32,
+}
+
+/// A single edge, after deserialization: an absolute coordinate (negative counts
+/// from the far edge; -1 = last row/col) or a reference to another window's edge.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedEdge {
+  Absolute(i32),
+  Ref(EdgeRef),
+}
+
+/// One edge in config: an integer (absolute) or a `"id.edge +/- n"` string.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum EdgeSpecConfig {
+  Absolute(i32),
+  Expr(String),
+}
+
+/// A window rect (6_plan 4.1): the legacy whole-rect array `[x0,y0,x1,y1]` (all
+/// absolute), or a per-edge table whose edges may be absolute or relative. Both
+/// forms parse, so absolute configs are unchanged.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum RectSpecConfig {
+  Absolute([i32; 4]),
+  PerEdge {
+    top: EdgeSpecConfig,
+    bottom: EdgeSpecConfig,
+    left: EdgeSpecConfig,
+    right: EdgeSpecConfig,
+  },
+}
+
+/// Parse a relative-edge expression `"<id>.<edge> [+/- n]"`, e.g.
+/// `"live-timbre.bottom + 1"` or `"grid.left"`. Whitespace around the offset is
+/// optional. The id may contain hyphens (split on the first dot).
+pub fn parse_edge_expr(s: &str) -> Result<EdgeRef, String> {
+  let s = s.trim();
+  let dot = s
+    .find('.')
+    .ok_or_else(|| format!("edge expr {s:?} must be \"<id>.<edge> [+/- n]\""))?;
+  let target = s[..dot].trim();
+  if target.is_empty() {
+    return Err(format!("edge expr {s:?} is missing a window id"));
+  }
+  let rest = s[dot + 1..].trim();
+  let edge_len = rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len());
+  let edge = match &rest[..edge_len] {
+    "top" => EdgeName::Top,
+    "bottom" => EdgeName::Bottom,
+    "left" => EdgeName::Left,
+    "right" => EdgeName::Right,
+    other => return Err(format!("edge expr {s:?} has unknown edge {other:?}")),
+  };
+  let offset_str: String = rest[edge_len..].chars().filter(|c| !c.is_whitespace()).collect();
+  let offset = if offset_str.is_empty() {
+    0
+  } else {
+    offset_str
+      .parse::<i32>()
+      .map_err(|_| format!("edge expr {s:?} has a non-integer offset {offset_str:?}"))?
+  };
+  Ok(EdgeRef { target: target.to_string(), edge, offset })
+}
+
+impl RectSpecConfig {
+  /// The given edge as Absolute(int) or Ref(other window's edge). The array form
+  /// maps `[x0,y0,x1,y1]` to left/top/right/bottom.
+  pub fn resolved_edge(&self, which: EdgeName) -> Result<ResolvedEdge, String> {
+    match self {
+      RectSpecConfig::Absolute(a) => Ok(ResolvedEdge::Absolute(match which {
+        EdgeName::Left => a[0],
+        EdgeName::Top => a[1],
+        EdgeName::Right => a[2],
+        EdgeName::Bottom => a[3],
+      })),
+      RectSpecConfig::PerEdge { top, bottom, left, right } => {
+        let e = match which {
+          EdgeName::Top => top,
+          EdgeName::Bottom => bottom,
+          EdgeName::Left => left,
+          EdgeName::Right => right,
+        };
+        match e {
+          EdgeSpecConfig::Absolute(v) => Ok(ResolvedEdge::Absolute(*v)),
+          EdgeSpecConfig::Expr(s) => Ok(ResolvedEdge::Ref(parse_edge_expr(s)?)),
+        }
+      }
+    }
+  }
+
+  /// Validate that every edge parses (absolute or a well-formed reference). Cross-
+  /// window reference targets and cycles are checked at resolve time (the runtime).
+  pub fn validate(&self) -> Result<(), String> {
+    for which in [EdgeName::Top, EdgeName::Bottom, EdgeName::Left, EdgeName::Right] {
+      self.resolved_edge(which)?;
+    }
+    Ok(())
+  }
 }
 
 /// Looper-wide scalars (see the loop windows below). All durations in
@@ -148,7 +321,7 @@ pub enum SinkConfig {
   Midi {
     id: String,
   },
-  CpalSawwave {
+  CpalSynth {
     id: String,
     sample_rate: u32,
     buffer_frames: u32,
@@ -162,12 +335,14 @@ pub enum SinkConfig {
 impl SinkConfig {
   pub fn id(&self) -> &str {
     match self {
-      SinkConfig::Midi { id } | SinkConfig::CpalSawwave { id, .. } => id,
+      SinkConfig::Midi { id } | SinkConfig::CpalSynth { id, .. } => id,
     }
   }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+// Not `Eq`: the `TimbreEditor` variant carries f32 row ranges (like `LoopEvent`
+// dropped `Eq` for its f32 timbre in C6).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MonomeWindowConfig {
   EdoNoteGrid {
@@ -299,6 +474,53 @@ pub enum MonomeWindowConfig {
     monome: String,
     rect: [i32; 4],
   },
+  // The on-grid timbre editor (6_plan 2.6/2.7). One absolute rect (~7 rows tall),
+  // a stack of radio parameter rows. `target` picks live vs loop editing. Each
+  // value row's range is configurable; omitted rows fall back to 6_plan 5 defaults.
+  TimbreEditor {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    target: TimbreTarget,
+    #[serde(default = "default_amplitude_row")]
+    amplitude: RowRangeConfig,
+    #[serde(default = "default_am_amplitude_row")]
+    am_amplitude: RowRangeConfig,
+    #[serde(default = "default_am_frequency_row")]
+    am_frequency: RowRangeConfig,
+    #[serde(default = "default_am_shape_row")]
+    am_shape: RowRangeConfig,
+    #[serde(default = "default_fm_amplitude_row")]
+    fm_amplitude: RowRangeConfig,
+    #[serde(default = "default_fm_frequency_row")]
+    fm_frequency: RowRangeConfig,
+    // The save-undo double-press window in ms (6_plan 2.8/5). Loop-editor only.
+    #[serde(default = "default_save_undo_ms")]
+    save_undo_double_ms: u64,
+  },
+}
+
+// Per-row default ranges (6_plan 5). Used when a `timbre_editor` omits a row.
+fn default_amplitude_row() -> RowRangeConfig {
+  RowRangeConfig::LogRange { least: 0.0009, greatest: 0.15 }
+}
+fn default_am_amplitude_row() -> RowRangeConfig {
+  RowRangeConfig::Linear { min: 0.0, max: 1.0 }
+}
+fn default_am_frequency_row() -> RowRangeConfig {
+  RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }
+}
+fn default_am_shape_row() -> RowRangeConfig {
+  RowRangeConfig::Linear { min: 0.0, max: 1.0 }
+}
+fn default_fm_amplitude_row() -> RowRangeConfig {
+  RowRangeConfig::LogFactor { least: 5.0, multiplier: 2.0 }
+}
+fn default_fm_frequency_row() -> RowRangeConfig {
+  RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }
+}
+fn default_save_undo_ms() -> u64 {
+  200
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -355,7 +577,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::LoopRemapModeToggle { id, .. }
       | MonomeWindowConfig::LoopCopyButton { id, .. }
       | MonomeWindowConfig::LoopRemapUndo { id, .. }
-      | MonomeWindowConfig::LoopDisplay { id, .. } => id,
+      | MonomeWindowConfig::LoopDisplay { id, .. }
+      | MonomeWindowConfig::TimbreEditor { id, .. } => id,
     }
   }
 
@@ -380,7 +603,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::LoopRemapModeToggle { monome, .. }
       | MonomeWindowConfig::LoopCopyButton { monome, .. }
       | MonomeWindowConfig::LoopRemapUndo { monome, .. }
-      | MonomeWindowConfig::LoopDisplay { monome, .. } => monome,
+      | MonomeWindowConfig::LoopDisplay { monome, .. }
+      | MonomeWindowConfig::TimbreEditor { monome, .. } => monome,
     }
   }
 
@@ -405,7 +629,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::LoopRemapModeToggle { rect, .. }
       | MonomeWindowConfig::LoopCopyButton { rect, .. }
       | MonomeWindowConfig::LoopRemapUndo { rect, .. }
-      | MonomeWindowConfig::LoopDisplay { rect, .. } => *rect,
+      | MonomeWindowConfig::LoopDisplay { rect, .. }
+      | MonomeWindowConfig::TimbreEditor { rect, .. } => *rect,
     }
   }
 
@@ -432,6 +657,42 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::LoopCopyButton { .. } => "loop_copy_button",
       MonomeWindowConfig::LoopRemapUndo { .. } => "loop_remap_undo",
       MonomeWindowConfig::LoopDisplay { .. } => "loop_display",
+      MonomeWindowConfig::TimbreEditor { .. } => "timbre_editor",
+    }
+  }
+
+  /// The timbre-editor row ranges + target, in row order (amplitude, AM amp/freq/
+  /// shape, FM amp/freq), or None for other window kinds. Used by `resolve_settings`.
+  #[allow(clippy::type_complexity)]
+  pub fn timbre_editor_rows(
+    &self,
+  ) -> Option<(TimbreTarget, [RowRangeConfig; 6])> {
+    match self {
+      MonomeWindowConfig::TimbreEditor {
+        target,
+        amplitude,
+        am_amplitude,
+        am_frequency,
+        am_shape,
+        fm_amplitude,
+        fm_frequency,
+        ..
+      } => Some((
+        *target,
+        [*amplitude, *am_amplitude, *am_frequency, *am_shape, *fm_amplitude, *fm_frequency],
+      )),
+      _ => None,
+    }
+  }
+
+  /// A timbre_editor's target + its save-undo double-press window (ms), or None for
+  /// other window kinds. Used by `resolve_settings` (save-undo is loop-editor only).
+  pub fn timbre_editor_save_undo_ms(&self) -> Option<(TimbreTarget, u64)> {
+    match self {
+      MonomeWindowConfig::TimbreEditor { target, save_undo_double_ms, .. } => {
+        Some((*target, *save_undo_double_ms))
+      }
+      _ => None,
     }
   }
 }
@@ -534,7 +795,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   }
 
   for sink in &config.sinks {
-    if let SinkConfig::CpalSawwave {
+    if let SinkConfig::CpalSynth {
       sample_rate,
       buffer_frames,
       amplitude,
@@ -616,6 +877,25 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
             "duplicate loop_control kind {:?} (in window {:?})",
             control, id,
           ));
+        }
+      }
+      MonomeWindowConfig::TimbreEditor { id, .. } => {
+        // Unfolded the editor is 7 rows (control + amplitude + 5 FX rows) and needs
+        // the control row's fold + 4 waveform cells (>=5 wide). 6_plan 2.7.
+        if x1 - x0 + 1 < 5 {
+          return Err(format!(
+            "timbre_editor window {id:?} rect must be at least 5 cells wide",
+          ));
+        }
+        if y1 - y0 + 1 < 7 {
+          return Err(format!(
+            "timbre_editor window {id:?} rect must be at least 7 rows tall (unfolded)",
+          ));
+        }
+        if let Some((_, rows)) = window.timbre_editor_rows() {
+          for row in rows {
+            validate_row_range(id, &row)?;
+          }
         }
       }
       _ => {}
@@ -741,6 +1021,34 @@ fn validate_looper(config: &Config) -> Result<(), String> {
     }
   }
 
+  Ok(())
+}
+
+/// A timbre-editor parameter row must be finite and monotonic. Log rows need a
+/// positive base; a growth factor must exceed 1 or the row collapses.
+fn validate_row_range(id: &str, row: &RowRangeConfig) -> Result<(), String> {
+  let finite = |v: f32| v.is_finite();
+  match *row {
+    RowRangeConfig::Linear { min, max } => {
+      if !finite(min) || !finite(max) || max < min {
+        return Err(format!("timbre_editor window {id:?} linear row needs finite min <= max"));
+      }
+    }
+    RowRangeConfig::LogFactor { least, multiplier } => {
+      if !finite(least) || least <= 0.0 || !finite(multiplier) || multiplier <= 1.0 {
+        return Err(format!(
+          "timbre_editor window {id:?} log_factor row needs least > 0 and multiplier > 1",
+        ));
+      }
+    }
+    RowRangeConfig::LogRange { least, greatest } => {
+      if !finite(least) || least <= 0.0 || !finite(greatest) || greatest < least {
+        return Err(format!(
+          "timbre_editor window {id:?} log_range row needs 0 < least <= greatest",
+        ));
+      }
+    }
+  }
   Ok(())
 }
 
@@ -1376,7 +1684,7 @@ fundamental_hz = 80
 
 [[sinks]]
 id = "saw"
-kind = "cpal_sawwave"
+kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
 amplitude = 0.15
@@ -1512,5 +1820,181 @@ rect = [0, 5, 15, 15]
     let err = parse_config(&valid_looper_toml().replace("rect = [0, 3, 0, 3]", "rect = [0, 3, 1, 3]"))
       .expect_err("a multi-cell loop_control rect should fail");
     assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  // ---- C3b: timbre_editor window + [am.shape] ----
+
+  const TIMBRE_EDITOR_MIN: &str = r#"
+[[monome_windows]]
+id = "edo-timbre"
+monome = "edo"
+kind = "timbre_editor"
+target = "loop"
+rect = [0, 0, 15, 6]
+"#;
+
+  fn looper_with_editor(editor: &str) -> String {
+    format!("{}{editor}", valid_looper_toml())
+  }
+
+  #[test]
+  fn timbre_editor_parses_with_default_rows() {
+    let config = parse_config(&looper_with_editor(TIMBRE_EDITOR_MIN))
+      .expect("a timbre_editor with omitted rows should use 6_plan 5 defaults");
+    let ed = config
+      .monome_windows
+      .iter()
+      .find_map(MonomeWindowConfig::timbre_editor_rows)
+      .expect("the editor is present");
+    assert_eq!(ed.0, TimbreTarget::Loop);
+    assert_eq!(ed.1[0], RowRangeConfig::LogRange { least: 0.0009, greatest: 0.15 }, "amplitude default");
+    assert_eq!(ed.1[1], RowRangeConfig::Linear { min: 0.0, max: 1.0 }, "am depth default");
+    assert_eq!(ed.1[2], RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }, "am freq default");
+    assert_eq!(ed.1[4], RowRangeConfig::LogFactor { least: 5.0, multiplier: 2.0 }, "fm cents default");
+  }
+
+  #[test]
+  fn timbre_editor_parses_explicit_rows() {
+    let editor = r#"
+[[monome_windows]]
+id = "edo-timbre"
+monome = "edo"
+kind = "timbre_editor"
+target = "live"
+rect = [0, 0, 15, 6]
+amplitude    = { kind = "log_range",  least = 0.001, greatest = 0.2 }
+am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
+"#;
+    let config = parse_config(&looper_with_editor(editor)).expect("explicit rows should parse");
+    let ed = config.monome_windows.iter().find_map(MonomeWindowConfig::timbre_editor_rows).unwrap();
+    assert_eq!(ed.0, TimbreTarget::Live);
+    assert_eq!(ed.1[0], RowRangeConfig::LogRange { least: 0.001, greatest: 0.2 });
+    assert_eq!(ed.1[1], RowRangeConfig::Linear { min: 0.0, max: 0.5 });
+    // An omitted row still falls back to its default.
+    assert_eq!(ed.1[2], RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 });
+  }
+
+  #[test]
+  fn am_shape_family_parses_and_defaults() {
+    // Absent [am.shape] -> no am table (the runtime defaults to sin_to_square).
+    let none = parse_config(&looper_with_editor(TIMBRE_EDITOR_MIN)).unwrap();
+    assert!(none.am.is_none(), "no [am] table when omitted");
+    // Explicit family parses.
+    let with = parse_config(&format!(
+      "{}\n[am.shape]\nfamily = \"tri_to_square\"\n",
+      looper_with_editor(TIMBRE_EDITOR_MIN)
+    ))
+    .expect("am.shape should parse");
+    assert_eq!(with.am.unwrap().shape.family, AmShapeFamilyConfig::TriToSquare);
+  }
+
+  #[test]
+  fn save_undo_double_ms_parses_and_defaults() {
+    let su = |toml: &str| {
+      parse_config(toml)
+        .unwrap()
+        .monome_windows
+        .iter()
+        .find_map(MonomeWindowConfig::timbre_editor_save_undo_ms)
+    };
+    // Omitted -> default 200 ms.
+    assert_eq!(su(&looper_with_editor(TIMBRE_EDITOR_MIN)), Some((TimbreTarget::Loop, 200)));
+    // Explicit value parses.
+    let explicit = format!("{TIMBRE_EDITOR_MIN}save_undo_double_ms = 350\n");
+    assert_eq!(su(&looper_with_editor(&explicit)), Some((TimbreTarget::Loop, 350)));
+  }
+
+  #[test]
+  fn timbre_editor_rect_must_be_tall_enough() {
+    let short = TIMBRE_EDITOR_MIN.replace("rect = [0, 0, 15, 6]", "rect = [0, 0, 15, 2]");
+    let err = parse_config(&looper_with_editor(&short)).expect_err("a 3-row editor should fail");
+    assert!(err.contains("at least 7 rows"), "{err}");
+  }
+
+  #[test]
+  fn timbre_editor_rect_must_be_wide_enough() {
+    let narrow = TIMBRE_EDITOR_MIN.replace("rect = [0, 0, 15, 6]", "rect = [0, 0, 3, 6]");
+    let err = parse_config(&looper_with_editor(&narrow)).expect_err("a 4-wide editor should fail");
+    assert!(err.contains("at least 5 cells wide"), "{err}");
+  }
+
+  #[test]
+  fn timbre_editor_rejects_a_degenerate_log_row() {
+    let bad = format!(
+      "{}am_frequency = {{ kind = \"log_factor\", least = 0.25, multiplier = 1.0 }}\n",
+      TIMBRE_EDITOR_MIN
+    );
+    let err = parse_config(&looper_with_editor(&bad)).expect_err("multiplier 1.0 collapses the row");
+    assert!(err.contains("multiplier > 1"), "{err}");
+  }
+
+  // ---- C5a: relative window coordinates ----
+
+  #[test]
+  fn parse_edge_expr_forms() {
+    assert_eq!(
+      parse_edge_expr("live-timbre.bottom + 1").unwrap(),
+      EdgeRef { target: "live-timbre".into(), edge: EdgeName::Bottom, offset: 1 },
+    );
+    assert_eq!(parse_edge_expr("grid.left").unwrap().offset, 0, "no offset -> 0");
+    assert_eq!(parse_edge_expr("a.top-2").unwrap().offset, -2, "unspaced negative offset");
+    assert_eq!(parse_edge_expr("a.right +3").unwrap().offset, 3);
+    assert!(parse_edge_expr("noedge").is_err(), "missing dot");
+    assert!(parse_edge_expr("a.middle").is_err(), "unknown edge");
+    assert!(parse_edge_expr(".top").is_err(), "missing id");
+  }
+
+  #[test]
+  fn rect_spec_parses_array_and_per_edge() {
+    #[derive(serde::Deserialize)]
+    struct W {
+      rect: RectSpecConfig,
+    }
+    let arr: W = toml::from_str("rect = [0, 0, 15, 6]").unwrap();
+    assert_eq!(arr.rect.resolved_edge(EdgeName::Left).unwrap(), ResolvedEdge::Absolute(0));
+    assert_eq!(arr.rect.resolved_edge(EdgeName::Right).unwrap(), ResolvedEdge::Absolute(15));
+    arr.rect.validate().unwrap();
+
+    let per: W = toml::from_str(
+      "[rect]\ntop = \"live-timbre.bottom + 1\"\nbottom = -1\nleft = 0\nright = -1\n",
+    )
+    .unwrap();
+    assert_eq!(per.rect.resolved_edge(EdgeName::Bottom).unwrap(), ResolvedEdge::Absolute(-1));
+    assert!(matches!(
+      per.rect.resolved_edge(EdgeName::Top).unwrap(),
+      ResolvedEdge::Ref(EdgeRef { edge: EdgeName::Bottom, offset: 1, .. })
+    ));
+    per.rect.validate().unwrap();
+  }
+
+  #[test]
+  fn timbre_looper_config_has_both_editors() {
+    // The full instrument (7_layout.org): a loop-timbre editor on edo + a live-timbre
+    // editor on loops, with the looper stack at its unfolded positions.
+    let config = load_named_config("monome-looper-58-8-1-timbre").expect("timbre config loads");
+    let editors: Vec<(String, TimbreTarget)> = config
+      .monome_windows
+      .iter()
+      .filter_map(|w| w.timbre_editor_rows().map(|(t, _)| (w.monome().to_string(), t)))
+      .collect();
+    assert_eq!(editors.len(), 2, "two timbre editors");
+    assert!(editors.iter().any(|(m, t)| m == "edo" && *t == TimbreTarget::Loop), "edo loop editor");
+    assert!(editors.iter().any(|(m, t)| m == "loops" && *t == TimbreTarget::Live), "loops live editor");
+    // The loop display is at its unfolded position (reflowed up at runtime).
+    let display = config.monome_windows.iter().find(|w| w.kind_name() == "loop_display").unwrap();
+    assert_eq!(display.rect(), [0, 9, 15, 15], "loop display sits below the unfolded editor");
+  }
+
+  #[test]
+  fn rect_spec_rejects_a_bad_edge_expr() {
+    #[derive(serde::Deserialize)]
+    struct W {
+      rect: RectSpecConfig,
+    }
+    let w: W = toml::from_str(
+      "[rect]\ntop = \"x.sideways\"\nbottom = 0\nleft = 0\nright = 0\n",
+    )
+    .unwrap();
+    assert!(w.rect.validate().is_err(), "an unknown edge name should fail validation");
   }
 }

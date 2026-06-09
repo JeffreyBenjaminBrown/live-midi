@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::pitch::freq_for_pitch;
-use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
+use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
 /// Who is asking for a pitch to sound. `Live` carries the edo cell so that two
 /// distinct held cells whose steps collide to the same absolute pitch are two
@@ -61,9 +61,11 @@ impl SawNoteSink {
     }
   }
 
-  /// `source` wants `pitch` (an absolute EDO step) sounding. Spawns a voice only
-  /// if no source held this pitch yet.
-  pub fn note_on(&mut self, pitch: i32, source: NoteSource) {
+  /// `source` wants `pitch` (an absolute EDO step) sounding with `timbre`. Spawns a
+  /// voice (stamped with `timbre`, its AM/FM LFOs retriggered at phase 0) only if
+  /// no source held this pitch yet. If another source already holds the pitch this
+  /// only ref-counts -- the first holder's timbre wins for the shared voice.
+  pub fn note_on(&mut self, pitch: i32, source: NoteSource, timbre: Timbre) {
     let sources = self.refs.entry(pitch).or_default();
     let was_empty = sources.is_empty();
     sources.insert(source);
@@ -83,6 +85,9 @@ impl SawNoteSink {
         env: 0.0,
         target_env: 1.0,
         ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        timbre,
+        am_phase: 0.0,
+        fm_phase: 0.0,
       },
     );
   }
@@ -164,7 +169,7 @@ mod tests {
   #[test]
   fn note_on_spawns_one_voice_at_full_target() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live(0, 0));
+    s.note_on(30, NoteSource::Live(0, 0), Timbre::default());
     assert_eq!(voice_count(&s), 1);
     assert_eq!(target_env(&s, 30), Some(1.0));
   }
@@ -172,8 +177,8 @@ mod tests {
   #[test]
   fn two_sources_on_same_pitch_share_one_voice() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live(0, 0));
-    s.note_on(30, NoteSource::Slot(2));
+    s.note_on(30, NoteSource::Live(0, 0), Timbre::default());
+    s.note_on(30, NoteSource::Slot(2), Timbre::default());
     assert_eq!(voice_count(&s), 1, "same pitch must be one ref-counted voice");
     // First source releases: still held by the slot, so not yet ramping down.
     s.note_off(30, NoteSource::Live(0, 0));
@@ -186,8 +191,8 @@ mod tests {
   #[test]
   fn distinct_pitches_get_distinct_voices() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live(0, 0));
-    s.note_on(35, NoteSource::Live(0, 0));
+    s.note_on(30, NoteSource::Live(0, 0), Timbre::default());
+    s.note_on(35, NoteSource::Live(0, 0), Timbre::default());
     assert_eq!(voice_count(&s), 2);
   }
 
@@ -201,9 +206,9 @@ mod tests {
   #[test]
   fn release_source_releases_all_that_sources_pitches_only() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Slot(0));
-    s.note_on(35, NoteSource::Slot(0));
-    s.note_on(40, NoteSource::Live(0, 0));
+    s.note_on(30, NoteSource::Slot(0), Timbre::default());
+    s.note_on(35, NoteSource::Slot(0), Timbre::default());
+    s.note_on(40, NoteSource::Live(0, 0), Timbre::default());
     s.release_source(NoteSource::Slot(0));
     assert_eq!(target_env(&s, 30), Some(0.0));
     assert_eq!(target_env(&s, 35), Some(0.0));
@@ -213,8 +218,8 @@ mod tests {
   #[test]
   fn shared_pitch_survives_release_source_of_one_holder() {
     let mut s = sink();
-    s.note_on(30, NoteSource::Live(0, 0));
-    s.note_on(30, NoteSource::Slot(1));
+    s.note_on(30, NoteSource::Live(0, 0), Timbre::default());
+    s.note_on(30, NoteSource::Slot(1), Timbre::default());
     s.release_source(NoteSource::Slot(1));
     assert_eq!(target_env(&s, 30), Some(1.0), "Live still holds 30");
   }
@@ -224,12 +229,37 @@ mod tests {
     // The 58-8-1 collision: cells (0,8) and (1,0) both sound step 8. Each is a
     // distinct Live source, so releasing one must not silence the other.
     let mut s = sink();
-    s.note_on(8, NoteSource::Live(0, 8));
-    s.note_on(8, NoteSource::Live(1, 0));
+    s.note_on(8, NoteSource::Live(0, 8), Timbre::default());
+    s.note_on(8, NoteSource::Live(1, 0), Timbre::default());
     assert_eq!(voice_count(&s), 1);
     s.note_off(8, NoteSource::Live(0, 8));
     assert_eq!(target_env(&s, 8), Some(1.0), "still held by the other cell");
     s.note_off(8, NoteSource::Live(1, 0));
     assert_eq!(target_env(&s, 8), Some(0.0), "last cell released");
+  }
+
+  #[test]
+  fn note_on_stamps_the_timbre_on_the_spawned_voice() {
+    use crate::types::Waveform;
+    let mut s = sink();
+    let t = Timbre { waveform: Waveform::Saw, gain: 0.5, ..Timbre::default() };
+    s.note_on(30, NoteSource::Live(0, 0), t);
+    let voices = s.voices.lock().unwrap();
+    let v = voices.get(&voice_key(30)).unwrap();
+    assert_eq!(v.timbre.waveform, Waveform::Saw);
+    assert_eq!(v.timbre.gain, 0.5);
+    assert_eq!(v.am_phase, 0.0, "LFO retriggered at note-on");
+  }
+
+  #[test]
+  fn first_timbre_wins_on_same_pitch_collision() {
+    use crate::types::Waveform;
+    let mut s = sink();
+    s.note_on(30, NoteSource::Live(0, 0), Timbre { waveform: Waveform::Saw, ..Timbre::default() });
+    // Second source, different timbre, but the pitch already sounds -> ref-count
+    // only, so the first holder's timbre stands for the shared voice.
+    s.note_on(30, NoteSource::Slot(1), Timbre { waveform: Waveform::Sine, ..Timbre::default() });
+    let voices = s.voices.lock().unwrap();
+    assert_eq!(voices.get(&voice_key(30)).unwrap().timbre.waveform, Waveform::Saw);
   }
 }

@@ -13,7 +13,11 @@
 //! compute an LED vector (no I/O), then drops it before UDP sends. The audio
 //! thread locks only `voices`. control -> voices is the single, brief nesting.
 
-use midi_pulse::config::{Config, LoopControlKind, MonomeWindowConfig, SinkConfig};
+use midi_pulse::config::{
+  AmShapeFamilyConfig, Config, LoopControlKind, MonomeWindowConfig, RowRangeConfig, SinkConfig,
+  TimbreTarget,
+};
+use crate::types::AmShapeFamily;
 use midi_pulse::monome;
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
@@ -32,10 +36,20 @@ mod display;
 mod loop_store;
 #[allow(dead_code)]
 mod remap;
+// A general per-edge relative-coordinate resolver (C5a). The shipped loops layout is
+// a uniform vertical stack (7_layout.org), reflowed by a direct shift, so this richer
+// engine is currently unused at runtime -- kept (and tested) for future per-edge
+// anchoring where a simple shift won't do.
+#[allow(dead_code)]
+mod relayout;
 mod sink;
 mod state;
+mod timbre_editor;
+mod timbre_rows;
 
 use state::{Grid, LooperParams, LooperState};
+use timbre_editor::TimbreEditor;
+use timbre_rows::RowRange;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -62,7 +76,11 @@ fn blank_grid(device_port: u16, prefix: &str) {
 
 pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   print_inventory(config);
-  run(config)
+  install_sigint();
+  // Headless / mock runs set MIDI_PULSE_NO_AUDIO to skip the cpal stream (no sound
+  // card needed; the grids and LEDs still work). See MOCK-MONOME.org.
+  let no_audio = std::env::var("MIDI_PULSE_NO_AUDIO").is_ok();
+  run(config, monome::detector_port(), no_audio)
 }
 
 fn print_inventory(config: &Config) {
@@ -118,6 +136,51 @@ struct Settings {
   flash_ms: u64,
   quantize: Duration,
   cluster: Duration,
+  am_shape_family: AmShapeFamily,
+  /// The timbre editor on the edo monome (C3b, occludes the edo grid) and the
+  /// live-timbre editor on the loops monome (C5c, the loop display reflows under it).
+  timbre_editor: Option<TimbreEditor>,
+  loops_timbre_editor: Option<TimbreEditor>,
+  /// The save-undo double-press window, from the loop editor's `save_undo_double_ms`
+  /// (6_plan 2.8/5), default 200 ms.
+  save_undo_window: Duration,
+}
+
+fn to_row_range(c: RowRangeConfig) -> RowRange {
+  match c {
+    RowRangeConfig::Linear { min, max } => RowRange::Linear { min, max },
+    RowRangeConfig::LogFactor { least, multiplier } => RowRange::LogFactor { least, multiplier },
+    RowRangeConfig::LogRange { least, greatest } => RowRange::LogRange { least, greatest },
+  }
+}
+
+fn to_am_shape_family(c: AmShapeFamilyConfig) -> AmShapeFamily {
+  match c {
+    AmShapeFamilyConfig::SinToSquare => AmShapeFamily::SinToSquare,
+    AmShapeFamilyConfig::TriToSquare => AmShapeFamily::TriToSquare,
+  }
+}
+
+/// Build the timbre editor on the given monome from its window config, converting
+/// the lib-side row specs into runtime `RowRange`s.
+fn resolve_timbre_editor(config: &Config, monome: &str) -> Option<TimbreEditor> {
+  config.monome_windows.iter().find_map(|w| {
+    if w.monome() != monome {
+      return None;
+    }
+    let (target, rows) = w.timbre_editor_rows()?;
+    let r = |i: usize| to_row_range(rows[i]);
+    Some(TimbreEditor::new(
+      w.rect(),
+      target,
+      r(0), // amplitude
+      r(1), // am amplitude (depth)
+      r(2), // am frequency
+      r(3), // am shape
+      r(4), // fm amplitude (cents)
+      r(5), // fm frequency
+    ))
+  })
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -188,14 +251,28 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .iter()
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSawwave { sample_rate, buffer_frames, amplitude, attack_secs, release_secs, .. } = sink
+  let SinkConfig::CpalSynth { sample_rate, buffer_frames, amplitude, attack_secs, release_secs, .. } = sink
   else {
-    return Err("looper requires a cpal_sawwave sink".into());
+    return Err("looper requires a cpal_synth sink".into());
   };
   let looper = config.looper.as_ref().ok_or("looper config needs a [looper] table")?;
   let edo_cfg = config.monomes.iter().find(|m| m.id == edo_monome).ok_or("the edo monome is not declared")?;
   let loops_cfg = config.monomes.iter().find(|m| m.id == loops_monome).ok_or("the loops monome is not declared")?;
   let size = edo_cfg.select.size.unwrap_or([16, 16]);
+  // Resolve the editor + shape family before moving `edo_monome` into Settings.
+  let am_shape_family =
+    to_am_shape_family(config.am.as_ref().map(|a| a.shape.family).unwrap_or_default());
+  let timbre_editor = resolve_timbre_editor(config, &edo_monome);
+  let loops_timbre_editor = resolve_timbre_editor(config, &loops_monome);
+  // save-undo is loop-editor only; take its window (default 200 ms).
+  let save_undo_window = Duration::from_millis(
+    config
+      .monome_windows
+      .iter()
+      .filter_map(MonomeWindowConfig::timbre_editor_save_undo_ms)
+      .find_map(|(target, ms)| (target == TimbreTarget::Loop).then_some(ms))
+      .unwrap_or(200),
+  );
   Ok(Settings {
     edo_monome,
     loops_monome,
@@ -229,16 +306,24 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     flash_ms: looper.flash_ms,
     quantize: Duration::from_millis(looper.quantize_record_ms),
     cluster: Duration::from_millis(looper.cluster_display_ms),
+    am_shape_family,
+    timbre_editor,
+    loops_timbre_editor,
+    save_undo_window,
   })
 }
 
-fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+/// The I/O shell. `detector_port` is the serialosc(-mock) port to discover grids on;
+/// `no_audio` skips the cpal stream (headless / mock). Loops until the global `STOP`
+/// (SIGINT, or a test setting it). Signal handling is installed by `run_from_config`,
+/// not here, so tests can call this directly.
+fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dyn std::error::Error>> {
   let s = resolve_settings(config)?;
 
   let edo_sock = UdpSocket::bind(("0.0.0.0", s.edo_listen_port))
     .map_err(|e| format!("bind UDP :{}: {e}", s.edo_listen_port))?;
   edo_sock.set_read_timeout(Some(Duration::from_millis(50)))?;
-  let devices = monome::discover_devices(&edo_sock, s.edo_listen_port);
+  let devices = monome::discover_devices_via(&edo_sock, s.edo_listen_port, detector_port);
   let assigned = device::assign_distinct_devices(&devices, s.size, config.monomes.len())?;
 
   let pairs: Vec<(&str, &monome::DeviceInfo)> =
@@ -265,7 +350,11 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   loops_sock.set_read_timeout(Some(Duration::from_millis(50)))?;
 
   let voices = Arc::new(Mutex::new(HashMap::new()));
-  let audio = audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude)?;
+  let audio = if no_audio {
+    audio::start_null(s.sample_rate)
+  } else {
+    audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude, s.am_shape_family)?
+  };
   let looper_sink =
     sink::SawNoteSink::new(Arc::clone(&voices), s.fund, s.edo, audio.sample_rate, s.attack, s.release);
   let looper_state = Arc::new(Mutex::new(LooperState::new(
@@ -289,10 +378,12 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       remap_center: s.remap_center,
       quantize: s.quantize,
       cluster: s.cluster,
+      timbre_editor: s.timbre_editor,
+      save_undo_window: s.save_undo_window, // from the loop editor's save_undo_double_ms
+      loops_timbre_editor: s.loops_timbre_editor,
     },
   )));
 
-  install_sigint();
   println!("looper running; Ctrl-C to exit.");
 
   let epoch = Instant::now();
@@ -446,7 +537,7 @@ fn grid_thread(
     let levels = {
       let st = state.lock().unwrap_or_else(|e| e.into_inner());
       match role {
-        Grid::Edo => st.edo_levels(),
+        Grid::Edo => st.edo_levels(flash_on),
         Grid::Loops => st.loops_levels(flash_on),
       }
     };
@@ -473,4 +564,86 @@ fn send_diffs(
     }
   }
   *last = levels.to_vec();
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use midi_pulse::config::load_named_config;
+
+  #[test]
+  fn timbre_config_resolves_both_editors() {
+    // The full instrument config resolves a loop-timbre editor on edo and a
+    // live-timbre editor on loops (7_layout.org), and threads the AM shape family.
+    let config = load_named_config("monome-looper-58-8-1-timbre").expect("config loads");
+    let s = resolve_settings(&config).expect("resolves without hardware");
+    assert!(s.timbre_editor.is_some(), "edo loop-timbre editor resolved");
+    assert!(s.loops_timbre_editor.is_some(), "loops live-timbre editor resolved");
+    // The loop-display rect is the unfolded position; the runtime reflows it.
+    assert_eq!(s.loop_display_rect, [0, 9, 15, 15]);
+    // save_undo_double_ms is omitted in the config, so it defaults to 200 ms.
+    assert_eq!(s.save_undo_window, Duration::from_millis(200));
+  }
+
+  /// End-to-end: run the REAL looper runtime against two virtual grids (the monome
+  /// mock) with null audio (no sound card), and drive the timbre instrument. This
+  /// exercises the whole device layer -- discovery, registration, OSC LED output, key
+  /// input, the grid threads -- that the pure state tests cannot. See MOCK-MONOME.org.
+  #[test]
+  fn full_timbre_instrument_runs_against_mock_grids() {
+    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+
+    let rig = MockRig::start(0, &[GridSpec::grid_256("edo"), GridSpec::grid_256("loops")])
+      .expect("start mock rig");
+    let detector_port = rig.detector_port();
+    let config = load_named_config("monome-looper-58-8-1-timbre-mock").expect("mock config loads");
+
+    STOP.store(false, Ordering::SeqCst);
+    let handle = {
+      let config = config.clone();
+      thread::spawn(move || {
+        if let Err(e) = run(&config, detector_port, true) {
+          eprintln!("mock looper run error: {e}");
+        }
+      })
+    };
+
+    let edo = rig.grid(0);
+    let loops = rig.grid(1);
+    let secs = Duration::from_secs;
+    // Both grids register (the looper sent /sys/port to each) and get a first repaint.
+    assert!(
+      wait_until(secs(5), || edo.registered() && loops.registered()),
+      "both grids should register against the looper"
+    );
+    assert!(wait_until(secs(3), || edo.generation() > 0 && loops.generation() > 0), "first repaint");
+
+    // Both editors rest folded: the top-left fold cell shows Mid (level 8) on each grid.
+    assert!(wait_until(secs(3), || edo.level_at(0, 0) == 8), "edo loop-timbre fold cell = Mid");
+    assert!(wait_until(secs(3), || loops.level_at(0, 0) == 8), "loops live-timbre fold cell = Mid");
+    // (Visible with `cargo test -- --nocapture`.)
+    println!("EDO grid (folded loop-timbre editor on row 0, play surface below):\n{}", edo.render());
+    println!("LOOPS grid (folded live editor row 0, looper stack below):\n{}", loops.render());
+
+    // Finger a note on an open edo row (row 8, below the folded editor): it lights, and
+    // goes dark on release. This round-trips a key press -> note -> LED through the OSC.
+    edo.press(0, 8);
+    assert!(wait_until(secs(3), || edo.level_at(0, 8) == 15), "fingered note lights solid");
+    edo.release(0, 8);
+    assert!(wait_until(secs(3), || edo.level_at(0, 8) == 0), "released note goes dark");
+
+    // Reflow: unfold the loops live editor (press its fold cell) -> the looper stack
+    // slides down. Cell (15,1) is the copy button when folded and inside the editor
+    // when unfolded, so it changes; folding again restores it.
+    let folded = loops.level_at(15, 1);
+    loops.tap(0, 0); // momentary fold toggle (tap, so the next tap isn't debounced)
+    assert!(wait_until(secs(3), || loops.level_at(15, 1) != folded), "unfolding reflows the stack");
+    println!("LOOPS grid (UNFOLDED live editor: 7 rows; the looper stack reflowed down):\n{}", loops.render());
+    loops.tap(0, 0);
+    assert!(wait_until(secs(3), || loops.level_at(15, 1) == folded), "re-folding restores the layout");
+
+    STOP.store(true, Ordering::SeqCst);
+    let _ = handle.join();
+    STOP.store(false, Ordering::SeqCst);
+  }
 }

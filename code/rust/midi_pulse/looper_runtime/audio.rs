@@ -10,13 +10,22 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use std::sync::{Arc, Mutex};
 
-use crate::types::VoiceMap;
+use crate::types::{AmShapeFamily, VoiceMap};
 use crate::voices::render_block_with_amplitude;
 
 pub struct Audio {
-  /// Kept alive for the run; dropping it stops the stream.
-  _stream: cpal::Stream,
+  /// Kept alive for the run; dropping it stops the stream. `None` in the null path
+  /// (headless / mock runs), which opens no device and makes no sound.
+  _stream: Option<cpal::Stream>,
   pub sample_rate: f32,
+}
+
+/// A silent audio "device": no cpal stream, so it needs no sound card and never
+/// renders. Used for headless / mock-rig runs (`MIDI_PULSE_NO_AUDIO`), where we drive
+/// the grids and inspect LEDs/state, not sound. The note sink still ref-counts notes
+/// (so the LEDs behave); only the cpal render callback is absent.
+pub fn start_null(requested_sample_rate: u32) -> Audio {
+  Audio { _stream: None, sample_rate: requested_sample_rate as f32 }
 }
 
 pub fn start(
@@ -24,6 +33,7 @@ pub fn start(
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
   amplitude: f32,
+  am_shape_family: AmShapeFamily,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   let host = cpal::default_host();
   let device = host.default_output_device().ok_or("no default output device")?;
@@ -56,11 +66,14 @@ pub fn start(
       // Recover from poisoning so a panicked grid thread can't permanently kill
       // audio output.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-      render_block_with_amplitude(&mut voices, data, channels, sample_rate, amplitude);
+      // The AM shape family is config-level (6_plan 2.5); resolve_settings sources it.
+      render_block_with_amplitude(
+        &mut voices, data, channels, sample_rate, amplitude, am_shape_family,
+      );
     },
     |error| eprintln!("looper audio stream error: {error:?}"),
     None,
   )?;
   stream.play()?;
-  Ok(Audio { _stream: stream, sample_rate })
+  Ok(Audio { _stream: Some(stream), sample_rate })
 }

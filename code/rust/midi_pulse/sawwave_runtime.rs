@@ -50,7 +50,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     .iter()
     .find(|sink| sink.id() == edo_window.2.as_str())
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSawwave {
+  let SinkConfig::CpalSynth {
     sample_rate,
     buffer_frames,
     amplitude,
@@ -60,7 +60,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     ..
   } = sink
   else {
-    return Err("sawwave runtime requires a cpal_sawwave sink".into());
+    return Err("sawwave runtime requires a cpal_synth sink".into());
   };
   let grid_size = monome_config.select.size.unwrap_or([16, 16]);
   run(RuntimeSettings {
@@ -335,7 +335,11 @@ fn start_audio_stream(
     &stream_config,
     move |data: &mut [f32], _| {
       let mut voices = voices.lock().unwrap();
-      render_block_with_amplitude(&mut voices, data, channels, sample_rate, amplitude);
+      // Legacy runtime has no AM (default timbres), so the family is inert.
+      render_block_with_amplitude(
+        &mut voices, data, channels, sample_rate, amplitude,
+        crate::types::AmShapeFamily::default(),
+      );
       cb_count_audio.fetch_add(1, Ordering::Relaxed);
       sample_count_audio.fetch_add((data.len() / channels) as u64, Ordering::Relaxed);
       let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));

@@ -102,6 +102,9 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       phase: 0.0, env: 0.0,
       target_env: 1.0,
       ramp_per_sample: 1.0 / (state.audio.attack_secs * state.sample_rate),
+      timbre: crate::types::Timbre::default(),
+      am_phase: 0.0,
+      fm_phase: 0.0,
     });
   }
   let mut diffs = vec![];
@@ -179,6 +182,7 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
         ramp_per_sample:
           (v.env - state.audio.accretion_level).abs()
             / (state.audio.release_secs * state.sample_rate),
+        timbre: v.timbre, am_phase: v.am_phase, fm_phase: v.fm_phase,
       });
     } else if let Some(v) = vs.get_mut(&VoiceSource::Fingered { xy: cell }) {
       v.target_env = 0.0;

@@ -374,7 +374,7 @@ unit-tested; the rest is the I/O shell.
   set the shared STOP, freeing the others; ~run()~ then blanks both grids and
   drops the audio stream. A startup that can't find two distinct grids fails
   cleanly before spawning anything.
-- *Audio.* A ~cpal_sawwave~ sink. Both live edo play and loop playback drive one
+- *Audio.* A ~cpal_synth~ sink. Both live edo play and loop playback drive one
   ~VoiceMap~ through the unchanged sawwave ~render_block~; the looper's ~NoteSink~
   is pitch-keyed and ref-counts sources (live + each slot), so a pitch wanted by
   several sources is one voice.

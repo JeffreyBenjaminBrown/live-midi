@@ -67,7 +67,12 @@ pub fn apply_fine(events: &[LoopEvent], mapping: &[(i32, i32)]) -> Vec<LoopEvent
   let map: HashMap<i32, i32> = mapping.iter().copied().collect();
   events
     .iter()
-    .map(|e| LoopEvent { elapsed: e.elapsed, pitch: *map.get(&e.pitch).unwrap_or(&e.pitch), on: e.on })
+    .map(|e| LoopEvent {
+      elapsed: e.elapsed,
+      pitch: *map.get(&e.pitch).unwrap_or(&e.pitch),
+      on: e.on,
+      timbre: e.timbre,
+    })
     .collect()
 }
 
@@ -83,7 +88,7 @@ pub fn apply_group_transpose(events: &[LoopEvent], selected: &[i32], intervals: 
   let mut out: Vec<LoopEvent> = events.iter().filter(|e| !sel.contains(&e.pitch)).copied().collect();
   for &interval in intervals {
     for e in events.iter().filter(|e| sel.contains(&e.pitch)) {
-      out.push(LoopEvent { elapsed: e.elapsed, pitch: e.pitch + interval, on: e.on });
+      out.push(LoopEvent { elapsed: e.elapsed, pitch: e.pitch + interval, on: e.on, timbre: e.timbre });
     }
   }
   out.sort_by(|a, b| a.elapsed.cmp(&b.elapsed).then(a.on.cmp(&b.on)));

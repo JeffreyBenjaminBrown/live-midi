@@ -1,12 +1,11 @@
 * lately using [[./code/rust/configs/README.org]]
+* ONGOING , maybe done : [[./TODO/DONE/timbre-manip]]
+claude --resume b0b9fbc0-fae2-428a-be43-fad8a16900b8
 * AWAITS [[./TODO/monome-looper]]
 claude --dangerously-skip-permissions --resume 31806765-010a-499b-a578-972782fd9b21
 ** loops must be overlappable
 ** edit a number of repeats of a loop
 Requires overriding record and stop.
-* AWAITS [[./TODO/timbre-manip]]
-Ready to write a definitive plan.
-claude --dangerously-skip-permissions --resume 9e94e238-1e8d-42c5-b842-340e634d30ab
 * TODO by AI
 ** ONGOING write a mock monome for tests
 ** ? write a mock pipewire for tests
