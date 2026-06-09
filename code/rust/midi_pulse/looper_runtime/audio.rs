@@ -10,7 +10,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use std::sync::{Arc, Mutex};
 
-use crate::types::VoiceMap;
+use crate::types::{AmShapeFamily, VoiceMap};
 use crate::voices::render_block_with_amplitude;
 
 pub struct Audio {
@@ -56,7 +56,10 @@ pub fn start(
       // Recover from poisoning so a panicked grid thread can't permanently kill
       // audio output.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-      render_block_with_amplitude(&mut voices, data, channels, sample_rate, amplitude);
+      // C3 will source the AM shape family from config; AM is inert until then.
+      render_block_with_amplitude(
+        &mut voices, data, channels, sample_rate, amplitude, AmShapeFamily::default(),
+      );
     },
     |error| eprintln!("looper audio stream error: {error:?}"),
     None,

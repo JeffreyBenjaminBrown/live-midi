@@ -63,4 +63,19 @@ rig (see =MOCK-MONOME.org=): =cargo run --bin mock_monome= +
 - Tests: osc shapes, gain halving, PolyBLEP bounds, timbre stamping,
   first-timbre-wins. Full suite green (145 bin + 29 lib). Existing triangle test
   still passes -> default behaviour identical.
-** (next) C2 -- AM + FM + shape DSP
+** DONE C2 -- AM + FM + shape DSP
+- =voices.rs=: =am_shape_value(family, shape, phase)= (SinToSquare = tanh
+  waveshaper; TriToSquare = clipped/gained triangle); =am_multiplier= -> [1-depth,1]
+  ("more depth = wider"); =fm_factor= = 2^(cents*sin/1200). =render_block= now
+  advances per-voice AM/FM LFOs, FM-modulates the carrier dt (PolyBLEP tracks it),
+  and applies the AM multiplier.
+- The AM shape *family* is a render param (config-level, NOT part of saved
+  =Timbre=). =render_block= wrapper + the two real-time callers (=audio.rs=,
+  =sawwave_runtime.rs=) pass =AmShapeFamily::default()= for now; *C3 wires it from
+  config*. AM is inert until the editor can set depth>0 anyway.
+- Tests: shape morphs, multiplier floor/ceiling, fm octave at 1200 cents, AM cuts
+  RMS, FM changes samples. 151 bin tests green.
+** (next) C3 -- timbre editor window + live editing (target=live)
+   Needs: config schema (param-row kinds + timbre_editor window kind), then
+   wiring rows to LooperState.live_timbre and routing presses. This is where the
+   config.rs / state.rs / display.rs work begins.

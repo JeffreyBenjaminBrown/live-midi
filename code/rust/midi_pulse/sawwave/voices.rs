@@ -4,7 +4,9 @@ use crate::consts::AMPLITUDE;
 #[cfg(test)]
 use crate::consts::RELEASE_SECS;
 use crate::pitch::freq_for_pitch;
-use crate::types::{ChordId, Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState, Waveform};
+use crate::types::{
+  Am, AmShapeFamily, ChordId, Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState, Waveform,
+};
 
 pub fn triangle(phase: f32) -> f32 {
   // phase is in [0, 1)
@@ -53,6 +55,53 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
   0.0
 }
 
+/// The slow-AM LFO wave (bipolar, in [-1,1]) at `phase`, morphed by `shape` in
+/// [0,1] within `family`. shape 0 = the soft end (sine / triangle), shape 1 = a
+/// square; in between it interpolates.
+pub fn am_shape_value(family: AmShapeFamily, shape: f32, phase: f32) -> f32 {
+  let s = (std::f32::consts::TAU * phase).sin();
+  let shape = shape.clamp(0.0, 1.0);
+  match family {
+    // tanh waveshaper: tanh(k*sin)/tanh(k). k->0 is a sine, k->inf a square.
+    AmShapeFamily::SinToSquare => {
+      if shape <= 0.0 {
+        s
+      } else if shape >= 1.0 {
+        if s >= 0.0 { 1.0 } else { -1.0 }
+      } else {
+        let k = shape / (1.0 - shape); // 0..inf as shape 0..1
+        (k * s).tanh() / k.tanh()
+      }
+    }
+    // Triangle steepened toward a square: clip a gained triangle. gain 1 (shape 0)
+    // is the triangle untouched; gain->inf (shape 1) clips it to a square.
+    AmShapeFamily::TriToSquare => {
+      let tri = triangle(phase); // -1..1, peak at phase 0.5
+      let m = if shape >= 1.0 { 1.0e6 } else { 1.0 / (1.0 - shape) };
+      (tri * m).clamp(-1.0, 1.0)
+    }
+  }
+}
+
+/// The AM amplitude multiplier in [1-depth, 1] for the LFO at `am_phase`. depth 0
+/// returns 1.0 (no AM). "more depth = wider AM", dipping toward silence.
+pub fn am_multiplier(am: Am, family: AmShapeFamily, am_phase: f32) -> f32 {
+  if am.depth <= 0.0 {
+    return 1.0;
+  }
+  let unipolar = (am_shape_value(family, am.shape, am_phase) + 1.0) * 0.5; // 0..1
+  1.0 - am.depth * (1.0 - unipolar)
+}
+
+/// The FM carrier-frequency multiplier: 2^(depth_cents * sin(2*pi*fm_phase) / 1200).
+/// depth_cents 0 returns 1.0 (no FM).
+pub fn fm_factor(depth_cents: f32, fm_phase: f32) -> f32 {
+  if depth_cents == 0.0 {
+    return 1.0;
+  }
+  2.0_f32.powf(depth_cents * (std::f32::consts::TAU * fm_phase).sin() / 1200.0)
+}
+
 // Render one cpal callback's worth of audio into `data` from `voices`.
 // Pulled out of the cpal closure so unit tests can exercise it
 // without cpal or PipeWire.
@@ -62,7 +111,9 @@ pub fn render_block(
   channels: usize,
   sample_rate: f32,
 ) {
-  render_block_with_amplitude(voices, data, channels, sample_rate, AMPLITUDE);
+  render_block_with_amplitude(
+    voices, data, channels, sample_rate, AMPLITUDE, AmShapeFamily::default(),
+  );
 }
 
 pub fn render_block_with_amplitude(
@@ -71,6 +122,7 @@ pub fn render_block_with_amplitude(
   channels: usize,
   sample_rate: f32,
   amplitude: f32,
+  shape_family: AmShapeFamily,
 ) {
   for frame in data.chunks_mut(channels) {
     let mut mix = 0.0_f32;
@@ -88,13 +140,17 @@ pub fn render_block_with_amplitude(
       if v.env == 0.0 && v.target_env == 0.0 {
         return false;
       }
-      let dt = v.freq / sample_rate;
+      // Advance the per-voice AM/FM LFOs.
+      v.am_phase += v.timbre.am.freq / sample_rate;
+      if v.am_phase >= 1.0 { v.am_phase -= 1.0; }
+      v.fm_phase += v.timbre.fm.freq / sample_rate;
+      if v.fm_phase >= 1.0 { v.fm_phase -= 1.0; }
+      // FM modulates the carrier increment; PolyBLEP band-limits at this same dt.
+      let dt = v.freq * fm_factor(v.timbre.fm.depth_cents, v.fm_phase) / sample_rate;
       v.phase += dt;
-      if v.phase >= 1.0 {
-        v.phase -= 1.0;
-      }
-      // C2 will modulate dt (FM) and apply AM here; for now: waveform + gain.
-      mix += osc(v.timbre.waveform, v.phase, dt) * v.env * v.timbre.gain * amplitude;
+      if v.phase >= 1.0 { v.phase -= 1.0; }
+      let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
+      mix += osc(v.timbre.waveform, v.phase, dt) * v.env * v.timbre.gain * amm * amplitude;
       true
     });
     let s = mix.clamp(-0.95, 0.95);
@@ -156,6 +212,7 @@ pub fn ramp_chord_accretion_to_zero(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::types::Fm;
   use std::collections::HashMap;
 
   // Render N frames (mono) for a single voice with the given initial state.
@@ -246,5 +303,85 @@ mod tests {
         assert!(v.abs() <= 1.5, "{wf:?} at {p} = {v} out of bounds");
       }
     }
+  }
+
+  #[test]
+  fn am_shape_morphs_sine_to_square() {
+    let p = 0.1;
+    let sine = (std::f32::consts::TAU * p).sin();
+    assert!((am_shape_value(AmShapeFamily::SinToSquare, 0.0, p) - sine).abs() < 1e-4);
+    // sin(2pi*0.1) > 0, so the square end is +1.
+    assert!((am_shape_value(AmShapeFamily::SinToSquare, 1.0, p) - 1.0).abs() < 1e-4);
+    assert!(am_shape_value(AmShapeFamily::SinToSquare, 0.5, p).abs() <= 1.01);
+  }
+
+  #[test]
+  fn am_shape_morphs_triangle_to_square() {
+    let p = 0.1;
+    assert!((am_shape_value(AmShapeFamily::TriToSquare, 0.0, p) - triangle(p)).abs() < 1e-4);
+    assert!(am_shape_value(AmShapeFamily::TriToSquare, 1.0, 0.4).abs() > 0.99);
+  }
+
+  #[test]
+  fn am_multiplier_spans_floor_to_one() {
+    let am = Am { depth: 0.8, freq: 1.0, shape: 0.0 };
+    let top = am_multiplier(am, AmShapeFamily::SinToSquare, 0.25); // sine peak
+    let bot = am_multiplier(am, AmShapeFamily::SinToSquare, 0.75); // sine trough
+    assert!((top - 1.0).abs() < 1e-3, "top={top}");
+    assert!((bot - 0.2).abs() < 1e-3, "bot={bot} (1-depth)");
+    let none = Am { depth: 0.0, ..am };
+    assert_eq!(am_multiplier(none, AmShapeFamily::SinToSquare, 0.75), 1.0);
+  }
+
+  #[test]
+  fn fm_factor_is_an_octave_at_1200_cents() {
+    assert!((fm_factor(0.0, 0.3) - 1.0).abs() < 1e-6);
+    assert!((fm_factor(1200.0, 0.25) - 2.0).abs() < 1e-3); // +1 octave
+    assert!((fm_factor(1200.0, 0.75) - 0.5).abs() < 1e-3); // -1 octave
+  }
+
+  #[test]
+  fn full_depth_am_lowers_average_energy() {
+    let sr = 48000.0;
+    let rms = |depth: f32| {
+      let mut voices: VoiceMap = HashMap::new();
+      voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        id: 0, freq: 1000.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        timbre: Timbre {
+          waveform: Waveform::Sine, gain: 1.0,
+          am: Am { depth, freq: 50.0, shape: 0.0 }, fm: Fm::default(),
+        },
+        am_phase: 0.0, fm_phase: 0.0,
+      });
+      let mut data = vec![0.0_f32; 4800];
+      render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::SinToSquare);
+      (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
+    };
+    let (off, full) = (rms(0.0), rms(1.0));
+    assert!(full < off * 0.85, "AM should cut average energy: off={off} full={full}");
+    assert!(full > 0.0);
+  }
+
+  #[test]
+  fn fm_changes_the_rendered_samples() {
+    let sr = 48000.0;
+    let render = |depth_cents: f32| {
+      let mut voices: VoiceMap = HashMap::new();
+      voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        id: 0, freq: 300.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        timbre: Timbre {
+          waveform: Waveform::Sine, gain: 1.0, am: Am::default(),
+          fm: Fm { depth_cents, freq: 6.0 },
+        },
+        am_phase: 0.0, fm_phase: 0.0,
+      });
+      let mut data = vec![0.0_f32; 4800];
+      render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+      data
+    };
+    let flat = render(0.0);
+    let vib = render(600.0);
+    let diff: f32 = flat.iter().zip(&vib).map(|(a, b)| (a - b).abs()).sum();
+    assert!(diff > 1.0, "FM should change the rendered samples: diff={diff}");
   }
 }
