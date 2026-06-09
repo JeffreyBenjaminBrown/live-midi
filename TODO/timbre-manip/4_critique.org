@@ -1,0 +1,595 @@
+* critique: 3_plan.org
+A critical read of =3_plan.org= against =2_discussion.org= (including the staged,
+not-yet-committed responses), the real code (=config.rs=, =sawwave/*=), and the
+in-flight looper configs. The plan's *architecture* is sound -- the commit spine,
+the voice model (2.3), the tagged-row idea, and the relative-coordinate insight
+are all keepers. The problems are: (1) two staged answers overrule decisions the
+plan baked in; (2) a handful of genuine contradictions; (3) several
+under-specified corners, mostly in the window system; (4) some inelegance worth
+fixing before v2. Ordered by how much each should change the next draft.
+
+Per your instruction I do *not* fold the staged answers into the plan here -- §1
+says how to integrate them in v2.
+
+* 1. The staged responses overrule two plan decisions (integrate in v2)
+
+** 1a. Selection edits are *immediate*, not playhead-filtered.
+The plan's whole loop-edit model (§2.5, C7, assumption 5.1) is "destructive *at
+note-on*; a selection just *filters* which note-ons get rewritten." Your staged
+answer at 1c says the opposite for the selected case:
+
+#+begin_quote
+Timing is irrelevant if there is a selection. In that case the edits apply to
+everything selected immediately.
+#+end_quote
+
+So there are *two* application paths, and v2 must split them:
+- *No selection:* play-along. Edits apply at each note-on the playhead triggers
+  (the A-B-C-D example). Requires the loop to be playing.
+- *With selection:* a one-shot stamp. The moment you set a parameter, every
+  selected note is rewritten immediately -- no playhead, no waiting. Works on a
+  *stopped* loop.
+
+This is not just a correction; it *removes a latent bug* in the plan: under
+"filter the note-ons," a selected note that never sounds again (loop stopped, or
+that pass already past) would never receive the edit. Immediate application is
+both what you asked for and more correct.
+
+Two knock-ons v2 must state:
+- *sustain-the-edits is a no-selection concept.* It governs whether a *released*
+  edit keeps applying to *future note-ons*. With a selection the edit is already
+  applied and complete, so the toggle is irrelevant while a selection is active.
+- *Display under selection.* §2.5 says the rows "track the lowest still-sounding
+  note." With a selection (possibly on a stopped loop) there may be no sounding
+  note; the rows should instead reflect the selection (e.g. the lowest selected
+  note). Currently unspecified.
+*** SOLVED claude
+Split confirmed (selection = immediate stamp; no-selection = note-on play-along).
+Decisions on the two knock-ons:
+- sustain-the-edits applies *only* in no-selection mode; with a selection it's
+  ignored (the stamp is already complete).
+- Selection-mode display: rows show the *lowest selected note's* stored value
+  (the "lowest" rule, applied to the selection instead of the playhead); a press
+  homogenises that param across the whole selection.
+Drawback: a heterogeneous selection shows only one representative value, so you
+can't see the spread before stamping it flat. Acceptable -- stamping is the point.
+
+** 1b. The folded quick-cells are a *rolling* most-recent-4.
+Plan §2.6 and C7's done-criterion and assumption 5.3 say the four folded cells
+hold the *first four* saved timbres. Staged answer: "ooh, rolling is a good idea
+-- let's do that." So v2: the four cells are the four *most recently* saved
+timbres, newest displacing oldest. v2 should pin the order (does the newest land
+in cell 1 and push the rest right, or fill cell 4? does *recalling* reorder?).
+
+Note this *deepens* the awkwardness in §4b below: with a rolling set, the meaning
+of each folded cell changes on every save, and a monome cell has no label to say
+which timbre (or waveform) it currently is.
+*** SOLVED claude
+Rolling most-recent-4. Order: the newest save enters cell 0 (leftmost) and pushes
+the rest right; the 4th-oldest falls off. Recall does NOT reorder (read-only).
+Drawback: the cell->timbre map shifts on every save (this is what worsens 4b).
+Trivially reversible -- could fill-from-the-right or do MRU-on-recall if it feels
+wrong in the hand.
+
+** 1c. Two distinct buttons -- confirmed.
+Assumption 5.2 stands: =sustain_the_edits= and the loop-display "clear selection"
+corner are separate (one toggle, one momentary). Lock it; drop it from the
+"assumptions to confirm" list.
+*** SOLVED claude
+Nothing to build differently -- already two distinct controls. v2 just drops it
+from the "assumptions to confirm" list.
+
+** 1d. Meta-point: that two decisions drifted in a single round is the symptom.
+The plan re-states every settled decision from =2_discussion.org= in §2. Because
+those are *copies*, the moment you changed two answers, §2/§5 went stale. See §5d.
+*** SOLVED claude
+Same fix as 5d: v2 references 2_discussion for settled decisions instead of
+copying them, so a changed answer updates one place. (Detailed at 5d.)
+
+* 2. Contradictions
+
+** 2a. §0 says C1-C5 are looper-independent, but C5 needs the loop display.
+§0: "C1-C5 stand alone (they need only the synth and the edo grid); C6-C7 wait on
+the looper." But C5 "bind[s] the live-timbre window *+ loop display* into one
+compound window" -- the loop display is the looper's. C5 cannot be built or
+tested without it. Fix: either move the loop-monome compound into the
+looper-dependent tier, or split C5 (the fold mechanism + relative coords +
+edo-monome occlusion are synth/edo-only and testable; the loop-monome compound is
+not).
+*** SOLVED claude
+Reclassify by splitting C5 (see 5e). Fold mechanism + relative coords +
+edo-monome occlusion are synth/edo-only (looper-independent); only the loop-monome
+reflow (live-timbre strip above the loop display) needs the looper. v2 §0 tiering:
+looper-independent = C0..C5b; looper-dependent = C5c, C6, C7. No drawback -- just
+honest tiering.
+
+** 2b. The sink rename breaks live configs -- including the looper's.
+C1 says rename =cpal_sawwave= -> =cpal_synth= and *also* "the existing sawwave
+configs sound identical." Those can't both hold. =config.rs= parses sinks as a
+=#[serde(tag = "kind", deny_unknown_fields)]= enum, so an unknown =kind= fails to
+load. And the name is live in *three* places, one of them the in-flight looper:
+- =configs/monome-edo-sawwave.toml=
+- =configs/monome-looper-58-8-1.toml=  <- the looper you're building now
+- README/RUNTIME-NOTES prose
+So renaming the kind silently breaks =monome-looper-58-8-1.toml= mid-build. v2
+options: (a) keep =cpal_sawwave= as an accepted alias of the new kind; (b) do the
+rename as its own coordinated commit that updates *all* configs at once and syncs
+with the looper work; or (c) don't rename the kind at all -- just fix the
+comments/docs and add the new waveforms under the existing kind. (b) or (c) is
+cleaner than burying a breaking rename inside C1.
+*** SOLVED claude
+You asked (discussion 1b/3a) to "correct the lies," so *do* rename -- but safely,
+as its own first commit C0 that renames =cpal_sawwave= -> =cpal_synth= AND updates
+every reference atomically: =monome-edo-sawwave.toml=,
+=monome-looper-58-8-1.toml=, README, RUNTIME-NOTES, and any looper code using the
+tag. No serde alias (an alias would re-introduce the lie).
+Drawback / coordination: =monome-looper-58-8-1.toml= is the live looper, so C0
+must be sequenced with the looper work (rename before it grows more references, or
+rebase). That's the only cost; the rename is mechanical and reversible.
+
+** 2c. The chosen log-row model can't express the folded amplitude row.
+1a settled log rows as =[least, multiplier]= with the cell count from the rect --
+so a row's *top* = least*mult^(n-1) *grows with width*. But the amplitude row
+appears at full width when unfolded and at reduced width in the folded strip
+(§2.6: "amplitude row across the remaining cells... scaled for that range"). "Same
+range, fewer cells" is exactly what =[least, multiplier]= *cannot* do -- it would
+give a *smaller top* when folded. Keeping the range fixed while the width changes
+requires the *endpoint-anchored* log form (least + greatest, multiplier derived
+from width) -- the very option 1a rejected. v2 must reconcile: at minimum the
+amplitude row (any row whose width varies with fold) needs endpoint-anchored
+scaling, so the tagged-range model needs a third variant (or all log rows become
+endpoint-anchored).
+*** SOLVED claude
+Two log row variants (not one):
+- =log_factor= = [least, multiplier] -- top grows with width. For AM/FM freq,
+  where you *want* more cells -> higher top ("audio rate is fun", 1a).
+- =log_range= = [least, greatest] -- multiplier derived = (greatest/least)^(1/(n-1)),
+  so range stays fixed and steps scale with width. For the amplitude row, which
+  changes width between folded and unfolded yet must keep its range.
+amplitude uses =log_range=; AM/FM freq use =log_factor=.
+Drawback: two variants is more schema surface; a config author must pick. But it
+honors both of your stated wants (freq tops higher with width; amplitude keeps
+its range).
+
+** 2d. "Folding reveals the grid beneath" vs. "the strip is always present."
+C5's done-criterion: "folding the edo-monome window reveals the grid beneath."
+But §2.6 says folded is the *resting state* and the 1-row strip is *always
+present*. A folded strip still occupies one row, so folding reveals all-but-one
+row, never the whole grid. Minor wording, but it points at a real question (3d):
+the always-on folded strip permanently costs each grid its top row.
+*** SOLVED claude
+Wording + spec: the folded strip is always present (1 row), so folding the
+edo-monome loop-timbre editor reveals the grid *except that one row*. The
+permanent 1-row cost is handled by occlusion at 3d. v2 drops "reveals the grid
+beneath". No drawback.
+
+** 2e. "Volume" vs "amplitude" vs "(depth)" -- naming drifts from 2c.
+At 2c you overruled the rename and kept *amplitude* as the term in all three
+contexts, and your own folded-strip text calls the volume row "the amplitude
+row." The plan re-introduces "Volume" (§2.2 heading, C3) and relabels the AM/FM
+rows "amplitude (depth)". v2 should use *amplitude* throughout (it's the volume
+row, the AM amplitude row, the FM amplitude row) and merely *document the
+direction* of AM amplitude rather than renaming it "depth."
+*** SOLVED claude
+Use "amplitude" everywhere (the volume row is the "amplitude row"); document only
+the *direction* of AM amplitude (more = wider; multiplier in [1-amp,1]). Don't
+relabel "(depth)". Drawback: "amplitude" is overloaded across three rows -- which
+you explicitly accepted ("their fault"). No further action.
+
+* 3. Incompletely specified
+
+** 3a. A slot press means different things in the two windows.
+§2.4 defines a slot press as "recall (load into the live timbre)." That's the
+*live*-timbre window. In the *loop*-timbre window a slot press must be the
+discussion's "recall whole timbre" -- stamp that saved timbre onto the
+selection / future note-ons (destructively, like any loop edit). The plan never
+maps that. v2 must define slot-press (and =timbre_arm=: capture *what* in the
+loop window?) per target.
+*** SOLVED claude
+Resolved via the =target= field (5b). Per target:
+- live: slot press = recall into the live timbre; arm+slot = capture the live
+  timbre.
+- loop: slot press = "recall whole timbre" = stamp that saved timbre onto the edit
+  target (selection if any, else future note-ons -- the 1a paths); arm+slot =
+  capture the *currently displayed* timbre (the lowest selected / lowest-sounding
+  note's stored values) into the slot.
+Drawback: arm-in-loop capturing the displayed note's timbre is a new micro-
+behavior; if you'd rather arm always capture the *live* timbre it's a one-line
+change. I chose "capture displayed" because it lets you lift a loop note's colour
+into a slot.
+
+** 3b. The failsafe-duplicate undo is under-defined and coarse.
+§2.5/C7 give it one line. Open questions a build needs:
+- *Overwrite rule.* "Overwritten every time another loop is triggered" -- does
+  re-triggering the *same* loop you're editing overwrite the pristine copy with
+  the already-edited state (losing the undo)? Exact trigger semantics matter.
+- *Scope.* It only mirrors the *most-recently-triggered* loop; an edit to any
+  other slot is unprotected. With selection edits now immediate (1a) you can edit
+  a *stopped* loop that isn't the last-triggered one -- unprotected.
+- *Granularity.* It's all-or-nothing per slot (a "massive undo"), not per edit.
+- *Cost.* It permanently consumes one loop slot, and lives on the looper side
+  purely to serve timbre -- name that coupling in §0.
+*** SOLVED claude (mostly) -- one TODO below
+Decided: granularity stays coarse by design (per-slot all-or-nothing "massive
+undo"); cost (one loop slot + looper-side coupling) gets named in v2 §0.
+**** TODO claude: snapshot timing -- trigger-time vs copy-on-first-edit
+Your "snapshot at trigger, overwrite on next trigger" has two gaps: (1)
+re-triggering the loop you're editing overwrites the pristine copy with the
+edited state (undo lost); (2) with immediate selection edits (1a) you can edit a
+*stopped, non-last-triggered* loop, which the trigger-time snapshot never
+protected. Both vanish if the failsafe instead snapshots a slot *the first time
+it's edited since its last trigger* (copy-on-write): same one-slot cost, strictly
+more protection. I recommend copy-on-write -- but it diverges from what you wrote,
+so I'm flagging rather than baking it in. Your call.
+***** context (claude): what this TODO is about, term by term
+You asked me to define every term before using it, so this builds from scratch.
+
+- *Loop*: a short musical phrase that is recorded and then repeats. The companion
+  "looper" feature (=TODO/monome-looper/=) records and plays loops.
+- *Loop note*: one note inside a loop, stored as pitch + timing. This feature adds
+  one field to each loop note: its timbre (next).
+- *Timbre*: the tone-colour of a note -- its waveform, volume, tremolo (= AM,
+  amplitude modulation), vibrato (= FM, frequency modulation), and wave shape.
+  Everything about how a note sounds *except* its pitch and timing.
+- *Per-note timbre*: each loop note carries its own timbre, captured at the moment
+  it was recorded ("record-time capture"). So one loop can hold a saw note, then a
+  sine note, etc.
+- *Loop slot*: a numbered storage location holding one whole loop. The looper has a
+  grid of these; pressing a slot recalls/plays the loop in it. The looper also has
+  a *copy gesture* that copies one slot's contents into another.
+- *Trigger (a loop)*: press its slot to start it playing.
+- *Loop-timbre editor*: the on-grid window where you change a playing or selected
+  loop's timbre (defined at 3a/5b).
+- *Destructive editing*: the headline of this feature. Editing a loop's timbre via
+  the loop-timbre editor *permanently rewrites* the stored per-note timbre of the
+  affected notes -- it is not a temporary overlay you can drop. (Your explicit
+  choice at 2_discussion 1c, "both should be destructive.")
+
+Because editing is destructive, there is no natural undo -- the old timbre values
+are simply overwritten and gone. So you proposed a cheap one:
+
+- *Failsafe duplicate slot*: one loop slot reserved as an automatic backup that
+  always holds a copy of a loop *as it was before your edits*. To undo, you use the
+  copy gesture to copy that backup back over the slot you edited. It is coarse: it
+  restores the *whole* loop at once, not individual edits -- hence "massive undo"
+  (all-or-nothing, per slot).
+- *Snapshot*: the act of copying a loop's current contents into the failsafe slot.
+
+The TODO is *when the snapshot is taken*, because that decides whether the backup
+actually holds a pre-edit copy when you reach for it. Two options:
+
+- *Trigger-time snapshot* (what you originally specified): the failsafe copies a
+  loop at the moment you *trigger it to play*, and is overwritten the next time any
+  loop is triggered.
+- *Copy-on-first-edit* (a.k.a. *copy-on-write*): the failsafe copies a loop the
+  *first time you edit it* since it was last triggered -- i.e. the instant before
+  the first change.
+
+Why I flagged trigger-time as leaky:
+1. If you *re-trigger* the loop you are editing (say, to hear it from the top), the
+   trigger-time rule snapshots it *again*, now capturing the already-edited state.
+   Your pristine backup is gone and undo no longer works.
+2. *Selection edits* (1a: editing a chosen set of loop notes) apply *immediately*
+   and don't need the loop to be playing -- so you can edit a loop you never
+   triggered this session, which trigger-time never backed up. Unprotected.
+
+Copy-on-first-edit closes both: the backup is taken right before the first edit,
+whatever triggered it, so it is always the true pre-edit state -- at the same cost
+of one slot. That's why I recommend it; but it changes the rule you wrote, so the
+call is yours.
+***** TODO I changed my mind.
+I think the failsafe duplicate key is dumb.
+Instead let's make a real 'timbre edit save-undo' button, in the same place.
+If you press it once, it saves your timbre edits to that slot.
+If you press it twice rapidly (within 200 ms) it instead
+restores the timbre to the last thing it was saved as, that is,
+the save before the save you almost just (within 200 ms of now) started.
+****** SOLVED claude
+Settles 3b. The save-undo button replaces the failsafe-duplicate slot entirely:
+- single press = checkpoint the active loop's current timbre to that slot;
+- double press (<200 ms) = revert to the *previous* checkpoint (one level deep),
+  cancelling the checkpoint the first tap began.
+Knock-ons (folded into 5_plan): the looper no longer sacrifices a loop slot (that
+dependency is dropped); the button lives in the loop-timbre editor (inert in the
+live editor); undo stays coarse/per-slot (you accepted that). Decisions I made:
+with no prior save, a double-press reverts to the as-recorded timbres (record-time
+capture = "save 0"); the 200 ms window is configurable.
+One thing I assume (flag if wrong): editing stays *destructive/live* and this
+button only sets/reverts restore points -- it does NOT turn editing into a buffered
+"apply on save" model (that would undo your 1c destructive decision).
+** 3c. Relative coordinates need more than the sketch.
+§2.6/§3 introduce relative rects with negative-from-far-edge, but leave:
+- *Sub-window references.* The compound's sub-windows are "non-configurable /
+  derived," yet windows may anchor "relative to either of its sub-windows." How
+  do you *name* a derived sub-window in =relative_to=?
+- *Runtime re-layout.* The anchor (the timbre sub-window) changes height on fold,
+  so any relative-anchored rect must be *re-resolved at runtime*, every fold. The
+  plan says today's rects are static and never mentions the relayout pass this
+  requires. This is the actual new engine work, bigger than "add a field."
+- *Mixing.* May one rect be part-absolute, part-relative? Presumably not; say so.
+*** SOLVED claude
+- Sub-window naming dissolves: dropping the compound kind (5a) means =relative_to=
+  only ever names a normal top-level window.
+- Per-edge anchoring (this reverses my "no mixing" guess): each rect edge is
+  independently absolute (a number; -1 = far edge) OR relative
+  (=other.edge + offset=). Reflow needs it -- loop display top = timbre.bottom+1,
+  bottom = 15 absolute.
+- Runtime relayout: a resolver computes absolute rects from config rects given
+  current window heights, and re-runs on every fold/unfold. This is the real new
+  engine work (named as such in v2).
+Drawback: per-edge anchoring is more to validate than whole-rect anchoring, and
+the relayout pass is genuinely new code. Worth it -- it's the general mechanism
+that also kills the bespoke compound kind (5a).
+
+** 3d. The edo grid's rect vs. the always-present folded strip.
+If the folded loop-timbre strip is always present on the edo monome (§2.6), the
+edo grid loses its top row permanently. The looper's edo grid is =[0,0,15,13]=;
+v2 must say where it now starts (=y>=1=?) and confirm "the grid is big, no harm"
+covers a whole row, not just the one =(0,0)= cell discussed at 1d.
+*** SOLVED claude
+Edo monome = occlusion, not reflow (your choice: "all absolute, just occludes").
+The edo grid keeps its absolute rect; the loop-timbre editor draws on top. Since
+the folded strip is always present (1 row), the grid's top row is permanently
+occluded (unplayable while covered); unfolding covers 7.
+Why occlusion beats reflow *here*: reflow would shove every playable note down on
+unfold -- notes would move mid-performance. Occlusion keeps the keyboard put.
+Drawback: one instrument row is always dead under the folded strip (you blessed
+this: "grid is big, no harm"). The loop monome *does* reflow (3c/5a) because the
+loop display has no fixed note-to-cell mapping to disturb.
+
+** 3e. Loop-timbre display edge cases.
+- *Rests.* What do the rows show when no note is sounding in the current column?
+- *active != sounding loop.* The looper lets the *active* (control-target) loop
+  differ from the *sounding* one, and a non-sounding active loop has no playhead.
+  Which loop does the loop-timbre window track, and what shows when it isn't
+  playing? (Ties to the selection-display question in 1a.)
+*** SOLVED claude
+- Rest (no sounding note in the column): hold the last sounding note's values --
+  don't blank/flicker.
+- Target loop: the loop-timbre editor tracks the *active* loop (control target),
+  matching the looper's "edo grid shows the active loop." Playing -> track its
+  playhead; stopped -> show the lowest selected note (if a selection) else hold /
+  first note.
+Drawback: if a *different* loop is sounding while you edit the active one, the
+readout reflects the active (edited) loop, not what you hear -- but that's correct
+(you edit what's active). Consistent with the looper.
+
+** 3f. The folded strip's behaviour *in the loop-timbre window*.
+§2.6 describes the folded strip generically. In the loop-timbre window, what do
+its cells do -- the four quick cells = "recall whole timbre onto the loop"? the
+amplitude row = a destructive loop-amplitude edit? Unspecified.
+*** SOLVED claude
+In the loop-timbre editor the folded strip uses loop-target semantics (3a/5b): the
+4 quick cells = recall-whole-timbre onto the edit target; the amplitude row = a
+destructive loop-amplitude edit (selection or future note-ons).
+Drawback: folded, loop editing is limited to amplitude + whole-timbre recall (no
+per-FX-param tweaks until you unfold). Fine -- folded is the minimal state.
+
+** 3g. Parameter states: held vs released+sustain-on vs released+sustain-off.
+The model has three states for an edited parameter, and an earlier line ("when
+the user lifts their finger, the value stays there") sits awkwardly with the
+sustain model. v2 should state, per state: does it *apply* to new note-ons, and
+what does the row *display*? In particular, with sustain off and the finger
+lifted, does the row revert to tracking the playhead, or keep showing the
+(now-inactive) value? And does turning sustain back on re-activate it?
+*** SOLVED claude
+Model: each param is either *overridden* (a user value applies to new note-ons /
+the selection) or *tracking* (follows per-note stored).
+- Held: overridden; row shows the held value (steady).
+- Released + sustain ON: stays overridden; row keeps showing its value.
+- Released + sustain OFF: returns to tracking; row resumes following the
+  playhead/selection.
+- Toggling sustain OFF returns all released-overrides to tracking (held ones stay
+  until released). Toggling sustain ON is not retroactive -- it only affects
+  releases from then on.
+This *supersedes* the earlier "lift your finger, the value stays there": it stays
+only if sustain is on. (The A-B-C-D example already assumes sustain was on when
+saw was tapped -- that's why C kept it.) Flagging the supersession, but the
+example only works under this reading, so no drawback beyond that.
+
+** 3h. Top-row cell budget and the fold-cell brightness.
+§2.6 row0 = [fold][4 waveforms][arm][sustain][slots...] = 7 fixed cells, leaving
+9 slots on a 16-wide row -- but §2.4 says "~10 slots." Pin the count (and note it
+falls out of width minus the fixed controls). Also =sustain= sits in the shared
+row but is inert in the live window (a wasted cell there). And §2.7 says the fold
+cell is "always lit, distinct from a value cell" -- but value cells use Bright;
+with only ~4 buckets, say which level the fold cell uses (=Mid= is currently
+unused in =types.rs=).
+*** SOLVED claude
+- Budget: row0 = [fold][4 waveforms][arm][sustain] = 7 fixed -> slots = width-7
+  (9 on a 16-wide). Pin "9", not "~10".
+- sustain is inert in the live target. Keep ONE layout (sustain present-but-inert
+  in live; 9 slots both) for simplicity -- the inert cell shows off.
+- Fold cell uses =Mid= (the unused 4th bucket), distinct from value cells
+  (=Bright=), occupied slots (=Dim=), and off.
+Drawback: one wasted (inert) cell in the live editor; 9 (not 10) slots.
+
+** 3i. C7 done-criteria omit the selection path.
+"Reproduce the A-B-C-D example" only exercises no-selection. Add a selection
+done-criterion (select notes on a stopped loop, dial a parameter, all selected
+notes change at once) and a failsafe-undo criterion that covers the overwrite
+edge in 3b.
+*** SOLVED claude
+v2 C7 done-criteria add: (a) selection path -- with the loop *stopped*, select
+notes, dial a param, all selected change at once; (b) failsafe undo --
+copy-from-failsafe restores the pre-edit slot (the re-trigger edge depends on
+3b's TODO). No drawback; just fuller acceptance tests.
+
+* 4. Awkward / ergonomic
+
+** 4a. The window names are reversed from where they sit.
+"loop-timbre window" lives on the *edo* monome; "live-timbre window" lives on the
+*loop* monome. That inversion is inherent (you edit X while looking at not-X), but
+it's a constant source of confusion -- you tripped on it yourself ("the foldable
+edo-grid timbre window ... on the other one"). v2 should name by *target* and
+*always* state the host monome in the same breath, or pick names that encode both.
+*** SOLVED claude
+Name by *target*: "live-timbre editor" / "loop-timbre editor", always written with
+the host monome ("loop-timbre editor (on the edo monome)"). Document the placement
+rule once: the editor for X sits on the not-X monome so X stays visible.
+Drawback: the inversion is inherent; naming-by-target is least-bad and still needs
+the placement rule learned once.
+
+** 4b. The folded quick-cells silently change meaning, with no monome cue.
+They start as the four waveforms (press = set waveform) and become saved-timbre
+recallers (press = recall) as you save -- and with rolling (1b) the mapping
+changes on *every* save. A monome cell is just on/off; nothing tells the player
+whether cell 2 is "triangle" or "saved timbre #5." This needs either a
+distinguishing display convention or an accepted "you have to remember" caveat.
+*** SOLVED claude (with accepted caveat)
+Kill the *mixed* ambiguity: the folded strip is in one mode at a time, not a
+blend. Before any timbre is saved, the 4 cells are the 4 waveforms (current =
+bright, radio). After the first save they become the rolling timbre palette
+(empty ones off). So a cell is never "maybe waveform, maybe timbre."
+Residual: "which saved timbre is cell 2" is unlabel-able on a monome -- accept
+"recall and listen." Drawback: after the first save you lose quick waveform access
+when folded (unfold for that) -- inherent to your saved-overwrites-waveforms
+choice.
+
+** 4c. The playhead-tracking display is busy and you edit against a moving target.
+In the loop-timbre window the lit cell in each row jumps as the playhead sweeps
+notes with different stored timbres. That's the spec, but it means pressing to
+edit lands relative to a value that just moved. Worth at least acknowledging; a
+"freeze the display while a row is touched" rule would help.
+*** SOLVED claude
+Freeze-on-touch falls out of 3g: a touched/overridden row shows its value
+steadily; only *untouched* rows track. So busyness is confined to rows you're not
+editing -- and that flicker is the intended per-note readout. Drawback: untouched
+rows still move with the playhead -- the feature, not a bug.
+
+** 4d. The editing dance spans both monomes (consistent with the looper, at least).
+Select on the loop monome, dial on the edo monome's loop-timbre window, watch the
+result on the loop monome. It's a lot of back-and-forth, though it mirrors the
+looper's existing cross-grid remap, so it's not a new burden -- just flag it.
+*** SOLVED claude
+Accept as-is -- it mirrors the looper's cross-grid remap (press on loop grid,
+light on edo grid), so no new idiom. No change, no drawback beyond the inherent
+ergonomics.
+
+* 5. Inelegant / structural
+
+** 5a. The compound window kind is probably redundant with relative coordinates.
+Relative coords already solve the reflow: declare the timbre window, then declare
+the loop display with =rect = [0, <timbre.bottom + 1>, 15, 15]= -- top relative
+to the (variable-height) timbre window, bottom absolute, so it grows when the
+timbre folds. That needs no bespoke =timbre_loop_compound= kind, and it keeps the
+loop display a normal *looper-owned* window instead of welding looper + timbre
+into one config kind (which would mean you can't place the loop display without
+the timbre strip). You floated "I guess we need them both to be a single window";
+I think relative coords *alone* are enough -- drop the compound kind.
+*** SOLVED claude
+Drop =timbre_loop_compound=. Use per-edge relative coords (3c): on the loop monome,
+declare the live-timbre editor (foldable) and the looper's loop display as two
+normal windows, loop display top = live-timbre.bottom+1, bottom = 15 absolute, so
+it reflows on fold. Loop display stays looper-owned; no welding of two features.
+Drawback: config is slightly more verbose (two windows + a relative anchor vs one
+bundled kind), and the relayout pass must re-resolve the loop display on fold
+(needed anyway). Net simpler -- one fewer bespoke kind.
+
+** 5b. "One window kind, two behaviours" hides real divergence.
+Assumption 5.4 shares one kind across both windows, but they differ in: sustain
+(active vs inert), display source (live timbre vs playhead/selection), slot-press
+(load vs recall-onto-loop), selection interaction (none vs pickers), and
+destructiveness. That's enough divergence that a =target = "live" | "loop"= field
+(or two kinds) would be clearer than "same kind, behaves differently depending on
+which monome it landed on."
+*** SOLVED claude
+Add =target = "live" | "loop"= to the timbre-window kind (one kind, explicit
+field). It selects: display source (live timbre vs playhead/selection), slot-press
+(recall vs recall-whole-onto-loop), arm (capture live vs displayed), sustain
+(inert vs active), selection interaction (off vs pickers), destructiveness (sets
+current timbre vs writes loop storage). Resolves 3a/3f/3h-sustain too.
+Drawback: field-conditional behavior carries branching -- but it's explicit and
+configurable, strictly clearer than implicit-by-monome.
+
+** 5c. Destructive editing + a jerry-rigged undo has a real elegance cost.
+This is your call and I'm not reopening it -- but name the cost in v2: a whole
+loop slot sacrificed, an all-or-nothing undo with overwrite gaps (3b), and a
+looper mechanism that exists only for timbre. If that cost ever feels too high,
+the alternative is the non-destructive overlay + explicit "commit" -- worth a
+one-line "considered and rejected because..." so the trade is on record.
+*** SOLVED claude (documentation only -- your decision stands)
+Keep destructive editing. v2 records the cost (one loop slot to the failsafe;
+all-or-nothing undo, 3b; a looper mechanism existing only for timbre) and the
+rejected alternative for the record: non-destructive overlay + explicit "commit"
+-- rejected because it needs a commit gesture and a parallel "live override" layer
+over playback (more state), whereas you wanted edits to just stick. The one
+actionable improvement to the chosen path is 3b's copy-on-write TODO.
+
+** 5d. The plan duplicates settled decisions, which is why it drifted.
+§2 re-states what =2_discussion.org= already settled; §1 here exists *because*
+those copies went stale the instant two answers changed. This also runs against
+your "one place for each thing." v2 should keep §2 thin: *reference*
+=2_discussion= section numbers for settled decisions, and let the plan carry only
+(a) the build-order/commit spine, (b) genuinely new implementation specifics (the
+voice-model wiring, the relayout pass, the .toml schema), and (c) the open items.
+Then a changed answer updates one place.
+*** SOLVED claude
+v2 plan structure: §-by-§ reference to 2_discussion for every settled decision;
+the body holds only the commit spine, new implementation specifics (voice wiring,
+the relayout pass, the .toml schema, the =target= field), and open items.
+Drawback: the plan stops being a standalone read -- a reader must cross-reference
+2_discussion. Right trade: single source of truth, no drift (1d was caused by the
+duplication).
+
+** 5e. C5 is over-stuffed.
+It bundles relative coords + the runtime relayout pass + fold state + the folded
+strip layout + the rolling quick-cells. Each is testable on its own; splitting
+keeps "every commit independently runnable" honest.
+*** SOLVED claude
+Split C5 ->
+- C5a: relative coords + the runtime relayout pass (engine; looper-independent).
+- C5b: fold state + folded-strip layout + rolling quick-cells, on the edo-monome
+  loop-timbre editor (UI; looper-independent, testable via edo occlusion).
+- C5c: loop-monome reflow (live-timbre editor above the looper's loop display via
+  relative coords) -- depends on the looper.
+Resolves 2a's tiering too. No drawback; each piece independently runnable.
+
+* 6. What's solid (keep it in v2)
+- The commit dependency spine, once 2a/2b are fixed.
+- The voice model (2.3): per-voice =waveform/gain/am/fm= + retriggered LFO phase,
+  carrier-freq FM, wavetable shapes. This is the right shape.
+- Tagged parameter rows (2.1) -- modulo the endpoint-anchored variant 2c forces.
+- Record-time per-note capture (C6) as the source of stored timbres.
+- LED priority inside the 4 buckets (2.7), modulo the fold-cell level.
+- The relative-coordinate *insight* (just lean on it harder, per 5a).
+- Reuse map (§4) -- the =scale_control= store idiom and looper picker reuse.
+
+* 7. Concrete deltas for plan v2 (checklist)
+1. Split loop editing into immediate-selection vs note-on-no-selection; mark
+   sustain a no-selection concept; define selection-mode display. (1a)
+2. Rolling most-recent-4 folded cells; pin the ordering. (1b)
+3. Drop the sink rename from C1; either alias =cpal_sawwave= or do an all-configs
+   rename commit coordinated with the looper; just add waveforms otherwise. (2b)
+4. Fix §0: C5's loop-monome compound depends on the looper. (2a)
+5. Add an endpoint-anchored log row variant for width-varying rows; use it for
+   amplitude. (2c)
+6. Replace the compound kind with relative coords; keep the loop display
+   looper-owned. (5a)
+7. Add a =target= field (or two kinds) and spell out per-target slot-press, arm,
+   sustain, and display. (3a, 5b)
+8. Specify the failsafe undo's overwrite rule, scope, granularity, and slot cost;
+   add a done-criterion. (3b, 3i)
+9. Specify relative-coord sub-window naming + the runtime relayout pass. (3c)
+10. State the edo grid's reduced rect and the folded strip's permanent top row.
+    (2d, 3d)
+11. Define loop-display edge cases: rests, active!=sounding, selection display.
+    (3e)
+12. Define the folded strip's behaviour in the loop-timbre window. (3f)
+13. Define the three parameter states' apply/display semantics. (3g)
+14. Use "amplitude" consistently; document AM-amplitude direction. (2e)
+15. Make §2 reference =2_discussion= rather than copy it. (5d)
+
+* 8. Status (claude)
+All issues now have a leafward SOLVED node (decision + drawbacks). The *only* thing
+that needs your call before v2 is the *one* TODO at 3b: failsafe-undo snapshot
+timing -- I recommend copy-on-write (snapshot a slot on first edit since its last
+trigger) over your trigger-time snapshot, because it also protects re-triggered
+and stopped/selection-edited loops. Everything else is reversible and decided;
+veto any drawback you don't like and I'll flip it.
+
+Decisions worth a second look (reversible, but they change behavior you wrote):
+- 3g supersedes "lift your finger, the value stays there" -- now it stays only if
+  sustain-the-edits is on (your A-B-C-D example requires this).
+- 2b renames =cpal_sawwave= -> =cpal_synth= across all configs incl. the live
+  looper (per your "correct the lies"); needs sequencing with the looper.
