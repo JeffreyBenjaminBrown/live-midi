@@ -1,6 +1,7 @@
 pub mod config;
 pub mod mapping;
 pub mod midi;
+pub mod mock_monome;
 pub mod monome;
 pub mod monome_brightness;
 pub mod monome_window;

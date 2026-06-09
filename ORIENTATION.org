@@ -34,6 +34,11 @@ cargo run  --bin midi_pulse -- monome-looper-58-8-1  # needs BOTH 16x16 grids
 Most logic is testable without hardware; do that. Running for real needs the
 grids and audio routing (below). Ctrl-C blanks both grids and stops audio.
 
+To exercise the *device layer* (discovery/registration/LED/key) -- or play the
+whole instrument -- without real grids and without interrupting a live session,
+use the *monome mock*: =cargo run --bin mock_monome= + =MIDI_PULSE_DETECTOR_PORT=.
+See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev.org]].
+
 * operational facts (these otherwise live only in memory)
 - *Audio routing*: synths run in the container, where ALSA "default" wasn't wired
   to host PipeWire -- so =cpal= grabbed the raw card and blocked sound. Fixed with
