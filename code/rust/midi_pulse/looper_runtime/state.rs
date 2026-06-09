@@ -113,6 +113,13 @@ pub struct LooperState {
   timbre_slots: Vec<Option<Timbre>>,
   timbre_armed: bool,
   timbre_current: Option<usize>,
+
+  /// Editor fold state (C5b). Folded is the resting state (6_plan 2.7): only the
+  /// 1-row strip occludes the grid. `timbre_quick` is the rolling most-recent-4 saved
+  /// timbres shown in the strip's quick cells (empty = waveform mode); newest at
+  /// front. A save pushes onto it; a recall does not reorder it.
+  timbre_folded: bool,
+  timbre_quick: Vec<Timbre>,
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -178,6 +185,8 @@ impl LooperState {
       timbre_slots: vec![None; n_timbre_slots],
       timbre_armed: false,
       timbre_current: None,
+      timbre_folded: true, // 6_plan 2.7: folded is the resting state
+      timbre_quick: Vec::new(),
     }
   }
 
@@ -191,13 +200,20 @@ impl LooperState {
       // row, the arm latch, or a slot (C4); a blank/inert cell is simply swallowed so
       // it never plays or remaps. A release falls through harmlessly (editor cells
       // were never recorded in `self.down`). C7 will branch on `target = loop`.
-      let action = self.timbre_editor.as_ref().filter(|ed| ed.contains(x, y)).map(|ed| ed.press(x, y));
+      let folded = self.timbre_folded;
+      let action = self
+        .timbre_editor
+        .as_ref()
+        .filter(|ed| ed.occludes(x, y, folded))
+        .map(|ed| ed.press(x, y, folded));
       if let Some(action) = action {
         match action {
           Some(EditorAction::Param(p)) => p.apply(&mut self.live_timbre),
           Some(EditorAction::ToggleArm) => self.timbre_armed = !self.timbre_armed,
           Some(EditorAction::Slot(i)) => self.timbre_slot_press(i),
-          None => {} // fold / sustain / save-undo / blank: consumed, no effect
+          Some(EditorAction::ToggleFold) => self.timbre_folded = !self.timbre_folded,
+          Some(EditorAction::QuickCell(i)) => self.timbre_quick_press(i),
+          None => {} // sustain / save-undo / blank: consumed, no effect
         }
         return true;
       }
@@ -253,10 +269,30 @@ impl LooperState {
       self.timbre_slots[i] = Some(self.live_timbre);
       self.timbre_current = Some(i);
       self.timbre_armed = false;
+      self.push_quick(self.live_timbre); // C5b: feed the rolling quick-cells
     } else if let Some(t) = self.timbre_slots[i] {
       self.live_timbre = t;
       self.timbre_current = Some(i);
     }
+  }
+
+  /// A folded quick-cell press (C5b): recall the i-th most-recent saved timbre, or --
+  /// before any save (waveform mode) -- set the i-th waveform.
+  fn timbre_quick_press(&mut self, i: usize) {
+    if self.timbre_quick.is_empty() {
+      if let Some(w) = TimbreEditor::quick_waveform(i) {
+        self.live_timbre.waveform = w;
+      }
+    } else if let Some(t) = self.timbre_quick.get(i).copied() {
+      self.live_timbre = t;
+    }
+  }
+
+  /// Push a freshly-saved timbre onto the quick-roll: newest at the front, keep four
+  /// (the 4th-oldest falls off). Recall never calls this, so it does not reorder.
+  fn push_quick(&mut self, t: Timbre) {
+    self.timbre_quick.insert(0, t);
+    self.timbre_quick.truncate(4);
   }
 
   pub fn edo_levels(&self, flash_on: bool) -> Vec<i32> {
@@ -269,8 +305,9 @@ impl LooperState {
         slots: &self.timbre_slots,
         current: self.timbre_current,
         armed: self.timbre_armed,
+        quick: &self.timbre_quick,
       };
-      ed.paint(&view, &mut levels, self.grid_w, flash_on);
+      ed.paint(&view, self.timbre_folded, &mut levels, self.grid_w, flash_on);
     }
     levels
   }
@@ -830,6 +867,8 @@ mod tests {
     // Match what `new()` does from LooperParams: size the slot store to the editor.
     s.timbre_slots = vec![None; editor.slot_count()];
     s.timbre_editor = Some(editor);
+    // Most tests below exercise the full (unfolded) editor; C5b fold tests re-fold.
+    s.timbre_folded = false;
     s
   }
 
@@ -1174,5 +1213,74 @@ mod tests {
     assert_eq!(level_at(&s.edo_levels(true), 5, 0), LEVEL_DIM, "arm idle dim");
     s.edo_key(5, 0, true, ms(0)); // arm
     assert_eq!(level_at(&s.edo_levels(true), 5, 0), LEVEL_FULL, "armed bright");
+  }
+
+  // ---- C5b: fold + folded strip + rolling quick-cells ----
+
+  #[test]
+  fn folding_reveals_the_grid_below_the_strip() {
+    let mut s = state_with_editor(); // starts unfolded
+    // Unfolded: a press on row 3 (an FX row) is consumed by the editor (no note).
+    s.edo_key(0, 3, true, ms(0));
+    assert!(s.down.is_empty(), "unfolded editor eats the press");
+    // Fold via the top-left cell.
+    s.edo_key(0, 0, true, ms(1));
+    assert!(s.timbre_folded, "folded");
+    // Folded: row 3 falls through to the grid and plays a note.
+    s.edo_key(0, 3, true, ms(2));
+    assert_eq!(s.down.len(), 1, "folded reveals the row -> it plays");
+  }
+
+  #[test]
+  fn folded_strip_amplitude_edits_gain() {
+    let mut s = state_with_editor();
+    s.edo_key(0, 0, true, ms(0)); // fold
+    // Folded amplitude lives at x>=5; the far cell is unity (~0.15).
+    s.edo_key(15, 0, true, ms(1));
+    assert!((s.live_timbre.gain - 0.15).abs() < 1e-4, "folded amplitude edits gain");
+  }
+
+  #[test]
+  fn quick_cells_set_waveforms_before_any_save() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    s.edo_key(0, 0, true, ms(0)); // fold
+    assert!(s.timbre_quick.is_empty(), "waveform mode");
+    s.edo_key(3, 0, true, ms(1)); // quick cell 2 = Square (waveform mode)
+    assert_eq!(s.live_timbre.waveform, Waveform::Square);
+  }
+
+  #[test]
+  fn saving_a_timbre_rolls_the_quick_cells_and_recall_works() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor(); // unfolded for the save gesture
+    // Save a Saw into slot 0.
+    s.edo_key(4, 0, true, ms(0)); // Saw
+    let saw = s.live_timbre;
+    s.edo_key(5, 0, true, ms(1)); // arm
+    s.edo_key(8, 0, true, ms(2)); // slot 0 -> capture (rolls into quick)
+    assert_eq!(s.timbre_quick, vec![saw], "save pushes onto the quick-roll");
+    // Save a Sine into slot 1; newest goes to the front.
+    s.edo_key(1, 0, true, ms(3)); // Sine
+    let sine = s.live_timbre;
+    s.edo_key(5, 0, true, ms(4)); // arm
+    s.edo_key(9, 0, true, ms(5)); // slot 1
+    assert_eq!(s.timbre_quick, vec![sine, saw], "newest at front");
+    // Fold and recall the 2nd quick cell (index 1 = saw).
+    s.edo_key(0, 0, true, ms(6)); // fold
+    s.edo_key(2, 0, true, ms(7)); // quick cell 1 -> recall saw
+    assert_eq!(s.live_timbre.waveform, Waveform::Saw, "quick recall restores the timbre");
+  }
+
+  #[test]
+  fn quick_roll_keeps_only_four() {
+    let mut s = state_with_editor();
+    // Save five distinct timbres via slots 0..5.
+    for (i, wf) in [0i32, 1, 2, 3, 1].iter().enumerate() {
+      s.edo_key(1 + wf, 0, true, ms(i as u64 * 10)); // pick a waveform cell
+      s.edo_key(5, 0, true, ms(i as u64 * 10 + 1)); // arm
+      s.edo_key(8 + i as i32, 0, true, ms(i as u64 * 10 + 2)); // slot i
+    }
+    assert_eq!(s.timbre_quick.len(), 4, "quick-roll holds at most four");
   }
 }

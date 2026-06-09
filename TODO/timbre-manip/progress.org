@@ -272,11 +272,32 @@ the editor row matches 6_plan 2.7 and avoids a second window. Reversible.)
   module is =#[allow(dead_code)]= until then. Per stop-rule this matches 6_plan's
   C5a-engine / C5c-wire split.
 
-** TODO C5b/c -- fold + folded strip (edo occlusion), then loop reflow (loops monome)
-C5b: fold state on the edo editor + 1-row folded strip (fold cell =Mid=, 4 rolling
-quick-timbres, amplitude row LogRange) -- edo occlusion, no reflow. C5c: add the
-live-timbre editor on the loops monome and anchor the loop display under it
-(=top = "live-timbre.bottom + 1"=) via =relayout.rs= so it reflows on fold.
+** DONE C5b -- fold/unfold + folded strip + rolling quick-cells (edo occlusion)
+- =timbre_editor.rs=: =press(x,y,folded)= and =paint(view,folded,..)= now branch on
+  fold. =occludes(x,y,folded)= -- folded occludes only the strip row (rows below fall
+  through to the grid and play); unfolded the whole rect. Folded strip layout
+  (6_plan 2.7): =[fold (Mid) | 4 quick cells | amplitude across the rest]=, the
+  amplitude on =log_range= so its range survives the narrower width. New actions
+  =ToggleFold= and =QuickCell(i)=; the fold cell also resolves in the unfolded
+  control row.
+- =state.rs=: =timbre_folded= (default true -- folded is the resting state) and
+  =timbre_quick: Vec<Timbre>= (rolling most-recent-4). =edo_key= uses =occludes/press=
+  with the fold state and handles the two new actions. A save (=timbre_slot_press=
+  while armed) =push_quick=es the timbre (newest at front, keep 4); recall never
+  reorders. =timbre_quick_press=: waveform mode (quick empty) sets the i-th waveform,
+  else recalls =quick[i]=. The quick cells show waveform-radio (mode empty) or
+  occupied-Dim (mode timbres).
+- Tests: 190 bin + 38 lib green. Folding reveals the row below the strip (it plays);
+  folded amplitude edits gain; quick cells set waveforms then roll on save and recall;
+  quick-roll caps at 4.
+- NOTE: the test helper =state_with_editor()= unfolds (most tests exercise the full
+  editor); production starts folded. No config change (fold is runtime state).
+
+** TODO C5c -- loop reflow (loops monome live editor)
+Add the live-timbre editor on the loops monome and anchor the loop display under it
+(=top = "live-timbre.bottom + 1"=) via =relayout.rs=, recomputing =loop_display_rect=
+on fold/unfold so it reflows. Needs a second editor instance + the loops-monome
+press/LED path wired through the same =TimbreEditor=.
 
 ** DONE C6 -- per-note loop timbre (storage + record-time capture)
 - =LoopEvent= gains a =timbre= field (dropped =Eq=, kept =PartialEq=; =Am/Fm/Timbre=
