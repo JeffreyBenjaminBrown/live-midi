@@ -316,12 +316,29 @@ press/LED path wired through the same =TimbreEditor=.
   the C3b editor can change live_timbre) -- but the per-note substrate for C7 is
   now in place.
 
-** TODO C7 -- loop-timbre manipulation (target=loop)
-The headline. loop-timbre editor (edo monome) edits the ACTIVE loop: playhead-
-tracking display (lowest sounding note; hold on rests; lowest selected under a
-selection); two paths -- selection = immediate stamp on all selected (works
-stopped), no-selection = rewrite each note-on as the playhead hits it;
-sustain-the-edits toggle (no-selection only); slot press = recall-whole-timbre;
-arm = capture displayed; corner cell clears selection; the save-undo button
-(single = checkpoint, double<200ms = revert to prior checkpoint, init = as-recorded).
-Reuses the existing selection/remap machinery.
+** DONE C7a -- loop-timbre manipulation: selection stamp (path 1) [headline]
+The edo editor's =target = loop= now edits the ACTIVE loop when a loop-display
+selection is active (6_plan 2.4 path 1), reusing the looper's existing selection
+machinery and history-undo.
+- =state.rs=: =apply_editor_action(target, action)= routes every editor press by
+  target. =editor_param/editor_slot/editor_quick= branch: loop target + a (non-frozen)
+  loop-display selection -> =stamp_loop= (snapshot to history, then set the param/whole
+  timbre on every selected note-on); else edit the live timbre (no-selection is the
+  interim until C7b play-along). =current_selection_pitches= reuses =self.remap=
+  (unfrozen = a timbre scope; frozen = a pitch-remap in progress). =arm= captures the
+  =displayed_timbre= (lowest selected note for a loop target). The editor DISPLAY
+  (=edo_levels=) shows the lowest selected note's timbre under a selection.
+- =loops_key=: the loop-display corner cell clears the selection (6_plan 2.4).
+- The existing loop-undo button reverts a stamp (it snapshots to history) -- so the
+  dedicated =save-undo= checkpoint is deferred to C7b without losing undo.
+- Tests: 196 bin + 38 lib. Selection stamp changes ALL selected notes at once on a
+  *stopped* loop (done-criterion 2); column stamp; corner clear; recall-whole-timbre
+  onto a selection; lowest-selected display; undo reverts.
+
+** TODO C7b -- play-along (path 2) + sustain-the-edits + playhead display + save-undo
+Remaining C7: no-selection play-along (rewrite each note-on as the playhead triggers
+it) with the =sustain-the-edits= toggle; the playhead-tracking display (lowest
+still-sounding note of the current note-group column, holding on rests); and the
+=save-undo= button (per-slot =committed/prev_committed=: single = checkpoint,
+double<200ms = revert). Satisfies done-criteria 1 and 3 (the A-B-C-D example and the
+save/double-press restore). save-undo adds =committed/prev_committed= to =LoopSlot=.

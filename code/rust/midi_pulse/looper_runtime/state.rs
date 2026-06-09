@@ -15,8 +15,9 @@ use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
-use super::timbre_editor::{EditorAction, EditorView, TimbreEditor};
+use super::timbre_editor::{EditorAction, EditorView, TimbreEditor, TimbreParam};
 use crate::types::Timbre;
+use midi_pulse::config::TimbreTarget;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
@@ -201,20 +202,13 @@ impl LooperState {
       // it never plays or remaps. A release falls through harmlessly (editor cells
       // were never recorded in `self.down`). C7 will branch on `target = loop`.
       let folded = self.timbre_folded;
-      let action = self
+      let hit = self
         .timbre_editor
         .as_ref()
         .filter(|ed| ed.occludes(x, y, folded))
-        .map(|ed| ed.press(x, y, folded));
-      if let Some(action) = action {
-        match action {
-          Some(EditorAction::Param(p)) => p.apply(&mut self.live_timbre),
-          Some(EditorAction::ToggleArm) => self.timbre_armed = !self.timbre_armed,
-          Some(EditorAction::Slot(i)) => self.timbre_slot_press(i),
-          Some(EditorAction::ToggleFold) => self.timbre_folded = !self.timbre_folded,
-          Some(EditorAction::QuickCell(i)) => self.timbre_quick_press(i),
-          None => {} // sustain / save-undo / blank: consumed, no effect
-        }
+        .map(|ed| (ed.target, ed.press(x, y, folded)));
+      if let Some((target, action)) = hit {
+        self.apply_editor_action(target, action);
         return true;
       }
       if let Some(shift) = shift_for_cell(self.shift_rect, (x, y)) {
@@ -261,31 +255,121 @@ impl LooperState {
   /// A timbre-slot press (C4): recall the slot into the live timbre, or -- if armed
   /// -- capture the live timbre into the slot and auto-disarm. Either way the slot
   /// becomes current. Pressing an empty slot unarmed is a no-op (nothing to recall).
-  fn timbre_slot_press(&mut self, i: usize) {
+  /// Dispatch an editor action against the editor's target. For `target = live`
+  /// everything edits the global live timbre. For `target = loop` (C7) a press with
+  /// a loop-display selection active stamps onto the selected notes of the active
+  /// loop instead; with no selection it falls back to editing the live timbre (the
+  /// no-selection play-along path is C7b).
+  fn apply_editor_action(&mut self, target: TimbreTarget, action: Option<EditorAction>) {
+    match action {
+      Some(EditorAction::Param(p)) => self.editor_param(target, p),
+      Some(EditorAction::ToggleArm) => self.timbre_armed = !self.timbre_armed,
+      Some(EditorAction::Slot(i)) => self.editor_slot(target, i),
+      Some(EditorAction::ToggleFold) => self.timbre_folded = !self.timbre_folded,
+      Some(EditorAction::QuickCell(i)) => self.editor_quick(target, i),
+      None => {} // sustain / save-undo / blank: consumed, no effect
+    }
+  }
+
+  fn editor_param(&mut self, target: TimbreTarget, p: TimbreParam) {
+    if target == TimbreTarget::Loop {
+      if let Some(selected) = self.current_selection_pitches() {
+        self.stamp_loop(&selected, |t| p.apply(t));
+        return;
+      }
+    }
+    p.apply(&mut self.live_timbre);
+  }
+
+  fn editor_slot(&mut self, target: TimbreTarget, i: usize) {
     if i >= self.timbre_slots.len() {
       return;
     }
     if self.timbre_armed {
-      self.timbre_slots[i] = Some(self.live_timbre);
+      // Arm -> capture the *displayed* timbre (the lowest selected loop note for a
+      // loop target, else the live timbre) and auto-disarm. [C4, C7 6_plan 2.3/2.4]
+      let captured = self.displayed_timbre(target);
+      self.timbre_slots[i] = Some(captured);
       self.timbre_current = Some(i);
       self.timbre_armed = false;
-      self.push_quick(self.live_timbre); // C5b: feed the rolling quick-cells
+      self.push_quick(captured);
     } else if let Some(t) = self.timbre_slots[i] {
-      self.live_timbre = t;
       self.timbre_current = Some(i);
+      self.recall_timbre(target, t);
     }
   }
 
-  /// A folded quick-cell press (C5b): recall the i-th most-recent saved timbre, or --
-  /// before any save (waveform mode) -- set the i-th waveform.
-  fn timbre_quick_press(&mut self, i: usize) {
+  fn editor_quick(&mut self, target: TimbreTarget, i: usize) {
     if self.timbre_quick.is_empty() {
       if let Some(w) = TimbreEditor::quick_waveform(i) {
-        self.live_timbre.waveform = w;
+        self.editor_param(target, TimbreParam::Waveform(w));
       }
     } else if let Some(t) = self.timbre_quick.get(i).copied() {
-      self.live_timbre = t;
+      self.recall_timbre(target, t);
     }
+  }
+
+  /// Recall a whole timbre onto the edit target: the live timbre, or -- loop target
+  /// with a selection -- stamped onto every selected note. [6_plan 2.3/2.4]
+  fn recall_timbre(&mut self, target: TimbreTarget, t: Timbre) {
+    if target == TimbreTarget::Loop {
+      if let Some(selected) = self.current_selection_pitches() {
+        self.stamp_loop(&selected, |slot| *slot = t);
+        return;
+      }
+    }
+    self.live_timbre = t;
+  }
+
+  /// Stamp a timbre change onto every note-on of the active loop whose pitch is
+  /// selected, snapshotting for undo first (the existing loop-undo button reverts
+  /// it). Works on a stopped loop -- no playhead needed. [6_plan 2.4 path 1]
+  fn stamp_loop(&mut self, selected: &[i32], edit: impl Fn(&mut Timbre)) {
+    let sel: HashSet<i32> = selected.iter().copied().collect();
+    self.apply_to_active(|events| {
+      events
+        .iter()
+        .map(|e| {
+          let mut e = *e;
+          if e.on && sel.contains(&e.pitch) {
+            edit(&mut e.timbre);
+          }
+          e
+        })
+        .collect()
+    });
+  }
+
+  /// The active loop-display selection's pitches, if a selection is active and not
+  /// frozen (a frozen selection is a pitch-remap in progress, not a timbre scope).
+  fn current_selection_pitches(&self) -> Option<Vec<i32>> {
+    let r = self.remap.as_ref()?;
+    if r.frozen {
+      return None;
+    }
+    let pitches = selected_pitches(&self.build_active_display(), &r.selection);
+    (!pitches.is_empty()).then_some(pitches)
+  }
+
+  /// The timbre the loop editor displays: the lowest selected note's timbre when a
+  /// loop selection is active, else the live timbre. [6_plan 2.4 display]
+  fn displayed_timbre(&self, target: TimbreTarget) -> Timbre {
+    if target == TimbreTarget::Loop {
+      if let Some(t) = self.lowest_selected_timbre() {
+        return t;
+      }
+    }
+    self.live_timbre
+  }
+
+  fn lowest_selected_timbre(&self) -> Option<Timbre> {
+    let pitches = self.current_selection_pitches()?;
+    let lowest = *pitches.iter().min()?;
+    self.loops.slots[self.loops.active]
+      .events
+      .iter()
+      .find(|e| e.on && e.pitch == lowest)
+      .map(|e| e.timbre)
   }
 
   /// Push a freshly-saved timbre onto the quick-roll: newest at the front, keep four
@@ -300,8 +384,11 @@ impl LooperState {
     // The editor overlays last so its occluding rect always wins over the play grid
     // (edo_levels_base has an early return in remap mode, hence the wrapper).
     if let Some(ed) = &self.timbre_editor {
+      // For a loop target with a selection, the editor displays the lowest selected
+      // note's timbre (6_plan 2.4); otherwise the live timbre.
+      let displayed = self.displayed_timbre(ed.target);
       let view = EditorView {
-        timbre: &self.live_timbre,
+        timbre: &displayed,
         slots: &self.timbre_slots,
         current: self.timbre_current,
         armed: self.timbre_armed,
@@ -453,6 +540,12 @@ impl LooperState {
       if !self.group_transpose && self.remap.as_ref().is_some_and(|r| r.group_transpose) {
         self.exit_remap();
       }
+      return true;
+    }
+    // The loop-display corner cell clears any active selection (6_plan 2.4, C7).
+    let [dcx, dcy, _, _] = self.loop_display_rect;
+    if (x, y) == (dcx, dcy) {
+      self.exit_remap();
       return true;
     }
     if let Some(pick) = self.display_pick(x, y) {
@@ -1282,5 +1375,99 @@ mod tests {
       s.edo_key(8 + i as i32, 0, true, ms(i as u64 * 10 + 2)); // slot i
     }
     assert_eq!(s.timbre_quick.len(), 4, "quick-roll holds at most four");
+  }
+
+  // ---- C7a: loop-timbre manipulation -- selection stamp (path 1) ----
+
+  /// Record a one-note loop (pitch at edo (px,8), below the editor) into the active
+  /// slot and stop. The display rect is [0,5,15,15]: row picker x=0, column picker
+  /// y=5, corner (0,5).
+  fn record_one_note(s: &mut LooperState, px: i32) {
+    s.loops_key(0, 3, true, ms(0)); // start
+    s.edo_key(px, 8, true, ms(10)); // a real note (row 8 is below the editor)
+    s.edo_key(px, 8, false, ms(200));
+    s.loops_key(1, 3, true, ms(1000)); // stop
+  }
+
+  #[test]
+  fn loop_selection_stamp_changes_the_selected_note_and_undo_reverts() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor(); // target = Loop, unfolded
+    record_one_note(&mut s, 0);
+    s.loops_key(0, 15, true, ms(1100)); // select the single (bottom) display row
+    assert!(s.remap.is_some(), "selection active");
+    // Stamp Saw via the editor control-row Saw cell (x=4): loop target + selection.
+    s.edo_key(4, 0, true, ms(1200));
+    let wf = |s: &LooperState| s.loops.slots[0].events.iter().find(|e| e.on).unwrap().timbre.waveform;
+    assert_eq!(wf(&s), Waveform::Saw, "the selected note is stamped");
+    assert_eq!(s.live_timbre.waveform, Waveform::Triangle, "live timbre untouched");
+    // The existing loop-undo button reverts the stamp (it snapshotted to history).
+    s.loops_key(5, 2, true, ms(1300)); // loop_undo at (5,2) in the test geometry
+    assert_eq!(wf(&s), Waveform::Triangle, "undo reverts the stamp");
+  }
+
+  #[test]
+  fn loop_column_stamp_changes_all_notes_at_once() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    s.loops_key(0, 3, true, ms(0)); // start
+    s.edo_key(0, 8, true, ms(10)); // two notes close in time -> one display column
+    s.edo_key(1, 8, true, ms(15));
+    s.edo_key(0, 8, false, ms(200));
+    s.edo_key(1, 8, false, ms(205));
+    s.loops_key(1, 3, true, ms(1000)); // stop
+    s.loops_key(1, 5, true, ms(1100)); // select column 0 (picker at y=5, x=1)
+    assert!(s.remap.is_some(), "column selection active");
+    s.edo_key(4, 0, true, ms(1200)); // stamp Saw
+    let saws = s.loops.slots[0].events.iter().filter(|e| e.on && e.timbre.waveform == Waveform::Saw).count();
+    assert_eq!(saws, 2, "both notes in the column stamped at once (works on a stopped loop)");
+  }
+
+  #[test]
+  fn corner_cell_clears_the_loop_selection() {
+    let mut s = state_with_editor();
+    record_one_note(&mut s, 0);
+    s.loops_key(0, 15, true, ms(1100)); // select a row
+    assert!(s.remap.is_some());
+    s.loops_key(0, 5, true, ms(1200)); // corner (dx0,dy0)=(0,5)
+    assert!(s.remap.is_none(), "the corner cell clears the selection");
+  }
+
+  #[test]
+  fn loop_editor_displays_the_lowest_selected_notes_timbre() {
+    let mut s = state_with_editor();
+    record_one_note(&mut s, 0);
+    s.loops_key(0, 15, true, ms(1100)); // select the note's row
+    s.edo_key(4, 0, true, ms(1200)); // stamp Saw onto it
+    // The editor now DISPLAYS the selected note's timbre (Saw), not live (Triangle).
+    let levels = s.edo_levels(true);
+    assert_eq!(level_at(&levels, 4, 0), LEVEL_FULL, "editor shows the selected note's saw");
+    assert_eq!(level_at(&levels, 2, 0), LEVEL_OFF, "not the live triangle");
+  }
+
+  #[test]
+  fn loop_recall_onto_a_selection_stamps_the_whole_timbre() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    // Save a Saw timbre into slot 0 (no selection -> edits live, then capture).
+    s.edo_key(4, 0, true, ms(0)); // Saw into live
+    s.edo_key(5, 0, true, ms(1)); // arm
+    s.edo_key(8, 0, true, ms(2)); // capture into slot 0
+    // Reset live to triangle, record a note, select it, recall slot 0 onto it.
+    s.edo_key(2, 0, true, ms(3)); // live back to Triangle
+    record_one_note(&mut s, 0);
+    s.loops_key(0, 15, true, ms(1100)); // select the note
+    s.edo_key(8, 0, true, ms(1200)); // recall slot 0 (Saw) onto the selection
+    let on = s.loops.slots[0].events.iter().find(|e| e.on).unwrap();
+    assert_eq!(on.timbre.waveform, Waveform::Saw, "recall stamps the whole timbre onto the selection");
+  }
+
+  #[test]
+  fn loop_target_without_selection_edits_live_timbre_interim() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    assert!(s.remap.is_none());
+    s.edo_key(4, 0, true, ms(0)); // Saw, no selection
+    assert_eq!(s.live_timbre.waveform, Waveform::Saw, "no selection -> live (interim, C7b adds play-along)");
   }
 }
