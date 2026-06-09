@@ -44,6 +44,10 @@ pub struct LoopSlot {
   pub events: Vec<LoopEvent>,
   /// Snapshots of `events` before each remap, for one-press undo (Phase 4).
   pub history: Vec<Vec<LoopEvent>>,
+  /// The save-undo checkpoints (C7, 6_plan 2.8): the last committed timbres and the
+  /// one before it. Both start at the as-recorded events ("save 0") on finalize.
+  pub committed: Vec<LoopEvent>,
+  pub prev_committed: Option<Vec<LoopEvent>>,
 }
 
 /// Turn raw recorded events + the chosen loop length into the finalized loop.
@@ -256,7 +260,11 @@ impl LoopStore {
       return None;
     }
     self.slots[rec.slot].loop_duration = Some(duration);
-    self.slots[rec.slot].events = finalize_recording(rec.buffer, duration, self.quantize);
+    let finalized = finalize_recording(rec.buffer, duration, self.quantize);
+    // "save 0": the checkpoints start at the as-recorded timbres.
+    self.slots[rec.slot].committed = finalized.clone();
+    self.slots[rec.slot].prev_committed = None;
+    self.slots[rec.slot].events = finalized;
     Some(rec.slot)
   }
 }

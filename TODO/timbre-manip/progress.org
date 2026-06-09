@@ -335,10 +335,29 @@ machinery and history-undo.
   *stopped* loop (done-criterion 2); column stamp; corner clear; recall-whole-timbre
   onto a selection; lowest-selected display; undo reverts.
 
-** TODO C7b -- play-along (path 2) + sustain-the-edits + playhead display + save-undo
-Remaining C7: no-selection play-along (rewrite each note-on as the playhead triggers
-it) with the =sustain-the-edits= toggle; the playhead-tracking display (lowest
-still-sounding note of the current note-group column, holding on rests); and the
-=save-undo= button (per-slot =committed/prev_committed=: single = checkpoint,
-double<200ms = revert). Satisfies done-criteria 1 and 3 (the A-B-C-D example and the
-save/double-press restore). save-undo adds =committed/prev_committed= to =LoopSlot=.
+** DONE C7b-save-undo -- the save-undo checkpoint button (6_plan 2.8) [done-criterion 3]
+- =loop_store.rs=: =LoopSlot= gains =committed= + =prev_committed=, both initialised
+  at finalize to the as-recorded events ("save 0").
+- =timbre_editor.rs=: the control-row save-undo cell (x=7) now resolves to
+  =EditorAction::SaveUndo= (loop-only; inert in a live editor).
+- =state.rs=: =save_undo_press(now)= -- a lone tap checkpoints the active slot
+  (=prev_committed <- committed=, =committed <- current=); a second tap within the
+  window reverts events + committed to =prev_committed=, cancelling the checkpoint
+  the first tap began. =save_undo_window= (default 200 ms).
+- Tests: 199 bin + 38 lib. Single-tap checkpoints; double-tap (<200 ms) restores the
+  prior save; "save 0" = as-recorded. (done-criterion 3.)
+- FOLLOW-UP (trivial): thread =save_undo_double_ms= from the editor config (6_plan 5)
+  instead of the hardcoded 200 ms in =mod.rs::run=.
+
+** TODO C7c -- play-along (path 2) + sustain-the-edits + playhead-tracking display
+The last C7 piece (done-criterion 1, the A-B-C-D example): with NO selection, a held
+editor param rewrites each loop note-on as the playhead triggers it; =sustain-the-edits=
+(the inert x=6 cell) governs whether a released override keeps applying; the editor
+rows track the lowest still-sounding note of the current note-group column (holding on
+rests). Needs playhead/parameter-state machinery on =LooperState= (6_plan 2.4 [C 3g]).
+
+** TODO C5c -- loop reflow (loops monome live editor)  [deferred past C7; see Session 2 reorder]
+Add the live-timbre editor on the loops monome + anchor the loop display under it via
+=relayout.rs= (built in C5a) so it reflows on fold. Deferred behind C7 because the
+headline loop-manipulation is higher value than the reflow polish (reversible reorder
+per when-to-stop.org; the engine it needs, C5a, is already done).

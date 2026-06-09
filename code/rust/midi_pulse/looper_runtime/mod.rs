@@ -347,6 +347,9 @@ fn run(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
       quantize: s.quantize,
       cluster: s.cluster,
       timbre_editor: s.timbre_editor,
+      // 6_plan 5 has save_undo_double_ms on the editor; defaulting to 200 ms here
+      // until that field is threaded through config (a trivial follow-up).
+      save_undo_window: Duration::from_millis(200),
     },
   )));
 

@@ -69,6 +69,9 @@ pub enum EditorAction {
   /// A folded-strip quick cell (0..4). Recall the i-th most-recent timbre, or -- until
   /// the first save -- set the i-th waveform. `state.rs` decides by the quick-roll. [C5b]
   QuickCell(usize),
+  /// The save-undo cell: a loop-target checkpoint / one-level revert (6_plan 2.8).
+  /// Inert in a live-target editor. [C7b]
+  SaveUndo,
 }
 
 // Local row offsets within the editor rect (y - rect.top).
@@ -91,6 +94,7 @@ const WAVEFORM_X0: i32 = 1;
 const WAVEFORMS: [Waveform; 4] =
   [Waveform::Sine, Waveform::Triangle, Waveform::Square, Waveform::Saw];
 const ARM_X: i32 = 5;
+const SAVE_UNDO_X: i32 = 7; // sustain (x=6) stays inert until C7b play-along
 const SLOTS_X0: i32 = 8;
 
 // Folded strip (C5b, 6_plan 2.7): [ fold | 4 quick-timbres | amplitude across the rest ].
@@ -194,11 +198,14 @@ impl TimbreEditor {
     if local_x == ARM_X {
       return Some(EditorAction::ToggleArm);
     }
+    if local_x == SAVE_UNDO_X {
+      return Some(EditorAction::SaveUndo);
+    }
     let slot = local_x - SLOTS_X0;
     if (0..self.slot_count() as i32).contains(&slot) {
       return Some(EditorAction::Slot(slot as usize));
     }
-    None // sustain / save-undo: inert until C7
+    None // sustain (x=6): inert until C7b
   }
 
   /// Cells in the folded strip: [ fold | 4 quick | amplitude across the rest ].
@@ -400,8 +407,8 @@ mod tests {
     assert_eq!(up(&ed, 5, 0), Some(EditorAction::ToggleArm));
     assert_eq!(up(&ed, 8, 0), Some(EditorAction::Slot(0)), "first slot");
     assert_eq!(up(&ed, 15, 0), Some(EditorAction::Slot(7)), "last of 8 slots");
-    assert_eq!(up(&ed, 6, 0), None, "sustain inert until C7");
-    assert_eq!(up(&ed, 7, 0), None, "save-undo inert until C7");
+    assert_eq!(up(&ed, 6, 0), None, "sustain inert until C7b");
+    assert_eq!(up(&ed, 7, 0), Some(EditorAction::SaveUndo), "save-undo cell");
     assert_eq!(ed.slot_count(), 8, "16-wide editor -> 8 slots");
   }
 

@@ -53,6 +53,8 @@ pub struct LooperParams {
   pub cluster: Duration,
   /// The timbre editor occluding the edo grid (C3b), if configured.
   pub timbre_editor: Option<TimbreEditor>,
+  /// save-undo double-press window (6_plan 2.8, default 200 ms).
+  pub save_undo_window: Duration,
 }
 
 /// The slot currently sounding, with its playhead and the epoch time it started.
@@ -121,6 +123,11 @@ pub struct LooperState {
   /// front. A save pushes onto it; a recall does not reorder it.
   timbre_folded: bool,
   timbre_quick: Vec<Timbre>,
+
+  /// save-undo (C7b, 6_plan 2.8): the last save-undo press time and the double-press
+  /// window. A lone tap checkpoints the active slot; a second within the window reverts.
+  save_undo_last: Option<Duration>,
+  save_undo_window: Duration,
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -188,6 +195,8 @@ impl LooperState {
       timbre_current: None,
       timbre_folded: true, // 6_plan 2.7: folded is the resting state
       timbre_quick: Vec::new(),
+      save_undo_last: None,
+      save_undo_window: p.save_undo_window,
     }
   }
 
@@ -208,7 +217,7 @@ impl LooperState {
         .filter(|ed| ed.occludes(x, y, folded))
         .map(|ed| (ed.target, ed.press(x, y, folded)));
       if let Some((target, action)) = hit {
-        self.apply_editor_action(target, action);
+        self.apply_editor_action(target, action, now);
         return true;
       }
       if let Some(shift) = shift_for_cell(self.shift_rect, (x, y)) {
@@ -260,14 +269,42 @@ impl LooperState {
   /// a loop-display selection active stamps onto the selected notes of the active
   /// loop instead; with no selection it falls back to editing the live timbre (the
   /// no-selection play-along path is C7b).
-  fn apply_editor_action(&mut self, target: TimbreTarget, action: Option<EditorAction>) {
+  fn apply_editor_action(&mut self, target: TimbreTarget, action: Option<EditorAction>, now: Duration) {
     match action {
       Some(EditorAction::Param(p)) => self.editor_param(target, p),
       Some(EditorAction::ToggleArm) => self.timbre_armed = !self.timbre_armed,
       Some(EditorAction::Slot(i)) => self.editor_slot(target, i),
       Some(EditorAction::ToggleFold) => self.timbre_folded = !self.timbre_folded,
       Some(EditorAction::QuickCell(i)) => self.editor_quick(target, i),
-      None => {} // sustain / save-undo / blank: consumed, no effect
+      Some(EditorAction::SaveUndo) => {
+        if target == TimbreTarget::Loop {
+          self.save_undo_press(now); // loop-only; inert in a live editor (6_plan 2.8)
+        }
+      }
+      None => {} // sustain / blank: consumed, no effect
+    }
+  }
+
+  /// The save-undo button (6_plan 2.8): a lone tap sets a restore point on the active
+  /// slot (prev_committed <- committed, committed <- current); a second tap within the
+  /// window reverts -- the events and committed go back to prev_committed, cancelling
+  /// the checkpoint the first tap began. Both checkpoints start at the as-recorded
+  /// timbres ("save 0", set at finalize).
+  fn save_undo_press(&mut self, now: Duration) {
+    let slot = self.loops.active;
+    let is_double = self
+      .save_undo_last
+      .is_some_and(|t| now.saturating_sub(t) < self.save_undo_window);
+    if is_double {
+      if let Some(prev) = self.loops.slots[slot].prev_committed.clone() {
+        self.loops.slots[slot].events = prev.clone();
+        self.loops.slots[slot].committed = prev;
+      }
+      self.save_undo_last = None;
+    } else {
+      self.loops.slots[slot].prev_committed = Some(self.loops.slots[slot].committed.clone());
+      self.loops.slots[slot].committed = self.loops.slots[slot].events.clone();
+      self.save_undo_last = Some(now);
     }
   }
 
@@ -936,6 +973,7 @@ mod tests {
         quantize: ms(70),
         cluster: ms(100),
         timbre_editor: None,
+        save_undo_window: ms(200),
       },
     )
   }
@@ -1469,5 +1507,51 @@ mod tests {
     assert!(s.remap.is_none());
     s.edo_key(4, 0, true, ms(0)); // Saw, no selection
     assert_eq!(s.live_timbre.waveform, Waveform::Saw, "no selection -> live (interim, C7b adds play-along)");
+  }
+
+  // ---- C7b: save-undo checkpoint ----
+
+  fn loop_wf(s: &LooperState) -> crate::types::Waveform {
+    s.loops.slots[0].events.iter().find(|e| e.on).unwrap().timbre.waveform
+  }
+
+  #[test]
+  fn save_undo_single_checkpoints_and_double_reverts() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    record_one_note(&mut s, 0); // committed = triangle ("save 0")
+    s.loops_key(0, 15, true, ms(1100)); // select the note (selection persists through stamps)
+    s.edo_key(4, 0, true, ms(1200)); // stamp Saw
+    assert_eq!(loop_wf(&s), Waveform::Saw);
+    s.edo_key(7, 0, true, ms(1300)); // save-undo SINGLE -> committed = Saw
+    s.edo_key(3, 0, true, ms(1400)); // stamp Square (events = Square, committed = Saw)
+    assert_eq!(loop_wf(&s), Waveform::Square);
+    // A double-press: tap #1 (>200 ms after the save) checkpoints Square; tap #2
+    // (<200 ms) cancels that checkpoint and reverts to the prior save (Saw).
+    s.edo_key(7, 0, true, ms(2000)); // tap #1
+    s.edo_key(7, 0, true, ms(2100)); // tap #2 (within 200 ms)
+    assert_eq!(loop_wf(&s), Waveform::Saw, "double-press restores the prior save");
+  }
+
+  #[test]
+  fn save_undo_lone_tap_only_sets_a_restore_point() {
+    use crate::types::Waveform;
+    let mut s = state_with_editor();
+    record_one_note(&mut s, 0);
+    s.loops_key(0, 15, true, ms(1100));
+    s.edo_key(4, 0, true, ms(1200)); // stamp Saw
+    s.edo_key(7, 0, true, ms(1300)); // lone save (no second tap within 200 ms)
+    assert_eq!(loop_wf(&s), Waveform::Saw, "a lone tap does not revert the events");
+    let committed_wf = s.loops.slots[0].committed.iter().find(|e| e.on).unwrap().timbre.waveform;
+    assert_eq!(committed_wf, Waveform::Saw, "committed advanced to the saved timbre");
+  }
+
+  #[test]
+  fn save_zero_is_the_as_recorded_timbres() {
+    // Before any manual save, committed = the as-recorded events (record-time "save 0").
+    let mut s = state_with_editor();
+    record_one_note(&mut s, 0);
+    assert_eq!(s.loops.slots[0].committed, s.loops.slots[0].events, "save 0 = as recorded");
+    assert!(s.loops.slots[0].prev_committed.is_none());
   }
 }
