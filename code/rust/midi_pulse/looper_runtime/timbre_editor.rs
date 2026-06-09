@@ -52,6 +52,32 @@ impl TimbreParam {
       TimbreParam::FmFreq(f) => t.fm.freq = f,
     }
   }
+
+  /// Which parameter this is, value aside -- the key for play-along overrides (one
+  /// active override per parameter; the latest value wins). [C7c]
+  pub fn kind(self) -> ParamKind {
+    match self {
+      TimbreParam::Waveform(_) => ParamKind::Waveform,
+      TimbreParam::Gain(_) => ParamKind::Gain,
+      TimbreParam::AmDepth(_) => ParamKind::AmDepth,
+      TimbreParam::AmFreq(_) => ParamKind::AmFreq,
+      TimbreParam::AmShape(_) => ParamKind::AmShape,
+      TimbreParam::FmDepthCents(_) => ParamKind::FmDepthCents,
+      TimbreParam::FmFreq(_) => ParamKind::FmFreq,
+    }
+  }
+}
+
+/// A parameter identity (no value), keying the play-along override set. [C7c]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParamKind {
+  Waveform,
+  Gain,
+  AmDepth,
+  AmFreq,
+  AmShape,
+  FmDepthCents,
+  FmFreq,
 }
 
 /// What a press resolves to inside the editor rect. `state.rs` applies it (a blank /
@@ -72,6 +98,9 @@ pub enum EditorAction {
   /// The save-undo cell: a loop-target checkpoint / one-level revert (6_plan 2.8).
   /// Inert in a live-target editor. [C7b]
   SaveUndo,
+  /// The sustain-the-edits cell: toggles whether a released play-along override keeps
+  /// applying (loop-target, no-selection only). Inert in a live editor. [C7c]
+  ToggleSustain,
 }
 
 // Local row offsets within the editor rect (y - rect.top).
@@ -94,7 +123,8 @@ const WAVEFORM_X0: i32 = 1;
 const WAVEFORMS: [Waveform; 4] =
   [Waveform::Sine, Waveform::Triangle, Waveform::Square, Waveform::Saw];
 const ARM_X: i32 = 5;
-const SAVE_UNDO_X: i32 = 7; // sustain (x=6) stays inert until C7b play-along
+const SUSTAIN_X: i32 = 6;
+const SAVE_UNDO_X: i32 = 7;
 const SLOTS_X0: i32 = 8;
 
 // Folded strip (C5b, 6_plan 2.7): [ fold | 4 quick-timbres | amplitude across the rest ].
@@ -111,6 +141,7 @@ pub struct EditorView<'a> {
   pub current: Option<usize>,
   pub armed: bool,
   pub quick: &'a [Timbre],
+  pub sustain: bool,
 }
 
 /// A timbre editor placed at an absolute rect on one grid. `target` selects what it
@@ -198,6 +229,9 @@ impl TimbreEditor {
     if local_x == ARM_X {
       return Some(EditorAction::ToggleArm);
     }
+    if local_x == SUSTAIN_X {
+      return Some(EditorAction::ToggleSustain);
+    }
     if local_x == SAVE_UNDO_X {
       return Some(EditorAction::SaveUndo);
     }
@@ -205,7 +239,7 @@ impl TimbreEditor {
     if (0..self.slot_count() as i32).contains(&slot) {
       return Some(EditorAction::Slot(slot as usize));
     }
-    None // sustain (x=6): inert until C7b
+    None
   }
 
   /// Cells in the folded strip: [ fold | 4 quick | amplitude across the rest ].
@@ -336,6 +370,8 @@ impl TimbreEditor {
     put(levels, FOLD_X, ROW_CONTROL, LEVEL_MID); // findable, distinct from values
     put(levels, Self::waveform_cell(view.timbre), ROW_CONTROL, LEVEL_FULL);
     put(levels, ARM_X, ROW_CONTROL, if view.armed { LEVEL_FULL } else { LEVEL_DIM });
+    // sustain-the-edits toggle: Bright on, Off off (6_plan 2.9).
+    put(levels, SUSTAIN_X, ROW_CONTROL, if view.sustain { LEVEL_FULL } else { LEVEL_OFF });
     let dirty = view
       .current
       .and_then(|c| view.slots.get(c))
@@ -407,7 +443,7 @@ mod tests {
     assert_eq!(up(&ed, 5, 0), Some(EditorAction::ToggleArm));
     assert_eq!(up(&ed, 8, 0), Some(EditorAction::Slot(0)), "first slot");
     assert_eq!(up(&ed, 15, 0), Some(EditorAction::Slot(7)), "last of 8 slots");
-    assert_eq!(up(&ed, 6, 0), None, "sustain inert until C7b");
+    assert_eq!(up(&ed, 6, 0), Some(EditorAction::ToggleSustain), "sustain toggle");
     assert_eq!(up(&ed, 7, 0), Some(EditorAction::SaveUndo), "save-undo cell");
     assert_eq!(ed.slot_count(), 8, "16-wide editor -> 8 slots");
   }
@@ -472,7 +508,7 @@ mod tests {
     armed: bool,
     quick: &'a [Timbre],
   ) -> EditorView<'a> {
-    EditorView { timbre: t, slots, current, armed, quick }
+    EditorView { timbre: t, slots, current, armed, quick, sustain: false }
   }
 
   #[test]

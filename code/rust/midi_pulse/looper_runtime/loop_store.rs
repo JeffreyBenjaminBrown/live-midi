@@ -120,6 +120,12 @@ impl Playback {
     }
   }
 
+  /// The index of the next event to emit. C7c reads this around `step` to find which
+  /// note-ons the playhead just crossed (for the play-along destructive rewrite).
+  pub fn cursor(&self) -> usize {
+    self.cursor
+  }
+
   pub fn step(&mut self, events: &[LoopEvent], total: Duration) -> Vec<PlayAction> {
     let dur = self.duration_nanos;
     let total = total.as_nanos();

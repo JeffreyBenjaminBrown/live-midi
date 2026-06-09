@@ -349,12 +349,31 @@ machinery and history-undo.
 - FOLLOW-UP (trivial): thread =save_undo_double_ms= from the editor config (6_plan 5)
   instead of the hardcoded 200 ms in =mod.rs::run=.
 
-** TODO C7c -- play-along (path 2) + sustain-the-edits + playhead-tracking display
-The last C7 piece (done-criterion 1, the A-B-C-D example): with NO selection, a held
-editor param rewrites each loop note-on as the playhead triggers it; =sustain-the-edits=
-(the inert x=6 cell) governs whether a released override keeps applying; the editor
-rows track the lowest still-sounding note of the current note-group column (holding on
-rests). Needs playhead/parameter-state machinery on =LooperState= (6_plan 2.4 [C 3g]).
+** DONE C7c -- play-along (path 2) + sustain-the-edits + playhead display [C7 complete]
+- =timbre_editor.rs=: =ParamKind= + =TimbreParam::kind()= (override key); the
+  control-row sustain cell (x=6) resolves to =ToggleSustain=; =EditorView.sustain=
+  paints it Bright-on/Off-off (6_plan 2.9).
+- =loop_store.rs=: =Playback::cursor()= so play-along can find the note-ons the
+  playhead just crossed.
+- =state.rs=: =timbre_overrides: HashMap<ParamKind,(TimbreParam,held)>= +
+  =timbre_sustain=. A no-selection loop param press HOLDS an override (not live);
+  releasing it (an editor-cell key-up, now handled) returns it to tracking unless
+  =sustain= keeps it; toggling sustain off drops released overrides (held stay).
+  =playback_tick= rewrites each just-crossed note-on with the active overrides
+  (destructive; reverted by the save-undo checkpoint, not per-edit history) and sounds
+  the overridden timbre. The editor DISPLAY tracks the lowest still-sounding loop note
+  (=displayed_timbre=) when there is no selection.
+- Tests: 203 bin + 38 lib. Override held -> note rewritten as the playhead hits it;
+  release drops it (no sustain); sustain keeps a released override, then sustain-off
+  drops it. (done-criterion 1.)
+- DEVIATIONS (per stop-rule, plan unchanged): (1) "hold last on rests" is approximated
+  by falling back to the live timbre when nothing sounds (a stored last-displayed would
+  be exact; reversible). (2) Test helpers split: =state_with_editor= is now a *live*
+  editor (genuinely tests live editing, C3b..C5b); =state_with_loop_editor= a *loop*
+  editor (C7). The earlier "no-selection loop edits live (interim)" behaviour is gone --
+  a loop editor never edits the live timbre.
+- C7 is COMPLETE: all three 6_plan-C7 done-criteria pass (selection stamp on a stopped
+  loop; single/double save-undo; play-along rewrite).
 
 ** TODO C5c -- loop reflow (loops monome live editor)  [deferred past C7; see Session 2 reorder]
 Add the live-timbre editor on the loops monome + anchor the loop display under it via

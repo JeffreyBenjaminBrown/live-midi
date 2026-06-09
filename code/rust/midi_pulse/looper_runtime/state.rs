@@ -15,7 +15,7 @@ use super::edo::{register_delta, shift_for_cell, step_for_cell, Shift};
 use super::loop_store::{LoopStore, PlayAction, Playback};
 use super::remap::{apply_fine, apply_group_transpose, selected_pitches, Selection};
 use super::sink::{NoteSource, SawNoteSink};
-use super::timbre_editor::{EditorAction, EditorView, TimbreEditor, TimbreParam};
+use super::timbre_editor::{EditorAction, EditorView, ParamKind, TimbreEditor, TimbreParam};
 use crate::types::Timbre;
 use midi_pulse::config::TimbreTarget;
 
@@ -128,6 +128,14 @@ pub struct LooperState {
   /// window. A lone tap checkpoints the active slot; a second within the window reverts.
   save_undo_last: Option<Duration>,
   save_undo_window: Duration,
+
+  /// Play-along overrides (C7c, 6_plan 2.4 path 2): on a loop editor with no
+  /// selection, holding a param row overrides that parameter; each loop note-on the
+  /// playhead triggers is rewritten to the active overrides. `(param, held)`: a
+  /// released override stays iff `timbre_sustain`. Toggling sustain off drops the
+  /// released ones (held stay until released); toggling on is not retroactive.
+  timbre_overrides: HashMap<ParamKind, (TimbreParam, bool)>,
+  timbre_sustain: bool,
 }
 
 /// An in-progress loop remap. While present, the edo grid is in remap mode (its
@@ -197,6 +205,8 @@ impl LooperState {
       timbre_quick: Vec::new(),
       save_undo_last: None,
       save_undo_window: p.save_undo_window,
+      timbre_overrides: HashMap::new(),
+      timbre_sustain: false,
     }
   }
 
@@ -246,12 +256,31 @@ impl LooperState {
         return true;
       }
       false
-    } else if let Some(pitch) = self.down.remove(&(x, y)) {
-      self.sink.note_off(pitch, NoteSource::Live(x, y));
-      self.loops.record_note(now, pitch, false);
-      true
     } else {
-      false
+      // A release inside the (occluding) editor: if it let go of a held play-along
+      // param, release that override (sustain decides whether it persists). Always
+      // consume it -- editor cells never entered `self.down`. [C7c]
+      let folded = self.timbre_folded;
+      let hit = self
+        .timbre_editor
+        .as_ref()
+        .filter(|ed| ed.occludes(x, y, folded))
+        .map(|ed| (ed.target, ed.press(x, y, folded)));
+      if let Some((target, action)) = hit {
+        if target == TimbreTarget::Loop {
+          if let Some(EditorAction::Param(p)) = action {
+            self.release_override(p.kind());
+          }
+        }
+        return true;
+      }
+      if let Some(pitch) = self.down.remove(&(x, y)) {
+        self.sink.note_off(pitch, NoteSource::Live(x, y));
+        self.loops.record_note(now, pitch, false);
+        true
+      } else {
+        false
+      }
     }
   }
 
@@ -281,8 +310,42 @@ impl LooperState {
           self.save_undo_press(now); // loop-only; inert in a live editor (6_plan 2.8)
         }
       }
-      None => {} // sustain / blank: consumed, no effect
+      Some(EditorAction::ToggleSustain) => {
+        if target == TimbreTarget::Loop {
+          self.toggle_sustain();
+        }
+      }
+      None => {} // blank: consumed, no effect
     }
+  }
+
+  /// Toggle sustain-the-edits. Turning it off drops released play-along overrides
+  /// (held ones stay until released); turning it on is not retroactive. [6_plan 2.4]
+  fn toggle_sustain(&mut self) {
+    self.timbre_sustain = !self.timbre_sustain;
+    if !self.timbre_sustain {
+      self.timbre_overrides.retain(|_, (_, held)| *held);
+    }
+  }
+
+  /// Release a play-along override (its cell was let go): it returns to tracking
+  /// unless sustain keeps it. [6_plan 2.4]
+  fn release_override(&mut self, kind: ParamKind) {
+    if let Some((_, held)) = self.timbre_overrides.get_mut(&kind) {
+      *held = false;
+      if !self.timbre_sustain {
+        self.timbre_overrides.remove(&kind);
+      }
+    }
+  }
+
+  /// The params currently overriding play-along note-ons -- none while a selection is
+  /// active (that is the immediate-stamp path instead). [6_plan 2.4]
+  fn active_overrides(&self) -> Vec<TimbreParam> {
+    if self.timbre_overrides.is_empty() || self.current_selection_pitches().is_some() {
+      return Vec::new();
+    }
+    self.timbre_overrides.values().map(|(p, _)| *p).collect()
   }
 
   /// The save-undo button (6_plan 2.8): a lone tap sets a restore point on the active
@@ -312,8 +375,12 @@ impl LooperState {
     if target == TimbreTarget::Loop {
       if let Some(selected) = self.current_selection_pitches() {
         self.stamp_loop(&selected, |t| p.apply(t));
-        return;
+      } else {
+        // No selection: hold a play-along override, applied at each loop note-on the
+        // playhead triggers (6_plan 2.4 path 2).
+        self.timbre_overrides.insert(p.kind(), (p, true));
       }
+      return;
     }
     p.apply(&mut self.live_timbre);
   }
@@ -388,11 +455,17 @@ impl LooperState {
     (!pitches.is_empty()).then_some(pitches)
   }
 
-  /// The timbre the loop editor displays: the lowest selected note's timbre when a
-  /// loop selection is active, else the live timbre. [6_plan 2.4 display]
+  /// The timbre the loop editor displays (6_plan 2.4 display): under a selection, the
+  /// lowest selected note's timbre; else, while the loop plays, the lowest
+  /// still-sounding note of the current note-group column (playhead tracking); else
+  /// the live timbre (the rest fallback -- "hold last" is approximated by the live
+  /// timbre, a reversible simplification).
   fn displayed_timbre(&self, target: TimbreTarget) -> Timbre {
     if target == TimbreTarget::Loop {
       if let Some(t) = self.lowest_selected_timbre() {
+        return t;
+      }
+      if let Some(t) = self.lowest_sounding_loop_timbre() {
         return t;
       }
     }
@@ -403,6 +476,18 @@ impl LooperState {
     let pitches = self.current_selection_pitches()?;
     let lowest = *pitches.iter().min()?;
     self.loops.slots[self.loops.active]
+      .events
+      .iter()
+      .find(|e| e.on && e.pitch == lowest)
+      .map(|e| e.timbre)
+  }
+
+  /// The timbre of the lowest pitch the sounding loop is currently holding (read from
+  /// the sink's live ref-counts), i.e. the playhead's current lowest note. [6_plan 2.4]
+  fn lowest_sounding_loop_timbre(&self) -> Option<Timbre> {
+    let slot = self.loops.sounding?;
+    let lowest = self.sink.pitches_held_by(NoteSource::Slot(slot)).into_iter().min()?;
+    self.loops.slots[slot]
       .events
       .iter()
       .find(|e| e.on && e.pitch == lowest)
@@ -430,6 +515,7 @@ impl LooperState {
         current: self.timbre_current,
         armed: self.timbre_armed,
         quick: &self.timbre_quick,
+        sustain: self.timbre_sustain,
       };
       ed.paint(&view, self.timbre_folded, &mut levels, self.grid_w, flash_on);
     }
@@ -785,14 +871,41 @@ impl LooperState {
       Some(p) => (p.slot, now.saturating_sub(p.start)),
       None => return,
     };
+    let cursor_before = self.playing.as_ref().unwrap().playback.cursor();
     let actions = {
       let events = &self.loops.slots[slot].events;
       self.playing.as_mut().unwrap().playback.step(events, total)
     };
+    // C7c play-along: rewrite the note-ons the playhead just crossed with the active
+    // overrides -- destructive, the loop's stored timbres change live (the save-undo
+    // checkpoint, not per-edit history, reverts these).
+    let overrides = self.active_overrides();
+    if !overrides.is_empty() {
+      let wrapped = actions.iter().any(|a| matches!(a, PlayAction::ReleaseAll));
+      let cursor_after = self.playing.as_ref().unwrap().playback.cursor();
+      let len = self.loops.slots[slot].events.len();
+      let indices: Vec<usize> = if wrapped {
+        (cursor_before..len).chain(0..cursor_after).collect()
+      } else {
+        (cursor_before..cursor_after).collect()
+      };
+      for i in indices {
+        if self.loops.slots[slot].events[i].on {
+          for p in &overrides {
+            p.apply(&mut self.loops.slots[slot].events[i].timbre);
+          }
+        }
+      }
+    }
     let source = NoteSource::Slot(slot);
     for action in actions {
       match action {
-        PlayAction::On(pitch, timbre) => self.sink.note_on(pitch, source, timbre),
+        PlayAction::On(pitch, mut timbre) => {
+          for p in &overrides {
+            p.apply(&mut timbre);
+          }
+          self.sink.note_on(pitch, source, timbre);
+        }
         PlayAction::Off(pitch) => self.sink.note_off(pitch, source),
         PlayAction::ReleaseAll => self.sink.release_source(source),
       }
@@ -979,14 +1092,13 @@ mod tests {
   }
 
   /// A state whose edo grid carries a timbre editor occluding the top 7 rows
-  /// (rect [0,0,15,6]), with the 6_plan 5 default row ranges.
-  fn state_with_editor() -> LooperState {
+  /// (rect [0,0,15,6]) with the 6_plan 5 default row ranges, unfolded.
+  fn state_with_target(target: TimbreTarget) -> LooperState {
     use super::super::timbre_editor::TimbreEditor;
-    use midi_pulse::config::TimbreTarget;
     use super::super::timbre_rows::RowRange;
     let editor = TimbreEditor::new(
       [0, 0, 15, 6],
-      TimbreTarget::Loop,
+      target,
       RowRange::LogRange { least: 0.0009, greatest: 0.15 },
       RowRange::Linear { min: 0.0, max: 1.0 },
       RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
@@ -998,9 +1110,20 @@ mod tests {
     // Match what `new()` does from LooperParams: size the slot store to the editor.
     s.timbre_slots = vec![None; editor.slot_count()];
     s.timbre_editor = Some(editor);
-    // Most tests below exercise the full (unfolded) editor; C5b fold tests re-fold.
+    // Most tests exercise the full (unfolded) editor; C5b fold tests re-fold.
     s.timbre_folded = false;
     s
+  }
+
+  /// A live-target editor: every press edits the global live timbre (C3b..C5b).
+  fn state_with_editor() -> LooperState {
+    state_with_target(TimbreTarget::Live)
+  }
+
+  /// A loop-target editor: presses edit the active loop via selection-stamp /
+  /// play-along (C7).
+  fn state_with_loop_editor() -> LooperState {
+    state_with_target(TimbreTarget::Loop)
   }
 
   fn level_at(levels: &[i32], x: i32, y: i32) -> i32 {
@@ -1430,7 +1553,7 @@ mod tests {
   #[test]
   fn loop_selection_stamp_changes_the_selected_note_and_undo_reverts() {
     use crate::types::Waveform;
-    let mut s = state_with_editor(); // target = Loop, unfolded
+    let mut s = state_with_loop_editor(); // unfolded
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100)); // select the single (bottom) display row
     assert!(s.remap.is_some(), "selection active");
@@ -1447,7 +1570,7 @@ mod tests {
   #[test]
   fn loop_column_stamp_changes_all_notes_at_once() {
     use crate::types::Waveform;
-    let mut s = state_with_editor();
+    let mut s = state_with_loop_editor();
     s.loops_key(0, 3, true, ms(0)); // start
     s.edo_key(0, 8, true, ms(10)); // two notes close in time -> one display column
     s.edo_key(1, 8, true, ms(15));
@@ -1463,7 +1586,7 @@ mod tests {
 
   #[test]
   fn corner_cell_clears_the_loop_selection() {
-    let mut s = state_with_editor();
+    let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100)); // select a row
     assert!(s.remap.is_some());
@@ -1473,7 +1596,7 @@ mod tests {
 
   #[test]
   fn loop_editor_displays_the_lowest_selected_notes_timbre() {
-    let mut s = state_with_editor();
+    let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100)); // select the note's row
     s.edo_key(4, 0, true, ms(1200)); // stamp Saw onto it
@@ -1486,13 +1609,12 @@ mod tests {
   #[test]
   fn loop_recall_onto_a_selection_stamps_the_whole_timbre() {
     use crate::types::Waveform;
-    let mut s = state_with_editor();
-    // Save a Saw timbre into slot 0 (no selection -> edits live, then capture).
-    s.edo_key(4, 0, true, ms(0)); // Saw into live
+    let mut s = state_with_loop_editor();
+    // Put a Saw timbre into slot 0 (set live directly, then arm + capture).
+    s.live_timbre.waveform = Waveform::Saw;
     s.edo_key(5, 0, true, ms(1)); // arm
-    s.edo_key(8, 0, true, ms(2)); // capture into slot 0
-    // Reset live to triangle, record a note, select it, recall slot 0 onto it.
-    s.edo_key(2, 0, true, ms(3)); // live back to Triangle
+    s.edo_key(8, 0, true, ms(2)); // capture the displayed (live, no selection) timbre
+    s.live_timbre.waveform = Waveform::Triangle; // reset live
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100)); // select the note
     s.edo_key(8, 0, true, ms(1200)); // recall slot 0 (Saw) onto the selection
@@ -1500,13 +1622,66 @@ mod tests {
     assert_eq!(on.timbre.waveform, Waveform::Saw, "recall stamps the whole timbre onto the selection");
   }
 
+  // ---- C7c: play-along (path 2) + sustain-the-edits ----
+
+  /// Record a Saw note into slot 0, then play it (target=loop, no selection).
+  fn record_and_play_saw(s: &mut LooperState) {
+    s.live_timbre.waveform = crate::types::Waveform::Saw;
+    record_one_note(s, 0);
+    s.live_timbre.waveform = crate::types::Waveform::Triangle;
+    s.loops_key(2, 3, true, ms(1000)); // play
+  }
+
   #[test]
-  fn loop_target_without_selection_edits_live_timbre_interim() {
-    use crate::types::Waveform;
-    let mut s = state_with_editor();
+  fn no_selection_param_press_holds_a_play_along_override() {
+    let mut s = state_with_loop_editor();
     assert!(s.remap.is_none());
-    s.edo_key(4, 0, true, ms(0)); // Saw, no selection
-    assert_eq!(s.live_timbre.waveform, Waveform::Saw, "no selection -> live (interim, C7b adds play-along)");
+    s.edo_key(1, 0, true, ms(0)); // Sine, no selection -> an override (not live, not the loop yet)
+    assert_eq!(s.live_timbre.waveform, crate::types::Waveform::Triangle, "live untouched");
+    assert!(!s.timbre_overrides.is_empty(), "a held override exists");
+  }
+
+  #[test]
+  fn play_along_rewrites_notes_as_the_playhead_triggers_them() {
+    use crate::types::Waveform;
+    let mut s = state_with_loop_editor();
+    record_and_play_saw(&mut s); // the loop note is Saw
+    // Hold a Sine override (no selection), then let the playhead reach the note.
+    s.edo_key(1, 0, true, ms(1050)); // Sine override held
+    s.playback_tick(ms(1110)); // playhead crosses the note-on -> rewritten to Sine
+    let on = s.loops.slots[0].events.iter().find(|e| e.on).unwrap();
+    assert_eq!(on.timbre.waveform, Waveform::Sine, "play-along rewrote the stored note");
+  }
+
+  #[test]
+  fn released_override_stops_applying_without_sustain() {
+    use crate::types::Waveform;
+    let mut s = state_with_loop_editor();
+    record_and_play_saw(&mut s);
+    s.edo_key(1, 0, true, ms(1050)); // hold Sine
+    s.edo_key(1, 0, false, ms(1060)); // release (sustain OFF -> override drops)
+    assert!(s.timbre_overrides.is_empty(), "released override drops without sustain");
+    s.playback_tick(ms(1110)); // playhead crosses the note -> NOT rewritten
+    let on = s.loops.slots[0].events.iter().find(|e| e.on).unwrap();
+    assert_eq!(on.timbre.waveform, Waveform::Saw, "no override -> note keeps Saw");
+  }
+
+  #[test]
+  fn sustain_keeps_a_released_override_applying() {
+    use crate::types::Waveform;
+    let mut s = state_with_loop_editor();
+    record_and_play_saw(&mut s);
+    s.edo_key(6, 0, true, ms(1040)); // sustain-the-edits ON
+    assert!(s.timbre_sustain);
+    s.edo_key(1, 0, true, ms(1050)); // hold Sine
+    s.edo_key(1, 0, false, ms(1060)); // release -> stays overridden (sustain on)
+    assert!(!s.timbre_overrides.is_empty(), "sustain keeps the released override");
+    s.playback_tick(ms(1110)); // playhead crosses the note -> rewritten to Sine
+    let on = s.loops.slots[0].events.iter().find(|e| e.on).unwrap();
+    assert_eq!(on.timbre.waveform, Waveform::Sine, "sustained override still applies");
+    // Toggling sustain off now drops the released override.
+    s.edo_key(6, 0, true, ms(1120));
+    assert!(s.timbre_overrides.is_empty(), "sustain off drops released overrides");
   }
 
   // ---- C7b: save-undo checkpoint ----
@@ -1518,7 +1693,7 @@ mod tests {
   #[test]
   fn save_undo_single_checkpoints_and_double_reverts() {
     use crate::types::Waveform;
-    let mut s = state_with_editor();
+    let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0); // committed = triangle ("save 0")
     s.loops_key(0, 15, true, ms(1100)); // select the note (selection persists through stamps)
     s.edo_key(4, 0, true, ms(1200)); // stamp Saw
@@ -1536,7 +1711,7 @@ mod tests {
   #[test]
   fn save_undo_lone_tap_only_sets_a_restore_point() {
     use crate::types::Waveform;
-    let mut s = state_with_editor();
+    let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100));
     s.edo_key(4, 0, true, ms(1200)); // stamp Saw
@@ -1549,9 +1724,22 @@ mod tests {
   #[test]
   fn save_zero_is_the_as_recorded_timbres() {
     // Before any manual save, committed = the as-recorded events (record-time "save 0").
-    let mut s = state_with_editor();
+    let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0);
     assert_eq!(s.loops.slots[0].committed, s.loops.slots[0].events, "save 0 = as recorded");
     assert!(s.loops.slots[0].prev_committed.is_none());
+  }
+
+  #[test]
+  fn loop_editor_display_tracks_the_lowest_sounding_note() {
+    use crate::types::Waveform;
+    let mut s = state_with_loop_editor();
+    s.live_timbre.waveform = Waveform::Saw; // the recorded note will be Saw
+    record_one_note(&mut s, 0);
+    s.live_timbre.waveform = Waveform::Triangle; // diverge live from the loop note
+    assert!(s.remap.is_none(), "no selection");
+    s.loops_key(2, 3, true, ms(1100)); // play
+    s.playback_tick(ms(1110)); // playhead reaches the note-on -> it sounds
+    assert_eq!(level_at(&s.edo_levels(true), 4, 0), LEVEL_FULL, "display tracks the sounding saw note");
   }
 }
