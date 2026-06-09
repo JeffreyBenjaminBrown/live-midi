@@ -80,6 +80,125 @@ pub enum RowRangeConfig {
   LogRange { least: f32, greatest: f32 },
 }
 
+// === Relative window coordinates (6_plan 4.1) ===========================
+
+/// One side of a rect. `Top`/`Bottom` are y edges; `Left`/`Right` are x edges.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeName {
+  Top,
+  Bottom,
+  Left,
+  Right,
+}
+
+/// A reference to another window's edge, plus an offset: `live-timbre.bottom + 1`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeRef {
+  pub target: String,
+  pub edge: EdgeName,
+  pub offset: i32,
+}
+
+/// A single edge, after deserialization: an absolute coordinate (negative counts
+/// from the far edge; -1 = last row/col) or a reference to another window's edge.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResolvedEdge {
+  Absolute(i32),
+  Ref(EdgeRef),
+}
+
+/// One edge in config: an integer (absolute) or a `"id.edge +/- n"` string.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum EdgeSpecConfig {
+  Absolute(i32),
+  Expr(String),
+}
+
+/// A window rect (6_plan 4.1): the legacy whole-rect array `[x0,y0,x1,y1]` (all
+/// absolute), or a per-edge table whose edges may be absolute or relative. Both
+/// forms parse, so absolute configs are unchanged.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum RectSpecConfig {
+  Absolute([i32; 4]),
+  PerEdge {
+    top: EdgeSpecConfig,
+    bottom: EdgeSpecConfig,
+    left: EdgeSpecConfig,
+    right: EdgeSpecConfig,
+  },
+}
+
+/// Parse a relative-edge expression `"<id>.<edge> [+/- n]"`, e.g.
+/// `"live-timbre.bottom + 1"` or `"grid.left"`. Whitespace around the offset is
+/// optional. The id may contain hyphens (split on the first dot).
+pub fn parse_edge_expr(s: &str) -> Result<EdgeRef, String> {
+  let s = s.trim();
+  let dot = s
+    .find('.')
+    .ok_or_else(|| format!("edge expr {s:?} must be \"<id>.<edge> [+/- n]\""))?;
+  let target = s[..dot].trim();
+  if target.is_empty() {
+    return Err(format!("edge expr {s:?} is missing a window id"));
+  }
+  let rest = s[dot + 1..].trim();
+  let edge_len = rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len());
+  let edge = match &rest[..edge_len] {
+    "top" => EdgeName::Top,
+    "bottom" => EdgeName::Bottom,
+    "left" => EdgeName::Left,
+    "right" => EdgeName::Right,
+    other => return Err(format!("edge expr {s:?} has unknown edge {other:?}")),
+  };
+  let offset_str: String = rest[edge_len..].chars().filter(|c| !c.is_whitespace()).collect();
+  let offset = if offset_str.is_empty() {
+    0
+  } else {
+    offset_str
+      .parse::<i32>()
+      .map_err(|_| format!("edge expr {s:?} has a non-integer offset {offset_str:?}"))?
+  };
+  Ok(EdgeRef { target: target.to_string(), edge, offset })
+}
+
+impl RectSpecConfig {
+  /// The given edge as Absolute(int) or Ref(other window's edge). The array form
+  /// maps `[x0,y0,x1,y1]` to left/top/right/bottom.
+  pub fn resolved_edge(&self, which: EdgeName) -> Result<ResolvedEdge, String> {
+    match self {
+      RectSpecConfig::Absolute(a) => Ok(ResolvedEdge::Absolute(match which {
+        EdgeName::Left => a[0],
+        EdgeName::Top => a[1],
+        EdgeName::Right => a[2],
+        EdgeName::Bottom => a[3],
+      })),
+      RectSpecConfig::PerEdge { top, bottom, left, right } => {
+        let e = match which {
+          EdgeName::Top => top,
+          EdgeName::Bottom => bottom,
+          EdgeName::Left => left,
+          EdgeName::Right => right,
+        };
+        match e {
+          EdgeSpecConfig::Absolute(v) => Ok(ResolvedEdge::Absolute(*v)),
+          EdgeSpecConfig::Expr(s) => Ok(ResolvedEdge::Ref(parse_edge_expr(s)?)),
+        }
+      }
+    }
+  }
+
+  /// Validate that every edge parses (absolute or a well-formed reference). Cross-
+  /// window reference targets and cycles are checked at resolve time (the runtime).
+  pub fn validate(&self) -> Result<(), String> {
+    for which in [EdgeName::Top, EdgeName::Bottom, EdgeName::Left, EdgeName::Right] {
+      self.resolved_edge(which)?;
+    }
+    Ok(())
+  }
+}
+
 /// Looper-wide scalars (see the loop windows below). All durations in
 /// milliseconds. Present iff the config declares the looper windows.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -1774,5 +1893,57 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
     );
     let err = parse_config(&looper_with_editor(&bad)).expect_err("multiplier 1.0 collapses the row");
     assert!(err.contains("multiplier > 1"), "{err}");
+  }
+
+  // ---- C5a: relative window coordinates ----
+
+  #[test]
+  fn parse_edge_expr_forms() {
+    assert_eq!(
+      parse_edge_expr("live-timbre.bottom + 1").unwrap(),
+      EdgeRef { target: "live-timbre".into(), edge: EdgeName::Bottom, offset: 1 },
+    );
+    assert_eq!(parse_edge_expr("grid.left").unwrap().offset, 0, "no offset -> 0");
+    assert_eq!(parse_edge_expr("a.top-2").unwrap().offset, -2, "unspaced negative offset");
+    assert_eq!(parse_edge_expr("a.right +3").unwrap().offset, 3);
+    assert!(parse_edge_expr("noedge").is_err(), "missing dot");
+    assert!(parse_edge_expr("a.middle").is_err(), "unknown edge");
+    assert!(parse_edge_expr(".top").is_err(), "missing id");
+  }
+
+  #[test]
+  fn rect_spec_parses_array_and_per_edge() {
+    #[derive(serde::Deserialize)]
+    struct W {
+      rect: RectSpecConfig,
+    }
+    let arr: W = toml::from_str("rect = [0, 0, 15, 6]").unwrap();
+    assert_eq!(arr.rect.resolved_edge(EdgeName::Left).unwrap(), ResolvedEdge::Absolute(0));
+    assert_eq!(arr.rect.resolved_edge(EdgeName::Right).unwrap(), ResolvedEdge::Absolute(15));
+    arr.rect.validate().unwrap();
+
+    let per: W = toml::from_str(
+      "[rect]\ntop = \"live-timbre.bottom + 1\"\nbottom = -1\nleft = 0\nright = -1\n",
+    )
+    .unwrap();
+    assert_eq!(per.rect.resolved_edge(EdgeName::Bottom).unwrap(), ResolvedEdge::Absolute(-1));
+    assert!(matches!(
+      per.rect.resolved_edge(EdgeName::Top).unwrap(),
+      ResolvedEdge::Ref(EdgeRef { edge: EdgeName::Bottom, offset: 1, .. })
+    ));
+    per.rect.validate().unwrap();
+  }
+
+  #[test]
+  fn rect_spec_rejects_a_bad_edge_expr() {
+    #[derive(serde::Deserialize)]
+    struct W {
+      rect: RectSpecConfig,
+    }
+    let w: W = toml::from_str(
+      "[rect]\ntop = \"x.sideways\"\nbottom = 0\nleft = 0\nright = 0\n",
+    )
+    .unwrap();
+    assert!(w.rect.validate().is_err(), "an unknown edge name should fail validation");
   }
 }

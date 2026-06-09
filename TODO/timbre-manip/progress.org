@@ -255,13 +255,28 @@ the editor row matches 6_plan 2.7 and avoids a second window. Reversible.)
   auto-disarm, dirty flash, empty-recall no-op all covered. The existing
   =monome-looper-58-8-1-timbre.toml= already yields 8 slots (no config change).
 
-** TODO C5a/b/c -- window system: relative coords + relayout, fold, loop reflow
-C5a: implement the relative-coordinate parser (pending the syntax TODO) + a
-relayout pass (recompute absolute rects on fold). C5b: fold state + 1-row folded
-strip (fold cell =Mid=, 4 rolling quick-timbres, amplitude row LogRange) +
-edo-monome occlusion. C5c: on the loops monome, anchor the loop display under the
-live editor so it reflows on fold. Nothing in the runtime resizes a window today,
-so the relayout pass is the real new mechanism.
+** DONE C5a -- relative coordinates + relayout pass (engine, pure)
+- =config.rs=: =RectSpecConfig= (untagged: legacy array =[x0,y0,x1,y1]= OR a per-edge
+  table =top/bottom/left/right=, each an int or a =\"id.edge +/- n\"= string), plus
+  =EdgeName/EdgeRef/ResolvedEdge=, the =parse_edge_expr= parser, and =validate()=.
+  The array form still parses, so every existing config is unchanged.
+- =looper_runtime/relayout.rs=: =resolve_layout(specs, grid_w, grid_h)= -- resolves
+  every window's four edges to absolute corners, following =other.edge + offset=
+  refs in dependency order (memoised), with =-1= = far edge, unknown-target and
+  reference-cycle errors. Pure, no I/O.
+- Tests: the C5a "Done" is proven directly -- an anchored window's resolved top is 7
+  when its target is unfolded (bottom 6) and 1 when folded (bottom 0). Plus far-edge,
+  transitive refs, cycle + unknown-target errors, and config parse forms. 182 bin +
+  38 lib green.
+- NOT yet wired into the live runtime: that is C5c (the loop-display reflow). The
+  module is =#[allow(dead_code)]= until then. Per stop-rule this matches 6_plan's
+  C5a-engine / C5c-wire split.
+
+** TODO C5b/c -- fold + folded strip (edo occlusion), then loop reflow (loops monome)
+C5b: fold state on the edo editor + 1-row folded strip (fold cell =Mid=, 4 rolling
+quick-timbres, amplitude row LogRange) -- edo occlusion, no reflow. C5c: add the
+live-timbre editor on the loops monome and anchor the loop display under it
+(=top = "live-timbre.bottom + 1"=) via =relayout.rs= so it reflows on fold.
 
 ** DONE C6 -- per-note loop timbre (storage + record-time capture)
 - =LoopEvent= gains a =timbre= field (dropped =Eq=, kept =PartialEq=; =Am/Fm/Timbre=

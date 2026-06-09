@@ -35,6 +35,8 @@ mod display;
 mod loop_store;
 #[allow(dead_code)]
 mod remap;
+#[allow(dead_code)] // resolver is wired into the loop-display reflow in C5c.
+mod relayout;
 mod sink;
 mod state;
 mod timbre_editor;
