@@ -372,8 +372,10 @@ physical grid is which).
   transport, acting on the active slot. ~start~ records (overwriting); ~stop~
   halts the active slot's record *or* play; ~play~ loops the active slot as the
   sole sounding loop. (Only one loop sounds at a time; no layering.)
-- ~loop_remap_mode_toggle~ -- fine vs coarse remap.
+- ~loop_remap_mode_toggle~ -- fine vs group-transpose remap (lit solid in fine,
+  dim in group transpose).
 - ~loop_copy_button~ -- copy a slot: press it, then a 'from' slot, then a 'to'.
+  Lit solid while armed; pressing it again mid-copy cancels.
 - ~loop_remap_undo~ -- undo the last loop remap (its own kind, so it does not
   pull in the un-12 "remap" window group).
 - ~loop_display~ -- the 2D display compound. One rect derives a left row-picker
@@ -391,7 +393,7 @@ are required together; the shift pad, toggle, copy and undo are optional. The
 quantize_record_ms = 70   # events within this of the loop boundary snap to it
 cluster_display_ms = 100  # note-ons within this of each other = one display column
 flash_ms = 50             # reflection / equivalent flash half-period
-remap_center = [7, 7]     # the edo-grid cell that means "unison" in coarse remap
+remap_center = [7, 7]     # the edo-grid cell meaning "unison" in group-transpose remap
 #+end_src
 
 The table and the looper windows imply each other; declaring one without the
@@ -402,9 +404,9 @@ other is rejected.
 - *Play* on the edo grid; the shift pad transposes. A sounding pitch lights all
   its octave-equivalents solid.
 - *Record*: select a slot, press ~start~, play, then ~play~ to loop it (or
-  ~stop~ to keep it without playing). The active slot's content reflects solid
-  on the edo grid.
+  ~stop~ to keep it without playing). The *sounding* loop reflects on the edo grid
+  -- dim throughout, each note solid while it individually sounds.
 - *Remap*: pick rows/columns/cells in the loop display (mutually exclusive); the
   edo grid enters remap mode. *Fine* sets each selected pitch to the edo cell you
-  press (lowest-first); *coarse* transposes/duplicates the selection by the
-  interval from ~remap_center~ to the cell you press. ~loop_remap_undo~ reverts.
+  press (lowest-first); *group transpose* transposes/duplicates the selection by
+  the interval from ~remap_center~ to the cell you press. ~loop_remap_undo~ reverts.

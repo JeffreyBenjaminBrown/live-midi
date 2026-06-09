@@ -38,11 +38,12 @@ records, plays back, and edits loops. No piano. Defined by
   row) selects a whole time-column (the chord at that moment), and a *cell* in the
   main area selects one pitch at one time.
 - *remap* :: Re-pitching the selected notes using the edo grid. *Fine* sets each
-  selected pitch to the exact cell you press (lowest pitch first). *Coarse*
-  transposes/duplicates the selection by the interval from the *center* cell to the
-  cell you press (so fingering several cells copies the selection to each).
-- *center* :: The edo cell that means "no change" (unison) in coarse remap. Here
-  it is ~(7, 7)~.
+  selected pitch to the exact cell you press (lowest pitch first). *Group
+  transpose* transposes/duplicates the selection by the interval from the *center*
+  cell to the cell you press (so fingering several cells copies the selection to
+  each).
+- *center* :: The edo cell that means "no change" (unison) in group-transpose
+  remap. Here it is ~(7, 7)~.
 - *target* :: A pitch currently up for remap (resolved from the selection,
   lowest-first).
 - *shift pad* :: The 3x2 block of cells in the lower-right of the edo grid that
@@ -75,9 +76,11 @@ corners by a whole octave.
 4. Press *play* to close the loop and start it looping, or *stop* to keep it
    without playing.
 
-The active slot's notes reflect on the edo grid -- flashing while it plays, dim
-while it's silent -- so you can see what's in it. Recording into a slot overwrites
-whatever was there (there is no overdub).
+The *sounding* loop reflects on the edo grid: all its notes glow dim throughout,
+and each lights solid the moment it actually sounds (and its octave-equivalents
+with it), so two notes in one loop light at their own separate times. A loop that
+is merely active but silent shows nothing -- only what you hear lights up.
+Recording into a slot overwrites whatever was there (there is no overdub).
 
 ** switch, stop, and silence
 
@@ -94,13 +97,13 @@ whatever was there (there is no overdub).
    cells are mutually exclusive -- starting one clears the others. The edo grid
    switches to remap mode (it shows the selected pitches; presses now pick, they
    don't play).
-2. *Fine* mode (default): press an edo cell for each selected pitch, lowest first.
-   Each press sets that pitch to the cell's note. After the last, the edit is
-   applied and you return to play.
-3. *Coarse* mode (press the *toggle*): the edo grid shows the *center* cell. Each
-   cell you press transposes the selection by the interval from center to that
-   cell; pressing several cells copies the selection to each (2 notes x 3 cells =
-   6 notes). Toggle back to fine to end.
+2. *Fine* mode (default; the *toggle* is lit solid when fine is active): press an
+   edo cell for each selected pitch, lowest first. Each press sets that pitch to
+   the cell's note. After the last, the edit is applied and you return to play.
+3. *Group transpose* mode (press the *toggle*, which dims): the edo grid shows the
+   *center* cell. Each cell you press transposes the selection by the interval from
+   center to that cell; pressing several cells copies the selection to each (2
+   notes x 3 cells = 6 notes). Toggle back to fine to end.
 4. The shift pad still works during remap; the play register is restored on exit.
 5. Press *undo* to revert the last remap on the active slot.
 
@@ -108,7 +111,9 @@ whatever was there (there is no overdub).
 
 Press *copy*, then the *from* slot, then the *to* slot. The contents move; the
 active and sounding slots are unchanged. Copying from an empty slot, or onto
-itself, does nothing.
+itself, does nothing. While a copy is armed the *copy* button is lit solid;
+pressing it again before you finish cancels the copy and forgets the *from* slot
+you had picked.
 
 * layout
 
@@ -166,8 +171,10 @@ cluster; the two octave corners (Od, Ou) stay dark.
   - ~a~ (0,3) *start* -- record into the active slot.
   - ~o~ (1,3) *stop* -- stop the active slot's recording or playback.
   - ~p~ (2,3) *play* -- loop the active slot as the sole sounding loop.
-- ~C~ (15,2) -- *copy* =loop_copy_button= (copy, then from, then to).
-- ~F~ (14,3) -- *fine* (or else coarse) =loop_remap_mode_toggle=.
+- ~C~ (15,2) -- *copy* =loop_copy_button= (copy, then from, then to). Solid while
+  armed, dim otherwise; pressing it again mid-copy cancels.
+- ~F~ (14,3) -- *fine* (or else group transpose) =loop_remap_mode_toggle=. Solid
+  in fine (so it starts lit), dim in group transpose.
 - ~U~ (15,3) -- *remap undo* =loop_remap_undo= (always flashing).
 - *loop display* =loop_display= ~[0,4,15,15]~:
   - ~*~ (0,4) -- reserved (unused for now).
@@ -182,5 +189,5 @@ cluster; the two octave corners (Od, Ou) stay dark.
 |----------------------+-------+--------------------------------------------------|
 | ~quantize_record_ms~ |    70 | events within this of the loop boundary snap to it |
 | ~cluster_display_ms~ |   100 | note-ons within this of each other = one column  |
-| ~flash_ms~           |    50 | flash half-period (sounding slot, remap)         |
-| ~remap_center~       | (7,7) | the "unison" edo cell for coarse remap           |
+| ~flash_ms~           |    50 | flash half-period (sounding slot, undo)          |
+| ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap  |

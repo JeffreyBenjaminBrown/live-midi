@@ -34,7 +34,7 @@ accretion_level = 0.5
 quantize_record_ms = 70   # events within this of the loop boundary snap to it
 cluster_display_ms = 100  # notes within this of each other = one display column
 flash_ms = 50             # reflection / equivalent flash half-period (50 on / 50 off)
-remap_center = [7, 7]     # edo-grid cell meaning "unison" in coarse remap
+remap_center = [7, 7]     # edo-grid cell meaning "unison" in group-transpose remap
 
 [[monomes]]
 id = "edo"
@@ -104,22 +104,24 @@ kind = "loop_control"
 control = "play"
 rect = [2, 3, 2, 3]
 
-# Remap-mode toggle: fine vs coarse. Both are destructive; toggling back to fine
-# also ENDS a coarse session.
+# Remap-mode toggle: fine vs group transpose. Both are destructive; toggling back
+# to fine also ENDS a group-transpose session. Lit solid in fine (the default),
+# dim in group transpose.
 [[monome_windows]]
 id = "loop-remap-mode"
 monome = "loops"
 kind = "loop_remap_mode_toggle"
 rect = [14, 3, 14, 3]
 
-# Copy a slot to another: press this, then 'from' slot, then 'to' slot.
+# Copy a slot to another: press this, then 'from' slot, then 'to' slot. Lit solid
+# while armed; pressing it again mid-gesture cancels (forgetting any picked slot).
 [[monome_windows]]
 id = "loop-copy"
 monome = "loops"
 kind = "loop_copy_button"
 rect = [15, 2, 15, 2]
 
-# One-press undo of the last loop remap (fine or coarse). Its own looper kind --
+# One-press undo of the last loop remap (fine or group transpose). Its own looper kind --
 # shares the undo mechanism in code, not the entangled remap_undo_button kind.
 [[monome_windows]]
 id = "loop-remap-undo"
