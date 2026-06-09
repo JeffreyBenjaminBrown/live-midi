@@ -39,7 +39,15 @@ Essentially none. It's additive config with a default, so every existing config 
 unchanged. The only "decision": which window owns the field if both editors are
 present -- the *loop* editor (save-undo is loop-only; inert in the live editor).
 
-* 2. Exact "hold last on rests" in the loop-editor display
+* 2. Exact "hold last on rests" in the loop-editor display  [DONE]
+DONE: =LooperState.loop_display_held= now remembers the lowest sounding loop timbre
+(updated each =playback_tick=, held across rests AND loop wraps), and =displayed_timbre=
+returns it on a rest before falling back to the live timbre. Cleared in
+=reconcile_playback= when playback stops or the sounding slot changes. Taste calls
+taken: hold across wraps; clear on stop / active-slot change. Test: play a 1-note loop,
+tick past the note-off into a rest -> the editor still lights the held note; stopping
+falls back to the live timbre. 209 bin + 40 lib green. The notes below are the original
+write-up.
 ** What it is
 The loop-timbre editor's rows show the timbre of the note under the playhead. 6_plan
 2.4 says: "on a rest it holds the last value" -- i.e. between notes, the display should

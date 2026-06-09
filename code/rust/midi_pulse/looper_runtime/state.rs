@@ -142,6 +142,13 @@ pub struct LooperState {
   timbre_overrides: HashMap<ParamKind, (TimbreParam, bool)>,
   timbre_sustain: bool,
 
+  /// The loop-editor display's "hold last on rests" value (6_plan 2.4): the most
+  /// recent lowest-sounding loop timbre. Updated each playback tick while a note
+  /// sounds; held across rests (and loop wraps); cleared when playback stops or the
+  /// sounding slot changes (`reconcile_playback`). Shown when nothing is selected or
+  /// currently sounding, in preference to the live timbre.
+  loop_display_held: Option<Timbre>,
+
   /// The live-timbre editor on the loops monome (C5c, 6_plan 2.2 / 7_layout), with
   /// its own fold state. The whole looper stack (slots, transport, copy/undo/remap,
   /// and the loop display) sits BELOW it and reflows down together when it unfolds:
@@ -252,6 +259,7 @@ impl LooperState {
       save_undo_window: p.save_undo_window,
       timbre_overrides: HashMap::new(),
       timbre_sustain: false,
+      loop_display_held: None,
       loops_timbre_editor: p.loops_timbre_editor,
       loops_timbre_folded: true, // folded is the resting state (6_plan 2.7)
       loops_reflow,
@@ -535,9 +543,9 @@ impl LooperState {
 
   /// The timbre the loop editor displays (6_plan 2.4 display): under a selection, the
   /// lowest selected note's timbre; else, while the loop plays, the lowest
-  /// still-sounding note of the current note-group column (playhead tracking); else
-  /// the live timbre (the rest fallback -- "hold last" is approximated by the live
-  /// timbre, a reversible simplification).
+  /// still-sounding note of the current note-group column (playhead tracking); else on
+  /// a rest the last sounded note's timbre is held (`loop_display_held`); else the live
+  /// timbre (stopped / before the first note).
   fn displayed_timbre(&self, target: TimbreTarget) -> Timbre {
     if target == TimbreTarget::Loop {
       if let Some(t) = self.lowest_selected_timbre() {
@@ -545,6 +553,9 @@ impl LooperState {
       }
       if let Some(t) = self.lowest_sounding_loop_timbre() {
         return t;
+      }
+      if let Some(t) = self.loop_display_held {
+        return t; // hold last on a rest
       }
     }
     self.live_timbre
@@ -1005,6 +1016,9 @@ impl LooperState {
         PlayAction::ReleaseAll => self.sink.release_source(source),
       }
     }
+    // "Hold last on rests": capture the lowest sounding note's timbre while one plays;
+    // on a rest keep the previous (held across rests and loop wraps). [6_plan 2.4]
+    self.loop_display_held = self.lowest_sounding_loop_timbre().or(self.loop_display_held);
   }
 
   /// After a transport op changes which slot sounds, release the outgoing slot's
@@ -1015,6 +1029,8 @@ impl LooperState {
     if target == current {
       return;
     }
+    // The held display value belonged to the outgoing slot; drop it on stop / switch.
+    self.loop_display_held = None;
     if let Some(p) = &self.playing {
       self.sink.release_source(NoteSource::Slot(p.slot));
     }
@@ -1884,6 +1900,26 @@ mod tests {
     s.loops_key(2, 3, true, ms(1100)); // play
     s.playback_tick(ms(1110)); // playhead reaches the note-on -> it sounds
     assert_eq!(level_at(&s.edo_levels(true), 4, 0), LEVEL_FULL, "display tracks the sounding saw note");
+  }
+
+  #[test]
+  fn loop_editor_display_holds_the_last_note_on_a_rest() {
+    use crate::types::Waveform;
+    let mut s = state_with_loop_editor();
+    s.live_timbre.waveform = Waveform::Saw; // the recorded note is Saw (note-on@0, off@200)
+    record_one_note(&mut s, 0);
+    s.live_timbre.waveform = Waveform::Triangle; // diverge live from the loop note
+    s.loops_key(2, 3, true, ms(1100)); // play
+    s.playback_tick(ms(1110)); // at the note-on -> Saw sounds
+    assert_eq!(level_at(&s.edo_levels(true), 4, 0), LEVEL_FULL, "shows the sounding saw note");
+    // Tick PAST the note-off into a rest: the display HOLDS the last note (Saw), not live.
+    s.playback_tick(ms(1400));
+    assert_eq!(level_at(&s.edo_levels(true), 4, 0), LEVEL_FULL, "holds saw on the rest");
+    assert_eq!(level_at(&s.edo_levels(true), 2, 0), LEVEL_OFF, "not the live triangle");
+    // Stopping clears the hold -> falls back to the live timbre (Triangle, cell 2).
+    s.loops_key(1, 3, true, ms(1500)); // stop
+    assert_eq!(level_at(&s.edo_levels(true), 2, 0), LEVEL_FULL, "stopped -> live triangle");
+    assert_eq!(level_at(&s.edo_levels(true), 4, 0), LEVEL_OFF, "no longer holding saw");
   }
 
   #[test]

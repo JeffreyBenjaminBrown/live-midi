@@ -76,8 +76,9 @@ the items below are notes + verify-on-hardware pointers, not blockers.
   slot positions; the display compresses to 7 rows while the loops editor is unfolded
   (restored on fold); a loop-display selection held across a loops-editor fold maps onto
   the resized display. All minor + reversible.
-- "hold last on rests" in the playhead display is approximated by the live timbre
-  (a stored last-displayed would be exact). Reversible.
+- (FIXED) "hold last on rests" is now exact: =loop_display_held= remembers the lowest
+  sounding loop timbre (updated each playback tick, held across rests + wraps, cleared
+  on stop / active-slot change); =displayed_timbre= shows it on a rest.
 - (FIXED) =save_undo_double_ms= is now a per-editor config field (default 200), read
   off the loop editor in =resolve_settings=; the =mod.rs::run= literal is gone.
 - Play-along edits are reverted by the save-undo checkpoint, not the per-edit loop-undo
@@ -96,9 +97,8 @@ the items below are notes + verify-on-hardware pointers, not blockers.
 Jeff chose 7_layout.org (the looper stack reflows under the live editor); implemented
 and tested. Nothing is blocked. The only remaining work is *verify-on-hardware* (the
 synth/DSP is unit-tested; the on-grid UI wants a mock-rig or real-monome pass -- see the
-VERIFY pointers in each commit's roadmap entry). Follow-ups (=hey-jeff.org=): #1 thread
-=save_undo_double_ms= from config -- DONE; #2 exact "hold last on rests" display -- open
-(Jeff's call; see hey-jeff.org).
+VERIFY pointers in each commit's roadmap entry). Follow-ups (=hey-jeff.org=): #1
+config-driven =save_undo_double_ms= -- DONE; #2 exact "hold last on rests" -- DONE.
 
 ** A note on beating the premature-stop problem
 Per your request I wrote a suggestion as a child of "** Your \"stop rule\" is very
