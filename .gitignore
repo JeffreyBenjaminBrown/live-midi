@@ -1,8 +1,7 @@
 *~
 .bash_history
 .cache
-.cargo/*
-!.cargo/config.toml
+/.cargo/
 .codex
 .emacs.desktop*
 .local/
