@@ -160,12 +160,22 @@ edo-monome occlusion. C5c: on the loops monome, anchor the loop display under th
 live editor so it reflows on fold. Nothing in the runtime resizes a window today,
 so the relayout pass is the real new mechanism.
 
-** TODO C6 -- per-note loop timbre (storage + record-time capture)
-Add a =Timbre= field to recorded loop notes in =loop_store.rs=; capture
-=live_timbre= at record time; loop playback stamps each note's own timbre (removes
-the C1 interim where Slot playback used live_timbre). Unit-testable at the
-loop_store/state level independent of the editor UI -- a good standalone commit if
-you want per-note storage before the loop editor.
+** DONE C6 -- per-note loop timbre (storage + record-time capture)
+- =LoopEvent= gains a =timbre= field (dropped =Eq=, kept =PartialEq=; =Am/Fm/Timbre=
+  are now =PartialEq=). =on()=/=off()= default it; =on_with()= carries one.
+- =record_note_with()= captures =live_timbre= at record time; =state.rs= note-on
+  uses it. Off-events keep the default.
+- =PlayAction::On(i32, Timbre)= carries the stored timbre; =state.rs= playback
+  stamps each note's OWN timbre into the sink -- *removes the C1 interim* where
+  loop playback used the global live_timbre.
+- Pitch remap (=apply_fine=/=apply_group_transpose=) carries each note's timbre
+  through, so remapping pitch keeps the colour (and the remap-undo snapshots in
+  =LoopSlot.history= preserve it too).
+- Test: record a saw note -> the stored on-event and its PlayAction both carry saw.
+  158 bin tests green.
+- NOTE: produces no audible variety yet (every captured timbre is default until
+  the C3b editor can change live_timbre) -- but the per-note substrate for C7 is
+  now in place.
 
 ** TODO C7 -- loop-timbre manipulation (target=loop)
 The headline. loop-timbre editor (edo monome) edits the ACTIVE loop: playhead-

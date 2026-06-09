@@ -187,7 +187,7 @@ impl LooperState {
           }
         }
         self.sink.note_on(pitch, NoteSource::Live(x, y), self.live_timbre);
-        self.loops.record_note(now, pitch, true);
+        self.loops.record_note_with(now, pitch, true, self.live_timbre);
         return true;
       }
       false
@@ -556,7 +556,7 @@ impl LooperState {
     let source = NoteSource::Slot(slot);
     for action in actions {
       match action {
-        PlayAction::On(pitch) => self.sink.note_on(pitch, source, self.live_timbre),
+        PlayAction::On(pitch, timbre) => self.sink.note_on(pitch, source, timbre),
         PlayAction::Off(pitch) => self.sink.note_off(pitch, source),
         PlayAction::ReleaseAll => self.sink.release_source(source),
       }

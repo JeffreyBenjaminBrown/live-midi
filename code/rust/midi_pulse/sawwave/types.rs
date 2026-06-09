@@ -80,7 +80,7 @@ impl Default for Waveform {
 // the carrier is multiplied by a unipolar wave in [1-depth, 1], so depth 0 = no
 // AM and depth 1 = dips to silence. `freq` is the LFO rate (Hz). `shape` in [0,1]
 // morphs the LFO wave within the config-level `AmShapeFamily`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Am { pub depth: f32, pub freq: f32, pub shape: f32 }
 
 impl Default for Am {
@@ -89,7 +89,7 @@ impl Default for Am {
 
 // Slow frequency modulation (vibrato), driven by a sine. `depth_cents` is the peak
 // pitch deviation in cents; `freq` is the LFO rate (Hz). depth 0 = no FM.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fm { pub depth_cents: f32, pub freq: f32 }
 
 impl Default for Fm {
@@ -105,7 +105,7 @@ impl Default for AmShapeFamily {
   fn default() -> Self { AmShapeFamily::SinToSquare }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timbre {
   pub waveform: Waveform,
   pub gain:     f32,   // linear per-voice gain; 1.0 = unity
