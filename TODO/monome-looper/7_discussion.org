@@ -1,0 +1,55 @@
+#+title: 7 -- discussion: what's left after feature-completion
+
+The looper is *feature-complete and live-verified* (phases 0-5; see =progress.org=),
+and the post-completion =request.org= set is done (coarse -> group transpose;
+copy armed-lit + cancel; fine lit; edo reflection reworked to per-note sounding).
+=cargo test -p midi_pulse looper_runtime= is green (59 tests).
+
+So *yes -- the plan is done, and Phase 0 was done* (=progress.org= line ~10:
+config parse + validate + dispatch). What's below is NOT plan work; it's the short
+list of *reversible LED/UX polish* I parked during the build. I can't finish it
+alone: I can't see the grid's LEDs (acceptance is your eyes), and a few items are
+taste calls. Each item says what I'd do and exactly what I need from you. Answer
+inline (a word per item is plenty) and I'll build, with you verifying on the grid.
+
+* 0. heads-up: a change already landed that may move the goalposts
+=request.org= #3 changed the edo reflection from "active loop, *all-solid*" to
+"*sounding* loop: dim backdrop, each note solid only while it sounds" -- a
+deliberate new aesthetic, *no flashing*. Two deferred ideas below were written
+*before* that and assume the old all-solid/flashing style, so they may want
+rethinking rather than building as written. Flagging so we don't polish toward an
+aesthetic we just left.
+
+* 1. richer remap-mode LEDs
+Today, in remap mode the edo grid shows the targets (or the group-transpose
+center) *all solid*, and your loops-grid selection isn't highlighted back to you.
+Deferred ideas:
+- (a) *highlight the selection on the loops grid* while you pick (the chosen
+  rows / columns / cells light brighter than the dim picker baseline).
+- (b) *group-transpose center + octave-equivalents* shown center-solid with the
+  equivalents *flashing* rather than all-solid.
+*What I need:* (a) is unambiguous -- OK to just build it? (your eyes to confirm
+brightness reads right). (b) conflicts with the no-flashing aesthetic from #0 --
+do you still want flashing equivalents in remap mode, or the dim-backdrop /
+solid-when-relevant style to match play mode now? Your call.
+
+* 2. auto-octave-shift on remap entry
+On entering remap the targets can sit off-grid or awkwardly placed. The idea: auto-
+shift the play register on entry so the targets land in a comfortable region, then
+restore on exit (the *restore* already happens; only the auto-shift-in is missing).
+*What I need:* the rule. Candidates: (i) shift so the lowest target sits on row 0;
+(ii) center the targets in the grid; (iii) leave it (drop this). Pick one.
+
+* 3. non-uniform playhead on the loop display
+The loop-display columns are *note-groups*, not uniform time, so a real-time
+playhead would sweep across them non-uniformly.
+*What I need:* do you want a moving playhead at all, and if so: (a) highlight the
+current note-group *column* (simple, matches the display model), or (b) advance a
+separate real-time pixel across a column (needs a sub-column scheme)? Or (c) skip.
+
+* if you'd rather I just go
+- *1a* I can build now with no decision (only your eyes after).
+- *1b / 2 / 3* are taste calls parked for you.
+Reply like "1a yes; 1b match play mode; 2 = lowest on row 0; 3 = column highlight"
+and I'll implement them and hand you something to look at. Say nothing and the
+looper stays as-is -- it's done to spec.
