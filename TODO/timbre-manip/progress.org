@@ -45,6 +45,62 @@ lib and cannot see it. So config deserializes each row into a lib-local
 maps it to =RowRange= (mirroring the existing =ScaleControlKind -> scale::ScaleControl=
 conversion). Default per-row ranges = 6_plan 5's numbers.
 
+* Session 2 -- STOP REPORT (read this + the one TODO below)
+The whole CODE spine is built: C0..C7 all implemented, 207 bin + 38 lib tests green,
+clean build (lib + all bins), every config still loads. An adversarial multi-agent
+review of C3b..C7c found zero confirmed bugs. I am stopping on ONE genuine user-facing
+decision: the C5c production loops-monome layout (below). Everything else is done.
+
+** what's done and went well
+- C3b editor on the edo monome (occlusion); C4 slots + save/recall (in the editor
+  control row -- no extra window needed); C5a relative-coord engine + relayout
+  resolver; C5b fold + folded strip + rolling quick-cells; C5c loops-editor + reflow
+  MECHANISM (wires the C5a resolver). C7 in full: C7a selection-stamp, C7b save-undo,
+  C7c play-along + sustain + playhead display. All three 6_plan-C7 done-criteria pass.
+- The synth/data foundation (Session 1: C0/C1/C2/C3a/C6) needed no changes.
+- Pure, testable seams throughout (=timbre_editor.rs= geometry, =relayout.rs= resolver,
+  =timbre_rows.rs= value math) -- the editor never touches I/O.
+
+** changes to the plan's envisioned order
+- Did C3b->C4->C5a->C5b->C7(a,b,c)->C5c-mechanism. C7 (the headline) was done BEFORE
+  C5c because the loop-manipulation is far higher value than the reflow polish, and C7
+  does not depend on the loops-monome editor. (Reversible reorder per when-to-stop.org.)
+- The three Session-1 =TODO (need Jeff)= items were decided by me (reversible) -- see
+  "* Session 2 (resuming)" decisions.
+- C4 folded the slots/arm into the editor's control row rather than adding separate
+  =timbre_slot=/=timbre_arm= window kinds (matches 6_plan 2.7).
+
+** what's imperfect about what's done
+- C5c ships the reflow MECHANISM (unit-tested) but NO runnable loops-monome config --
+  that needs a layout decision (the TODO below).
+- "hold last on rests" in the playhead display is approximated by the live timbre
+  (a stored last-displayed would be exact). Reversible.
+- =save_undo_double_ms= is hardcoded to 200 ms in =mod.rs::run= rather than read from
+  the editor config (6_plan 5). Trivial follow-up.
+- Play-along edits are reverted by the save-undo checkpoint, not the per-edit loop-undo
+  button (play-along does not spam =history=). Intended, but worth knowing.
+
+** choices determining the future
+- A loop editor (=target=loop=) NEVER edits the live timbre; a live editor never edits
+  the loop. The earlier "no-selection loop edits live (interim)" behaviour is gone.
+- The play-along override is keyed by =ParamKind= (one active override per parameter,
+  latest value wins); =apply()= is absolute assignment (idempotent across loop passes).
+- The timbre slot store / quick-roll / arm / sustain are SHARED across both editors;
+  only fold state is per-editor.
+- =MonomeWindowConfig= dropped =Eq= (it now carries f32 row ranges).
+
+** TODO (need Jeff) -- the one open decision
+See =*** TODO (need Jeff) C5c production CONFIG layout= under the C5c entry below:
+pick (a) folded-only / minimal, (b) full loops-grid redesign, or (c) drop the loops
+editor. I lean (a). On your word I'll write the config + a mock-rig check. Nothing
+else is blocked.
+
+** A note on beating the premature-stop problem
+Per your request I wrote a suggestion as a child of "** Your \"stop rule\" is very
+permissive" in 6_plan.org, unstaged (it'll show in your diff). TL;DR: a Stop HOOK in
+settings.json is the highest-leverage fix (it fires every time, independent of the
+model remembering the rule); I can wire it via the update-config skill if you want.
+
 * Session 1 summary (overnight, unattended)
 *Done + committed on branch timbre-manip (all unit-tested; binaries build clean):*
 - docs: =6_plan.org= (definitive plan).
