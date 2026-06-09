@@ -14,9 +14,18 @@ use crate::types::{AmShapeFamily, VoiceMap};
 use crate::voices::render_block_with_amplitude;
 
 pub struct Audio {
-  /// Kept alive for the run; dropping it stops the stream.
-  _stream: cpal::Stream,
+  /// Kept alive for the run; dropping it stops the stream. `None` in the null path
+  /// (headless / mock runs), which opens no device and makes no sound.
+  _stream: Option<cpal::Stream>,
   pub sample_rate: f32,
+}
+
+/// A silent audio "device": no cpal stream, so it needs no sound card and never
+/// renders. Used for headless / mock-rig runs (`MIDI_PULSE_NO_AUDIO`), where we drive
+/// the grids and inspect LEDs/state, not sound. The note sink still ref-counts notes
+/// (so the LEDs behave); only the cpal render callback is absent.
+pub fn start_null(requested_sample_rate: u32) -> Audio {
+  Audio { _stream: None, sample_rate: requested_sample_rate as f32 }
 }
 
 pub fn start(
@@ -66,5 +75,5 @@ pub fn start(
     None,
   )?;
   stream.play()?;
-  Ok(Audio { _stream: stream, sample_rate })
+  Ok(Audio { _stream: Some(stream), sample_rate })
 }

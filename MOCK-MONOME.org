@@ -68,12 +68,28 @@ record/play. It behaves like the real instrument because it *is* the real runtim
   serialosc, never the real one on 12002. It never enumerates or registers a real
   grid, so it can't steal them.
 
-* The one thing it does NOT mock: audio
-The looper still opens a real =cpal= stream. Under the container's
-ALSA->PipeWire routing (=~/.asoundrc=) PipeWire mixes, so a second instance
-coexists fine -- but if you *press note keys* in terminal A it makes sound. For a
-silent check, just let it paint LEDs (startup lights the loops controls) without
-pressing edo cells. (Mocking audio too would be a separate, larger job.)
+* Audio: real by default, or null with =MIDI_PULSE_NO_AUDIO=
+By default the looper opens a real =cpal= stream. Under the container's ALSA->PipeWire
+routing PipeWire mixes, so a second instance coexists fine -- but pressing note keys
+makes sound. For a *fully silent, sound-card-free* run (headless boxes, CI, automated
+tests), set =MIDI_PULSE_NO_AUDIO=1=: the looper opens *no* audio device and renders
+nothing, while the note sink still ref-counts notes so every LED behaves identically.
+#+begin_src sh
+  cargo run --bin mock_monome -- --detector-port 17002
+  MIDI_PULSE_NO_AUDIO=1 MIDI_PULSE_DETECTOR_PORT=17002 \
+    cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre-mock
+#+end_src
+=monome-looper-58-8-1-timbre-mock= is the *full timbre instrument* on mock ports
+(9100/9101): the loop-timbre editor on the edo grid + the live-timbre editor on the
+loops grid, with the looper stack reflowing under it (7_layout.org). Tap a grid's
+top-left cell to fold/unfold its editor.
+
+* Automated end-to-end test
+=looper_runtime/mod.rs= has =full_timbre_instrument_runs_against_mock_grids=: it spins
+up a =MockRig= of two grids, runs the REAL runtime (=run()=, null audio) against them,
+and drives the device layer -- discovery, registration, OSC LED output, key input --
+asserting that the editors fold, a fingered note lights, and unfolding the loops editor
+reflows the looper stack. Runs in =cargo test= (~2s), no hardware, no sound.
 
 * Where the code is
 - =code/rust/midi_pulse/mock_monome.rs= -- the library: =GridSpec=, =MockRig=,

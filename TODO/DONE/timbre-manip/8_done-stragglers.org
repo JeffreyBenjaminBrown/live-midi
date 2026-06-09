@@ -1,25 +1,26 @@
 #+title: hey jeff -- two optional follow-ups
+* These are now done.
 Both are *small, reversible polish*; neither blocks anything. The whole C0..C7 spine
 is built, tested (208 bin + 39 lib), and the full instrument config loads. These are
 just the two "imperfect" notes from progress.org, written out so you can decide.
 
-* 1. Make =save_undo_double_ms= config-driven  [DONE]
+** 1. Make =save_undo_double_ms= config-driven  [DONE]
 DONE: =save_undo_double_ms= is now a per-editor config field (default 200; read off the
 loop editor in =resolve_settings=, threaded to the runtime). The hardcoded literal in
 =run()= is gone. Tests: a config parse test (default + explicit) + the resolve test
 asserts the window. 208 bin + 40 lib green. The notes below are the original write-up.
-** What it is
+*** What it is
 The save-undo button distinguishes a single tap (set a checkpoint) from a double tap
 (revert) by a time window (6_plan 2.8). 6_plan 5 sketches that window as a per-editor
 config field =save_undo_double_ms = 200=. Today the *value flows through the runtime*
 correctly, but its *source* is a literal, not the config.
 
-** Why it's imperfect
+*** Why it's imperfect
 - =looper_runtime/mod.rs:359= -- =run()= sets =save_undo_window: Duration::from_millis(200)=
   with a comment "until that field is threaded through config (a trivial follow-up)".
 - So a user can't change the double-tap window without editing Rust.
 
-** The fix (small; ~15 min, low risk)
+*** The fix (small; ~15 min, low risk)
 The plumbing already exists end to end -- only the config *source* is missing:
 - =config.rs:480= =TimbreEditor { .. }= variant: add
   =#[serde(default = "default_save_undo_ms")] save_undo_double_ms: u64= (default 200),
@@ -34,12 +35,12 @@ The plumbing already exists end to end -- only the config *source* is missing:
 - Test: a config-parse test asserting the field reads back; the existing
   =save_undo_*= state tests already cover the behaviour (they pass =ms(200)= directly).
 
-** Risk / caveat
+*** Risk / caveat
 Essentially none. It's additive config with a default, so every existing config is
 unchanged. The only "decision": which window owns the field if both editors are
 present -- the *loop* editor (save-undo is loop-only; inert in the live editor).
 
-* 2. Exact "hold last on rests" in the loop-editor display  [DONE]
+** 2. Exact "hold last on rests" in the loop-editor display  [DONE]
 DONE: =LooperState.loop_display_held= now remembers the lowest sounding loop timbre
 (updated each =playback_tick=, held across rests AND loop wraps), and =displayed_timbre=
 returns it on a rest before falling back to the live timbre. Cleared in
@@ -48,12 +49,12 @@ taken: hold across wraps; clear on stop / active-slot change. Test: play a 1-not
 tick past the note-off into a rest -> the editor still lights the held note; stopping
 falls back to the live timbre. 209 bin + 40 lib green. The notes below are the original
 write-up.
-** What it is
+*** What it is
 The loop-timbre editor's rows show the timbre of the note under the playhead. 6_plan
 2.4 says: "on a rest it holds the last value" -- i.e. between notes, the display should
 keep showing the *most recent* note's timbre, not jump to something else.
 
-** Why it's imperfect
+*** Why it's imperfect
 - =state.rs:541= =displayed_timbre()=: under a selection it shows the lowest selected
   note; while a note sounds it shows the lowest still-sounding note (=state.rs:565=
   =lowest_sounding_loop_timbre=); but on a *rest* (nothing selected, nothing sounding)
@@ -62,7 +63,7 @@ keep showing the *most recent* note's timbre, not jump to something else.
 - Practically: as a loop plays, between notes the editor rows momentarily reflect the
   live timbre instead of holding the last note you heard. Cosmetic, but not spec.
 
-** The fix (small-medium; the subtlety is WHERE to remember)
+*** The fix (small-medium; the subtlety is WHERE to remember)
 =displayed_timbre()= is =&self= (it's called from =edo_levels=, a read-only paint). To
 "hold last" you must *remember* the last non-rest timbre, which needs a write. The
 natural write point is the playback tick:
@@ -80,7 +81,7 @@ natural write point is the playback tick:
   live timbre). Mirror =loop_editor_display_tracks_the_lowest_sounding_note= (=state.rs=
   test) but step the playhead into the gap.
 
-** Risk / caveat
+*** Risk / caveat
 Low, but two judgement calls are yours:
 - *Reset semantics*: hold across the loop's wrap? I'd clear on stop and on active-slot
   change, but hold across wraps (so a rest at the loop seam still shows the last note).
@@ -88,6 +89,6 @@ Low, but two judgement calls are yours:
   bothersome in practice, skipping this is completely fine -- the current behaviour is a
   reasonable approximation, just not the letter of 6_plan 2.4.
 
-* If you want either, say the word
+** If you want either, say the word
 Both are self-contained; I can do #1 in one small commit and #2 in another (with the
 playhead-into-a-rest test). Or leave them -- nothing depends on them.

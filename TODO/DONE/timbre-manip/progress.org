@@ -45,12 +45,25 @@ lib and cannot see it. So config deserializes each row into a lib-local
 maps it to =RowRange= (mirroring the existing =ScaleControlKind -> scale::ScaleControl=
 conversion). Default per-row ranges = 6_plan 5's numbers.
 
-* Session 2 -- FINAL REPORT (the whole spine C0..C7 is built)
-The whole spine is built AND C5c's layout is now decided + shipped: Jeff added the
-solution (7_layout.org), I implemented it. 208 bin + 39 lib tests green, clean build
-(lib + all bins), every config loads (incl. the full two-editor instrument). An
-adversarial multi-agent review of C3b..C7c found zero confirmed bugs. NOTHING is open;
-the items below are notes + verify-on-hardware pointers, not blockers.
+* Session 2 -- FINAL REPORT (the whole spine C0..C7 is built + mock-verified)
+The whole spine is built; C5c's layout shipped (Jeff's 7_layout.org); both hey-jeff
+follow-ups done; and the full instrument is now VERIFIED end-to-end on the monome mock
+with null audio. 210 bin + 40 lib tests green, clean build (lib + all bins), every
+config loads. An adversarial multi-agent review of C3b..C7c found zero confirmed bugs.
+NOTHING is open.
+
+** Mock verification (Jeff asked: "test via mocks; make an audio mock if it helps")
+- =audio::start_null= + =MIDI_PULSE_NO_AUDIO= : the looper runs with NO cpal stream / no
+  sound card; the note sink still ref-counts so LEDs are identical. =run()= refactored
+  to take an explicit detector port + no-audio flag (no env-var races); SIGINT install
+  moved to =run_from_config=.
+- =configs/monome-looper-58-8-1-timbre-mock.toml= : the full instrument on mock ports.
+- =looper_runtime/mod.rs= test =full_timbre_instrument_runs_against_mock_grids= : runs
+  the REAL runtime against a =MockRig= of two grids, null audio, and drives the device
+  layer end to end -- both editors fold, a fingered edo note lights + clears, and
+  unfolding the loops editor reflows the whole looper stack. Visible ASCII (--nocapture)
+  shows the stack sliding down by 6 rows. ~2s in cargo test; no hardware, no sound.
+- See MOCK-MONOME.org for the manual two-binary run with =MIDI_PULSE_NO_AUDIO=1=.
 
 ** what's done and went well
 - C3b editor on the edo monome (occlusion); C4 slots + save/recall (in the editor

@@ -43,17 +43,17 @@ EDO (with the loop-timbre editor, occlusion):       legend: E=editor  g=play gri
 #+end_example
 
 * Window inventory -- LOOPS monome
-| window            | kind                    | rect            | size            | purpose                          |
-|-------------------+-------------------------+-----------------+-----------------+----------------------------------|
-| loop-slots        | loop_slots              | [0, 0, 3, 3]    | 4x4 (16 slots)  | pick / activate a loop slot      |
-| loop-start        | loop_control (start)    | [0, 3, 0, 3]    | 1 cell          | begin recording                  |
-| loop-stop         | loop_control (stop)     | [1, 3, 1, 3]    | 1 cell          | stop record / play               |
-| loop-play         | loop_control (play)     | [2, 3, 2, 3]    | 1 cell          | loop the active slot             |
-| loop-remap-mode   | loop_remap_mode_toggle  | [14, 3, 14, 3]  | 1 cell          | fine vs group-transpose          |
-| loop-copy         | loop_copy_button        | [15, 2, 15, 2]  | 1 cell          | copy a slot to another           |
-| loop-remap-undo   | loop_remap_undo         | [15, 3, 15, 3]  | 1 cell          | undo the last remap              |
-| loop-display      | loop_display            | [0, 4, 15, 15]  | 16x12           | the loop's notes + row/col pickers + corner |
-| live-timbre editor*| timbre_editor live     | [0, 0, 15, 6]   | 16x7, folds to 16x1| edit the live timbre (6_plan)  |
+| window              | kind                   | rect           | size                | purpose                                     |
+|---------------------+------------------------+----------------+---------------------+---------------------------------------------|
+| loop-slots          | loop_slots             | [0, 0, 3, 3]   | 4x4 (16 slots)      | pick / activate a loop slot                 |
+| loop-start          | loop_control (start)   | [0, 3, 0, 3]   | 1 cell              | begin recording                             |
+| loop-stop           | loop_control (stop)    | [1, 3, 1, 3]   | 1 cell              | stop record / play                          |
+| loop-play           | loop_control (play)    | [2, 3, 2, 3]   | 1 cell              | loop the active slot                        |
+| loop-remap-mode     | loop_remap_mode_toggle | [14, 3, 14, 3] | 1 cell              | fine vs group-transpose                     |
+| loop-copy           | loop_copy_button       | [15, 2, 15, 2] | 1 cell              | copy a slot to another                      |
+| loop-remap-undo     | loop_remap_undo        | [15, 3, 15, 3] | 1 cell              | undo the last remap                         |
+| loop-display        | loop_display           | [0, 4, 15, 15] | 16x12               | the loop's notes + row/col pickers + corner |
+| live-timbre editor* | timbre_editor live     | [0, 0, 15, 6]  | 16x7, folds to 16x1 | edit the live timbre (6_plan)               |
 (* the one we cannot place. The transport overlays slots 12-14, so 13 slots are usable.)
 
 Unlike the edo grid, the loops monome is a *dense mosaic of small, function-specific
