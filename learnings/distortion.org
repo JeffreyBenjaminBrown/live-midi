@@ -1,0 +1,183 @@
+#+TITLE: Distortion: a one-family parametric soft-clipper
+#+AUTHOR: notes for montevideo-synth
+#+OPTIONS: toc:2
+
+* The function
+
+A single family covers everything we want from a saturating distortion:
+
+#+begin_src
+                 y
+  f(y) = -----------------
+         (1 + |y/s|^k)^(1/k)
+#+end_src
+
+Two parameters:
+
+- =s= -- *scale* (the saturation level / asymptote).
+- =k= -- *harshness* (how sharp the elbow is).
+
+It is odd (=f(-y) = -f(y)=), so it is correct for bipolar audio and adds no
+DC. Everything below is stated for =y > 0=; the negative side mirrors it.
+
+This is the well-known "algebraic" or "superellipse" soft-clipper. Requiring a
+*bounded* asymptote -- the slope must go to zero *and* the value must plateau,
+rather than fold back toward zero -- is what forces the outer =^(1/k)= power.
+Every other cheap shaper (=y/(1+|y|)=, =y/sqrt(1+y^2)=, hard clip) is a special
+case of this one.
+
+* Why it meets the spec
+
+Let =u = y/s=. The derivative collapses to a remarkably clean form:
+
+#+begin_src
+  f'(y) = (1 + u^k)^(-(k+1)/k)
+#+end_src
+
+From this everything follows by inspection:
+
+- *Unity slope through the origin.* At =y = 0=, =u = 0=, so =f'(0) = 1=. The
+  curve leaves the origin tangent to the line =y = x=.
+
+- *Slope tends to zero.* As =y -> inf=, =u^k -> inf=, so =f'(y) -> 0=. The
+  output flattens to the horizontal asymptote =f -> s= (i.e. =+/- s=).
+
+- *Monotone.* =f'(y) > 0= for all finite =y=, so the curve never folds back --
+  it rises steadily toward the asymptote.
+
+- *Concave on the whole positive axis* (the property we actually care about):
+
+#+begin_src
+                  k+1      u^(k-1)
+  f''(y) = - ( ------- ) ----------------
+                  s      (1 + u^k)^((2k+1)/k)
+#+end_src
+
+  Every factor after the leading minus is positive for =y > 0=, so =f''(y) < 0=
+  for all positive =y= and all =k >= 1=. The distortion is present for any
+  nonzero signal -- there is no flat dead zone.
+
+  At the origin itself: =f''(0) = -2/s= for =k = 1= (curvature bites
+  immediately), and =f''(0) = 0= for =k > 1= (the curve hugs the unity line a
+  moment longer before bending). Either way, =f'' < 0= for every =y > 0=, which
+  is all we require.
+
+* The two parameters in practice
+
+** s -- scale (saturation level)
+
+=s= is the asymptote: the output can never exceed =+/- s=, and it approaches
+that level smoothly. Smaller =s= = earlier, heavier distortion; larger =s= =
+cleaner.
+
+Assuming the signal sits around unit full-scale (our mix amplitude is ~1, voices
+clamp at +/-0.95):
+
+| s     | character                                           |
+|-------+-----------------------------------------------------|
+| ~0.3  | heavy -- even quiet passages are well into the bend |
+| ~1.0  | strong -- at y=1 (k=2) gain is 0.71, a 29% cut      |
+| ~2--3 | gentle -- only loud peaks are touched               |
+| >= 5  | nearly clean                                        |
+
+This matches the existing =lim= convention ("larger = less clipping"): =lim= is
+just =s=.
+
+A more perceptual way to set the same knob is the *bite* point -- the =|y|= at
+which volume has dropped 5% (gain = 0.95). See the reparametrization below;
+=bite= in roughly =0.05 .. 1.0= spans "bites almost immediately" to "only clips
+the loudest peaks."
+
+** k -- harshness (elbow sharpness)
+
+=k= controls how abrupt the transition from "linear" to "saturated" is, i.e. how
+pronounced the elbow is. Because we are *waveshaping* (manufacturing harmonics),
+this is also a brightness/edge control: a sharper elbow injects more high-order
+harmonics.
+
+| k     | character                                      | closed form        |
+|-------+------------------------------------------------+--------------------|
+| 1     | gentlest; bends from the origin, very long tail| y/(1 + |y/s|)      |
+| 2     | the sweet spot -- smooth, branchless           | y/sqrt(1 + (y/s)^2)|
+| 3     | firmer knee                                    | y/cbrt(1 + |y/s|^3)|
+| 4--8  | hard-ish, pronounced elbow, bright             | (general form)     |
+| -> inf| hard clip                                      | clamp(y, -s, s)    |
+
+Practical musical range: =k= in =1 .. 4=, with =2= a good default. Beyond ~8 it
+is indistinguishable from a hard clip, so there is little reason to go higher.
+
+Lower =k= spreads the bend over a wide range starting right at the origin;
+higher =k= keeps the response linear longer, then turns the corner harder. The
+two knobs are nicely independent: =s= sets *where* it bites, =k= sets *how* it
+bites.
+
+* Anchoring the scale knob to the 5% (bite) point
+
+If we would rather the knob mean "where distortion becomes audible" than the
+abstract asymptote, define =bite= = the =|y|= where gain = 0.95. The gain is
+
+#+begin_src
+  g(y) = f(y)/y = (1 + |y/s|^k)^(-1/k)
+#+end_src
+
+Setting =g = 0.95= gives =bite = s * c(k)=, where
+
+#+begin_src
+  c(k) = ( (1/0.95)^k - 1 )^(1/k)
+#+end_src
+
+So to expose =bite= as the user knob, compute =s = bite / c(k)=:
+
+| k | c(k)   | s =          |
+|---+--------+--------------|
+| 1 | 0.0526 | 19.0 * bite  |
+| 2 | 0.3287 | 3.04 * bite  |
+| 3 | 0.4513 | 2.22 * bite  |
+
+Payoff: drive =s= through this and the 5% onset stays *fixed* while you sweep
+=k=. Turning "harshness" then changes character without changing how loud the
+signal must get before it bites -- usually what a player expects from two
+independent controls.
+
+* Relation to an "amount" / drive knob
+
+The TODO distortion is "just an amount knob." Amount is the inverse of =s=. The
+standard idiom is a pre-gain *drive* into a fixed-shape curve:
+
+#+begin_src
+  out = f(drive * y, s, k)       // optionally * (1/drive) for makeup gain
+#+end_src
+
+Bigger =drive= pushes more of the signal past the elbow -> more distortion,
+mapping cleanly to one "amount" knob while =s= and =k= stay fixed under the
+hood. This is likely the simpler control surface than exposing =s=/=bite=
+directly, with =k= as an optional second ("harshness") knob.
+
+* Cost
+
+Not a concern. We already call =tanh= per sample in =sawwave/voices.rs=, and the
+distortion runs at the oversampled rate. The general form is two =powf=; the
+=k = 2= form is a single =sqrt= and is *branchless* (it uses =u^2=, so the sign
+rides along on the numerator =y=). Pinning =k= to a small preset set
+{1, 2, 3, inf} makes every case a cheap closed form with no =powf= at all.
+
+=tanh= itself (what we use now) is essentially a =k ~ 2= member of this same
+family -- same smoothness, transcendental cost, and a different bite constant
+(=s ~ 2.5 * bite=). The algebraic =k = 2= form is its cheaper, branchless twin.
+
+* Cheapest fallback (if a hard knee is acceptable)
+
+The cubic =f(y) = y * (1 - y^2/3)= for =|y| <= sqrt(3)*s=, then clamp -- no
+transcendental at all. Downsides: only C^1 (a corner at the knee, hence extra
+high harmonics) and a fixed shape (no harshness knob). Fine as a "free" option;
+the algebraic family is worth the =sqrt= otherwise.
+
+* Summary
+
+- One family: =f(y) = y / (1 + |y/s|^k)^(1/k)=.
+- =s= = scale/asymptote (or reparametrize to the 5% =bite= point). Useful range
+  ~=0.3 .. 5= for unit-scale signals; =bite= ~=0.05 .. 1=.
+- =k= = harshness/elbow. Useful range =1 .. 4=, default =2=.
+- =f'(0) = 1=, =f' -> 0=, =f'' < 0= for all =y > 0= and all =k >= 1=.
+- Default to =k = 2= (one =sqrt=); promote to the full two-knob form when a
+  harshness control is wanted -- same curve, no rework.

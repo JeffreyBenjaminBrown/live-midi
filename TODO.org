@@ -1,17 +1,110 @@
 * lately using [[./code/rust/configs/README.org]]
 * super-want
-** save this chord to a button
-** shift this chord by this pitch
-** AM control
-*** 1 depth control
-*** 1 toggle between ring mod and the more obvious kind of AM
-*** many frequency controls
-**** reset to unity
-**** type a fraction
-**** multiply by the typed fraction
-** rhythmic AM frequency control
-** 58-edo FM frequency control
+** open questions
+Control which voices get which treatment.
+*** play timbres, chords
+Each timbre applies to chords initiated while it is held.
+*** stack multiple AM, FM patterns on the same voice(s)
+** picture
+*** empty grid
+|  . |   | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|  0 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  1 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  2 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  3 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  4 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  5 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  6 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  7 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  8 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  9 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 10 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 11 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 12 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 13 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 14 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 15 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+*** empty grid
+|  . |   | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|  0 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  1 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  2 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  3 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  4 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  5 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  6 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  7 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  8 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+|  9 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 10 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 11 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 12 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 13 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 14 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+| 15 | . | . | . | . | . | . | . | . | . | . | . | .  | .  | .  | .  | .  | .  |
+** components
+*** fraction UI : 2x5
+Lets you type a fraction. Controls are 10 buttons in 2 rows:
+
+/ 2 3 5 7
+apply-mul set-mul clear (65/64) (1029/1028)
+
+So to multiply by 15 / 8, type "3 5 / 2 2 2 apply-mul".
+To *set* it to 15/8, do the same but end with set-mul instead of apply-mul.
+*** waveform select UI : 1x4 or 1x5
+sine, tri, square, saw, random
+Random: white noise through a low pass filter.
+Random is omitted sometimes.
+** FM
+*** modulator's frequency : fraction UI
+Scaled to the carrier's.
+Fraction UI.
+*** depth : fraction UI
+Measured in Hz.
+Drives the carrier backward if negative.
+Defaults to half the carrier's frequency.
+Controlled with a fraction interface.
+** AM
+*** depth control : 1x5
+0 1/2 3/4 7/8 1 seems like enough. 1=off (no variation)
+Depth is its minimum absolute value of the waveform's amplitude before other effects.
+The maximum (before other effects) is always 1.
+*** freq control : fraction UI
 ** distortion
+Many voices to one.
+Two numeric controls:
+  scale : (1/4,1/2,1,2,4)
+  bend  : (1,2,3,4,5)
+But also (see 'open questions') there's the
+question of which voices it affects when.
+** timbre slots : 2x5
+*** 1 button for 'arm save timbre'
+When armed, it flashes. Push again to disarm.
+It also is disarmed by pressing a timbre slot.
+*** 9 timbre slots (so 2x5, like the other units)
+Keep it simple, stupid.
+** chord slots : 2x5
+*** button : clear next chord slot pressed
+flashes while armed; press again to disarm
+*** button : accrete fingered notes into next chord slot pressed
+reading those fingered notes at the time the slot is pressed,
+after the accrete button is pressed
+*** both 'accrete' and 'clear' can be armed simultaneously
+This way, whatever was there is overwritten by whatever is being played.
+*** display chord under button without sounding
+** later if at all
+*** maybe turn off visual echo of fingered notes to other octaves
+so that what the loop plays is easily visible
+*** tap tempo (low) frequency control
+*** display, edit a timbre
+*** display, edit a chord
+*** move note in displayed chord slot
+Press the old note (it is displayed).
+Then press the new note.
+It is moved. The display updates.
+*** transpose chord slot
+* better FM
+Through-Zero FM: The most advanced linear synths use "Through-Zero FM." If the modulation forces the frequency below 0 Hz, the oscillator doesn't stop; it flips its phase (180°) and runs backward, exactly like a Ring Modulator (DSB-SC) does at the zero line.
 * ONGOING the volume starts too high
 It's at an unreachable value, beyond the maximum amplitude.
 * TODO multi-loop
