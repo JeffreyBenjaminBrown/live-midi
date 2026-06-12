@@ -4,9 +4,13 @@ The file argument (to both commands) must exist in this folder.
 The path *to* this folder is not needed.
 ** do both of these
 *** in docker
+alternatives lately:
+
 cargo run --bin midi_pulse \
   edo-un12_58-8-1_snap_save-scales.toml
-*** outside
+*** outside, if (sednging MIDI?)
+Use the corresponding filename from in docker:
+
 ./code/rust/connect-midi.sh \
   edo-un12_58-8-1_snap_save-scales.toml
 * how to read a config
