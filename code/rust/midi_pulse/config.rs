@@ -329,7 +329,17 @@ pub enum SinkConfig {
     attack_secs: f32,
     release_secs: f32,
     accretion_level: f32,
+    /// Internal oversampling factor for the synth render (1 = off). >1 runs the
+    /// nonlinear/multiplicative mix at N x the rate and decimates, so audio-rate
+    /// AM/FM/waveshaping doesn't alias. Defaults to 1 so existing configs are
+    /// unchanged.
+    #[serde(default = "default_oversample")]
+    oversample: u32,
   },
+}
+
+fn default_oversample() -> u32 {
+  1
 }
 
 impl SinkConfig {
@@ -802,10 +812,14 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
       attack_secs,
       release_secs,
       accretion_level,
+      oversample,
       ..
     } = sink {
       if *sample_rate == 0 || *buffer_frames == 0 {
         return Err(format!("sink {:?} sample_rate and buffer_frames must be positive", sink.id()));
+      }
+      if *oversample == 0 {
+        return Err(format!("sink {:?} oversample must be >= 1", sink.id()));
       }
       for (name, value) in [
         ("amplitude", *amplitude),

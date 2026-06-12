@@ -131,6 +131,7 @@ struct Settings {
   sample_rate: u32,
   buffer_frames: u32,
   amplitude: f32,
+  oversample: u32,
   attack: f32,
   release: f32,
   flash_ms: u64,
@@ -251,7 +252,9 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .iter()
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSynth { sample_rate, buffer_frames, amplitude, attack_secs, release_secs, .. } = sink
+  let SinkConfig::CpalSynth {
+    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample, ..
+  } = sink
   else {
     return Err("looper requires a cpal_synth sink".into());
   };
@@ -301,6 +304,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     sample_rate: *sample_rate,
     buffer_frames: *buffer_frames,
     amplitude: *amplitude,
+    oversample: *oversample,
     attack: *attack_secs,
     release: *release_secs,
     flash_ms: looper.flash_ms,
@@ -353,7 +357,14 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
-    audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude, s.am_shape_family)?
+    audio::start(
+      Arc::clone(&voices),
+      s.sample_rate,
+      s.buffer_frames,
+      s.amplitude,
+      s.oversample as usize,
+      s.am_shape_family,
+    )?
   };
   let looper_sink =
     sink::SawNoteSink::new(Arc::clone(&voices), s.fund, s.edo, audio.sample_rate, s.attack, s.release);

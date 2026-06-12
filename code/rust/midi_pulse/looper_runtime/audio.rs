@@ -11,7 +11,7 @@ use cpal::SampleFormat;
 use std::sync::{Arc, Mutex};
 
 use crate::types::{AmShapeFamily, VoiceMap};
-use crate::voices::render_block_with_amplitude;
+use crate::voices::BlockRenderer;
 
 pub struct Audio {
   /// Kept alive for the run; dropping it stops the stream. `None` in the null path
@@ -33,6 +33,7 @@ pub fn start(
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
   amplitude: f32,
+  oversample: usize,
   am_shape_family: AmShapeFamily,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   let host = cpal::default_host();
@@ -60,6 +61,9 @@ pub fn start(
     sample_rate: supported.sample_rate(),
     buffer_size: cpal::BufferSize::Fixed(requested_buffer_frames),
   };
+  // The decimation filter is stateful across callbacks, so the renderer lives outside
+  // the closure (moved in, mutated each call).
+  let mut renderer = BlockRenderer::new(oversample);
   let stream = device.build_output_stream(
     &stream_config,
     move |data: &mut [f32], _| {
@@ -67,9 +71,7 @@ pub fn start(
       // audio output.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
       // The AM shape family is config-level (6_plan 2.5); resolve_settings sources it.
-      render_block_with_amplitude(
-        &mut voices, data, channels, sample_rate, amplitude, am_shape_family,
-      );
+      renderer.render(&mut voices, data, channels, sample_rate, amplitude, am_shape_family);
     },
     |error| eprintln!("looper audio stream error: {error:?}"),
     None,

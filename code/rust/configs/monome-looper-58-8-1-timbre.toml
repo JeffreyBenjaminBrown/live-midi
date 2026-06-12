@@ -36,6 +36,11 @@ amplitude = 1.0
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# 4x oversample + decimate the synth render so the AM/FM shaping stays clean when
+# pushed to audio rate (the point-sampled near-square would otherwise alias). The
+# edge-limited AM square keeps the harmonic count low, so 4x is plenty; raise for
+# more headroom at proportional CPU cost, or drop to 1 to disable.
+oversample = 4
 
 # Instrument-wide AM shape morph family (6_plan 2.5). The editor's shape row sweeps
 # the per-note morph position within this family.

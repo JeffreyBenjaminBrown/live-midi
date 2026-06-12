@@ -1,4 +1,16 @@
 //! Audio rendering and per-voice helpers.
+//!
+//! Oversampling note: the per-voice synthesis is nonlinear (the `tanh`/clip AM
+//! waveshaper) and multiplicative (the AM/FM multiply), so it manufactures harmonics
+//! and sidebands above the carrier. At sub-audio AM that is harmless, but pushed to
+//! audio rate those products cross Nyquist and fold back as inharmonic aliases that a
+//! plain output filter cannot remove (they are already in-band). `BlockRenderer` with
+//! `oversample = N` runs the whole mix at N x the rate -- so the products land below
+//! the high-rate Nyquist -- then a `Decimator` low-passes and downsamples, removing
+//! them before they fold. The edge-limited AM square (`am_shape_value`) and this
+//! oversampling are complementary: the cap bounds how many harmonics exist (so a
+//! modest N suffices), oversampling gives them room. Band-limited generation (the
+//! `osc` PolyBLEP) handles oscillator edges; oversampling handles the nonlinear mix.
 
 use crate::consts::AMPLITUDE;
 #[cfg(test)]
@@ -156,6 +168,115 @@ pub fn render_block(
   );
 }
 
+/// Advance every voice by `frac` of one output sample (1.0 on the plain path, 1/N
+/// when oversampling) and return their summed contribution, pre-clamp. Running the
+/// nonlinear per-voice work (osc, AM, FM, and the AM multiply) at N x the rate is the
+/// whole point of oversampling: the harmonics/sidebands it manufactures then land
+/// below the *high-rate* Nyquist instead of folding back into the band. Dead voices
+/// are dropped here, exactly as the single-rate path did.
+fn accumulate_voices(
+  voices: &mut VoiceMap,
+  frac: f32,
+  sample_rate: f32,
+  amplitude: f32,
+  shape_family: AmShapeFamily,
+) -> f32 {
+  let mut mix = 0.0_f32;
+  voices.retain(|_, v| {
+    // Step env toward target_env (by `frac` of a full-rate step).
+    let ramp = v.ramp_per_sample * frac;
+    let delta = v.target_env - v.env;
+    if delta.abs() <= ramp {
+      v.env = v.target_env;
+    } else if delta > 0.0 {
+      v.env += ramp;
+    } else {
+      v.env -= ramp;
+    }
+    // Voice is gone once env and target both reach 0.
+    if v.env == 0.0 && v.target_env == 0.0 {
+      return false;
+    }
+    // Advance the per-voice AM/FM LFOs (by `frac` of a full-rate step).
+    v.am_phase += v.timbre.am.freq * frac / sample_rate;
+    if v.am_phase >= 1.0 { v.am_phase -= 1.0; }
+    v.fm_phase += v.timbre.fm.freq * frac / sample_rate;
+    if v.fm_phase >= 1.0 { v.fm_phase -= 1.0; }
+    // FM modulates the carrier increment; PolyBLEP band-limits at this same dt -- the
+    // per-sub-sample increment, so it stays correct at whatever rate we step.
+    let dt = v.freq * fm_factor(v.timbre.fm.depth_cents, v.fm_phase) * frac / sample_rate;
+    v.phase += dt;
+    if v.phase >= 1.0 { v.phase -= 1.0; }
+    let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
+    let wf_norm = waveform_norm(v.timbre.waveform);
+    mix += osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * amplitude;
+    true
+  });
+  mix
+}
+
+/// A stateful per-stream renderer. With `oversample > 1` it runs the mix at N x the
+/// output rate and decimates back down, so audio-rate AM / FM / waveshaping don't
+/// alias (see the module-level note). `oversample = 1` is the plain path: no
+/// decimator, no latency, bit-identical to the pre-oversampling render. The state
+/// (the decimation filter's history) must persist across cpal callbacks, so this is
+/// a struct the audio loop owns rather than a free function.
+pub struct BlockRenderer {
+  oversample: usize,
+  decimator: Option<Decimator>,
+}
+
+impl BlockRenderer {
+  pub fn new(oversample: usize) -> Self {
+    let oversample = oversample.max(1);
+    let decimator = (oversample > 1).then(|| Decimator::new(oversample));
+    BlockRenderer { oversample, decimator }
+  }
+
+  /// Render one cpal callback's worth of audio into `data` from `voices`. Pulled out
+  /// of the cpal closure so unit tests can exercise it without cpal or PipeWire.
+  pub fn render(
+    &mut self,
+    voices: &mut VoiceMap,
+    data: &mut [f32],
+    channels: usize,
+    sample_rate: f32,
+    amplitude: f32,
+    shape_family: AmShapeFamily,
+  ) {
+    let oversample = self.oversample;
+    match &mut self.decimator {
+      // Plain path: one sub-step per output sample, no filtering, no latency.
+      None => {
+        for frame in data.chunks_mut(channels) {
+          let mix = accumulate_voices(voices, 1.0, sample_rate, amplitude, shape_family);
+          let s = mix.clamp(-0.95, 0.95);
+          for out in frame.iter_mut() {
+            *out = s;
+          }
+        }
+      }
+      // Oversampled path: N sub-steps per output sample, then decimate. The clamp runs
+      // at the high rate, so even hard-clip distortion is band-limited before folding.
+      Some(decim) => {
+        let frac = 1.0 / oversample as f32;
+        for frame in data.chunks_mut(channels) {
+          for _ in 0..oversample {
+            let mix = accumulate_voices(voices, frac, sample_rate, amplitude, shape_family);
+            decim.push(mix.clamp(-0.95, 0.95));
+          }
+          let s = decim.output();
+          for out in frame.iter_mut() {
+            *out = s;
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Backwards-compatible single-rate render (oversample = 1). Kept for the standalone
+/// sawwave path and the unit tests; the looper drives a persistent `BlockRenderer`.
 pub fn render_block_with_amplitude(
   voices: &mut VoiceMap,
   data: &mut [f32],
@@ -164,41 +285,69 @@ pub fn render_block_with_amplitude(
   amplitude: f32,
   shape_family: AmShapeFamily,
 ) {
-  for frame in data.chunks_mut(channels) {
-    let mut mix = 0.0_f32;
-    voices.retain(|_, v| {
-      // Step env toward target_env.
-      let delta = v.target_env - v.env;
-      if delta.abs() <= v.ramp_per_sample {
-        v.env = v.target_env;
-      } else if delta > 0.0 {
-        v.env += v.ramp_per_sample;
-      } else {
-        v.env -= v.ramp_per_sample;
-      }
-      // Voice is gone once env and target both reach 0.
-      if v.env == 0.0 && v.target_env == 0.0 {
-        return false;
-      }
-      // Advance the per-voice AM/FM LFOs.
-      v.am_phase += v.timbre.am.freq / sample_rate;
-      if v.am_phase >= 1.0 { v.am_phase -= 1.0; }
-      v.fm_phase += v.timbre.fm.freq / sample_rate;
-      if v.fm_phase >= 1.0 { v.fm_phase -= 1.0; }
-      // FM modulates the carrier increment; PolyBLEP band-limits at this same dt.
-      let dt = v.freq * fm_factor(v.timbre.fm.depth_cents, v.fm_phase) / sample_rate;
-      v.phase += dt;
-      if v.phase >= 1.0 { v.phase -= 1.0; }
-      let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
-      let wf_norm = waveform_norm(v.timbre.waveform);
-      mix += osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * amplitude;
-      true
-    });
-    let s = mix.clamp(-0.95, 0.95);
-    for out in frame.iter_mut() {
-      *out = s;
-    }
+  BlockRenderer::new(1).render(voices, data, channels, sample_rate, amplitude, shape_family);
+}
+
+/// The decimation stage of an oversampled render: a windowed-sinc FIR low-pass at the
+/// original Nyquist, then keep one sample per `factor`. Push every oversampled sample
+/// (`push`); read one filtered output per `factor` pushes (`output`). Cutoff below the
+/// post-decimation Nyquist means the high-rate content that would fold on downsampling
+/// is removed first -- a plain output filter could not, since by then it has already
+/// aliased in-band. Linear-phase (symmetric taps); its (len-1)/2-sample group delay is
+/// well under a millisecond.
+struct Decimator {
+  taps: Vec<f32>,
+  history: Vec<f32>, // ring buffer of the last taps.len() oversampled samples
+  pos: usize,        // index of the most-recent pushed sample
+}
+
+impl Decimator {
+  fn new(factor: usize) -> Self {
+    let taps = lowpass_taps(factor);
+    let len = taps.len();
+    Decimator { taps, history: vec![0.0; len], pos: 0 }
   }
+
+  fn push(&mut self, x: f32) {
+    let n = self.history.len();
+    self.pos = (self.pos + 1) % n;
+    self.history[self.pos] = x;
+  }
+
+  /// FIR output for the current history; `taps[0]` weights the most-recent sample.
+  fn output(&self) -> f32 {
+    let n = self.history.len();
+    let mut acc = 0.0_f32;
+    for (i, &c) in self.taps.iter().enumerate() {
+      acc += c * self.history[(self.pos + n - i) % n];
+    }
+    acc
+  }
+}
+
+/// Windowed-sinc low-pass taps for decimating a `factor`x-oversampled stream: cutoff
+/// at 0.45/factor cycles/sample (just under the post-decimation Nyquist of
+/// 0.5/factor), a Blackman window (~74 dB stopband), length scaling with `factor` so
+/// the transition band stays comparable. Normalized to unity DC gain.
+fn lowpass_taps(factor: usize) -> Vec<f32> {
+  use std::f32::consts::{PI, TAU};
+  let len = (16 * factor) | 1; // odd, so there is a true center tap
+  let fc = 0.45 / factor as f32; // cutoff in cycles/sample at the oversampled rate
+  let mid = (len - 1) as f32 / 2.0;
+  let last = (len - 1) as f32;
+  let mut taps = vec![0.0_f32; len];
+  let mut sum = 0.0_f32;
+  for (i, t) in taps.iter_mut().enumerate() {
+    let x = i as f32 - mid;
+    let sinc = if x == 0.0 { 2.0 * fc } else { (TAU * fc * x).sin() / (PI * x) };
+    let w = 0.42 - 0.5 * (TAU * i as f32 / last).cos() + 0.08 * (2.0 * TAU * i as f32 / last).cos();
+    *t = sinc * w;
+    sum += *t;
+  }
+  for t in &mut taps {
+    *t /= sum;
+  }
+  taps
 }
 
 // Is the voice with id `id` currently being held / sustained?
@@ -442,6 +591,38 @@ mod tests {
     let (off, full) = (rms(0.0), rms(1.0));
     assert!(full < off * 0.85, "AM should cut average energy: off={off} full={full}");
     assert!(full > 0.0);
+  }
+
+  #[test]
+  fn oversampling_removes_an_above_nyquist_alias() {
+    // A 40 kHz sine point-sampled at 48 kHz folds to a loud 8 kHz alias. Run the SAME
+    // voice through a 4x-oversampled renderer: 40 kHz is generated below the high-rate
+    // Nyquist (96 kHz), then the decimation low-pass removes it before downsampling --
+    // so it nearly vanishes. A 1 kHz tone (well in band) must survive both, proving we
+    // filtered the alias rather than muting everything.
+    let sr = 48000.0;
+    let rms = |freq: f32, oversample: usize| {
+      let mut voices: VoiceMap = HashMap::new();
+      voices.insert(
+        VoiceSource::Fingered { xy: (0, 0) },
+        VoiceState {
+          id: 0, freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+          timbre: Timbre {
+            waveform: Waveform::Sine, gain: 1.0, am: Am::default(), fm: Fm::default(),
+          },
+          am_phase: 0.0, fm_phase: 0.0,
+        },
+      );
+      let mut data = vec![0.0_f32; 4800];
+      BlockRenderer::new(oversample)
+        .render(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+      (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
+    };
+    let (alias_plain, alias_os) = (rms(40_000.0, 1), rms(40_000.0, 4));
+    assert!(alias_plain > 0.3, "plain render should fold a loud alias: {alias_plain}");
+    assert!(alias_os < alias_plain * 0.1, "4x oversampling should kill it: plain={alias_plain} os={alias_os}");
+    let (pass_plain, pass_os) = (rms(1_000.0, 1), rms(1_000.0, 4));
+    assert!(pass_os > pass_plain * 0.8, "an in-band 1 kHz tone must pass: plain={pass_plain} os={pass_os}");
   }
 
   #[test]

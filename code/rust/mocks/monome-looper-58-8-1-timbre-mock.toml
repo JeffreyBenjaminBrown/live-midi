@@ -34,6 +34,8 @@ amplitude = 1.0
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# 4x oversample + decimate so audio-rate AM/FM shaping doesn't alias. (configs/ twin.)
+oversample = 4
 
 # Instrument-wide AM shape morph family (6_plan 2.5). The editor's shape row sweeps
 # the per-note morph position within this family.
