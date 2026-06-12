@@ -1,4 +1,17 @@
 * lately using [[./code/rust/configs/README.org]]
+* super-want
+** save this chord to a button
+** shift this chord by this pitch
+** AM control
+*** 1 depth control
+*** 1 toggle between ring mod and the more obvious kind of AM
+*** many frequency controls
+**** reset to unity
+**** type a fraction
+**** multiply by the typed fraction
+** rhythmic AM frequency control
+** 58-edo FM frequency control
+** distortion
 * ONGOING the volume starts too high
 It's at an unreachable value, beyond the maximum amplitude.
 * TODO multi-loop

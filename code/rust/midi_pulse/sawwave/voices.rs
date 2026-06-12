@@ -82,29 +82,42 @@ pub fn waveform_norm(waveform: Waveform) -> f32 {
   }
 }
 
+/// How steep the "square" end of the AM shape is allowed to get. A *true* square
+/// (vertical edges) is what clicks: at full depth the amplitude steps between its
+/// floor and 1.0 in a single sample, a broadband transient. Real synths never emit
+/// an ideal square here -- they cap the edge slope (slew limiter / BLEP / a "smooth"
+/// knob), leaving a near-square with a short but finite rise. These caps hold the
+/// edge at very roughly ~4% of the LFO period -- visually square, but spread over
+/// enough samples at tremolo rates that it doesn't click. The morph stops steepening
+/// past these; the top sliver of the shape row all renders this same click-free
+/// near-square. Tune up for crisper edges (toward clicking), down for softer.
+const AM_SQUARE_MAX_K: f32 = 16.0; // SinToSquare: tanh sharpness; edge ~ 2/(pi*k)
+const AM_SQUARE_MAX_GAIN: f32 = 12.5; // TriToSquare: clip gain;   edge ~ 1/(2*gain)
+
 /// The slow-AM LFO wave (bipolar, in [-1,1]) at `phase`, morphed by `shape` in
 /// [0,1] within `family`. shape 0 = the soft end (sine / triangle), shape 1 = a
-/// square; in between it interpolates.
+/// near-square (edge-limited so it never clicks); in between it interpolates.
 pub fn am_shape_value(family: AmShapeFamily, shape: f32, phase: f32) -> f32 {
   let s = (std::f32::consts::TAU * phase).sin();
   let shape = shape.clamp(0.0, 1.0);
   match family {
-    // tanh waveshaper: tanh(k*sin)/tanh(k). k->0 is a sine, k->inf a square.
+    // tanh waveshaper: tanh(k*sin)/tanh(k). k->0 is a sine; k grows toward a square
+    // as shape->1 but is CAPPED at AM_SQUARE_MAX_K, so even at shape 1.0 the edge
+    // keeps a finite rise and doesn't click (a hard sign() square would).
     AmShapeFamily::SinToSquare => {
       if shape <= 0.0 {
         s
-      } else if shape >= 1.0 {
-        if s >= 0.0 { 1.0 } else { -1.0 }
       } else {
-        let k = shape / (1.0 - shape); // 0..inf as shape 0..1
+        let k = (shape / (1.0 - shape)).min(AM_SQUARE_MAX_K); // shape 1.0 -> capped
         (k * s).tanh() / k.tanh()
       }
     }
     // Triangle steepened toward a square: clip a gained triangle. gain 1 (shape 0)
-    // is the triangle untouched; gain->inf (shape 1) clips it to a square.
+    // is the triangle untouched; the gain grows toward a square as shape->1 but is
+    // CAPPED at AM_SQUARE_MAX_GAIN, so full square keeps a finite edge (no click).
     AmShapeFamily::TriToSquare => {
       let tri = triangle(phase); // -1..1, peak at phase 0.5
-      let m = if shape >= 1.0 { 1.0e6 } else { 1.0 / (1.0 - shape) };
+      let m = (1.0 / (1.0 - shape)).min(AM_SQUARE_MAX_GAIN); // shape 1.0 -> capped
       (tri * m).clamp(-1.0, 1.0)
     }
   }
@@ -371,6 +384,24 @@ mod tests {
     let p = 0.1;
     assert!((am_shape_value(AmShapeFamily::TriToSquare, 0.0, p) - triangle(p)).abs() < 1e-4);
     assert!(am_shape_value(AmShapeFamily::TriToSquare, 1.0, 0.4).abs() > 0.99);
+  }
+
+  #[test]
+  fn full_square_am_shape_is_edge_limited_not_a_clicking_step() {
+    // A true square jumps +-1 -> -+1 in one sample (the click). The edge-capped
+    // near-square must instead cross over many samples -- so densely sampling one
+    // period, the largest sample-to-sample step is small -- yet it still plateaus at
+    // ~+-1 (still square-like, not softened to a sine).
+    let n = 4000;
+    for family in [AmShapeFamily::SinToSquare, AmShapeFamily::TriToSquare] {
+      let vals: Vec<f32> =
+        (0..n).map(|i| am_shape_value(family, 1.0, i as f32 / n as f32)).collect();
+      let max_step =
+        vals.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0_f32, f32::max);
+      assert!(max_step < 0.25, "{family:?}: full-square edge should be gradual (no click), got step {max_step}");
+      let peak = vals.iter().fold(0.0_f32, |a, &v| a.max(v.abs()));
+      assert!(peak > 0.99, "{family:?}: should still plateau near +-1 (square-like), peak {peak}");
+    }
   }
 
   #[test]
