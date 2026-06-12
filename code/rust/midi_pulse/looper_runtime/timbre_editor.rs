@@ -189,6 +189,15 @@ impl TimbreEditor {
     (self.width() as i32 - SLOTS_X0).max(0) as usize
   }
 
+  /// The amplitude row's top-cell value -- "unity", the loudest the row can dial
+  /// (6_plan 2.5: "top cell = unity = the pre-timbre level"). The live timbre boots
+  /// here so it starts at a value the row can actually reach, rather than at the
+  /// `Timbre::default` linear gain of 1.0, which sits above this ceiling.
+  pub fn amplitude_unity(&self) -> f32 {
+    let w = self.width();
+    self.amplitude.value_at(w.saturating_sub(1), w)
+  }
+
   /// The fixed-value RowRange for a value-row offset (rows 1..6); None for the
   /// control row, which `press` special-cases.
   fn value_row(&self, local_y: i32) -> Option<RowRange> {

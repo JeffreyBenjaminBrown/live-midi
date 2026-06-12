@@ -7,6 +7,9 @@ The path *to* this folder is not needed.
 alternatives lately:
 
 cargo run --bin midi_pulse \
+  monome-looper-58-8-1-timbre.toml
+
+cargo run --bin midi_pulse \
   edo-un12_58-8-1_snap_save-scales.toml
 *** outside, if (sednging MIDI?)
 Use the corresponding filename from in docker:

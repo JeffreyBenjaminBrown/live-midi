@@ -27,7 +27,12 @@ id = "saw"
 kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
-amplitude = 0.15
+# Unity pass-through: the per-note GAIN row is the volume control here (6_plan 2.5,
+# §5 -- the sink sketch carries no amplitude). The amplitude row's top cell = unity
+# = 0.15 output (the pre-timbre instrument's level); leaving the sink at 0.15 too
+# would double-attenuate it (top would reach only 0.0225). The live timbre boots at
+# that row's top, so the instrument starts at the loudest value the row can dial.
+amplitude = 1.0
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5

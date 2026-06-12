@@ -1,4 +1,8 @@
 * lately using [[./code/rust/configs/README.org]]
+* ONGOING the volume starts too high
+It's at an unreachable value, beyond the maximum amplitude.
+* TODO multi-loop
+** What are the extant loop controls?
 * ONGOING , maybe done : [[./TODO/DONE/timbre-manip]]
 * AWAITS looper improvements
 ** the old plans

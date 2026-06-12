@@ -55,6 +55,33 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
   0.0
 }
 
+/// Per-waveform loudness-normalization gain. The four oscillators all swing to
+/// +-1.0 but carry very different *power*: at unit peak their RMS is sine
+/// 1/sqrt(2), triangle 1/sqrt(3), saw 1/sqrt(3), square 1. So a raw square sounds
+/// far louder than a triangle and sine sits in between, which makes switching
+/// waveforms a volume jump as much as a timbre change.
+///
+/// We equalize on *RMS* (signal power). Power -- not peak, and not rectified area
+/// under the curve -- is the measure that tracks perceived loudness for sustained
+/// broadband tones, and being a single linear gain it commutes cleanly with every
+/// later stage (per-voice `gain`, AM, FM, the sink amplitude). True loudness is of
+/// course frequency- and harmonic-content-dependent (equal-loudness contours), and
+/// these are bright vs dark spectra; RMS is the pragmatic, signal-chain-friendly
+/// proxy, not a psychoacoustic model.
+///
+/// Target = the *quietest* shape's RMS (1/sqrt(3), triangle/saw), so every gain is
+/// <= 1 and no waveform's peak grows past +-1.0 -- this only ever attenuates, never
+/// adds clipping. Triangle (the default timbre) is left at unity, so existing
+/// configs sound identical on the default and only the other shapes move to match.
+pub fn waveform_norm(waveform: Waveform) -> f32 {
+  match waveform {
+    Waveform::Sine => 0.816_496_6,    // sqrt(2/3): RMS 1/sqrt(2) -> 1/sqrt(3)
+    Waveform::Triangle => 1.0,        // already 1/sqrt(3)
+    Waveform::Saw => 1.0,             // already 1/sqrt(3)
+    Waveform::Square => 0.577_350_3,  // 1/sqrt(3): RMS 1 -> 1/sqrt(3)
+  }
+}
+
 /// The slow-AM LFO wave (bipolar, in [-1,1]) at `phase`, morphed by `shape` in
 /// [0,1] within `family`. shape 0 = the soft end (sine / triangle), shape 1 = a
 /// square; in between it interpolates.
@@ -150,7 +177,8 @@ pub fn render_block_with_amplitude(
       v.phase += dt;
       if v.phase >= 1.0 { v.phase -= 1.0; }
       let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
-      mix += osc(v.timbre.waveform, v.phase, dt) * v.env * v.timbre.gain * amm * amplitude;
+      let wf_norm = waveform_norm(v.timbre.waveform);
+      mix += osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * amplitude;
       true
     });
     let s = mix.clamp(-0.95, 0.95);
@@ -291,6 +319,29 @@ mod tests {
     let peak = |g: f32| render_voice(mk(g), 1024, sr).iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
     let (full, half) = (peak(1.0), peak(0.5));
     assert!((half / full - 0.5).abs() < 0.05, "gain 0.5 should ~halve peak: full={full} half={half}");
+  }
+
+  #[test]
+  fn waveform_norm_equalizes_rms_across_shapes() {
+    // After normalization every shape should render at the same RMS (power), so
+    // switching waveform is a timbre change, not a volume jump. Measure each at a
+    // frequency low enough that PolyBLEP barely perturbs the ideal RMS.
+    let sr = 48000.0;
+    let rms = |waveform: Waveform| {
+      let v = VoiceState {
+        id: 0, freq: 100.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        timbre: Timbre { waveform, gain: 1.0, am: Am::default(), fm: Fm::default() },
+        am_phase: 0.0, fm_phase: 0.0,
+      };
+      let data = render_voice(v, sr as usize, sr); // ~1 s = many whole periods
+      (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
+    };
+    let reference = rms(Waveform::Triangle);
+    for wf in [Waveform::Sine, Waveform::Saw, Waveform::Square] {
+      let r = rms(wf);
+      assert!((r / reference - 1.0).abs() < 0.03,
+        "{wf:?} RMS {r} should match triangle {reference} within 3%");
+    }
   }
 
   #[test]
