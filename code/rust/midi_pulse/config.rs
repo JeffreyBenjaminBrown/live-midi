@@ -725,11 +725,28 @@ pub fn config_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("code/rust/configs")
 }
 
+/// Mock-rig configs (mock ports/prefixes) live here, separate from `config_dir` so
+/// the real-config sweep (`loads_default_configs`) doesn't pick them up. Resolved by
+/// name as a fallback (see `config_path`), so `<name>-mock` loads by name too.
+pub fn mock_config_dir() -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("code/rust/mocks")
+}
+
 pub fn config_path(name: &str) -> Result<PathBuf, String> {
   if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
     return Err(format!("config name must not be a path, got {name:?}"));
   }
-  Ok(config_dir().join(name).with_extension("toml"))
+  // Prefer a real config; fall back to the mock dir so a mock-rig config resolves by
+  // name (the integration tests and `cargo run -- <name>-mock`). If neither exists,
+  // return the configs/ path so the not-found error names the expected location.
+  let primary = config_dir().join(name).with_extension("toml");
+  if !primary.exists() {
+    let mock = mock_config_dir().join(name).with_extension("toml");
+    if mock.exists() {
+      return Ok(mock);
+    }
+  }
+  Ok(primary)
 }
 
 pub fn load_named_config(name: &str) -> Result<Config, String> {
@@ -1233,6 +1250,18 @@ mod tests {
           .unwrap_or_else(|e| panic!("{} should parse: {e}", path.display()));
       }
     }
+  }
+
+  #[test]
+  fn resolves_and_loads_mock_configs_by_name() {
+    // Mock-rig configs live in mocks/, not configs/, but must resolve by name so the
+    // mock-grid tests and `cargo run -- <name>-mock` find them.
+    let name = "monome-looper-58-8-1-timbre-mock";
+    let path = config_path(name).expect("mock name resolves");
+    assert!(path.starts_with(mock_config_dir()), "should resolve into mocks/, got {}", path.display());
+    load_named_config(name).expect("mock config loads from the mock dir");
+    // A genuinely missing name still points at configs/ (the not-found error location).
+    assert!(config_path("definitely-not-a-real-config").unwrap().starts_with(config_dir()));
   }
 
   #[test]

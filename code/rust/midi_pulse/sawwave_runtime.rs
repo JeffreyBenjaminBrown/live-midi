@@ -4,7 +4,7 @@ use crate::state::{
   chord_press, chord_release, control_press, control_release, edo_press, edo_release,
 };
 use crate::types::{AppState, Brightness, Button, LedCmd, VoiceMap, Window, WindowId};
-use crate::voices::render_block_with_amplitude;
+use crate::voices::BlockRenderer;
 use crate::windows::{set_led, window_for_cell};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
@@ -57,6 +57,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     attack_secs,
     release_secs,
     accretion_level,
+    oversample,
     ..
   } = sink
   else {
@@ -75,6 +76,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     sample_rate: *sample_rate,
     buffer_frames: *buffer_frames,
     amplitude: *amplitude,
+    oversample: *oversample,
     attack_secs: *attack_secs,
     release_secs: *release_secs,
     accretion_level: *accretion_level,
@@ -94,6 +96,7 @@ struct RuntimeSettings {
   sample_rate: u32,
   buffer_frames: u32,
   amplitude: f32,
+  oversample: u32,
   attack_secs: f32,
   release_secs: f32,
   accretion_level: f32,
@@ -122,6 +125,7 @@ fn run(settings: RuntimeSettings) -> Result<(), Box<dyn std::error::Error>> {
     settings.sample_rate,
     settings.buffer_frames,
     settings.amplitude,
+    settings.oversample as usize,
   )?;
 
   let pitch_class = build_pitch_class(
@@ -297,6 +301,7 @@ fn start_audio_stream(
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
   amplitude: f32,
+  oversample: usize,
 ) -> Result<AudioRuntime, Box<dyn std::error::Error>> {
   let host = cpal::default_host();
   let device = host.default_output_device().ok_or("no default output device")?;
@@ -331,12 +336,16 @@ fn start_audio_stream(
   let cb_count_audio = Arc::clone(&cb_count);
   let sample_count_audio = Arc::clone(&sample_count);
   let peak_bits_audio = Arc::clone(&peak_bits);
+  // Honors the config `oversample` (default 1 = no change). This runtime has no AM/FM
+  // and its oscillators are PolyBLEP-band-limited, so 1 is the right default; the knob
+  // exists for parity and future modulation.
+  let mut renderer = BlockRenderer::new(oversample);
   let stream = device.build_output_stream(
     &stream_config,
     move |data: &mut [f32], _| {
       let mut voices = voices.lock().unwrap();
       // Legacy runtime has no AM (default timbres), so the family is inert.
-      render_block_with_amplitude(
+      renderer.render(
         &mut voices, data, channels, sample_rate, amplitude,
         crate::types::AmShapeFamily::default(),
       );
