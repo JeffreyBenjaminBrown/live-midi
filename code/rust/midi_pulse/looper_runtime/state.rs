@@ -204,11 +204,17 @@ impl LooperState {
   pub fn new(sink: SawNoteSink, p: LooperParams) -> Self {
     let [sx0, sy0, sx1, sy1] = p.loop_slots_rect;
     let n_slots = (((sx1 - sx0 + 1).max(0)) * ((sy1 - sy0 + 1).max(0))) as usize;
-    let n_timbre_slots = p
-      .timbre_editor
-      .as_ref()
-      .or(p.loops_timbre_editor.as_ref())
-      .map_or(0, TimbreEditor::slot_count);
+    let editor = p.timbre_editor.as_ref().or(p.loops_timbre_editor.as_ref());
+    let n_timbre_slots = editor.map_or(0, TimbreEditor::slot_count);
+    // Boot the live timbre at the amplitude row's unity (its top cell), not the
+    // linear gain 1.0 of Timbre::default(): with an editor present, 1.0 sits ABOVE
+    // the amplitude row's ceiling, so the instrument would start louder than the row
+    // can dial back to (the bug "volume starts beyond the maximum amplitude"). With
+    // no editor (the plain looper) there is no amplitude row, so keep the default.
+    let live_timbre = Timbre {
+      gain: editor.map_or(Timbre::default().gain, TimbreEditor::amplitude_unity),
+      ..Timbre::default()
+    };
     // Capture the unfolded looper-stack positions (config) so the loops editor can
     // reflow them under itself. Only when a loops editor is present.
     let loops_reflow = p.loops_timbre_editor.as_ref().map(|_| LoopsReflow {
@@ -248,7 +254,7 @@ impl LooperState {
       remap: None,
       copy_arming: false,
       copy_from: None,
-      live_timbre: Timbre::default(),
+      live_timbre,
       timbre_editor: p.timbre_editor,
       timbre_slots: vec![None; n_timbre_slots],
       timbre_armed: false,
@@ -1184,36 +1190,37 @@ mod tests {
   }
 
   // 58-8-1 on 16x16: edo grid full, shift pad lower-right, 4x4 slots top-left with
-  // transport on (0,3)/(1,3)/(2,3).
+  // transport on (0,3)/(1,3)/(2,3). No timbre editors by default.
+  fn base_params() -> LooperParams {
+    LooperParams {
+      x_step: 8,
+      y_step: 1,
+      edo: 58,
+      grid_w: 16,
+      grid_h: 16,
+      edo_rect: [0, 0, 15, 15],
+      shift_rect: [13, 14, 15, 15],
+      loop_slots_rect: [0, 0, 3, 3],
+      loop_start: (0, 3),
+      loop_stop: (1, 3),
+      loop_play: (2, 3),
+      loop_display_rect: [0, 5, 15, 15],
+      loop_toggle: (5, 0),
+      loop_copy: (5, 1),
+      loop_undo: (5, 2),
+      remap_center: (7, 7),
+      quantize: ms(70),
+      cluster: ms(100),
+      timbre_editor: None,
+      save_undo_window: ms(200),
+      loops_timbre_editor: None,
+    }
+  }
+
   fn state() -> LooperState {
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(Map::new()));
     let sink = SawNoteSink::new(voices, 80.0, 58, 48000.0, 0.003, 0.05);
-    LooperState::new(
-      sink,
-      LooperParams {
-        x_step: 8,
-        y_step: 1,
-        edo: 58,
-        grid_w: 16,
-        grid_h: 16,
-        edo_rect: [0, 0, 15, 15],
-        shift_rect: [13, 14, 15, 15],
-        loop_slots_rect: [0, 0, 3, 3],
-        loop_start: (0, 3),
-        loop_stop: (1, 3),
-        loop_play: (2, 3),
-        loop_display_rect: [0, 5, 15, 15],
-        loop_toggle: (5, 0),
-        loop_copy: (5, 1),
-        loop_undo: (5, 2),
-        remap_center: (7, 7),
-        quantize: ms(70),
-        cluster: ms(100),
-        timbre_editor: None,
-        save_undo_window: ms(200),
-        loops_timbre_editor: None,
-      },
-    )
+    LooperState::new(sink, base_params())
   }
 
   /// A state whose edo grid carries a timbre editor occluding the top 7 rows
@@ -1527,6 +1534,36 @@ mod tests {
     assert!((s.live_timbre.gain - 0.0009).abs() < 1e-5, "min amplitude");
     s.edo_key(15, 1, true, ms(1));
     assert!((s.live_timbre.gain - 0.15).abs() < 1e-5, "max amplitude = unity");
+  }
+
+  #[test]
+  fn live_timbre_boots_at_a_reachable_amplitude() {
+    // The instrument must not start louder than the amplitude row can reach. Build a
+    // state through `new()` WITH an editor in the params (the real runtime path), and
+    // check the booted gain is the row's top cell -- i.e. cell_for(gain) == top.
+    use super::super::timbre_editor::TimbreEditor;
+    use super::super::timbre_rows::RowRange;
+    let amplitude = RowRange::LogRange { least: 0.0009, greatest: 0.15 };
+    let editor = TimbreEditor::new(
+      [0, 0, 15, 6],
+      TimbreTarget::Live,
+      amplitude,
+      RowRange::Linear { min: 0.0, max: 1.0 },
+      RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
+      RowRange::Linear { min: 0.0, max: 1.0 },
+      RowRange::LogFactor { least: 5.0, multiplier: 2.0 },
+      RowRange::LogFactor { least: 0.25, multiplier: 2.0 },
+    );
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(Map::new()));
+    let sink = SawNoteSink::new(voices, 80.0, 58, 48000.0, 0.003, 0.05);
+    let mut params = base_params();
+    params.loops_timbre_editor = Some(editor);
+    let s = LooperState::new(sink, params);
+    // Starts at unity (the row's top value), not the out-of-range default gain 1.0.
+    assert!((s.live_timbre.gain - 0.15).abs() < 1e-5, "boots at unity = 0.15");
+    assert!(s.live_timbre.gain < 1.0, "below Timbre::default's linear 1.0");
+    // And that value lands on the last cell of a 16-wide row -- it IS reachable.
+    assert_eq!(amplitude.cell_for(s.live_timbre.gain, 16), 15, "boot gain is the top cell");
   }
 
   #[test]

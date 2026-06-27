@@ -1,8 +1,25 @@
 * lately using [[./code/rust/configs/README.org]]
+* super-want
+** save this chord to a button
+** shift this chord by this pitch
+** AM control
+*** 1 depth control
+*** 1 toggle between ring mod and the more obvious kind of AM
+*** many frequency controls
+**** reset to unity
+**** type a fraction
+**** multiply by the typed fraction
+** rhythmic AM frequency control
+** 58-edo FM frequency control
+** distortion
+* ONGOING the volume starts too high
+It's at an unreachable value, beyond the maximum amplitude.
+* TODO multi-loop
+** What are the extant loop controls?
 * ONGOING , maybe done : [[./TODO/DONE/timbre-manip]]
-claude --resume b0b9fbc0-fae2-428a-be43-fad8a16900b8
-* AWAITS [[./TODO/monome-looper]]
-claude --dangerously-skip-permissions --resume 31806765-010a-499b-a578-972782fd9b21
+* AWAITS looper improvements
+** the old plans
+[[./TODO/DONE/monome-looper]]
 ** loops must be overlappable
 ** edit a number of repeats of a loop
 Requires overriding record and stop.

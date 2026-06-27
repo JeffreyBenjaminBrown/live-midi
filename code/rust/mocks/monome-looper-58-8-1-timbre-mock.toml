@@ -27,10 +27,15 @@ id = "saw"
 kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
-amplitude = 0.15
+# Unity pass-through: the per-note GAIN row is the volume control (6_plan 2.5). The
+# amplitude row's top cell = unity = 0.15 output; the live timbre boots there, so the
+# instrument starts at the loudest value the row can dial. (See the configs/ twin.)
+amplitude = 1.0
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# 4x oversample + decimate so audio-rate AM/FM shaping doesn't alias. (configs/ twin.)
+oversample = 4
 
 # Instrument-wide AM shape morph family (6_plan 2.5). The editor's shape row sweeps
 # the per-note morph position within this family.
