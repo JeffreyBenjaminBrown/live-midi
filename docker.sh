@@ -44,7 +44,6 @@ CONTAINER_NAME="midi-$WT_NAME"
 
 docker run --name "$CONTAINER_NAME" -it -d               \
   -v /run/user/1000/pipewire-0:/run/user/1000/pipewire-0 \
-  -e PIPEWIRE_RUNTIME_DIR=/run/user/1000                 \
   -v /tmp/.X11-unix:/tmp/.X11-unix                       \
   -e DISPLAY="${DISPLAY:-:0}"                            \
   --network host                                         \
