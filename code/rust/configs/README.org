@@ -397,7 +397,7 @@ are required together; the shift pad, toggle, copy and undo are optional. The
 
 #+begin_src toml
 [looper]
-quantize_record_ms = 70   # events within this of the loop boundary snap to it
+clock_bpm = 240           # metronome (4*75 -> 200ms cycle): transport snaps to it, note-ons within 1/16 cycle snap
 cluster_display_ms = 100  # note-ons within this of each other = one display column
 flash_ms = 50             # reflection / equivalent flash half-period
 remap_center = [7, 7]     # the edo-grid cell meaning "unison" in group-transpose remap

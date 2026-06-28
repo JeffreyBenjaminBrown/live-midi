@@ -185,9 +185,19 @@ cluster; the two octave corners (Od, Ou) stay dark.
 
 ** the [looper] settings
 
-| key                  | value | meaning                                          |
-|----------------------+-------+--------------------------------------------------|
-| ~quantize_record_ms~ |    70 | events within this of the loop boundary snap to it |
-| ~cluster_display_ms~ |   100 | note-ons within this of each other = one column  |
-| ~flash_ms~           |    50 | flash half-period (sounding slot, undo)          |
-| ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap  |
+| key                  | value | meaning                                                |
+|----------------------+-------+--------------------------------------------------------|
+| ~clock_bpm~          |   300 | metronome rate (4*75 -> 200 ms cycle); see below       |
+| ~clock_duty~         |   0.1 | fraction of each cycle the flashing button stays lit   |
+| ~cluster_display_ms~ |   100 | note-ons within this of each other = one column        |
+| ~flash_ms~           |    50 | sounding-slot / undo flash half-period (NOT the clock) |
+| ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap        |
+
+The free-running *metronome* (=clock_bpm=) drives the loops grid: transport
+start/stop/play snap to the *nearest* cycle boundary (loops are a whole number of
+cycles long), recorded note-ons within a *fixed 50 ms* of a boundary snap onto it
+(offs are left as played; the window is fixed because it models human timing
+precision, not a musical interval), and one transport button strobes the cycle --
+lit for the first =clock_duty= of it (default 0.1; a brief pulse reads better than a
+50/50 blink, the eye being coarser in time than the ear), the dark->light edge on
+the boundary: *stop* idle, *start* recording, *play* sounding -- the other two dim.

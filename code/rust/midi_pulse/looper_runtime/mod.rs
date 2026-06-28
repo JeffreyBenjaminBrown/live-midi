@@ -97,8 +97,8 @@ fn print_inventory(config: &Config) {
   }
   if let Some(looper) = &config.looper {
     println!(
-      "  [looper] quantize_record_ms={} cluster_display_ms={} flash_ms={} remap_center={:?}",
-      looper.quantize_record_ms, looper.cluster_display_ms, looper.flash_ms, looper.remap_center,
+      "  [looper] clock_bpm={} clock_duty={} cluster_display_ms={} flash_ms={} remap_center={:?}",
+      looper.clock_bpm, looper.clock_duty, looper.cluster_display_ms, looper.flash_ms, looper.remap_center,
     );
   }
 }
@@ -135,7 +135,8 @@ struct Settings {
   attack: f32,
   release: f32,
   flash_ms: u64,
-  quantize: Duration,
+  clock_period: Duration,
+  clock_duty: f64,
   cluster: Duration,
   am_shape_family: AmShapeFamily,
   /// The timbre editor on the edo monome (C3b, occludes the edo grid) and the
@@ -308,7 +309,9 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     attack: *attack_secs,
     release: *release_secs,
     flash_ms: looper.flash_ms,
-    quantize: Duration::from_millis(looper.quantize_record_ms),
+    // One beat = one cycle: period (ns) = 60_000_000_000 / bpm. 300 bpm -> 200 ms.
+    clock_period: Duration::from_nanos((60_000_000_000.0 / looper.clock_bpm) as u64),
+    clock_duty: looper.clock_duty,
     cluster: Duration::from_millis(looper.cluster_display_ms),
     am_shape_family,
     timbre_editor,
@@ -387,7 +390,7 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       loop_copy: s.loop_copy,
       loop_undo: s.loop_undo,
       remap_center: s.remap_center,
-      quantize: s.quantize,
+      clock_period: s.clock_period,
       cluster: s.cluster,
       timbre_editor: s.timbre_editor,
       save_undo_window: s.save_undo_window, // from the loop editor's save_undo_double_ms
@@ -400,6 +403,8 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   let epoch = Instant::now();
   let grid_w = s.grid_w;
   let flash_ms = s.flash_ms;
+  let clock_period = s.clock_period;
+  let clock_duty = s.clock_duty;
   let (edo_prefix, loops_prefix) = (s.edo_prefix.clone(), s.loops_prefix.clone());
   let (edo_listen, loops_listen) = (s.edo_listen_port, s.loops_listen_port);
   let st_edo = Arc::clone(&looper_state);
@@ -407,10 +412,10 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   let st_play = Arc::clone(&looper_state);
 
   let edo_thread = thread::spawn(move || {
-    grid_thread(Grid::Edo, edo_sock, edo_prefix, edo_listen, edo_dev_id, edo_dev_port, grid_w, flash_ms, epoch, st_edo);
+    grid_thread(Grid::Edo, edo_sock, edo_prefix, edo_listen, edo_dev_id, edo_dev_port, grid_w, flash_ms, clock_period, clock_duty, epoch, st_edo);
   });
   let loops_thread = thread::spawn(move || {
-    grid_thread(Grid::Loops, loops_sock, loops_prefix, loops_listen, loops_dev_id, loops_dev_port, grid_w, flash_ms, epoch, st_loops);
+    grid_thread(Grid::Loops, loops_sock, loops_prefix, loops_listen, loops_dev_id, loops_dev_port, grid_w, flash_ms, clock_period, clock_duty, epoch, st_loops);
   });
   let playback = thread::spawn(move || playback_thread(epoch, st_play));
 
@@ -466,6 +471,8 @@ fn grid_thread(
   mut device_port: u16,
   grid_w: i32,
   flash_ms: u64,
+  clock_period: Duration,
+  clock_duty: f64,
   epoch: Instant,
   state: Arc<Mutex<LooperState>>,
 ) {
@@ -545,11 +552,19 @@ fn grid_thread(
     // 2. Repaint every iteration: picks up state changes from any thread plus the
     // flash phase for the loops grid. send_diffs only sends cells that changed.
     let flash_on = (epoch.elapsed().as_millis() / u128::from(flash_ms.max(1))) % 2 == 0;
+    // The metronome: a brief flash on each cycle boundary -- lit for the first
+    // `clock_duty` of the cycle (default 0.1), dark for the rest. A short pulse reads
+    // far more clearly than a 50/50 blink: the eye's temporal resolution is much
+    // coarser than the ear's, so a strobe-like tick is easier to lock onto. The
+    // dark->light edge still lands exactly on a boundary (a multiple of period).
+    let period = clock_period.as_nanos().max(1);
+    let on_for = (period as f64 * clock_duty) as u128;
+    let clock_on = epoch.elapsed().as_nanos() % period < on_for;
     let levels = {
       let st = state.lock().unwrap_or_else(|e| e.into_inner());
       match role {
         Grid::Edo => st.edo_levels(flash_on),
-        Grid::Loops => st.loops_levels(flash_on),
+        Grid::Loops => st.loops_levels(flash_on, clock_on),
       }
     };
     send_diffs(&sock, device, &prefix, grid_w, &levels, &mut last);

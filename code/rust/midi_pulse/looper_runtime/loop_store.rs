@@ -50,11 +50,24 @@ pub struct LoopSlot {
   pub prev_committed: Option<Vec<LoopEvent>>,
 }
 
+/// The snap window for record-time quantization: a recorded note-on this close to a
+/// metronome boundary is treated as if it landed on the beat. This is deliberately
+/// *fixed*, not derived from the tempo: it models how precisely a human can place a
+/// note by ear (~100 ms is realistic, so half that is a sane "close enough"), which
+/// is a neurological constant, not a musical one -- it should not shrink just because
+/// the clock is faster. (We can only adjust the recording after the fact; the live
+/// note already sounded when it was played -- snapping that would need time travel.)
+const QUANTIZE_WINDOW: Duration = Duration::from_millis(50);
+
 /// Turn raw recorded events + the chosen loop length into the finalized loop.
 ///
-/// - *Boundary quantize*: an event within `quantize` of either boundary snaps to
-///   the next-pass start (`Duration::ZERO`) -- never to `== duration`, which the
-///   playhead would never reach.
+/// - *Grid quantize*: a note-on within `QUANTIZE_WINDOW` of a metronome boundary (a
+///   multiple of `period`) snaps onto that boundary. The recording started on a
+///   boundary (the transport snaps presses, so `duration` is a whole number of
+///   cycles), hence the loop start and end are boundaries too; a note-on snapping
+///   onto the closing boundary wraps to the next-pass start (`Duration::ZERO`) --
+///   never `== duration`, which the playhead would never reach. Note-offs are left
+///   as played ("quantized to have *started* at the boundary").
 /// - *Strip ambient notes*: a note-off with no preceding note-on within the loop
 ///   is a release of a note held from before recording; drop it. (A note still
 ///   held at the *end* keeps its on and no off -- playback's wrap release cuts it
@@ -62,13 +75,19 @@ pub struct LoopSlot {
 pub fn finalize_recording(
   mut raw: Vec<LoopEvent>,
   duration: Duration,
-  quantize: Duration,
+  period: Duration,
 ) -> Vec<LoopEvent> {
-  for event in &mut raw {
-    let near_end = event.elapsed + quantize >= duration;
-    let near_start = event.elapsed <= quantize;
-    if near_end || near_start {
-      event.elapsed = Duration::ZERO;
+  let p = period.as_nanos();
+  if p > 0 {
+    let window = QUANTIZE_WINDOW.as_nanos();
+    let dur = duration.as_nanos();
+    for event in raw.iter_mut().filter(|e| e.on) {
+      let e = event.elapsed.as_nanos();
+      let snapped = ((e + p / 2) / p) * p; // nearest multiple of the period
+      if snapped.abs_diff(e) <= window {
+        let snapped = if snapped >= dur { 0 } else { snapped };
+        event.elapsed = Duration::from_nanos(snapped as u64);
+      }
     }
   }
   // Offs before ons at the same instant, so a release+repress at a boundary nets
@@ -184,17 +203,17 @@ pub struct LoopStore {
   pub slots: Vec<LoopSlot>,
   pub active: usize,
   pub sounding: Option<usize>,
-  quantize: Duration,
+  clock_period: Duration,
   recording: Option<Recording>,
 }
 
 impl LoopStore {
-  pub fn new(n_slots: usize, quantize: Duration) -> Self {
+  pub fn new(n_slots: usize, clock_period: Duration) -> Self {
     LoopStore {
       slots: vec![LoopSlot::default(); n_slots.max(1)],
       active: 0,
       sounding: None,
-      quantize,
+      clock_period,
       recording: None,
     }
   }
@@ -266,7 +285,7 @@ impl LoopStore {
       return None;
     }
     self.slots[rec.slot].loop_duration = Some(duration);
-    let finalized = finalize_recording(rec.buffer, duration, self.quantize);
+    let finalized = finalize_recording(rec.buffer, duration, self.clock_period);
     // "save 0": the checkpoints start at the as-recorded timbres.
     self.slots[rec.slot].committed = finalized.clone();
     self.slots[rec.slot].prev_committed = None;
@@ -286,19 +305,39 @@ mod tests {
   #[test]
   fn finalize_keeps_a_clean_pair() {
     let raw = vec![LoopEvent::on(ms(100), 30), LoopEvent::off(ms(400), 30)];
-    let out = finalize_recording(raw, ms(1000), ms(70));
+    let out = finalize_recording(raw, ms(1000), ms(200));
     assert_eq!(out.len(), 2);
     assert!(out[0].on && !out[1].on);
   }
 
   #[test]
-  fn finalize_quantizes_a_late_onset_to_the_next_pass_start() {
-    // A note-on 50 ms before the 1000 ms boundary (within the 70 ms window)
-    // snaps to elapsed 0, not to == duration (which would never play).
-    let raw = vec![LoopEvent::on(ms(950), 42), LoopEvent::off(ms(990), 42)];
-    let out = finalize_recording(raw, ms(1000), ms(70));
-    assert!(out.iter().all(|e| e.elapsed == Duration::ZERO));
+  fn finalize_snaps_near_boundary_onsets_onto_the_grid() {
+    // Fixed 50 ms window, 200 ms cycle. A note-on 5 ms before the 1000 ms close (a
+    // boundary) snaps onto it, which wraps to the next-pass start (0), never
+    // == duration. An interior onset 40 ms past the 600 ms boundary snaps back to it
+    // (it would NOT under the old tempo-derived window). The note-off is left alone.
+    let raw = vec![
+      LoopEvent::on(ms(995), 42),
+      LoopEvent::off(ms(998), 42),
+      LoopEvent::on(ms(640), 50),
+    ];
+    let out = finalize_recording(raw, ms(1000), ms(200));
+    let on42 = out.iter().find(|e| e.pitch == 42 && e.on).unwrap();
+    assert_eq!(on42.elapsed, Duration::ZERO, "closing-boundary onset wraps to 0");
+    let on50 = out.iter().find(|e| e.pitch == 50 && e.on).unwrap();
+    assert_eq!(on50.elapsed, ms(600), "interior onset snaps onto the boundary");
+    let off42 = out.iter().find(|e| e.pitch == 42 && !e.on).unwrap();
+    assert_eq!(off42.elapsed, ms(998), "the off is left as played");
     assert!(out.iter().all(|e| e.elapsed < ms(1000)));
+  }
+
+  #[test]
+  fn finalize_leaves_an_off_grid_onset_alone() {
+    // 100 ms is 100 ms from either neighbouring boundary (0 / 200), outside the
+    // 50 ms window: unmoved.
+    let raw = vec![LoopEvent::on(ms(100), 30), LoopEvent::off(ms(400), 30)];
+    let out = finalize_recording(raw, ms(1000), ms(200));
+    assert_eq!(out[0].elapsed, ms(100));
   }
 
   #[test]
@@ -310,7 +349,7 @@ mod tests {
       LoopEvent::on(ms(300), 9),
       LoopEvent::off(ms(500), 9),
     ];
-    let out = finalize_recording(raw, ms(1000), ms(70));
+    let out = finalize_recording(raw, ms(1000), ms(200));
     assert_eq!(out.len(), 2);
     assert!(out.iter().all(|e| e.pitch == 9));
   }
@@ -319,7 +358,7 @@ mod tests {
   fn finalize_leaves_a_held_at_end_note_as_an_unpaired_on() {
     // on with no off before the boundary: kept as on-only; playback wrap cuts it.
     let raw = vec![LoopEvent::on(ms(800), 12)];
-    let out = finalize_recording(raw, ms(1000), ms(70));
+    let out = finalize_recording(raw, ms(1000), ms(200));
     assert_eq!(out.len(), 1);
     assert!(out[0].on);
   }
@@ -359,7 +398,7 @@ mod tests {
   // ---- transport (LoopStore) ----
 
   fn store() -> LoopStore {
-    LoopStore::new(16, ms(70))
+    LoopStore::new(16, ms(200)) // 300 bpm cycle
   }
 
   #[test]

@@ -43,7 +43,7 @@ oversample = 4
 family = "sin_to_square"
 
 [looper]
-quantize_record_ms = 70
+clock_bpm = 300
 cluster_display_ms = 100
 flash_ms = 50
 remap_center = [7, 7]

@@ -31,7 +31,8 @@ accretion_level = 0.5
 
 # Looper-wide scalars (all ms unless noted).
 [looper]
-quantize_record_ms = 70   # events within this of the loop boundary snap to it
+clock_bpm = 300           # metronome (4*75): transport snaps to the 200ms cycle; note-ons within a fixed 50ms snap
+clock_duty = 0.1          # fraction of each cycle the flashing transport button stays lit (a brief strobe)
 cluster_display_ms = 100  # notes within this of each other = one display column
 flash_ms = 50             # reflection / equivalent flash half-period (50 on / 50 off)
 remap_center = [7, 7]     # edo-grid cell meaning "unison" in group-transpose remap
