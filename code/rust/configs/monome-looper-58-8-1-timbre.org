@@ -213,7 +213,7 @@ once here, config-wide (6_plan 2.5); =tri_to_square= is the other option.
 | ~clock_bpm~          |   240 | metronome rate (one beat = one cycle); see below       |
 | ~clock_duty~         |   0.1 | fraction of each cycle the flashing button stays lit   |
 | ~cluster_display_ms~ |   100 | note-ons within this of each other = one column        |
-| ~flash_ms~           |    50 | sounding-slot / undo flash half-period (NOT the clock) |
+| ~flash_ms~           |    50 | sounding-slot flash half-period (NOT the clock)        |
 | ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap        |
 
 The *metronome* (=clock_bpm=, 300 = 4x75 -> a 200 ms cycle) is a free-running clock
