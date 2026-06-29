@@ -199,13 +199,29 @@ impl RectSpecConfig {
   }
 }
 
+fn default_clock_bpm() -> f64 {
+  300.0
+}
+
+fn default_clock_duty() -> f64 {
+  0.1
+}
+
 /// Looper-wide scalars (see the loop windows below). All durations in
 /// milliseconds. Present iff the config declares the looper windows.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LooperConfig {
-  /// Events within this of a loop boundary snap to it (to the next pass start).
-  pub quantize_record_ms: u64,
+  /// The metronome clock, in beats per minute (one beat = one cycle). The transport
+  /// snaps presses to the nearest cycle boundary, recorded note-ons within a fixed
+  /// 50 ms of a boundary snap onto it, and one transport button flashes at this rate.
+  #[serde(default = "default_clock_bpm")]
+  pub clock_bpm: f64,
+  /// The fraction of each metronome cycle the flashing transport button stays lit
+  /// (0..1], measured from the boundary. Small values strobe (the eye is coarser in
+  /// time than the ear, so a brief pulse reads more clearly than a 50/50 blink).
+  #[serde(default = "default_clock_duty")]
+  pub clock_duty: f64,
   /// Note-ons within this of each other display as one column of the loop.
   pub cluster_display_ms: u64,
   /// Reflection / octave-equivalent flash half-period (on for this, off for this).
@@ -1033,9 +1049,15 @@ fn validate_looper(config: &Config) -> Result<(), String> {
     ));
   }
 
+  if !(looper.clock_bpm > 0.0) {
+    return Err("looper clock_bpm must be positive".to_string());
+  }
+  if !(looper.clock_duty > 0.0 && looper.clock_duty <= 1.0) {
+    return Err("looper clock_duty must be in (0, 1]".to_string());
+  }
+
   // The looper scalars must be positive.
   for (name, value) in [
-    ("quantize_record_ms", looper.quantize_record_ms),
     ("cluster_display_ms", looper.cluster_display_ms),
     ("flash_ms", looper.flash_ms),
   ] {
@@ -1737,7 +1759,7 @@ accretion_level = 0.5
 
 "#;
   const LOOPER_TABLE: &str = r#"[looper]
-quantize_record_ms = 70
+clock_bpm = 300
 cluster_display_ms = 100
 flash_ms = 50
 remap_center = [7, 7]
@@ -1810,6 +1832,13 @@ rect = [0, 5, 15, 15]
   #[test]
   fn looper_config_is_valid() {
     parse_config(&valid_looper_toml()).expect("a complete looper config should be valid");
+  }
+
+  #[test]
+  fn clock_duty_must_be_in_range() {
+    let err = parse_config(&valid_looper_toml().replace("clock_bpm = 300", "clock_bpm = 300\nclock_duty = 1.5"))
+      .expect_err("a clock_duty above 1 should fail");
+    assert!(err.contains("clock_duty"), "{err}");
   }
 
   #[test]

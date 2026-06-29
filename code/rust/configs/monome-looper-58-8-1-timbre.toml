@@ -1,3 +1,4 @@
+
 version = 1
 id = "monome-looper-58-8-1-timbre"
 title = "Monome Looper 58 8 1 (timbre)"
@@ -48,7 +49,8 @@ oversample = 4
 family = "sin_to_square"
 
 [looper]
-quantize_record_ms = 70
+clock_bpm = 120
+clock_duty = 0.1
 cluster_display_ms = 100
 flash_ms = 50
 remap_center = [7, 7]

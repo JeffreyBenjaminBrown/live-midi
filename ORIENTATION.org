@@ -68,3 +68,6 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
 - Claude's persistent memory index: =~/.claude/projects/-home-ubuntu/memory/MEMORY.md=.
+* also possibly relevant files
+- README.org
+- code/rust/configs/README.org

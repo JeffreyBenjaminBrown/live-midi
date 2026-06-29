@@ -1,9 +1,26 @@
 * lately using [[./code/rust/configs/README.org]]
+* shift one row of the loop in time
+* vision
+** There's no difference between a chord and a loop.
+A chord is a loop during which the notes don't change.
+** The column-picker buttons can be chords.
+And the row-pickers are good for transposing individual notes in a melody.
+** Can couple and decouple timbre to pitch.
+** work cycle
+Grow an environment (set of loops, set of timbres).
+Play them.
+Loop them together in a long polyrhythm, call that a stream,
+set some decay processes upon it while growing a new environment.
+** interface
+Record some loops (melodies). Put one on repeat. Silently, while it is playing back,
+slightly edit the pitches of it into another loop slot.
+Do that a few times, then sequence those, with overdub.
 * super-want
-** open questions
+** open question : interactions
 Control which voices get which treatment.
 *** play timbres, chords
 Each timbre applies to chords initiated while it is held.
+*** record sequence of chord slots
 *** stack multiple AM, FM patterns on the same voice(s)
 ** picture
 *** empty grid
@@ -55,7 +72,7 @@ To *set* it to 15/8, do the same but end with set-mul instead of apply-mul.
 sine, tri, square, saw, random
 Random: white noise through a low pass filter.
 Random is omitted sometimes.
-** FM
+** FM : 4x5
 *** modulator's frequency : fraction UI
 Scaled to the carrier's.
 Fraction UI.
@@ -64,13 +81,17 @@ Measured in Hz.
 Drives the carrier backward if negative.
 Defaults to half the carrier's frequency.
 Controlled with a fraction interface.
-** AM
+** AM : 3x5
 *** depth control : 1x5
 0 1/2 3/4 7/8 1 seems like enough. 1=off (no variation)
 Depth is its minimum absolute value of the waveform's amplitude before other effects.
 The maximum (before other effects) is always 1.
 *** freq control : fraction UI
-** distortion
+** 2 envelope params
+**** time initially ramping up from 0 to full volume
+0, 100 ms, 1s
+**** time afterward ramping down from full volume to 0
+** distortion: 2x5
 Many voices to one.
 Two numeric controls:
   scale : (1/4,1/2,1,2,4)
@@ -92,6 +113,15 @@ after the accrete button is pressed
 *** both 'accrete' and 'clear' can be armed simultaneously
 This way, whatever was there is overwritten by whatever is being played.
 *** display chord under button without sounding
+** loop recording
+*** transport
+**** start record
+**** stop recording
+**** play
+*** some loop slots
+** remap notes
+*** can apply to loop or to chords
+*** can be per-note or parallel shift
 ** later if at all
 *** maybe turn off visual echo of fingered notes to other octaves
 so that what the loop plays is easily visible

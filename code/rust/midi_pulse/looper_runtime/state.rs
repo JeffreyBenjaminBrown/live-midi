@@ -51,7 +51,7 @@ pub struct LooperParams {
   pub loop_copy: (i32, i32),
   pub loop_undo: (i32, i32),
   pub remap_center: (i32, i32),
-  pub quantize: Duration,
+  pub clock_period: Duration,
   pub cluster: Duration,
   /// The timbre editor occluding the edo grid (C3b), if configured.
   pub timbre_editor: Option<TimbreEditor>,
@@ -89,6 +89,10 @@ pub struct LooperState {
   loop_undo: (i32, i32),
   remap_center: (i32, i32),
   cluster: Duration,
+  /// The metronome cycle. Transport presses snap to the nearest multiple of this
+  /// (measured from the epoch); recorded note-ons snap onto the same grid; one
+  /// transport button flashes at this rate. 300 bpm (4*75) -> 200 ms.
+  clock_period: Duration,
 
   register: i32,
   down: HashMap<(i32, i32), i32>,
@@ -246,9 +250,10 @@ impl LooperState {
       loop_undo: p.loop_undo,
       remap_center: p.remap_center,
       cluster: p.cluster,
+      clock_period: p.clock_period,
       register: 0,
       down: HashMap::new(),
-      loops: LoopStore::new(n_slots, p.quantize),
+      loops: LoopStore::new(n_slots, p.clock_period),
       playing: None,
       group_transpose: false,
       remap: None,
@@ -747,18 +752,17 @@ impl LooperState {
       self.copy_from = None;
       return true;
     }
-    if (x, y) == self.loop_start {
-      self.loops.start_recording(now);
-      self.reconcile_playback(now);
-      return true;
-    }
-    if (x, y) == self.loop_stop {
-      self.loops.stop(now);
-      self.reconcile_playback(now);
-      return true;
-    }
-    if (x, y) == self.loop_play {
-      self.loops.play(now);
+    if (x, y) == self.loop_start || (x, y) == self.loop_stop || (x, y) == self.loop_play {
+      // The transport takes effect on the nearest metronome boundary, so loops
+      // always start and end on a beat (their length is a whole number of cycles).
+      let now = self.snap_to_clock(now);
+      if (x, y) == self.loop_start {
+        self.loops.start_recording(now);
+      } else if (x, y) == self.loop_stop {
+        self.loops.stop(now);
+      } else {
+        self.loops.play(now);
+      }
       self.reconcile_playback(now);
       return true;
     }
@@ -1027,6 +1031,19 @@ impl LooperState {
     self.loop_display_held = self.lowest_sounding_loop_timbre().or(self.loop_display_held);
   }
 
+  /// Round an epoch time to the nearest metronome boundary (a multiple of
+  /// `clock_period`). The cycle is free-running from the epoch, so this is the same
+  /// grid the flashing transport button and the record-time note-on snap use.
+  fn snap_to_clock(&self, now: Duration) -> Duration {
+    let p = self.clock_period.as_nanos();
+    if p == 0 {
+      return now;
+    }
+    let n = now.as_nanos();
+    let snapped = ((n + p / 2) / p) * p;
+    Duration::from_nanos(snapped.min(u128::from(u64::MAX)) as u64)
+  }
+
   /// After a transport op changes which slot sounds, release the outgoing slot's
   /// notes and (re)arm the playhead for the new one.
   fn reconcile_playback(&mut self, now: Duration) {
@@ -1047,10 +1064,12 @@ impl LooperState {
   }
 
   /// Loops-grid LEDs: active solid > sounding(non-active) flash > recorded dim >
-  /// empty dark. The transport cells show dim so they are findable. The copy
-  /// button is solid while a copy is armed (dim otherwise); the remap-mode toggle
-  /// is solid in fine mode (dim in group transpose); undo always flashes.
-  pub fn loops_levels(&self, flash_on: bool) -> Vec<i32> {
+  /// empty dark. The state-relevant transport cell flashes on the metronome
+  /// (`clock_on`) -- record while recording, play while a loop sounds, else stop --
+  /// the other two show dim so they stay findable. The copy button is solid while a
+  /// copy is armed (dim otherwise); the remap-mode toggle is solid in fine mode (dim
+  /// in group transpose); undo always flashes.
+  pub fn loops_levels(&self, flash_on: bool, clock_on: bool) -> Vec<i32> {
     let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
     let [x0, y0, x1, y1] = self.loop_slots_rect;
     let width = (x1 - x0 + 1).max(1);
@@ -1063,7 +1082,7 @@ impl LooperState {
         || (cx, cy) == self.loop_stop
         || (cx, cy) == self.loop_play
       {
-        LEVEL_DIM
+        self.transport_level((cx, cy), clock_on)
       } else {
         self.slot_level(slot, flash_on)
       };
@@ -1148,6 +1167,28 @@ impl LooperState {
     }
   }
 
+  /// The level for a transport cell. The one that reflects the current activity --
+  /// record while recording, play while a loop sounds, stop when idle -- flashes
+  /// full/off on the metronome (`clock_on`); the other two stay dim and findable.
+  fn transport_level(&self, cell: (i32, i32), clock_on: bool) -> i32 {
+    let flasher = if self.loops.is_recording() {
+      self.loop_start
+    } else if self.loops.sounding.is_some() {
+      self.loop_play
+    } else {
+      self.loop_stop
+    };
+    if cell == flasher {
+      if clock_on {
+        LEVEL_FULL
+      } else {
+        LEVEL_OFF
+      }
+    } else {
+      LEVEL_DIM
+    }
+  }
+
   fn slot_at(&self, x: i32, y: i32) -> Option<usize> {
     let [x0, y0, x1, y1] = self.loop_slots_rect;
     if x < x0 || x > x1 || y < y0 || y > y1 {
@@ -1209,7 +1250,7 @@ mod tests {
       loop_copy: (5, 1),
       loop_undo: (5, 2),
       remap_center: (7, 7),
-      quantize: ms(70),
+      clock_period: ms(200),
       cluster: ms(100),
       timbre_editor: None,
       save_undo_window: ms(200),
@@ -1372,7 +1413,7 @@ mod tests {
     let one = |slot: i32| (slot % 4, slot / 4);
     let (ax, ay) = one(1);
     s.loops_key(ax, ay, true, ms(600)); // slot 1 active
-    let levels = s.loops_levels(true);
+    let levels = s.loops_levels(true, true);
     assert_eq!(level_at(&levels, ax, ay), LEVEL_FULL, "active slot solid");
     // slot 0's cell is (0,0) but that's overlaid by... no, (0,0) is a slot, (0,3)
     // is the transport. slot 0 cell = (0,0).
@@ -1389,7 +1430,7 @@ mod tests {
     s.edo_key(0, 0, true, ms(10));
     s.edo_key(0, 0, false, ms(200));
     s.loops_key(1, 3, true, ms(1000)); // stop -> stored in slot 0 (active)
-    let levels = s.loops_levels(false);
+    let levels = s.loops_levels(false, false);
     // Display rect [0,5,15,15]: row pickers at x=0 (y>=6), column pickers at y=5
     // (x>=1), one note -> one lit cell in the main area (bottom row, first col).
     assert_eq!(level_at(&levels, 0, 6), LEVEL_DIM, "row-picker column is findable");
@@ -1398,6 +1439,45 @@ mod tests {
     // The single note is the lowest pitch (row 0 -> bottom y=15) at the first
     // column (x=1).
     assert_eq!(level_at(&levels, 1, 15), LEVEL_FULL, "the loop's note");
+  }
+
+  #[test]
+  fn transport_snaps_the_loop_length_to_whole_cycles() {
+    // The fixture clock is 200 ms. Pressing start at 290 ms snaps to the 200 ms
+    // boundary; stop at 1310 ms snaps to 1400; the stored loop is 1200 ms = 6 cycles.
+    let mut s = state();
+    s.loops_key(0, 3, true, ms(290)); // start -> 200
+    s.edo_key(0, 0, true, ms(400));
+    s.edo_key(0, 0, false, ms(900));
+    s.loops_key(1, 3, true, ms(1310)); // stop -> 1400
+    assert_eq!(s.loops.slots[0].loop_duration, Some(ms(1200)));
+  }
+
+  #[test]
+  fn the_state_relevant_transport_button_flashes_on_the_clock() {
+    let mut s = state(); // loop_start (0,3) loop_stop (1,3) loop_play (2,3)
+    let lit = |s: &LooperState, cell: (i32, i32)| level_at(&s.loops_levels(true, true), cell.0, cell.1);
+    let dark = |s: &LooperState, cell: (i32, i32)| level_at(&s.loops_levels(true, false), cell.0, cell.1);
+
+    // Idle: stop flashes (full on the lit phase, off on the dark phase); the other
+    // two stay dim and findable.
+    assert_eq!(lit(&s, (1, 3)), LEVEL_FULL, "idle: stop lit on the beat");
+    assert_eq!(dark(&s, (1, 3)), LEVEL_OFF, "idle: stop dark off the beat");
+    assert_eq!(lit(&s, (0, 3)), LEVEL_DIM, "idle: record dim");
+    assert_eq!(lit(&s, (2, 3)), LEVEL_DIM, "idle: play dim");
+
+    // Recording: record flashes, stop falls back to dim.
+    s.loops_key(0, 3, true, ms(0));
+    assert_eq!(lit(&s, (0, 3)), LEVEL_FULL, "recording: record lit");
+    assert_eq!(dark(&s, (0, 3)), LEVEL_OFF, "recording: record dark off-beat");
+    assert_eq!(lit(&s, (1, 3)), LEVEL_DIM, "recording: stop dim");
+
+    // Playing: play flashes.
+    s.edo_key(0, 0, true, ms(10));
+    s.loops_key(2, 3, true, ms(1000)); // play -> the slot sounds
+    assert_eq!(lit(&s, (2, 3)), LEVEL_FULL, "playing: play lit");
+    assert_eq!(dark(&s, (2, 3)), LEVEL_OFF, "playing: play dark off-beat");
+    assert_eq!(lit(&s, (1, 3)), LEVEL_DIM, "playing: stop dim");
   }
 
   #[test]
@@ -1436,40 +1516,40 @@ mod tests {
   #[test]
   fn the_undo_button_flashes() {
     let s = state(); // loop_undo is (5,2) in the test geometry.
-    assert_eq!(level_at(&s.loops_levels(true), 5, 2), LEVEL_FULL);
-    assert_eq!(level_at(&s.loops_levels(false), 5, 2), LEVEL_OFF);
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 2), LEVEL_FULL);
+    assert_eq!(level_at(&s.loops_levels(false, false), 5, 2), LEVEL_OFF);
   }
 
   #[test]
   fn the_fine_toggle_starts_lit_and_dims_in_group_transpose() {
     let mut s = state(); // loop_toggle is (5,0) in the test geometry.
     // Fine is the default, so the toggle starts lit (solid).
-    assert_eq!(level_at(&s.loops_levels(true), 5, 0), LEVEL_FULL, "fine starts lit");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 0), LEVEL_FULL, "fine starts lit");
     // Toggle to group transpose -> dim (still findable).
     s.loops_key(5, 0, true, ms(0));
-    assert_eq!(level_at(&s.loops_levels(true), 5, 0), LEVEL_DIM, "group transpose dims it");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 0), LEVEL_DIM, "group transpose dims it");
     // Toggle back to fine -> lit again.
     s.loops_key(5, 0, true, ms(10));
-    assert_eq!(level_at(&s.loops_levels(true), 5, 0), LEVEL_FULL, "back to fine, lit");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 0), LEVEL_FULL, "back to fine, lit");
   }
 
   #[test]
   fn the_copy_button_lights_while_armed_and_a_re_press_cancels() {
     let mut s = state(); // loop_copy is (5,1) in the test geometry.
     // Idle: dim and findable.
-    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_DIM, "idle copy dim");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 1), LEVEL_DIM, "idle copy dim");
     // Arm copy -> solid.
     s.loops_key(5, 1, true, ms(0));
-    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_FULL, "armed copy solid");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 1), LEVEL_FULL, "armed copy solid");
     // Pick a 'from' slot (slot 0): still mid-gesture (awaiting 'to') -> still solid.
     s.loops_key(0, 0, true, ms(10));
     assert_eq!(s.copy_from, Some(0), "origin picked");
-    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_FULL, "from picked, still solid");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 1), LEVEL_FULL, "from picked, still solid");
     // Press copy again -> cancels and forgets the picked origin -> dim again.
     s.loops_key(5, 1, true, ms(20));
     assert_eq!(s.copy_from, None, "origin forgotten");
     assert!(!s.copy_arming, "disarmed");
-    assert_eq!(level_at(&s.loops_levels(true), 5, 1), LEVEL_DIM, "re-press cancels");
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 1), LEVEL_DIM, "re-press cancels");
   }
 
   #[test]
@@ -2009,7 +2089,7 @@ mod tests {
   #[test]
   fn loops_editor_occludes_its_rect_on_the_loops_grid() {
     let s = state_with_loops_editor(); // folded
-    let levels = s.loops_levels(true);
+    let levels = s.loops_levels(true, true);
     assert_eq!(level_at(&levels, 0, 0), LEVEL_MID, "fold cell findable on the loops grid");
   }
 }

@@ -1,25 +1,21 @@
 #+title: Monome Looper 58 8 1 (timbre)
 * in a nutshell
-WARNING: I changed the names here slightly from the verbose section Claude wrote,
+** WARNING: Names between sections don't correspond completely.
+I changed the names here slightly from the verbose section Claude wrote,
 without similarly changing them there.
 ** overview
 One monome is mostly an edo grid.
 The other is mostly loops.
-But both have timbre controls -- compact initially, unfoldable --
+Both have timbre controls -- compact initially, unfoldable --
 that affect the *other* monome.
 ** grid 1 -- "edo" (prefix /looper-edo): play + loop-timbre editor
 *** legend
-< ^ v > : cell shift
-A :: arm
-F :: fold timbre controls
-M :: AM/FM value rows
-O :: octave shift
-S :: sustain
-U :: save-undo
-a :: amplitude row
-g :: 58-EDO play cell
-t :: timbre slot
-w :: waveform : sine, tri, square, saw
+| < ^ v > : cell shift      | S :: sustain                           |
+| A :: arm to save timbre   | U :: save-undo                         |
+| F :: fold timbre controls | a :: amplitude row                     |
+| M :: AM/FM value rows     | g :: 58-EDO play cell                  |
+| O :: octave shift         | t :: timbre slot                       |
+|                           | w :: waveform : sine, tri, square, saw |
 *** the edo grid monome
   FOLDED (resting):                    UNFOLDED (momentary):
        0123456789012345                     0123456789012345
@@ -42,18 +38,13 @@ can't just occlude them. So the live editor sits on top and the looper stack
 the whole stack *up by 6* (=EDITOR_ROWS - 1=). The loop display's top moves with
 the stack; its bottom stays pinned to row 15, so it *grows* when folded.
 *** legend
-A :: arm saving of timbre to slot
-D :: loop display (top row=column pickers, left col=row pickers, corner)
-F :: fold timbre controls
-R :: start S :: stop P :: play
-S :: sustain, INERT
-U :: save-undo, INERT
-c :: copy
-m :: remap-mode
-s :: loop slot
-t :: timbre slot
-u :: remap-undo
-w :: waveform : sine, tri, square, saw
+| A :: arm to save timbre                  |                                        |
+| D :: loop display: top row picks columns | c :: copy                              |
+| .                  left col picks rows   | m :: remap-mode                        |
+| F :: fold timbre controls                | s :: loop slot                         |
+| R :: start S :: stop P :: play           | t :: timbre slot                       |
+| S :: sustain, INERT                      | u :: remap-undo                        |
+| U :: save-undo, INERT                    | w :: waveform : sine, tri, square, saw |
 *** picture
   FOLDED (resting):                    UNFOLDED (momentary):
        0123456789012345                     0123456789012345
@@ -69,7 +60,7 @@ w :: waveform : sine, tri, square, saw
                                        9   DDDDDDDDDDDDDDDD   loop display
                                        .   ................   (rows 9-15)
                                       15   DDDDDDDDDDDDDDDD
-** TODO What's up with inert controls?
+* TODO What's up with inert controls?
 (* The live editor is =target = "live"=, so its *sustain* (x6) and *save-undo* (x7)
 cells are inert -- shown blank above. Its *arm* (x5) and slot cells (x8..15) work.)
 * verbose
@@ -217,12 +208,28 @@ once here, config-wide (6_plan 2.5); =tri_to_square= is the other option.
 
 **** =[looper]= -- the looper scalars
 
-| key                  | value | meaning                                            |
-|----------------------+-------+----------------------------------------------------|
-| ~quantize_record_ms~ |    70 | events within this of the loop boundary snap to it |
-| ~cluster_display_ms~ |   100 | note-ons within this of each other = one column    |
-| ~flash_ms~           |    50 | flash half-period (sounding slot, undo)            |
-| ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap    |
+| key                  | value | meaning                                                |
+|----------------------+-------+--------------------------------------------------------|
+| ~clock_bpm~          |   240 | metronome rate (one beat = one cycle); see below       |
+| ~clock_duty~         |   0.1 | fraction of each cycle the flashing button stays lit   |
+| ~cluster_display_ms~ |   100 | note-ons within this of each other = one column        |
+| ~flash_ms~           |    50 | sounding-slot / undo flash half-period (NOT the clock) |
+| ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap        |
+
+The *metronome* (=clock_bpm=, 300 = 4x75 -> a 200 ms cycle) is a free-running clock
+from program start. It drives three things on the loops grid:
+- *transport sync* :: pressing start/stop/play takes effect on the *nearest* cycle
+  boundary, so every loop starts and ends on a beat -- its length is a whole number
+  of cycles.
+- *record quantize* :: a note-on within a *fixed 50 ms* of a boundary is recorded as
+  if it started exactly on that boundary (note-offs are left as played). The window
+  is fixed (not tempo-derived): it models human timing precision -- a neurological
+  constant -- not a musical interval, so it does not shrink as the clock speeds up.
+- *transport flash* :: one transport button strobes the cycle -- lit for the first
+  =clock_duty= of it (default 0.1 = 10%), dark the rest, the dark->light edge on the
+  boundary. A short pulse reads better than a 50/50 blink (the eye is coarser in time
+  than the ear); shrink =clock_duty= for a tighter strobe. The lit button is *stop*
+  when idle, *start* while recording, *play* while a loop sounds; the other two dim.
 
 **** =[[monomes]]= -- the two grids
 
