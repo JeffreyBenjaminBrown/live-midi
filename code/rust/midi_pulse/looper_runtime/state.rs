@@ -1068,7 +1068,8 @@ impl LooperState {
   /// (`clock_on`) -- record while recording, play while a loop sounds, else stop --
   /// the other two show dim so they stay findable. The copy button is solid while a
   /// copy is armed (dim otherwise); the remap-mode toggle is solid in fine mode (dim
-  /// in group transpose); undo always flashes.
+  /// in group transpose); undo is dim and findable. The only flashing transport-row
+  /// button is the state-relevant R/S/P one.
   pub fn loops_levels(&self, flash_on: bool, clock_on: bool) -> Vec<i32> {
     let mut levels = vec![LEVEL_OFF; (self.grid_w * self.grid_h) as usize];
     let [x0, y0, x1, y1] = self.loop_slots_rect;
@@ -1102,10 +1103,11 @@ impl LooperState {
       levels[(ty * self.grid_w + tx) as usize] =
         if self.group_transpose { LEVEL_DIM } else { LEVEL_FULL };
     }
-    // The undo button always flashes 50/50 (driven by the caller's flash phase).
+    // The undo button: dim and findable. It does not flash -- the only flashing
+    // transport-row button is the state-relevant R/S/P one (see `transport_level`).
     let (ux, uy) = self.loop_undo;
     if ux >= 0 && ux < self.grid_w && uy >= 0 && uy < self.grid_h {
-      levels[(uy * self.grid_w + ux) as usize] = if flash_on { LEVEL_FULL } else { LEVEL_OFF };
+      levels[(uy * self.grid_w + ux) as usize] = LEVEL_DIM;
     }
     // The loops-monome live editor overlays last (C5c), occluding whatever it covers.
     if let Some(ed) = &self.loops_timbre_editor {
@@ -1514,10 +1516,12 @@ mod tests {
   }
 
   #[test]
-  fn the_undo_button_flashes() {
+  fn the_undo_button_is_dim_and_does_not_flash() {
     let s = state(); // loop_undo is (5,2) in the test geometry.
-    assert_eq!(level_at(&s.loops_levels(true, true), 5, 2), LEVEL_FULL);
-    assert_eq!(level_at(&s.loops_levels(false, false), 5, 2), LEVEL_OFF);
+    // Dim and findable, and steady across both flash phases (it never flashes --
+    // the only flashing transport-row button is the state-relevant R/S/P one).
+    assert_eq!(level_at(&s.loops_levels(true, true), 5, 2), LEVEL_DIM);
+    assert_eq!(level_at(&s.loops_levels(false, false), 5, 2), LEVEL_DIM);
   }
 
   #[test]

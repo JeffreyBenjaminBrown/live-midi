@@ -175,7 +175,7 @@ cluster; the two octave corners (Od, Ou) stay dark.
   armed, dim otherwise; pressing it again mid-copy cancels.
 - ~F~ (14,3) -- *fine* (or else group transpose) =loop_remap_mode_toggle=. Solid
   in fine (so it starts lit), dim in group transpose.
-- ~U~ (15,3) -- *remap undo* =loop_remap_undo= (always flashing).
+- ~U~ (15,3) -- *remap undo* =loop_remap_undo= (dim and findable)
 - *loop display* =loop_display= ~[0,4,15,15]~:
   - ~*~ (0,4) -- reserved (unused for now).
   - ~c~ -- *column pickers* (top row): select a whole time-column.
@@ -190,7 +190,7 @@ cluster; the two octave corners (Od, Ou) stay dark.
 | ~clock_bpm~          |   300 | metronome rate (4*75 -> 200 ms cycle); see below       |
 | ~clock_duty~         |   0.1 | fraction of each cycle the flashing button stays lit   |
 | ~cluster_display_ms~ |   100 | note-ons within this of each other = one column        |
-| ~flash_ms~           |    50 | sounding-slot / undo flash half-period (NOT the clock) |
+| ~flash_ms~           |    50 | sounding-slot flash half-period (NOT the clock)        |
 | ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap        |
 
 The free-running *metronome* (=clock_bpm=) drives the loops grid: transport

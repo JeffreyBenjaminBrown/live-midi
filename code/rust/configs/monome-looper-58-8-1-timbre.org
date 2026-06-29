@@ -10,12 +10,17 @@ Both have timbre controls -- compact initially, unfoldable --
 that affect the *other* monome.
 ** grid 1 -- "edo" (prefix /looper-edo): play + loop-timbre editor
 *** legend
-| < ^ v > : cell shift      | S :: sustain                           |
-| A :: arm to save timbre   | U :: save-undo                         |
-| F :: fold timbre controls | a :: amplitude row                     |
-| M :: AM/FM value rows     | g :: 58-EDO play cell                  |
-| O :: octave shift         | t :: timbre slot                       |
-|                           | w :: waveform : sine, tri, square, saw |
+**** < ^ v > : cell shift
+**** A :: arm to save timbre
+**** F :: fold timbre controls
+**** M :: AM/FM value rows
+**** O :: octave shift
+**** S :: sustain
+**** U :: save-undo
+**** a :: amplitude row
+**** g :: 58-EDO play cell
+**** t :: timbre slot
+**** w :: waveform : sine, tri, square, saw
 *** the edo grid monome
   FOLDED (resting):                    UNFOLDED (momentary):
        0123456789012345                     0123456789012345
@@ -38,13 +43,22 @@ can't just occlude them. So the live editor sits on top and the looper stack
 the whole stack *up by 6* (=EDITOR_ROWS - 1=). The loop display's top moves with
 the stack; its bottom stays pinned to row 15, so it *grows* when folded.
 *** legend
-| A :: arm to save timbre                  |                                        |
-| D :: loop display: top row picks columns | c :: copy                              |
-| .                  left col picks rows   | m :: remap-mode                        |
-| F :: fold timbre controls                | s :: loop slot                         |
-| R :: start S :: stop P :: play           | t :: timbre slot                       |
-| S :: sustain, INERT                      | u :: remap-undo                        |
-| U :: save-undo, INERT                    | w :: waveform : sine, tri, square, saw |
+**** A :: arm to save timbre
+**** D :: loop display: top row picks columns, left col picks rows
+**** F :: fold timbre controls
+**** R :: start S :: stop P :: play
+**** S :: sustain, INERT
+**** U :: save-undo, INERT
+**** c :: copy a loop slot
+**** f :: fine | parallel-transpose
+Controls how pitch remap is done to a loop.
+**** m :: remap-mode
+**** s :: loop slot
+**** t :: timbre slot
+**** u :: remap-undo
+Undoes the last pitch or timbre edit to a loop slot.
+Works per-slot.
+**** w :: waveform : sine, tri, square, saw
 *** picture
   FOLDED (resting):                    UNFOLDED (momentary):
        0123456789012345                     0123456789012345
@@ -213,7 +227,7 @@ once here, config-wide (6_plan 2.5); =tri_to_square= is the other option.
 | ~clock_bpm~          |   240 | metronome rate (one beat = one cycle); see below       |
 | ~clock_duty~         |   0.1 | fraction of each cycle the flashing button stays lit   |
 | ~cluster_display_ms~ |   100 | note-ons within this of each other = one column        |
-| ~flash_ms~           |    50 | sounding-slot / undo flash half-period (NOT the clock) |
+| ~flash_ms~           |    50 | sounding-slot flash half-period (NOT the clock)        |
 | ~remap_center~       | (7,7) | the "unison" edo cell for group-transpose remap        |
 
 The *metronome* (=clock_bpm=, 300 = 4x75 -> a 200 ms cycle) is a free-running clock

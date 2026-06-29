@@ -1,5 +1,7 @@
 * lately using [[./code/rust/configs/README.org]]
+* BUG: Can't play a note live when the loop is, or vice-versa.
 * shift one row of the loop in time
+* A loop view can be collapsed along pitch, time or both.
 * vision
 ** There's no difference between a chord and a loop.
 A chord is a loop during which the notes don't change.
