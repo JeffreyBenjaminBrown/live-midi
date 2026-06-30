@@ -4,20 +4,26 @@ These notes preserve the useful operating details from the old
 per-runtime directories that were folded into the config-driven
 ~midi_pulse~ binary.
 
-Run configs from the repository root:
+Run configs from the repository root. Launch under ~pw-jack~ so audio output
+goes through PipeWire's JACK server: the synth then appears as an ordinary
+JACK node (visible in QJackCtl / ~pw-link~, routable to Reaper) and *shares*
+the sound card. Running a cpal-audio binary WITHOUT ~pw-jack~ either errors
+("JACK host unavailable...") or, if built without the ~jack~ feature, falls
+back to ALSA -- which grabs the card exclusively and silences everything else
+on the host (e.g. the Claude stop-hook beep). So always use ~pw-jack~.
 
 #+begin_src sh
-cargo run --bin midi_pulse -- CONFIG_NAME
+pw-jack cargo run --bin midi_pulse -- CONFIG_NAME
 #+end_src
 
 For example:
 
 #+begin_src sh
-cargo run --bin midi_pulse -- edo12n-piano
-cargo run --bin midi_pulse -- edo12n-piano-monome
-cargo run --bin midi_pulse -- edo-un12-31-loose
-cargo run --bin midi_pulse -- monome-edo-midi
-cargo run --bin midi_pulse -- monome-edo-sawwave
+pw-jack cargo run --bin midi_pulse -- edo12n-piano
+pw-jack cargo run --bin midi_pulse -- edo12n-piano-monome
+pw-jack cargo run --bin midi_pulse -- edo-un12-31-loose
+pw-jack cargo run --bin midi_pulse -- monome-edo-midi
+pw-jack cargo run --bin midi_pulse -- monome-edo-sawwave
 #+end_src
 
 * 12n piano
