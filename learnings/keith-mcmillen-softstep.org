@@ -1,0 +1,275 @@
+#+title: Keith McMillen SoftStep (KMSS): how to read it, what it sends, and the (so-far-failed) path to richer data
+#+date: 2026-06-30
+* what this is + bottom line
+A field report from getting a SoftStep foot controller talking to this
+container.
+
+- *Reading works.* The device is ALSA client =20= ("SSCOM"); pressing pedals
+  produces MIDI we can read with =aseqdump= / our =echo.py=.
+- *In its current programming it only sends Program Changes* -- pedal identity,
+  *no velocity, no pressure.* (=PC = preset*10 + pedal=.)
+- *Sending to the device does not currently work* from this container: every
+  control SysEx (mode switch, backlight, firmware query) was ignored, despite
+  the send path itself being proven good. So the richer "tether/hosted" data
+  stream (per-pedal pressure, from which velocity could be derived) is *not yet
+  reachable.* Details and next steps below.
+
+* Writing code to read (pedal + velocity) -- a recipe for next time
+
+** Connecting
+
+The device is on the *ALSA sequencer* (no rawmidi node), client =20=, port =0=.
+Three ways in, easiest to most production-ready:
+
+1. *Parse =aseqdump=* (what =echo.py= does). Spawn =stdbuf -oL aseqdump -p 20:0=,
+   read lines, regex out the event. Zero dependencies, fine for a monitor or a
+   quick bridge. (=aseqdump= ignores SIGTERM -- SIGKILL it.)
+2. *Python =python-rtmidi= / =mido=.* Clean callback API. NOT installed in this
+   container as of writing (=pip install python-rtmidi=); =echo.py= avoids it for
+   that reason.
+3. *Rust =midir=* -- the project's MIDI lib, and where this would really live
+   (=code/rust/midi_pulse/=). Open the input named ="SSCOM MIDI 1"= (or match
+   "SSCOM"), register a callback, match on the status nibble. This is the path to
+   wire the SoftStep into a =midi_pulse= config.
+
+Match the *device by name substring "SSCOM"*, not a hardcoded =20:0= -- the ALSA
+client number is assigned at plug-in time and will not be stable.
+
+** Reading *pedal identity* today (standalone mode -- works now)
+
+Listen for *Program Change on channel 0*. Decode:
+
+#+begin_src text
+  on ProgramChange(program):
+      pedal  = program % 10       # printed label: 1..9, then 0
+      preset = program // 10      # which on-device preset bank (0..12)
+#+end_src
+
+Caveat: a hard stomp can emit the *same PC twice within a few ms* (contact
+bounce). If you don't want double-triggers, debounce: ignore a repeat of the same
+program within ~15-25 ms. (For drums you may actually want every hit -- your
+call.) There is *no velocity and no note-off* here; a PC is a momentary ping.
+
+** Reading *pedal + velocity* (tether mode -- once sending works)
+
+This is the payoff path, blocked only by the send-path problem above. Once the
+device is in tether mode it *streams raw sensor values as CC on channel 0*. The
+algorithm:
+
+1. Build the *reverse CC->pedal map* from the base-CC table (CC 40..79). Pedal's
+   four sensors are =baseCC .. baseCC+3=:
+
+   #+begin_src text
+     baseCC -> pedal:  44->0  52->1  60->2  68->3  76->4
+                       40->5  48->6  56->7  64->8  72->9
+     so:  pedal = reverse_lookup(cc - (cc-40) % 4*0 ...)   # simply: find the
+          base B in {40,44,...,76} with B<=cc<=B+3, then pedal = table[B]
+   #+end_src
+
+2. Keep =sensor[pedal][0..3]= updated on each incoming CC. Per-pedal
+   *pressure = sum(sensor[pedal])* (the editor also offers "max of the 4" via its
+   =sensorResponse= setting, and a =globalGain= multiplier -- start with sum).
+
+3. *Onset / velocity / release* with hysteresis, per pedal:
+   - *Idle -> hit* when =pressure= crosses an *on-threshold* (rising edge). That
+     is the note-on instant.
+   - *Velocity* = the *peak pressure within a short window* after onset (e.g. the
+     max over the first ~3-8 ms), or equivalently the initial *slope*. Scale that
+     peak to 1..127. (A flat "current pressure at threshold-cross" is too low;
+     drum feel wants the attack peak.)
+   - *Release* when =pressure= falls back below a lower *off-threshold*
+     (off < on, so it doesn't chatter). That is the note-off.
+
+4. Map =pedal= -> whatever you want (a drum voice, a loop slot, ...).
+
+*One unknown to nail down empirically when tether first works:* which physical
+*printed label* corresponds to =datacooker= =keyNum 0..9= (and thus to each base
+CC). Press the pedal labeled "1", see which CC group (40..79) moves, and write
+the label<->keyNum table down. =echo.py= already prints Note/CC/velocity, so it's
+the tool for that calibration too.
+
+* The hardware as it appears to us
+
+#+begin_src sh
+aconnect -l          # or -o for writable destinations
+#+end_src
+
+#+begin_example
+client 20: 'SSCOM' [type=kernel,card=1]
+    0 'SSCOM MIDI 1    '      <- ALSA 20:0  (performance MIDI; the editor's "Port 1")
+    1 'SSCOM MIDI 2    '      <- ALSA 20:1  (editor/firmware COM; silent in standalone)
+#+end_example
+
+There is *no =/dev/snd/midiC*= node* for it, so =amidi= (rawmidi) can't see it;
+everything goes through the *ALSA sequencer* (=aseqdump=, =aseqsend=). Both
+=20:0= and =20:1= are writable destinations.
+
+* What it sends right now (standalone / preset mode)
+
+The device currently holds a *Program-Change bank-switcher* programming:
+
+#+begin_example
+  pedal labeled P (1..9, then 0) on preset K (display 0..12)
+      -->  Program Change number = 10*K + P   on MIDI channel 1
+#+end_example
+
+So 13 presets x 10 pedals = *PC 0..129*, 130 distinct momentary triggers.
+Verified empirically (e.g. preset 3: pedal1->PC31, pedal5->PC35, pedal8->PC38).
+
+- *No velocity, pressure, aftertouch, X/Y, or notes* in *any* of the 13 presets
+  -- a Program Change physically can't carry a velocity, and mashing/holding a
+  pedal changes nothing.
+- The *4 nav arrows emit no MIDI*; they only scroll presets on the device's own
+  numeric display (and the display also echoes the last pedal pressed).
+- *Port =20:1= is silent* in this mode.
+
+This is a *custom programming* someone loaded (not what gets you notes). Changing
+it needs either reprogramming the presets or switching to tether mode -- both of
+which need us to *send* to the device (see below), which currently fails.
+
+* Tools we built (=code/softstep/=)
+
+- =echo.py= -- human-readable live monitor. Wraps =aseqdump= (we don't have
+  python-rtmidi/mido), parses its text, prints e.g.
+  =event origin: preset 3, pedal labeled 1= / =event type: program change=.
+  It already understands Note/velocity/CC-pressure/aftertouch, so it will Just
+  Work if a richer stream ever appears. Run: =python3 code/softstep/echo.py 20:0=.
+- =backlight_blink.py= -- a *visible* "can we send?" test: blinks the backlight
+  with a live countdown so you know exactly when to look. (Currently: no blink.)
+- =ssmode.py= -- sends the standalone<->tether mode sequences + backlight +
+  query. Bytes taken verbatim from KMI's own editor. *Currently has no effect on
+  the device* (see failure analysis).
+
+* MIDI pitfalls learned (save yourself the time)
+
+- =aseqdump= *ignores SIGTERM* -- =timeout 4s aseqdump ...= hangs; use
+  =timeout -s KILL= or =kill -9=. Its banner is fully-buffered stdout, so SIGKILL
+  loses it; use =stdbuf -oL= when capturing to a file.
+- *Passive listening shows nothing* -- the device only emits when you step on it.
+  An empty capture means "nobody pressed anything," not "broken."
+- =aseqsend -s= takes a *filename*, not a hex string (despite the usage text).
+  Write the bytes to a =.syx= file first. =aseqsend -v= confirms "Sent : N bytes".
+- The send path *is* good: =aseqsend= a Note to Midi Through (=14:0=) loops back,
+  proving the sequencer delivers. (So a SoftStep non-response is the device, not
+  the tool.)
+
+* The tether/hosted protocol (reverse-engineered, for the future attempt)
+
+KMI open-sourced their editor: *github.com/Muse-Kinetics/softstep_editor* (C++,
+MPL-2.0). It documents the whole "hosted mode" protocol. Key facts:
+
+** How raw sensor data would arrive
+From =standalone/advanced/hosted/midiparse.cpp= ("Used only for SSCOM Port 1
+data, tethered data"): tethered data comes as *Control Change on channel 0*
+(status =0xB0=); *CC number = sensor index, value 0..127 = sensor reading.*
+
+Each pedal has *4 sensors* (pad corners; sum ~= pressure, differences = X/Y).
+=datacooker.cpp= maps pedal -> base CC (a pedal's 4 sensors are baseCC..baseCC+3):
+
+#+begin_example
+  pedal index:  0   1   2   3   4   5   6   7   8   9
+  base CC:     44  52  60  68  76  40  48  56  64  72     (sensors span CC 40..79)
+#+end_example
+
+Velocity for "play drums" would come from the *attack* of a pedal's summed
+pressure -- i.e. peak/slope of (sensor0+1+2+3) in the first few ms of a press.
+
+** The SysEx to switch modes
+SysEx start =F0=, stop =F7=, KMI manufacturer id =00 01 5F=, magic =7A=. The
+*hosted-enable sequence* (=sysexcomposer.cpp= =slotHostedOnOff(true)=, order
+matters, firmware "requires delay between messages"):
+
+#+begin_example
+  1. standalone_off
+  2. scenechange_on_persist
+  3. nav_standalone_on_persist
+  4. tether_on
+#+end_example
+
+Raw bytes (43 each), as sent:
+
+#+begin_example
+  standalone_off            f000015f7a01 00*10 00010009000b2b3a 0010 03 00 00000000000000 5007 000000 02 f7
+  scenechange_on_persist    f000015f7a01 00*10 00010009000b2b3a 0010 08 01 01000000000000 7b69 000000 02 f7
+  nav_standalone_on_persist f000015f7a01 00*10 00010009000b2b3a 0010 09 01 01000000000000 3c3a 000000 06 f7
+  tether_on                 f000015f7a01 00*10 00010009000b2b3a 0010 04 01 00000000000000 2f7e 000000 02 f7
+  --- restore (standalone) ---
+  tether_off                f000015f7a01 00*10 00010009000b2b3a 0010 04 00 00000000000000 171f 000000 00 f7
+  standalone_on             f000015f7a01 00*10 00010009000b2b3a 0010 03 01 00000000000000 6866 000000 00 f7
+#+end_example
+
+(=00*10= = ten 0x00 bytes. The two bytes before the trailing pad look like a
+per-message CRC; we send them verbatim so it doesn't matter.) Backlight on/off
+and a firmware query are also in =ssmode.py= and =sysexmessages.h=.
+
+* Why sending fails right now (analysis + next steps)
+
+Confirmed: =aseqsend= delivers (Midi Through loopback works); both SoftStep
+ports are writable; bytes match KMI's editor exactly. Yet the device ignored
+*every* command -- mode switches, backlight (no blink), and the firmware query
+(no SysEx reply) -- on *both* =20:0= and =20:1=, sent both as separate messages
+and as one held connection with 120 ms gaps.
+
+Leading hypotheses, most to least likely:
+
+1. *Firmware vs editor-version mismatch.* This editor is the 2025 Muse-Kinetics
+   rewrite; a header comment literally says "still using the wrong sysex id for
+   old firmware." If the device runs older firmware, it may want a different
+   manufacturer id / message format and silently drop ours. The *old* SoftStep 2
+   Advanced Editor (Max-based) used a different protocol worth digging up.
+2. *Container can read the USB device but not write to it.* The host (NixOS,
+   PipeWire) owns the audio stack; the container sees raw =/dev/snd=. Reading the
+   device works, but USB MIDI *out* from the container may not reach the device's
+   IN endpoint. *Cheap decisive test:* try =ssmode.py backlight_on= (or the
+   tether sequence) *from the host* -- if the backlight blinks there but not in
+   the container, it's a container write-path problem, not protocol.
+3. *Device must be "claimed"/queried first.* The editor guards mode sends behind
+   a =connected= flag set only after a successful firmware-query handshake. We
+   got no query reply, so we never established that session. (Probably a
+   consequence of #1 or #2 rather than an independent cause.)
+
+If/when velocity matters: start with hypothesis #2's host-side backlight test
+(one minute, unambiguous). If host send works, run the editor's tether sequence
+from the host (or bridge a host->container MIDI route) and read the CC 40..79
+stream with =echo.py= -- it's already wired to decode it. If even the host can't
+drive it, chase the *old* firmware's SysEx id.
+
+* Two pedals can be pressed simultaneously. (drum-trigger concern)
+
+And nothing gets stifled -- no message is dropped. MIDI is a
+*serial* stream, so two "simultaneous" presses are simply sent one right after
+the other, in full, in some order.
+
+- *How far apart?* Over classic 31250-baud MIDI, a Program Change (2 bytes) takes
+  ~0.64 ms and a CC (3 bytes) ~0.96 ms, so two coincident events land ~0.6-1 ms
+  apart on the wire. The SoftStep is *USB* MIDI, which isn't bound by that baud
+  limit and is typically faster still. Either way that gap is *well under* the
+  ~5-10 ms where you'd hear a flam, and *no event is suppressed.*
+- *Standalone (PC) mode:* two distinct pedals = two distinct Program Changes,
+  both delivered. (Two presses of the *same* pedal = two identical PCs -- the
+  bounce/debounce note above applies.)
+- *Tether mode is even safer for this:* the device *continuously scans all 40
+  sensors* and streams their values, so two simultaneous hits are just two sets
+  of rising sensor readings in the same scan frame -- there is no discrete "note"
+  that one press could steal from another. This is a point in tether mode's favor
+  for drumming.
+- *The only way to lose data* is sustained buffer overflow from flooding (not a
+  thing for occasional 2-pedal hits) -- and the worst case there is added
+  latency, with ALSA preserving order, not silent single-message loss.
+
+This is by MIDI/USB design and the device's scan architecture; it was *not*
+specifically bench-tested with a true two-at-once stomp. To confirm on the
+hardware: run =python3 code/softstep/echo.py 20:0=, stomp two pedals as
+simultaneously as you can, and check both events appear (they will).
+
+* References
+
+- KMI editor (protocol source): github.com/Muse-Kinetics/softstep_editor
+  - =shared/sysexmessages.h= -- all control SysEx
+  - =shared/sysexcomposition/midi_ss.h= -- the id/constant =#define=s
+  - =standalone/advanced/hosted/midiparse.cpp= -- tethered data = CC on ch 0
+  - =standalone/advanced/hosted/datacooker.{h,cpp}= -- pedal<->sensor-CC map,
+    pressure/x/y cooking, on/off thresholds
+- =github.com/Muse-Kinetics/sendsysex= -- their CLI for sending SysEx/firmware
+- KMI SysEx/firmware files: files.keithmcmillen.com/downloads/softstep/
+- Our tools: =code/softstep/{echo,backlight_blink,ssmode}.py=
