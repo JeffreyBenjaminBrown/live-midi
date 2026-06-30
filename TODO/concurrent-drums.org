@@ -1,0 +1,204 @@
+#+title: Why two drum pads won't fire at (almost) the same time
+#+date: 2026-06-30
+
+A report on the open problem: on the KMSS drumkit (=kmss-drumkit=), striking two
+*different* pedals simultaneously -- or even nearly so -- produces only *one* drum
+hit. Single hits and slow alternation work fine. This documents the symptom, what
+has been ruled out, the ranked suspects, and the one experiment that settles it.
+
+Code refs are to =code/rust/midi_pulse/drumkit_runtime/= unless noted. Device
+background is in [[../learnings/keith-mcmillen-softstep.org]] (read it; this problem
+is mostly *that* document's "we can't send to the device" wall, seen from the
+playing side).
+
+* the short answer (current best hypothesis)
+
+*The loss is almost certainly upstream of our code -- in the SoftStep's current
+on-device preset, which appears to emit only one Program Change for a
+near-simultaneous two-pad press.* Nothing on our side can recover a MIDI message
+the device never sends.
+
+This is *not yet confirmed by captured data* -- see [[* the one decisive
+experiment]]. Everything below either rules out our side or explains why the device
+is the prime suspect.
+
+* the symptom, precisely
+
+- *One pad at a time*: perfect. Each press fires the right sample.
+- *Two different pads, slow* (clearly separated in time): both fire.
+- *Two different pads, simultaneous or "almost"*: only one sounds. Reproducible,
+  not a one-off fumble.
+- Unchanged after the parser was made robust to multi-message buffers (commit
+  in progress) and after adding the =MIDI_PULSE_TRACE= log.
+
+So the failure is specific to *temporal coincidence of two distinct pedals*.
+
+* the path a two-pad press travels (and where a hit could die)
+
+#+begin_example
+  [1] two pads pressed
+   |  feet / pressure pads
+  [2] SoftStep firmware: pressure scan -> threshold -> PRESET LOGIC -> MIDI out
+   |  USB
+  [3] USB-MIDI (4-byte packets, one message each)
+   |
+  [4] kernel snd-usb-audio -> ALSA rawmidi -> ALSA sequencer (client 20)
+   |
+  [5] midir ALSA backend: one callback per seq event
+   |
+  [6] our callback: collect_program_changes -> pedal -> debounce -> trigger
+   |
+  [7] audio: VoicePool adds a voice; mix() sums + clamps
+#+end_example
+
+Walking it from *our* end (what we can prove) up to the device (what we suspect):
+
+** [7] audio mixing -- RULED OUT
+The sampler is polyphonic. =VoicePool::trigger= (=audio.rs:42=) drops each hit into
+its own slot (64 of them, =audio.rs:17=); =mix= (=audio.rs:66=) sums *all* active
+voices and only clamps the summed frame to [-1, 1]. Two voices both sound -- there
+is a unit test for exactly this (=mix_sums_two_voices_and_applies_amplitude=,
+=audio.rs:221=) and for the clamp (=audio.rs:232=). The worst the clamp can do is
+blend two loud hits, never silence one.
+- /Audible cross-check/: map two pads to two *very distinct, long* samples (crash +
+  cowbell) and stomp together. If you ever hear a blend, audio is fine and the loss
+  is earlier (it will be).
+
+** [6] our debounce -- RULED OUT for different pedals
+=Debouncer= keys on the pedal: =last: [Option<Instant>; 10]= (=decode.rs:68=),
+and =accept= (=decode.rs:78=) compares a press only against *that pedal's* own last
+fire. Two different pedals use different slots and never gate each other. Unit test:
+=debounce_is_per_pedal_two_feet_both_fire=. (The 50 ms window only matters for
+repeats of the *same* pad -- not this case.)
+
+** [6] our MIDI parser -- RULED OUT as of the latest change
+Originally the callback accepted only a *length-2* buffer (=len() == 2 && status ==
+0xC0=), so if a backend ever coalesced two PCs into one buffer (=C0 05 C0 07=, or
+running status =C0 05 07=) we would have dropped *both*. =collect_program_changes=
+(=decode.rs:23=) now walks the whole buffer and extracts *every* Program Change,
+running status included (tests =collects_multiple_pcs_from_one_buffer=). The
+callback loops over all of them (=mod.rs:137-155=). So even a coalesced buffer now
+fires both pads.
+
+** [5] midir / [4] ALSA sequencer / [3] USB-MIDI -- UNLIKELY
+- USB-MIDI puts each message in its own packet; no running-status ambiguity, no
+  drop of a sparse second event.
+- ALSA seq delivers events in order; it only loses data under sustained *flooding*
+  (the learnings doc's warning), which two stomps are not.
+- midir's ALSA backend calls our callback *once per seq event*. Two PCs => two
+  callbacks => two =rx= lines in the trace. If the device sends two, we see two.
+- None of these are plausible droppers of a 2-event burst. The =MIDI_PULSE_TRACE=
+  output proves it either way (see below).
+
+** [2] the device / its loaded preset -- PRIME SUSPECT
+The KMSS currently runs a custom *Program-Change bank-switcher* preset (=PC =
+preset*10 + pedal=; learnings doc). Three ways that can yield one event for two
+presses, most to least likely:
+
+1. *Monophonic key-priority / "radio select."* If the preset treats the ten pads
+   as a one-of-N selector (only the newly-/highest-/last-selected key emits a PC),
+   then two near-coincident presses resolve to a *single* selection and a single
+   Program Change. Simple controller presets are very often effectively
+   monophonic. This fits the symptom exactly: coincident = one event; separated =
+   two distinct selections = two events.
+2. *Firmware scan debounce / serialization.* The device's own pad scan may
+   suppress a second key-state change within a short internal window.
+3. *Threshold under-press.* With feet, one pad may not cross the press threshold.
+   Less likely given the symptom is reproducible and "even almost" fails, but the
+   trace will show it (a press that sends nothing).
+
+The device's *own numeric display* echoes the last pedal pressed -- watching
+whether it flickers through two values or only one during a two-pad stomp is a free
+extra signal.
+
+* the one decisive experiment
+
+We still need the single datum that splits "device" from "us": *for a genuine
+two-pad stomp, how many Program Changes leave the device?*
+
+Two independent ways to capture it (do at least the first):
+
+1. *aseqdump -- device truth, bypasses our binary entirely* (preferred, because it
+   removes all of our code from the question):
+   #+begin_src sh
+   aseqdump -p 20:0
+   #+end_src
+   Then stomp two pads together, several times. Count the =Program change= lines per
+   stomp. (=aseqdump= ignores SIGTERM; exit with Ctrl-C, or =kill -9= if stuck.)
+
+2. *Our own trace* (also shows what we then do with it):
+   #+begin_src sh
+   MIDI_PULSE_TRACE=1 pw-jack cargo run --bin midi_pulse -- kmss-drumkit
+   #+end_src
+   Each received buffer prints =[kmss] rx ...= and each decoded program prints
+   =FIRE= / =debounced= / =unmapped=.
+
+Reading the result:
+
+| what you see for a two-pad stomp        | conclusion                                  |
+|-----------------------------------------+---------------------------------------------|
+| *one* PC / one =rx= line                | the *device* sends one -> [2], game over    |
+|                                         | for this preset. No code fix helps.         |
+| *two* PCs, but still one sound          | our side -> re-check [6]/[7]; the parser    |
+|                                         | fix should now fire both -- report back.    |
+| two PCs, two =FIRE=, two sounds         | fixed (the coalesced-buffer case).          |
+
+Given "still only one at a time" persists after the parser fix, the top row is the
+expected outcome -- but it is unconfirmed until the capture is pasted here.
+
+* if it is the device (the likely case): how to actually fix it
+
+All real fixes require *changing what the device sends*, which means either
+selecting a different preset (no send needed) or reprogramming/mode-switching it
+(needs a working send path -- the open blocker in the learnings doc).
+
+1. *Try the other on-device presets first -- FREE, no send.* There are 13 presets
+   (display 0..12); scroll with the nav arrows and re-run =aseqdump= per preset,
+   stomping two pads. If any preset emits an independent event per pad
+   (polyphonic), point the drumkit at it and we are done. The decode is already
+   preset-independent (=pedal = program % 10=, =decode.rs:12=), so a different
+   preset "just works" as long as it is polyphonic.
+
+2. *Reprogram to a "notes" preset.* Each pad -> an independent Note On (which also
+   carries *velocity* -- a bonus). This is the right long-term answer, but it needs
+   sending a preset/SysEx to the device, which *currently fails from the container*
+   (learnings doc: every control SysEx ignored). Decisive cheap test there: try the
+   backlight blink / preset send *from the host*, not the container.
+
+3. *Tether / hosted mode.* The device streams raw per-sensor CC continuously, which
+   is *inherently polyphonic* -- the learnings doc explicitly calls tether mode
+   "even safer" for simultaneous hits, since there is no discrete note for one press
+   to steal from another. Also blocked on the same send-path problem, and a bigger
+   lift (sensor onset/velocity logic). This is the eventual "real drums with
+   velocity" path.
+
+The throughline: *this concurrency limit and the missing-velocity limit are the
+same wall* -- the device's standalone PC preset is lossy and expressionless, and
+escaping it needs the send path the learnings doc could not get working from the
+container. Worth retrying that from the host.
+
+* what is NOT worth doing
+
+- Lowering or removing =debounce_ms=: it is per-pad and never gates two different
+  pedals, so it cannot be the cause. (Leave the 50 ms; it only stops same-pad
+  bounce.)
+- More parser cleverness: =collect_program_changes= already extracts every PC in a
+  buffer. If the device sends one, there is nothing to parse.
+- Audio-side work: the mixer is already polyphonic and tested.
+
+* status / next action
+
+- *Need*: paste the =aseqdump= (or =MIDI_PULSE_TRACE=) output for a two-pad stomp.
+- *Then*: if one PC -> try the other 12 presets (free); if none are polyphonic,
+  escalate to the host-side send path (notes preset or tether).
+- Drumkit code itself is complete and correct for whatever the device delivers; no
+  further drumkit-runtime change is expected to help until the device sends two
+  events.
+
+* references
+- [[../learnings/keith-mcmillen-softstep.org]] -- device protocol, the PC preset,
+  the "two pedals at once" note (untested), and the blocked send path.
+- =code/rust/midi_pulse/drumkit_runtime/decode.rs= -- PC parse + per-pad debounce.
+- =code/rust/midi_pulse/drumkit_runtime/mod.rs= -- the MIDI callback + trace.
+- =code/rust/midi_pulse/drumkit_runtime/audio.rs= -- the polyphonic sampler.
+- =code/python/softstep/echo.py= -- human-readable monitor (alt to aseqdump).

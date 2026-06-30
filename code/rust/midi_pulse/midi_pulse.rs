@@ -45,6 +45,7 @@ mod sawwave_runtime;
 #[allow(dead_code)]
 mod remap_runtime;
 mod looper_runtime;
+mod drumkit_runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config_name = std::env::args().nth(1).ok_or_else(|| {
@@ -52,7 +53,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   })?;
   let config = config::load_named_config(&config_name)?;
   print_startup(&config);
-  if is_remap_config(&config) {
+  if is_drumkit_config(&config) {
+    // A KMSS drumkit config is unambiguous (it has softstep_windows and no
+    // monome/piano windows), so it can lead the dispatch.
+    drumkit_runtime::run_from_config(&config)?;
+  } else if is_remap_config(&config) {
     remap_runtime::run_from_config(&config)?;
   } else if is_edo12n_monome_config(&config) {
     edo12n_piano_monome_runtime::run_from_config(&config)?;
@@ -127,6 +132,12 @@ fn is_monome_sawwave_config(config: &Config) -> bool {
       .any(|sink| matches!(sink, midi_pulse::config::SinkConfig::CpalSynth { .. }))
 }
 
+/// A KMSS drumkit config declares at least one `softstep_window`. These configs
+/// have no monome/piano windows, so the predicate is unambiguous.
+fn is_drumkit_config(config: &Config) -> bool {
+  !config.softstep_windows.is_empty()
+}
+
 /// Keyed on the looper-only `loop_display` kind, so it is strictly more specific
 /// than the sawwave predicate. Dispatch order makes this matter (see `main`).
 fn is_looper_config(config: &Config) -> bool {
@@ -142,6 +153,10 @@ fn print_startup(config: &Config) {
   println!("  monomes: {}", config.monomes.len());
   println!("  sinks: {}", config.sinks.len());
   println!("  monome windows: {}", config.monome_windows.len());
+  if !config.softsteps.is_empty() || !config.softstep_windows.is_empty() {
+    println!("  softsteps: {}", config.softsteps.len());
+    println!("  softstep windows: {}", config.softstep_windows.len());
+  }
   if let Some(piano) = &config.piano {
     match &piano.mapping {
       PianoMappingConfig::TwelveN { edo_per_12, .. } => {

@@ -20,6 +20,14 @@ pub struct Config {
   pub sinks: Vec<SinkConfig>,
   #[serde(default)]
   pub monome_windows: Vec<MonomeWindowConfig>,
+  /// Keith McMillen SoftStep (KMSS) foot-controller devices, declared once and
+  /// referenced by id from `softstep_windows` -- the same idiom as `monomes`.
+  #[serde(default)]
+  pub softsteps: Vec<SoftstepConfig>,
+  /// Windows over a SoftStep: a region of pedals plus a `kind` behavior. The same
+  /// windowing idiom as `monome_windows`, adapted to the KMSS's 10 labeled pedals.
+  #[serde(default)]
+  pub softstep_windows: Vec<SoftstepWindowConfig>,
   #[serde(default)]
   pub display: Option<DisplayConfig>,
   #[serde(default)]
@@ -258,6 +266,33 @@ pub struct MonomeSelect {
   pub id_contains: Option<String>,
 }
 
+/// A Keith McMillen SoftStep (KMSS) foot controller. Declared once and referenced
+/// by id from `softstep_windows`. The KMSS presents on the ALSA sequencer as the
+/// client named "SSCOM"; the runtime opens the input port matching `select`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SoftstepConfig {
+  pub id: String,
+  #[serde(default)]
+  pub select: SoftstepSelect,
+}
+
+/// Which MIDI input port to bind. `name_contains` is matched as a substring of the
+/// midir input port name (default "SSCOM", the KMSS's ALSA client name) -- never a
+/// hardcoded client number, which is reassigned on every replug.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SoftstepSelect {
+  pub name_contains: Option<String>,
+}
+
+impl SoftstepSelect {
+  /// The port-name substring to match, defaulting to the KMSS client name.
+  pub fn name_substring(&self) -> &str {
+    self.name_contains.as_deref().unwrap_or("SSCOM")
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MidiConfig {
@@ -352,6 +387,15 @@ pub enum SinkConfig {
     #[serde(default = "default_oversample")]
     oversample: u32,
   },
+  /// A one-shot sample player: each trigger plays a loaded WAV to completion,
+  /// mixed polyphonically. Drives the `drumkit` softstep window. Uses the same
+  /// cpal/JACK output path as `cpal_synth` (launch under `pw-jack`).
+  CpalSampler {
+    id: String,
+    sample_rate: u32,
+    buffer_frames: u32,
+    amplitude: f32,
+  },
 }
 
 fn default_oversample() -> u32 {
@@ -361,7 +405,9 @@ fn default_oversample() -> u32 {
 impl SinkConfig {
   pub fn id(&self) -> &str {
     match self {
-      SinkConfig::Midi { id } | SinkConfig::CpalSynth { id, .. } => id,
+      SinkConfig::Midi { id }
+      | SinkConfig::CpalSynth { id, .. }
+      | SinkConfig::CpalSampler { id, .. } => id,
     }
   }
 }
@@ -723,6 +769,68 @@ impl MonomeWindowConfig {
   }
 }
 
+/// One pedal's assignment inside a `drumkit` window: the printed pedal label
+/// (1..9, then 0) and the sample file to fire. `gain` scales this voice (the KMSS
+/// sends no velocity today, so level is fixed per pad).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DrumPadConfig {
+  pub pedal: u8,
+  pub sample: String,
+  #[serde(default = "default_pad_gain")]
+  pub gain: f32,
+}
+
+fn default_pad_gain() -> f32 {
+  1.0
+}
+
+fn default_debounce_ms() -> u64 {
+  50
+}
+
+/// A window over a SoftStep: a `kind` behavior bound to a declared `softstep`
+/// device. The same windowing idiom as `monome_windows`; new arrangements are new
+/// kinds (or new configs). Today the only kind is `drumkit`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SoftstepWindowConfig {
+  /// Maps pedals to one-shot drum samples played through a `cpal_sampler` sink.
+  /// Each pad's `sample` resolves under the top-level `drum-samples/` folder
+  /// (`drum_samples_dir`); a `sample` may name a subpath for multi-kit layouts.
+  Drumkit {
+    id: String,
+    softstep: String,
+    sink: String,
+    /// Ignore a repeat of the *same* pedal within this many ms (contact-bounce
+    /// debounce). Per-pedal, so two different pedals hit together both fire.
+    #[serde(default = "default_debounce_ms")]
+    debounce_ms: u64,
+    pads: Vec<DrumPadConfig>,
+  },
+}
+
+impl SoftstepWindowConfig {
+  pub fn id(&self) -> &str {
+    match self {
+      SoftstepWindowConfig::Drumkit { id, .. } => id,
+    }
+  }
+
+  pub fn softstep(&self) -> &str {
+    match self {
+      SoftstepWindowConfig::Drumkit { softstep, .. } => softstep,
+    }
+  }
+
+  /// A human-readable kind label (matches the config `kind = "..."` tag).
+  pub fn kind_name(&self) -> &'static str {
+    match self {
+      SoftstepWindowConfig::Drumkit { .. } => "drumkit",
+    }
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DisplayConfig {
@@ -739,6 +847,12 @@ pub enum DisplayConfig {
 
 pub fn config_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("code/rust/configs")
+}
+
+/// Top-level folder holding drum-sample WAVs. A `drumkit` window's pads resolve
+/// under here: `drum_samples_dir()/<pad.sample>` (a `sample` may name a subpath).
+pub fn drum_samples_dir() -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("drum-samples")
 }
 
 /// Mock-rig configs (mock ports/prefixes) live here, separate from `config_dir` so
@@ -790,6 +904,11 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   require_unique("monome", config.monomes.iter().map(|m| m.id.as_str()))?;
   require_unique("sink", config.sinks.iter().map(SinkConfig::id))?;
   require_unique("monome window", config.monome_windows.iter().map(MonomeWindowConfig::id))?;
+  require_unique("softstep", config.softsteps.iter().map(|s| s.id.as_str()))?;
+  require_unique(
+    "softstep window",
+    config.softstep_windows.iter().map(SoftstepWindowConfig::id),
+  )?;
   require_unique(
     "monome listen_port",
     config.monomes.iter().map(|m| m.listen_port.to_string()),
@@ -863,6 +982,14 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
         if !value.is_finite() || value < 0.0 {
           return Err(format!("sink {:?} {name} must be nonnegative", sink.id()));
         }
+      }
+    }
+    if let SinkConfig::CpalSampler { sample_rate, buffer_frames, amplitude, .. } = sink {
+      if *sample_rate == 0 || *buffer_frames == 0 {
+        return Err(format!("sink {:?} sample_rate and buffer_frames must be positive", sink.id()));
+      }
+      if !amplitude.is_finite() || *amplitude < 0.0 {
+        return Err(format!("sink {:?} amplitude must be nonnegative", sink.id()));
       }
     }
   }
@@ -951,7 +1078,99 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
 
   validate_window_groups(config)?;
   validate_looper(config)?;
+  validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// SoftStep windows: every window must bind a declared softstep and a declared
+/// `cpal_sampler` sink; pedals are the 10 printed labels 0..9, claimed by at most
+/// one window per device; sample filenames must be safe and present. Validation is
+/// filesystem-free (sample *existence* is checked at load time, with a clear error)
+/// so configs stay unit-testable without fixture WAVs.
+fn validate_softsteps(config: &Config) -> Result<(), String> {
+  let softstep_ids: HashSet<&str> = config.softsteps.iter().map(|s| s.id.as_str()).collect();
+  let sampler_sink_ids: HashSet<&str> = config
+    .sinks
+    .iter()
+    .filter(|s| matches!(s, SinkConfig::CpalSampler { .. }))
+    .map(SinkConfig::id)
+    .collect();
+
+  // pedals already claimed on a given device, so windows partition (never overlap).
+  let mut claimed: std::collections::HashMap<&str, HashSet<u8>> = std::collections::HashMap::new();
+
+  for window in &config.softstep_windows {
+    require_ref("softstep_window.softstep", window.softstep(), &softstep_ids)?;
+    match window {
+      SoftstepWindowConfig::Drumkit { id, sink, debounce_ms, pads, .. } => {
+        if !sampler_sink_ids.contains(sink.as_str()) {
+          return Err(format!(
+            "drumkit window {id:?} sink {sink:?} must be a declared cpal_sampler sink",
+          ));
+        }
+        if pads.is_empty() {
+          return Err(format!("drumkit window {id:?} needs at least one pad"));
+        }
+        let _ = debounce_ms; // any u64 is valid (0 = no debounce)
+        let device_claims = claimed.entry(window.softstep()).or_default();
+        let mut this_window: HashSet<u8> = HashSet::new();
+        for pad in pads {
+          if pad.pedal > 9 {
+            return Err(format!(
+              "drumkit window {id:?} pedal {} out of range (the KMSS labels are 0..9)",
+              pad.pedal,
+            ));
+          }
+          if !this_window.insert(pad.pedal) {
+            return Err(format!(
+              "drumkit window {id:?} assigns pedal {} more than once",
+              pad.pedal,
+            ));
+          }
+          if !device_claims.insert(pad.pedal) {
+            return Err(format!(
+              "pedal {} on softstep {:?} is claimed by more than one window",
+              pad.pedal,
+              window.softstep(),
+            ));
+          }
+          if !pad.gain.is_finite() || pad.gain < 0.0 {
+            return Err(format!("drumkit window {id:?} pad {} gain must be nonnegative", pad.pedal));
+          }
+          validate_asset_subpath("drumkit sample", id, &pad.sample)?;
+        }
+      }
+    }
+  }
+
+  // No orphan devices: every declared softstep must be used by some window.
+  for softstep in &config.softsteps {
+    let used = config.softstep_windows.iter().any(|w| w.softstep() == softstep.id);
+    if !used {
+      return Err(format!(
+        "config declares softstep {:?} but no window uses it",
+        softstep.id,
+      ));
+    }
+  }
+
+  Ok(())
+}
+
+/// A sample/dir path must be a non-empty *relative* subpath of the assets root --
+/// no absolute paths and no `..` components escaping it.
+fn validate_asset_subpath(label: &str, id: &str, value: &str) -> Result<(), String> {
+  if value.is_empty() {
+    return Err(format!("{label} in window {id:?} must not be empty"));
+  }
+  let path = Path::new(value);
+  if path.is_absolute() {
+    return Err(format!("{label} {value:?} in window {id:?} must be a relative path"));
+  }
+  if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    return Err(format!("{label} {value:?} in window {id:?} must not contain '..'"));
+  }
   Ok(())
 }
 
@@ -2068,5 +2287,97 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
     )
     .unwrap();
     assert!(w.rect.validate().is_err(), "an unknown edge name should fail validation");
+  }
+
+  // ---- KMSS drumkit (softstep windows) ----
+
+  const DRUMKIT_TOML: &str = r#"version = 1
+id = "kmss-drumkit"
+title = "KMSS Drumkit"
+
+[[softsteps]]
+id = "feet"
+
+[[sinks]]
+id = "drums"
+kind = "cpal_sampler"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.8
+
+[[softstep_windows]]
+id = "kit"
+softstep = "feet"
+kind = "drumkit"
+sink = "drums"
+pads = [
+  { pedal = 1, sample = "kick.wav" },
+  { pedal = 2, sample = "snare.wav" },
+  { pedal = 0, sample = "wood_block.wav" },
+]
+"#;
+
+  #[test]
+  fn drumkit_config_is_valid_with_defaults() {
+    let config = parse_config(DRUMKIT_TOML).expect("a complete drumkit config should be valid");
+    assert_eq!(config.softsteps.len(), 1);
+    assert_eq!(config.softsteps[0].select.name_substring(), "SSCOM", "default select substring");
+    let SoftstepWindowConfig::Drumkit { debounce_ms, pads, .. } = &config.softstep_windows[0];
+    assert_eq!(*debounce_ms, 50, "default per-pedal debounce");
+    assert_eq!(pads[0].gain, 1.0, "default pad gain");
+    assert_eq!(pads.len(), 3);
+  }
+
+  #[test]
+  fn drumkit_pedal_out_of_range_is_rejected() {
+    let err = parse_config(&DRUMKIT_TOML.replace("pedal = 1,", "pedal = 10,"))
+      .expect_err("pedal 10 is out of the 0..9 label range");
+    assert!(err.contains("out of range"), "{err}");
+  }
+
+  #[test]
+  fn drumkit_duplicate_pedal_in_one_window_is_rejected() {
+    let err = parse_config(&DRUMKIT_TOML.replace("pedal = 2,", "pedal = 1,"))
+      .expect_err("the same pedal assigned twice should fail");
+    assert!(err.contains("more than once"), "{err}");
+  }
+
+  #[test]
+  fn drumkit_sink_must_be_a_cpal_sampler() {
+    let err = parse_config(&DRUMKIT_TOML.replace("kind = \"cpal_sampler\"", "kind = \"midi\"")
+      // a midi sink has no sample_rate/buffer_frames/amplitude fields
+      .replace("sample_rate = 48000\nbuffer_frames = 128\namplitude = 0.8\n", ""))
+      .expect_err("a non-sampler sink should be rejected for a drumkit");
+    assert!(err.contains("cpal_sampler"), "{err}");
+  }
+
+  #[test]
+  fn drumkit_unknown_softstep_ref_is_rejected() {
+    let err = parse_config(&DRUMKIT_TOML.replace("softstep = \"feet\"", "softstep = \"nope\""))
+      .expect_err("an unknown softstep reference should fail");
+    assert!(err.contains("unknown id \"nope\""), "{err}");
+  }
+
+  #[test]
+  fn drumkit_orphan_softstep_is_rejected() {
+    let toml = format!("{DRUMKIT_TOML}\n[[softsteps]]\nid = \"unused\"\n");
+    let err = parse_config(&toml).expect_err("a softstep no window uses should fail");
+    assert!(err.contains("no window uses it"), "{err}");
+  }
+
+  #[test]
+  fn drumkit_sample_path_must_not_escape_assets() {
+    let err = parse_config(&DRUMKIT_TOML.replace("\"kick.wav\"", "\"../secrets/kick.wav\""))
+      .expect_err("a sample path with .. should fail");
+    assert!(err.contains("'..'"), "{err}");
+  }
+
+  #[test]
+  fn pedal_claimed_by_two_windows_is_rejected() {
+    let toml = format!(
+      "{DRUMKIT_TOML}\n[[softstep_windows]]\nid = \"kit2\"\nsoftstep = \"feet\"\nkind = \"drumkit\"\nsink = \"drums\"\npads = [{{ pedal = 1, sample = \"other.wav\" }}]\n",
+    );
+    let err = parse_config(&toml).expect_err("two windows claiming pedal 1 should fail");
+    assert!(err.contains("more than one window"), "{err}");
   }
 }

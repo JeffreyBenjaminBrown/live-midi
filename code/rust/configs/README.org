@@ -6,10 +6,10 @@ The path *to* this folder is not needed.
 *** in docker
 alternatives lately:
 
-cargo run --bin midi_pulse \
+pw-jack cargo run --bin midi_pulse \
   monome-looper-58-8-1-timbre.toml
 
-cargo run --bin midi_pulse \
+pw-jack cargo run --bin midi_pulse \
   edo-un12_58-8-1_snap_save-scales.toml
 *** outside, if (sednging MIDI?)
 Use the corresponding filename from in docker:
@@ -202,6 +202,9 @@ release_secs = 0.050
 accretion_level = 0.5
 #+end_src
 
+A third sink kind, ~cpal_sampler~ (a one-shot WAV player), drives the SoftStep
+~drumkit~ window; see the SoftStep section below.
+
 * Monome windows
 
 Monome windows reference configured monomes, tunings, and sinks by ID.
@@ -270,6 +273,61 @@ monome = "big"
 kind = "remap_undo_button"
 rect = [15, 15, 15, 15]
 #+end_src
+
+* SoftStep (KMSS)
+
+The Keith McMillen SoftStep foot controller uses the *same windowing idiom* as the
+monomes, adapted to its 10 labeled pedals (printed ~6 7 8 9 0~ on top, ~1 2 3 4 5~
+on the bottom). A device is declared once and referenced by ~id~; windows carry a
+~kind~. Full reference: [[./kmss-drumkit.org]].
+
+The device, matched by input-port-name substring (default ~"SSCOM"~, the KMSS's
+ALSA client name -- never a hardcoded client number):
+
+#+begin_src toml
+[[softsteps]]
+id = "feet"
+select.name_contains = "SSCOM"
+#+end_src
+
+A one-shot sample-player sink (same cpal/JACK path as ~cpal_synth~; launch under
+~pw-jack~):
+
+#+begin_src toml
+[[sinks]]
+id = "drums"
+kind = "cpal_sampler"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.8
+#+end_src
+
+A ~drumkit~ window maps pedal labels to one-shot samples (filenames under the
+top-level ~drum-samples/~ folder; a ~sample~ may name a subpath for an alternate
+kit):
+
+#+begin_src toml
+[[softstep_windows]]
+id = "kit"
+softstep = "feet"          # -> [[softsteps]] id
+kind = "drumkit"
+sink = "drums"             # -> a cpal_sampler [[sinks]] id
+debounce_ms = 50           # per-pedal contact-bounce window (default 50; 0 = off)
+pads = [
+  { pedal = 1, sample = "kick.wav" },
+  { pedal = 2, sample = "snare.wav", gain = 1.0 },
+]
+#+end_src
+
+Built-in softstep window kinds:
+
+- ~drumkit~
+
+Pedals are addressed by their printed label (1..9, then 0). The KMSS sends only
+Program Changes today (no velocity), so hits play at a fixed per-pad ~gain~; the
+pedal is decoded as ~program % 10~, so a config is independent of which on-device
+preset is selected. See [[../../../learnings/keith-mcmillen-softstep.org]] for the
+device protocol.
 
 * Optional display
 

@@ -1,0 +1,53 @@
+version = 1
+id = "kmss-drumkit"
+title = "KMSS Drumkit"
+
+# A simple drumkit on the Keith McMillen SoftStep (KMSS). Each pedal fires a
+# one-shot drum sample. The KMSS sends only Program Changes today (no velocity),
+# so every hit plays at a fixed level. Launch under pw-jack so the sampler shares
+# the sound card via PipeWire:
+#
+#   pw-jack cargo run --bin midi_pulse -- kmss-drumkit
+#
+# See configs/kmss-drumkit.org for the full reference.
+
+# The foot controller. Matched by input-port-name substring (default "SSCOM",
+# the KMSS's ALSA client name) -- never a hardcoded client number.
+[[softsteps]]
+id = "feet"
+select.name_contains = "SSCOM"
+
+# One-shot sample player. Same cpal/JACK output path as the cpal_synth sink.
+[[sinks]]
+id = "drums"
+kind = "cpal_sampler"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.8
+
+# The drumkit "window": pedal -> sample. Samples resolve under the top-level
+# drum-samples/ folder. Pedals are the printed labels (1..9, then 0).
+#
+#   physical layout      left foot          right foot
+#     top  6 7 8 9 0      6 low tom          9 cowbell
+#     bot  1 2 3 4 5      7 high tom         0 wood block
+#                         8 crash            4 hat
+#                         1 kick             5 ride
+#                         2 snare            (3 unused)
+[[softstep_windows]]
+id = "kit"
+softstep = "feet"
+kind = "drumkit"
+sink = "drums"
+debounce_ms = 50
+pads = [
+  { pedal = 1, sample = "kick.wav" },
+  { pedal = 2, sample = "snare.wav" },
+  { pedal = 6, sample = "low_tom.wav" },
+  { pedal = 7, sample = "high_tom.wav" },
+  { pedal = 8, sample = "crash.wav" },
+  { pedal = 4, sample = "hat.wav" },
+  { pedal = 5, sample = "ride.wav" },
+  { pedal = 9, sample = "cowbell.wav" },
+  { pedal = 0, sample = "wood_block.wav" },
+]

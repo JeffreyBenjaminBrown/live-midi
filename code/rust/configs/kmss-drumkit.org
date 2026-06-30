@@ -1,0 +1,144 @@
+#+title: KMSS Drumkit -- reference
+#+date: 2026-06-30
+
+The =kmss-drumkit= config turns the Keith McMillen SoftStep (KMSS) foot
+controller into a simple drumkit: each pedal fires a one-shot drum sample. It is
+the first instrument built on the *softstep windowing idiom* -- the KMSS analogue
+of the monome =[[monome_windows]]= system (see [[./README.org]]).
+
+This is *v1: get the I/O working*. The sounds (a CC0 TR-808 set) are placeholders
+to be refined later.
+
+* glossary
+
+- *KMSS / SoftStep* -- the Keith McMillen foot controller. 10 pedals in two rows
+  of five, printed =6 7 8 9 0= (top) and =1 2 3 4 5= (bottom). Background and
+  protocol notes: [[../../../learnings/keith-mcmillen-softstep.org]].
+- *pedal label* -- the number silk-screened on a pedal (1..9, then 0). This is what
+  a config addresses, *not* a coordinate.
+- *softstep window* -- a behavior bound to a SoftStep, the same idea as a monome
+  window. Today the only =kind= is =drumkit=.
+- *drumkit window* -- maps pedals to one-shot drum samples.
+- *cpal_sampler sink* -- the audio output that plays the samples (cpal/JACK, like
+  the synth's =cpal_synth=).
+
+* usage
+
+Launch under =pw-jack= so the sampler shares the sound card via PipeWire instead
+of grabbing it:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- kmss-drumkit
+#+end_src
+
+Then step on the pedals. =Ctrl-C= (or Enter) stops it; dropping the audio stream
+silences it. A headless check that loads samples and binds the device but makes no
+sound (no audio device needed):
+
+#+begin_src sh
+MIDI_PULSE_NO_AUDIO=1 cargo run --bin midi_pulse -- kmss-drumkit
+#+end_src
+
+* the mapping (this config)
+
+| foot  | pedal | voice        |
+|-------+-------+--------------|
+| left  |     1 | kick         |
+| left  |     2 | snare        |
+| left  |     6 | low tom      |
+| left  |     7 | high tom     |
+| left  |     8 | crash cymbal |
+| right |     4 | hat          |
+| right |     5 | ride cymbal  |
+| right |     9 | cowbell      |
+| right |     0 | wood block   |
+| --    |     3 | (unused)     |
+
+Spatially: left foot owns the left of the board (=6 7 8= top, =1 2= bottom); right
+foot owns the right (=9 0= top, =4 5= bottom); =3= (bottom-middle) is the gap
+between the feet.
+
+* config shape
+
+** the device -- =[[softsteps]]=
+Declared once, referenced by =id= from windows -- exactly like =[[monomes]]=.
+
+#+begin_src toml
+[[softsteps]]
+id = "feet"
+select.name_contains = "SSCOM"   # input-port-name substring (default "SSCOM")
+#+end_src
+
+The KMSS appears on ALSA as the client "SSCOM" with two ports; the runtime binds
+the *performance* port ("SSCOM MIDI 1"), preferring it when several match. The
+match is by *name substring*, never the ALSA client number (which changes on every
+replug).
+
+** the sink -- =cpal_sampler=
+A one-shot sample player. Same cpal/JACK output path as =cpal_synth=.
+
+#+begin_src toml
+[[sinks]]
+id = "drums"
+kind = "cpal_sampler"
+sample_rate = 48000      # requested output rate; samples resample to it per-voice
+buffer_frames = 128
+amplitude = 0.8          # master gain; per-frame mix is clamped to [-1, 1]
+#+end_src
+
+** the window -- =kind = "drumkit"=
+
+#+begin_src toml
+[[softstep_windows]]
+id = "kit"
+softstep = "feet"        # -> [[softsteps]] id
+kind = "drumkit"
+sink = "drums"           # -> a cpal_sampler [[sinks]] id
+debounce_ms = 50         # per-pedal contact-bounce debounce (default 50; 0 = off)
+pads = [
+  { pedal = 1, sample = "kick.wav" },
+  { pedal = 2, sample = "snare.wav", gain = 1.0 },
+  # ...
+]
+#+end_src
+
+Each pad binds a *pedal label* to a *sample* -- a filename under the top-level
+=drum-samples/= folder (a =sample= may name a subpath, e.g. =808/kick.wav=, for
+multi-kit layouts) -- with an optional =gain= (default 1.0; the KMSS sends no
+velocity today, so level is fixed per pad).
+
+* behavior notes
+
+- *Fixed velocity.* The KMSS currently emits only Program Changes (=PC = preset*10
+  + pedal=), which carry no velocity. So every hit plays at its pad's =gain=.
+  Velocity would need the device's "tether mode," currently blocked
+  ([[../../../learnings/keith-mcmillen-softstep.org]]).
+- *Preset-independent.* The pedal is decoded as =program % 10=, so the kit works
+  no matter which on-device preset is showing.
+- *Per-pedal debounce.* A hard stomp can emit the same PC twice within a few ms;
+  =debounce_ms= suppresses a repeat of the *same* pedal within the window. It is
+  per pedal, so two different pedals struck together (two feet within ~1 ms) both
+  fire faithfully.
+- *Polyphonic.* Hits overlap; a ringing crash keeps sounding under later hits
+  (up to a 64-voice pool, then the most-finished voice is stolen).
+
+* validation (rejected at load)
+
+- a pedal outside 0..9;
+- the same pedal assigned twice in one window, or claimed by two windows on the
+  same device;
+- a =softstep=/=sink= reference to an undeclared id, or a =sink= that is not a
+  =cpal_sampler=;
+- a sample path that is absolute or escapes the samples root (contains =..=);
+- a declared softstep that no window uses.
+
+Sample *files* are not checked at parse time (validation is filesystem-free, so
+configs stay unit-testable); a missing WAV errors clearly at launch.
+
+* swapping arrangements
+
+Different drumkit = a different config, or (later) a different softstep-window
+=kind= -- exactly the monome story. To change which pedal plays what, edit =pads=;
+to change the sounds, point each =sample= at a different file under =drum-samples/=
+(use a subfolder + subpath for an alternate kit), or replace the WAVs in
+=drum-samples/=.
