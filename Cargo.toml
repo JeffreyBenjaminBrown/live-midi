@@ -37,4 +37,4 @@ rosc = "0.10"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-cpal = "0.15"
+cpal = { version = "0.15", features = ["jack"] }

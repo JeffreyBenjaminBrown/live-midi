@@ -303,7 +303,20 @@ fn start_audio_stream(
   amplitude: f32,
   oversample: usize,
 ) -> Result<AudioRuntime, Box<dyn std::error::Error>> {
-  let host = cpal::default_host();
+  // Prefer the JACK host so this synth is an ordinary JACK node that shares the
+  // sound card via PipeWire, rather than cpal's default ALSA host grabbing the
+  // device exclusively and evicting PipeWire (which silences all other audio,
+  // e.g. the Claude stop-hook beep). Built with cpal's `jack` feature; launch
+  // under `pw-jack` so libjack resolves to PipeWire's. If the `jack` feature is
+  // not compiled in, fall back to the previous default (ALSA) host.
+  let host = match cpal::available_hosts()
+    .into_iter()
+    .find(|id| format!("{id:?}").eq_ignore_ascii_case("jack"))
+  {
+    Some(jack_id) => cpal::host_from_id(jack_id)
+      .map_err(|e| format!("JACK host unavailable ({e}); launch under `pw-jack`"))?,
+    None => cpal::default_host(),
+  };
   let device = host.default_output_device().ok_or("no default output device")?;
   let default_cfg = device.default_output_config()?;
   let default_channels = default_cfg.channels();
