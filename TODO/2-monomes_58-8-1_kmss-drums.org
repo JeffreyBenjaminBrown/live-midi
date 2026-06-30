@@ -1,0 +1,178 @@
+#+title: Plan -- 2-monomes_58-8-1_kmss-drums (two EDO grids + scroll + KMSS drums)
+#+date: 2026-06-30
+
+Status: PLAN, not yet implemented. Greenlit in [[../hey-jeff.org]] (all questions
+DONE). Background constraint + decisions also in Claude memory
+(=surfaces-unification-plan=).
+
+* what we're building
+
+One config, =2-monomes_58-8-1_kmss-drums.toml=, driving three surfaces at once:
+- *two* monome 16x16 grids, each a full-grid 58-EDO play surface, each with
+  - a 3x2 *scroll pad* in the bottom-right (=[13,14,15,15]=) that moves *that
+    grid's* pitch window (arrows = +/-1 cell, top corners = +/-1 octave), and
+  - a 4-cell *waveform selector* on the top row (=[0,0]..[3,0]=) -- sine / triangle
+    / square / saw -- that sets the *other* grid's timbre;
+- the *KMSS* pedalboard as a drumkit (reuse the =kmss-drumkit= TR-808 mapping).
+
+Sound: each grid's voices are *independent* (the same pitch fingered on both grids
+is two separate voices, and releasing one never cuts the other) and play in that
+grid's currently-selected waveform. Drums are their own one-shot sampler.
+
+* settled decisions (from hey-jeff.org)
+- Tuning: 58-EDO, =x_step 8=, =y_step 1=, =fundamental_hz 80= (the 58-8-1 family).
+- Both grids share the tuning; each has an *independent* scroll register and
+  *independent* voices.
+- Per-grid timbre via a *waveform-only* 4-button strip (no AM/FM, fixed volume);
+  each grid's strip controls the *other* grid.
+- Reuse the =kmss-drumkit= pedal/sample layout verbatim.
+- Leave piano / remap / looper on their current paths.
+
+* coordination with the velocity-drum rewrite at ../main  [READ FIRST]
+
+Another agent (worktree =../main=) is making the drum trigger *velocity-sensitive*
+-- the "notes preset / tether" escape from the lossy Program-Change preset
+described in [[./concurrent-drums.org]]. That work edits the drumkit's decode +
+trigger (+ probably its =pads= config). This plan *reuses* the drumkit machinery,
+so it must not collide:
+
+- *Consume, don't fork.* The surfaces runtime calls the drumkit's public pieces
+  (=drumkit_runtime::audio::{Sampler,Trigger}=, =decode=, =samples=, the =drumkit=
+  window kind + the =cpal_sampler= sink). It does NOT copy or edit
+  =drumkit_runtime/audio.rs= or =decode.rs=. When velocity lands, surfaces inherits
+  it for free.
+- *Sequencing (preferred): land velocity on main first, then rebase this branch
+  onto it* and build against the final =Trigger::fire(...)= signature (likely gains
+  a velocity arg) and any new =pads= fields. If the two must run in parallel, keep
+  every surfaces change *additive* (new files) so the only files that could conflict
+  are ones this plan otherwise leaves alone.
+- *Refactor caution.* Phase 0 lifts shared code into the lib -- but do NOT move any
+  =drumkit_runtime/= files; reuse them in place (the binary already compiles them
+  as a sibling module). Only the grid/synth pure code moves, which that agent isn't
+  touching.
+- Nothing here depends on the velocity outcome: the pedal decode is
+  preset-independent and the mixer is polyphonic + tested (concurrent-drums.org),
+  so surfaces works with PC-today and Note-On-with-velocity-later alike.
+
+* the architectural problem (why this needs a runtime, not just a TOML)
+
+=midi_pulse.rs::main= dispatches to exactly ONE runtime (a mutually-exclusive
+=if / else if=). The three features live in three runtimes that each take over the
+whole app: EDO grid+synth = *sawwave* (binds one grid), scroll pad = *looper*-only
+(and config rules force the full looper stack), drums = *drumkit* (binds no grids;
+leads dispatch on any softstep window). So no pure config composes them -- we add a
+new composite "surfaces" path and lift the shared pieces out of the looper.
+
+* plan, as bite-sized commits
+
+** Phase 0 -- lift shared grid/synth pieces into the lib (no behavior change)
+So the looper isn't the sole owner of the scroll math + waveform synth, and the
+looper keeps working unchanged. Run =cargo test -p midi_pulse= after each step.
+
+1. *Scroll / EDO math.* Move the pure fns from =looper_runtime/edo.rs=
+   (=step_for_cell=, =shift_for_cell=, =register_delta=, =Shift=) into a lib module
+   (=midi_pulse/edo_play.rs=, exported from =lib.rs=); import them back into the
+   looper so its call sites + tests are unchanged. Keep the unit tests with the code.
+2. *Distinct-grid assignment.* Lift =looper_runtime/device.rs::assign_distinct_devices=
+   (+ tests) to a shared module for the two-grid bind. It is already general.
+3. *Waveform synth* (the bigger lift). The waveform-capable voice/render path lives
+   in the looper: =types::{Timbre, Waveform}=, =looper_runtime/sink.rs=,
+   =looper_runtime/audio.rs=. Expose / extract what surfaces needs -- a per-voice
+   =Timbre= where we only vary =waveform= (gain + AM/FM stay default and inert) and
+   the block renderer -- without changing looper behavior.
+   - *Linchpin detail:* the looper sink keys voices by *pitch* (=voice_key(pitch)=).
+     Surfaces must key by *(grid, cell)* so the same pitch on both grids is two
+     voices and a release never gates the other grid. Parameterize voice identity
+     (a grid/source discriminant) rather than pitch-only; confirm the looper still
+     keys the way it expects.
+
+** Phase 1 -- free the scroll pad from the looper (validation)
+In =config.rs=, =edo_shift_pad= currently sits in the looper's all-or-nothing set
+(=validate_looper='s =any_loop_window=), so it can't appear without slots /
+transport / display. Make it a *generally-valid* window: validate it generically
+(rect fits the grid; an =edo_note_grid= exists on the *same* monome to shift) and
+drop it from =any_loop_window=. The looper configs still validate (they carry
+=loop_display= etc.). Tests: a shift pad on a plain grid parses; a shift pad with no
+edo grid on its monome is rejected.
+
+** Phase 2 -- config schema: new window + dispatch predicate
+1. Add a =waveform_selector= =MonomeWindowConfig= variant:
+   ={ id, monome, rect, controls }=, where =controls= is the monome id whose timbre
+   the strip sets. Validate: rect covers exactly the 4 waveform cells; =controls=
+   names a declared monome that has an =edo_note_grid= (we *allow* =controls !=
+   monome=, which is the cross-control the config uses).
+2. Add =is_surfaces_config= + an arm in =main=, ordered *before* =is_drumkit_config=
+   and =is_monome_sawwave_config=. Precise definition so existing configs are
+   untouched: has >=1 =edo_note_grid=, has NO =loop_display=, and at least one of
+   { a =softstep_window=, an =edo_note_grid= on >1 distinct monome, a
+   =waveform_selector= }. Also tighten =is_drumkit_config= to "softstep windows AND
+   no monome windows" so a grids+drums config can't fall into the drums-only arm.
+
+** Phase 3 -- the surfaces runtime
+New module =surfaces_runtime/= (mirrors the looper / drumkit shape).
+=run_from_config=:
+1. *Discover + bind* both grids (=assign_distinct_devices=) and the KMSS (reuse the
+   drumkit runtime's midir bind + port select).
+2. *Audio*: one waveform synth stream (shared; voices carry their grid's waveform) +
+   one =cpal_sampler= (the drumkit). Both are JACK nodes under =pw-jack=.
+3. *Per grid*, a thread running the serialosc key/LED loop (model on
+   =sawwave_runtime=), routing a press by window:
+   - edo cell -> note on/off into the synth; voice id = =(grid, cell)=; timbre =
+     this grid's current waveform. LED like sawwave (lit while sounding).
+   - scroll pad -> move *this grid's* register (=register_delta=); repaint.
+   - waveform selector -> set the *controlled* grid's current waveform; light the
+     chosen cell; the target grid's next notes use it.
+4. *KMSS thread*: reuse the drumkit callback (decode -> debounce -> trigger).
+5. Shared state behind a mutex (per-grid register + waveform); audio voices behind
+   their own lock; the looper's lock discipline. STOP / SIGINT blanks both grids and
+   drops audio.
+
+** Phase 4 -- the config file
+=code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=:
+- =[[tunings]] main= = 58 / 8 / 1 / 80.
+- =[[monomes]]= =a= (port 9000) and =b= (port 9001), distinct prefixes.
+- =[[sinks]]= one =cpal_synth= ("synth") + one =cpal_sampler= ("drums").
+- grid =a=: =edo_note_grid [0,0,15,15]= + =edo_shift_pad [13,14,15,15]= +
+  =waveform_selector [0,0,3,0] controls = "b"=.
+- grid =b=: same, with =waveform_selector ... controls = "a"=.
+- =[[softsteps]] feet= + =[[softstep_windows]] drumkit= (kmss-drumkit pads verbatim).
+- No =[looper]=, no loop windows, no AM/FM, no display.
+
+** Phase 5 -- tests + headless verification
+- *Unit:* config parse/validate (the new file; =waveform_selector= validation;
+  standalone shift pad; the surfaces predicate vs sawwave / looper / drumkit).
+  Voice independence (two grids, same pitch -> two voices; release one, the other
+  stays). Waveform routing (selector on A writes B's waveform). Per-grid scroll.
+- *Headless device-layer smoke:* =mock_monome= x2 + =MIDI_PULSE_NO_AUDIO= (see
+  [[../MOCK-MONOME.org]]); add a =-mock= rig config if useful. Confirms discovery,
+  both grids bind, LEDs, presses route -- no hardware, no sound.
+- *Two-cpal-streams check:* confirm the synth + sampler coexist in one process under
+  =pw-jack= (the open risk; both are JACK nodes since commit =f6a16d5=).
+- *Hardware* (Jeff, since I can't watch the grids): both grids play + scroll
+  independently; each grid's top-row buttons change the *other* grid's timbre; pedals
+  drum; Ctrl-C blanks both grids and stops audio.
+
+** Phase 6 -- docs
+Companion =code/rust/configs/2-monomes_58-8-1_kmss-drums.org= (like the looper's
+.org): glossary, a layout diagram per grid, and how the cross-grid waveform control
+reads. Add a =waveform_selector= line to =configs/README.org='s window-kinds list.
+
+* open questions / risks (none block the plan; resolve in-flight)
+- *Voice keying* (Phase 0.3): confirm the looper's pitch-keying parameterizes
+  cleanly -- this is the linchpin of "independent voices."
+- *Waveform change vs held notes:* a selector press changes *future* notes on the
+  target grid (radio semantics); held voices keep their waveform. Simplest; revisit
+  if live re-timbre is wanted.
+- *Two cpal streams* under =pw-jack=: verify (above).
+- *Velocity-drum merge:* prefer rebasing onto =main= after that lands (see
+  coordination section).
+
+* reuse map (file -> what we take)
+- =looper_runtime/edo.rs= -> scroll / EDO math (lift to lib).
+- =looper_runtime/device.rs= -> =assign_distinct_devices= (lift to lib).
+- =looper_runtime/{types,sink,audio}.rs= -> =Timbre= / =Waveform= voices + renderer
+  (expose the waveform-only path).
+- =sawwave_runtime.rs= -> the single-grid event/LED loop shape (generalize to N).
+- =drumkit_runtime/= -> KMSS bind + decode + sampler (reuse *in place*; do NOT move
+  -- the velocity work lives here).
+- =midi_pulse.rs= -> new =is_surfaces_config= arm, before the drumkit + sawwave arms.
