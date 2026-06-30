@@ -1,0 +1,168 @@
+#+title: How loop-note timbre is represented (and why the lit button lags)
+
+A report answering: /can a loop hold two notes of different timbres at once?/ and
+the deeper /how are these things represented?/ It also explains the symptom that
+started this -- the edo grid's lit waveform button only updates "on the next
+played note," and not at all when no loop is playing.
+
+All file:line references are to =code/rust/midi_pulse/looper_runtime/= unless noted
+(=types.rs= is =code/rust/midi_pulse/sawwave/types.rs=).
+
+* the short answers
+
+- *Yes, a loop holds a separate timbre per note.* Timbre is stored on each
+  note-*on* event, not on the loop as a whole. Two notes overlapping in time can
+  carry two different timbres.
+- *Yes -- with one exception -- note A keeps its old timbre and note B gets the
+  new one*, exactly as you guessed. The exception is when A and B are the *same
+  pitch* and A is still sounding: then B does not get its own voice at all (see
+  [[* layer 3 -- the sink (what actually makes sound)]]).
+- *A timbre is frozen into a voice at note-on.* Editing a note's stored timbre
+  while it is ringing does **not** change the ringing sound; it changes what you
+  hear the *next* time that note-on fires. This, plus playhead-tracking, is why the
+  lit button "updates only on the next played note."
+
+* the three layers
+
+There are three distinct representations, and "the timbre" means a different thing
+in each. Most of the confusion comes from conflating them.
+
+** layer 1 -- the live timbre (one global value)
+
+=LooperState.live_timbre= is a single =Timbre= (=types.rs:108-120=: waveform,
+linear gain, =Am=, =Fm=). It is what *fingered edo notes* pick up at the moment
+they sound (=state.rs:327-328=) and what a *recording* stamps onto each note it
+captures. The *loops*-grid editor (=target = "live"=) edits this one value, so its
+lit waveform is simply "the global live timbre" -- always present, never moving.
+That is why that grid "always" shows an active timbre lit.
+
+** layer 2 -- the loop store (a timbre per note-on)
+
+A loop is a flat, time-sorted list of events:
+
+#+begin_src rust
+// loop_store.rs:17-23
+pub struct LoopEvent {
+  pub elapsed: Duration,  // offset from loop start
+  pub pitch: i32,         // absolute EDO step
+  pub on: bool,           // note-on vs note-off
+  pub timbre: Timbre,     // captured at record time; UNUSED on off-events
+}
+#+end_src
+
+So the timbre lives *on each note-on*. A four-note loop has four independent
+=Timbre= snapshots. There is no "loop timbre" -- only the per-note ones. (Off
+events carry a junk =Timbre= that nothing reads.)
+
+How a note-on gets its timbre:
+
+- *At record time*: =record_note_with(now, pitch, true, self.live_timbre)=
+  (=state.rs:328=, =loop_store.rs:253-257=) snapshots the live timbre *at that
+  note's onset*. Change the live timbre between two played notes and the two notes
+  store different timbres -- captured, not referenced.
+- *By editing later*, via the edo (=target = "loop"=) editor. =editor_param=
+  (=state.rs:471-483=) has two paths (6_plan 2.4):
+  1. *Selection active* (=stamp_loop=, =state.rs:528-542=): immediately rewrites
+     the stored =timbre= of every selected note-on. Works on a stopped loop. Snap-
+     shotted for the loop-undo button.
+  2. *No selection, loop playing* (play-along): the held parameter is parked in
+     =timbre_overrides= (=state.rs:476-479=) and applied to each note-on *as the
+     playhead crosses it* (=state.rs:998-1015=). It is *destructive* -- it edits
+     the stored timbres of the notes the playhead passes, reverted only by the
+     save-undo checkpoint, not per-edit history.
+
+   Path 2 is the direct cause of "the lit button updates only on the next played
+   note": a held edit reaches a note only when the playhead next triggers that
+   note-on.
+
+** layer 3 -- the sink (what actually makes sound)
+
+=SawNoteSink= turns note-ons into *voices*. Two facts here dominate the behavior:
+
+1. *A voice copies its timbre at note-on and never re-reads it.*
+   =note_on(pitch, source, timbre)= stamps =VoiceState.timbre= once
+   (=sink.rs:68-95=, =types.rs:125-138=); =render_block= reads only the voice.
+   Editing =LoopEvent.timbre= afterward changes the *stored* note, not the
+   *ringing* voice. The edit is heard on the next pass, when that note-on re-fires.
+
+2. *Voices are keyed by pitch alone, ref-counted across all sources.*
+   =voice_key(pitch)= ignores the source (=sink.rs:148-150=); =refs: pitch ->
+   {sources}= (=sink.rs:34=). The first source to want a pitch creates the voice
+   with *its* timbre; any later source wanting the *same pitch* only bumps the
+   ref-count -- "the first holder's timbre wins" (=sink.rs:67,72-74=). The pitch
+   goes silent only when the last holder releases.
+
+   This is global across =NoteSource::Live= (an edo finger) *and* every
+   =NoteSource::Slot(n)= (=sink.rs:23-29=). So a live note and a loop note at the
+   same absolute pitch also collapse into one voice.
+
+* the question, answered precisely
+
+"/Note A is sounding; I change timbre; note B sounds; A never ended -- does A keep
+the old timbre and B the new?/"
+
+- *A and B are different pitches* (the normal chord case): *Yes.* Two independent
+  voices, each stamped at its own note-on. A rings on with its captured timbre; B
+  sounds with whatever B's stored timbre is when B fires -- the new one, if you are
+  holding a play-along override or B was in the stamped selection.
+- *A and B are the same pitch, A still held when B onsets*: B creates *no* new
+  voice -- it ref-counts onto A's voice and inherits A's timbre (=sink.rs:72-74=).
+  There is no way for one pitch to sound two timbres at once.
+- *Either way, A's already-ringing sound never changes*, because a voice's timbre
+  is frozen at note-on (layer 3 fact 1). "Change the timbre of a sounding note" is
+  not expressible against a live voice; it only edits the stored event for next
+  pass.
+
+* why the lit button lags (tying it back to the UI)
+
+The edo editor lights the waveform of =displayed_timbre(Loop)= (=state.rs:560-573=),
+which resolves in this order:
+
+1. lowest *selected* note's timbre (=lowest_selected_timbre=), else
+2. lowest *currently sounding* loop note's timbre, read from the sink's live
+   ref-counts at the playhead (=lowest_sounding_loop_timbre=, =state.rs:587-595=),
+   else
+3. =loop_display_held= -- the last sounded note's timbre, held across rests, only
+   refreshed inside =playback_tick= (=state.rs:1031=), else
+4. the live timbre (stopped, nothing selected, nothing ever played).
+
+So the lit button is *playhead-driven*: it can only change when the playhead
+crosses a new note-on (step 2/3 refresh in =playback_tick=). With no loop playing
+and nothing selected it falls through to step 4 -- the *live* timbre -- which is
+why it "won't update when there's no loop playing": there is no per-note loop
+timbre to show, so it shows the global one.
+
+Contrast the loops grid: =displayed_timbre(Live)= is just =live_timbre=, a single
+steady value, so its lit waveform is "always on." The two editors *are* the same
+=timbre_editor= abstraction (=timbre_editor.rs=); they differ only in what
+=displayed_timbre= feeds them. The asymmetry is in the *data being shown*, not the
+widget.
+
+* gotchas worth keeping in mind
+
+- *"Loop timbre" is plural.* Asking "what is this loop's timbre" is ill-posed; the
+  honest answers are per-note. Any single lit button over a polytimbral loop is
+  necessarily a lossy summary (currently: the lowest sounding/selected note).
+- *Editing never touches ringing voices.* All three edit paths (record, stamp,
+  play-along) write =LoopEvent.timbre=; none reach a live =VoiceState=. Audible
+  only next pass.
+- *Same-pitch overlap is monotimbral and first-wins.* Includes live-vs-loop pitch
+  collisions, since voices are keyed by pitch globally.
+- *Play-along is destructive and playhead-gated.* A held no-selection edit silently
+  rewrites stored timbres note-by-note as the playhead sweeps; only save-undo
+  reverts it.
+
+* if we wanted the lit button to feel live (design notes, not done)
+
+The current behavior is a faithful readout of the model, not a bug. If the goal is
+"the edo button always shows a sensible loop timbre, updating immediately":
+
+- *Stopped / no selection*: show the lowest note-on's stored timbre of the active
+  loop (a cheap scan of =slots[active].events=) instead of falling through to the
+  live timbre. Gives a steady, loop-specific reading even when not playing.
+- *Immediate selection feedback*: already works -- selecting refreshes step 1
+  without the playhead. Encourage selecting before dialing.
+- *Truly per-voice live timbre* (one pitch, two timbres at once, or re-timbring a
+  ringing note) would require keying sink voices by =(source, pitch)= or by event
+  id rather than pitch, and re-reading timbre per block -- a layer-3 change with
+  real cost. Out of scope unless that musical capability is actually wanted.
