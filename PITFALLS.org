@@ -7,9 +7,9 @@ each with a *followable link to its source*. Put point on a link and follow it w
 to the exact heading or line. Auto-collected by sweeping the docs and source, then every
 anchor was verified to resolve. Grouped by area; regenerate/extend as the code grows.
 
-Currently *141 pitfalls* across 54 files.
+Currently *142 pitfalls* across 54 files.
 
-* MIDI, ALSA & the SoftStep (KMSS)  (41)
+* MIDI, ALSA & the SoftStep (KMSS)  (42)
 - [[file:README.org::To read MIDI data without freezing][Reading raw MIDI directly blocks/freezes]]
   Reading raw binary data directly from a MIDI device blocks indefinitely and freezes.  /Fix:/ Use aseqdump with a timeout and head, e.g. `timeout 10s aseqdump -p 20:0 | head -20`; list devices with aconnect -l / amidi -l.
 - [[file:TODO/concurrent-drums.org::the short answer (current best hypothesis)][Two drum pads won't fire near-simultaneously (device sends one Program Change)]]
@@ -68,6 +68,8 @@ Currently *141 pitfalls* across 54 files.
   Switching the SoftStep into tether mode leaves it in the wrong mode if the process dies without restoring it.  /Fix:/ All mode-changing scripts and the Rust runtime restore standalone mode on exit -- including on error and Ctrl-C/SIGTERM.
 - [[file:learnings/keith-mcmillen-softstep.org::refreshes its sensors only][SoftStep sensors refresh only ~every 10 ms]]
   The SoftStep refreshes its sensors only ~every 10 ms and a strike peaks on the 2nd refresh, so too-short a velocity attack window misses the peak.  /Fix:/ Use a ~14 ms ATTACK window (poll at 1 ms so firing isn't delayed past it); tunable in drumkit_runtime/decode.rs.
+- [[file:code/rust/midi_pulse/drumkit_runtime/decode.rs::const ON_SUM][Soft foot presses are dropped if they never cross the onset threshold]]
+  A pad registers a hit only when its sum-of-4 pressure rises past `ON_SUM` (default 40), so a soft strike whose peak never reaches 40 produces no hit at all.  /Fix:/ Lower `ON_SUM` in drumkit_runtime/decode.rs (e.g. to 25); keep it above `OFF_SUM` (20) so the hysteresis still works — drop `OFF_SUM` too if you go lower. Too low invites phantom triggers from a resting foot.
 - [[file:learnings/keith-mcmillen-softstep.org::*Sending to the device (the breakthrough)][Send SoftStep SysEx via ALSA rawmidi, not the sequencer (aseqsend)]]
   An earlier attempt sent control SysEx (mode switch, backlight, firmware query) to the SoftStep over the ALSA sequencer (aseqsend) and everything was silently ignored, leading to the wrong conclusion 'we can't send'.  /Fix:/ Send via ALSA rawmidi instead (amidi -p hw:1,0,0). A rawmidi node /dev/snd/midiC1D0 does exist; the firmware query is answered and tether mode engages.
 - [[file:learnings/keith-mcmillen-softstep.org::assigned at plug-in and is NOT stable][Match SoftStep by name substring 'SSCOM', not a hardcoded ALSA client:port]]

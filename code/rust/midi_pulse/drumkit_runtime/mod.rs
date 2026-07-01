@@ -44,6 +44,8 @@ struct PadBinding {
 struct DeviceBuild {
   pedal_map: [Option<PadBinding>; 10],
   select_substring: String,
+  /// Per-pad minimum gap between hits (widest among the device's drumkit windows).
+  debounce_ms: u64,
 }
 
 pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -92,18 +94,21 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
       DeviceBuild {
         pedal_map: std::array::from_fn(|_| None),
         select_substring: softstep.select.name_substring().to_string(),
+        debounce_ms: 0,
       },
     );
   }
   for window in &config.softstep_windows {
-    // `debounce_ms` is ignored now: the tether onset uses on/off hysteresis instead.
-    let SoftstepWindowConfig::Drumkit { softstep, sink, pads, .. } = window;
+    let SoftstepWindowConfig::Drumkit { softstep, sink, debounce_ms, pads, .. } = window;
     let sampler = samplers
       .get(sink)
       .ok_or_else(|| format!("drumkit window references unbuilt sink {sink:?}"))?;
     let device = devices
       .get_mut(softstep)
       .ok_or_else(|| format!("drumkit window references unknown softstep {softstep:?}"))?;
+    // A device's debounce is the widest window among its drumkit windows (they
+    // partition pedals, so in the common one-window case this is just its value).
+    device.debounce_ms = device.debounce_ms.max(*debounce_ms);
     for pad in pads {
       let path = drum_samples_dir().join(&pad.sample);
       let sample = samples::load_wav(&path)?;
@@ -127,10 +132,10 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
   let mut connections: Vec<MidiInputConnection<()>> = Vec::new();
   let mut timers: Vec<(Arc<AtomicBool>, JoinHandle<()>)> = Vec::new();
   for (device_id, build) in devices {
-    let DeviceBuild { pedal_map, select_substring } = build;
-    print_device_summary(&device_id, &pedal_map);
+    let DeviceBuild { pedal_map, select_substring, debounce_ms } = build;
+    print_device_summary(&device_id, &pedal_map, debounce_ms);
 
-    let decoder = Arc::new(Mutex::new(TetherDecoder::new()));
+    let decoder = Arc::new(Mutex::new(TetherDecoder::new(debounce_ms)));
 
     // Timer thread: fire hits whose attack window has elapsed. It owns the pad map
     // and sample triggers; the MIDI callback only feeds sensor readings in.
@@ -252,8 +257,8 @@ fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPo
   Ok(matches.remove(0).0)
 }
 
-fn print_device_summary(device_id: &str, pedal_map: &[Option<PadBinding>; 10]) {
-  println!("  device {device_id:?} pedal map (tether mode, velocity-sensitive):");
+fn print_device_summary(device_id: &str, pedal_map: &[Option<PadBinding>; 10], debounce_ms: u64) {
+  println!("  device {device_id:?} pedal map (tether, velocity-sensitive, debounce {debounce_ms} ms):");
   // Print in printed-label order 1..9, then 0, skipping unmapped pedals.
   for label in (1..=9).chain(std::iter::once(0)) {
     if let Some(binding) = &pedal_map[label as usize] {

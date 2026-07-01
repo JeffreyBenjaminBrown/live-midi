@@ -225,8 +225,9 @@ Consequences:
   surface slows and scatters it. Re-check =ATTACK= if you change playing surface.
 
 ** The knobs
-All live in =code/rust/midi_pulse/drumkit_runtime/decode.rs=; the poll interval is in
-=drumkit_runtime/mod.rs= (=run_voice_timer=). The Python meter
+Most live in =code/rust/midi_pulse/drumkit_runtime/decode.rs= (the poll interval is in
+=drumkit_runtime/mod.rs=; =debounce_ms= is a per-window field in the =kmss-drumkit=
+config, =code/rust/configs/kmss-drumkit.toml=). The Python meter
 =code/python/softstep/meter.py= mirrors =VEL_DB_RANGE= / =ATTACK_MS= so what you audition
 matches the kit. Symptom -> fix:
 
@@ -237,6 +238,7 @@ matches the kit. Symptom -> fix:
 | =VELOCITY_FULL_SCALE= | 460   | pad pressure (sum of its 4 sensors, 0..508) that maps to velocity 127 | *everything maxes out*, no headroom -> raise toward 508; *can't reach full* even hitting hard -> lower    |
 | =ON_SUM= / =OFF_SUM= | 40 / 20 | onset / release thresholds on the pad's sum-of-4 (hysteresis)      | *double/false* triggers -> raise =ON_SUM=; a pad *won't retrigger (stuck)* -> lower =OFF_SUM=             |
 | poll interval       | 1 ms    | how often the fire-timer checks for matured hits                     | rarely needs changing; the ~10 ms device scan dominates                                                |
+| =debounce_ms= (config) | 50 ms | min gap between two hits on the SAME pad, *in addition to* a release below =OFF_SUM= | *machine-gunning / bounce on one pad* -> raise; *fast rolls cut off* -> lower (0 = release-only)         |
 
 Velocity = the *peak of sum-of-4* over the =ATTACK= window, scaled by =VELOCITY_FULL_SCALE=
 to 1..127, then converted to a gain spread over =VELOCITY_DB_RANGE=. (Loudness is
