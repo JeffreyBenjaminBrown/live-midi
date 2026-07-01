@@ -151,7 +151,7 @@ pads = [
   { pedal = 2, sample = "snare.wav" },
   { pedal = 6, sample = "low_tom.wav" },
   { pedal = 7, sample = "high_tom.wav" },
-  { pedal = 8, sample = "crash.wav" },
+  { pedal = 8, sample = "crash_electronic.wav", gain = 0.5 },  # real crash (synth, CC0), not the 808 CY; fuller than the kit -> trimmed a bit
   { pedal = 4, sample = "hat.wav" },
   { pedal = 5, sample = "ride.wav" },
   { pedal = 9, sample = "cowbell.wav" },
