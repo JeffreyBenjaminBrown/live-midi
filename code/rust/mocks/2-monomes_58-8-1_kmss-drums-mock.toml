@@ -1,0 +1,84 @@
+version = 1
+id = "2-monomes_58-8-1_kmss-drums-mock"
+title = "Two monomes (58-8-1) + KMSS drums (mock grids)"
+
+# ---------------------------------------------------------------------------
+# Headless mock of the surfaces runtime: two mock 16x16 grids with the scroll
+# pads + cross-control waveform strips, driven with MIDI_PULSE_NO_AUDIO (no
+# sound card). The KMSS drumkit is deliberately OMITTED here: entering tether
+# mode shells out to `amidi` against a real device, which a headless test has
+# no way to satisfy. This still exercises the two-grid discovery/bind, LED
+# output, and press routing -- the device layer the pure tests can't. The runtime
+# is still selected as "surfaces" (two edo grids on distinct monomes).
+# ---------------------------------------------------------------------------
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.050
+accretion_level = 0.5
+
+[[monomes]]
+id = "a"
+listen_port = 9102
+prefix = "/mock-surface-a"
+select.size = [16, 16]
+
+[[monomes]]
+id = "b"
+listen_port = 9103
+prefix = "/mock-surface-b"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "wave-a"
+monome = "a"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "b"
+
+[[monome_windows]]
+id = "scroll-a"
+monome = "a"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+
+[[monome_windows]]
+id = "grid-b"
+monome = "b"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "wave-b"
+monome = "b"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "a"
+
+[[monome_windows]]
+id = "scroll-b"
+monome = "b"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]

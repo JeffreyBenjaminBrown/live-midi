@@ -1,0 +1,137 @@
+version = 1
+id = "2-monomes_58-8-1_kmss-drums"
+title = "Two monomes (58-8-1) + KMSS drums"
+
+# ===========================================================================
+# THREE SURFACES AT ONCE (see configs/2-monomes_58-8-1_kmss-drums.org):
+#   - two 16x16 monome grids, each a full 58-EDO play surface with its own
+#     independent scroll register and its own voices;
+#   - the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.
+#
+# Each grid also carries a 4-cell waveform strip on its top row that sets the
+# *other* grid's timbre (cross-control), and a 3x2 scroll pad in the bottom-
+# right that moves *that* grid's pitch window. The same pitch fingered on both
+# grids is two independent voices (releasing one never cuts the other), each in
+# its grid's currently-selected waveform.
+#
+# Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
+#   pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
+# ===========================================================================
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+# The play-grid synth (both grids' voices go here; each voice carries its grid's
+# waveform). Waveform-only timbre -- gain/AM/FM stay at their inert defaults.
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.050
+accretion_level = 0.5
+
+# The drum sampler (one-shot WAVs). Same cpal/JACK path as the synth.
+[[sinks]]
+id = "drums"
+kind = "cpal_sampler"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.8
+
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/surface-a"
+select.size = [16, 16]
+
+[[monomes]]
+id = "b"
+listen_port = 9001
+prefix = "/surface-b"
+select.size = [16, 16]
+
+# ---------------------------------------------------------------------------
+# GRID A -- 58-EDO play surface. Its waveform strip sets grid B's timbre.
+# ---------------------------------------------------------------------------
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+# 4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID B.
+[[monome_windows]]
+id = "wave-a"
+monome = "a"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "b"
+
+# 3x2 scroll pad, bottom-right: arrows shift grid A's pitch window by one cell,
+# the two top corners by an octave.
+[[monome_windows]]
+id = "scroll-a"
+monome = "a"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+
+# ---------------------------------------------------------------------------
+# GRID B -- 58-EDO play surface. Its waveform strip sets grid A's timbre.
+# ---------------------------------------------------------------------------
+
+[[monome_windows]]
+id = "grid-b"
+monome = "b"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "wave-b"
+monome = "b"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "a"
+
+[[monome_windows]]
+id = "scroll-b"
+monome = "b"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+
+# ---------------------------------------------------------------------------
+# KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit layout.
+# ---------------------------------------------------------------------------
+
+[[softsteps]]
+id = "feet"
+select.name_contains = "SSCOM"
+
+[[softstep_windows]]
+id = "kit"
+softstep = "feet"
+kind = "drumkit"
+sink = "drums"
+debounce_ms = 50
+pads = [
+  { pedal = 1, sample = "kick.wav" },
+  { pedal = 2, sample = "snare.wav" },
+  { pedal = 6, sample = "low_tom.wav" },
+  { pedal = 7, sample = "high_tom.wav" },
+  { pedal = 8, sample = "crash.wav" },
+  { pedal = 4, sample = "hat.wav" },
+  { pedal = 5, sample = "ride.wav" },
+  { pedal = 9, sample = "cowbell.wav" },
+  { pedal = 0, sample = "wood_block.wav" },
+]

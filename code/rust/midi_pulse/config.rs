@@ -498,6 +498,18 @@ pub enum MonomeWindowConfig {
     rect: [i32; 4],
     control: ScaleControlKind,
   },
+  // A 4-cell waveform picker (sine / triangle / square / saw) overlaid on the edo
+  // grid. Used by the surfaces runtime: each grid's strip sets the timbre of the
+  // monome named by `controls` (the config wires each grid's strip to the OTHER
+  // grid). Purely a radio selector -- no gain/AM/FM, fixed volume.
+  WaveformSelector {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    /// The monome id whose play voices this strip re-timbres (may differ from
+    /// `monome`, which is the surfaces cross-control the config uses).
+    controls: String,
+  },
   // ---- Looper windows (see 6_plan.org). ----
   // The 3x2 shift pad overlaid on the lower-right of the edo grid.
   EdoShiftPad {
@@ -643,6 +655,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::RecordControl { id, .. }
       | MonomeWindowConfig::ScaleSlots { id, .. }
       | MonomeWindowConfig::ScaleControl { id, .. }
+      | MonomeWindowConfig::WaveformSelector { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
       | MonomeWindowConfig::LoopControl { id, .. }
@@ -669,6 +682,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::RecordControl { monome, .. }
       | MonomeWindowConfig::ScaleSlots { monome, .. }
       | MonomeWindowConfig::ScaleControl { monome, .. }
+      | MonomeWindowConfig::WaveformSelector { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
       | MonomeWindowConfig::LoopControl { monome, .. }
@@ -695,6 +709,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::RecordControl { rect, .. }
       | MonomeWindowConfig::ScaleSlots { rect, .. }
       | MonomeWindowConfig::ScaleControl { rect, .. }
+      | MonomeWindowConfig::WaveformSelector { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
       | MonomeWindowConfig::LoopControl { rect, .. }
@@ -722,6 +737,7 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::RecordControl { .. } => "record_control",
       MonomeWindowConfig::ScaleSlots { .. } => "scale_slots",
       MonomeWindowConfig::ScaleControl { .. } => "scale_control",
+      MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
       MonomeWindowConfig::LoopControl { .. } => "loop_control",
@@ -1078,9 +1094,87 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   }
 
   validate_window_groups(config)?;
+  validate_shift_pads(config)?;
+  validate_waveform_selectors(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// A `waveform_selector` is the surfaces runtime's 4-cell timbre picker. Its rect
+/// must cover exactly the four waveform cells (one row, four wide), and `controls`
+/// must name a declared monome that has an `edo_note_grid` (the grid whose voices
+/// it re-timbres). `controls` may differ from the selector's own `monome` -- that
+/// cross-grid wiring is exactly what the surfaces config uses.
+fn validate_waveform_selectors(config: &Config) -> Result<(), String> {
+  let monome_ids: HashSet<&str> = config.monomes.iter().map(|m| m.id.as_str()).collect();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::WaveformSelector { id, monome, rect, controls } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x1 - x0 != 3 || y1 != y0 {
+      return Err(format!(
+        "waveform_selector window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly 4 cells in one row",
+      ));
+    }
+    require_ref("waveform_selector.controls", controls, &monome_ids)?;
+    let controlled_has_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == controls)
+    });
+    if !controlled_has_grid {
+      return Err(format!(
+        "waveform_selector window {id:?} controls monome {controls:?}, which has no edo_note_grid",
+      ));
+    }
+    // The strip is drawn on its own grid, so its rect must fit that monome.
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "waveform_selector window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+  }
+  Ok(())
+}
+
+/// An `edo_shift_pad` is a generally-valid window (not tied to the looper stack):
+/// it needs an `edo_note_grid` on the *same* monome to scroll, and its rect must
+/// fit that monome's grid. This runs for every config, so a plain sawwave grid,
+/// the surfaces runtime's grids, and the looper all validate a shift pad the same
+/// way. (The looper's own `validate_looper` separately checks the edo grid fits.)
+fn validate_shift_pads(config: &Config) -> Result<(), String> {
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::EdoShiftPad { id, monome, rect } = window else {
+      continue;
+    };
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "edo_shift_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    let [x0, y0, x1, y1] = *rect;
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "edo_shift_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+  }
   Ok(())
 }
 
@@ -1186,11 +1280,14 @@ fn validate_looper(config: &Config) -> Result<(), String> {
   };
   let loop_slots = count(|w| matches!(w, MonomeWindowConfig::LoopSlots { .. }));
   let loop_displays = count(|w| matches!(w, MonomeWindowConfig::LoopDisplay { .. }));
+  // NB: edo_shift_pad is deliberately NOT in this set. It is a generally-valid
+  // window (validated by `validate_shift_pads`), so a plain edo grid -- or the
+  // surfaces runtime's two grids -- can carry a scroll pad without pulling in the
+  // whole looper stack. Looper configs still trip this via their loop_display etc.
   let any_loop_window = config.monome_windows.iter().any(|w| {
     matches!(
       w,
-      MonomeWindowConfig::EdoShiftPad { .. }
-        | MonomeWindowConfig::LoopSlots { .. }
+      MonomeWindowConfig::LoopSlots { .. }
         | MonomeWindowConfig::LoopControl { .. }
         | MonomeWindowConfig::LoopRemapModeToggle { .. }
         | MonomeWindowConfig::LoopCopyButton { .. }
@@ -2380,5 +2477,186 @@ pads = [
     );
     let err = parse_config(&toml).expect_err("two windows claiming pedal 1 should fail");
     assert!(err.contains("more than one window"), "{err}");
+  }
+
+  // ---- edo_shift_pad as a generally-valid window (freed from the looper) ----
+
+  #[test]
+  fn shift_pad_on_a_plain_grid_is_valid() {
+    // A plain sawwave grid + a scroll pad, with NO looper stack, must parse:
+    // the shift pad is no longer trapped in the looper's all-or-nothing set.
+    parse_config(r#"
+version = 1
+id = "grid-plus-scroll"
+title = "Grid plus scroll"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[sinks]]
+id = "saw"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.05
+accretion_level = 0.5
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/big"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "edo-grid"
+monome = "big"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "saw"
+
+[[monome_windows]]
+id = "scroll"
+monome = "big"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+"#).expect("a plain grid with a scroll pad should be valid");
+  }
+
+  #[test]
+  fn shift_pad_without_an_edo_grid_is_rejected() {
+    let err = parse_config(r#"
+version = 1
+id = "orphan-scroll"
+title = "Orphan scroll"
+
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/big"
+
+[[monome_windows]]
+id = "scroll"
+monome = "big"
+kind = "edo_shift_pad"
+rect = [13, 14, 15, 15]
+"#).expect_err("a shift pad with no edo grid on its monome should fail");
+    assert!(err.contains("needs an edo_note_grid on the same monome"), "{err}");
+  }
+
+  // ---- waveform_selector (surfaces cross-grid timbre picker) ----
+
+  const SURFACES_MIN: &str = r#"version = 1
+id = "surfaces-min"
+title = "Surfaces min"
+
+[[tunings]]
+id = "main"
+edo = 58
+x_step = 8
+y_step = 1
+fundamental_hz = 80
+
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.05
+accretion_level = 0.5
+
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/a"
+select.size = [16, 16]
+
+[[monomes]]
+id = "b"
+listen_port = 9001
+prefix = "/b"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "wave-a"
+monome = "a"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "b"
+
+[[monome_windows]]
+id = "grid-b"
+monome = "b"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "wave-b"
+monome = "b"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "a"
+"#;
+
+  #[test]
+  fn waveform_selector_cross_control_is_valid() {
+    let config = parse_config(SURFACES_MIN).expect("two grids that cross-control timbre should be valid");
+    let selectors: Vec<(&str, &str)> = config
+      .monome_windows
+      .iter()
+      .filter_map(|w| match w {
+        MonomeWindowConfig::WaveformSelector { monome, controls, .. } => Some((monome.as_str(), controls.as_str())),
+        _ => None,
+      })
+      .collect();
+    assert!(selectors.contains(&("a", "b")), "grid a's strip controls b");
+    assert!(selectors.contains(&("b", "a")), "grid b's strip controls a");
+  }
+
+  #[test]
+  fn waveform_selector_must_cover_four_cells() {
+    let err = parse_config(&SURFACES_MIN.replace("rect = [0, 0, 3, 0]\ncontrols = \"b\"", "rect = [0, 0, 2, 0]\ncontrols = \"b\""))
+      .expect_err("a 3-wide selector should fail");
+    assert!(err.contains("exactly 4 cells"), "{err}");
+  }
+
+  #[test]
+  fn waveform_selector_controls_must_be_a_declared_monome() {
+    let err = parse_config(&SURFACES_MIN.replace("controls = \"b\"", "controls = \"nope\""))
+      .expect_err("an unknown controls target should fail");
+    assert!(err.contains("unknown id \"nope\""), "{err}");
+  }
+
+  #[test]
+  fn waveform_selector_controls_must_have_an_edo_grid() {
+    // Point a's strip at a monome with no edo_note_grid.
+    let toml = SURFACES_MIN
+      .replace("controls = \"b\"", "controls = \"c\"")
+      .replace(
+        "[[monome_windows]]\nid = \"grid-a\"",
+        "[[monomes]]\nid = \"c\"\nlisten_port = 9002\nprefix = \"/c\"\n\n[[monome_windows]]\nid = \"grid-a\"",
+      )
+      // c must be used by *some* window or an orphan check could fire elsewhere; give it a lone strip.
+      + "\n[[monome_windows]]\nid = \"wave-c\"\nmonome = \"c\"\nkind = \"waveform_selector\"\nrect = [0, 0, 3, 0]\ncontrols = \"a\"\n";
+    let err = parse_config(&toml).expect_err("controlling a gridless monome should fail");
+    assert!(err.contains("no edo_note_grid"), "{err}");
   }
 }

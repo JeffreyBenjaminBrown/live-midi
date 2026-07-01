@@ -46,6 +46,7 @@ mod sawwave_runtime;
 mod remap_runtime;
 mod looper_runtime;
 mod drumkit_runtime;
+mod surfaces_runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config_name = std::env::args().nth(1).ok_or_else(|| {
@@ -53,9 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   })?;
   let config = config::load_named_config(&config_name)?;
   print_startup(&config);
-  if is_drumkit_config(&config) {
+  if is_surfaces_config(&config) {
+    // Two-plus EDO play grids and/or a KMSS drumkit composed in one config. Leads the
+    // dispatch: it is a superset of both the drumkit and sawwave predicates (it can
+    // carry softstep windows AND edo grids), so it must be checked before them.
+    surfaces_runtime::run_from_config(&config)?;
+  } else if is_drumkit_config(&config) {
     // A KMSS drumkit config is unambiguous (it has softstep_windows and no
-    // monome/piano windows), so it can lead the dispatch.
+    // monome windows), so it can lead the remaining dispatch.
     drumkit_runtime::run_from_config(&config)?;
   } else if is_remap_config(&config) {
     remap_runtime::run_from_config(&config)?;
@@ -132,10 +138,46 @@ fn is_monome_sawwave_config(config: &Config) -> bool {
       .any(|sink| matches!(sink, midi_pulse::config::SinkConfig::CpalSynth { .. }))
 }
 
-/// A KMSS drumkit config declares at least one `softstep_window`. These configs
-/// have no monome/piano windows, so the predicate is unambiguous.
+/// A standalone KMSS drumkit config declares at least one `softstep_window` and NO
+/// monome windows. The "no monome windows" clause keeps a grids+drums config (which
+/// the surfaces predicate claims first) from falling into the drums-only arm.
 fn is_drumkit_config(config: &Config) -> bool {
-  !config.softstep_windows.is_empty()
+  !config.softstep_windows.is_empty() && config.monome_windows.is_empty()
+}
+
+/// The surfaces runtime: at least one `edo_note_grid`, no `loop_display` (that is the
+/// looper), and something that only surfaces composes -- a softstep window (drums), an
+/// edo grid on more than one monome (the two play grids), or a `waveform_selector`.
+/// Precise enough that every existing config keeps its current runtime.
+fn is_surfaces_config(config: &Config) -> bool {
+  use midi_pulse::config::MonomeWindowConfig;
+  let has_edo_grid = config
+    .monome_windows
+    .iter()
+    .any(|w| matches!(w, MonomeWindowConfig::EdoNoteGrid { .. }));
+  if !has_edo_grid {
+    return false;
+  }
+  let has_loop_display = config
+    .monome_windows
+    .iter()
+    .any(|w| matches!(w, MonomeWindowConfig::LoopDisplay { .. }));
+  if has_loop_display {
+    return false;
+  }
+  let distinct_grid_monomes: std::collections::HashSet<&str> = config
+    .monome_windows
+    .iter()
+    .filter_map(|w| match w {
+      MonomeWindowConfig::EdoNoteGrid { monome, .. } => Some(monome.as_str()),
+      _ => None,
+    })
+    .collect();
+  let has_selector = config
+    .monome_windows
+    .iter()
+    .any(|w| matches!(w, MonomeWindowConfig::WaveformSelector { .. }));
+  !config.softstep_windows.is_empty() || distinct_grid_monomes.len() > 1 || has_selector
 }
 
 /// Keyed on the looper-only `loop_display` kind, so it is strictly more specific
@@ -224,4 +266,45 @@ fn run_piano_runtime(config: &Config) -> Result<(), Box<dyn std::error::Error>> 
   let mut input = String::new();
   io::stdin().read_line(&mut input)?;
   Ok(())
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+  //! The dispatch predicates decide which runtime a config gets. Adding the surfaces
+  //! arm must not change any existing config's runtime, so we assert the routing of
+  //! each real config family by name.
+  use super::*;
+  use midi_pulse::config::load_named_config;
+
+  #[test]
+  fn surfaces_config_routes_to_surfaces_only() {
+    let c = load_named_config("2-monomes_58-8-1_kmss-drums").expect("loads");
+    assert!(is_surfaces_config(&c), "grids+drums is a surfaces config");
+    // It must NOT fall into the drums-only arm (it has monome windows) or the looper /
+    // sawwave arms (surfaces is checked first, but assert the tightened predicate too).
+    assert!(!is_drumkit_config(&c), "grids+drums is not the drums-only arm");
+    assert!(!is_looper_config(&c), "no loop_display");
+  }
+
+  #[test]
+  fn drumkit_config_still_routes_to_drumkit() {
+    let c = load_named_config("kmss-drumkit").expect("loads");
+    assert!(is_drumkit_config(&c), "a pure drumkit still matches the drums arm");
+    assert!(!is_surfaces_config(&c), "no edo_note_grid -> not surfaces");
+  }
+
+  #[test]
+  fn looper_config_is_not_surfaces() {
+    let c = load_named_config("monome-looper-58-8-1").expect("loads");
+    assert!(is_looper_config(&c), "loop_display -> looper");
+    assert!(!is_surfaces_config(&c), "a looper is excluded by its loop_display");
+  }
+
+  #[test]
+  fn sawwave_config_is_not_surfaces() {
+    let c = load_named_config("monome-edo-sawwave").expect("loads");
+    assert!(is_monome_sawwave_config(&c), "single grid + cpal_synth -> sawwave");
+    assert!(!is_surfaces_config(&c), "one grid, no drums, no selector -> not surfaces");
+    assert!(!is_drumkit_config(&c), "no softstep windows");
+  }
 }

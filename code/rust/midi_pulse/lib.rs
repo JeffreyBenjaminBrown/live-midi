@@ -1,4 +1,6 @@
 pub mod config;
+pub mod device_assign;
+pub mod edo_play;
 pub mod mapping;
 pub mod midi;
 pub mod mock_monome;

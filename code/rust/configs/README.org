@@ -7,6 +7,9 @@ The path *to* this folder is not needed.
 alternatives lately:
 
 pw-jack cargo run --bin midi_pulse \
+  2-monomes_58-8-1_kmss-drums.toml
+
+pw-jack cargo run --bin midi_pulse \
   monome-looper-58-8-1-timbre.toml
 
 pw-jack cargo run --bin midi_pulse \
@@ -234,6 +237,27 @@ Built-in unbundled window kinds:
 - ~preimage_row~
 - ~remappable_un12_grid~
 - ~remap_undo_button~
+- ~waveform_selector~
+
+A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
+to right) that sets the timbre of the monome named by its ~controls~ field -- which
+may differ from the window's own ~monome~. The surfaces runtime uses it to let each
+of two play grids re-timbre the *other* (see
+[[./2-monomes_58-8-1_kmss-drums.org]]). Its rect must cover exactly the four cells
+(one row, four wide).
+
+#+begin_src toml
+[[monome_windows]]
+id = "wave-a"
+monome = "a"               # drawn on grid A's top row
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "b"             # -> sets grid B's timbre (must have an edo_note_grid)
+#+end_src
+
+The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
+*generally-valid* window now: it may sit on any grid that has an ~edo_note_grid~,
+not only in a full looper stack.
 
 The bundled 12-EDO offset/root board is:
 

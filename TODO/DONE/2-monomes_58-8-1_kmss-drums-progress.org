@@ -1,0 +1,124 @@
+#+title: Progress -- 2-monomes_58-8-1_kmss-drums (surfaces runtime)
+#+date: 2026-07-01
+
+Companion to the plan [[./2-monomes_58-8-1_kmss-drums.org]]. The plan is left as-is;
+this records what was built, how it deviated from the plan's *envisioned mechanics*
+(not its goals), what is imperfect, and the choices that constrain the future.
+
+Status: *all six phases implemented and green headless* (66 lib + 237 binary tests
+pass; =cargo clippy= clean). What remains is *hardware verification*, which the plan
+already assigns to Jeff (I can't watch the grids or stomp the KMSS).
+
+* what's done and went well
+
+- *Phase 0 (lib lift).* =looper_runtime/edo.rs= scroll math -> =midi_pulse::edo_play=;
+  =assign_distinct_devices= -> =midi_pulse::device_assign=. The looper files became
+  thin =pub use= re-exports, so every looper call site + test is unchanged. Tests
+  moved with the code (they now run under the lib crate).
+- *Phase 1 (free the scroll pad).* =edo_shift_pad= dropped out of =validate_looper='s
+  all-or-nothing =any_loop_window= set and gained a generic =validate_shift_pads=
+  (needs an =edo_note_grid= on the same monome; rect must fit the grid). A plain grid
+  can now carry a scroll pad. Looper configs still validate (their =loop_display= etc.
+  keep them in the looper group).
+- *Phase 2 (schema + dispatch).* New =waveform_selector= =MonomeWindowConfig= variant
+  (={id, monome, rect, controls}=) with validation (exactly 4 cells in a row;
+  =controls= names a declared monome that has an =edo_note_grid=; =controls != monome=
+  allowed). New =is_surfaces_config= predicate + a =main= arm *ahead of* the drumkit
+  and sawwave arms; =is_drumkit_config= tightened to "softstep windows AND no monome
+  windows". Dispatch tests assert every real config family keeps its runtime.
+- *Phase 3 (the surfaces runtime).* New =surfaces_runtime/= (=mod.rs= shell, =synth.rs=
+  =(grid,cell)=-keyed sink, =grid.rs= pure LED/selector logic, =audio.rs= cpal glue).
+  Binds both grids via =assign_distinct_devices=, one shared synth stream + the drum
+  sampler, one key/LED thread per grid, and the KMSS drumkit reused via
+  =drumkit_runtime::start=. Unified SIGINT/SIGTERM handling (block + a =sigwait=
+  thread that sets STOP) tears down cleanly: both grids blanked, audio dropped, KMSS
+  restored to standalone.
+- *Phase 4 (config).* =configs/2-monomes_58-8-1_kmss-drums.toml= -- 58/8/1/80, a
+  =cpal_synth= + =cpal_sampler= sink, grids =a=/=b= each with a scroll pad and a
+  cross-control waveform strip, and the =kmss-drumkit= pads verbatim.
+- *Phase 5 (tests).* Unit: config parse/validate (selector, standalone shift pad,
+  surfaces vs sawwave/looper/drumkit); voice independence (same pitch on two grids =
+  two voices; release one, the other stays; two colliding cells on one grid stay
+  independent); waveform routing (a grid's selector writes the *controlled* grid's
+  slot only); per-grid LED (octave-equivalents, selector highlight, scroll pad dark).
+  Headless device-layer smoke: =two_grids_run_against_mock_grids= drives two mock
+  grids with null audio -- discovery, both grids binding, LEDs, key routing, and the
+  cross-grid selector all verified with no hardware and no sound.
+- *Phase 6 (docs).* Companion [[../code/rust/configs/2-monomes_58-8-1_kmss-drums.org]]
+  (glossary, per-grid layout diagram, the cross-grid waveform read) + a
+  =waveform_selector= entry in =configs/README.org=.
+
+* changes to the plan's envisioned order / mechanics
+
+None of these change *what* was built, only *how* (recorded here per when-to-stop.org;
+the plan text is untouched):
+
+1. *The waveform synth was NOT lifted into the lib (Phase 0.3).* The plan put
+   =Timbre=/=Waveform= + the renderer "in the looper" and had Phase 0.3 extract them.
+   In fact they already live in the =sawwave/*= binary modules (=crate::{types,
+   voices,pitch}=), shared with the looper via =crate::=. =surfaces_runtime= is also a
+   binary module, so it reuses that engine the same way -- no lib lift, and the
+   looper's pitch-keyed =sink.rs= is *untouched*. Surfaces instead has its OWN sink
+   (=synth.rs=) keyed by =(grid, cell)=, reusing the opaque =Accreted= =VoiceSource=
+   variant purely as a per-voice handle (exactly the trick the looper's sink already
+   uses per-pitch). This is the linchpin ("independent voices") solved without
+   changing the shared =VoiceSource= type or the looper.
+2. *The drumkit is reused via a small refactor, not by copying its glue.* The plan
+   said "call the leaf pieces (=Sampler=, =Trigger=, =decode=, ...)". Since the
+   velocity rewrite already *merged* (commit =2071b7d=), the parallel-conflict worry
+   that motivated "additive only" is gone, so I instead extracted a reusable
+   =drumkit_runtime::start(config, tether_session) -> DrumSession= out of
+   =run_from_config= (which now just calls it + blocks on stdin). Standalone drumkit
+   behavior is identical (its tests still pass). Surfaces calls =start= with an
+   *unarmed* tether session (new =tether::session()=) because surfaces owns signal
+   handling; dropping the =DrumSession= stops the voice timers and restores standalone
+   mode. Net edits to =drumkit_runtime=: =mod=->=pub mod= visibility, the =start=
+   extraction, one new =tether::session()=. No change to =audio.rs= / =decode.rs=.
+3. *No lib lift of the cpal audio glue.* Consistent with the codebase's existing
+   convention (the looper and drum sampler each *duplicate* the ~60 lines of
+   untestable cpal/JACK setup rather than share it), =surfaces_runtime/audio.rs=
+   duplicates it too.
+
+* what's imperfect about what's done
+
+- *Two-cpal-streams-in-one-process is unverified.* The synth stream + the drum sampler
+  stream both run as JACK nodes under =pw-jack=; the plan flags this as the open audio
+  risk. It builds and the mock path (null audio) is green, but I cannot open real
+  audio safely from the container. Needs a =pw-jack cargo run= check (Jeff).
+- *Held-note re-timbre and held-note scroll are intentionally inert.* A waveform-strip
+  press changes *future* notes on the target grid (radio semantics); a scroll changes
+  future notes' pitch. Notes already held keep their waveform and their sounding pitch.
+  This is the simplest coherent choice; live re-timbre / live pitch-bend of held notes
+  is a future option, not a bug.
+- *The mock smoke can't observe audio-only effects.* It verifies the selector's LED
+  cross-control and voice independence at the LED/state level, but the *audible*
+  waveform of the controlled grid and the *audible* scroll are only checkable on
+  hardware (the pure tests cover the synth stamping + scroll math separately).
+
+* choices determining the future
+
+- *Voice identity = =(grid, cell)=.* This is what makes the two grids independent. It
+  also means two cells on ONE grid that collide to the same pitch are two voices (one
+  per finger), unlike the looper (which merges them). If a future config wants same-
+  grid pitch-merging, that is a per-grid policy on top of this key, not a rewrite.
+- *The surfaces runtime binds every monome that has an =edo_note_grid= as a play grid*
+  (N grids, not hard-coded to 2), all sharing the first grid's tuning + =cpal_synth=
+  sink. Per-grid tunings/sinks would need resolve_settings to carry them per grid.
+- *=is_surfaces_config= leads dispatch* and is deliberately narrow (>=1 edo grid, NO
+  =loop_display=, AND one of {softstep window, edo grid on >1 monome, waveform
+  selector}). Every existing config keeps its runtime (asserted by the dispatch
+  tests). A future single-grid + selector or single-grid + drums config will also land
+  in surfaces -- intended.
+- *Signal handling: block + =sigwait=->STOP, teardown on the main thread.* Unlike the
+  standalone drumkit (whose signal thread =process::exit=s after restoring tether),
+  surfaces must blank grids AND restore the KMSS, so it drives teardown itself. The
+  KMSS =tether::session()= is therefore unarmed. A second Ctrl-C during teardown is
+  blocked (teardown is expected to be prompt); =kill -9= remains the escape hatch.
+
+* operational prerequisite (not a code issue)
+
+- The drum WAVs resolve under the repo-root =drum-samples/= folder (via
+  =CARGO_MANIFEST_DIR=). That folder is worktree-local / untracked and is currently
+  *absent from this =3-surfaces= worktree* (it exists in =../main=). Running the real
+  config for drums needs it present here -- exactly as =kmss-drumkit= already does.
+  The grids + synth run without it; only the drum sampler load needs the WAVs.

@@ -94,6 +94,16 @@ pub fn arm() -> TetherSession {
   TetherSession { active }
 }
 
+/// A `TetherSession` with NO signal handling installed -- restoration happens only
+/// on `Drop`. For a host runtime (e.g. the surfaces runtime) that owns its own
+/// SIGINT/SIGTERM handling and drives teardown itself, so it must not have the
+/// drumkit's own signal thread call `process::exit` out from under it. The caller
+/// is responsible for blocking the signals early (before spawning threads) and for
+/// dropping this session on exit.
+pub fn session() -> TetherSession {
+  TetherSession { active: Arc::new(AtomicBool::new(false)) }
+}
+
 impl TetherSession {
   /// Enter tether mode and arm restoration.
   pub fn enter(&self) -> Result<(), String> {

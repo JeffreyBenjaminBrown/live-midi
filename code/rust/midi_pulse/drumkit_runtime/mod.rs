@@ -8,10 +8,10 @@
 //! Two feet stream independently, so a simultaneous two-pad strike fires both: the
 //! limitation the old Program-Change path could not escape (see `learnings/keith-mcmillen-softstep.org`).
 
-mod audio;
-mod decode;
-mod samples;
-mod tether;
+pub mod audio;
+pub mod decode;
+pub mod samples;
+pub mod tether;
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -46,14 +46,62 @@ struct DeviceBuild {
   select_substring: String,
 }
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
-  let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
+/// A live drumkit: the sampler streams, the bound MIDI inputs, and the per-device
+/// voice timers, plus the tether session that restores standalone mode. Kept alive
+/// for the run; dropping it stops the timers, releases the MIDI connections, and
+/// (via the tether session) restores the device to standalone mode. This is what
+/// lets the drumkit run *alongside* other surfaces (the two-grid runtime) in one
+/// process rather than only as the whole app.
+pub struct DrumSession {
+  timers: Vec<(Arc<AtomicBool>, JoinHandle<()>)>,
+  // Dropped after the timers stop (field order): the MIDI callbacks stop feeding the
+  // decoders, then the tether session restores standalone mode last.
+  _connections: Vec<MidiInputConnection<()>>,
+  _samplers: HashMap<String, Sampler>,
+  _tether: tether::TetherSession,
+}
 
+impl Drop for DrumSession {
+  fn drop(&mut self) {
+    for (stop, _) in &self.timers {
+      stop.store(true, Ordering::Relaxed);
+    }
+    for (_, handle) in self.timers.drain(..) {
+      let _ = handle.join();
+    }
+    // `_connections`, `_samplers`, then `_tether` drop after this in field order, so
+    // standalone mode is restored only once the sensor stream has been released.
+  }
+}
+
+pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   // Arm Ctrl-C / SIGTERM restoration FIRST, before any audio or MIDI thread spawns,
   // so the signal block is inherited by all of them and a stray signal can't leave
-  // the device stuck in tether mode. Restoration is armed once we actually enter.
-  let tether_session = tether::arm();
+  // the device stuck in tether mode. `start` enters tether mode once setup succeeds.
+  let session = start(config, tether::arm())?;
+
+  println!("\nDrumkit ready (tether mode, velocity-sensitive). Step on the pedals. Press Enter to exit...");
+  let mut line = String::new();
+  io::stdin().read_line(&mut line)?;
+
+  // Dropping the session stops the voice timers, releases the MIDI connections, and
+  // restores standalone mode.
+  drop(session);
+  Ok(())
+}
+
+/// Bring up the drumkit and return a live [`DrumSession`] without blocking. The
+/// caller owns the `tether` session (armed via [`tether::arm`] for the standalone
+/// runtime, or unarmed via [`tether::session`] for a host runtime that owns its own
+/// signal handling) and keeps the returned `DrumSession` alive for the run. Reads
+/// `MIDI_PULSE_NO_AUDIO` / `MIDI_PULSE_TRACE` from the environment, like the
+/// standalone path.
+pub fn start(
+  config: &Config,
+  tether_session: tether::TetherSession,
+) -> Result<DrumSession, Box<dyn std::error::Error>> {
+  let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
+  let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
 
   // 1. Start a sampler per cpal_sampler sink referenced by some drumkit window.
   let referenced: HashSet<&str> = config
@@ -180,19 +228,12 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     return Err("drumkit config declares no softstep devices to bind".into());
   }
 
-  println!("\nDrumkit ready (tether mode, velocity-sensitive). Step on the pedals. Press Enter to exit...");
-  let mut line = String::new();
-  io::stdin().read_line(&mut line)?;
-
-  // Stop the voice timers, drop the connections, then `tether` restores on its Drop.
-  for (stop, _) in &timers {
-    stop.store(true, Ordering::Relaxed);
-  }
-  for (_, handle) in timers {
-    let _ = handle.join();
-  }
-  drop(connections);
-  Ok(())
+  Ok(DrumSession {
+    timers,
+    _connections: connections,
+    _samplers: samplers,
+    _tether: tether_session,
+  })
 }
 
 /// The poll/fire loop for one device: every few ms, ask the decoder for matured hits

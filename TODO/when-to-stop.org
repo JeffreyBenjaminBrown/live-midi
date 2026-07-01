@@ -20,7 +20,6 @@ divided into these categories:
 - 'what's imperfect about what's done,"
   Don't include things just because they are missing now but part of the plan.
 - "choices determining the future"
-In that document, mark TODO every item that requires my input.
 
 If you have no questions for me, do not stop. Keep your report in progress.org,
 but then return to executing more of the plan.
@@ -30,4 +29,4 @@ after writing them, you might decide that they are trivial.
 Do not stop in that case, either.
 If you are uncertain of the answer to a question,
 but the choice would not be hard to reverse later,
-then just make what seems best to you.
+then just go with what seems best to you.
