@@ -2,7 +2,7 @@
 //! mode and reliably back to standalone on exit.
 //!
 //! The mode-switch SysEx must go over ALSA *rawmidi* (`amidi`), NOT the sequencer:
-//! the device ignores sequencer sends but honors rawmidi (see `kmss-research.org`).
+//! the device ignores sequencer sends but honors rawmidi (see `learnings/keith-mcmillen-softstep.org`).
 //! We read the sensor stream through midir/seq as usual; only these short control
 //! messages go via `amidi`. None of this touches firmware -- it cannot brick the
 //! device; it only flips a runtime mode that we always restore.

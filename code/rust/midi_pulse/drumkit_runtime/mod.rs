@@ -6,7 +6,7 @@
 //! attack-peak velocity (`decode`), and fires samples through a `cpal_sampler` sink
 //! (`audio`). On exit -- including Ctrl-C -- it restores standalone mode (`tether`).
 //! Two feet stream independently, so a simultaneous two-pad strike fires both: the
-//! limitation the old Program-Change path could not escape (see `kmss-research.org`).
+//! limitation the old Program-Change path could not escape (see `learnings/keith-mcmillen-softstep.org`).
 
 mod audio;
 mod decode;

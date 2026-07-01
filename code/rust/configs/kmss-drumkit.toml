@@ -8,7 +8,7 @@ title = "KMSS Drumkit"
 # stream, and scales each hit's loudness by how hard the pad is struck; it restores
 # standalone mode on exit (including Ctrl-C). Per-pad `gain` below is the FULL-
 # velocity level (a hard hit); softer hits play quieter, spread over VELOCITY_DB_RANGE
-# (see drumkit_runtime/decode.rs). See kmss-research.org for how this works.
+# (see drumkit_runtime/decode.rs). See learnings/keith-mcmillen-softstep.org for how this works.
 # Launch under pw-jack so the sampler shares the sound card via PipeWire:
 #
 #   pw-jack cargo run --bin midi_pulse -- kmss-drumkit

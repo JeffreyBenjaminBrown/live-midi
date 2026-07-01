@@ -7,7 +7,7 @@ each with a *followable link to its source*. Put point on a link and follow it w
 to the exact heading or line. Auto-collected by sweeping the docs and source, then every
 anchor was verified to resolve. Grouped by area; regenerate/extend as the code grows.
 
-Currently *142 pitfalls* across 55 files.
+Currently *141 pitfalls* across 54 files.
 
 * MIDI, ALSA & the SoftStep (KMSS)  (41)
 - [[file:README.org::To read MIDI data without freezing][Reading raw MIDI directly blocks/freezes]]
@@ -43,7 +43,7 @@ Currently *142 pitfalls* across 55 files.
 - [[file:code/rust/midi_pulse/drumkit_runtime/decode.rs::the device refreshes its sensors][Tether attack window must clear the SoftStep's ~10 ms sensor refresh or velocity reads too soft]]
   The device refreshes sensors only ~every 10 ms and a deliberate strike peaks on the second refresh (~10-11 ms); a 10 ms peak-capture window occasionally fires before the peak lands and registers a hard hit as ~17% velocity.  /Fix:/ Use a 14 ms ATTACK window to reliably clear the second refresh frame; lower it for less latency at the risk of clipping the peak, raise it for springier surfaces (carpet lagged 20+ ms).
 - [[file:code/rust/midi_pulse/drumkit_runtime/tether.rs::ignores sequencer sends but honors rawmidi][SoftStep mode-switch SysEx must use ALSA rawmidi (amidi), not the sequencer]]
-  The KMSS device silently ignores the tether/standalone mode-switch SysEx if sent through the ALSA sequencer (midir/seq); it only honors those control messages over ALSA rawmidi.  /Fix:/ Send the short mode-switch SysEx via `amidi` (rawmidi, e.g. hw:1,0,0); keep reading the sensor stream through midir/seq as usual. See kmss-research.org.
+  The KMSS device silently ignores the tether/standalone mode-switch SysEx if sent through the ALSA sequencer (midir/seq); it only honors those control messages over ALSA rawmidi.  /Fix:/ Send the short mode-switch SysEx via `amidi` (rawmidi, e.g. hw:1,0,0); keep reading the sensor stream through midir/seq as usual. See learnings/keith-mcmillen-softstep.org.
 - [[file:code/rust/midi_pulse/drumkit_runtime/tether.rs::A default Ctrl-C would kill the process][Default Ctrl-C kills the process without Drop, leaving the SoftStep stuck in tether mode]]
   A default SIGINT/SIGTERM terminates the process without running Drop, so standalone mode is never restored and the device is left streaming in tether mode.  /Fix:/ Block SIGINT/SIGTERM process-wide in the main thread (so all spawned threads inherit the block) and sigwait on a dedicated thread that restores standalone mode and exits.
 - [[file:hey-jeff.org::which isn't stable across replug][Match KMSS by name, not ALSA client number]]
@@ -52,39 +52,39 @@ Currently *142 pitfalls* across 55 files.
   Pinning the drumkit to a specific on-device preset breaks if the KMSS display gets bumped to a different preset.  /Fix:/ Decode pedal = program % 10, ignoring the preset digit, so the kit keeps working regardless of which preset is selected.
 - [[file:hey-jeff.org::A hard stomp can emit the same Program Change twice][Contact-bounce double-triggers need per-pad debounce]]
   A hard stomp can emit the same Program Change twice within a few ms (contact bounce), double-triggering a drum.  /Fix:/ Debounce per pedal (wait 50 ms before re-sending the same trigger), but keep it per-pad so two different pedals within 1 ms both still fire.
-- [[file:kmss-research.org::the SoftStep ignores][SoftStep ignores ALSA-sequencer sends; use rawmidi]]
+- [[file:learnings/keith-mcmillen-softstep.org::Send via rawmidi, not the sequencer][SoftStep ignores ALSA-sequencer sends; use rawmidi]]
   The "can't send to the SoftStep" wall was only ever tested via the ALSA sequencer (aseqsend), which the SoftStep silently ignores.  /Fix:/ Send via ALSA rawmidi (amidi -p hw:1,0,0) instead -- queries answer, tether mode engages, and mode switches are reversible.
-- [[file:kmss-research.org::The idle flicker you'd see at rest][CC 86 idle flicker is the empty jack, not a signal]]
+- [[file:learnings/keith-mcmillen-softstep.org::The idle flicker you'd see at rest][CC 86 idle flicker is the empty jack, not a signal]]
   CC 86 flickering (~126/127 or 0) at rest looks like a pad or heartbeat but is just the expression-pedal 1/4" jack floating with nothing plugged in.
-- [[file:kmss-research.org::Pressure and velocity][Default max-of-4 pressure metric saturates]]
+- [[file:learnings/keith-mcmillen-softstep.org::become indistinguishable][Default max-of-4 pressure metric saturates]]
   The editor's default per-pad pressure metric (max-of-4 sensors) saturates ~117/127 past a gentle press, so medium and hard hits are indistinguishable.  /Fix:/ Use sum-of-4 (range 0..508, 4x headroom) for pressure/velocity; calibrate touch with meter.py.
-- [[file:kmss-research.org::*Two feet at once][Standalone mode drops simultaneous two-foot hits]]
+- [[file:learnings/keith-mcmillen-softstep.org::*Two feet at once][Standalone mode drops simultaneous two-foot hits]]
   In standalone mode, simultaneous two-pad stomps unreliably drop to one or zero Program Changes -- the concurrency loss.  /Fix:/ Use tether mode, where each pad streams its own CCs so every two-foot hit lands (and you get velocity too).
-- [[file:kmss-research.org::Bricking: the precise, reassuring truth][Only a firmware flash can brick the SoftStep]]
+- [[file:learnings/keith-mcmillen-softstep.org::Bricking: the precise, reassuring truth][Only a firmware flash can brick the SoftStep]]
   On pre-bootloader firmware (build <=94; this unit is 91) an interrupted firmware FLASH can brick the SoftStep.  /Fix:/ Never flash firmware (reads, mode switches, backlight, preset upload do not flash); if KMI's editor ever offers to update/reload firmware, click No.
-- [[file:kmss-research.org::single-key lockout][Notes preset: fixed velocity + single-key lockout]]
+- [[file:learnings/keith-mcmillen-softstep.org::single-key lockout][Notes preset: fixed velocity + single-key lockout]]
   The factory "Notes" preset has two catches: on-device note velocity is a fixed constant (no dynamics), and the default is single-key lockout (one pad at a time).  /Fix:/ Prefer tether mode for velocity + concurrency; if using the notes preset, upload an "All Keys" settings change to allow simultaneous pads.
-- [[file:kmss-research.org::restore standalone mode on exit][Restore standalone mode on every exit path]]
+- [[file:learnings/keith-mcmillen-softstep.org::restore standalone mode on exit][Restore standalone mode on every exit path]]
   Switching the SoftStep into tether mode leaves it in the wrong mode if the process dies without restoring it.  /Fix:/ All mode-changing scripts and the Rust runtime restore standalone mode on exit -- including on error and Ctrl-C/SIGTERM.
-- [[file:kmss-research.org::the device refreshes sensors only ~every 10 ms][SoftStep sensors refresh only ~every 10 ms]]
+- [[file:learnings/keith-mcmillen-softstep.org::refreshes its sensors only][SoftStep sensors refresh only ~every 10 ms]]
   The SoftStep refreshes its sensors only ~every 10 ms and a strike peaks on the 2nd refresh, so too-short a velocity attack window misses the peak.  /Fix:/ Use a ~14 ms ATTACK window (poll at 1 ms so firing isn't delayed past it); tunable in drumkit_runtime/decode.rs.
-- [[file:learnings/keith-mcmillen-softstep.org::what this is + bottom line][Send SoftStep SysEx via ALSA rawmidi, not the sequencer (aseqsend)]]
+- [[file:learnings/keith-mcmillen-softstep.org::*Sending to the device (the breakthrough)][Send SoftStep SysEx via ALSA rawmidi, not the sequencer (aseqsend)]]
   An earlier attempt sent control SysEx (mode switch, backlight, firmware query) to the SoftStep over the ALSA sequencer (aseqsend) and everything was silently ignored, leading to the wrong conclusion 'we can't send'.  /Fix:/ Send via ALSA rawmidi instead (amidi -p hw:1,0,0). A rawmidi node /dev/snd/midiC1D0 does exist; the firmware query is answered and tether mode engages.
-- [[file:learnings/keith-mcmillen-softstep.org::assigned at plug-in time][Match SoftStep by name substring 'SSCOM', not a hardcoded ALSA client:port]]
+- [[file:learnings/keith-mcmillen-softstep.org::assigned at plug-in and is NOT stable][Match SoftStep by name substring 'SSCOM', not a hardcoded ALSA client:port]]
   The ALSA client number (e.g. 20:0) is assigned at plug-in time and is not stable, so any hardcoded 20:0 breaks when the device is re-plugged.  /Fix:/ Open/match the device by name substring 'SSCOM' (input 'SSCOM MIDI 1') rather than a fixed client:port number.
-- [[file:learnings/keith-mcmillen-softstep.org::same PC twice within a few ms][SoftStep contact bounce emits the same Program Change twice]]
+- [[file:learnings/keith-mcmillen-softstep.org::PC twice within a few ms][SoftStep contact bounce emits the same Program Change twice]]
   A hard stomp can emit the same Program Change twice within a few ms (contact bounce), causing unwanted double-triggers.  /Fix:/ Debounce: ignore a repeat of the same program within ~15-25 ms (unless, for drums, you actually want every hit).
-- [[file:learnings/keith-mcmillen-softstep.org::drum feel wants the attack peak][Velocity must be the attack peak, not the pressure at threshold-cross]]
+- [[file:learnings/keith-mcmillen-softstep.org::peak sum-of-4 within a short attack window][Velocity must be the attack peak, not the pressure at threshold-cross]]
   Reading the flat current pressure at the on-threshold crossing yields a velocity that is too low and erratic for drum feel.  /Fix:/ Take velocity as the peak pressure within a short window (~3-8 ms) after onset (or the initial slope), scaled 1..127; use hysteresis (off-threshold below on-threshold) so release doesn't chatter.
 - [[file:learnings/keith-mcmillen-softstep.org::Passive listening shows nothing][Empty MIDI capture means nobody pressed a pedal, not a broken device]]
   The SoftStep only emits MIDI when stepped on, so a passive/empty capture can look like a broken device or connection.  /Fix:/ Treat an empty capture as 'nobody pressed anything'; step on a pedal to confirm the stream is live.
 - [[file:learnings/keith-mcmillen-softstep.org::not a hex string][aseqsend -s takes a filename, not a hex string]]
   Despite its usage text, 'aseqsend -s' expects a filename, not an inline hex string, so passing hex silently does the wrong thing.  /Fix:/ Write the bytes to a .syx file first and pass that; use 'aseqsend -v' to confirm 'Sent : N bytes'.
-- [[file:learnings/keith-mcmillen-softstep.org::The send path *is* good][Prove the send path with a Midi Through loopback before blaming the tool]]
+- [[file:learnings/keith-mcmillen-softstep.org::loops back through Midi Through][Prove the send path with a Midi Through loopback before blaming the tool]]
   When a device ignores your SysEx, it is easy to wrongly blame the send tool or path.  /Fix:/ aseqsend a Note to Midi Through (14:0); if it loops back, the sequencer delivery is proven good, so a device non-response is the device, not the tool.
 - [[file:learnings/keith-mcmillen-softstep.org::requires delay between messages][SoftStep hosted-enable SysEx needs correct order and delays between messages]]
   The firmware requires a delay between the mode-switch SysEx messages, which must also be sent in a specific order (standalone_off, scenechange_on_persist, nav_standalone_on_persist, tether_on).  /Fix:/ Send the four messages in that exact order with a delay (~120 ms gaps) between each.
-- [[file:learnings/keith-mcmillen-softstep.org::still using the wrong sysex id for][Wrong SysEx manufacturer id for old firmware is silently dropped]]
+- [[file:learnings/keith-mcmillen-softstep.org::wrong for old firmware][Wrong SysEx manufacturer id for old firmware is silently dropped]]
   The 2025 editor's own header admits it is 'still using the wrong sysex id for old firmware'; a device on older firmware may expect a different manufacturer id/format and silently drop the messages.  /Fix:/ If sending has no effect, dig up the old SoftStep 2 Advanced Editor (Max-based) protocol / the correct old-firmware SysEx id.
 - [[file:learnings/keith-mcmillen-softstep.org::The one empirical fact that drives everything][SoftStep sensors refresh only ~every 10 ms; don't shrink the attack window]]
   The device scans its sensors only ~every 10 ms (fixed in firmware). Firing before ~2 refreshes reads pressure mid-ramp, so velocity comes out too low and erratic; a 3 ms window captured only ~17-50% of the true peak.  /Fix:/ Wait ~2 refreshes (~10-14 ms) to capture the attack peak; do not shrink the window chasing latency (the 10 ms scan is the floor). Polling faster than ~10 ms captures nothing new.
@@ -207,7 +207,7 @@ Currently *142 pitfalls* across 55 files.
 - [[file:how-to-parallelize-dev.org::*The shared-hardware catch (read this)][Second looper steals the grid via global serialosc registration]]
   Serialosc registration is global per grid, so a second looper instance that registers steals the grid's output from the first; real runs can't be parallelized.  /Fix:/ Keep real-grid runs serial; give other instances the monome mock (virtual serialosc/grids on alternate ports) so they grab no hardware.
 
-* Docker, NixOS & the container  (9)
+* Docker, NixOS & the container  (8)
 - [[file:code/rust/configs/RUNTIME-NOTES.org::the host must allow X11 access][X11/minifb display needs xhost access plus the X11 socket mounted and DISPLAY set]]
   Inside the Docker container the optional pitch-class display (X11/minifb) won't open unless the host allows X11 access and the container has the X11 socket and DISPLAY.  /Fix:/ On the host run `xhost +local:`; ensure the container mounts /tmp/.X11-unix and sets DISPLAY.
 - [[file:docker.sh::would leave git with no object DB][Mounting only the worktree leaves git with no object DB; mount .bare explicitly]]
@@ -224,8 +224,6 @@ Currently *142 pitfalls* across 55 files.
   Without '--group-add audio' and '--device /dev/snd', the container user cannot reach the ALSA sound/MIDI devices (/dev/snd/seq, /dev/snd/midiC*D*, etc.).  /Fix:/ Add '--group-add audio' (joins the audio group) and '--device /dev/snd' (mounts all ALSA sound/MIDI devices) to the docker run command.
 - [[file:learnings/docker-midi-nixos-report.org::Note on ALSA sequencer][alsaSeq.enable = false disables the ALSA sequencer API in the container]]
   With 'alsaSeq.enable = false' in the NixOS config, ALSA MIDI applications inside the container have no access to the sequencer API.  /Fix:/ Use JACK MIDI apps or apps that read/write raw ALSA MIDI devices; or enable alsaSeq in NixOS, or run a2jmidid on the host to bridge ALSA MIDI to JACK.
-- [[file:learnings/keith-mcmillen-softstep.org::but not write to it][Container may read /dev/snd but not write MIDI out to the USB device]]
-  The container sees raw /dev/snd and can read the device, but USB MIDI out from the container may never reach the device's IN endpoint (the host NixOS/PipeWire stack owns the device).  /Fix:/ Decisive test: run ssmode.py backlight_on from the host; if the backlight blinks on host but not in the container it's a container write-path problem, not the protocol.
 
 * Build, Cargo & paths  (8)
 - [[file:TODO/DONE/monome-looper/5_critique.org::breaks config validation][Reusing remap_undo_button activates the all-or-nothing 'remap' window group and breaks loads_default_configs]]
@@ -284,7 +282,7 @@ Currently *142 pitfalls* across 55 files.
   A HashSet<Voice> forces Voice to be Hash+Eq, but voices carry mutable audio state (phase, env, target volume) you'd be hashing, and a HashSet isn't ergonomic for update-in-place in a tight render loop.  /Fix:/ Keep the sum-type design but use HashMap<VoiceSource, VoiceState> (O(1) keyed access for release-transform and 'does an accretion voice for P exist?'), iterating .values_mut() in the render loop.
 
 * Python & shell tooling  (1)
-- [[file:learnings/keith-mcmillen-softstep.org::Clean callback API. NOT installed][python-rtmidi / mido are not installed in this container]]
+- [[file:learnings/keith-mcmillen-softstep.org::NOT installed here][python-rtmidi / mido are not installed in this container]]
   python-rtmidi / mido are not installed in the container, so scripts importing them fail; echo.py deliberately avoids them for that reason.  /Fix:/ Either pip install python-rtmidi, or parse aseqdump's text output (what echo.py does) with zero dependencies.
 
 * Process & parallel dev  (8)
