@@ -51,8 +51,14 @@ const VOLUME_DB_RANGE: f32 = 30.0;
 /// The startup active volume column (absolute), per `0_vision.org`: "begin at button 10
 /// (which leaves 5 spots to the right for headroom)".
 const VOLUME_DEFAULT_COL: i32 = 10;
-/// Recent-note trail length (`0_vision.org` feature 4).
+/// Recent-note trail length: up to this many *distinct* pitch classes (`0_vision.org`
+/// feature 4). Repeating a note (even in another octave) refreshes its entry rather than
+/// flooding the trail.
 const TRAIL_LEN: usize = 7;
+/// Trail neighbour-suppression radius, as a divisor of the octave: playing a note clears
+/// any trailed class within `edo / TRAIL_SUPPRESS_DENOM` steps of it, so close pitches
+/// never share the dim backdrop (Jeff: "within 1/18th of an octave").
+const TRAIL_SUPPRESS_DENOM: i32 = 18;
 /// Fake-dim flash for a monobright grid: ~1/32 duty at ~66.7 Hz (period 15 ms), matching
 /// `edo12n_piano_monome_runtime` and a varibright grid's native level-4 brightness. The
 /// effective on-time is transmit-bound (a full frame takes a few ms to send), so a heavy
@@ -593,7 +599,7 @@ fn handle_key(
     let gain = current_gain(&rt.gains, rt.grid_index);
     rt.sink.note_on(cell, pitch, Timbre { waveform, gain, ..Timbre::default() });
     held.insert(cell, pitch);
-    push_trail(&rt.trail, pitch.rem_euclid(rt.edo));
+    push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo);
   } else {
     rt.sink.note_off(cell);
     held.remove(&cell);
@@ -687,19 +693,33 @@ fn trail_set(trail: &Arc<Mutex<VecDeque<i32>>>) -> HashSet<i32> {
   t.iter().copied().collect()
 }
 
-/// Push a just-pressed pitch class onto the shared trail, keeping the newest `TRAIL_LEN`.
-fn push_trail(trail: &Arc<Mutex<VecDeque<i32>>>, class: i32) {
+/// Record a just-pressed pitch class in the shared trail. The trail holds up to
+/// `TRAIL_LEN` *distinct* classes, newest first. Playing a note first clears its own
+/// class (dedup -- so hammering one note, in any octave, never floods or erases the
+/// trail) and every trailed class within `edo / TRAIL_SUPPRESS_DENOM` steps of it
+/// (neighbour suppression), then adds it at the front.
+fn push_trail(trail: &Arc<Mutex<VecDeque<i32>>>, class: i32, edo: i32) {
   let mut t = trail.lock().unwrap_or_else(|e| e.into_inner());
+  // Keep only classes strictly outside the suppression radius (this also drops the new
+  // class itself, since its distance is 0).
+  t.retain(|&c| pitch_class_distance(c, class, edo) * TRAIL_SUPPRESS_DENOM > edo);
   t.push_front(class);
   while t.len() > TRAIL_LEN {
     t.pop_back();
   }
 }
 
+/// The distance between two pitch classes on the octave circle, in EDO steps (0..=edo/2).
+fn pitch_class_distance(a: i32, b: i32, edo: i32) -> i32 {
+  let d = (a - b).rem_euclid(edo);
+  d.min(edo - d)
+}
+
 /// Send a binary frame as changed 8x8 quads (`/grid/led/map`). `dim_on` selects whether
 /// DIM cells are lit this sub-frame (the monobright fake-dim flash toggles it); BRIGHT is
 /// always on, OFF always off. Cheap: a whole 16x16 frame is at most 4 messages, so this
 /// sustains the flash where per-cell writes would swamp the serial link.
+#[allow(clippy::too_many_arguments)]
 fn send_binary_frame(
   sock: &UdpSocket,
   device: SocketAddr,
@@ -838,6 +858,39 @@ mod tests {
     set_waveform(&waveforms, 1, Waveform::Saw); // grid 0's selector -> grid 1
     assert_eq!(current_waveform(&waveforms, 1), Waveform::Saw, "grid 1 (controlled) got saw");
     assert_eq!(current_waveform(&waveforms, 0), Waveform::Triangle, "grid 0 unchanged");
+  }
+
+  #[test]
+  fn trail_dedups_by_class_and_suppresses_neighbours() {
+    let edo = 58; // 58/18 ~= 3.2, so classes within 3 steps are neighbours.
+    let trail = Arc::new(Mutex::new(VecDeque::new()));
+    let snap = |t: &Arc<Mutex<VecDeque<i32>>>| -> Vec<i32> { t.lock().unwrap().iter().copied().collect() };
+
+    // Hammering one class (octaves collapse to the same class) never floods or evicts.
+    for _ in 0..7 {
+      push_trail(&trail, 20, edo);
+    }
+    assert_eq!(snap(&trail), vec![20], "a repeated class stays a single entry");
+
+    // Far-apart classes accumulate, newest first.
+    push_trail(&trail, 30, edo);
+    push_trail(&trail, 40, edo);
+    assert_eq!(snap(&trail), vec![40, 30, 20], "far-apart classes coexist");
+
+    // Playing a near neighbour (2 steps from 40) erases 40 from the trail.
+    push_trail(&trail, 42, edo);
+    assert_eq!(snap(&trail), vec![42, 30, 20], "a neighbour within 1/18 octave is suppressed");
+
+    // Wrap-around neighbours count too: classes 1 and 57 are 2 apart in 58-EDO.
+    push_trail(&trail, 1, edo);
+    push_trail(&trail, 57, edo);
+    assert!(!snap(&trail).contains(&1), "1 is suppressed by its wrap-around neighbour 57");
+
+    // Never exceeds TRAIL_LEN distinct classes.
+    for c in [4, 8, 12, 16, 24, 34, 44, 54] {
+      push_trail(&trail, c, edo);
+    }
+    assert!(snap(&trail).len() <= TRAIL_LEN, "capped at {TRAIL_LEN}");
   }
 
   #[test]

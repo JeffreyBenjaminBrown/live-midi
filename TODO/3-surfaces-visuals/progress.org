@@ -17,8 +17,11 @@ Not committed (leaving the working tree for your review, as with the prior phase
   - *(3)* cross-grid reflection: each grid lights the *union* of both grids' sounding
     classes, each under its own register (so the same note shows on both grids wherever
     each currently places it);
-  - *(4)* trails: a shared 7-note ring of recent press classes paints DIM, and a
-    currently-sounding class paints BRIGHT (full clobbers dim).
+  - *(4)* trails: a shared ring of up to 7 recent *pitch classes* paints DIM, a
+    currently-sounding class paints BRIGHT (full clobbers dim). Repeating a note keeps a
+    single entry (octaves collapse to one class, so hammering a note can't flood/erase the
+    trail), and each press clears trailed neighbours within 1/18 of an octave
+    (=edo/18= steps) -- the later refinement you asked for.
   Overlays (selector / volume / scroll pad) occlude the play grid and are painted first,
   so the shift pad fully hides the edo grid beneath it (your directive -- no note ever
   shows on a pad cell).
@@ -84,9 +87,23 @@ Not committed (leaving the working tree for your review, as with the prior phase
   =volume_strip= window kind (parallel to =waveform_selector=) are now available to any
   runtime, not just surfaces.
 
+* clippy
+
+Installed a rustup stable toolchain (1.96.1) inside the container -- the system Rust is
+Nix (=/bin/cargo=, 1.95.0) with no rustup/clippy and a read-only store, so I fetched
+rustup + clippy into =~/.cargo= / =~/.rustup= (home only; nothing tracked). Run it with
+=PATH=$HOME/.cargo/bin:$PATH cargo clippy=.
+
+- *This diff is clippy-clean.* The only lint in code I wrote was =send_binary_frame='s arg
+  count (8/7), now =#[allow]='d to match =levels_for_grid=.
+- *Pre-existing version drift:* clippy 1.96 reports ~50 warnings across files this diff does
+  NOT add code to (the =sampler= bin, =midi_pulse.rs=, looper/remap, and doc-list-indent
+  nits in older module docs). These are new/stricter 1.96 lints on the old "clippy-clean"
+  baseline, not from this work. I left them (out of scope + would churn untouched code);
+  worth a separate sweep if you want the whole tree clean under 1.96.
+
 * remaining (needs you / the hardware)
 
-- Run clippy host-side.
 - Verify on the two real grids + KMSS under =pw-jack=: waveform strips now match; volume
   fader feel + range; trails/reflection read well; and confirm =m256-282= is the monobright
   one (and tune =DIM_PULSE= if its dim doesn't match the varibright grid). Lower the FTDI
