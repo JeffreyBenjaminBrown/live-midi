@@ -1,0 +1,37 @@
+I need a few changes to '2-monomes_58-8-1_kmss-drums.toml'.
+* the four waveform buttons should be identical on both monomes
+Each monome has four buttons in the top-righto control the other's waveform.
+On one of them, the active one is lit solid, and the others are dim.
+On the other, the active one is lit solid and the rest are off.
+They should instead be the same.
+
+The problem here might be that one monome understands dimness,
+and the other doesn't. If that's the case, we need to use flashing
+to fake the dimness. I know that dimness is in fact achieved by rapid flashing anyway,
+on a monome that permits dimness controls, so please look up online what duty cycle
+and frequency correspond to the different dimness levels. Let me know
+if you think this will be a performance bottleneck.
+* there should be a volume control
+In the top row, the 12 so-far unused buttons should be for volume.
+Let's make it a logarithmic control, spread over a 30 db range.
+The active volume position should be lit, and the rest unlit.
+The active volume position should begin at button 10
+(which leaves 5 spots to the right for headroom).
+* notes from either monome should be reflected in the other
+Currently if you press a note on one monome,
+its enharmonic equivalents light up across all octaves on that monome.
+Its enharmonic equivalents should also light up on the other monome.
+* notes should leave trails
+Let's keep a history of the most recent 7 notes that were pressed,
+regardless of whether they are currently being pressed,
+and display them all dimly. If they are currently being pressed,
+they should display fully lit (fully lit clobbers dimly lit).
+* let's plan and dialog this
+Please write a document 'TODO/3-surfaces-visuals/1_discussion.org',
+where you first plan how to do what I've asked,
+and after that (not concurrently) you push back in a section called 'problems"
+against anything unclear, contradictory, awkward or dangerous.
+Mark everything that needs my attention by prefixing TODO to the headline,
+and prefix (likely resolved) to anything that, while problematic, you think
+you probably already know how to handle.
+I will respond inline. (I want to avoid the in-CLI question interface.)
