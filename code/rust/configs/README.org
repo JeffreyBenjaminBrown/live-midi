@@ -333,10 +333,10 @@ kit):
 #+begin_src toml
 [[softstep_windows]]
 id = "kit"
-softstep = "feet"          # -> [[softsteps]] id
+softstep = "feet" # -> [[softsteps]] id
 kind = "drumkit"
-sink = "drums"             # -> a cpal_sampler [[sinks]] id
-debounce_ms = 50           # per-pedal contact-bounce window (default 50; 0 = off)
+sink = "drums"    # -> a cpal_sampler [[sinks]] id
+debounce_ms = 50  # per-pedal contact-bounce window (default 50; 0 = off)
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav", gain = 1.0 },

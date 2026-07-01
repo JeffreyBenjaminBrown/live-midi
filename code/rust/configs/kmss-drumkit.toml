@@ -43,6 +43,8 @@ id = "kit"
 softstep = "feet"
 kind = "drumkit"
 sink = "drums"
+# Minimum ms between two hits on the SAME pad, enforced on top of requiring a
+# release (pressure falling below OFF_SUM in decode.rs). 0 = release-only.
 debounce_ms = 50
 pads = [
   { pedal = 1, sample = "kick.wav" },

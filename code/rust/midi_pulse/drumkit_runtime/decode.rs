@@ -40,7 +40,7 @@ const VELOCITY_FULL_SCALE: u16 = 460;
 /// occasionally fired just before the peak landed, registering a hard hit as ~17%).
 /// Lower it for less latency at the risk of clipping the peak; raise it if soft hits
 /// on a springier surface peak later. (On carpet the peak lagged 20+ ms.)
-const ON_SUM: u16 = 40;
+const ON_SUM: u16 = 20;
 const OFF_SUM: u16 = 20;
 const ATTACK: Duration = Duration::from_millis(14);
 
@@ -76,11 +76,22 @@ enum PadState {
 pub struct TetherDecoder {
   sensors: [u8; 40], // CC 40..79, index = cc - 40
   pads: [PadState; NUM_PADS],
+  /// Minimum gap between two hits on the SAME pad, on top of requiring a release.
+  debounce: Duration,
+  /// When each pad last fired, for the debounce gate (`None` = never).
+  last_fire: [Option<Instant>; NUM_PADS],
 }
 
 impl TetherDecoder {
-  pub fn new() -> Self {
-    TetherDecoder { sensors: [0; 40], pads: [PadState::Idle; NUM_PADS] }
+  /// `debounce_ms` is the minimum time between two hits on the same pad (0 disables
+  /// it); it is enforced *in addition to* the per-pad release hysteresis (`OFF_SUM`).
+  pub fn new(debounce_ms: u64) -> Self {
+    TetherDecoder {
+      sensors: [0; 40],
+      pads: [PadState::Idle; NUM_PADS],
+      debounce: Duration::from_millis(debounce_ms),
+      last_fire: [None; NUM_PADS],
+    }
   }
 
   /// Feed one Control-Change sensor reading at time `now`. CCs outside the key range
@@ -103,13 +114,23 @@ impl TetherDecoder {
     };
   }
 
-  /// Emit a hit for any pad whose attack window has elapsed since onset, then mark it
-  /// Held (one hit per strike until it releases). Call frequently (every few ms).
+  /// Emit a hit for any pad whose attack window has elapsed since onset -- unless the
+  /// pad last fired less than `debounce` ago -- then mark it Held (one hit per strike;
+  /// a pad re-arms only after releasing below `OFF_SUM`). Call frequently (every few ms).
   pub fn poll(&mut self, now: Instant, out: &mut Vec<Hit>) {
     for slot in 0..NUM_PADS {
       if let PadState::Rising { onset, peak } = self.pads[slot] {
         if now.duration_since(onset) >= ATTACK {
-          out.push(Hit { label: SLOT_LABEL[slot], velocity: velocity_from_peak(peak) });
+          // Reaching Rising already required a release below OFF_SUM, so gating the
+          // fire on the debounce interval makes the retrigger condition the conjunction
+          // "fell below the floor AND debounce elapsed". A too-soon press is dropped
+          // (still -> Held, so it must release again before another attempt).
+          let debounced =
+            matches!(self.last_fire[slot], Some(t) if now.duration_since(t) < self.debounce);
+          if !debounced {
+            out.push(Hit { label: SLOT_LABEL[slot], velocity: velocity_from_peak(peak) });
+            self.last_fire[slot] = Some(now);
+          }
           self.pads[slot] = PadState::Held;
         }
       }
@@ -124,7 +145,7 @@ impl TetherDecoder {
 
 impl Default for TetherDecoder {
   fn default() -> Self {
-    Self::new()
+    Self::new(0)
   }
 }
 
@@ -208,7 +229,7 @@ mod tests {
 
   #[test]
   fn single_pad_fires_one_hit_mapped_to_its_label() {
-    let mut d = TetherDecoder::new();
+    let mut d = TetherDecoder::new(0);
     let t0 = Instant::now();
     // base 44 = label "1".
     let hits = strike(&mut d, 44, [127, 127, 127, 80], t0);
@@ -219,7 +240,7 @@ mod tests {
 
   #[test]
   fn does_not_fire_before_the_attack_window() {
-    let mut d = TetherDecoder::new();
+    let mut d = TetherDecoder::new(0);
     let t0 = Instant::now();
     d.on_cc(44, 100, t0);
     let mut hits = Vec::new();
@@ -231,7 +252,7 @@ mod tests {
 
   #[test]
   fn velocity_scales_with_peak_pressure() {
-    let mut d = TetherDecoder::new();
+    let mut d = TetherDecoder::new(0);
     let t0 = Instant::now();
     // Soft-ish: sum 120 -> ~33; hard: sum 460 -> 127. Distinct, and soft < hard.
     let soft = strike(&mut d, 44, [60, 60, 0, 0], t0)[0].velocity;
@@ -245,7 +266,7 @@ mod tests {
 
   #[test]
   fn two_pads_struck_together_both_fire() {
-    let mut d = TetherDecoder::new();
+    let mut d = TetherDecoder::new(0);
     let t0 = Instant::now();
     d.on_cc(44, 120, t0); // label 1
     d.on_cc(60, 120, t0); // base 60 -> label 3
@@ -257,7 +278,7 @@ mod tests {
 
   #[test]
   fn one_hit_per_press_refires_only_after_release() {
-    let mut d = TetherDecoder::new();
+    let mut d = TetherDecoder::new(0);
     let t0 = Instant::now();
     d.on_cc(44, 100, t0);
     let mut hits = Vec::new();
@@ -274,8 +295,35 @@ mod tests {
   }
 
   #[test]
+  fn debounce_suppresses_a_too_soon_retrigger_on_the_same_pad() {
+    let mut d = TetherDecoder::new(50); // 50 ms minimum gap between hits on a pad
+    let t0 = Instant::now();
+    let mut hits = Vec::new();
+    // Hit 1.
+    d.on_cc(44, 100, t0);
+    d.poll(t0 + ATTACK, &mut hits);
+    assert_eq!(hits.len(), 1, "first hit fires");
+    // Release, then re-press ~10 ms after the first hit (inside the debounce window).
+    d.on_cc(44, 0, t0 + ATTACK + Duration::from_millis(2));
+    let onset2 = t0 + ATTACK + Duration::from_millis(10);
+    d.on_cc(44, 100, onset2);
+    d.poll(onset2 + ATTACK, &mut hits);
+    assert_eq!(hits.len(), 1, "a re-press within debounce is suppressed");
+    // Release, then re-press well past the debounce window from the first hit.
+    d.on_cc(44, 0, onset2 + ATTACK + Duration::from_millis(2));
+    let onset3 = t0 + Duration::from_millis(120);
+    d.on_cc(44, 100, onset3);
+    d.poll(onset3 + ATTACK, &mut hits);
+    assert_eq!(hits.len(), 2, "a re-press after debounce fires");
+    // A different pedal is on its own debounce clock -- unaffected.
+    d.on_cc(60, 100, onset3); // label 3
+    d.poll(onset3 + ATTACK, &mut hits);
+    assert_eq!(hits.len(), 3, "debounce is per-pad");
+  }
+
+  #[test]
   fn nav_pad_and_pedal_ccs_are_ignored() {
-    let mut d = TetherDecoder::new();
+    let mut d = TetherDecoder::new(0);
     let t0 = Instant::now();
     d.on_cc(80, 127, t0); // nav pad
     d.on_cc(86, 127, t0); // expression pedal
