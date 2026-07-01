@@ -1,0 +1,282 @@
+#+title: 3-surfaces visuals -- plan & discussion
+#+date: 2026-07-01
+
+This plans the visual/behaviour changes you asked for
+in =TODO/3-surfaces/0_vision.org=
+for =code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=
+(the surfaces runtime).
+
+How to use this doc: read the *Plan* first, then *Problems*. In *Problems* I've
+prefixed every heading with either =TODO= (I need a call from you) or
+=(likely resolved)= (I think I can just handle it, but you should know it's there).
+Please answer inline under the =*Answer:*= slots -- no CLI questions.
+
+* What you asked for (so you can confirm I understood)
+
+From =0_vision.org=:
+1. The four waveform buttons should look *the same* on both grids (today one grid
+   shows the unselected three dim, the other shows them off).
+2. A *volume* control: the 12 unused top-row buttons, logarithmic over ~30 dB,
+   active position lit and the rest unlit, starting at button 10 (5 spots of
+   headroom to its right).
+3. A note pressed on *either* grid lights its octave-equivalents on *both* grids.
+4. *Trails*: remember the last 7 pressed notes and show them dimly; a note that is
+   also currently held shows fully lit (full clobbers dim).
+
+From =0p5_also.org=:
+5. When you hold a pitch and shift the window, the *lit keys move* with the shift.
+6. The window-shift *arrows* (up/down/left/right) are dimly lit; the two octave
+   corners are not.
+
+* Research you asked me to do (varibright, duty cycle, performance)
+
+You were right about the cause. I looked it up (monome OSC/serial docs, the
+=libmonome= source, monome's own MAX72xx grid firmware, the MAX7219/MAX7221
+datasheet, and flicker-fusion / Talbot-Plateau references), and cross-checked every
+number with a second adversarial pass.
+
+** Why one grid dims and the other doesn't
+
+- Monome LEDs have two command families: *binary* on/off and *varibright* (a
+  per-LED level 0--15). Our code already sends the varibright form
+  (=/grid/led/level/set=) with three levels: 0 (off), *4 (dim)*, 15 (bright).
+- A *non-varibright* grid can't do per-LED brightness. When it receives a level it
+  thresholds it: *level > 7 -> ON, level <= 7 -> OFF*. This is confirmed in
+  monome's own code (=libmonome= =reduce_level_to_bit(level) = (level > 7)= and the
+  grid firmware's =rx[3] > 7=).
+- So our =DIM = 4= becomes *OFF* on that grid, while =BRIGHT = 15= (> 7) stays *ON*
+  on both. That is exactly your report: "active solid on both; the others dim on
+  one, off on the other."
+- Your two 16x16 grids are a "256" size. The original monome *Series 256* (2007--2010)
+  is *monobright* (no per-LED dimming); a modern 16x16 (e.g. monome's 2023 "grid
+  zero") *is* varibright. So one of your two is almost certainly a monobright 256 --
+  that's the one showing "off" instead of "dim".
+
+** The duty cycle & frequency to fake dimness (your explicit question)
+
+Dimness on a capable grid really is PWM (rapid on/off) inside the LED driver; we can
+fake it in software by flashing an on/off LED fast enough to fuse.
+
+- *Frequency:* fuse above the flicker threshold. Cones fuse ~48--60 Hz; peripheral
+  vision can still catch flicker up to ~80 Hz. Safe engineering target: *60--120 Hz*
+  (period 8--16 ms). Our codebase already flashes "dim" at *66.7 Hz* (15 ms period)
+  in =edo12n_piano_monome_runtime= -- I'll reuse that.
+- *Duty cycle:* above fusion, perceived *luminance* = duty cycle x full brightness
+  (Talbot-Plateau). But perceived *brightness* is compressive (~luminance^0.33..0.43),
+  so a "quarter-bright" look needs far less than 25% duty. A *1/32 duty (~3%)* reads
+  as a convincing dim -- and, usefully, ~1/32--1/25 duty is about what a varibright
+  grid's *native level 4* looks like (its gamma curve maps level 4 to ~4% drive). So
+  a 1/32-duty flash on the monobright grid will roughly *match* the varibright grid's
+  level-4 dim. That's the number: *~1/32 duty at ~67 Hz.* (Our existing =PulseBrightness=
+  helper already expresses exactly this.)
+
+** Is flashing a performance bottleneck? (your explicit question)
+
+Short answer: *the naive way, yes; batched, no -- with one caveat and one required
+system tweak.*
+
+- The link is an FTDI serial port at *115200 baud ~= 11.5 kB/s* (~87 us/byte).
+- *Naive (one message per dim cell):* trails + dim arrows can be ~30+ cells. Flashing
+  30 cells on+off at 67 Hz ~= *4000 messages/s* ~= ~12 kB/s -- that *saturates* the
+  link (and worse, see the FTDI note below). So per-cell flashing *is* a bottleneck.
+- *Batched (whole-row/quad writes):* a monome "quad" is an 8x8 block; a 16x16 grid is
+  4 quads. Repainting the changed quads twice per flash is *4 x 2 x 67 ~= 540 msgs/s*
+  ~= ~6 kB/s ~= ~half the link. Fine. So the fix is to *paint the flash as quad/row
+  writes, not per cell.* (We currently send per-cell diffs; I'd add a batched path.)
+- *Required system tweak:* the FTDI *latency timer* defaults to *16 ms*, which alone
+  caps clean updates near ~62 Hz and adds jitter. It must be lowered (to ~1 ms) for a
+  smooth 67 Hz flash. This is a known monome/serialosc setting, set on the host.
+- *The one honest caveat:* sending a 4-quad frame takes ~3.8 ms, which is *longer than
+  a crisp 0.5 ms dim pulse*. So if dim cells are scattered across all four quads, we
+  can't actually deliver a true 1/32 duty -- the pulse gets transmit-bound and the dim
+  reads *brighter* (toward half-bright) unless we keep the dim set small or lengthen
+  the period. This only bites the *monobright* grid, and only when many dim cells are
+  lit at once (lots of trails). Mitigations in the plan below.
+
+* Plan
+
+Common groundwork (touches most features): today each grid thread keeps its own
+=held= set and its own scroll =register= privately, and =levels_for_grid= paints by a
+*register-independent* pitch-class map. I'll (a) make each grid publish its currently-
+sounding pitch-classes to a small shared structure, (b) add a shared 7-entry trail,
+and (c) switch the LED math to the looper's *register-aware* painter so lit cells move
+with the shift. Then each of the six features is a small addition on top.
+
+** 1. Identical waveform strips on both grids
+
+The strip logic is already identical; only the *rendering* of =DIM= differs because
+one grid is monobright. Fix = make =DIM= look the same on both by faking it with a
+flash on the monobright grid (see research above). Concretely: keep native level 4 on
+the varibright grid; on the monobright grid, render dim cells by pulsing them on at
+~1/32 duty, ~67 Hz, using batched (row/quad) writes. Selected waveform = solid on both
+(15 > 7, already fine).
+
+** 2. Volume control (top row, 12 buttons)
+
+- Window: a new =volume_strip= (or similar) covering the top row right of the wave
+  strip: =rect = [4, 0, 15, 0]= (12 cells). One cell lit = current level, rest off.
+- Mapping: 12 discrete positions, *logarithmic* = equal dB per step. Spread ~30 dB
+  across the 12 -> ~2.7 dB/step. Startup at *column 10* (the 7th of the 12), leaving
+  columns 11--15 (5 steps) of headroom to the right.
+- Effect: scales the synth's output gain. The synth's =amplitude= is currently baked
+  in at stream-build; I'll make it a live value the audio callback reads, and the
+  strip writes it. (No flashing needed -- the strip is lit/off, not dim.)
+- Default level = the config's current amplitude (0.15) at column 10; steps left get
+  quieter, steps right louder, 30 dB total end-to-end.
+- (Per-grid vs global, and cross-control -- see Problems.)
+
+** 3. Cross-grid note reflection
+
+Each grid publishes the pitch-classes it is currently sounding into shared state. When
+a grid paints, it lights every cell whose *current-register* class is in the *union* of
+both grids' sounding classes. Because each grid uses its *own* register, the same note
+lights on each grid wherever that grid currently places it -- octave-equivalents and
+all. (This subsumes the existing single-grid reflection.)
+
+** 4. Trails (last 7 notes, dim)
+
+- Add a shared ring buffer of the last 7 pressed notes (as pitch-classes). On each
+  note-on (either grid) push its class.
+- Paint: a cell whose current-register class is in the trail -> *dim*; if that class
+  is *currently held* on either grid -> *bright* (bright clobbers dim). Everything
+  else off.
+- Dim here is the same faked-dim flash as feature 1 on the monobright grid.
+
+** 5. Lit keys move with the window shift
+
+Adopt the looper's painter (=looper_runtime/state.rs::paint_classes=): compute each
+cell's class as =step_for_cell(x_step, y_step, register, x, y) mod edo= using the
+*live* register, instead of the current fixed, register-independent map. Then a shift
+changes every cell's class, so the lit octave-equivalents of a held pitch move under
+the new window -- exactly the looper-timbre behaviour you remembered. (Held *voices*
+keep the pitch they were struck at; only the LEDs move.)
+
+** 6. Shift arrows dim, octave corners dark
+
+Falls out of feature 5 for free: the looper painter already lights the four arrows
+(=Up/Down/Left/Right=) at =LEVEL_DIM= and leaves the two octave corners dark. Porting
+that logic gives you this directly. (The arrows are "dim", so on the monobright grid
+they use the same faked-dim flash.)
+
+* Problems
+
+** (likely resolved) Feature 5 reverses a documented decision
+
+The current surfaces design *deliberately* makes lit cells register-independent
+("scrolling moves the pitches under your fingers without moving the lit cells" -- it's
+written into =grid.rs= and =2-monomes_58-8-1_kmss-drums.org=). Feature 5 asks for the
+opposite, matching the looper. I can implement it (adopt the looper painter) and will
+update those docs/comments. Flagging only so you know the reversal is intentional.
+
+*** TODO good
+
+** ONGOING Which physical grid is the monobright one? (needed to flash only it)
+
+To flash the dim on *only* the monobright grid (the efficient option that also keeps
+the varibright grid's tests/behaviour untouched), the runtime has to know which
+physical grid is which. Right now it can't: the config binds the two grids by *size
+only* (both are 16x16) and hands them out in discovery order, so "grid a" / "grid b"
+in the TOML is *not* pinned to a specific physical unit. Two ways forward:
+
+- *(a)* You tell me the serialosc *type string* and/or *serial* of each of your two
+  grids (run =serialoscd= / the monome device list on the host). I auto-detect
+  varibright from that, or you pin the monobright one in its =[[monomes]]= block. This
+  is cleanest but needs the strings from you, and it needs a small runtime change so
+  device-to-slot assignment honours a per-grid selector (today it ignores everything
+  but size).
+- *(b)* Sidestep it: *flash the dim on both grids* uniformly (treat both as binary).
+  Guarantees they look identical with zero detection, but the varibright grid then
+  flickers slightly where it needn't and carries the extra link traffic, and it breaks
+  the current (varibright) mock tests, which I'd rewrite.
+
+I lean toward *(a)* if you can grab the device strings; otherwise *(b)* is safe.
+*** TODO Can you not get those strings yourself?
+Let's only flash where necessary. You can query the two grids. They're already connected.
+(I am using them for one of the configs, in another workspace; let me know if I need
+to stop doing that so they're available to you.)
+
+** ONGOING Volume: per-grid or one global level? And cross-controlled like the waveform?
+
+There is *one* shared synth for both grids, so the simplest volume is a *single global
+master* that both top-row strips show and move together. But you might want each grid
+to have its *own* loudness (like each has its own timbre) -- that's doable but means
+per-grid gain (a bit more plumbing). Also: the *waveform* strip on each grid controls
+the *other* grid; should the *volume* strip do the same (cross-control), or control its
+own grid / the global? My default, absent an answer: *one global master volume*,
+mirrored on both strips, *not* cross-controlled.
+*Answer:*
+
+*** TODO right, each should have its own
+and like the waveform controls, the amplitude row should affect the *other* monome.
+
+** ONGOING Volume: confirm the dB reference and range shape
+
+I'm reading "logarithmic, ~30 dB, start at button 10 with 5 headroom to the right" as:
+12 steps, ~2.7 dB each, *column 15 = loudest*, *column 4 = 30 dB below that*, and the
+startup *column 10 = today's level (amplitude 0.15)*, sitting ~13.6 dB below max. Is
+that the intent -- in particular, is the default column 10 meant to be "normal" (unity)
+with the 5 to its right as boost/headroom above normal? Or should the *top* be unity
+and everything else attenuation?
+
+*** TODO top should be unity
+and yes, button 15 = top
+
+** ONGOING Trails: shared across both grids or per grid? 7 events or 7 distinct notes?
+
+Given features 3--5 unify the two grids, my default is *one shared* 7-note trail (the
+last 7 presses from *either* grid), shown dim on *both*. Alternatives: a separate
+7-note trail per grid, or trails that only show on the grid they were played on. Also,
+"7 notes" -- I'm treating it as the *7 most recent press events* (a moving window;
+repeats allowed, deduped only for display). If you meant "7 distinct pitches," say so.
+
+*** TODO correct, one shared set of notes to trail
+The purpose is for me to see, when looking at one monome,
+where to put my fingers to harmonize with the other.
+
+** ONGOING Trails vs the flash budget on the monobright grid
+
+This is where the performance caveat actually bites. Seven trailed notes, each lighting
+all its octave-equivalents (~3--4 cells) *plus* the dim arrows, can be ~25--30 dim
+cells scattered over all four quads of the monobright grid. As noted in the research,
+a full 4-quad flash frame (~3.8 ms) can't hold a crisp 1/32-duty pulse, so with that
+many dim cells the "dim" on the monobright grid will drift *brighter* than the
+varibright grid's true level-4 -- i.e. the two grids won't match perfectly *at the
+extreme*. Options: cap the trail (fewer than 7) so the dim set stays small; accept a
+slightly-brighter dim on the monobright grid; or accept minor extra flicker. The
+varibright grid is unaffected either way. Which trade do you prefer?
+
+*** TODO let's go with flicker
+I assume that's because it will be flashing at a lower speed. Correct?
+
+** (likely resolved) Dim trails also move when you scroll
+
+Because trails paint through the register-aware painter (feature 5), a trailed note's
+dim octave-equivalents will *move* when you shift the window, same as held notes. I
+think that's consistent and probably what you want, but it's a behaviour you didn't
+explicitly ask for, so: flagging. (If you'd rather trails stay put while held notes
+move, that's a bigger change -- say so.)
+
+*** TODO right
+
+** (likely resolved) Cross-reflection shows same pitch-class, not same Hz
+
+If the two grids are scrolled to *different* windows, reflecting a note across shows it
+at the cell each grid currently assigns that pitch-class -- so the two grids can light
+different-looking cells for "the same note," and the reflected cell need not be under
+your finger. This is the natural reading of "octave-equivalents on both grids" and
+matches how within-grid reflection already works; I'll go with it unless you object.
+
+*** TODO right
+
+** (likely resolved) A cell that's both held-bright and a shift-arrow
+
+If a held pitch's octave-equivalent lands on a shift-arrow cell, bright (note) wins
+over dim (arrow), and the arrows never sound. This matches the looper. No action
+needed; noting for completeness.
+
+*** TODO The arrows should completely clobber the edo grid under them.
+The arrow window is on top of the edo grid window.
+That portion of the edo grid window is inaccessible,
+both to fingers and to eyeballs.
+(This is harmless -- the edo grid is huge and isomorphic,
+so losing a corner of it doesn't restrict what I can play.)
