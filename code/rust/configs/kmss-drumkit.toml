@@ -3,9 +3,13 @@ id = "kmss-drumkit"
 title = "KMSS Drumkit"
 
 # A simple drumkit on the Keith McMillen SoftStep (KMSS). Each pedal fires a
-# one-shot drum sample. The KMSS sends only Program Changes today (no velocity),
-# so every hit plays at a fixed level. Launch under pw-jack so the sampler shares
-# the sound card via PipeWire:
+# one-shot drum sample, VELOCITY-SENSITIVE: on start the runtime switches the KMSS
+# into tether/hosted mode (over rawmidi via `amidi`), reads its raw pressure-sensor
+# stream, and scales each hit's loudness by how hard the pad is struck; it restores
+# standalone mode on exit (including Ctrl-C). Per-pad `gain` below is the FULL-
+# velocity level (a hard hit); softer hits play quieter, spread over VELOCITY_DB_RANGE
+# (see drumkit_runtime/decode.rs). See kmss-research.org for how this works.
+# Launch under pw-jack so the sampler shares the sound card via PipeWire:
 #
 #   pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 #

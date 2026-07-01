@@ -1,48 +1,59 @@
-//! The KMSS drumkit runtime: read pedal presses from a SoftStep and fire drum
-//! one-shots through a `cpal_sampler` sink.
+//! The KMSS drumkit runtime: read the SoftStep's tether/hosted sensor stream and
+//! fire drum one-shots with VELOCITY derived from how hard each pad is struck.
 //!
-//! Shape mirrors the other runtimes: `run_from_config` wires the config's devices,
-//! sinks and windows, then blocks until Enter / Ctrl-C. The press-decode and the
-//! audio mixing live in `decode` and `audio` (both unit-tested); this module is the
-//! I/O shell (sample loading, midir connection, the pedal->voice routing table).
+//! On start it switches the device into tether mode (over rawmidi via `amidi`),
+//! reads the per-sensor Control-Change stream through midir, derives per-pad onset +
+//! attack-peak velocity (`decode`), and fires samples through a `cpal_sampler` sink
+//! (`audio`). On exit -- including Ctrl-C -- it restores standalone mode (`tether`).
+//! Two feet stream independently, so a simultaneous two-pad strike fires both: the
+//! limitation the old Program-Change path could not escape (see `kmss-research.org`).
 
 mod audio;
 mod decode;
 mod samples;
+mod tether;
 
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
 use midi_pulse::config::{drum_samples_dir, Config, SinkConfig, SoftstepWindowConfig};
 
 use audio::{Sampler, Trigger};
-use decode::{collect_program_changes, pedal_from_program, Debouncer};
+use decode::{collect_control_changes, gain_from_velocity, Hit, TetherDecoder};
 use samples::DrumSample;
 
-/// One pedal's resolved binding: which sample to fire, at what gain, into which
-/// sink. Cloning a `Trigger` is cheap (an `Arc`), so a pad copies its sink's handle.
+/// One pedal's resolved binding: which sample to fire, at what *base* gain (the
+/// vel-127 level, scaled down by velocity), into which sink. Cloning a `Trigger` is
+/// cheap (an `Arc`), so a pad copies its sink's handle.
 struct PadBinding {
   sample: Arc<DrumSample>,
   gain: f32,
   trigger: Trigger,
-  /// For the startup summary only.
+  /// For the startup summary / trace only.
   voice_label: String,
 }
 
-/// What a single KMSS device needs at runtime: its pedal table, its debounce
-/// window, and the port-name substring used to find it.
+/// What a single KMSS device needs at runtime: its pedal table (indexed by printed
+/// label) and the port-name substring used to find its MIDI input.
 struct DeviceBuild {
   pedal_map: [Option<PadBinding>; 10],
-  debounce_ms: u64,
   select_substring: String,
 }
 
 pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
   let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
+  let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
+
+  // Arm Ctrl-C / SIGTERM restoration FIRST, before any audio or MIDI thread spawns,
+  // so the signal block is inherited by all of them and a stray signal can't leave
+  // the device stuck in tether mode. Restoration is armed once we actually enter.
+  let tether_session = tether::arm();
 
   // 1. Start a sampler per cpal_sampler sink referenced by some drumkit window.
   let referenced: HashSet<&str> = config
@@ -80,22 +91,19 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
       softstep.id.clone(),
       DeviceBuild {
         pedal_map: std::array::from_fn(|_| None),
-        debounce_ms: 0,
         select_substring: softstep.select.name_substring().to_string(),
       },
     );
   }
   for window in &config.softstep_windows {
-    let SoftstepWindowConfig::Drumkit { softstep, sink, debounce_ms, pads, .. } = window;
+    // `debounce_ms` is ignored now: the tether onset uses on/off hysteresis instead.
+    let SoftstepWindowConfig::Drumkit { softstep, sink, pads, .. } = window;
     let sampler = samplers
       .get(sink)
       .ok_or_else(|| format!("drumkit window references unbuilt sink {sink:?}"))?;
     let device = devices
       .get_mut(softstep)
       .ok_or_else(|| format!("drumkit window references unknown softstep {softstep:?}"))?;
-    // A device's debounce is the widest window among its drumkit windows (they
-    // partition pedals, so in the common one-window case this is just its value).
-    device.debounce_ms = device.debounce_ms.max(*debounce_ms);
     for pad in pads {
       let path = drum_samples_dir().join(&pad.sample);
       let sample = samples::load_wav(&path)?;
@@ -108,23 +116,41 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     }
   }
 
-  // 3. Connect to each device and route presses. Connections are held alive in the
-  // returned Vec for the lifetime of the run.
+  // 3. Setup succeeded -> switch the device into tether mode (and arm restoration).
+  tether_session
+    .enter()
+    .map_err(|e| format!("could not enter tether mode (needs alsa-utils `amidi`): {e}"))?;
+  println!("  device in tether mode (velocity-sensitive); will restore standalone on exit");
+
+  // 4. Per device: spawn the poll/fire timer and connect the MIDI input. Connections
+  // and timers are held alive for the run.
   let mut connections: Vec<MidiInputConnection<()>> = Vec::new();
+  let mut timers: Vec<(Arc<AtomicBool>, JoinHandle<()>)> = Vec::new();
   for (device_id, build) in devices {
-    let DeviceBuild { pedal_map, debounce_ms, select_substring } = build;
-    print_device_summary(&device_id, &pedal_map, debounce_ms);
+    let DeviceBuild { pedal_map, select_substring } = build;
+    print_device_summary(&device_id, &pedal_map);
+
+    let decoder = Arc::new(Mutex::new(TetherDecoder::new()));
+
+    // Timer thread: fire hits whose attack window has elapsed. It owns the pad map
+    // and sample triggers; the MIDI callback only feeds sensor readings in.
+    let stop = Arc::new(AtomicBool::new(false));
+    let timer = {
+      let decoder = Arc::clone(&decoder);
+      let stop = Arc::clone(&stop);
+      std::thread::Builder::new()
+        .name(format!("kmss-voices-{device_id}"))
+        .spawn(move || run_voice_timer(decoder, pedal_map, stop, trace))?
+    };
+    timers.push((stop, timer));
 
     let midi_in = MidiInput::new(&format!("kmss-drumkit-{device_id}"))?;
     let port = select_input_port(&midi_in, &select_substring)?;
     let port_name = midi_in.port_name(&port).unwrap_or_else(|_| "<unknown>".to_string());
     println!("  device {device_id:?}: bound MIDI input {port_name:?}");
 
-    let mut debouncer = Debouncer::new(debounce_ms);
-    // Set MIDI_PULSE_TRACE=1 to log every received MIDI buffer and what it fired --
-    // the way to see whether the device actually sends two PCs for a two-pad stomp.
-    let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
-    let mut programs: Vec<u8> = Vec::with_capacity(8);
+    let decoder_cb = Arc::clone(&decoder);
+    let mut ccs: Vec<(u8, u8)> = Vec::with_capacity(16);
     let conn = midi_in
       .connect(
         &port,
@@ -133,29 +159,15 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
           if trace {
             eprintln!("[kmss] rx {message:02X?}");
           }
-          programs.clear();
-          collect_program_changes(message, &mut programs);
-          for &program in &programs {
-            let pedal = pedal_from_program(program);
-            match &pedal_map[pedal as usize] {
-              Some(binding) => {
-                let fired = debouncer.accept(pedal, Instant::now());
-                if trace {
-                  eprintln!(
-                    "[kmss]   program {program} -> pedal {pedal} ({}): {}",
-                    binding.voice_label,
-                    if fired { "FIRE" } else { "debounced" },
-                  );
-                }
-                if fired {
-                  binding.trigger.fire(Arc::clone(&binding.sample), binding.gain);
-                }
-              }
-              None if trace => {
-                eprintln!("[kmss]   program {program} -> pedal {pedal}: unmapped");
-              }
-              None => {}
-            }
+          ccs.clear();
+          collect_control_changes(message, &mut ccs);
+          if ccs.is_empty() {
+            return;
+          }
+          let now = Instant::now();
+          let mut decoder = decoder_cb.lock().unwrap_or_else(|e| e.into_inner());
+          for &(cc, val) in &ccs {
+            decoder.on_cc(cc, val, now);
           }
         },
         (),
@@ -168,15 +180,58 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     return Err("drumkit config declares no softstep devices to bind".into());
   }
 
-  println!("\nDrumkit ready. Step on the pedals. Press Enter to exit...");
+  println!("\nDrumkit ready (tether mode, velocity-sensitive). Step on the pedals. Press Enter to exit...");
   let mut line = String::new();
   io::stdin().read_line(&mut line)?;
+
+  // Stop the voice timers, drop the connections, then `tether` restores on its Drop.
+  for (stop, _) in &timers {
+    stop.store(true, Ordering::Relaxed);
+  }
+  for (_, handle) in timers {
+    let _ = handle.join();
+  }
+  drop(connections);
   Ok(())
 }
 
+/// The poll/fire loop for one device: every few ms, ask the decoder for matured hits
+/// and fire each sample at `pad.gain * gain_from_velocity(velocity)`.
+fn run_voice_timer(
+  decoder: Arc<Mutex<TetherDecoder>>,
+  pad_map: [Option<PadBinding>; 10],
+  stop: Arc<AtomicBool>,
+  trace: bool,
+) {
+  let mut hits: Vec<Hit> = Vec::with_capacity(8);
+  while !stop.load(Ordering::Relaxed) {
+    // Poll at 1 ms: the device only refreshes every ~10 ms so this captures nothing
+    // extra, but it shaves the delay between the attack window elapsing and firing.
+    std::thread::sleep(Duration::from_millis(1));
+    hits.clear();
+    {
+      let mut decoder = decoder.lock().unwrap_or_else(|e| e.into_inner());
+      decoder.poll(Instant::now(), &mut hits);
+    }
+    for hit in &hits {
+      if let Some(binding) = &pad_map[(hit.label % 10) as usize] {
+        let gain = binding.gain * gain_from_velocity(hit.velocity);
+        if trace {
+          eprintln!(
+            "[kmss]   pad {} vel {} -> {} (gain {gain:.3})",
+            hit.label, hit.velocity, binding.voice_label,
+          );
+        }
+        binding.trigger.fire(Arc::clone(&binding.sample), gain);
+      } else if trace {
+        eprintln!("[kmss]   pad {} vel {}: unmapped", hit.label, hit.velocity);
+      }
+    }
+  }
+}
+
 /// Choose the KMSS input port: any whose name contains `substring`, preferring the
-/// performance port ("MIDI 1") when several match (the KMSS exposes both a
-/// performance and an editor port, both containing "SSCOM").
+/// performance port ("MIDI 1") -- the one that carries the tether sensor stream.
 fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPort, String> {
   let mut matches: Vec<(MidiInputPort, String)> = midi_in
     .ports()
@@ -197,8 +252,8 @@ fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPo
   Ok(matches.remove(0).0)
 }
 
-fn print_device_summary(device_id: &str, pedal_map: &[Option<PadBinding>; 10], debounce_ms: u64) {
-  println!("  device {device_id:?} pedal map (debounce {debounce_ms} ms):");
+fn print_device_summary(device_id: &str, pedal_map: &[Option<PadBinding>; 10]) {
+  println!("  device {device_id:?} pedal map (tether mode, velocity-sensitive):");
   // Print in printed-label order 1..9, then 0, skipping unmapped pedals.
   for label in (1..=9).chain(std::iter::once(0)) {
     if let Some(binding) = &pedal_map[label as usize] {

@@ -1,3 +1,8 @@
+* KMSS drumkit
+** run the KMSS drumkit
+pw-jack cargo run --bin midi_pulse -- kmss-drumkit
+** some cool KMSS velocity/aftertouch measurement code
+python3 code/python/softstep/meter.py
 * remember to run the synth 'under pw-jack'
 Just prefix 'pw-jack' to the command:
 

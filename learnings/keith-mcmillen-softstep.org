@@ -1,6 +1,15 @@
 #+title: Keith McMillen SoftStep (KMSS): how to read it, what it sends, and the (so-far-failed) path to richer data
 #+date: 2026-06-30
 * what this is + bottom line
+
+#+begin_quote
+*UPDATE 2026-06-30 — two claims below are SUPERSEDED; see =kmss-research.org=.*
+Sending to the device *works* — via ALSA *rawmidi* (=amidi -p hw:1,0,0=), not the
+sequencer (=aseqsend=) tried here. A rawmidi node *does* exist (=/dev/snd/midiC1D0=).
+The firmware query is answered and tether mode engages. The "we can't send" wall is
+gone; velocity + two-foot concurrency are reachable.
+#+end_quote
+
 A field report from getting a SoftStep foot controller talking to this
 container.
 
@@ -261,6 +270,50 @@ This is by MIDI/USB design and the device's scan architecture; it was *not*
 specifically bench-tested with a true two-at-once stomp. To confirm on the
 hardware: run =python3 code/softstep/echo.py 20:0=, stomp two pedals as
 simultaneously as you can, and check both events appear (they will).
+
+* Drumkit velocity (tether runtime): how it works + the tuning knobs
+
+The =drumkit_runtime= now plays *velocity-sensitive*: it runs the device in tether
+mode and derives how hard each pad is struck from its 4 pressure sensors. Full story
+in [[../kmss-research.org]]; this is the operator's tuning reference.
+
+** The one empirical fact that drives everything
+The device refreshes its sensors only *~every 10 ms* (~100 Hz scan -- measured from
+timestamped captures; it is fixed in firmware, not tunable). A deliberate strike's
+pressure peaks on the *2nd refresh* (~10-11 ms after the hit is first seen) on a
+*hard floor*; on a springy/mushy surface (carpet) the peak lags 20 ms or more.
+Consequences:
+- You must wait ~2 refreshes to know how hard the hit was. Firing sooner reads the
+  pressure mid-ramp, so velocity comes out both *too low* and *erratic* (it depends
+  on where the strike happened to land in the scan cycle). A 3 ms window captured
+  only ~17-50% of the true peak in real data -- *do not shrink the window chasing
+  latency*; the 10 ms device scan is the floor.
+- Polling the stream faster than ~10 ms captures nothing new; it only trims the delay
+  between the attack window ending and the sound firing (poll is 1 ms, plenty).
+- *Surface matters.* A hard floor sharpens the attack (peak ~10 ms, consistent); a
+  soft surface slows and scatters it. Re-check =ATTACK= if you change playing surface.
+
+** The knobs
+All live in =code/rust/midi_pulse/drumkit_runtime/decode.rs=; the poll interval is in
+=drumkit_runtime/mod.rs= (=run_voice_timer=). The Python meter
+=code/python/softstep/meter.py= mirrors =VEL_DB_RANGE= / =ATTACK_MS= so what you
+audition matches the kit. Symptom → fix:
+
+| knob                | default | what it does                                                        | symptom → fix                                                                                          |
+|---------------------+---------+---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------|
+| =ATTACK=            | 14 ms   | how long after onset we capture the attack peak before firing        | hard hit sometimes comes out *weak/dead* → raise 1-2 ms (peak landing past the window); *laggy* → lower |
+| =VELOCITY_DB_RANGE= | 20 dB   | loudness spread from softest (vel 1) to hardest (vel 127) hit        | dynamics feel *flat* → raise (e.g. 30); soft hits *vanish* / too extreme → lower (e.g. 12)              |
+| =VELOCITY_FULL_SCALE= | 460   | pad pressure (sum of its 4 sensors, 0..508) that maps to velocity 127 | *everything maxes out*, no headroom → raise toward 508; *can't reach full* even hitting hard → lower    |
+| =ON_SUM= / =OFF_SUM= | 40 / 20 | onset / release thresholds on the pad's sum-of-4 (hysteresis)      | *double/false* triggers → raise =ON_SUM=; a pad *won't retrigger (stuck)* → lower =OFF_SUM=             |
+| poll interval       | 1 ms    | how often the fire-timer checks for matured hits                     | rarely needs changing; the ~10 ms device scan dominates                                                |
+
+Velocity = the *peak of sum-of-4* over the =ATTACK= window, scaled by
+=VELOCITY_FULL_SCALE= to 1..127, then converted to a gain spread over
+=VELOCITY_DB_RANGE=. (Loudness is ~logarithmic, so velocity is spread across dB
+rather than scaling amplitude linearly -- linear would put vel 127 ~42 dB above vel
+1, far too much.) After changing any knob, rebuild:
+=pw-jack cargo run --bin midi_pulse -- kmss-drumkit=. The pure decoder has unit tests
+(=cargo test --bin midi_pulse drumkit=).
 
 * References
 
