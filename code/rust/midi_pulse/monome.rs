@@ -178,3 +178,23 @@ pub fn send_led_level_set(
     vec![OscType::Int(x), OscType::Int(y), OscType::Int(level)],
   );
 }
+
+/// Binary quad map: set a whole 8x8 block in one message (`/grid/led/map x y d[8]`).
+/// `x_off`/`y_off` are the block's top-left (multiples of 8); `rows[r]` is a bitmask of
+/// the 8 columns of row `y_off + r`, LSB = leftmost (`x_off`). Cheap enough to flash the
+/// whole grid at LED-fusion rates (4 messages for a 16x16), which per-cell writes are not
+/// -- see the surfaces runtime's monobright fake-dim path.
+pub fn send_led_map(
+  sock: &UdpSocket,
+  device: SocketAddr,
+  prefix: &str,
+  x_off: i32,
+  y_off: i32,
+  rows: &[u8; 8],
+) {
+  let mut args = Vec::with_capacity(10);
+  args.push(OscType::Int(x_off));
+  args.push(OscType::Int(y_off));
+  args.extend(rows.iter().map(|r| OscType::Int(*r as i32)));
+  send_osc(sock, device, &format!("{prefix}/grid/led/map"), args);
+}

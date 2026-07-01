@@ -23,7 +23,14 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   by an octave. Reuses the looper's =edo_shift_pad=.
 - *waveform strip / selector* -- a 4-cell radio on a grid's top row
   (=[0,0]..[3,0]=): sine / triangle / square / saw, left to right. Each grid's strip
-  sets the *other* grid's timbre (cross-control). Fixed volume, no AM/FM.
+  sets the *other* grid's timbre (cross-control). No AM/FM.
+- *volume strip / fader* -- the 12 cells right of the waveform strip (=[4,0]..[15,0]=): a
+  log fader over 30 dB, top cell = unity, starting at column 10. Like the waveform strip it
+  sets the *other* grid's loudness (cross-control), and it is *live* -- moving it rescales
+  that grid's already-sounding voices, not just future notes.
+- *trail* -- the 7 most recently pressed notes, shared across both grids, shown dim on both
+  as a backdrop (a currently-sounding note shows bright instead). Lets you see where to
+  finger on one grid to harmonize with the other.
 - *independent voices* -- the same pitch fingered on both grids is *two* separate
   voices; releasing one never cuts the other. Even two cells on one grid that collide
   to the same pitch are independent (one voice per finger). Voices are keyed by
@@ -59,8 +66,9 @@ Both grids are identical except for which grid their strip controls. The whole
 16x16 is the play surface, with two overlays drawn on top:
 
 #+begin_example
-  col: 0   1   2   3   4  ...            13  14  15
-  row 0  [SIN TRI SQR SAW] . . . . . . . . .  .   .   <- waveform strip (sets OTHER grid)
+  col: 0   1   2   3   4   5  ...        13  14  15
+  row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls the OTHER
+                                                               grid: waveform (0..3) + volume
   row 1   .   .   .   .   .                    .   .   .
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
@@ -68,21 +76,39 @@ Both grids are identical except for which grid their strip controls. The whole
   row 15  .   .   .   .   .  . . . . . . .  LEFT DOWN RIGHT  <- scroll pad
 #+end_example
 
-- The strip cells (0,0)..(3,0) and the pad cells (13..15, 14..15) *occlude* the play
-  grid: pressing them scrolls / re-timbres rather than sounding a note.
+- The whole top row (0,0)..(15,0) and the pad cells (13..15, 14..15) *occlude* the play
+  grid: pressing them re-timbres / sets volume / scrolls rather than sounding a note.
 - The scroll-pad corners follow the looper's convention: top-left = down an octave
   (notes sound lower), top-right = up an octave; arrows raise pitch down/right,
   lower it up/left. See =midi_pulse::edo_play=.
 
 * LEDs
 
-- *Play cells*: a held note lights all its octave-equivalents solid (bright). Which
-  cells are octave-equivalent does *not* depend on the scroll register (a scroll
-  shifts every cell's pitch by the same amount), so scrolling moves the pitches under
-  your fingers without moving the lit cells.
-- *Waveform strip*: the currently-selected waveform is bright, the other three dim.
-  A grid's strip shows the waveform *it controls* -- i.e. the other grid's timbre.
-- *Scroll pad*: dark (it carries no pitch).
+The play-grid LEDs are *register-aware* and *shared across both grids* (the visuals pass
+-- see =TODO/3-surfaces-visuals/=):
+
+- *Held notes (bright).* A held note lights all its octave-equivalents solid, computed
+  through the *current* scroll register -- so shifting the window *moves* the lit cells to
+  where that pitch now lives (the sounding pitch itself stays put; only the lights move).
+- *Cross-grid reflection.* A note held on *either* grid lights on *both* grids; each grid
+  places it under its own register, so the same note can appear at different cells on the
+  two grids -- it shows where to finger to match the other surface.
+- *Trails (dim).* The last 7 pressed notes (shared across both grids) stay lit *dim* after
+  release, until newer presses push them out. A trailed note that is also currently
+  sounding shows *bright* (bright clobbers dim).
+- *Waveform strip*: the selected waveform is bright, the other three dim; a grid's strip
+  shows the waveform *it controls* (the other grid's timbre).
+- *Volume strip*: the active cell is lit, the rest dark; it shows the *other* grid's volume.
+- *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
+  occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
+
+*Monobright vs varibright.* One of the two 16x16 grids (an old Series 256, id =m256-282=)
+cannot dim a single LED -- it thresholds any level <= 7 to off. So its "dim" (unselected
+waveform cells, trails, arrows) is *faked by flashing* the cell on/off fast (~1/32 duty,
+~67 Hz) via whole-quad writes; the varibright grid (id =m0000102=) uses a native dim
+level. The runtime decides per grid from the *serial id* (both report type "monome 256").
+With many dim cells lit at once the flash slows into mild flicker on the monobright grid
+-- an accepted trade.
 
 * the cross-grid waveform control (how to read it)
 
@@ -127,7 +153,7 @@ future drum change (kit, decode, velocity feel) is inherited for free. Pedal map
 * what is deliberately NOT here
 
 - No looper (no slots / transport / loop display), no remap, no piano.
-- No AM/FM or per-note gain on the play grids -- the strip is waveform-only, fixed
-  volume. (The waveform-capable synth *can* do AM/FM; surfaces just leaves those at
-  their inert defaults.)
-- No on-grid metronome / flash.
+- No AM/FM on the play grids -- the strips control waveform + volume only. (The
+  waveform-capable synth *can* do AM/FM; surfaces leaves those at their inert defaults.)
+- No on-grid metronome. (The only flashing is the monobright grid faking its dim LEDs --
+  see *LEDs* above -- not a clock.)

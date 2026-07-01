@@ -346,6 +346,25 @@ fn grid_loop(
           }
         }
       }
+    } else if addr.ends_with("/grid/led/map") {
+      // Binary 8x8 quad: args = x_off, y_off, then 8 row-bytes. Bit c of row r -> cell
+      // (x_off+c, y_off+r), on = 15 / off = 0. The surfaces runtime uses this to flash a
+      // monobright grid's fake-dim frames.
+      if let (Some(OscType::Int(x0)), Some(OscType::Int(y0))) = (m.args.first(), m.args.get(1)) {
+        let (w, h) = (st.grid_w, st.grid_h);
+        let (x0, y0) = (*x0, *y0);
+        for r in 0..8i32 {
+          let Some(OscType::Int(byte)) = m.args.get(2 + r as usize) else { break };
+          let byte = *byte;
+          for c in 0..8i32 {
+            let (x, y) = (x0 + c, y0 + r);
+            if (0..w).contains(&x) && (0..h).contains(&y) {
+              st.levels[(y * w + x) as usize] = if byte & (1 << c) != 0 { 15 } else { 0 };
+              changed = true;
+            }
+          }
+        }
+      }
     }
     drop(st);
     if changed {

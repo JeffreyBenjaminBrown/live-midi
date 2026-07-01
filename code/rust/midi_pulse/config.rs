@@ -510,6 +510,19 @@ pub enum MonomeWindowConfig {
     /// `monome`, which is the surfaces cross-control the config uses).
     controls: String,
   },
+  // A one-row volume strip overlaid on the edo grid (surfaces runtime). The 12 cells
+  // right of the waveform selector on the top row; the active cell is lit, the rest
+  // dark. Log-spaced over a fixed dB range; the top cell is unity. Like the waveform
+  // strip it *cross-controls* -- each grid's volume sets the loudness of the monome
+  // named by `controls` (the OTHER grid), and it is *live* (moving it rescales that
+  // grid's sounding voices, not just future notes).
+  VolumeStrip {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    /// The monome id whose play voices this strip sets the volume of.
+    controls: String,
+  },
   // ---- Looper windows (see 6_plan.org). ----
   // The 3x2 shift pad overlaid on the lower-right of the edo grid.
   EdoShiftPad {
@@ -656,6 +669,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleSlots { id, .. }
       | MonomeWindowConfig::ScaleControl { id, .. }
       | MonomeWindowConfig::WaveformSelector { id, .. }
+      | MonomeWindowConfig::VolumeStrip { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
       | MonomeWindowConfig::LoopControl { id, .. }
@@ -683,6 +697,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleSlots { monome, .. }
       | MonomeWindowConfig::ScaleControl { monome, .. }
       | MonomeWindowConfig::WaveformSelector { monome, .. }
+      | MonomeWindowConfig::VolumeStrip { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
       | MonomeWindowConfig::LoopControl { monome, .. }
@@ -710,6 +725,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleSlots { rect, .. }
       | MonomeWindowConfig::ScaleControl { rect, .. }
       | MonomeWindowConfig::WaveformSelector { rect, .. }
+      | MonomeWindowConfig::VolumeStrip { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
       | MonomeWindowConfig::LoopControl { rect, .. }
@@ -738,6 +754,7 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::ScaleSlots { .. } => "scale_slots",
       MonomeWindowConfig::ScaleControl { .. } => "scale_control",
       MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
+      MonomeWindowConfig::VolumeStrip { .. } => "volume_strip",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
       MonomeWindowConfig::LoopControl { .. } => "loop_control",
@@ -1096,9 +1113,50 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_window_groups(config)?;
   validate_shift_pads(config)?;
   validate_waveform_selectors(config)?;
+  validate_volume_strips(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// A `volume_strip` is the surfaces runtime's one-row loudness fader. Its rect must be a
+/// single row at least two cells wide, and `controls` must name a declared monome that
+/// has an `edo_note_grid` (the grid whose voices it sets the volume of) -- the same
+/// cross-grid wiring as `waveform_selector`.
+fn validate_volume_strips(config: &Config) -> Result<(), String> {
+  let monome_ids: HashSet<&str> = config.monomes.iter().map(|m| m.id.as_str()).collect();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::VolumeStrip { id, monome, rect, controls } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if y1 != y0 || x1 - x0 < 1 {
+      return Err(format!(
+        "volume_strip window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be one row, >= 2 cells wide",
+      ));
+    }
+    require_ref("volume_strip.controls", controls, &monome_ids)?;
+    let controlled_has_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == controls)
+    });
+    if !controlled_has_grid {
+      return Err(format!(
+        "volume_strip window {id:?} controls monome {controls:?}, which has no edo_note_grid",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "volume_strip window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+  }
   Ok(())
 }
 

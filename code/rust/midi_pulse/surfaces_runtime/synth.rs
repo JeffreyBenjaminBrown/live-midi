@@ -19,6 +19,22 @@ use std::sync::{Arc, Mutex};
 use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
+/// Set the per-voice gain of every voice belonging to `grid`, in place. Drives the
+/// *live* volume control: a grid's volume strip re-timbres the *other* grid, and moving
+/// it must change notes that are already sounding (a fader, not a radio) -- so we walk
+/// the shared map and rescale that grid's voices. Future note-ons pick up the new gain
+/// from the shared per-grid state; this only touches the ones already in flight.
+pub fn set_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    if let VoiceSource::Accreted { chord, .. } = src {
+      if *chord == grid {
+        state.timbre.gain = gain;
+      }
+    }
+  }
+}
+
 /// Pack a grid index + cell into an opaque `VoiceMap` key. Distinct grids get
 /// distinct `chord` values, so the same cell on two grids never collides; distinct
 /// cells on one grid pack to distinct `pitch` fields. Cells are 0..grid_w/h (<= 16),

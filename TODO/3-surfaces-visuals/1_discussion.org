@@ -160,7 +160,7 @@ they use the same faked-dim flash.)
 
 * Problems
 
-** (likely resolved) Feature 5 reverses a documented decision
+** DONE (likely resolved) Feature 5 reverses a documented decision
 
 The current surfaces design *deliberately* makes lit cells register-independent
 ("scrolling moves the pitches under your fingers without moving the lit cells" -- it's
@@ -168,9 +168,9 @@ written into =grid.rs= and =2-monomes_58-8-1_kmss-drums.org=). Feature 5 asks fo
 opposite, matching the looper. I can implement it (adopt the looper painter) and will
 update those docs/comments. Flagging only so you know the reversal is intentional.
 
-*** TODO good
+*** DONE good
 
-** ONGOING Which physical grid is the monobright one? (needed to flash only it)
+** DONE Which physical grid is the monobright one? (needed to flash only it)
 
 To flash the dim on *only* the monobright grid (the efficient option that also keeps
 the varibright grid's tests/behaviour untouched), the runtime has to know which
@@ -190,10 +190,21 @@ in the TOML is *not* pinned to a specific physical unit. Two ways forward:
   the current (varibright) mock tests, which I'd rewrite.
 
 I lean toward *(a)* if you can grab the device strings; otherwise *(b)* is safe.
-*** TODO Can you not get those strings yourself?
+*** DONE Can you not get those strings yourself?
 Let's only flash where necessary. You can query the two grids. They're already connected.
 (I am using them for one of the configs, in another workspace; let me know if I need
 to stop doing that so they're available to you.)
+**** DONE (Claude) Done -- I queried serialoscd read-only (enumerate only; no =/sys/*=
+register and no LED, so your running config was untouched). Two grids, and the *type
+string does not tell them apart*:
+- id =m0000102=  type "monome 256"  -> new-style serial => *varibright* (the one that dims)
+- id =m256-282=  type "monome 256"  -> classic Series-256 serial => *monobright* (the "off" one)
+Both report "monome 256"; the tell is the *serial id* format ("m256-NNN" is the 2007--2010
+monobright Series; "m0000NNN" is the newer / varibright-upgraded unit). Plan: flash
+faked-dim on *=m256-282= only*; =m0000102= keeps native level 4. I'll key detection on the
+serial id, not the type string. I'll confirm on the hardware pass (send level 4 to each;
+whichever goes dark is the monobright one). Nothing needed from you unless you happen to
+know these two map the other way.
 
 ** ONGOING Volume: per-grid or one global level? And cross-controlled like the waveform?
 
@@ -206,9 +217,15 @@ own grid / the global? My default, absent an answer: *one global master volume*,
 mirrored on both strips, *not* cross-controlled.
 *Answer:*
 
-*** TODO right, each should have its own
+*** ONGOING right, each should have its own
 and like the waveform controls, the amplitude row should affect the *other* monome.
-
+**** ONGOING (Claude) Got it -- per-grid gain, cross-controlled, so each grid's *top row*
+becomes the *other* grid's channel strip (waveform + volume side by side). One behaviour
+question: should volume be *live* (moving it changes notes already sounding, like a fader)
+or *future-notes only* (like the waveform, where held notes keep their value)? A volume
+control usually feels best *live*; I'll default to live unless you'd rather match the
+waveform's future-notes rule.
+***** TODO live
 ** ONGOING Volume: confirm the dB reference and range shape
 
 I'm reading "logarithmic, ~30 dB, start at button 10 with 5 headroom to the right" as:
@@ -218,9 +235,16 @@ that the intent -- in particular, is the default column 10 meant to be "normal" 
 with the 5 to its right as boost/headroom above normal? Or should the *top* be unity
 and everything else attenuation?
 
-*** TODO top should be unity
+*** ONGOING top should be unity
 and yes, button 15 = top
-
+**** ONGOING (Claude) So: col 15 = unity (0 dB), col 4 = -30 dB, ~2.7 dB/step, start col 10
+(~-13.6 dB). One catch worth your call: the synth *sums* all voices, and today's low master
+(0.15) is exactly what keeps chords from clipping. At/near unity a chord *will* clip -- and
+it's per-grid now, so two grids near unity is ~2x hotter still. Options: (a) I add a gentle
+output limiter so the top stays loud-but-clean, or (b) raw unity that can distort on big
+chords. I'd pick (a). Which do you want?
+***** TODO don't worry about it
+I can put that in later if needed.
 ** ONGOING Trails: shared across both grids or per grid? 7 events or 7 distinct notes?
 
 Given features 3--5 unify the two grids, my default is *one shared* 7-note trail (the
@@ -245,8 +269,16 @@ extreme*. Options: cap the trail (fewer than 7) so the dim set stays small; acce
 slightly-brighter dim on the monobright grid; or accept minor extra flicker. The
 varibright grid is unaffected either way. Which trade do you prefer?
 
-*** TODO let's go with flicker
+*** ONGOING let's go with flicker
 I assume that's because it will be flashing at a lower speed. Correct?
+**** TODO (Claude) Correct, essentially. A full grid-frame takes ~4 ms to send, so a dim
+LED can't be pulsed on for *less* than ~4 ms. To keep the dim genuinely dim (a small
+on-fraction of the cycle) the only lever left is to stretch the cycle -- flash *slower*.
+Below ~60 Hz the eye stops fusing the pulses into steady dim and starts to see them blink;
+that's the flicker. So the trade is "dim but blinky" vs "steady but too bright." And it's
+*adaptive*: only =m256-282= is affected, and only when *many* dim cells are lit at once (a
+big trail). Light trails stay fast and steady; it only flickers visibly when lots of
+octave-equivalents are dim together. I'll keep the rate as high as the live cell-count allows.
 
 ** (likely resolved) Dim trails also move when you scroll
 
@@ -274,9 +306,14 @@ If a held pitch's octave-equivalent lands on a shift-arrow cell, bright (note) w
 over dim (arrow), and the arrows never sound. This matches the looper. No action
 needed; noting for completeness.
 
-*** TODO The arrows should completely clobber the edo grid under them.
+*** ONGOING The arrows should completely clobber the edo grid under them.
 The arrow window is on top of the edo grid window.
 That portion of the edo grid window is inaccessible,
 both to fingers and to eyeballs.
 (This is harmless -- the edo grid is huge and isomorphic,
 so losing a corner of it doesn't restrict what I can play.)
+**** TODO (Claude) Understood -- and simpler this way: the 6 shift-pad cells show *only*
+their pad state (4 arrows dim, 2 octave corners dark) and *never* a note reflection or
+trail, held or not. The pad fully occludes the edo grid beneath it. (A deliberate departure
+from the looper, whose painter can light an arrow cell bright; surfaces occludes first, then
+paints. Noted in the plan.)

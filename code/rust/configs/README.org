@@ -238,6 +238,7 @@ Built-in unbundled window kinds:
 - ~remappable_un12_grid~
 - ~remap_undo_button~
 - ~waveform_selector~
+- ~volume_strip~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- which
@@ -245,6 +246,21 @@ may differ from the window's own ~monome~. The surfaces runtime uses it to let e
 of two play grids re-timbre the *other* (see
 [[./2-monomes_58-8-1_kmss-drums.org]]). Its rect must cover exactly the four cells
 (one row, four wide).
+
+A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
+loudness of the monome named by its ~controls~ field. Like ~waveform_selector~ it
+*cross-controls* (each grid's strip sets the OTHER grid's volume) and is *live* --
+moving it rescales that grid's sounding voices, not just future notes. The active
+cell is lit, the rest dark.
+
+#+begin_src toml
+[[monome_windows]]
+id = "vol-a"
+monome = "a"               # drawn on grid A's top row
+kind = "volume_strip"
+rect = [4, 0, 15, 0]       # 12 cells, right of the 4-cell waveform strip
+controls = "b"             # -> sets grid B's loudness
+#+end_src
 
 #+begin_src toml
 [[monome_windows]]

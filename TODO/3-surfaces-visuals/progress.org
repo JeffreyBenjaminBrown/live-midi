@@ -1,0 +1,93 @@
+#+title: 3-surfaces visuals -- progress
+#+date: 2026-07-01
+
+Execution report for the plan in =1_discussion.org= (all six features + the two
+addendum items). Headless build + tests green (243 tests, no warnings); clippy not
+runnable in this container (no component installed) -- please run it host-side.
+
+Not committed (leaving the working tree for your review, as with the prior phase).
+
+* what's done and went well
+
+- *Register-aware painter* (=surfaces_runtime/grid.rs=): rewritten to compute each cell's
+  pitch class from the *current* register via =step_for_cell=, exactly like the looper's
+  =paint_classes=. This one change delivers four of the requests at once:
+  - *(5)* holding a pitch and shifting the window now *moves* the lit cells;
+  - *(6)* the four scroll arrows are DIM, the two octave corners dark;
+  - *(3)* cross-grid reflection: each grid lights the *union* of both grids' sounding
+    classes, each under its own register (so the same note shows on both grids wherever
+    each currently places it);
+  - *(4)* trails: a shared 7-note ring of recent press classes paints DIM, and a
+    currently-sounding class paints BRIGHT (full clobbers dim).
+  Overlays (selector / volume / scroll pad) occlude the play grid and are painted first,
+  so the shift pad fully hides the edo grid beneath it (your directive -- no note ever
+  shows on a pad cell).
+- *(1) Monobright fake-dim by flashing.* A grid whose serial id is the old Series format
+  (=m256-= etc.) is treated as monobright and its DIM cells are flashed on/off as binary
+  8x8 quad frames (=/grid/led/map=) at ~1/32 duty, ~67 Hz (reusing =PulseBrightness=);
+  a varibright grid keeps native level 4. New =monome::send_led_map= keeps a whole-grid
+  flash to <=4 messages/frame instead of ~30 per-cell writes (the bottleneck we discussed).
+- *(2) Per-grid, cross-controlled, live volume.* New =volume_strip= config window (12
+  cells right of the waveform strip). Log-spaced over 30 dB, top cell = unity, starts at
+  column 10. Each grid's strip sets the *other* grid's loudness (like the waveform strip),
+  and it is *live*: moving it rescales that grid's already-sounding voices (=set_grid_gain=)
+  as well as future notes. So each grid's top row is now the *other* grid's channel strip.
+- *Detection resolved without config changes.* Each grid thread decides monobright-ness
+  from its own device's serial id, so it needs no per-slot pinning and doesn't care which
+  physical grid lands in which config slot.
+- *Tests.* Pure unit tests for the painter (selector, volume, arrows, reflection,
+  register-shift-moves-lights, trail-clobber, occlusion) and the volume-gain curve; the
+  mock end-to-end test now asserts cross-reflection, trail-lingers-dim, and the volume
+  strip; a new mock test drives one monobright + one varibright grid and checks the
+  flash-vs-steady-dim contrast (added =/grid/led/map= to the mock, and a test serial-lock
+  since the surfaces mock tests share the global =STOP= and the config ports).
+
+* Changes to the plan's envisioned order
+
+- The plan's order was 5/6 -> 3 -> 4 -> 1 -> 2. Because features 3/4/5/6 all live in the
+  one pure painter + the same shared state, I implemented them together as a single unit
+  rather than in four steps, then did 1 (flash) and 2 (volume). Same net order, fewer
+  seams.
+- Landed the shared infrastructure first (config =volume_strip=, =monome::send_led_map=,
+  =synth::set_grid_gain=, mock =/grid/led/map=) before the surfaces wiring, so each layer
+  compiled on its own.
+
+* what's imperfect about what's done
+
+- *The monobright flash duty is transmit-bound, not tuned.* A full 4-quad frame takes a
+  few ms to send, so with a large dim set the effective duty rises (dimmer look drifts
+  brighter) and/or the flash slows into visible flicker -- the trade you accepted. The
+  exact rate that best matches the varibright grid's native level-4 is a hardware-tuning
+  knob (the =DIM_PULSE= constant), not yet dialed in on real grids.
+- *Host setup, not code:* the FTDI latency timer (default 16 ms) should be lowered to
+  ~1 ms on the host for the flash to come out even. Nothing in the repo sets this.
+- *=is_monobright= is a serial-prefix heuristic* (=m40h-/m64-/m128-/m256-=). It matches
+  your =m256-282= and not =m0000102=, but it is confirmed only on the hardware pass (send
+  level 4 to each; the one that goes dark is monobright).
+- *Volume can clip.* Master is now unity and a chord near the top (or two grids at once)
+  can exceed full scale; no limiter yet (you deferred it).
+- *The monobright flash test catches an on-frame by polling* (robust over its 5 s window,
+  but timing-based rather than strictly deterministic, like all the mock-timing tests).
+
+* choices determining the future
+
+- *The config's =amplitude= (0.15) is superseded.* The surfaces synth master is now unity
+  (1.0); loudness lives entirely in the per-grid volume gain (default column 10 ~= 0.208,
+  a touch hotter than the old 0.15). If you later want a limiter or a different unity
+  reference, that is the place.
+- *Monobright is decided by serial id, never the type string* (both grids report
+  "monome 256"). Real mapping: =m256-282= monobright, =m0000102= varibright.
+- *Reflection and trails are register-aware* -- this deliberately reverses the earlier
+  "lit cells are register-independent" design; =grid.rs= and the reference doc are updated
+  to say so.
+- *New reusable primitive =monome::send_led_map=* (binary quad) and a first-class
+  =volume_strip= window kind (parallel to =waveform_selector=) are now available to any
+  runtime, not just surfaces.
+
+* remaining (needs you / the hardware)
+
+- Run clippy host-side.
+- Verify on the two real grids + KMSS under =pw-jack=: waveform strips now match; volume
+  fader feel + range; trails/reflection read well; and confirm =m256-282= is the monobright
+  one (and tune =DIM_PULSE= if its dim doesn't match the varibright grid). Lower the FTDI
+  latency timer if the flash flickers more than expected.
