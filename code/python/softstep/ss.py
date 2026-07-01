@@ -17,7 +17,7 @@ Control SysEx (query, mode switch, backlight) and the sensor stream are on hw:1,
 
 Mode switching is REVERSIBLE and does NOT touch firmware -- it cannot brick the
 device (only an interrupted firmware *flash* can; we never flash). See
-kmss-research.org.
+learnings/keith-mcmillen-softstep.org.
 """
 import subprocess, time, sys
 

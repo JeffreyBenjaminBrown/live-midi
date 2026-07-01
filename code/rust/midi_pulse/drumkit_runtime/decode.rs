@@ -1,7 +1,7 @@
 //! Pure tether-mode decoding: the SoftStep's hosted sensor stream -> per-pad hits
 //! with velocity. No MIDI/audio I/O, so it is unit-testable without hardware.
 //!
-//! In hosted/tether mode (see `kmss-research.org`) the device streams each pad's 4
+//! In hosted/tether mode (see `learnings/keith-mcmillen-softstep.org`) the device streams each pad's 4
 //! pressure sensors as Control Change on channel 0: CC number = sensor index, value
 //! 0..127 = reading. A pad owns `baseCC..baseCC+3`. We sum a pad's 4 sensors, detect
 //! an onset (sum rising across an on-threshold), capture the attack PEAK over a
@@ -15,7 +15,7 @@ pub const NUM_PADS: usize = 10;
 
 /// Printed pedal label (1..9, then 0) for each pad slot. Slot = `(baseCC-40)/4`; the
 /// base CCs in slot order are 40,44,48,...,76. The label<->base mapping was measured
-/// on the device (`kmss-research.org`): e.g. base 44 = label "1", base 40 = label
+/// on the device (`learnings/keith-mcmillen-softstep.org`): e.g. base 44 = label "1", base 40 = label
 /// "6", base 72 = label "0".
 const SLOT_LABEL: [u8; NUM_PADS] = [6, 1, 7, 2, 8, 3, 9, 4, 0, 5];
 
