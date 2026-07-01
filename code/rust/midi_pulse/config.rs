@@ -770,8 +770,9 @@ impl MonomeWindowConfig {
 }
 
 /// One pedal's assignment inside a `drumkit` window: the printed pedal label
-/// (1..9, then 0) and the sample file to fire. `gain` scales this voice (the KMSS
-/// sends no velocity today, so level is fixed per pad).
+/// (1..9, then 0) and the sample file to fire. `gain` is the voice's FULL-velocity
+/// level; the tether runtime scales it down for softer hits (see
+/// `drumkit_runtime::decode`).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DrumPadConfig {
