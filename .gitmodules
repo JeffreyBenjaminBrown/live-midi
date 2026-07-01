@@ -1,0 +1,3 @@
+[submodule "drum-samples"]
+	path = drum-samples
+	url = git@github.com:JeffreyBenjaminBrown/drum-samples.git
