@@ -67,17 +67,19 @@ Not committed (leaving the working tree for your review, as with the prior phase
 - *=is_monobright= is a serial-prefix heuristic* (=m40h-/m64-/m128-/m256-=). It matches
   your =m256-282= and not =m0000102=, but it is confirmed only on the hardware pass (send
   level 4 to each; the one that goes dark is monobright).
-- *Volume can clip.* Master is now unity and a chord near the top (or two grids at once)
-  can exceed full scale; no limiter yet (you deferred it).
+- *Volume can clip.* The per-grid faders reach full master gain, and a chord near the top
+  (or two grids at once) can exceed full scale; no limiter yet (you deferred it). Pull the
+  master down with the synth sink =amplitude= (see the follow-up below).
 - *The monobright flash test catches an on-frame by polling* (robust over its 5 s window,
   but timing-based rather than strictly deterministic, like all the mock-timing tests).
 
 * choices determining the future
 
-- *The config's =amplitude= (0.15) is superseded.* The surfaces synth master is now unity
-  (1.0); loudness lives entirely in the per-grid volume gain (default column 10 ~= 0.208,
-  a touch hotter than the old 0.15). If you later want a limiter or a different unity
-  reference, that is the place.
+- *The synth sink =amplitude= is the single master "synth volume".* (Corrected in a
+  follow-up: an earlier build hardcoded the master to unity and ignored this field, which
+  is why the synth clipped and couldn't be pulled down.) It scales both grids; the per-grid
+  faders are live trims below it. The drum-kit likewise has one knob -- the =cpal_sampler=
+  sink =amplitude= (the redundant =drum_sample_amplitude= was removed).
 - *Monobright is decided by serial id, never the type string* (both grids report
   "monome 256"). Real mapping: =m256-282= monobright, =m0000102= varibright.
 - *Reflection and trails are register-aware* -- this deliberately reverses the earlier

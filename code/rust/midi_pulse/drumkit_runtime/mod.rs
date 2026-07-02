@@ -147,8 +147,7 @@ pub fn start(
     );
   }
   for window in &config.softstep_windows {
-    let SoftstepWindowConfig::Drumkit { softstep, sink, debounce_ms, pads, drum_sample_amplitude, .. } =
-      window;
+    let SoftstepWindowConfig::Drumkit { softstep, sink, debounce_ms, pads, .. } = window;
     let sampler = samplers
       .get(sink)
       .ok_or_else(|| format!("drumkit window references unbuilt sink {sink:?}"))?;
@@ -163,9 +162,7 @@ pub fn start(
       let sample = samples::load_wav(&path)?;
       device.pedal_map[(pad.pedal % 10) as usize] = Some(PadBinding {
         sample,
-        // Fold the kit-wide amplitude into each pad's base gain (1.0 = no change), so a
-        // hit fires at `pad.gain * drum_sample_amplitude * gain_from_velocity(vel)`.
-        gain: pad.gain * drum_sample_amplitude,
+        gain: pad.gain,
         trigger: sampler.trigger(),
         voice_label: pad.sample.clone(),
       });

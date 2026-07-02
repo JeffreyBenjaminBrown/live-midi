@@ -823,10 +823,6 @@ fn default_debounce_ms() -> u64 {
   50
 }
 
-fn default_drum_sample_amplitude() -> f32 {
-  1.0
-}
-
 /// A window over a SoftStep: a `kind` behavior bound to a declared `softstep`
 /// device. The same windowing idiom as `monome_windows`; new arrangements are new
 /// kinds (or new configs). Today the only kind is `drumkit`.
@@ -844,12 +840,6 @@ pub enum SoftstepWindowConfig {
     /// debounce). Per-pedal, so two different pedals hit together both fire.
     #[serde(default = "default_debounce_ms")]
     debounce_ms: u64,
-    /// Linear gain applied to every sample this kit fires (1.0 = no change), on top of
-    /// each pad's own `gain` and the sink amplitude. A global loudness trim: the TR-808
-    /// cymbals in particular are transient/low-RMS and read quiet next to the sustained
-    /// synth, so this lets a config lift the whole kit.
-    #[serde(default = "default_drum_sample_amplitude")]
-    drum_sample_amplitude: f32,
     pads: Vec<DrumPadConfig>,
   },
 }
@@ -2488,10 +2478,8 @@ pads = [
     let config = parse_config(DRUMKIT_TOML).expect("a complete drumkit config should be valid");
     assert_eq!(config.softsteps.len(), 1);
     assert_eq!(config.softsteps[0].select.name_substring(), "SSCOM", "default select substring");
-    let SoftstepWindowConfig::Drumkit { debounce_ms, pads, drum_sample_amplitude, .. } =
-      &config.softstep_windows[0];
+    let SoftstepWindowConfig::Drumkit { debounce_ms, pads, .. } = &config.softstep_windows[0];
     assert_eq!(*debounce_ms, 50, "default per-pedal debounce");
-    assert_eq!(*drum_sample_amplitude, 1.0, "default kit amplitude has no effect");
     assert_eq!(pads[0].gain, 1.0, "default pad gain");
     assert_eq!(pads.len(), 3);
   }

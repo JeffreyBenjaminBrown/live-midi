@@ -95,7 +95,6 @@ softstep = "feet"        # -> [[softsteps]] id
 kind = "drumkit"
 sink = "drums"           # -> a cpal_sampler [[sinks]] id
 debounce_ms = 50         # per-pedal contact-bounce debounce (default 50; 0 = off)
-drum_sample_amplitude = 1.0  # kit-wide linear gain (default 1.0 = no change)
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav", gain = 1.0 },
