@@ -17,11 +17,12 @@ Not committed (leaving the working tree for your review, as with the prior phase
   - *(3)* cross-grid reflection: each grid lights the *union* of both grids' sounding
     classes, each under its own register (so the same note shows on both grids wherever
     each currently places it);
-  - *(4)* trails: a shared ring of up to 7 recent *pitch classes* paints DIM, a
-    currently-sounding class paints BRIGHT (full clobbers dim). Repeating a note keeps a
-    single entry (octaves collapse to one class, so hammering a note can't flood/erase the
-    trail), and each press clears trailed neighbours within 1/18 of an octave
-    (=edo/18= steps) -- the later refinement you asked for.
+  - *(4)* trails: a shared ring of up to =[surfaces].trails_max= recent *pitch classes*
+    (default 7; 9 in the 2-monomes config) paints DIM, a currently-sounding class paints
+    BRIGHT (full clobbers dim). Repeating a note keeps a single entry (octaves collapse to
+    one class, so hammering a note can't flood/erase the trail), and each press clears
+    trailed neighbours within =1/[surfaces].trail_clobber_radius= of an octave (1/27 =
+    =edo/27= steps by default) -- the later refinement you asked for.
   Overlays (selector / volume / scroll pad) occlude the play grid and are painted first,
   so the shift pad fully hides the edo grid beneath it (your directive -- no note ever
   shows on a pad cell).

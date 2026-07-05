@@ -450,6 +450,27 @@ tuning = "main"
 sink = "midi"
 #+end_src
 
+* Surfaces
+
+The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
+[[./2-monomes_58-8-1_kmss-drums.org]]) reads one optional table of instrument-wide
+scalars for the shared *recent-note trail* -- the dim backdrop of the last few played
+pitch classes:
+
+#+begin_src toml
+[surfaces]
+trail_clobber_radius = 27  # clear trailed classes within edo/this steps of a played note
+trails_max = 9             # keep at most this many distinct classes (newest first)
+#+end_src
+
+- ~trail_clobber_radius~ is a *divisor of the octave*: a played note clears any trailed
+  class within ~edo / trail_clobber_radius~ steps of it, so close pitches never crowd the
+  backdrop. Bigger = tighter; ~27~ is 1/27 of an octave (~44 cents). Default ~27~.
+- ~trails_max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
+
+The whole table (and each field) is optional; omitting it uses the defaults, so behaviour
+is unchanged for configs that don't declare it. Only the surfaces runtime consults it.
+
 * Looper
 
 The looper is a two-monome instrument (no piano): one grid is the EDO play

@@ -36,6 +36,10 @@ pub struct Config {
   /// it is the config-level morph family the per-note `am.shape` value sweeps within.
   #[serde(default)]
   pub am: Option<AmConfig>,
+  /// Surfaces-runtime settings (the shared recent-note trail). Absent for non-surfaces
+  /// configs; the surfaces runtime falls back to `SurfacesConfig::default`.
+  #[serde(default)]
+  pub surfaces: Option<SurfacesConfig>,
 }
 
 /// `[am]` table: instrument-wide amplitude-modulation settings. The shape *family*
@@ -236,6 +240,40 @@ pub struct LooperConfig {
   pub flash_ms: u64,
   /// The edo-grid cell that means "unison" in group-transpose remap.
   pub remap_center: [i32; 2],
+}
+
+fn default_trail_clobber_radius() -> i32 {
+  27
+}
+
+fn default_trails_max() -> usize {
+  7
+}
+
+/// `[surfaces]` table: instrument-wide settings for the surfaces runtime's shared
+/// recent-note trail (the dim backdrop of the last few played pitch classes). A missing
+/// table -- or any missing field -- uses these defaults, so behaviour is unchanged for
+/// configs that don't declare it.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct SurfacesConfig {
+  /// Trail clobber radius, as a *divisor of the octave*: playing a note clears any
+  /// trailed pitch-class within `edo / trail_clobber_radius` steps of it, so close
+  /// pitches never crowd the backdrop. Bigger value = tighter radius (clears fewer);
+  /// the default 27 is 1/27 of an octave (~44 cents).
+  pub trail_clobber_radius: i32,
+  /// The most *distinct* pitch classes the shared trail keeps at once (newest first);
+  /// older ones drop off the end. Default 7.
+  pub trails_max: usize,
+}
+
+impl Default for SurfacesConfig {
+  fn default() -> Self {
+    Self {
+      trail_clobber_radius: default_trail_clobber_radius(),
+      trails_max: default_trails_max(),
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
