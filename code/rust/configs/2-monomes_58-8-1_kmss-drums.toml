@@ -19,6 +19,15 @@ title = "Two monomes (58-8-1) + KMSS drums"
 #   pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
 # ===========================================================================
 
+# Shared recent-note trail (the dim backdrop of the last few played pitch classes).
+[surfaces]
+# Clobber radius as a divisor of the octave: a played note clears any trailed class
+# within edo/trail_clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents);
+# bigger = tighter = fewer potential neighbors to clobber.
+trail_clobber_radius = 27
+# How many distinct pitch classes the trail keeps at once (newest first).
+trails_max = 9
+
 [[tunings]]
 id = "main"
 edo = 46

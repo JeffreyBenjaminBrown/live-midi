@@ -28,12 +28,13 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   log fader over 30 dB, top cell = unity, starting at column 10. Like the waveform strip it
   sets the *other* grid's loudness (cross-control), and it is *live* -- moving it rescales
   that grid's already-sounding voices, not just future notes.
-- *trail* -- up to 7 recently played *pitch classes* (octave-independent), shared across
-  both grids, shown dim on both as a backdrop; a currently-sounding class shows bright
-  instead. Repeating a note refreshes its single entry (so hammering one note never floods
-  or erases the trail), and playing a note clears any trailed neighbour within 1/18 of an
-  octave, so close pitches never crowd the backdrop. Lets you see where to finger on one
-  grid to harmonize with the other.
+- *trail* -- up to ~trails_max~ recently played *pitch classes* (octave-independent; 9
+  here), shared across both grids, shown dim on both as a backdrop; a currently-sounding
+  class shows bright instead. Repeating a note refreshes its single entry (so hammering one
+  note never floods or erases the trail), and playing a note clears any trailed neighbour
+  within ~1/trail_clobber_radius~ of an octave (1/27 here, ~44 cents), so close pitches
+  never crowd the backdrop. Both knobs live in the ~[surfaces]~ table. Lets you see where
+  to finger on one grid to harmonize with the other.
 - *independent voices* -- the same pitch fingered on both grids is *two* separate
   voices; releasing one never cuts the other. Even two cells on one grid that collide
   to the same pitch are independent (one voice per finger). Voices are keyed by
@@ -96,11 +97,12 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
 - *Cross-grid reflection.* A note held on *either* grid lights on *both* grids; each grid
   places it under its own register, so the same note can appear at different cells on the
   two grids -- it shows where to finger to match the other surface.
-- *Trails (dim).* Up to 7 recent *pitch classes* (shared across both grids, octave-
-  independent) stay lit *dim* after release, until newer presses push them out. A trailed
-  class that is also currently sounding shows *bright* (bright clobbers dim). Repeating a
-  note keeps a single entry, and playing a note clears any trailed neighbour within 1/18 of
-  an octave -- so the dim backdrop stays sparse.
+- *Trails (dim).* Up to ~trails_max~ recent *pitch classes* (shared across both grids,
+  octave-independent; 9 here) stay lit *dim* after release, until newer presses push them
+  out. A trailed class that is also currently sounding shows *bright* (bright clobbers dim).
+  Repeating a note keeps a single entry, and playing a note clears any trailed neighbour
+  within ~1/trail_clobber_radius~ of an octave (1/27 here) -- so the dim backdrop stays
+  sparse. Both are set in the ~[surfaces]~ table.
 - *Waveform strip*: the selected waveform is bright, the other three dim; a grid's strip
   shows the waveform *it controls* (the other grid's timbre).
 - *Volume strip*: the active cell is lit, the rest dark; it shows the *other* grid's volume.

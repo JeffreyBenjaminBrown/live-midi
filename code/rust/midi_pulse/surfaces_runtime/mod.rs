@@ -51,14 +51,6 @@ const VOLUME_DB_RANGE: f32 = 30.0;
 /// The startup active volume column (absolute), per `0_vision.org`: "begin at button 10
 /// (which leaves 5 spots to the right for headroom)".
 const VOLUME_DEFAULT_COL: i32 = 10;
-/// Recent-note trail length: up to this many *distinct* pitch classes (`0_vision.org`
-/// feature 4). Repeating a note (even in another octave) refreshes its entry rather than
-/// flooding the trail.
-const TRAIL_LEN: usize = 7;
-/// Trail neighbour-suppression radius, as a divisor of the octave: playing a note clears
-/// any trailed class within `edo / TRAIL_SUPPRESS_DENOM` steps of it, so close pitches
-/// never share the dim backdrop (Jeff: "within 1/18th of an octave").
-const TRAIL_SUPPRESS_DENOM: i32 = 18;
 /// Fake-dim flash for a monobright grid: ~1/32 duty at ~66.7 Hz (period 15 ms), matching
 /// `edo12n_piano_monome_runtime` and a varibright grid's native level-4 brightness. The
 /// effective on-time is transmit-bound (a full frame takes a few ms to send), so a heavy
@@ -142,6 +134,11 @@ struct Settings {
   attack: f32,
   release: f32,
   has_drums: bool,
+  /// Trail clobber radius as a divisor of the octave (`[surfaces].trail_clobber_radius`):
+  /// a played note clears trailed classes within `edo / this` steps of it.
+  trail_clobber_radius: i32,
+  /// Max distinct pitch classes in the shared trail (`[surfaces].trails_max`).
+  trails_max: usize,
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -257,6 +254,9 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .and_then(|m| m.select.size)
     .unwrap_or([16, 16]);
 
+  // The `[surfaces]` table (trail knobs); absent -> defaults, so unchanged behaviour.
+  let surfaces = config.surfaces.unwrap_or_default();
+
   Ok(Settings {
     grids,
     size,
@@ -273,6 +273,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     attack: *attack_secs,
     release: *release_secs,
     has_drums: !config.softstep_windows.is_empty(),
+    trail_clobber_radius: surfaces.trail_clobber_radius,
+    trails_max: surfaces.trails_max,
   })
 }
 
@@ -326,7 +328,7 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   // shared recent-note trail (dim backdrop), and the per-grid volume state (position +
   // linear gain), each defaulting to column `VOLUME_DEFAULT_COL` of its own strip.
   let sounding = Arc::new(Mutex::new(vec![HashSet::<i32>::new(); num_grids]));
-  let trail = Arc::new(Mutex::new(VecDeque::<i32>::with_capacity(TRAIL_LEN)));
+  let trail = Arc::new(Mutex::new(VecDeque::<i32>::with_capacity(s.trails_max)));
   let mut volume_pos_init = Vec::with_capacity(num_grids);
   let mut gains_init = Vec::with_capacity(num_grids);
   for g in &s.grids {
@@ -381,6 +383,8 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       x_step: s.x_step,
       y_step: s.y_step,
       edo: s.edo,
+      trail_clobber_radius: s.trail_clobber_radius,
+      trails_max: s.trails_max,
       waveforms: Arc::clone(&waveforms),
       sounding: Arc::clone(&sounding),
       trail: Arc::clone(&trail),
@@ -437,6 +441,10 @@ struct GridThread {
   x_step: i32,
   y_step: i32,
   edo: i32,
+  /// Trail clobber radius as a divisor of the octave (see `Settings`).
+  trail_clobber_radius: i32,
+  /// Max distinct pitch classes the shared trail keeps.
+  trails_max: usize,
   waveforms: Arc<Mutex<Vec<Waveform>>>,
   /// Per-grid sounding pitch-classes; the union drives cross-grid note reflection.
   sounding: Arc<Mutex<Vec<HashSet<i32>>>>,
@@ -603,7 +611,7 @@ fn handle_key(
     let gain = current_gain(&rt.gains, rt.grid_index);
     rt.sink.note_on(cell, pitch, Timbre { waveform, gain, ..Timbre::default() });
     held.insert(cell, pitch);
-    push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo);
+    push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
   } else {
     rt.sink.note_off(cell);
     held.remove(&cell);
@@ -698,17 +706,23 @@ fn trail_set(trail: &Arc<Mutex<VecDeque<i32>>>) -> HashSet<i32> {
 }
 
 /// Record a just-pressed pitch class in the shared trail. The trail holds up to
-/// `TRAIL_LEN` *distinct* classes, newest first. Playing a note first clears its own
+/// `trails_max` *distinct* classes, newest first. Playing a note first clears its own
 /// class (dedup -- so hammering one note, in any octave, never floods or erases the
-/// trail) and every trailed class within `edo / TRAIL_SUPPRESS_DENOM` steps of it
-/// (neighbour suppression), then adds it at the front.
-fn push_trail(trail: &Arc<Mutex<VecDeque<i32>>>, class: i32, edo: i32) {
+/// trail) and every trailed class within `edo / clobber_radius` steps of it (neighbour
+/// suppression), then adds it at the front. Both knobs come from the `[surfaces]` table.
+fn push_trail(
+  trail: &Arc<Mutex<VecDeque<i32>>>,
+  class: i32,
+  edo: i32,
+  clobber_radius: i32,
+  trails_max: usize,
+) {
   let mut t = trail.lock().unwrap_or_else(|e| e.into_inner());
   // Keep only classes strictly outside the suppression radius (this also drops the new
   // class itself, since its distance is 0).
-  t.retain(|&c| pitch_class_distance(c, class, edo) * TRAIL_SUPPRESS_DENOM > edo);
+  t.retain(|&c| pitch_class_distance(c, class, edo) * clobber_radius > edo);
   t.push_front(class);
-  while t.len() > TRAIL_LEN {
+  while t.len() > trails_max {
     t.pop_back();
   }
 }
@@ -866,35 +880,39 @@ mod tests {
 
   #[test]
   fn trail_dedups_by_class_and_suppresses_neighbours() {
-    let edo = 58; // 58/18 ~= 3.2, so classes within 3 steps are neighbours.
+    let edo = 58;
+    // The `[surfaces]` defaults: 1/27 octave (58/27 ~= 2.1, so classes within 2 steps are
+    // neighbours) and up to 7 distinct classes.
+    let clobber = 27;
+    let trails_max = 7;
     let trail = Arc::new(Mutex::new(VecDeque::new()));
     let snap = |t: &Arc<Mutex<VecDeque<i32>>>| -> Vec<i32> { t.lock().unwrap().iter().copied().collect() };
 
     // Hammering one class (octaves collapse to the same class) never floods or evicts.
     for _ in 0..7 {
-      push_trail(&trail, 20, edo);
+      push_trail(&trail, 20, edo, clobber, trails_max);
     }
     assert_eq!(snap(&trail), vec![20], "a repeated class stays a single entry");
 
     // Far-apart classes accumulate, newest first.
-    push_trail(&trail, 30, edo);
-    push_trail(&trail, 40, edo);
+    push_trail(&trail, 30, edo, clobber, trails_max);
+    push_trail(&trail, 40, edo, clobber, trails_max);
     assert_eq!(snap(&trail), vec![40, 30, 20], "far-apart classes coexist");
 
     // Playing a near neighbour (2 steps from 40) erases 40 from the trail.
-    push_trail(&trail, 42, edo);
-    assert_eq!(snap(&trail), vec![42, 30, 20], "a neighbour within 1/18 octave is suppressed");
+    push_trail(&trail, 42, edo, clobber, trails_max);
+    assert_eq!(snap(&trail), vec![42, 30, 20], "a neighbour within 1/27 octave is suppressed");
 
     // Wrap-around neighbours count too: classes 1 and 57 are 2 apart in 58-EDO.
-    push_trail(&trail, 1, edo);
-    push_trail(&trail, 57, edo);
+    push_trail(&trail, 1, edo, clobber, trails_max);
+    push_trail(&trail, 57, edo, clobber, trails_max);
     assert!(!snap(&trail).contains(&1), "1 is suppressed by its wrap-around neighbour 57");
 
-    // Never exceeds TRAIL_LEN distinct classes.
+    // Never exceeds `trails_max` distinct classes.
     for c in [4, 8, 12, 16, 24, 34, 44, 54] {
-      push_trail(&trail, c, edo);
+      push_trail(&trail, c, edo, clobber, trails_max);
     }
-    assert!(snap(&trail).len() <= TRAIL_LEN, "capped at {TRAIL_LEN}");
+    assert!(snap(&trail).len() <= trails_max, "capped at {trails_max}");
   }
 
   #[test]
@@ -914,6 +932,20 @@ mod tests {
       assert_ne!(g.selector_rect, NO_RECT, "grid {:?} has a selector", g.monome_id);
       assert_ne!(g.volume_rect, NO_RECT, "grid {:?} has a volume strip", g.monome_id);
     }
+    // The `[surfaces]` table flows into the settings (this config asks for 9 trails).
+    assert_eq!(s.trail_clobber_radius, 27, "trail_clobber_radius from [surfaces]");
+    assert_eq!(s.trails_max, 9, "trails_max from [surfaces]");
+  }
+
+  #[test]
+  fn surfaces_defaults_when_table_absent() {
+    // A config that declares no `[surfaces]` table falls back to the built-in defaults
+    // (1/27 octave, 7 trails), so omitting it changes nothing.
+    let config = load_named_config("monome-edo-sawwave").expect("config loads");
+    assert!(config.surfaces.is_none(), "no [surfaces] table declared");
+    let s = config.surfaces.unwrap_or_default();
+    assert_eq!(s.trail_clobber_radius, 27, "default radius is 1/27 octave");
+    assert_eq!(s.trails_max, 7, "default trail length is 7");
   }
 
   /// End-to-end against two virtual grids (the monome mock) with null audio: the whole

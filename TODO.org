@@ -23,11 +23,8 @@ Let's also introduce a 'flush' command, triggered with 'f', that closes all open
 The lever is tau (GAIN_RAMP_SECS, currently 5 ms, a single const in audio.rs): shorter (say 2–3 ms) lets the gain reach the peak before the transient is over — snappier, more of the hit's character at full velocity — at the cost of getting nearer a hard step. If it sounds dull when you try it, drop tau before you drop the whole approach. Want me to pull GAIN_RAMP_SECS out into the config so you can
 tune it by ear with a reload?
 * easy
-** the trail merge radius should be 44 cents
 ** edo synth attack should be louder
 to distinguish new notes
-** configure the max number of trails
-8? 9?
 ** slide
 Time to transition is calculated as the time
 between the last two touches. That time is updated continuously,
