@@ -1,16 +1,25 @@
+* move to README
+** remember this program
+*** the softstep meter
+python3 code/python/softstep/meter/main.py
+** lately using [[./code/rust/configs/README.org]]
+** remember to run the synth 'under pw-jack'
+Just prefix 'pw-jack' to the command:
+
+pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
+* pitch-aware energy feedback synth
+* Need a way to get only slightly buzzier.
+From sine to triangle is too much,
+when harmony needs clarification with more harmonics.
 * KMSS drumkit
 ** run the KMSS drumkit
 pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 ** some cool KMSS velocity/aftertouch measurement code
 python3 code/python/softstep/meter.py
-* remember to run the synth 'under pw-jack'
-Just prefix 'pw-jack' to the command:
-
-pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
-* lately using [[./code/rust/configs/README.org]]
-* BUG: Can't play a note live when the loop is, or vice-versa.
-* shift one row of the loop in time
-* A loop view can be collapsed along pitch, time or both.
+* looper (includes bugs)
+** BUG: Can't play a note live when the loop is, or vice-versa.
+** shift one row of the loop in time
+** A loop view can be collapsed along pitch, time or both.
 * vision
 ** There's no difference between a chord and a loop.
 A chord is a loop during which the notes don't change.
