@@ -1,0 +1,231 @@
+#+title: SoftStep drum hit detection & velocity -- how it works *before* these changes
+#+date: 2026-07-05
+#+author: baseline snapshot by Claude, before any calibration change
+
+A baseline record of *exactly* how the running instrument decides (a) that a pedal
+was struck ("a kick happened") and (b) how hard, so that when we change thresholds
+to fix the "no hit / double hit" problem we can see what moved. Nothing here is a
+proposal -- it is the current mechanism, with the constants in force and the file
+lines they live at. The =kick= pedal is used as the running example, but the logic
+is identical for all ten pads.
+
+Source of truth: the tether-mode decoder =code/rust/midi_pulse/drumkit_runtime/decode.rs=
+and its driver =drumkit_runtime/mod.rs= + =audio.rs=; the active config
+=code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=. Protocol background:
+[[../../learnings/keith-mcmillen-softstep.org]] and [[../../code/rust/configs/kmss-drumkit.org]].
+
+* TL;DR
+
+The SoftStep is put in *tether mode*, where it streams each pad's *4 pressure
+sensors* as Control Change messages, refreshed only *~every 10 ms*. The runtime
+*sums a pad's 4 sensors* (0..508) and runs a tiny per-pad state machine:
+
+1. *Onset* -- the sum rising above =ON_SUM= (20) starts a hit (=Idle -> Rising=).
+2. *Attack window* -- for =ATTACK= (14 ms) it keeps the *peak* sum seen.
+3. *Fire* -- 14 ms after onset it emits one hit whose *velocity* is that peak
+   scaled to 1..127, *unless* the same pad fired < =debounce_ms= (50 ms) ago.
+4. *Re-arm* -- the pad won't fire again until its sum falls back below =OFF_SUM= (20).
+
+Three independent gates must all pass for a kick to sound: the sum must *exceed
+20*, it must *stay above 20 for the full 14 ms* window, and the pad must *not have
+fired in the last 50 ms*.
+
+"How hard" = the peak sum over the 14 ms window, mapped to velocity 1..127, then to
+a *loudness* spread across a 20 dB range (vel 127 = full, vel 1 = -20 dB).
+
+The two constants most relevant to the symptoms: =ON_SUM= and =OFF_SUM= are *both
+20* (there is *no hysteresis gap*), and =debounce_ms= only guards 50 ms. See
+[[* Where "no hit" comes from]] and [[* Where "double hit" comes from]].
+
+The old SoftStep device only refreshes its sensors ~every 10 ms
+(which rationalizes the 14 ms wait).
+The new one (arriving tomorrow) might be faster.
+
+Loudness is ~logarithmic, over a 20 db range.
+Velocity is derived entirely from pressure; the KMSS itself has no velocity.
+
+* The constants in force right now
+
+| constant              | value  | where                     | role                                                              |
+|-----------------------+--------+---------------------------+-------------------------------------------------------------------|
+| =ON_SUM=              | 20     | decode.rs:43              | onset: sum must exceed this to *start* a hit                      |
+| =OFF_SUM=             | 20     | decode.rs:44              | release: sum must drop below this to *re-arm*                     |
+| =ATTACK=              | 14 ms  | decode.rs:45              | how long after onset the peak is captured before firing           |
+| =VELOCITY_FULL_SCALE= | 460    | decode.rs:31              | pad sum (0..508) that maps to velocity 127                        |
+| =VELOCITY_DB_RANGE=   | 20 dB  | decode.rs:27              | loudness spread from vel 1 to vel 127                             |
+| =debounce_ms=         | 50 ms  | config:148 (window field) | min gap between two fires on the *same* pad                       |
+| poll interval         | 1 ms   | mod.rs:256                | how often matured hits are checked (device scan ~10 ms dominates) |
+| sink =amplitude=      | 1.6    | config:52                 | drum master gain, applied at mix, clamped [-1,1]                  |
+| device scan           | ~10 ms | firmware (fixed)          | sensors only refresh ~100 Hz -- the latency/aliasing floor        |
+
+*Note the missing hysteresis gap:* =ON_SUM= and =OFF_SUM= are *both 20*. There is no
+dead-band between "start a hit" and "re-arm." (The Python meter uses 40/20 -- see
+[[* meter.py disagrees with the runtime]].)
+
+* The signal path (device -> sound)
+
+#+begin_example
+  SoftStep (tether mode)                                        drumkit_runtime
+  ─ each pad = 4 pressure sensors, streamed as CC ch0 ─┐
+     kick = pedal "1" = base CC 44, sensors 44,45,46,47│  scan refresh ~10 ms (100 Hz, firmware-fixed)
+                                                       ▼
+  midir MIDI callback (mod.rs:207)  ── collect_control_changes() ──▶ decoder.on_cc(cc,val,now)
+                                                       │  updates one sensor, recomputes pad_sum
+                                                       ▼
+  per-pad state machine  Idle → Rising → Held  (decode.rs on_cc / poll)
+                                                       │
+  voice timer thread, polls every 1 ms (mod.rs:256) ── decoder.poll(now) → Vec<Hit{label,velocity}>
+                                                       │
+  for each Hit:  gain = pad.gain × gain_from_velocity(velocity)   (mod.rs:264)
+                                                       ▼
+  Trigger.fire(sample, gain) → VoicePool → cpal mix × sink amplitude(1.6), clamp[-1,1] (audio.rs:66)
+#+end_example
+
+Why tether mode at all: in the device's *standalone* preset each pedal sends only a
+*Program Change* (no velocity, and a two-foot stomp collapses to one PC). Tether
+mode streams the raw sensors continuously, which gives us both *velocity* and
+*reliable concurrency*. The runtime switches the device into tether mode on start
+and restores standalone on exit (=drumkit_runtime/tether.rs=).
+
+* When did a kick happen? (the per-pad state machine)
+
+All of this lives in =decode.rs=. Each pad owns one =PadState= (=Idle= /
+=Rising{onset,peak}= / =Held=). A pad's *pressure* is =pad_sum= = the sum of its 4
+sensor CCs, so it ranges *0..508* (decode.rs:140).
+
+Every incoming sensor CC calls =on_cc= (decode.rs:99), which updates that one sensor,
+recomputes the pad's sum, and steps the state machine:
+
+| from   | condition            | to     | meaning                                         |
+|--------+----------------------+--------+-------------------------------------------------|
+| Idle   | =sum > ON_SUM= (20)  | Rising | *onset*: a hit has started; record onset time   |
+| Rising | =sum >= peak=        | Rising | keep the running *attack peak*                  |
+| Rising | =sum < OFF_SUM= (20) | Idle   | released *before* the window -- press *dropped* |
+| Held   | =sum < OFF_SUM= (20) | Idle   | released -- pad re-arms                         |
+| Held   | otherwise            | Held   | still pressed; will *not* retrigger             |
+
+The *fire* decision is separate, in =poll= (decode.rs:120), called every 1 ms by the
+voice-timer thread (mod.rs:256):
+
+- For any pad in =Rising= where =now - onset >= ATTACK= (14 ms):
+  - if the pad last fired < =debounce= (50 ms) ago -> *suppress* (no hit);
+  - else -> emit =Hit{label, velocity}= and record =last_fire=;
+  - either way the pad moves to =Held= (so one physical press yields at most one hit,
+    and it must release below =OFF_SUM= before another can start).
+
+*The 14 ms is not arbitrary.* The device only refreshes its sensors ~every 10 ms,
+and a deliberate strike peaks on the *second* refresh (~10-11 ms after onset) on a
+hard floor. 14 ms clears that second frame; firing sooner reads the pressure
+mid-ramp and reports a hard hit as weak/erratic (decode.rs:37-45).
+
+* How hard? (velocity, then loudness)
+
+Two steps, both in =decode.rs=:
+
+** 1. peak sum -> velocity 1..127  (=velocity_from_peak=, decode.rs:63)
+: velocity = clamp( peak * 127 / VELOCITY_FULL_SCALE , 1, 127 )     VELOCITY_FULL_SCALE = 460
+A pad sum of 460 (a solid strike; hard hits measure ~430-460 against the 508 ceiling)
+reads as velocity 127. The *peak* used is the max sum seen during the 14 ms window.
+
+** 2. velocity -> linear gain  (=gain_from_velocity=, decode.rs:56)
+Loudness is ~logarithmic, so velocity is spread over a fixed *=VELOCITY_DB_RANGE= =
+20 dB* rather than scaled linearly (linear would put vel 127 ~42 dB over vel 1):
+: t  = (velocity - 1) / 126                 # 0..1
+: dB = (t - 1) * 20                          # -20 dB .. 0 dB
+: gain = 10^(dB/20)                          # 0.1 .. 1.0
+
+** 3. the full gain chain for a kick
+: fired gain  = pad.gain × gain_from_velocity(velocity)      (mod.rs:264)
+:             = 1.0      × gain_from_velocity(velocity)      # kick has no `gain=`, defaults to 1.0
+: heard level = clamp( Σ voices(sample × gain) × amplitude , -1, 1 )   amplitude = 1.6  (audio.rs:87, config:52)
+
+Worked examples for the kick (=pedal 1=, base CC 44, =gain= default 1.0):
+
+| peak sum | velocity | vel gain (dB)  | note                                 |
+|----------+----------+----------------+--------------------------------------|
+|    >=460 |      127 | 1.00  ( 0 dB)  | full-scale strike                    |
+|      230 |       64 | 0.32  (-10 dB) | ~half pressure -> ~10 dB down        |
+|       40 |       11 | 0.12  (-18 dB) | just above onset -> nearly inaudible |
+|       21 |        6 | 0.11  (-19 dB) | the softest hit that can fire at all |
+
+Note the tail: a hit that *barely* clears =ON_SUM= fires at ~-19 dB -- it played, but
+so quietly it may *sound like* a missed hit (see below). Velocity here is derived
+entirely from pressure; the KMSS itself has no velocity.
+
+* Where "no hit" comes from
+
+Given the mechanism above, a real stomp can produce no sound for several distinct
+reasons -- worth separating because they call for different fixes:
+
+1. *Onset never reached.* If the pad's 4-sensor sum never exceeds =ON_SUM= (20) it
+   stays =Idle=. A glancing / heel-edge press that loads only one sensor lightly, or a
+   very fast tap that the ~100 Hz scan only samples once (mid-ramp), can miss.
+2. *Released inside the attack window.* If the sum falls below =OFF_SUM= (20) within
+   14 ms of onset, the =Rising= press is *discarded* (decode.rs:110) -- a quick, light
+   tap that the device caught for only one sub-threshold refresh produces nothing.
+3. *Debounce swallow.* A genuine second hit on the *same* pad within 50 ms of the
+   previous fire is *silently dropped* (decode.rs:128). Fast double-kicks or rolls
+   quicker than ~20 Hz on one pedal lose beats.
+4. *Stuck "Held".* A pad only re-arms when its sum drops below =OFF_SUM= (20). If
+   resting foot weight keeps the sum at/above 20 between strikes, the pad stays
+   =Held= and *subsequent presses never retrigger* (decode.rs:112,134).
+5. *Fired but inaudible.* A hit that barely clears onset plays at ~-18 to -19 dB
+   (table above). It *did* fire, but may be perceived as a miss. This is a velocity
+   symptom, not a detection one.
+
+* Where "double hit" comes from
+
+1. *No hysteresis gap.* Because =ON_SUM = OFF_SUM = 20=, there is no dead-band. If a
+   single physical press makes the summed pressure *dither across 20* -- a foot rocking
+   heel<->toe, an uneven landing across the 4 sensors, or sensor noise near threshold --
+   the pad can go =Rising -> (fire) -> Held -> (dip < 20) Idle -> (rise > 20) Rising ->
+   (fire again)=. One stomp, two hits.
+2. *Debounce only covers 50 ms.* The 50 ms =debounce_ms= gate would catch a *fast*
+   re-cross, but if the pressure re-crosses 20 *more than 50 ms* after the first fire
+   (a slow rock, or a press that settles then re-loads), the second hit is *not*
+   suppressed -> audible double.
+3. *Contact bounce carried into pressure.* A hard stomp can make the summed pressure
+   oscillate; with only a single threshold (no band) the oscillation crosses it
+   repeatedly. (In standalone PC mode this showed up as duplicate Program Changes; in
+   tether mode it shows up as the sum re-crossing =ON_SUM=.)
+
+The common thread for doubles is the absent hysteresis band plus a debounce that is
+both short and *only* a same-pad time gate.
+
+* meter.py disagrees with the runtime
+
+=code/python/softstep/meter.py= (the tool the next task wants to beef up) runs *its
+own copy* of this state machine, and its constants *do not match* the Rust runtime:
+
+| constant              | meter.py           | runtime (decode.rs) |
+|-----------------------+--------------------+---------------------|
+| ON_SUM                | *40* (meter.py:29) | *20*                |
+| OFF_SUM               | 20 (meter.py:30)   | 20                  |
+| ATTACK                | 14 ms              | 14 ms               |
+| full scale / dB range | 460 / 20 dB        | 460 / 20 dB         |
+
+So the meter has a real *20-wide hysteresis band* (40 down to 20) while the
+instrument has *none*. Consequences to keep in mind while calibrating:
+
+- The meter is *stricter* about starting a hit and *harder* to double-trigger than
+  the actual instrument. Auditioning a pad in the meter can *understate* both
+  symptoms you feel while playing.
+- The meter's live *bar* shows the *raw* pad sum for *any* pressure > 0, independent
+  of whether its onset logic fires. That is why "=meter.py seems to show pad presses
+  even when no sound would happen=": the bar is raw pressure; a press that never
+  crosses the onset threshold moves the bar but fires nothing.
+
+Reconciling the two (making the meter mirror the runtime's exact gates, and surfacing
+onset/attack/debounce/re-arm state -- not just raw pressure) is the natural first
+step of the measurement task in =requests.org=.
+
+* Pointers
+
+- Decoder + all constants: =code/rust/midi_pulse/drumkit_runtime/decode.rs=
+- Driver (timer, MIDI callback, gain chain): =drumkit_runtime/mod.rs=
+- Sampler / mix / master amplitude: =drumkit_runtime/audio.rs=
+- Tether mode switch + restore: =drumkit_runtime/tether.rs=
+- Active config (pads, =debounce_ms=, sink amplitude): =code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=
+- Protocol, CC map, why tether: [[../../learnings/keith-mcmillen-softstep.org]]
+- Config-level drumkit reference: [[../../code/rust/configs/kmss-drumkit.org]]
+- Pure-decoder unit tests (behaviour lock): =cargo test --bin midi_pulse drumkit=

@@ -22,10 +22,12 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
-use midi_pulse::config::{drum_samples_dir, Config, SinkConfig, SoftstepWindowConfig};
+use midi_pulse::config::{
+  drum_samples_dir, load_softstep_params, Config, SinkConfig, SoftstepParams, SoftstepWindowConfig,
+};
 
-use audio::{Sampler, Trigger};
-use decode::{collect_control_changes, gain_from_velocity, Hit, TetherDecoder};
+use audio::{Sampler, Trigger, VoiceId};
+use decode::{collect_control_changes, gain_from_velocity, DrumEvent, TetherDecoder};
 use samples::DrumSample;
 
 /// One pedal's resolved binding: which sample to fire, at what *base* gain (the
@@ -44,8 +46,6 @@ struct PadBinding {
 struct DeviceBuild {
   pedal_map: [Option<PadBinding>; 10],
   select_substring: String,
-  /// Per-pad minimum gap between hits (widest among the device's drumkit windows).
-  debounce_ms: u64,
 }
 
 /// A live drumkit: the sampler streams, the bound MIDI inputs, and the per-device
@@ -104,6 +104,8 @@ pub fn start(
 ) -> Result<DrumSession, Box<dyn std::error::Error>> {
   let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
   let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
+  // Shared SoftStep detection/velocity parameters (configs/softstep.toml), not per-config.
+  let params = load_softstep_params()?;
 
   // 1. Start a sampler per cpal_sampler sink referenced by some drumkit window.
   let referenced: HashSet<&str> = config
@@ -142,21 +144,17 @@ pub fn start(
       DeviceBuild {
         pedal_map: std::array::from_fn(|_| None),
         select_substring: softstep.select.name_substring().to_string(),
-        debounce_ms: 0,
       },
     );
   }
   for window in &config.softstep_windows {
-    let SoftstepWindowConfig::Drumkit { softstep, sink, debounce_ms, pads, .. } = window;
+    let SoftstepWindowConfig::Drumkit { softstep, sink, pads, .. } = window;
     let sampler = samplers
       .get(sink)
       .ok_or_else(|| format!("drumkit window references unbuilt sink {sink:?}"))?;
     let device = devices
       .get_mut(softstep)
       .ok_or_else(|| format!("drumkit window references unknown softstep {softstep:?}"))?;
-    // A device's debounce is the widest window among its drumkit windows (they
-    // partition pedals, so in the common one-window case this is just its value).
-    device.debounce_ms = device.debounce_ms.max(*debounce_ms);
     for pad in pads {
       let path = drum_samples_dir().join(&pad.sample);
       let sample = samples::load_wav(&path)?;
@@ -180,10 +178,10 @@ pub fn start(
   let mut connections: Vec<MidiInputConnection<()>> = Vec::new();
   let mut timers: Vec<(Arc<AtomicBool>, JoinHandle<()>)> = Vec::new();
   for (device_id, build) in devices {
-    let DeviceBuild { pedal_map, select_substring, debounce_ms } = build;
-    print_device_summary(&device_id, &pedal_map, debounce_ms);
+    let DeviceBuild { pedal_map, select_substring } = build;
+    print_device_summary(&device_id, &pedal_map, params);
 
-    let decoder = Arc::new(Mutex::new(TetherDecoder::new(debounce_ms)));
+    let decoder = Arc::new(Mutex::new(TetherDecoder::new(params)));
 
     // Timer thread: fire hits whose attack window has elapsed. It owns the pad map
     // and sample triggers; the MIDI callback only feeds sensor readings in.
@@ -193,7 +191,7 @@ pub fn start(
       let stop = Arc::clone(&stop);
       std::thread::Builder::new()
         .name(format!("kmss-voices-{device_id}"))
-        .spawn(move || run_voice_timer(decoder, pedal_map, stop, trace))?
+        .spawn(move || run_voice_timer(decoder, pedal_map, stop, trace, params.velocity_db_range))?
     };
     timers.push((stop, timer));
 
@@ -241,36 +239,55 @@ pub fn start(
   })
 }
 
-/// The poll/fire loop for one device: every few ms, ask the decoder for matured hits
-/// and fire each sample at `pad.gain * gain_from_velocity(velocity)`.
+/// The poll loop for one device: every ~1 ms, ask the decoder for events. A `Fire` starts
+/// a voice at `pad.gain * gain_from_velocity(velocity)`; a `Revise` ramps that pad's
+/// current voice up to a higher velocity read later in the attack window.
 fn run_voice_timer(
   decoder: Arc<Mutex<TetherDecoder>>,
   pad_map: [Option<PadBinding>; 10],
   stop: Arc<AtomicBool>,
   trace: bool,
+  db_range: f32,
 ) {
-  let mut hits: Vec<Hit> = Vec::with_capacity(8);
+  let mut events: Vec<DrumEvent> = Vec::with_capacity(8);
+  // The most recent voice started per pad label, so a Revise can find and re-gain it.
+  let mut current: [Option<VoiceId>; 10] = [None; 10];
   while !stop.load(Ordering::Relaxed) {
-    // Poll at 1 ms: the device only refreshes every ~10 ms so this captures nothing
-    // extra, but it shaves the delay between the attack window elapsing and firing.
+    // Poll at 1 ms: fires on onset promptly and applies mid-window loudness revises with
+    // little delay (the device itself only refreshes every ~10 ms).
     std::thread::sleep(Duration::from_millis(1));
-    hits.clear();
+    events.clear();
     {
       let mut decoder = decoder.lock().unwrap_or_else(|e| e.into_inner());
-      decoder.poll(Instant::now(), &mut hits);
+      decoder.poll(Instant::now(), &mut events);
     }
-    for hit in &hits {
-      if let Some(binding) = &pad_map[(hit.label % 10) as usize] {
-        let gain = binding.gain * gain_from_velocity(hit.velocity);
-        if trace {
-          eprintln!(
-            "[kmss]   pad {} vel {} -> {} (gain {gain:.3})",
-            hit.label, hit.velocity, binding.voice_label,
-          );
+    for event in &events {
+      match *event {
+        DrumEvent::Fire { label, velocity } => {
+          let slot = (label % 10) as usize;
+          if let Some(binding) = &pad_map[slot] {
+            let gain = binding.gain * gain_from_velocity(velocity, db_range);
+            if trace {
+              eprintln!(
+                "[kmss]   pad {label} FIRE vel {velocity} -> {} (gain {gain:.3})",
+                binding.voice_label,
+              );
+            }
+            current[slot] = Some(binding.trigger.fire(Arc::clone(&binding.sample), gain));
+          } else if trace {
+            eprintln!("[kmss]   pad {label} vel {velocity}: unmapped");
+          }
         }
-        binding.trigger.fire(Arc::clone(&binding.sample), gain);
-      } else if trace {
-        eprintln!("[kmss]   pad {} vel {}: unmapped", hit.label, hit.velocity);
+        DrumEvent::Revise { label, velocity } => {
+          let slot = (label % 10) as usize;
+          if let (Some(binding), Some(id)) = (&pad_map[slot], current[slot]) {
+            let gain = binding.gain * gain_from_velocity(velocity, db_range);
+            if trace {
+              eprintln!("[kmss]   pad {label} REVISE vel {velocity} -> gain {gain:.3}");
+            }
+            binding.trigger.set_target_gain(id, gain);
+          }
+        }
       }
     }
   }
@@ -298,8 +315,15 @@ fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPo
   Ok(matches.remove(0).0)
 }
 
-fn print_device_summary(device_id: &str, pedal_map: &[Option<PadBinding>; 10], debounce_ms: u64) {
-  println!("  device {device_id:?} pedal map (tether, velocity-sensitive, debounce {debounce_ms} ms):");
+fn print_device_summary(
+  device_id: &str,
+  pedal_map: &[Option<PadBinding>; 10],
+  params: SoftstepParams,
+) {
+  println!(
+    "  device {device_id:?} pedal map (tether, velocity-sensitive, debounce {} ms, de-stick {} ms):",
+    params.debounce_ms, params.silence_to_zero_ms,
+  );
   // Print in printed-label order 1..9, then 0, skipping unmapped pedals.
   for label in (1..=9).chain(std::iter::once(0)) {
     if let Some(binding) = &pedal_map[label as usize] {

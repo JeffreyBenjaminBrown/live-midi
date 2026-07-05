@@ -19,3 +19,4 @@ Cargo.lock
 __pycache__/
 my-dot-claude/
 target/
+/code/python/softstep/meter/logs/

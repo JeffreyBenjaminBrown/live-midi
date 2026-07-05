@@ -1,8 +1,46 @@
+* ONGOING softstep pressure meter
+** how to run it
+python3 code/python/softstep/meter/main.py
+** TODO implement
+*** AWAITS transplant config values from meter to synth
+*** AWAITS Collect softstep documentation in one place.
+**** Some is at code/python/softstep/meter/config.toml.
+**** These might be undocumented.
+***** A stuck sensor is interpreted as having dropped to 0.
+It is stuck if it hasn't changed for <parameter name?> ms,
+which is currently 25 ms.
+***** Amplitude can be adjusted mid-sample.
+What we ought to do is count it even if it was only on for a single sample, but adjust the volume if we then read a higher value at the 10 ms mark. This is achievable with samples -- just ramp (with some kind of filter to smooth the discontinuity) up the amplitude mid-sample if we measure it to be higher.
+
+That changes the meaning of the attack window: It's no longer 'we need positive signal for this long', but rather 'this is how long we keep watching to adjust the amplitude mid-sample'.
+
+If I find I'm getting ghost hits with that I'll undo it but for now let's try it.
+**** For the meter, this might be undocumented.
+Let's also introduce a 'flush' command, triggered with 'f', that closes all open groups and writes to disk. Killing the program (in any way) should trigger flush.
+*** ? Per-pad overrides of default|global trigger threshold values.
+** TODO might need to fix
+*** if some attacks sound dull
+The lever is tau (GAIN_RAMP_SECS, currently 5 ms, a single const in audio.rs): shorter (say 2–3 ms) lets the gain reach the peak before the transient is over — snappier, more of the hit's character at full velocity — at the cost of getting nearer a hard step. If it sounds dull when you try it, drop tau before you drop the whole approach. Want me to pull GAIN_RAMP_SECS out into the config so you can
+tune it by ear with a reload?
+* easy
+** the trail merge radius should be 44 cents
+** edo synth attack should be louder
+to distinguish new notes
+** configure the max number of trails
+8? 9?
+** slide
+Time to transition is calculated as the time
+between the last two touches. That time is updated continuously,
+so (e.g.) if the destination is tapped again ... uh ...
+** mono
+** each pad gets velocity-tuned separately
+* each note should evolve
+Could just reduce each parameter's amplitude logarithmically.
 * KMSS drumkit
 ** run the KMSS drumkit
 pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 ** some cool KMSS velocity/aftertouch measurement code
-python3 code/python/softstep/meter.py
+python3 code/python/softstep/meter/main.py
 * remember to run the synth 'under pw-jack'
 Just prefix 'pw-jack' to the command:
 

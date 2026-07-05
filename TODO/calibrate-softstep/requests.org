@@ -1,0 +1,21 @@
+* ONGOING measurement
+There's a program at python3 code/python/softstep/meter.py
+that seems to show pad presses even when no sound would happen.
+I want to beef up that program.
+
+Let's move it into code/python/softstep/meter/main.py.
+Let's also give it a config.toml file, in the same folder.
+While the program runs, pressing 'r' should 'r'eload the config.
+
+The meter should create a single .csv file in meter/logs/
+for each 'event group'.
+A parameter 'event-group-separation-threshold' is a velocity value,
+such that if the sum-of-four from a pad falls below it,
+the events that just happened are considered 'a group',
+and written to a file.
+
+Each time an event group starts, the meter should say
+'new group (ongoing): X', where X is a number equal to the maximum of
+1 or N+1 where N is the highest group that had been recorded before X started.
+When a group ends, it should say 'wrote group: X',
+and write X.csv it to disk.

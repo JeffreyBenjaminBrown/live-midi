@@ -1,3 +1,4 @@
+# See also softstep.toml (the shared SoftStep detection & velocity parameters).
 version = 1
 id = "2-monomes_58-8-1_kmss-drums"
 title = "Two monomes (58-8-1) + KMSS drums"
@@ -20,8 +21,8 @@ title = "Two monomes (58-8-1) + KMSS drums"
 
 [[tunings]]
 id = "main"
-edo = 58
-x_step = 8
+edo = 46
+x_step = 9
 y_step = 1
 fundamental_hz = 80
 
@@ -145,7 +146,7 @@ id = "kit"
 softstep = "feet"
 kind = "drumkit"
 sink = "drums"
-debounce_ms = 50
+# Detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml.
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav" },

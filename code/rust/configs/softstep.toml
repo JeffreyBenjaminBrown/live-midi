@@ -1,0 +1,16 @@
+# SoftStep hit-detection & velocity parameters -- shared across every config.
+#
+# There is no reason for these to vary from one config to the next, so they live here once
+# rather than being duplicated in each config's [[softstep_windows]]. Every config that uses
+# the SoftStep carries a "see also softstep.toml" note at the top. The Python meter
+# (code/python/softstep/meter/config.toml) mirrors these same numbers.
+#
+# All keys are optional; a missing key uses the default shown. Reject-on-typo is on.
+
+on_sum              = 20    # a hit fires when a pad's sum-of-4 exceeds this
+off_sum             = 20    # the pad re-arms once its sum-of-4 falls below this
+attack_ms           = 14    # after firing on onset, keep watching this long to raise velocity to a later peak
+velocity_full_scale = 460   # pad sum-of-4 (0..508) that maps to velocity 127
+velocity_db_range   = 20.0  # dB between the softest (vel 1) and hardest (vel 127) hit
+debounce_ms         = 100   # min gap between two hits on the SAME pad (contact-bounce guard); 0 = off
+silence_to_zero_ms  = 25    # a sensor with no CC for this long reads 0 (de-stick); 0 = off

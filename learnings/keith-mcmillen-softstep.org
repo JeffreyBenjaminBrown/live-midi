@@ -191,8 +191,12 @@ Ctrl-C.
     the reply. Good link check.
   - =capture.py= -- self-paced guided capture (tether + two-foot + standalone PC),
     logs to =captures/session-*.log=.
-  - =meter.py= -- live per-pad pressure meter + velocity audition: strike a pad and it
-    prints the velocity and plays the low tom at that velocity, for calibrating touch.
+  - =meter/main.py= -- live per-pad pressure meter + velocity audition + per-group logger:
+    strike a pad and it prints the velocity, plays the configured audition sample (default
+    snare, =audition-sample= in =config.toml=) at that velocity, and writes
+    each pad-event group to =meter/logs/pad-<label>/<N>.org= (raw sum trace + a re-derived
+    interpretation of the hits it renders); tunables in =meter/config.toml= (reload with
+    =r=). For calibrating touch and diagnosing missed/double hits.
 - *Older, sequencer-based (echo still handy; the senders used the dead seq path):*
   =echo.py= (human-readable =aseqdump= monitor -- still useful), =backlight_blink.py=
   and =ssmode.py= (sent control SysEx via =aseqsend=, so they had *no effect*; kept only
@@ -204,9 +208,11 @@ prompts (it waits for Enter, never times you), and it writes one log to read bac
 * Drumkit velocity (tether runtime): how it works + the tuning knobs
 
 The =drumkit_runtime= plays *velocity-sensitive*: on start it switches the device into
-tether mode (over rawmidi via =amidi=), reads the CC sensor stream through midir, derives
-per-pad onset + attack-peak velocity, fires samples through the polyphonic =VoicePool=,
-and *restores standalone mode on exit* (Enter, error, or Ctrl-C/SIGTERM).
+tether mode (over rawmidi via =amidi=), reads the CC sensor stream through midir, FIRES a
+voice the instant a pad's sum crosses the onset threshold (so even a one-sample tap
+counts), then RAMPS that voice's gain up if a higher peak arrives during the attack watch
+window -- all through the polyphonic =VoicePool= -- and *restores standalone mode on exit*
+(Enter, error, or Ctrl-C/SIGTERM).
 
 ** The one empirical fact that drives everything
 The device refreshes its sensors only *~every 10 ms* (~100 Hz scan -- measured from
@@ -214,31 +220,33 @@ timestamped captures; it is fixed in firmware, not tunable). A deliberate strike
 pressure peaks on the *2nd refresh* (~10-11 ms after the hit is first seen) on a
 *hard floor*; on a springy/mushy surface (carpet) the peak lags 20 ms or more.
 Consequences:
-- You must wait ~2 refreshes to know how hard the hit was. Firing sooner reads the
-  pressure mid-ramp, so velocity comes out both *too low* and *erratic* (it depends on
-  where the strike happened to land in the scan cycle). A 3 ms window captured only
-  ~17-50% of the true peak in real data -- *do not shrink the window chasing latency*;
-  the 10 ms device scan is the floor.
-- Polling the stream faster than ~10 ms captures nothing new; it only trims the delay
-  between the attack window ending and the sound firing (poll is 1 ms, plenty).
+- The peak isn't known until ~2 refreshes in. Rather than *wait* to fire (which delayed
+  every hit and dropped one-sample taps), the runtime FIRES on onset and then RAMPS the
+  voice up to the true peak as it arrives -- so =ATTACK= is a *watch-and-adjust* window, not
+  a "wait this long before firing" delay. Keep it >= ~2 refreshes (~14 ms) so a hard hit's
+  late peak still lands inside it; shrinking it just caps how loud a late peak can push the
+  voice (it no longer adds latency).
+- Polling the stream faster than ~10 ms captures nothing new; it only trims onset-fire
+  latency and how promptly a mid-window loudness revise reaches the voice (poll is 1 ms).
 - *Surface matters.* A hard floor sharpens the attack (peak ~10 ms, consistent); a soft
   surface slows and scatters it. Re-check =ATTACK= if you change playing surface.
 
 ** The knobs
-Most live in =code/rust/midi_pulse/drumkit_runtime/decode.rs= (the poll interval is in
-=drumkit_runtime/mod.rs=; =debounce_ms= is a per-window field in the =kmss-drumkit=
-config, =code/rust/configs/kmss-drumkit.toml=). The Python meter
-=code/python/softstep/meter.py= mirrors =VEL_DB_RANGE= / =ATTACK_MS= so what you audition
-matches the kit. Symptom -> fix:
+The detection & velocity knobs are all *config* now: they live in the shared
+=code/rust/configs/softstep.toml= (loaded by =drumkit_runtime=), not as =decode.rs=
+consts. The poll interval is the one exception (=drumkit_runtime/mod.rs=). The Python
+meter =code/python/softstep/meter/= mirrors them in its own =config.toml= (=on-sum=,
+=attack-ms=, =debounce-ms=, ...) so what you audition matches the kit. Symptom -> fix:
 
 | knob                | default | what it does                                                        | symptom -> fix                                                                                          |
 |---------------------+---------+---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------|
-| =ATTACK=            | 14 ms   | how long after onset we capture the attack peak before firing        | hard hit sometimes comes out *weak/dead* -> raise 1-2 ms (peak landing past the window); *laggy* -> lower |
+| =ATTACK=            | 14 ms   | after firing on onset, how long we keep watching to ramp the voice up to a later, higher peak | hard hit stays *weak* (its peak lands past the window) -> raise 1-2 ms; fire is immediate now, so it adds no latency |
 | =VELOCITY_DB_RANGE= | 20 dB   | loudness spread from softest (vel 1) to hardest (vel 127) hit        | dynamics feel *flat* -> raise (e.g. 30); soft hits *vanish* / too extreme -> lower (e.g. 12)              |
 | =VELOCITY_FULL_SCALE= | 460   | pad pressure (sum of its 4 sensors, 0..508) that maps to velocity 127 | *everything maxes out*, no headroom -> raise toward 508; *can't reach full* even hitting hard -> lower    |
-| =ON_SUM= / =OFF_SUM= | 40 / 20 | onset / release thresholds on the pad's sum-of-4 (hysteresis)      | *double/false* triggers -> raise =ON_SUM=; a pad *won't retrigger (stuck)* -> lower =OFF_SUM=             |
+| =on_sum= / =off_sum= | 20 / 20 | onset / release thresholds on the pad's sum-of-4 (hysteresis)      | *double/false* triggers -> raise =on_sum=; a pad *won't retrigger (stuck)* -> lower =off_sum=             |
 | poll interval       | 1 ms    | how often the fire-timer checks for matured hits                     | rarely needs changing; the ~10 ms device scan dominates                                                |
-| =debounce_ms= (config) | 50 ms | min gap between two hits on the SAME pad, *in addition to* a release below =OFF_SUM= | *machine-gunning / bounce on one pad* -> raise; *fast rolls cut off* -> lower (0 = release-only)         |
+| =debounce_ms= (softstep.toml) | 100 ms | min gap between two hits on the SAME pad, *in addition to* a release below =off_sum= | *machine-gunning / bounce on one pad* -> raise; *fast rolls cut off* -> lower (0 = release-only)         |
+| =silence_to_zero_ms= (softstep.toml) | 25 ms | a sensor with no CC for this long reads 0 (de-stick) -- the on-change stream leaves a physically stuck sensor's last value lingering, pinning a pad Held | *a pad won't retrigger after a stuck sensor* -> lower; *held/sustained presses cut out* -> raise (0 = off) |
 
 Velocity = the *peak of sum-of-4* over the =ATTACK= window, scaled by =VELOCITY_FULL_SCALE=
 to 1..127, then converted to a gain spread over =VELOCITY_DB_RANGE=. (Loudness is
@@ -336,7 +344,7 @@ undoing the 8->7-byte SysEx packing): packet type 5 = FW_HEADER whose =buildnum=
 - =github.com/Muse-Kinetics/sendsysex= -- KMI CLI for SysEx/firmware
 - KMI brick/firmware facts: support.keithmcmillen.com "Legacy Users: Updating SoftStep
   Firmware"; the "SoftStep Firmware Readme" (fw <=94 = no bootloader)
-- Our tools: =code/python/softstep/{ss,probe,capture,meter}.py= (rawmidi) and the older
-  =echo.py= (=aseqdump= monitor)
+- Our tools: =code/python/softstep/{ss,probe,capture}.py= + =meter/main.py= (rawmidi) and
+  the older =echo.py= (=aseqdump= monitor)
 - Related repo docs: =TODO/concurrent-drums.org= (the concurrency problem, now explained),
   =code/rust/configs/kmss-drumkit.org= (the drumkit config reference)

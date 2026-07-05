@@ -1,3 +1,4 @@
+# See also softstep.toml (the shared SoftStep detection & velocity parameters).
 version = 1
 id = "kmss-drumkit"
 title = "KMSS Drumkit"
@@ -43,9 +44,7 @@ id = "kit"
 softstep = "feet"
 kind = "drumkit"
 sink = "drums"
-# Minimum ms between two hits on the SAME pad, enforced on top of requiring a
-# release (pressure falling below OFF_SUM in decode.rs). 0 = release-only.
-debounce_ms = 50
+# Detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml.
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav" },
