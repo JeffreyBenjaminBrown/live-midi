@@ -94,8 +94,7 @@ id = "kit"
 softstep = "feet"        # -> [[softsteps]] id
 kind = "drumkit"
 sink = "drums"           # -> a cpal_sampler [[sinks]] id
-debounce_ms = 50         # per-pedal contact-bounce debounce (default 50; 0 = off)
-drum_sample_amplitude = 1.0  # kit-wide linear gain (default 1.0 = no change)
+# detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav", gain = 1.0 },
@@ -116,10 +115,10 @@ velocity today, so level is fixed per pad).
   ([[../../../learnings/keith-mcmillen-softstep.org]]).
 - *Preset-independent.* The pedal is decoded as =program % 10=, so the kit works
   no matter which on-device preset is showing.
-- *Per-pedal debounce.* A hard stomp can emit the same PC twice within a few ms;
-  =debounce_ms= suppresses a repeat of the *same* pedal within the window. It is
-  per pedal, so two different pedals struck together (two feet within ~1 ms) both
-  fire faithfully.
+- *Per-pedal debounce.* A hard stomp can double-trigger one pedal; the shared
+  =debounce_ms= (in =softstep.toml=, default 100) suppresses a repeat of the *same*
+  pedal within the window. It is per pedal, so two different pedals struck together
+  (two feet within ~1 ms) both fire faithfully.
 - *Polyphonic.* Hits overlap; a ringing crash keeps sounding under later hits
   (up to a 64-voice pool, then the most-finished voice is stolen).
 

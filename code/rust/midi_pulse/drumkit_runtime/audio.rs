@@ -16,6 +16,11 @@ use super::samples::DrumSample;
 /// in the realtime callback.
 const VOICE_SLOTS: usize = 64;
 
+/// A playing voice's gain ramps toward its target over ~this long (one-pole), so a
+/// mid-flight loudness revise -- a harder peak arriving during the attack window -- does
+/// not click. Short enough to reach the new level well within a drum hit.
+const GAIN_RAMP_SECS: f32 = 0.005;
+
 /// One sounding sample. `pos` is a fractional read index into `sample.frames`;
 /// `step = file_rate / output_rate` resamples by linear interpolation.
 #[derive(Clone)]
@@ -23,42 +28,70 @@ struct Voice {
   sample: Arc<DrumSample>,
   pos: f64,
   step: f64,
-  gain: f32,
+  gain: f32,        // current gain; ramps toward `target_gain`
+  target_gain: f32, // where a mid-window loudness revise moves the gain to
+  ramp: f32,        // per-frame one-pole coefficient toward `target_gain`
+  gen: u64,         // generation, so a stale VoiceId can't revise a reused slot
+}
+
+/// Handle to a triggered voice, so a later `Revise` can find and re-gain it. Becomes stale
+/// once the slot is reused (the generation won't match), and `set_target_gain` is then a
+/// no-op. `Copy`, so the timer can keep one per pad cheaply.
+#[derive(Clone, Copy)]
+pub struct VoiceId {
+  slot: usize,
+  gen: u64,
 }
 
 /// The shared, realtime-safe voice pool. Triggering (MIDI thread) and mixing
 /// (audio thread) both lock this briefly; no allocation happens under the lock.
 pub struct VoicePool {
   voices: Vec<Option<Voice>>,
+  next_gen: u64,
 }
 
 impl VoicePool {
   fn new() -> Self {
-    VoicePool { voices: vec![None; VOICE_SLOTS] }
+    VoicePool { voices: vec![None; VOICE_SLOTS], next_gen: 0 }
   }
 
-  /// Start `sample` playing. Reuses a free slot; if all are busy it steals the
-  /// voice nearest its end (least musical to drop).
-  pub fn trigger(&mut self, sample: Arc<DrumSample>, output_rate: f32, gain: f32) {
+  /// Start `sample` playing and return its [`VoiceId`]. Reuses a free slot; if all are
+  /// busy it steals the voice nearest its end (least musical to drop).
+  pub fn trigger(&mut self, sample: Arc<DrumSample>, output_rate: f32, gain: f32) -> VoiceId {
     let step = sample.sample_rate as f64 / output_rate.max(1.0) as f64;
-    let voice = Voice { sample, pos: 0.0, step, gain };
-    if let Some(slot) = self.voices.iter().position(|v| v.is_none()) {
-      self.voices[slot] = Some(voice);
-      return;
-    }
-    // All busy: steal the most-finished voice (largest fraction of its length played).
-    let mut best = 0usize;
-    let mut best_frac = -1.0f64;
-    for (i, v) in self.voices.iter().enumerate() {
-      if let Some(v) = v {
-        let frac = v.pos / v.sample.frames.len().max(1) as f64;
-        if frac > best_frac {
-          best_frac = frac;
-          best = i;
+    let ramp = 1.0 - (-1.0 / (GAIN_RAMP_SECS * output_rate.max(1.0))).exp();
+    let gen = self.next_gen;
+    self.next_gen += 1;
+    let voice = Voice { sample, pos: 0.0, step, gain, target_gain: gain, ramp, gen };
+    let slot = self.voices.iter().position(|v| v.is_none()).unwrap_or_else(|| {
+      // All busy: steal the most-finished voice (largest fraction of its length played).
+      let mut best = 0usize;
+      let mut best_frac = -1.0f64;
+      for (i, v) in self.voices.iter().enumerate() {
+        if let Some(v) = v {
+          let frac = v.pos / v.sample.frames.len().max(1) as f64;
+          if frac > best_frac {
+            best_frac = frac;
+            best = i;
+          }
+        }
+      }
+      best
+    });
+    self.voices[slot] = Some(voice);
+    VoiceId { slot, gen }
+  }
+
+  /// Ramp a still-playing voice toward a new gain (a mid-window loudness revise). A no-op
+  /// if that voice has already ended or its slot was reused (generation mismatch).
+  pub fn set_target_gain(&mut self, id: VoiceId, gain: f32) {
+    if let Some(slot) = self.voices.get_mut(id.slot) {
+      if let Some(v) = slot {
+        if v.gen == id.gen {
+          v.target_gain = gain;
         }
       }
     }
-    self.voices[best] = Some(voice);
   }
 
   /// Mix all active voices into the interleaved output buffer. `amplitude` is the
@@ -78,6 +111,14 @@ impl VoicePool {
         let a = frames[i];
         let b = if i + 1 < frames.len() { frames[i + 1] } else { a };
         let frac = (v.pos - i as f64) as f32;
+        // One-pole "de-zipper": glide the gain toward its (instantly-set) target. The gain
+        // is always continuous, which is what kills the click; the slope change when the
+        // target moves is inaudible. Snap once within epsilon so a long-ringing voice does
+        // not creep toward the target forever (which would slow the mix on denormals).
+        v.gain += (v.target_gain - v.gain) * v.ramp;
+        if (v.target_gain - v.gain).abs() < 1e-6 {
+          v.gain = v.target_gain;
+        }
         sum += (a + (b - a) * frac) * v.gain;
         v.pos += v.step;
         if v.pos as usize >= frames.len() {
@@ -102,11 +143,17 @@ pub struct Trigger {
 }
 
 impl Trigger {
-  /// Fire a one-shot. Recovers from a poisoned lock so a panicked audio thread
-  /// can't permanently wedge triggering.
-  pub fn fire(&self, sample: Arc<DrumSample>, gain: f32) {
+  /// Fire a one-shot; returns a [`VoiceId`] for later gain revisions. Recovers from a
+  /// poisoned lock so a panicked audio thread can't permanently wedge triggering.
+  pub fn fire(&self, sample: Arc<DrumSample>, gain: f32) -> VoiceId {
     let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
-    pool.trigger(sample, self.output_rate, gain);
+    pool.trigger(sample, self.output_rate, gain)
+  }
+
+  /// Ramp a previously-fired voice toward a new gain (a mid-window loudness revise).
+  pub fn set_target_gain(&self, id: VoiceId, gain: f32) {
+    let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+    pool.set_target_gain(id, gain);
   }
 }
 
@@ -246,5 +293,31 @@ mod tests {
     let mut out = [0.0f32; 2]; // one stereo frame
     pool.mix(&mut out, 2, 1.0);
     assert_eq!(out, [0.3, 0.3], "mono source fanned to both channels");
+  }
+
+  #[test]
+  fn set_target_gain_ramps_a_playing_voice_up() {
+    let mut pool = VoicePool::new();
+    // A long DC sample so the gain ramp is visible over many frames.
+    let id = pool.trigger(sample(vec![1.0; 2000], 48000), 48000.0, 0.2);
+    pool.set_target_gain(id, 1.0); // revise louder mid-flight
+    let mut out = [0.0f32; 500];
+    pool.mix(&mut out, 1, 1.0);
+    assert!(out[0] < 0.3, "starts near the fire gain (0.2): {}", out[0]);
+    assert!(out[499] > 0.8, "ramps up toward the target (1.0): {}", out[499]);
+    assert!(out[499] > out[0], "monotonic ramp up");
+  }
+
+  #[test]
+  fn set_target_gain_is_a_noop_for_a_stale_voice() {
+    let mut pool = VoicePool::new();
+    let id = pool.trigger(sample(vec![1.0], 48000), 48000.0, 0.5); // slot 0, gen 0
+    pool.mix(&mut [0.0f32; 4], 1, 1.0); // play to completion -> frees the slot
+    // A fresh voice reuses the slot at gain 0.3 (DC sample value 1.0, so out == gain).
+    pool.trigger(sample(vec![1.0; 500], 48000), 48000.0, 0.3); // slot 0, gen 1
+    pool.set_target_gain(id, 1.0); // stale generation -> no-op (would otherwise ramp to 1.0)
+    let mut out = [0.0f32; 500];
+    pool.mix(&mut out, 1, 1.0);
+    assert!((out[499] - 0.3).abs() < 1e-3, "stale id did not ramp the reused voice: {}", out[499]);
   }
 }

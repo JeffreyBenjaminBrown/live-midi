@@ -819,12 +819,84 @@ fn default_pad_gain() -> f32 {
   1.0
 }
 
+// --- Shared SoftStep detection & velocity parameters (configs/softstep.toml) ------------
+// These drive the drumkit decoder. There is no reason for them to vary per config, so they
+// live in one shared file loaded by `load_softstep_params`, not in each config's window.
+fn default_on_sum() -> u16 {
+  20
+}
+fn default_off_sum() -> u16 {
+  20
+}
+fn default_attack_ms() -> u64 {
+  14
+}
+fn default_velocity_full_scale() -> u16 {
+  460
+}
+fn default_velocity_db_range() -> f32 {
+  20.0
+}
 fn default_debounce_ms() -> u64 {
-  50
+  100
+}
+fn default_silence_to_zero_ms() -> u64 {
+  25
 }
 
-fn default_drum_sample_amplitude() -> f32 {
-  1.0
+/// Hit-detection & velocity parameters for the SoftStep, shared by every config that uses
+/// it. Loaded once from `configs/softstep.toml` (not from any per-config window), so one
+/// set of numbers drives the drumkit. Every field is optional; a missing file or key uses
+/// the default. The Python meter (`code/python/softstep/meter/`) mirrors these.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SoftstepParams {
+  /// A hit fires when a pad's sum-of-4 exceeds this.
+  #[serde(default = "default_on_sum")]
+  pub on_sum: u16,
+  /// The pad re-arms once its sum-of-4 falls below this.
+  #[serde(default = "default_off_sum")]
+  pub off_sum: u16,
+  /// After firing on onset, keep watching this long to raise velocity to a later peak.
+  #[serde(default = "default_attack_ms")]
+  pub attack_ms: u64,
+  /// Pad sum-of-4 (0..508) that maps to velocity 127.
+  #[serde(default = "default_velocity_full_scale")]
+  pub velocity_full_scale: u16,
+  /// dB between the softest (vel 1) and hardest (vel 127) hit.
+  #[serde(default = "default_velocity_db_range")]
+  pub velocity_db_range: f32,
+  /// Minimum gap between two hits on the SAME pad (contact-bounce guard); 0 = off.
+  #[serde(default = "default_debounce_ms")]
+  pub debounce_ms: u64,
+  /// A sensor with no CC for this long reads 0 (de-stick); 0 = off.
+  #[serde(default = "default_silence_to_zero_ms")]
+  pub silence_to_zero_ms: u64,
+}
+
+impl Default for SoftstepParams {
+  fn default() -> Self {
+    SoftstepParams {
+      on_sum: default_on_sum(),
+      off_sum: default_off_sum(),
+      attack_ms: default_attack_ms(),
+      velocity_full_scale: default_velocity_full_scale(),
+      velocity_db_range: default_velocity_db_range(),
+      debounce_ms: default_debounce_ms(),
+      silence_to_zero_ms: default_silence_to_zero_ms(),
+    }
+  }
+}
+
+/// Load the shared SoftStep parameters from `configs/softstep.toml`. A missing file uses
+/// the defaults; a present file with a parse error or unknown key is a hard error.
+pub fn load_softstep_params() -> Result<SoftstepParams, String> {
+  let path = config_dir().join("softstep.toml");
+  match std::fs::read_to_string(&path) {
+    Ok(text) => toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SoftstepParams::default()),
+    Err(e) => Err(format!("{}: {e}", path.display())),
+  }
 }
 
 /// A window over a SoftStep: a `kind` behavior bound to a declared `softstep`
@@ -840,16 +912,8 @@ pub enum SoftstepWindowConfig {
     id: String,
     softstep: String,
     sink: String,
-    /// Ignore a repeat of the *same* pedal within this many ms (contact-bounce
-    /// debounce). Per-pedal, so two different pedals hit together both fire.
-    #[serde(default = "default_debounce_ms")]
-    debounce_ms: u64,
-    /// Linear gain applied to every sample this kit fires (1.0 = no change), on top of
-    /// each pad's own `gain` and the sink amplitude. A global loudness trim: the TR-808
-    /// cymbals in particular are transient/low-RMS and read quiet next to the sustained
-    /// synth, so this lets a config lift the whole kit.
-    #[serde(default = "default_drum_sample_amplitude")]
-    drum_sample_amplitude: f32,
+    // Detection/velocity knobs (debounce, de-stick, thresholds) are NOT here -- they are
+    // shared across configs and live in configs/softstep.toml (see `SoftstepParams`).
     pads: Vec<DrumPadConfig>,
   },
 }
@@ -1266,7 +1330,7 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
   for window in &config.softstep_windows {
     require_ref("softstep_window.softstep", window.softstep(), &softstep_ids)?;
     match window {
-      SoftstepWindowConfig::Drumkit { id, sink, debounce_ms, pads, .. } => {
+      SoftstepWindowConfig::Drumkit { id, sink, pads, .. } => {
         if !sampler_sink_ids.contains(sink.as_str()) {
           return Err(format!(
             "drumkit window {id:?} sink {sink:?} must be a declared cpal_sampler sink",
@@ -1275,7 +1339,6 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
         if pads.is_empty() {
           return Err(format!("drumkit window {id:?} needs at least one pad"));
         }
-        let _ = debounce_ms; // any u64 is valid (0 = no debounce)
         let device_claims = claimed.entry(window.softstep()).or_default();
         let mut this_window: HashSet<u8> = HashSet::new();
         for pad in pads {
@@ -1652,11 +1715,30 @@ mod tests {
     for entry in std::fs::read_dir(config_dir()).expect("read configs dir") {
       let entry = entry.expect("config dir entry");
       let path = entry.path();
+      // softstep.toml is a shared SoftstepParams file, not a full runnable Config.
+      if path.file_name().and_then(|s| s.to_str()) == Some("softstep.toml") {
+        continue;
+      }
       if path.extension().and_then(|s| s.to_str()) == Some("toml") {
         load_config_file(&path)
           .unwrap_or_else(|e| panic!("{} should parse: {e}", path.display()));
       }
     }
+  }
+
+  #[test]
+  fn softstep_params_parse_and_default() {
+    // A missing file -> defaults (debounce is now 100 ms).
+    assert_eq!(SoftstepParams::default().debounce_ms, 100, "default debounce");
+    assert_eq!(SoftstepParams::default().on_sum, 20);
+    // The shipped softstep.toml parses and every field is present.
+    let params = load_softstep_params().expect("configs/softstep.toml parses");
+    assert!(params.velocity_full_scale > 0 && params.attack_ms > 0);
+    // Partial files fill in defaults; unknown keys are rejected.
+    let partial: SoftstepParams = toml::from_str("on_sum = 7").unwrap();
+    assert_eq!(partial.on_sum, 7);
+    assert_eq!(partial.debounce_ms, 100, "unset key uses the default");
+    assert!(toml::from_str::<SoftstepParams>("bogus = 1").is_err(), "unknown key rejected");
   }
 
   #[test]
@@ -2488,10 +2570,7 @@ pads = [
     let config = parse_config(DRUMKIT_TOML).expect("a complete drumkit config should be valid");
     assert_eq!(config.softsteps.len(), 1);
     assert_eq!(config.softsteps[0].select.name_substring(), "SSCOM", "default select substring");
-    let SoftstepWindowConfig::Drumkit { debounce_ms, pads, drum_sample_amplitude, .. } =
-      &config.softstep_windows[0];
-    assert_eq!(*debounce_ms, 50, "default per-pedal debounce");
-    assert_eq!(*drum_sample_amplitude, 1.0, "default kit amplitude has no effect");
+    let SoftstepWindowConfig::Drumkit { pads, .. } = &config.softstep_windows[0];
     assert_eq!(pads[0].gain, 1.0, "default pad gain");
     assert_eq!(pads.len(), 3);
   }

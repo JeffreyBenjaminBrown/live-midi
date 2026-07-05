@@ -3,13 +3,16 @@
 //!
 //! In hosted/tether mode (see `learnings/keith-mcmillen-softstep.org`) the device streams each pad's 4
 //! pressure sensors as Control Change on channel 0: CC number = sensor index, value
-//! 0..127 = reading. A pad owns `baseCC..baseCC+3`. We sum a pad's 4 sensors, detect
-//! an onset (sum rising across an on-threshold), capture the attack PEAK over a
-//! short window, and emit one hit per strike whose velocity is that peak scaled to
-//! 1..127. Each pad has its own slot, so two feet landing together yield two hits --
-//! the limitation the old Program-Change path could not escape.
+//! 0..127 = reading. A pad owns `baseCC..baseCC+3`. We sum a pad's 4 sensors and, the
+//! instant the sum crosses an on-threshold, FIRE a hit (so even a one-sample tap counts).
+//! For a short attack window after that we keep watching: if a higher peak arrives we emit
+//! a REVISE telling the audio to ramp that pad's playing voice up to the louder velocity.
+//! Each pad has its own slot, so two feet landing together yield two hits -- the
+//! limitation the old Program-Change path could not escape.
 
 use std::time::{Duration, Instant};
+
+use midi_pulse::config::SoftstepParams;
 
 pub const NUM_PADS: usize = 10;
 
@@ -19,77 +22,84 @@ pub const NUM_PADS: usize = 10;
 /// "6", base 72 = label "0".
 const SLOT_LABEL: [u8; NUM_PADS] = [6, 1, 7, 2, 8, 3, 9, 4, 0, 5];
 
-/// dB spread between the softest (vel 1) and hardest (vel 127) hit. Loudness is
-/// ~logarithmic, so velocity is spread over a fixed dB range rather than scaling
-/// amplitude linearly (linear would put vel 127 ~42 dB above vel 1 -- far too much).
-/// Bigger = more dynamic contrast; smaller = flatter. 20 dB => the softest hit is
-/// 1/10 the amplitude of the hardest. **This is the knob to turn for velocity feel.**
-pub const VELOCITY_DB_RANGE: f32 = 20.0;
+// The detection & velocity knobs -- onset/release thresholds, the attack WATCH window, the
+// velocity full-scale, and the dB spread -- are NOT constants here. They live in the shared
+// configs/softstep.toml (`SoftstepParams`) and are handed to `TetherDecoder::new`. A hit
+// fires the instant the sum crosses `on_sum` (even a one-sample tap); for `attack_ms` after
+// that we keep watching, and a higher peak ramps the playing voice up to the louder velocity
+// (see `audio`). So the attack window is *watch-and-adjust*, not "signal must persist this
+// long". Its ~14 ms size comes from real captures: the device scans only ~every 10 ms and a
+// deliberate strike peaks on the 2nd refresh (~10-11 ms). `off_sum` (release) re-arms the pad
+// and, once a stuck sensor has de-sticked to 0, closes it out.
 
-/// Sum-of-4 sensor value that maps to full velocity (127). Hard hits measured
-/// ~430-460 against a 508 ceiling, so 460 makes a solid strike read as ~127.
-const VELOCITY_FULL_SCALE: u16 = 460;
-
-/// Onset/release thresholds on a pad's sum-of-4 (hysteresis: must fall below
-/// `OFF_SUM` to re-arm, so a held foot can't chatter), and how long after onset we
-/// keep capturing the attack peak before firing.
-///
-/// `ATTACK` is set from real hard-floor captures: the device refreshes its sensors
-/// only ~every 10 ms, and a deliberate strike peaks on the *second* refresh (~10-11
-/// ms after onset). 14 ms clears that second frame reliably (a 10 ms window
-/// occasionally fired just before the peak landed, registering a hard hit as ~17%).
-/// Lower it for less latency at the risk of clipping the peak; raise it if soft hits
-/// on a springier surface peak later. (On carpet the peak lagged 20+ ms.)
-const ON_SUM: u16 = 20;
-const OFF_SUM: u16 = 20;
-const ATTACK: Duration = Duration::from_millis(14);
-
-/// A decoded strike: which printed pedal label, and velocity 1..127.
+/// What `poll` emits for a pad. A hit fires at ONSET (`Fire`, so even a one-sample tap
+/// counts); while the attack window is still open, a higher peak emits a `Revise` telling
+/// the audio to ramp that pad's playing voice up to the louder velocity (`audio::VoicePool`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Hit {
-  pub label: u8,
-  pub velocity: u8,
+pub enum DrumEvent {
+  /// Start a voice for `label` at `velocity`.
+  Fire { label: u8, velocity: u8 },
+  /// The pad's current voice should get louder -- ramp it toward `velocity`.
+  Revise { label: u8, velocity: u8 },
 }
 
-/// Linear gain multiplier for a velocity 1..127, spread over `VELOCITY_DB_RANGE`
-/// (vel 127 -> 1.0). Multiply a pad's configured base gain by this.
-pub fn gain_from_velocity(velocity: u8) -> f32 {
+/// Linear gain multiplier for a velocity 1..127, spread over `db_range` dB (vel 127 -> 1.0).
+/// Multiply a pad's configured base gain by this. `db_range` is `SoftstepParams::velocity_db_range`.
+pub fn gain_from_velocity(velocity: u8, db_range: f32) -> f32 {
   let v = velocity.clamp(1, 127);
   let t = (v as f32 - 1.0) / 126.0; // 0..1
-  let db = (t - 1.0) * VELOCITY_DB_RANGE; // -RANGE..0
+  let db = (t - 1.0) * db_range; // -db_range..0
   10f32.powf(db / 20.0)
 }
 
-fn velocity_from_peak(peak: u16) -> u8 {
-  let v = (peak as u32 * 127 / VELOCITY_FULL_SCALE as u32).max(1);
+fn velocity_from_peak(peak: u16, full_scale: u16) -> u8 {
+  let v = (peak as u32 * 127 / full_scale.max(1) as u32).max(1);
   v.min(127) as u8
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PadState {
   Idle,
-  Rising { onset: Instant, peak: u16 },
+  /// Fired at onset; still watching for a higher peak until `onset + ATTACK`. `sent_vel`
+  /// is the loudest velocity already emitted (Fire, then any Revises), so we only ramp up.
+  Watching { onset: Instant, peak: u16, sent_vel: u8 },
   Held,
 }
 
 /// Per-pad onset / attack-peak / velocity state machine over the hosted CC stream.
+/// Its thresholds come from the shared [`SoftstepParams`] (configs/softstep.toml).
 pub struct TetherDecoder {
   sensors: [u8; 40], // CC 40..79, index = cc - 40
   pads: [PadState; NUM_PADS],
+  on_sum: u16,               // fire when a pad's sum-of-4 exceeds this
+  off_sum: u16,              // re-arm when it falls below this
+  attack: Duration,          // watch-and-adjust window after onset
+  velocity_full_scale: u16,  // sum-of-4 mapping to velocity 127
   /// Minimum gap between two hits on the SAME pad, on top of requiring a release.
   debounce: Duration,
+  /// A sensor with no CC for longer than this reads 0 (de-stick); `ZERO` disables it.
+  /// The tether stream is on-change, so a physically stuck sensor stops sending and its
+  /// last value would otherwise linger, pinning a pad Held and blocking its next hit.
+  silence: Duration,
+  /// When each sensor (CC 40..79, index = cc - 40) last received a CC (`None` = never).
+  last_seen: [Option<Instant>; 40],
   /// When each pad last fired, for the debounce gate (`None` = never).
   last_fire: [Option<Instant>; NUM_PADS],
 }
 
 impl TetherDecoder {
-  /// `debounce_ms` is the minimum time between two hits on the same pad (0 disables
-  /// it); it is enforced *in addition to* the per-pad release hysteresis (`OFF_SUM`).
-  pub fn new(debounce_ms: u64) -> Self {
+  /// Build a decoder from the shared [`SoftstepParams`] (configs/softstep.toml).
+  pub fn new(params: SoftstepParams) -> Self {
     TetherDecoder {
       sensors: [0; 40],
       pads: [PadState::Idle; NUM_PADS],
-      debounce: Duration::from_millis(debounce_ms),
+      on_sum: params.on_sum,
+      off_sum: params.off_sum,
+      attack: Duration::from_millis(params.attack_ms),
+      velocity_full_scale: params.velocity_full_scale,
+      debounce: Duration::from_millis(params.debounce_ms),
+      silence: Duration::from_millis(params.silence_to_zero_ms),
+      last_seen: [None; 40],
       last_fire: [None; NUM_PADS],
     }
   }
@@ -100,52 +110,81 @@ impl TetherDecoder {
     if !(40..=79).contains(&cc) {
       return;
     }
-    self.sensors[(cc - 40) as usize] = val & 0x7F;
-    let slot = ((cc - 40) / 4) as usize;
-    let sum = self.pad_sum(slot);
-    self.pads[slot] = match self.pads[slot] {
-      PadState::Idle if sum > ON_SUM => PadState::Rising { onset: now, peak: sum },
-      PadState::Idle => PadState::Idle,
-      // Released before the attack window elapsed: drop the (sub-window) press.
-      PadState::Rising { .. } if sum < OFF_SUM => PadState::Idle,
-      PadState::Rising { onset, peak } => PadState::Rising { onset, peak: peak.max(sum) },
-      PadState::Held if sum < OFF_SUM => PadState::Idle,
-      PadState::Held => PadState::Held,
-    };
+    let idx = (cc - 40) as usize;
+    self.sensors[idx] = val & 0x7F;
+    self.last_seen[idx] = Some(now);
+    // The onset / fire / revise / release state machine lives in `poll` (driven by the
+    // interpreted sum), so a sensor going silent (de-stick) is handled with no new CC.
   }
 
-  /// Emit a hit for any pad whose attack window has elapsed since onset -- unless the
-  /// pad last fired less than `debounce` ago -- then mark it Held (one hit per strike;
-  /// a pad re-arms only after releasing below `OFF_SUM`). Call frequently (every few ms).
-  pub fn poll(&mut self, now: Instant, out: &mut Vec<Hit>) {
+  /// Advance every pad's state machine off its interpreted sum and emit events. A pad
+  /// FIRES the instant its sum crosses `ON_SUM` (even a one-sample tap); while the attack
+  /// window is still open a higher peak emits a `Revise` (ramp the voice up); after the
+  /// window it holds until the sum falls below `OFF_SUM` -- which also re-arms it and
+  /// de-sticks a stuck sensor. Call frequently (every ~1 ms).
+  pub fn poll(&mut self, now: Instant, out: &mut Vec<DrumEvent>) {
     for slot in 0..NUM_PADS {
-      if let PadState::Rising { onset, peak } = self.pads[slot] {
-        if now.duration_since(onset) >= ATTACK {
-          // Reaching Rising already required a release below OFF_SUM, so gating the
-          // fire on the debounce interval makes the retrigger condition the conjunction
-          // "fell below the floor AND debounce elapsed". A too-soon press is dropped
-          // (still -> Held, so it must release again before another attempt).
+      let sum = self.pad_sum(slot, now);
+      let label = SLOT_LABEL[slot];
+      self.pads[slot] = match self.pads[slot] {
+        PadState::Idle if sum > self.on_sum => {
+          // Fire immediately, unless this pad fired less than `debounce` ago.
           let debounced =
             matches!(self.last_fire[slot], Some(t) if now.duration_since(t) < self.debounce);
-          if !debounced {
-            out.push(Hit { label: SLOT_LABEL[slot], velocity: velocity_from_peak(peak) });
+          if debounced {
+            PadState::Held // suppress the too-soon retrigger; it must release first
+          } else {
+            let velocity = velocity_from_peak(sum, self.velocity_full_scale);
+            out.push(DrumEvent::Fire { label, velocity });
             self.last_fire[slot] = Some(now);
+            PadState::Watching { onset: now, peak: sum, sent_vel: velocity }
           }
-          self.pads[slot] = PadState::Held;
         }
-      }
+        PadState::Idle => PadState::Idle,
+        // Released (or de-sticked to 0) before the window closed: the voice plays out.
+        PadState::Watching { .. } if sum < self.off_sum => PadState::Idle,
+        PadState::Watching { onset, peak, sent_vel } => {
+          let peak = peak.max(sum);
+          let velocity = velocity_from_peak(peak, self.velocity_full_scale);
+          let sent_vel = if velocity > sent_vel {
+            out.push(DrumEvent::Revise { label, velocity }); // ramp the voice up to the new peak
+            velocity
+          } else {
+            sent_vel
+          };
+          if now.duration_since(onset) >= self.attack {
+            PadState::Held // window closed; final velocity locked in
+          } else {
+            PadState::Watching { onset, peak, sent_vel }
+          }
+        }
+        PadState::Held if sum < self.off_sum => PadState::Idle,
+        PadState::Held => PadState::Held,
+      };
     }
   }
 
-  fn pad_sum(&self, slot: usize) -> u16 {
+  /// A pad's sum-of-4 in INTERPRETED units: each sensor reads its raw value, or 0 once it
+  /// has been silent (no CC) longer than `silence` (de-stick; `silence == ZERO` = off).
+  fn pad_sum(&self, slot: usize, now: Instant) -> u16 {
     let base = slot * 4;
-    (0..4).map(|k| self.sensors[base + k] as u16).sum()
+    (0..4).map(|k| self.interp(base + k, now)).sum()
+  }
+
+  fn interp(&self, i: usize, now: Instant) -> u16 {
+    if self.silence.is_zero() {
+      return self.sensors[i] as u16;
+    }
+    match self.last_seen[i] {
+      Some(t) if now.duration_since(t) <= self.silence => self.sensors[i] as u16,
+      _ => 0, // silent too long (or never seen) -> treated as released to 0
+    }
   }
 }
 
 impl Default for TetherDecoder {
   fn default() -> Self {
-    Self::new(0)
+    Self::new(SoftstepParams::default())
   }
 }
 
@@ -202,6 +241,14 @@ pub fn collect_control_changes(message: &[u8], out: &mut Vec<(u8, u8)>) {
 mod tests {
   use super::*;
 
+  // Defaults match configs/softstep.toml (on/off 20, full-scale 460); the tests build
+  // decoders with a chosen debounce/silence and otherwise the defaults.
+  const ATTACK: Duration = Duration::from_millis(14);
+
+  fn decoder(debounce_ms: u64, silence_to_zero_ms: u64) -> TetherDecoder {
+    TetherDecoder::new(SoftstepParams { debounce_ms, silence_to_zero_ms, ..SoftstepParams::default() })
+  }
+
   fn ccs(message: &[u8]) -> Vec<(u8, u8)> {
     let mut out = Vec::new();
     collect_control_changes(message, &mut out);
@@ -217,127 +264,218 @@ mod tests {
     assert_eq!(ccs(&[0xB0, 44]), Vec::<(u8, u8)>::new(), "truncated CC yields nothing");
   }
 
-  /// Drive a pad's 4 sensors to a chosen sum, then fire it after the attack window.
-  fn strike(d: &mut TetherDecoder, base: u8, sensor_vals: [u8; 4], t0: Instant) -> Vec<Hit> {
+  fn fires(events: &[DrumEvent]) -> Vec<(u8, u8)> {
+    events
+      .iter()
+      .filter_map(|e| match e {
+        DrumEvent::Fire { label, velocity } => Some((*label, *velocity)),
+        _ => None,
+      })
+      .collect()
+  }
+
+  fn revises(events: &[DrumEvent]) -> Vec<(u8, u8)> {
+    events
+      .iter()
+      .filter_map(|e| match e {
+        DrumEvent::Revise { label, velocity } => Some((*label, *velocity)),
+        _ => None,
+      })
+      .collect()
+  }
+
+  /// Drive a pad's 4 sensors to a chosen sum, then poll -- which fires it on onset.
+  fn strike(d: &mut TetherDecoder, base: u8, sensor_vals: [u8; 4], t0: Instant) -> Vec<DrumEvent> {
     for (k, v) in sensor_vals.iter().enumerate() {
       d.on_cc(base + k as u8, *v, t0);
     }
-    let mut hits = Vec::new();
-    d.poll(t0 + ATTACK, &mut hits);
-    hits
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    ev
   }
 
   #[test]
   fn single_pad_fires_one_hit_mapped_to_its_label() {
-    let mut d = TetherDecoder::new(0);
+    let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    // base 44 = label "1".
-    let hits = strike(&mut d, 44, [127, 127, 127, 80], t0);
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].label, 1, "base 44 -> printed label 1");
-    assert_eq!(hits[0].velocity, 127, "sum 461 >= full scale -> max velocity");
+    // base 44 = label "1"; sum 461 >= full scale -> max velocity.
+    assert_eq!(fires(&strike(&mut d, 44, [127, 127, 127, 80], t0)), vec![(1, 127)]);
   }
 
   #[test]
-  fn does_not_fire_before_the_attack_window() {
-    let mut d = TetherDecoder::new(0);
+  fn fires_immediately_on_onset() {
+    // No attack-window wait anymore -- a pad fires the instant its sum crosses ON_SUM.
+    let mut d = decoder(0, 0);
     let t0 = Instant::now();
     d.on_cc(44, 100, t0);
-    let mut hits = Vec::new();
-    d.poll(t0, &mut hits); // window not elapsed
-    assert!(hits.is_empty());
-    d.poll(t0 + ATTACK, &mut hits);
-    assert_eq!(hits.len(), 1);
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    assert_eq!(fires(&ev), vec![(1, velocity_from_peak(100, 460))], "fires on onset, immediately");
+  }
+
+  #[test]
+  fn a_one_sample_tap_still_fires() {
+    // The behavior this change adds: a tap on for a single sample, released before the
+    // window elapses, now COUNTS (the old model dropped it).
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    d.on_cc(44, 40, t0); // sum 40 > ON_SUM
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    assert_eq!(fires(&ev).len(), 1, "single-sample tap fires");
+    // Released well before ATTACK elapses -- it already fired, and does not double-fire.
+    ev.clear();
+    d.on_cc(44, 0, t0 + Duration::from_millis(3));
+    d.poll(t0 + Duration::from_millis(3), &mut ev);
+    assert!(fires(&ev).is_empty(), "release does not double-fire");
+  }
+
+  #[test]
+  fn fires_on_onset_then_revises_up_to_a_later_peak() {
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    // A modest first reading fires immediately.
+    d.on_cc(44, 60, t0);
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    assert_eq!(fires(&ev), vec![(1, velocity_from_peak(60, 460))], "fires on the first sample");
+    // Within the window the press grows -> a Revise ramps the voice up (no second Fire).
+    ev.clear();
+    d.on_cc(44, 127, t0 + Duration::from_millis(10)); // sum 254
+    d.on_cc(45, 127, t0 + Duration::from_millis(10));
+    d.poll(t0 + Duration::from_millis(10), &mut ev);
+    assert!(fires(&ev).is_empty(), "no second Fire");
+    assert_eq!(revises(&ev), vec![(1, velocity_from_peak(254, 460))], "Revise up to the higher peak");
   }
 
   #[test]
   fn velocity_scales_with_peak_pressure() {
-    let mut d = TetherDecoder::new(0);
+    let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    // Soft-ish: sum 120 -> ~33; hard: sum 460 -> 127. Distinct, and soft < hard.
-    let soft = strike(&mut d, 44, [60, 60, 0, 0], t0)[0].velocity;
-    // release and re-arm before a second strike
-    d.on_cc(44, 0, t0 + ATTACK * 2);
-    d.on_cc(45, 0, t0 + ATTACK * 2);
-    let hard = strike(&mut d, 44, [127, 127, 127, 79], t0 + ATTACK * 3)[0].velocity;
+    // Soft-ish sum 120 vs hard sum 460, each fired on onset. Distinct, soft < hard.
+    let soft = fires(&strike(&mut d, 44, [60, 60, 0, 0], t0))[0].1;
+    // Release (sum 0) and let a poll re-arm before the second strike.
+    d.on_cc(44, 0, t0 + ATTACK);
+    d.on_cc(45, 0, t0 + ATTACK);
+    d.poll(t0 + ATTACK, &mut Vec::new());
+    let hard = fires(&strike(&mut d, 44, [127, 127, 127, 79], t0 + ATTACK * 2))[0].1;
     assert!(soft < hard, "soft {soft} should be quieter than hard {hard}");
     assert_eq!(hard, 127);
   }
 
   #[test]
   fn two_pads_struck_together_both_fire() {
-    let mut d = TetherDecoder::new(0);
+    let mut d = decoder(0, 0);
     let t0 = Instant::now();
     d.on_cc(44, 120, t0); // label 1
     d.on_cc(60, 120, t0); // base 60 -> label 3
-    let mut hits = Vec::new();
-    d.poll(t0 + ATTACK, &mut hits);
-    let labels: Vec<u8> = hits.iter().map(|h| h.label).collect();
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    let labels: Vec<u8> = fires(&ev).iter().map(|(l, _)| *l).collect();
     assert!(labels.contains(&1) && labels.contains(&3), "both feet fire: {labels:?}");
   }
 
   #[test]
   fn one_hit_per_press_refires_only_after_release() {
-    let mut d = TetherDecoder::new(0);
+    let mut d = decoder(0, 0);
     let t0 = Instant::now();
+    let mut ev = Vec::new();
     d.on_cc(44, 100, t0);
-    let mut hits = Vec::new();
-    d.poll(t0 + ATTACK, &mut hits);
-    assert_eq!(hits.len(), 1, "first strike fires");
-    hits.clear();
-    d.on_cc(44, 110, t0 + ATTACK * 2); // still held high
-    d.poll(t0 + ATTACK * 3, &mut hits);
-    assert!(hits.is_empty(), "held foot does not retrigger");
-    d.on_cc(44, 0, t0 + ATTACK * 4); // release below off-threshold
-    d.on_cc(44, 100, t0 + ATTACK * 5); // new strike
-    d.poll(t0 + ATTACK * 6, &mut hits);
-    assert_eq!(hits.len(), 1, "refires after a release");
+    d.poll(t0, &mut ev);
+    assert_eq!(fires(&ev).len(), 1, "first strike fires");
+    // Held high across the window and beyond: at most a Revise, never a second Fire.
+    ev.clear();
+    d.on_cc(44, 110, t0 + ATTACK / 2);
+    d.poll(t0 + ATTACK, &mut ev);
+    d.poll(t0 + ATTACK * 2, &mut ev);
+    assert!(fires(&ev).is_empty(), "held foot does not retrigger");
+    // Release (a poll catches the sub-OFF_SUM sum), then a new strike fires.
+    d.on_cc(44, 0, t0 + ATTACK * 3);
+    d.poll(t0 + ATTACK * 3, &mut ev);
+    ev.clear();
+    d.on_cc(44, 100, t0 + ATTACK * 4);
+    d.poll(t0 + ATTACK * 4, &mut ev);
+    assert_eq!(fires(&ev).len(), 1, "refires after a release");
   }
 
   #[test]
   fn debounce_suppresses_a_too_soon_retrigger_on_the_same_pad() {
-    let mut d = TetherDecoder::new(50); // 50 ms minimum gap between hits on a pad
+    let mut d = decoder(50, 0); // 50 ms minimum gap between hits on a pad
     let t0 = Instant::now();
-    let mut hits = Vec::new();
-    // Hit 1.
+    let mut ev = Vec::new();
     d.on_cc(44, 100, t0);
-    d.poll(t0 + ATTACK, &mut hits);
-    assert_eq!(hits.len(), 1, "first hit fires");
+    d.poll(t0, &mut ev);
+    assert_eq!(fires(&ev).len(), 1, "first hit fires");
     // Release, then re-press ~10 ms after the first hit (inside the debounce window).
-    d.on_cc(44, 0, t0 + ATTACK + Duration::from_millis(2));
-    let onset2 = t0 + ATTACK + Duration::from_millis(10);
+    d.on_cc(44, 0, t0 + Duration::from_millis(2));
+    d.poll(t0 + Duration::from_millis(2), &mut ev);
+    let onset2 = t0 + Duration::from_millis(10);
     d.on_cc(44, 100, onset2);
-    d.poll(onset2 + ATTACK, &mut hits);
-    assert_eq!(hits.len(), 1, "a re-press within debounce is suppressed");
+    ev.clear();
+    d.poll(onset2, &mut ev);
+    assert!(fires(&ev).is_empty(), "a re-press within debounce is suppressed");
     // Release, then re-press well past the debounce window from the first hit.
-    d.on_cc(44, 0, onset2 + ATTACK + Duration::from_millis(2));
+    d.on_cc(44, 0, onset2 + Duration::from_millis(2));
+    d.poll(onset2 + Duration::from_millis(2), &mut ev);
     let onset3 = t0 + Duration::from_millis(120);
     d.on_cc(44, 100, onset3);
-    d.poll(onset3 + ATTACK, &mut hits);
-    assert_eq!(hits.len(), 2, "a re-press after debounce fires");
+    ev.clear();
+    d.poll(onset3, &mut ev);
+    assert_eq!(fires(&ev).len(), 1, "a re-press after debounce fires");
     // A different pedal is on its own debounce clock -- unaffected.
     d.on_cc(60, 100, onset3); // label 3
-    d.poll(onset3 + ATTACK, &mut hits);
-    assert_eq!(hits.len(), 3, "debounce is per-pad");
+    ev.clear();
+    d.poll(onset3, &mut ev);
+    assert_eq!(fires(&ev).len(), 1, "debounce is per-pad");
   }
 
   #[test]
   fn nav_pad_and_pedal_ccs_are_ignored() {
-    let mut d = TetherDecoder::new(0);
+    let mut d = decoder(0, 0);
     let t0 = Instant::now();
     d.on_cc(80, 127, t0); // nav pad
     d.on_cc(86, 127, t0); // expression pedal
-    let mut hits = Vec::new();
-    d.poll(t0 + ATTACK, &mut hits);
-    assert!(hits.is_empty(), "non-key CCs produce no drum hits");
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    assert!(fires(&ev).is_empty(), "non-key CCs produce no drum hits");
+  }
+
+  #[test]
+  fn a_stuck_sensor_re_arms_after_silence() {
+    // silence-to-zero = 20 ms: a sensor with no CC for 20 ms reads 0.
+    let mut d = decoder(0, 20);
+    let t0 = Instant::now();
+    assert_eq!(fires(&strike(&mut d, 44, [127, 127, 127, 79], t0)).len(), 1, "the strike fires");
+    // The foot "sticks": no further CCs. After the silence window a poll de-sticks it.
+    let mut ev = Vec::new();
+    d.poll(t0 + Duration::from_millis(50), &mut ev);
+    assert!(fires(&ev).is_empty(), "the silence pass emits no spurious hit");
+    // A fresh strike now fires again -- the pad re-armed with no explicit release CC.
+    let again = strike(&mut d, 44, [127, 127, 127, 79], t0 + Duration::from_millis(60));
+    assert_eq!(fires(&again).len(), 1, "re-armed by silence -> the next strike is heard");
+  }
+
+  #[test]
+  fn silence_disabled_keeps_a_stuck_sensor_held() {
+    // silence-to-zero = 0 disables de-stick: a stuck sensor pins the pad Held (old behavior).
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    assert_eq!(fires(&strike(&mut d, 44, [127, 127, 127, 79], t0)).len(), 1);
+    let mut ev = Vec::new();
+    d.poll(t0 + Duration::from_secs(5), &mut ev); // long silence, but de-stick is off
+    assert!(fires(&ev).is_empty());
+    // Still Held (never released below OFF_SUM), so a same-pad strike does NOT re-fire.
+    let again = strike(&mut d, 44, [127, 127, 127, 79], t0 + Duration::from_secs(6));
+    assert!(fires(&again).is_empty(), "without de-stick, a stuck pad stays Held, cannot re-fire");
   }
 
   #[test]
   fn gain_spans_the_db_range_and_is_monotonic() {
-    assert!((gain_from_velocity(127) - 1.0).abs() < 1e-6, "vel 127 = unity gain");
-    let soft = gain_from_velocity(1);
-    let expected = 10f32.powf(-VELOCITY_DB_RANGE / 20.0);
-    assert!((soft - expected).abs() < 1e-4, "vel 1 = -{VELOCITY_DB_RANGE} dB: {soft} vs {expected}");
-    assert!(gain_from_velocity(96) > gain_from_velocity(32), "louder hit -> more gain");
+    let db = 20.0f32; // = default velocity_db_range
+    assert!((gain_from_velocity(127, db) - 1.0).abs() < 1e-6, "vel 127 = unity gain");
+    let soft = gain_from_velocity(1, db);
+    let expected = 10f32.powf(-db / 20.0);
+    assert!((soft - expected).abs() < 1e-4, "vel 1 = -{db} dB: {soft} vs {expected}");
+    assert!(gain_from_velocity(96, db) > gain_from_velocity(32, db), "louder hit -> more gain");
   }
 }

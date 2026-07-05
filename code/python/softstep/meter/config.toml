@@ -1,0 +1,34 @@
+# SoftStep velocity-meter config.
+#
+# Press `r` to reload while the meter runs.
+# All data here is optional; default values are in main.py.
+# Events only happen when at least one sensor *changes*.
+# Individual sensors can get stuck.
+
+# --- hit detection ---
+on-sum    = 5 # A note starts when a pad's sum-of-4 exceeds this.
+off-sum   = 2 # A note stops  when a pad's sum-of-4 exceeds this.
+attack-ms = 14 # A hit fires on onset; keep watching this long to raise its velocity to a later peak.
+debounce-ms = 100 # Min gap between two hits on the SAME pad (contact-bounce guard). 0 = off.
+
+# --- velocity -> loudness (how hard) ---
+vel-full-scale = 300  # The theoretical max is 127x4 = 508, but values above this in-practice max are clamped to this.
+vel-db-range   = 20.0 # volume range from min to max velocity
+master-volume  = 0.9  # ceiling passed to pw-play (0..1)
+audition       = true # play a sample on each detected hit (false = silent meter)
+audition-sample = "snare.wav"  # A filename under drum-samples/.
+
+# --- event grouping ---
+# This determines what gets logged; it is independent of note detection.
+# Grouping is per pad, so several event groups can be ongoing at once.
+# Each group is written to a separate file, at logs/pad-<label>/<N>.org
+# A group starts when its sum-of-4 rises to/above the sep threshold, and ends
+# once it has stayed below that (same!) threshold for `group-end-hold-ms`.
+event-group-separation-threshold = 0  # sum-of-4 at or below this = that pad is "quiet"
+group-end-hold-ms = 45 # A group ends when a pad is quiet for this long. Can be 0.
+
+# --- sensor de-stick ---
+# SoftStep only sends when something changes. Sometimes sensors get stuck.
+# A sensor that has sent no CC for this long is interpreted as at 0.
+# 0 => This feature is off.
+silence-to-zero-ms = 25

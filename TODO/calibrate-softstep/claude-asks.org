@@ -1,0 +1,165 @@
+#+title: Claude asks -- pushback on the "beef up meter.py" spec (requests.org)
+#+date: 2026-07-05
+
+I read =requests.org= and started building. The *scaffolding* is unambiguous and is
+coded (move to =meter/main.py=, =config.toml= + live =r=eload, =logs/= + per-group
+CSV, group counter + the two status messages). But several details of the *grouping*
+are genuinely under-specified or look slightly off, so I made explicit default
+choices and coded against them. Each is isolated behind a named config key / a single
+function, so flipping any decision is a one-line change once you weigh in.
+
+Nothing below is blocking -- the program runs today under these defaults. These are
+"confirm or correct" questions, roughly most-important first.
+
+* 1. The separation threshold is *not* a velocity -- what scale is it? (most important)
+
+Spec: /"'event-group-separation-threshold' is a velocity value, such that if the
+sum-of-four from a pad falls below it..."/
+
+Those are two different scales, so the sentence can't be literally true:
+- *velocity* is the derived 1..127 number;
+- *sum-of-four* is the raw pad pressure, range *0..508*.
+
+You compare the threshold against *sum-of-four*, so I read it as a *sum-of-four
+(pressure) value*, not a velocity. That also matches the existing =OFF_SUM= (20),
+which is the "pad is now quiet" pressure level.
+
+*My default (coded):* the key is a *sum-of-four* value, named =event-group-separation-threshold=,
+default *20* (same "quiet" level as =OFF_SUM=). Range 0..508.
+
+*If you actually meant a velocity 1..127*, I'll instead compare it against the
+velocity derived from the current pressure -- tell me and it's a two-line change.
+
+** TODO your default is right
+
+* 2. What is a "group" across *ten* pads? (board-wide vs per-pad)
+
+Spec (singular): /"if the sum-of-four from *a pad* falls below it, the events that
+just happened are considered 'a group'."/ But the group *number* =X= is a single
+global counter and the messages are singular ("new group ... X"), which fits *one*
+stream of groups, not ten parallel per-pad streams. The two readings diverge sharply:
+
+- *Per-pad* (literal): every time any single pad releases, that pad's recent events
+  close as a group. Problem: releasing the kick mid-phrase would cut a group while
+  the snare is still going, and two feet would produce two overlapping "groups"
+  fighting over one global counter =X=.
+- *Board-wide* (what I chose): a group is a *burst of whole-board activity*. It
+  *starts* when any pad first rises to/above the threshold from a quiet board, and
+  *ends* when *all* pads have fallen back below it. One group at a time, one clean
+  =X= sequence, and a two-foot stomp is one group containing both feet's events.
+
+*My default (coded):* *board-wide*. A group = from "board goes active" to "board
+goes quiet," and its =X.csv= holds *every* pad's events in that window.
+
+*Confirm board-wide*, or tell me you really want per-pad (then =X= numbering and
+"the events that just happened" need per-pad semantics defined).
+
+** TODO
+A group should be limited to a single pad.
+That is, multiple event groups can be ongoing at once.
+I guess we should divide logs/ into 10 subfolders, then,
+one for each pad.
+
+* 3. Group end needs a *hold time*, or brief dips will shred every phrase
+
+The device only refreshes ~every 10 ms and the pressure is noisy near the floor, so a
+single momentary dip below the threshold -- mid-roll, or between two quick kicks --
+would *end the group* the instant it happens (and immediately open a new one on the
+next hit). A fast double-kick could log as two or three one-hit groups.
+
+The spec says "falls below it" (an instantaneous edge) with no debounce.
+
+*My default (coded, and this is an addition not in the spec):* a group ends only
+after the board stays below the threshold *continuously* for =group-end-hold-ms=
+(default *150 ms*). A brief dip does not split a phrase. Set it to =0= to get the
+literal edge behavior.
+
+*OK to add this?* If you want the pure edge (0 ms), say so.
+
+** TODO yes, add that
+I can effectively remove it by simply setting it to 0, right?
+
+* 4. What goes *in* the CSV? (schema unspecified)
+
+Spec says write "the events that just happened" to =X.csv= but not what a row is or
+what columns. Since the whole point is diagnosing *no-hit / double-hit*, I logged the
+richest useful trace: *one row per incoming sensor update* (each of a pad's 4 sensors
+arrives as its own CC), so you can replay the exact pressure ramp and see where a hit
+did or didn't fire.
+
+*My default (coded) columns:*
+: t_mono, pad, base_cc, s0, s1, s2, s3, sum4, state, event, velocity
+- =t_mono= -- monotonic seconds (device clock via =amidi -T monotonic=).
+- =s0..s3= -- the pad's four raw sensors; =sum4= their sum (0..508).
+- =state= -- =idle= / =rising= / =held= at that instant.
+- =event= -- blank, or =onset= / =fire= / =release= when the state machine crosses one.
+- =velocity= -- filled only on the =fire= row (the 1..127 that would sound).
+
+*Tell me if you want fewer columns* (e.g. only one row per detected hit) *or more*
+(e.g. the nav-pad / expression CCs too). This is the schema I'm least sure you'll
+like, and it's trivial to slim.
+
+** TODO give the sum at every sampled moment
+** TODO actually let's make these .org files
+One headline should be the sequence, with the csv format described above.
+(Don't put noise like 'begin_src' or whatever; that's just more stuff to click through.
+Put it under a headline, but otherwise leave it as raw csv.)
+
+Another headline should describe the interpretation:
+As how many hits would this sequence render?
+At what velocities, and at what times (relative to the start of the event group)?
+
+Since that interpretation is dependent on the configured constants,
+each interpretation section should be subdivided:
+Subheadline 1 states the constants
+(this will be massively duplicative but that's fine),
+and subheadline 2 states the resulting interpretation.
+
+* 5. Does group numbering continue across runs, or reset each launch?
+
+Spec: /"N is the highest group that had been recorded *before X started*."/ "Recorded"
+= written to disk. Two readings:
+- continue across sessions (scan existing =logs/*.csv=, so old logs are never
+  overwritten and numbers keep climbing), or
+- reset to 1 each run (which would overwrite =1.csv=, =2.csv=, ... from prior runs).
+
+*My default (coded):* *continue across runs* -- at startup I scan =logs/= for the
+highest =N.csv= and the first new group is =max(1, N+1)=. Nothing is ever
+overwritten. (If two groups can't overlap -- and with board-wide grouping they can't --
+then at each group start the previous group is already written, so =X = N+1= exactly
+as specified.)
+
+*Confirm keep-and-continue*, or say "reset per run" (I'll add a timestamped subfolder
+so we still never clobber).
+
+** TODO right, continue across runs
+
+* 6. Smaller points (coded with a sensible default; easy to change)
+
+- *Audition sound.* The meter currently *plays the low tom* on every detected hit. A
+  logging/measurement tool that also makes noise may be distracting while you
+  calibrate, so I put it behind =audition= (default =true=, current behavior). Set
+  =false= for a silent meter.
+- *=r= needs a real terminal.* Live single-key input (=r= reload, =q= quit) uses
+  cbreak mode on the TTY; it only works when you run the meter *interactively* (not
+  with stdout piped to a file). =Ctrl-C= still exits cleanly and restores standalone
+  either way.
+- *Config key style.* TOML bare keys allow hyphens, so I kept your exact name
+  =event-group-separation-threshold= and made the *other* keys hyphenated too for
+  consistency (=on-sum=, =off-sum=, =attack-ms=, ...). Say the word if you'd rather
+  have =snake_case=.
+- *Run command changed* (the move): =python3 code/python/softstep/meter/main.py=. I
+  updated the doc references (=TODO.org=, =PITFALLS.org=, =learnings/=).
+- *=logs/= is git-ignored* (a =.gitignore= keeps the folder but ignores =*.csv=) so
+  capture logs don't get committed. Say if you actually want logs tracked.
+
+* What I built (so you know the state)
+
+- =code/python/softstep/meter/main.py= -- moved from =meter.py= (=git mv=, history
+  kept), rewritten: config-driven, =r=eload / =q=uit keys, board-wide group state
+  machine, per-group CSV, the two status messages, still draws the live bars + plays
+  the audition.
+- =code/python/softstep/meter/config.toml= -- all tunables, commented.
+- =code/python/softstep/meter/logs/.gitignore= -- keeps the dir, ignores =*.csv=.
+
+Once you answer 1-5 I'll adjust; none of it is deep surgery.

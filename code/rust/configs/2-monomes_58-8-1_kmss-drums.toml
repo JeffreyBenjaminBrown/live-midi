@@ -1,3 +1,4 @@
+# See also softstep.toml (the shared SoftStep detection & velocity parameters).
 version = 1
 id = "2-monomes_58-8-1_kmss-drums"
 title = "Two monomes (58-8-1) + KMSS drums"
@@ -20,8 +21,8 @@ title = "Two monomes (58-8-1) + KMSS drums"
 
 [[tunings]]
 id = "main"
-edo = 58
-x_step = 8
+edo = 46
+x_step = 9
 y_step = 1
 fundamental_hz = 80
 
@@ -32,6 +33,9 @@ id = "synth"
 kind = "cpal_synth"
 sample_rate = 48000
 buffer_frames = 128
+# The single master synth volume for BOTH grids (linear; 1.0 = full scale). Pull the
+# synth down here if it clips. The on-grid volume faders are live per-grid trims that
+# multiply *below* this.
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
@@ -43,7 +47,9 @@ id = "drums"
 kind = "cpal_sampler"
 sample_rate = 48000
 buffer_frames = 128
-amplitude = 0.8
+# The single drum-kit volume knob (linear; per-pad `gain` trims individual pads below it).
+# 1.6 = the old sink 0.8 x drum_sample_amplitude 2.0, now folded into one knob.
+amplitude = 1.6
 
 [[monomes]]
 id = "a"
@@ -140,12 +146,7 @@ id = "kit"
 softstep = "feet"
 kind = "drumkit"
 sink = "drums"
-debounce_ms = 50
-# Lift the whole kit relative to the synth (1.0 = no change). The 808 cymbals are
-# transient/low-RMS (~ -29 dBFS) and read quiet next to the sustained synth; ~2.0 is a
-# clear boost. Higher values clip the kick at hard velocities -- trim its per-pad `gain`
-# (below) if that bites, or lower this.
-drum_sample_amplitude = 2.0
+# Detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml.
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav" },

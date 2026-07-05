@@ -135,6 +135,9 @@ struct Settings {
   fund: f64,
   sample_rate: u32,
   buffer_frames: u32,
+  /// The synth master gain -- the single "synth volume" knob, from the cpal_synth sink's
+  /// `amplitude` (applies to both grids; the per-grid volume strips trim below it).
+  amplitude: f32,
   oversample: u32,
   attack: f32,
   release: f32,
@@ -179,7 +182,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
   let SinkConfig::CpalSynth {
-    sample_rate, buffer_frames, attack_secs, release_secs, oversample, ..
+    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample, ..
   } = sink
   else {
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
@@ -265,6 +268,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     fund: tuning.fundamental_hz,
     sample_rate: *sample_rate,
     buffer_frames: *buffer_frames,
+    amplitude: *amplitude,
     oversample: *oversample,
     attack: *attack_secs,
     release: *release_secs,
@@ -305,14 +309,14 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   }
 
   // Shared audio: one voice map + one synth stream; each voice carries its grid's
-  // waveform and its grid's volume gain, and the render sums them all. The master is
-  // unity (1.0) -- loudness now lives in the per-grid volume gain (see the volume strip),
-  // so the config's `amplitude` is superseded.
+  // waveform and its grid's volume gain, and the render sums them all. The cpal_synth
+  // sink's `amplitude` is the single master "synth volume" (both grids); the per-grid
+  // volume strips are live trims that multiply below it.
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
-    audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, 1.0, s.oversample as usize)?
+    audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude, s.oversample as usize)?
   };
 
   // Per-grid current waveform (index = grid index). Each element is written only by the
