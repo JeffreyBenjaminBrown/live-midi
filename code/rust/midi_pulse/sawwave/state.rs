@@ -108,6 +108,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       freq: freq_for_pitch(abs_pitch, state.fund, state.edo),
       freq_target: 0.0,
       glide_per_sample: 1.0,
+      tempo_am_freq: 0.0, tempo_am_phase: 0.0,
       phase: 0.0, env: 0.0,
       target_env: 1.0,
       ramp_per_sample: 1.0 / (state.audio.attack_secs * state.sample_rate),
@@ -187,7 +188,7 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       let chord = em.unwrap();
       let v = vs.remove(&VoiceSource::Fingered { xy: cell }).unwrap();
       vs.insert(VoiceSource::Accreted { chord, pitch: abs_pitch }, VoiceState {
-        id: v.id, freq: v.freq, freq_target: 0.0, glide_per_sample: 1.0, phase: v.phase, env: v.env,
+        id: v.id, freq: v.freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: v.phase, env: v.env,
         target_env: state.audio.accretion_level,
         ramp_per_sample:
           (v.env - state.audio.accretion_level).abs()

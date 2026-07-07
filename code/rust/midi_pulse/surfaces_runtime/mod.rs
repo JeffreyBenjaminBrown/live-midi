@@ -25,6 +25,7 @@
 mod accrete;
 pub mod audio;
 mod grid;
+mod polyrhythm;
 mod slide;
 mod synth;
 
@@ -52,6 +53,7 @@ use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
 use crate::voices::Distortion;
 
 use accrete::AccreteState;
+use polyrhythm::{FactorButton, PolyrhythmState};
 use slide::SlideCandidates;
 use grid::{
   levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos, ButtonOverlay,
@@ -109,6 +111,7 @@ pub(crate) struct LiveParams {
   pub decay_secs: f32,
   pub slide_window: Duration,
   pub slide_duration_secs: f32,
+  pub tap_window: Duration,
   pub trail_clobber_radius: i32,
   pub trails_max: usize,
 }
@@ -127,6 +130,7 @@ fn live_params(s: &Settings) -> LiveParams {
     decay_secs: s.decay_secs,
     slide_window: s.slide_window,
     slide_duration_secs: s.slide_duration_secs,
+    tap_window: s.tap_window,
     trail_clobber_radius: s.trail_clobber_radius,
     trails_max: s.trails_max,
   }
@@ -241,6 +245,8 @@ struct GridSettings {
   mono_rect: [i32; 4],
   /// The feet-accrete (softstep-accretes) toggle's cell, `NO_RECT` when absent.
   feet_accrete_rect: [i32; 4],
+  /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
+  poly_rect: [i32; 4],
 }
 
 struct Settings {
@@ -281,6 +287,8 @@ struct Settings {
   /// released to be a slide source, and how long the glide takes.
   slide_window: Duration,
   slide_duration_secs: f32,
+  /// The tap-tempo pairing window (`[surfaces].tap_tempo_window_ms`).
+  tap_window: Duration,
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -429,6 +437,14 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let poly_rect = config
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowConfig::TapTempoPad { monome, rect, .. } if monome == monome_id => Some(*rect),
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       listen_port: monome_cfg.listen_port,
@@ -446,6 +462,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       slide_rect,
       mono_rect,
       feet_accrete_rect,
+      poly_rect,
     });
   }
 
@@ -487,6 +504,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     trails_max: surfaces.trails_max,
     slide_window: Duration::from_millis(surfaces.slide_candidate_window_ms),
     slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
+    tap_window: Duration::from_millis(surfaces.tap_tempo_window_ms),
   })
 }
 
@@ -587,6 +605,9 @@ fn run(
   // Feet accrete: while on, the KMSS pedals 1/2/3 and 8/9/0 act as the accrete trio
   // instead of playing samples (see the pedal hook below).
   let feet_accrete_on = Arc::new(AtomicBool::new(false));
+  // The polyrhythm state (tap tempo + factor): one instrument-wide machine, both
+  // grids' pads.
+  let poly = Arc::new(Mutex::new(PolyrhythmState::new()));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -684,6 +705,7 @@ fn run(
       slide_rect: g.slide_rect,
       mono_rect: g.mono_rect,
       feet_accrete_rect: g.feet_accrete_rect,
+      poly_rect: g.poly_rect,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -703,6 +725,8 @@ fn run(
       slide_on: Arc::clone(&slide_on),
       mono_on: Arc::clone(&mono_on),
       feet_accrete_on: Arc::clone(&feet_accrete_on),
+      poly: Arc::clone(&poly),
+      tap_window: s.tap_window,
       live: Arc::clone(&live),
       slide: SlideCandidates::new(),
       slide_window: s.slide_window,
@@ -768,6 +792,8 @@ struct GridThread {
   mono_rect: [i32; 4],
   /// The feet-accrete toggle's cell on this grid (`NO_RECT` if absent).
   feet_accrete_rect: [i32; 4],
+  /// The polyrhythm pad's rect on this grid (`NO_RECT` if absent).
+  poly_rect: [i32; 4],
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -798,6 +824,9 @@ struct GridThread {
   mono_on: Arc<AtomicBool>,
   /// The global feet-accrete switch (pedals mirror the accrete trio while on).
   feet_accrete_on: Arc<AtomicBool>,
+  /// The shared polyrhythm state (tap tempo + factor) and its pairing window.
+  poly: Arc<Mutex<PolyrhythmState>>,
+  tap_window: Duration,
   /// THIS grid's recently-released notes (slide sources) + the slide knobs.
   slide: SlideCandidates,
   slide_window: Duration,
@@ -895,6 +924,24 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push((rt.slide_rect, rt.slide_on.load(Ordering::Relaxed)));
     buttons.push((rt.mono_rect, rt.mono_on.load(Ordering::Relaxed)));
     buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on.load(Ordering::Relaxed)));
+    if rt.poly_rect != NO_RECT {
+      // The pad's six cells: the tap cell blinks (10% duty at the applied tempo);
+      // the factor cells show which way the factor leans, =1 lights when pressing
+      // it would act. Rests dim like every control button.
+      let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
+      let now = Instant::now();
+      for (dx, dy, lit) in [
+        (0, 0, p.factor_lit(FactorButton::Times3)),
+        (1, 0, p.factor_lit(FactorButton::Times2)),
+        (2, 0, p.tap_blink(now)),
+        (0, 1, p.factor_lit(FactorButton::Div3)),
+        (1, 1, p.factor_lit(FactorButton::Div2)),
+        (2, 1, p.factor_lit(FactorButton::Unity)),
+      ] {
+        let (x, y) = (rt.poly_rect[0] + dx, rt.poly_rect[1] + dy);
+        buttons.push(([x, y, x, y], lit));
+      }
+    }
     let mut sounding_classes = union_sounding(&rt.sounding);
     sounding_classes.extend(sustained_classes);
     let trail_classes = trail_set(&rt.trail);
@@ -987,6 +1034,23 @@ fn handle_key(
     }
     return;
   }
+  // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only.
+  if in_overlay(rt.poly_rect, cell) {
+    if press {
+      let (dx, dy) = (cell.0 - rt.poly_rect[0], cell.1 - rt.poly_rect[1]);
+      let mut p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
+      match (dx, dy) {
+        (2, 0) => p.tap(Instant::now(), rt.tap_window),
+        (0, 0) => p.press(FactorButton::Times3),
+        (1, 0) => p.press(FactorButton::Times2),
+        (0, 1) => p.press(FactorButton::Div3),
+        (1, 1) => p.press(FactorButton::Div2),
+        (2, 1) => p.press(FactorButton::Unity),
+        _ => {}
+      }
+    }
+    return;
+  }
   // The accrete (sustain) buttons. All three act on the SHARED state, so either
   // grid's trio works. Decisions are made under the accrete lock, voices are touched
   // after it drops (the module's no-nested-locks rule).
@@ -1055,11 +1119,15 @@ fn handle_key(
     } else {
       None
     };
+    // The polyrhythm pulse at THIS note's onset (fixed for the note's life).
+    let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).applied_hz();
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
     match source {
-      Some(from) => rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs),
-      None => rt.sink.note_on(cell, pitch, timbre),
+      Some(from) => {
+        rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs, pulse)
+      }
+      None => rt.sink.note_on(cell, pitch, timbre, pulse),
     }
     held.insert(cell, pitch);
     rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).note_played(rt.grid_index, pitch);
@@ -1112,6 +1180,7 @@ fn refresh_live(rt: &mut GridThread) {
   rt.trails_max = p.trails_max;
   rt.slide_window = p.slide_window;
   rt.slide_duration_secs = p.slide_duration_secs;
+  rt.tap_window = p.tap_window;
   rt.timbres = p.timbres;
   rt.sink.retune(p.fund, p.edo, p.sustain_level, p.decay_secs);
 }
@@ -1548,7 +1617,9 @@ mod tests {
       assert_eq!(g.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
       assert_eq!(g.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
       assert_eq!(g.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
+      assert_eq!(g.poly_rect, [13, 0, 15, 1], "grid {:?} polyrhythm pad", g.monome_id);
     }
+    assert_eq!(s.tap_window, Duration::from_millis(2000), "tap window from [surfaces]");
     // The [surfaces] slide knobs flow into the settings.
     assert_eq!(s.slide_window, Duration::from_millis(1000));
     assert!((s.slide_duration_secs - 0.1).abs() < 1e-6);
@@ -1711,7 +1782,7 @@ mod tests {
     );
     // Sustain a voice, then clear from pedal 8 (the other triple's clear).
     let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
-    sink.note_on((5, 5), 20, Timbre::default());
+    sink.note_on((5, 5), 20, Timbre::default(), None);
     sink.sustain_note((5, 5), 20);
     assert!(hook(8, true), "pedal 8 = clear, consumed");
     hook(8, false);
@@ -1722,6 +1793,63 @@ mod tests {
       accrete.lock().unwrap().sustained_classes(58).is_empty(),
       "the set was flushed (accrete mode itself stays on -- clear never exits it)",
     );
+  }
+
+  /// The polyrhythm pad end-to-end: cells rest dim; two quick taps start the tap
+  /// cell blinking (caught mid-flash); a factor press lights its cell (and =1, now
+  /// actionable) on BOTH grids; =1 resets everything to rest.
+  #[test]
+  fn tap_tempo_pad_blinks_and_mirrors_factor_state() {
+    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+
+    let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+      .expect("start mock rig");
+    let detector_port = rig.detector_port();
+    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+
+    STOP.store(false, Ordering::SeqCst);
+    let handle = {
+      let config = config.clone();
+      thread::spawn(move || {
+        if let Err(e) = run(&config, detector_port, true, None) {
+          eprintln!("mock polyrhythm run error: {e}");
+        }
+      })
+    };
+
+    let a = rig.grid(0);
+    let b = rig.grid(1);
+    let secs = Duration::from_secs;
+    assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
+    // At rest: tap (15,0) and the factor cells glow dim; no blink yet.
+    assert!(wait_until(secs(3), || a.level_at(15, 0) == 4), "tap rests dim (no tempo)");
+    assert!(wait_until(secs(3), || a.level_at(14, 0) == 4), "x2 rests dim");
+
+    // Two taps ~200 ms apart set a 5 Hz tempo: the tap cell blinks at 10% duty
+    // (20 ms on per 200 ms); polling catches an on-flash within a few seconds.
+    a.press(15, 0);
+    a.release(15, 0);
+    thread::sleep(Duration::from_millis(200));
+    a.press(15, 0);
+    a.release(15, 0);
+    assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "the tap cell blinks on grid a");
+    assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "and on grid b (one shared tempo)");
+
+    // x2 from grid b: its cell lights on grid a too, and =1 becomes actionable.
+    b.press(14, 0);
+    b.release(14, 0);
+    assert!(wait_until(secs(3), || a.level_at(14, 0) == 15), "x2 lit (factor leans up)");
+    assert!(wait_until(secs(3), || a.level_at(15, 1) == 15), "=1 lit (pressing it would act)");
+    // =1 resets: both go back to resting dim.
+    a.press(15, 1);
+    a.release(15, 1);
+    assert!(wait_until(secs(3), || a.level_at(14, 0) == 4 && a.level_at(15, 1) == 4),
+      "unity resets the factor lights");
+
+    STOP.store(true, Ordering::SeqCst);
+    let _ = handle.join();
+    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The accrete (sustain) buttons end-to-end: toggle accrete mode on grid a, play a

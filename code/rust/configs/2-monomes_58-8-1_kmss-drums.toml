@@ -32,6 +32,8 @@ trails_max = 9
 slide_candidate_window_ms = 1000
 # ...taking this long to arrive at the new pitch.
 slide_duration_ms = 100
+# Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
+tap_tempo_window_ms = 2000
 
 [[tunings]]
 id = "main"
@@ -205,6 +207,17 @@ monome = "a"
 kind = "softstep_accretes_toggle"
 rect = [0, 14, 0, 14]
 
+# The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
+# [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
+# duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
+# while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+# per note, separate from any [[timbres]] AM).
+[[monome_windows]]
+id = "poly-a"
+monome = "a"
+kind = "tap_tempo_pad"
+rect = [13, 0, 15, 1]
+
 # ---------------------------------------------------------------------------
 # GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 # ---------------------------------------------------------------------------
@@ -290,6 +303,17 @@ id = "feet-accrete-b"
 monome = "b"
 kind = "softstep_accretes_toggle"
 rect = [0, 14, 0, 14]
+
+# The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
+# [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
+# duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
+# while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+# per note, separate from any [[timbres]] AM).
+[[monome_windows]]
+id = "poly-b"
+monome = "b"
+kind = "tap_tempo_pad"
+rect = [13, 0, 15, 1]
 
 # ---------------------------------------------------------------------------
 # KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit layout.

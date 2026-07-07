@@ -60,6 +60,11 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   pedals 1/2/3 and 8/9/0 mirror the trio (clear / needs-holding / accrete) instead
   of playing samples; pedals 4-7 keep drumming. Holding pedal 3 or 0 IS holding the
   accrete button (the tether decoder reports foot lifts). Global switch.
+- *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
+  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to set the tempo; the
+  factor buttons scale it exactly (2^a x 3^b); notes struck while a tempo is applied
+  pulse with a *descending sawtooth* at the applied tempo at their onset. One shared
+  state, mirrored on both grids. See *polyrhythm* below.
 - *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
   to the *sustained set* keep ringing after their fingers lift, until *clear*. Both
@@ -240,6 +245,31 @@ accrete state, the two pedal triples are two copies of the same three buttons (t
 Foot lifts are real releases (the tether decoder reports them), so *holding* pedal
 3 in needs-holding mode behaves exactly like holding the on-grid accrete button.
 Turn the toggle off and every pedal is a drum again.
+
+* polyrhythm
+
+The top-right 3x2 pad (both grids, one shared state):
+
+| =(13,0)= x3 | =(14,0)= x2 | =(15,0)= tap |
+| =(13,1)= /3 | =(14,1)= /2 | =(15,1)= =1  |
+
+- *Tap tempo.* Tap twice within ~tap_tempo_window_ms~ (default 2000; the window
+  *rolls*, so a stale first tap simply re-arms) and the interval becomes the
+  *tapped tempo*. Taps pair up: a third tap inside the window does nothing until
+  its fourth arrives, and that pair overrides the first. The tap cell *blinks* --
+  lit for the first 10% of each cycle of the *applied* tempo, phase-anchored to
+  your taps -- and rests dim before any tempo exists.
+- *Factor.* Applied tempo = tapped x 2^a x 3^b. x2 / /2 / x3 / /3 nudge the
+  exponents (so x3 then /3 is *exactly* unity); =1 zeroes them. LEDs: each
+  direction lights while the factor leans its way; =1 lights exactly when pressing
+  it would change something.
+- *The pulse.* Every note struck while a tempo is applied gets a descending
+  sawtooth amplitude pulse -- full at onset, fading to silence, restarting each
+  cycle -- at the applied tempo *at its onset* (later tempo changes leave sounding
+  notes alone; notes are deliberately NOT phase-synced to each other). This is a
+  separate mechanism from any ~[[timbres]]~ AM. Before the first tap, notes play
+  un-pulsed; there is no "off" other than never having tapped (see
+  jeff-maybe-review-this.org).
 
 * the KMSS drumkit
 

@@ -324,6 +324,9 @@ pub struct SurfacesConfig {
   /// The slide feature's candidate window, in ms: a new note may slide from a note
   /// released no longer ago than this. Default 1000.
   pub slide_candidate_window_ms: u64,
+  /// The tap-tempo pairing window, in ms: two taps at most this far apart set the
+  /// tapped tempo (rolling window). Default 2000.
+  pub tap_tempo_window_ms: u64,
   /// How long a slide takes to reach the new pitch, in ms. Default 100.
   pub slide_duration_ms: u64,
 }
@@ -334,6 +337,7 @@ impl Default for SurfacesConfig {
       trail_clobber_radius: default_trail_clobber_radius(),
       trails_max: default_trails_max(),
       slide_candidate_window_ms: default_slide_candidate_window_ms(),
+      tap_tempo_window_ms: default_tap_tempo_window_ms(),
       slide_duration_ms: default_slide_duration_ms(),
     }
   }
@@ -341,6 +345,10 @@ impl Default for SurfacesConfig {
 
 fn default_slide_candidate_window_ms() -> u64 {
   1000
+}
+
+fn default_tap_tempo_window_ms() -> u64 {
+  2000
 }
 
 fn default_slide_duration_ms() -> u64 {
@@ -696,6 +704,18 @@ pub enum MonomeWindowConfig {
     monome: String,
     rect: [i32; 4],
   },
+  // The 3x2 polyrhythm pad (surfaces runtime), by convention in the top-right:
+  //   | x3 | x2 | tap |
+  //   | /3 | /2 | =1  |
+  // Tap twice within [surfaces].tap_tempo_window_ms to set the tapped tempo; the
+  // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
+  // applied pulse with a descending sawtooth at that tempo. See TODO/misc.org
+  // "polyrhythm interface".
+  TapTempoPad {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // A single-cell on/off toggle (surfaces runtime): while on, the KMSS pedals
   // 1/2/3 and 8/9/0 mirror the accrete button trio (clear / needs_holding /
   // accrete) instead of playing samples. See TODO/misc.org "feet accrete".
@@ -877,6 +897,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::SlideToggle { id, .. }
       | MonomeWindowConfig::MonoToggle { id, .. }
       | MonomeWindowConfig::SoftstepAccretesToggle { id, .. }
+      | MonomeWindowConfig::TapTempoPad { id, .. }
       | MonomeWindowConfig::AccreteControl { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
@@ -910,6 +931,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::SlideToggle { monome, .. }
       | MonomeWindowConfig::MonoToggle { monome, .. }
       | MonomeWindowConfig::SoftstepAccretesToggle { monome, .. }
+      | MonomeWindowConfig::TapTempoPad { monome, .. }
       | MonomeWindowConfig::AccreteControl { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
@@ -943,6 +965,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::SlideToggle { rect, .. }
       | MonomeWindowConfig::MonoToggle { rect, .. }
       | MonomeWindowConfig::SoftstepAccretesToggle { rect, .. }
+      | MonomeWindowConfig::TapTempoPad { rect, .. }
       | MonomeWindowConfig::AccreteControl { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
@@ -977,6 +1000,7 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowConfig::MonoToggle { .. } => "mono_toggle",
       MonomeWindowConfig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
+      MonomeWindowConfig::TapTempoPad { .. } => "tap_tempo_pad",
       MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
@@ -1420,6 +1444,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_volume_strips(config)?;
   validate_accrete_controls(config)?;
   validate_single_cell_toggles(config)?;
+  validate_tap_tempo_pads(config)?;
   validate_timbres(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
@@ -1454,6 +1479,47 @@ fn validate_timbres(config: &Config) -> Result<(), String> {
     }
     if t.am_freq <= 0.0 || t.fm_freq <= 0.0 {
       return Err(format!("timbre {i}: am_freq/fm_freq must be > 0"));
+    }
+  }
+  Ok(())
+}
+
+/// A `tap_tempo_pad` is exactly 3x2 cells on a monome that has an `edo_note_grid`,
+/// at most one per monome (its six sub-cells are the fixed x3/x2/tap and /3/2/=1
+/// layout).
+fn validate_tap_tempo_pads(config: &Config) -> Result<(), String> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::TapTempoPad { id, monome, rect } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x1 - x0 != 2 || y1 - y0 != 1 {
+      return Err(format!(
+        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
+      ));
+    }
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "tap_tempo_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!("monome {monome:?} declares more than one tap_tempo_pad (window {id:?})"));
     }
   }
   Ok(())
@@ -3446,6 +3512,23 @@ rect = [1, 2, 1, 2]
     ))
     .expect_err("a 2-cell slide toggle should fail");
     assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  #[test]
+  fn tap_tempo_pad_must_be_three_by_two() {
+    let pad = r#"
+[[monome_windows]]
+id = "poly-a"
+monome = "a"
+kind = "tap_tempo_pad"
+rect = [13, 0, 15, 1]
+"#;
+    let config = parse_config(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
+    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::TapTempoPad { .. })));
+    assert_eq!(config.surfaces.unwrap_or_default().tap_tempo_window_ms, 2000, "default window");
+    let err = parse_config(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
+      .expect_err("a 3x3 pad should fail");
+    assert!(err.contains("exactly 3x2"), "{err}");
   }
 
   #[test]

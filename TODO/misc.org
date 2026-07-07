@@ -264,7 +264,7 @@ sink's master =amplitude=. The =volume_strip= window *kind* still exists for
 other configs; only this rig dropped it. One behavior note: the live per-grid
 fader (and its live rescale of sounding voices, incl. accrete drones) has no
 replacement -- 'r'-reloading a timbre amplitude affects only future notes.
-* polyrhythm interface
+* DONE polyrhythm interface
 ** tap tempo button
 It blinks (10% duty cycle) to indicate the current tempo.
 Tap it twice in an interval of less than
@@ -301,3 +301,14 @@ that note's AM frequency does not change.
 This AM should be separate from any AM
 that is part of the note's "timbre"
 (which after these changes will be settable via the config toml).
+** [Claude] done -- =tap_tempo_pad= at [13,0]..[15,1] on both grids
+Exactly your layout and semantics: rolling-window pairwise taps (3rd tap inert
+until its 4th, which overrides), 10%-duty blink phase-anchored to your taps,
+factor kept as exact exponents (2^a x 3^b, so x3 then /3 is perfectly unity),
+and a per-voice descending-sawtooth pulse at the tempo applied at each note's
+onset -- a separate engine field from the =[[timbres]]= AM, so they stack. The
+window knob is =[surfaces] tap_tempo_window_ms= (default 2000, 'r'-reloadable).
+Choices you might revisit (details in jeff-maybe-review-this.org): the blink
+follows the *applied* (factored) tempo; factor-button LEDs show lean direction
+and =1 lights only when actionable; there is no pulse-off button -- notes pulse
+forever once a tempo exists.

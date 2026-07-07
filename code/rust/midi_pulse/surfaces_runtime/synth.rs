@@ -112,8 +112,10 @@ impl SurfaceSink {
 
   /// Start `cell` sounding `pitch` (an absolute EDO step) with `timbre`. Spawns a
   /// fresh voice (its AM/FM LFOs retriggered at phase 0); overwrites any existing
-  /// voice for the same cell (a retrigger, though the grid thread debounces repeats).
-  pub fn note_on(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre) {
+  /// voice for the same cell (a retrigger, though the grid thread debounces
+  /// repeats). `pulse_hz` is the polyrhythm pulse at this note's onset (None = no
+  /// pulse), fixed for the voice's life.
+  pub fn note_on(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, pulse_hz: Option<f32>) {
     let id = self.next_id;
     self.next_id += 1;
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -124,6 +126,8 @@ impl SurfaceSink {
         freq: freq_for_pitch(pitch, self.fund, self.edo),
         freq_target: 0.0,
         glide_per_sample: 1.0,
+        tempo_am_freq: pulse_hz.unwrap_or(0.0),
+        tempo_am_phase: 0.0,
         phase: 0.0,
         env: 0.0,
         target_env: 1.0,
@@ -152,6 +156,7 @@ impl SurfaceSink {
   /// `glide_secs` (the slide feature). The frequency walks multiplicatively, so the
   /// glide is pitch-linear; the engine snaps it onto the target and ends the glide
   /// (`VoiceState::glide_per_sample`). Same pitch = a plain `note_on`.
+  #[allow(clippy::too_many_arguments)]
   pub fn note_on_gliding(
     &mut self,
     cell: (i32, i32),
@@ -159,11 +164,12 @@ impl SurfaceSink {
     from_pitch: i32,
     timbre: Timbre,
     glide_secs: f32,
+    pulse_hz: Option<f32>,
   ) {
     if from_pitch == pitch {
-      return self.note_on(cell, pitch, timbre);
+      return self.note_on(cell, pitch, timbre, pulse_hz);
     }
-    self.note_on(cell, pitch, timbre);
+    self.note_on(cell, pitch, timbre, pulse_hz);
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
       let from = freq_for_pitch(from_pitch, self.fund, self.edo);
@@ -256,8 +262,8 @@ mod tests {
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
-    a.note_on((0, 0), 30, Timbre::default());
-    b.note_on((0, 0), 30, Timbre::default());
+    a.note_on((0, 0), 30, Timbre::default(), None);
+    b.note_on((0, 0), 30, Timbre::default(), None);
     assert_eq!(count(&voices), 2, "same pitch, two grids -> two voices");
     a.note_off((0, 0));
     assert_eq!(target_env(&voices, 0, (0, 0)), Some(0.0), "grid a's voice releases");
@@ -270,8 +276,8 @@ mod tests {
     // voices; releasing one does not silence the other.
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.note_on((0, 8), 8, Timbre::default());
-    a.note_on((1, 0), 8, Timbre::default());
+    a.note_on((0, 8), 8, Timbre::default(), None);
+    a.note_on((1, 0), 8, Timbre::default(), None);
     assert_eq!(count(&voices), 2);
     a.note_off((0, 8));
     assert_eq!(target_env(&voices, 0, (1, 0)), Some(1.0), "the other cell still holds");
@@ -282,7 +288,7 @@ mod tests {
     let voices = shared();
     let mut a = sink(0, &voices);
     let t = Timbre { waveform: Waveform::Saw, ..Timbre::default() };
-    a.note_on((3, 4), 20, t);
+    a.note_on((3, 4), 20, t, None);
     let v = voices.lock().unwrap();
     let state = v.get(&voice_key(0, (3, 4))).unwrap();
     assert_eq!(state.timbre.waveform, Waveform::Saw);
@@ -301,7 +307,7 @@ mod tests {
   fn note_on_gliding_starts_at_the_source_pitch_and_targets_the_new_one() {
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.note_on_gliding((3, 4), 30, 20, Timbre::default(), 0.1);
+    a.note_on_gliding((3, 4), 30, 20, Timbre::default(), 0.1, None);
     let v = voices.lock().unwrap();
     let state = v.get(&voice_key(0, (3, 4))).unwrap();
     let from = crate::pitch::freq_for_pitch(20, 80.0, 58);
@@ -315,7 +321,7 @@ mod tests {
   fn note_on_gliding_from_the_same_pitch_is_a_plain_note() {
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.note_on_gliding((3, 4), 30, 30, Timbre::default(), 0.1);
+    a.note_on_gliding((3, 4), 30, 30, Timbre::default(), 0.1, None);
     let v = voices.lock().unwrap();
     let state = v.get(&voice_key(0, (3, 4))).unwrap();
     assert_eq!(state.glide_per_sample, 1.0, "no glide");
@@ -325,7 +331,7 @@ mod tests {
   fn sustain_note_keeps_the_voice_ringing_under_the_sustain_key() {
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.note_on((3, 4), 20, Timbre::default());
+    a.note_on((3, 4), 20, Timbre::default(), None);
     a.sustain_note((3, 4), 20);
     assert_eq!(count(&voices), 1, "the voice moved, not duplicated");
     let v = voices.lock().unwrap();
@@ -340,8 +346,8 @@ mod tests {
     // becomes the drone; the second releases normally (no click, no double drone).
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.note_on((0, 8), 8, Timbre::default());
-    a.note_on((1, 0), 8, Timbre::default());
+    a.note_on((0, 8), 8, Timbre::default(), None);
+    a.note_on((1, 0), 8, Timbre::default(), None);
     a.sustain_note((0, 8), 8);
     a.sustain_note((1, 0), 8);
     assert_eq!(target_env(&voices, 0, (1, 0)), Some(0.0), "second finger voice ramps out");
@@ -354,11 +360,11 @@ mod tests {
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
-    a.note_on((3, 4), 20, Timbre::default());
+    a.note_on((3, 4), 20, Timbre::default(), None);
     a.sustain_note((3, 4), 20);
-    b.note_on((5, 5), 33, Timbre::default());
+    b.note_on((5, 5), 33, Timbre::default(), None);
     b.sustain_note((5, 5), 33);
-    a.note_on((6, 6), 40, Timbre::default()); // a still-fingered note
+    a.note_on((6, 6), 40, Timbre::default(), None); // a still-fingered note
     a.release_all_sustained();
     let v = voices.lock().unwrap();
     assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(0.0), "grid a drone released");
@@ -373,9 +379,9 @@ mod tests {
     let mut b = sink(1, &voices);
     // Grid 0's drone carries a timbre-slot amplitude of 0.8 in its gain; the fader
     // rescale is a ratio, so that factor must survive.
-    a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() });
+    a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() }, None);
     a.sustain_note((3, 4), 20);
-    b.note_on((3, 4), 20, Timbre::default());
+    b.note_on((3, 4), 20, Timbre::default(), None);
     b.sustain_note((3, 4), 20);
     rescale_grid_gain(&voices, 0, 0.25);
     let v = voices.lock().unwrap();

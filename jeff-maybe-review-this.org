@@ -175,6 +175,25 @@ reverse it cheaply if you disagree.
   'r'-reloadable and IS live (the audio callback reads it fresh) -- that's the
   knob to reach for.
 
+* polyrhythm -- choices where the spec was silent
+- *The blink follows the APPLIED tempo* (tapped x factor), phase-anchored to the
+  tap that set it -- "indicate the current tempo" read as the one notes will get.
+  One line to switch it to the tapped tempo.
+- *No off switch.* Once a tempo exists every new note pulses; the spec offers no
+  way back to un-pulsed notes ("=1" only resets the factor). If you want one, a
+  long-press on tap or a 7th cell could clear the tempo -- say the word.
+- *Factor LEDs*: x2//2/x3//3 light while the factor leans their way (direction
+  only, not magnitude); =1 lights exactly when pressing it would act. The five
+  factor cells otherwise rest dim like all control buttons.
+- *The pulse decays to full silence* at each cycle's end (saw from 1 to 0). If
+  you'd rather it dip to a floor (say 0.2) so long notes never fully vanish,
+  that's one constant.
+- The pulse multiplies with any =[[timbres]]= AM (they stack); sustained (accrete)
+  drones keep pulsing at their onset tempo, which can sound great or busy --
+  clear and re-accrete under the new tempo to re-sync.
+- Tempo/factor state is NOT hot-reloaded by 'r' (it's performance state, not
+  config); only the window length is.
+
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
 - =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's

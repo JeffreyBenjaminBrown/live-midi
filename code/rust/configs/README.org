@@ -273,6 +273,7 @@ Built-in unbundled window kinds:
 - ~slide_toggle~
 - ~mono_toggle~
 - ~softstep_accretes_toggle~
+- ~tap_tempo_pad~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -361,6 +362,13 @@ defaults 1000 / 100). Mono: each new note cuts that grid's other fingered notes
 (and with slide on, the candidate set is a singleton -- you glide from the note
 you just cut). Softstep-accretes: while on, KMSS pedals 1/2/3 and 8/9/0 mirror
 the accrete trio instead of playing samples (see the config's .org).
+
+A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
+per monome, on a monome with an ~edo_note_grid~): tap twice within
+~[surfaces].tap_tempo_window_ms~ (default 2000) to set a tempo, scale it with the
+exact 2^a x 3^b factor buttons, and every note struck while a tempo is applied
+pulses with a descending sawtooth at that tempo (fixed at onset). The tap cell
+blinks at 10% duty at the applied tempo.
 
 The bundled 12-EDO offset/root board is:
 
