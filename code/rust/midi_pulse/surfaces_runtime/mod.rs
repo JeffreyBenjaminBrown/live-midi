@@ -239,6 +239,8 @@ struct GridSettings {
   /// The slide / mono toggles' cells, `NO_RECT` when absent (global switches too).
   slide_rect: [i32; 4],
   mono_rect: [i32; 4],
+  /// The feet-accrete (softstep-accretes) toggle's cell, `NO_RECT` when absent.
+  feet_accrete_rect: [i32; 4],
 }
 
 struct Settings {
@@ -417,6 +419,16 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let feet_accrete_rect = config
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowConfig::SoftstepAccretesToggle { monome, rect, .. } if monome == monome_id => {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       listen_port: monome_cfg.listen_port,
@@ -433,6 +445,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       distortion_rect,
       slide_rect,
       mono_rect,
+      feet_accrete_rect,
     });
   }
 
@@ -571,6 +584,9 @@ fn run(
   // but the modes are instrument-wide, like distortion).
   let slide_on = Arc::new(AtomicBool::new(false));
   let mono_on = Arc::new(AtomicBool::new(false));
+  // Feet accrete: while on, the KMSS pedals 1/2/3 and 8/9/0 act as the accrete trio
+  // instead of playing samples (see the pedal hook below).
+  let feet_accrete_on = Arc::new(AtomicBool::new(false));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -616,9 +632,23 @@ fn run(
 
   // Bring up the drumkit alongside the grids, if the config declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
-  // mode on drop. We own the signal handling, so the tether session is unarmed.
+  // mode on drop. We own the signal handling, so the tether session is unarmed. The
+  // pedal hook is the feet-accrete mirror: while its toggle is on, pedals 1/2/3 and
+  // 8/9/0 drive the shared accrete state instead of playing samples.
   let drums = if s.has_drums {
-    Some(drumkit_runtime::start(config, drumkit_runtime::tether::session())?)
+    let hook = feet_accrete_hook(
+      Arc::clone(&feet_accrete_on),
+      Arc::clone(&accrete),
+      Arc::clone(&held_all),
+      Arc::clone(&voices),
+      s.release,
+      audio.sample_rate,
+    );
+    Some(drumkit_runtime::start_with_hook(
+      config,
+      drumkit_runtime::tether::session(),
+      Some(hook),
+    )?)
   } else {
     None
   };
@@ -653,6 +683,7 @@ fn run(
       distortion_rect: g.distortion_rect,
       slide_rect: g.slide_rect,
       mono_rect: g.mono_rect,
+      feet_accrete_rect: g.feet_accrete_rect,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -671,6 +702,7 @@ fn run(
       distortion_on: Arc::clone(&distortion_on),
       slide_on: Arc::clone(&slide_on),
       mono_on: Arc::clone(&mono_on),
+      feet_accrete_on: Arc::clone(&feet_accrete_on),
       live: Arc::clone(&live),
       slide: SlideCandidates::new(),
       slide_window: s.slide_window,
@@ -734,6 +766,8 @@ struct GridThread {
   /// The slide / mono toggles' cells on this grid (`NO_RECT` if absent).
   slide_rect: [i32; 4],
   mono_rect: [i32; 4],
+  /// The feet-accrete toggle's cell on this grid (`NO_RECT` if absent).
+  feet_accrete_rect: [i32; 4],
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -762,6 +796,8 @@ struct GridThread {
   /// The global slide / mono switches (both grids' toggles).
   slide_on: Arc<AtomicBool>,
   mono_on: Arc<AtomicBool>,
+  /// The global feet-accrete switch (pedals mirror the accrete trio while on).
+  feet_accrete_on: Arc<AtomicBool>,
   /// THIS grid's recently-released notes (slide sources) + the slide knobs.
   slide: SlideCandidates,
   slide_window: Duration,
@@ -858,6 +894,7 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push((rt.distortion_rect, rt.distortion_on.load(Ordering::Relaxed)));
     buttons.push((rt.slide_rect, rt.slide_on.load(Ordering::Relaxed)));
     buttons.push((rt.mono_rect, rt.mono_on.load(Ordering::Relaxed)));
+    buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on.load(Ordering::Relaxed)));
     let mut sounding_classes = union_sounding(&rt.sounding);
     sounding_classes.extend(sustained_classes);
     let trail_classes = trail_set(&rt.trail);
@@ -941,6 +978,12 @@ fn handle_key(
   if in_overlay(rt.mono_rect, cell) {
     if press {
       let _ = rt.mono_on.fetch_xor(true, Ordering::Relaxed);
+    }
+    return;
+  }
+  if in_overlay(rt.feet_accrete_rect, cell) {
+    if press {
+      let _ = rt.feet_accrete_on.fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
@@ -1090,15 +1133,81 @@ fn publish_held(
 /// to the sustained set. Snapshot the held registry first, then feed the accrete
 /// state -- two short, non-nested locks.
 fn capture_all_held(rt: &GridThread) {
+  capture_all_held_into(&rt.held_all, &rt.accrete);
+}
+
+/// `capture_all_held` for callers that aren't a grid thread (the pedal hook).
+fn capture_all_held_into(
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  accrete: &Arc<Mutex<AccreteState>>,
+) {
   let snapshot: Vec<(usize, i32)> = {
-    let all = rt.held_all.lock().unwrap_or_else(|e| e.into_inner());
+    let all = held_all.lock().unwrap_or_else(|e| e.into_inner());
     all
       .iter()
       .enumerate()
       .flat_map(|(g, m)| m.values().map(move |p| (g, *p)))
       .collect()
   };
-  rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).capture_held(snapshot);
+  accrete.lock().unwrap_or_else(|e| e.into_inner()).capture_held(snapshot);
+}
+
+/// Which accrete button a KMSS pedal mirrors while feet-accrete is on. Jeff's
+/// mapping (misc.org "feet accrete"): the older (monobright) grid's trio -> pedals
+/// 1/2/3, the other grid's -> 8/9/0 -- but both grids share ONE accrete state, so
+/// the two pedal triples are simply two copies of the same three buttons, in the
+/// on-grid order clear / needs-holding / accrete.
+fn feet_accrete_button(pedal: u8) -> Option<AccreteControlKind> {
+  match pedal {
+    1 | 8 => Some(AccreteControlKind::Clear),
+    2 | 9 => Some(AccreteControlKind::NeedsHolding),
+    3 | 0 => Some(AccreteControlKind::Accrete),
+    _ => None,
+  }
+}
+
+/// Build the drumkit pedal hook that mirrors the accrete trio onto the KMSS while
+/// `feet_accrete_on` is set (TODO/misc.org "feet accrete"). Consuming an event
+/// suppresses that pedal's sample; with the toggle off every pedal drums as usual.
+/// A pedal "press" is the decoder's Fire (down) and its Release (up), so holding
+/// pedal 3 or 0 is exactly holding the accrete button.
+fn feet_accrete_hook(
+  feet_accrete_on: Arc<AtomicBool>,
+  accrete: Arc<Mutex<AccreteState>>,
+  held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  voices: Arc<Mutex<VoiceMap>>,
+  release_secs: f32,
+  sample_rate: f32,
+) -> drumkit_runtime::PedalHook {
+  Arc::new(move |pedal, down| {
+    if !feet_accrete_on.load(Ordering::Relaxed) {
+      return false;
+    }
+    let Some(button) = feet_accrete_button(pedal) else {
+      return false;
+    };
+    // Decide under the accrete lock, touch voices after it drops (the module's
+    // no-nested-locks rule), exactly like the on-grid buttons.
+    let mut activated = false;
+    {
+      let mut state = accrete.lock().unwrap_or_else(|e| e.into_inner());
+      match (button, down) {
+        (AccreteControlKind::Clear, true) => state.press_clear(),
+        (AccreteControlKind::Clear, false) => state.release_clear(),
+        (AccreteControlKind::NeedsHolding, true) => activated = state.press_needs_holding(),
+        (AccreteControlKind::NeedsHolding, false) => {}
+        (AccreteControlKind::Accrete, true) => activated = state.press_accrete(),
+        (AccreteControlKind::Accrete, false) => state.release_accrete(),
+      }
+    }
+    if button == AccreteControlKind::Clear && down {
+      synth::release_sustained_voices(&voices, release_secs, sample_rate);
+    }
+    if activated {
+      capture_all_held_into(&held_all, &accrete);
+    }
+    true
+  })
 }
 
 /// One lock: the accrete buttons' LED view for this grid plus the sustained pitch
@@ -1439,6 +1548,7 @@ mod tests {
       assert_eq!(g.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
       assert_eq!(g.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
       assert_eq!(g.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
+      assert_eq!(g.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
     }
     // The [surfaces] slide knobs flow into the settings.
     assert_eq!(s.slide_window, Duration::from_millis(1000));
@@ -1566,6 +1676,55 @@ mod tests {
   /// The `[[timbres]]` square entry, replaced by the reload test.
   const WAVE_SQUARE: &str = "waveform = \"square\"";
 
+  #[test]
+  fn the_pedal_hook_mirrors_the_accrete_trio_only_while_on() {
+    use crate::types::Timbre;
+
+    let feet_on = Arc::new(AtomicBool::new(false));
+    let accrete = Arc::new(Mutex::new(AccreteState::new()));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let hook = feet_accrete_hook(
+      Arc::clone(&feet_on),
+      Arc::clone(&accrete),
+      Arc::clone(&held_all),
+      Arc::clone(&voices),
+      0.05,
+      48000.0,
+    );
+
+    // Toggle off: nothing is consumed; the pedals drum as usual.
+    assert!(!hook(3, true), "off: pedal 3 stays a drum pad");
+    assert!(!accrete.lock().unwrap().accreting());
+
+    feet_on.store(true, Ordering::Relaxed);
+    // Unmapped pedals still drum even while on.
+    assert!(!hook(4, true), "pedal 4 (closed hat) is never mirrored");
+    // Pedal 3 = accrete: default needs-holding is OFF, so a tap toggles the mode --
+    // and the activation captures currently-held notes from BOTH grids' registries.
+    held_all.lock().unwrap()[1].insert((2, 3), 44);
+    assert!(hook(3, true), "on: pedal 3 is consumed");
+    hook(3, false);
+    assert!(accrete.lock().unwrap().accreting(), "accrete mode toggled by foot");
+    assert!(
+      accrete.lock().unwrap().note_released_sustains(1, 44),
+      "the held note was captured on activation",
+    );
+    // Sustain a voice, then clear from pedal 8 (the other triple's clear).
+    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    sink.note_on((5, 5), 20, Timbre::default());
+    sink.sustain_note((5, 5), 20);
+    assert!(hook(8, true), "pedal 8 = clear, consumed");
+    hook(8, false);
+    let v = voices.lock().unwrap();
+    let drone = v.values().next().expect("the drone still ramps out");
+    assert_eq!(drone.target_env, 0.0, "clear released the sustained voice");
+    assert!(
+      accrete.lock().unwrap().sustained_classes(58).is_empty(),
+      "the set was flushed (accrete mode itself stays on -- clear never exits it)",
+    );
+  }
+
   /// The accrete (sustain) buttons end-to-end: toggle accrete mode on grid a, play a
   /// note, release it -- it keeps ringing (stays bright on BOTH grids) -- then clear
   /// from grid B (the state is shared), and the note drops to the dim trail. Also
@@ -1665,8 +1824,11 @@ mod tests {
     let b = rig.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    // (0,1) distortion, (1,1) slide, (1,2) mono -- same toggle machinery each.
-    for (x, y, name) in [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono")] {
+    // (0,1) distortion, (1,1) slide, (1,2) mono, (0,14) feet-accrete -- same
+    // toggle machinery each.
+    for (x, y, name) in
+      [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono"), (0, 14, "feet-accrete")]
+    {
       assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
         "{name} rests dim on both grids");
       a.press(x, y);

@@ -30,6 +30,13 @@ use audio::{Sampler, Trigger, VoiceId};
 use decode::{collect_control_changes, gain_from_velocity, DrumEvent, TetherDecoder};
 use samples::DrumSample;
 
+/// A host runtime's tap on the pedal stream, called with `(printed label, down)` on
+/// every Fire (down) and Release (up). Returning `true` CONSUMES the event: the pad
+/// plays no sample for it (the surfaces runtime's feet-accrete mirror repurposes
+/// pads this way while its toggle is on). Releases are delivered too, but nothing
+/// sample-side listens to them.
+pub type PedalHook = Arc<dyn Fn(u8, bool) -> bool + Send + Sync>;
+
 /// The most recently played (non-ditto) hit in a drumkit window: its sample and the
 /// gain it actually played at (already velocity-scaled), so a `Ditto` pad can
 /// reproduce the exact same hit.
@@ -122,6 +129,16 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
 pub fn start(
   config: &Config,
   tether_session: tether::TetherSession,
+) -> Result<DrumSession, Box<dyn std::error::Error>> {
+  start_with_hook(config, tether_session, None)
+}
+
+/// `start`, with an optional [`PedalHook`] tapping the pedal stream (see the type's
+/// doc). `start` itself passes `None`.
+pub fn start_with_hook(
+  config: &Config,
+  tether_session: tether::TetherSession,
+  hook: Option<PedalHook>,
 ) -> Result<DrumSession, Box<dyn std::error::Error>> {
   let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
   let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
@@ -216,9 +233,12 @@ pub fn start(
     let timer = {
       let decoder = Arc::clone(&decoder);
       let stop = Arc::clone(&stop);
+      let hook = hook.clone();
       std::thread::Builder::new()
         .name(format!("kmss-voices-{device_id}"))
-        .spawn(move || run_voice_timer(decoder, pedal_map, stop, trace, params.velocity_db_range))?
+        .spawn(move || {
+          run_voice_timer(decoder, pedal_map, stop, trace, params.velocity_db_range, hook)
+        })?
     };
     timers.push((stop, timer));
 
@@ -314,6 +334,7 @@ fn run_voice_timer(
   stop: Arc<AtomicBool>,
   trace: bool,
   db_range: f32,
+  hook: Option<PedalHook>,
 ) {
   let mut events: Vec<DrumEvent> = Vec::with_capacity(8);
   // The most recent voice started per pad label, so a Revise can find and re-gain it.
@@ -331,6 +352,15 @@ fn run_voice_timer(
       match *event {
         DrumEvent::Fire { label, velocity } => {
           let slot = (label % 10) as usize;
+          // A hook that consumes the press owns this pedal for now: no sample, and
+          // no stale voice left for a later Revise to re-gain.
+          if hook.as_ref().is_some_and(|h| h(label, true)) {
+            if trace {
+              eprintln!("[kmss]   pad {label} FIRE consumed by the host hook");
+            }
+            current[slot] = None;
+            continue;
+          }
           if let Some(binding) = &pad_map[slot] {
             match resolve_fire(&binding.kind, &binding.last, velocity, db_range) {
               Some((sample, gain)) => {
@@ -361,6 +391,12 @@ fn run_voice_timer(
               }
               binding.trigger.set_target_gain(id, gain);
             }
+          }
+        }
+        // One-shot samples ignore releases; the hook (feet-accrete) needs them.
+        DrumEvent::Release { label } => {
+          if let Some(h) = hook.as_ref() {
+            let _ = h(label, false);
           }
         }
       }

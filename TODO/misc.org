@@ -185,7 +185,7 @@ grids -- each grid stays its own monosynth; accrete drones are not cut). Cuts go
 through the ordinary release path, so a cut under a live accrete condition still
 joins the sustained set, and with slide on the cut note is exactly the singleton
 slide candidate. Global toggle mirrored on both grids.
-* feet accrete
+* DONE feet accrete
 As described above, there will be three buttons for
 accreting sustained notes in the bottom-left of both monomes.
 Let's put one more toggle switch 'sofstep-accretes'
@@ -201,6 +201,18 @@ gets mirrored to softstep pads 1, 2 and 3,
 and the other to pads 8,9,0.
 While those pads are mirroring the monome accrete controls,
 they do not control samples.
+** [Claude] done -- =softstep_accretes_toggle= at (0,14), pedals 1/2/3 + 8/9/0
+While the toggle is on, those six pedals drive the accrete state and play no
+samples (4-7 keep drumming); off, they drum as usual. Two notes:
+- You guessed right about detecting the older monome (it's the serial-id
+  =is_monobright= check, used for the fake-dim flashing) -- but since both
+  grids share ONE accrete state (see the accrete item above), "older grid ->
+  1/2/3, other -> 8/9/0" collapses: both triples are the same three buttons,
+  in the trio's on-grid order (clear / needs-holding / accrete). If you ever
+  split the accrete state per grid, the older-monome mapping is ready to mean
+  something again.
+- The tether decoder now emits foot-lift (Release) events, so *holding* pedal
+  3 or 0 in needs-holding mode really is holding the accrete button.
 * DONE move pads, and add a 'ditto' pad
 New arrangement for pads:
 | high tom | low tom | cowbell |          9 | crash (was at 8) |

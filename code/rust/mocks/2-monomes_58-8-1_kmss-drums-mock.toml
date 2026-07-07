@@ -169,6 +169,15 @@ monome = "a"
 kind = "mono_toggle"
 rect = [1, 2, 1, 2]
 
+# Feet accrete (key-down flips; global): while on, KMSS pedals 1/2/3 and 8/9/0
+# mirror the accrete trio below (clear / needs-holding / accrete) instead of
+# playing samples. Just above the on-grid trio.
+[[monome_windows]]
+id = "feet-accrete-a"
+monome = "a"
+kind = "softstep_accretes_toggle"
+rect = [0, 14, 0, 14]
+
 [[monome_windows]]
 id = "grid-b"
 monome = "b"
@@ -247,3 +256,12 @@ id = "mono-b"
 monome = "b"
 kind = "mono_toggle"
 rect = [1, 2, 1, 2]
+
+# Feet accrete (key-down flips; global): while on, KMSS pedals 1/2/3 and 8/9/0
+# mirror the accrete trio below (clear / needs-holding / accrete) instead of
+# playing samples. Just above the on-grid trio.
+[[monome_windows]]
+id = "feet-accrete-b"
+monome = "b"
+kind = "softstep_accretes_toggle"
+rect = [0, 14, 0, 14]

@@ -208,13 +208,19 @@ impl SurfaceSink {
   /// The accrete 'clear': ramp EVERY sustained voice (both grids') to silence over
   /// this sink's release time. Fingered voices are untouched.
   pub fn release_all_sustained(&mut self) {
-    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
-    for (src, state) in voices.iter_mut() {
-      if let VoiceSource::Accreted { chord, .. } = src {
-        if *chord >= SUSTAIN_BASE {
-          state.target_env = 0.0;
-          state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
-        }
+    release_sustained_voices(&self.voices, self.release_secs, self.sample_rate);
+  }
+}
+
+/// Ramp every sustained voice (any grid's) to silence -- the accrete 'clear', in a
+/// form the feet-accrete pedal hook can call without owning a sink.
+pub fn release_sustained_voices(voices: &Arc<Mutex<VoiceMap>>, release_secs: f32, sample_rate: f32) {
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    if let VoiceSource::Accreted { chord, .. } = src {
+      if *chord >= SUSTAIN_BASE {
+        state.target_env = 0.0;
+        state.ramp_per_sample = state.env / (release_secs * sample_rate);
       }
     }
   }

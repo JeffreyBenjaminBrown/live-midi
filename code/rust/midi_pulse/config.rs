@@ -696,6 +696,14 @@ pub enum MonomeWindowConfig {
     monome: String,
     rect: [i32; 4],
   },
+  // A single-cell on/off toggle (surfaces runtime): while on, the KMSS pedals
+  // 1/2/3 and 8/9/0 mirror the accrete button trio (clear / needs_holding /
+  // accrete) instead of playing samples. See TODO/misc.org "feet accrete".
+  SoftstepAccretesToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
   // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
   // notes join a sustained set that rings after the fingers lift, until cleared.
@@ -868,6 +876,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::DistortionToggle { id, .. }
       | MonomeWindowConfig::SlideToggle { id, .. }
       | MonomeWindowConfig::MonoToggle { id, .. }
+      | MonomeWindowConfig::SoftstepAccretesToggle { id, .. }
       | MonomeWindowConfig::AccreteControl { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
@@ -900,6 +909,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::DistortionToggle { monome, .. }
       | MonomeWindowConfig::SlideToggle { monome, .. }
       | MonomeWindowConfig::MonoToggle { monome, .. }
+      | MonomeWindowConfig::SoftstepAccretesToggle { monome, .. }
       | MonomeWindowConfig::AccreteControl { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
@@ -932,6 +942,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::DistortionToggle { rect, .. }
       | MonomeWindowConfig::SlideToggle { rect, .. }
       | MonomeWindowConfig::MonoToggle { rect, .. }
+      | MonomeWindowConfig::SoftstepAccretesToggle { rect, .. }
       | MonomeWindowConfig::AccreteControl { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
@@ -965,6 +976,7 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::DistortionToggle { .. } => "distortion_toggle",
       MonomeWindowConfig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowConfig::MonoToggle { .. } => "mono_toggle",
+      MonomeWindowConfig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
       MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
@@ -1462,6 +1474,9 @@ fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
     }
     MonomeWindowConfig::MonoToggle { id, monome, rect } => {
       Some(("mono_toggle", id, monome, *rect))
+    }
+    MonomeWindowConfig::SoftstepAccretesToggle { id, monome, rect } => {
+      Some(("softstep_accretes_toggle", id, monome, *rect))
     }
     _ => None,
   });

@@ -152,6 +152,19 @@ reverse it cheaply if you disagree.
 - The drum sampler's amplitude is NOT hot-reloadable yet (that sink's stream was
   being reworked by the drum-pads task while I built this; easy follow-up).
 
+* feet accrete -- choices where the spec was silent
+- *Pedal -> button order*: 1/8 = clear, 2/9 = needs-holding, 3/0 = accrete (the
+  trio's on-grid left-to-right order). Easy to permute in =feet_accrete_button=.
+- Both pedal triples do the same thing because the accrete state is shared
+  between the grids; the older-monome distinction you described is honored in
+  spirit (both feet get the trio) and will become real if the state ever splits.
+- Mirrored pedals give NO tactile/LED feedback on the KMSS itself (tether mode
+  doesn't drive pad LEDs from us yet); the monome (0,14) toggle + trio LEDs are
+  the indicators.
+- The decoder's debounce can swallow a too-fast double-tap on a mirrored pedal
+  (same as for drum hits); a debounce-suppressed press can also release without
+  having "pressed" -- the accrete state's counters saturate, so this is harmless.
+
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
 - =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's

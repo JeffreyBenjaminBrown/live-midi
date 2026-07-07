@@ -55,6 +55,10 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   other fingered notes (through the normal release path, so accrete still captures
   them). With slide on too, the candidate set is a singleton -- you glide from
   exactly the note you cut. Global switch.
+- *feet-accrete toggle* -- =(0,14)= (just above the accrete trio): while on, KMSS
+  pedals 1/2/3 and 8/9/0 mirror the trio (clear / needs-holding / accrete) instead
+  of playing samples; pedals 4-7 keep drumming. Holding pedal 3 or 0 IS holding the
+  accrete button (the tether decoder reports foot lifts). Global switch.
 - *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
   to the *sustained set* keep ringing after their fingers lift, until *clear*. Both
@@ -98,7 +102,7 @@ overlays drawn on top:
   row 2   .  MONO .   .   .                    .   .   .   <- global toggle
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
-  row 14  .   .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- scroll pad
+  row 14 FEET .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- feet-accrete + scroll pad
   row 15 CLR HOLD ACC  .  .  . . . . . . .  LEFT DOWN RIGHT  <- accrete + scroll pad
 #+end_example
 
@@ -132,8 +136,8 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
 - *Volume strip*: the active cell is lit, the rest dark; it shows the grid's own volume.
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
-- *Distortion / slide / mono toggles*: *dim* at rest, *bright* while on; each is
-  one global switch mirrored on both grids.
+- *Distortion / slide / mono / feet-accrete toggles*: *dim* at rest, *bright* while
+  on; each is one global switch mirrored on both grids.
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
   clear while pressed, needs-holding while on, accrete while the accreting condition is
   live. Mirrored on both grids (one shared state). A *sustained* note paints exactly
@@ -224,6 +228,18 @@ becomes the sole slide candidate -- so mono+slide plays like a portamento
 monosynth per grid.
 
 Both are global switches (either grid's button, one state), like distortion.
+
+* feet accrete
+
+The =(0,14)= toggle (key-down flips, mirrored on both grids) hands the accrete trio
+to your feet: while it is on, pedals *1 / 2 / 3* and *8 / 9 / 0* act as
+*clear / needs-holding / accrete* -- in the trio's on-grid order -- and play no
+samples; pedals 4-7 (the hats and toms) keep drumming. Because both grids share one
+accrete state, the two pedal triples are two copies of the same three buttons (the
+"older monome to 1/2/3, the other to 8/9/0" distinction from misc.org collapses).
+Foot lifts are real releases (the tether decoder reports them), so *holding* pedal
+3 in needs-holding mode behaves exactly like holding the on-grid accrete button.
+Turn the toggle off and every pedal is a drum again.
 
 * the KMSS drumkit
 
