@@ -16,6 +16,11 @@ title = "Two monomes (58-8-1) + KMSS drums (mock grids)"
 [surfaces]
 trail_clobber_radius = 27  # 1/27 of an octave (~44 cents); bigger = tighter
 trails_max = 9
+# Slide (the slide_toggle windows): a new note may glide from a note released
+# within this many ms...
+slide_candidate_window_ms = 1000
+# ...taking this long to arrive at the new pitch.
+slide_duration_ms = 100
 
 [[tunings]]
 id = "main"
@@ -148,6 +153,22 @@ monome = "a"
 kind = "distortion_toggle"
 rect = [0, 1, 0, 1]
 
+# Slide toggle (key-down flips; global): a new note re-triggers the nearest
+# recently-released pitch and glides it into the new one. Knobs: [surfaces].
+[[monome_windows]]
+id = "slide-a"
+monome = "a"
+kind = "slide_toggle"
+rect = [1, 1, 1, 1]
+
+# Mono toggle (key-down flips; global): each new note cuts this grid's other
+# fingered notes (with slide on, you glide from exactly the note you cut).
+[[monome_windows]]
+id = "mono-a"
+monome = "a"
+kind = "mono_toggle"
+rect = [1, 2, 1, 2]
+
 [[monome_windows]]
 id = "grid-b"
 monome = "b"
@@ -210,3 +231,19 @@ id = "dist-b"
 monome = "b"
 kind = "distortion_toggle"
 rect = [0, 1, 0, 1]
+
+# Slide toggle (key-down flips; global): a new note re-triggers the nearest
+# recently-released pitch and glides it into the new one. Knobs: [surfaces].
+[[monome_windows]]
+id = "slide-b"
+monome = "b"
+kind = "slide_toggle"
+rect = [1, 1, 1, 1]
+
+# Mono toggle (key-down flips; global): each new note cuts this grid's other
+# fingered notes (with slide on, you glide from exactly the note you cut).
+[[monome_windows]]
+id = "mono-b"
+monome = "b"
+kind = "mono_toggle"
+rect = [1, 2, 1, 2]

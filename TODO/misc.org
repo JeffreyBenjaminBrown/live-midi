@@ -76,13 +76,28 @@ synth voices). =s=/=k= are =distortion_scale= / =distortion_shape= on the
 =cpal_synth= sink (defaults 1.0 / 2.0, ranges commented in the toml). The
 button: key-down toggles, dim at rest / bright while on, mirrored on both
 grids (one switch).
-* config reload
+* DONE config reload
 If I adjust parameters in the config,
 pressing 'r' should cause the new ones to be read and applied.
 For some kinds of parameters that would probably be hard;
 don't worry about those.
 I'm just thinking about amplitude, timbre and pitch changes,
 all of which I think should be easy to hot-reload.
+** [Claude] done -- 'r' + Enter hot-reloads the surfaces rig's live parameters
+Implemented for the *surfaces* runtime (the rig you're playing): type =r= and
+press Enter in the terminal it runs in, and the config file is re-read. What
+applies live: the synth master =amplitude=, the =distortion_scale/shape=
+curve, all four =[[timbres]]= (waveform, amplitude, AM/FM), the *tuning*
+(=edo=, =x_step=, =y_step=, =fundamental_hz= -- new notes; sounding ones keep
+their struck pitch; the trail clears if =edo= changed since its pitch classes
+would be meaningless), the pluck (=sustain_level=/=decay_secs=), and the
+=[surfaces]= slide/trail knobs. Window layout, ports, sample rates, and sinks
+still need a restart (a failed reload keeps the running parameters and prints
+why). Two deviations to know about (also in jeff-maybe-review-this.org):
+- it's 'r' *then Enter* -- raw-mode single-key input means termios surgery
+  that can wedge the terminal if we crash; say the word if you want it anyway;
+- only the surfaces runtime reloads; the looper/sawwave rigs would need the
+  same plumbing (doable, just not free).
 * DONE synth attacks should be louder
 Here I'm only talking about the synth, not the drum samples.
 Please find online (or maybe you know by heart)
@@ -133,7 +148,7 @@ edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a
 timbre's amplitude survives fader changes. The tremolo LFO's wave family is
 the existing instrument-wide =[am]= table. Docs: configs/README.org
 "Timbres".
-* slide
+* DONE slide
 Let's introduce a janky slide algorithm.
 Toggle it (key up does nothing) with the button
 right next to the distortion button (so (1,1)).
@@ -151,10 +166,25 @@ When that happens, the source pitch
 (the early one, sliding into the target, which comes later)
 is removed from the candidate set for any further notes
 that might be triggered in the future.
-* mono
+** [Claude] done -- =slide_toggle= at (1,1), engine-level pitch glide
+The engine's voices can now glide (pitch-linear exponential walk, snapping onto
+the target); a slid note *is* the new note's voice, started at the source pitch
+with a fresh attack. Candidates are per grid, audible releases only (a note that
+became an accrete drone still rings, so it is never a slide source); nearest
+pitch wins, ties to the more recent release; a used source is consumed. The two
+knobs are =[surfaces] slide_candidate_window_ms= (default 1000) and
+=slide_duration_ms= (default 100). The toggle is a *global* switch mirrored on
+both grids, like distortion. Docs: the config .org, "slide and mono".
+* DONE mono
 This button should be right next to slide (so (1,2)).
 If it's on, each new note cuts off the old one.
 This interacts with slide -- the set of candidates is a singleton.
+** [Claude] done -- =mono_toggle= at (1,2), per-grid cut through the release path
+A new note cuts the same grid's other *fingered* notes (per grid, not across
+grids -- each grid stays its own monosynth; accrete drones are not cut). Cuts go
+through the ordinary release path, so a cut under a live accrete condition still
+joins the sustained set, and with slide on the cut note is exactly the singleton
+slide candidate. Global toggle mirrored on both grids.
 * feet accrete
 As described above, there will be three buttons for
 accreting sustained notes in the bottom-left of both monomes.
@@ -171,7 +201,7 @@ gets mirrored to softstep pads 1, 2 and 3,
 and the other to pads 8,9,0.
 While those pads are mirroring the monome accrete controls,
 they do not control samples.
-* move pads, and add a 'ditto' pad
+* DONE move pads, and add a 'ditto' pad
 New arrangement for pads:
 | high tom | low tom | cowbell |          9 | crash (was at 8) |
 | snare    | kick    | ditto   | closed hat | open hat         |
@@ -182,6 +212,36 @@ I'd like you to find an open one online
 and add it to the sample bank.
 The 'ditto' pad retriggers the last sample.
 (It will serve as a generalized double-bass pedal.)
+** [Claude] done -- pedal 9 was =cowbell.wav=. Your table would then put cowbell
+at both 8 and 9, so I kept cowbell at 8 (as you wrote it) and gave 9 the
+=ride.wav= cymbal instead -- it was freed up when =open_hat.wav= took its old
+spot at pedal 5, and otherwise had nowhere to go. =wood_block.wav= (pedal 0's
+old occupant) drops out of the kit entirely, per your table. Pedal 0 now plays =crash_electronic.wav= (not the plain TR-808 =crash.wav=,
+which drops out too) -- that's what =2-monomes_58-8-1_kmss-drums.toml='s
+pedal 8 was already using ("was at 8" in your table); its 0.5 gain trim and
+comment moved with it. =kmss-drumkit.toml= had =crash.wav= (plain) at pedal 8
+instead -- it now matches the other config and uses the electronic crash too,
+so both drumkit configs share one pad list.
+
+Open hat: downloaded =oh8/OH50.WAV= (medium decay, ~0.5s) from
+=github.com/tidalcycles/sounds-tr808-fischer= -- CC0 1.0, the same source as
+the rest of the kit -- as =drum-samples/open_hat.wav=; verified it loads
+(=MIDI_PULSE_NO_AUDIO=1 cargo run --bin midi_pulse -- kmss-drumkit=). Credited
+in =drum-samples/CREDITS.org= and committed inside the =drum-samples=
+submodule (not pushed).
+
+Ditto: extended the pad schema (=DrumPadConfig=) so a pad is =pedal = 3, ditto
+= true= instead of naming a =sample= -- exactly one of =sample=/=ditto = true=
+per pad, at most one ditto pad per drumkit window (both validated at load).
+It retriggers whatever sample most recently played on ANY pedal in the SAME
+window, at THAT hit's already velocity-resolved gain -- not its own press's
+velocity. A ditto press does NOT update "last played" (so pad, ditto, ditto
+repeats the original hit rather than the ditto echoing itself), and it's a
+no-op if nothing has played yet. See =drumkit_runtime/mod.rs= (=PadKind=,
+=LastHit=) and =config.rs= for the implementation + unit tests.
+
+Details / choices you didn't specify: see =jeff-maybe-review-this.org=,
+"drum pads / ditto -- choices where the spec was silent".
 * drop the amplitude row
 Instead I'll use the config to tune each waveform's amplitude.
 * polyrhythm interface

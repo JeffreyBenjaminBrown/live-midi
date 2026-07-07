@@ -82,6 +82,76 @@ reverse it cheaply if you disagree.
   the *ringing* notes that got quieter, which reads as "attacks louder" without
   risking new clipping.
 
+* slide + mono -- choices where the spec was silent
+- *Global toggles, per-grid musical state.* The on/off switches are instrument-wide
+  (mirrored LEDs, like distortion), but each grid keeps its own slide-candidate
+  history and mono only cuts notes on the grid you played -- the two grids stay
+  independent instruments. Easy to change either way.
+- *A slid note IS the new note* (one voice, fresh pluck attack, starting at the
+  source pitch and gliding in). It does not ALSO sound the target from t=0.
+- *Sustained (accrete) notes are never slide candidates* -- they are still ringing;
+  sliding "from" one would double it.
+- *Mono does not cut accrete drones*, only fingered notes; a mono cut under a live
+  accrete condition still joins the sustained set (the release-path rule).
+- *Nearest-pitch ties* break toward the more recent release.
+- Defaults: window 1000 ms, glide 100 ms (both in =[surfaces]=).
+
+* drum pads / ditto -- choices where the spec was silent
+- *Pedal 9 = ride, not cowbell twice.* Your table names cowbell explicitly at 8;
+  pedal 9 was left as "whatever's already there" (=cowbell.wav=). Putting cowbell
+  at both 8 and 9 seemed wrong, so 9 got =ride.wav= instead -- it was the sample
+  freed up when =open_hat.wav= took over pedal 5 (its old home) and had nowhere
+  else to go in the new layout.
+- *=wood_block.wav= drops out of the kit entirely* (pedal 0's old occupant), per
+  your table -- the file stays in =drum-samples/=, just unreferenced by either
+  config.
+- *=crash.wav= (the plain TR-808 cymbal) also drops out*, not just wood block.
+  =kmss-drumkit.toml= had it at pedal 8; =2-monomes_58-8-1_kmss-drums.toml= had
+  =crash_electronic.wav= there instead (added later, per =drum-samples/CREDITS.org=).
+  Your table's "crash (was at 8)" for the new pedal-0 slot matches the electronic
+  one, so I unified both configs onto =crash_electronic.wav= (gain 0.5, same
+  comment) at pedal 0. If you actually wanted =kmss-drumkit.toml= to keep the
+  plain 808 crash somewhere, it's now unreferenced entirely -- easy to re-add.
+- *Open hat provenance*: =drum-samples/open_hat.wav= is
+  =oh8/OH50.WAV= from =github.com/tidalcycles/sounds-tr808-fischer= (CC0 1.0
+  Universal, same source/license as the rest of the kit) -- one of five decay
+  lengths the source ships (=OH00/10/25/50/75=); I picked the medium one (~0.5s)
+  to sit clearly apart from the closed hat without ringing long enough to smear
+  a fast roll. Network access was available, so nothing was synthesized here;
+  say the word if you'd rather have a longer/shorter decay variant.
+- *Ditto does not update "last played."* A ditto press retriggers the last
+  non-ditto hit's sample and resolved (already velocity-scaled) gain, but is
+  itself invisible to the "last played" memory -- so pad, ditto, ditto plays the
+  same sound three times, rather than the second ditto echoing the first. Ditto
+  also ignores its own press's velocity entirely (always replays at the copied
+  hit's exact gain) and ignores mid-window REVISE events (a harder second peak
+  on the ditto pedal itself does not change its gain). Both felt like the
+  natural reading of "retriggers... at the gain it played at," but they're a
+  choice, not spelled out in the request.
+- *Ditto scope is per drumkit WINDOW*, not per device -- if a future config ever
+  splits one softstep's pedals across two windows, each window gets its own
+  "last played" memory and its own at-most-one-ditto-pad rule. Today every
+  config has exactly one window per device, so this distinction is currently
+  invisible in practice.
+- *Ditto's pedal placement (3, the gap between the feet)* is your table's choice,
+  kept as-is -- it fits nicely with "either foot can reach it" for a
+  double-bass-pedal role.
+
+* config hot-reload -- scope choices
+- *'r' + Enter, not a raw keypress.* Line-buffered stdin is zero-risk; raw mode
+  (single 'r', no Enter) needs termios changes that can leave the terminal broken
+  after a crash. Happy to add raw mode behind a flag if the Enter annoys you.
+- *Surfaces runtime only.* The looper and sawwave rigs don't reload; same pattern
+  would work there but each needs its own plumbing.
+- *What reloads*: amplitude, distortion curve, [[timbres]], tuning, pluck, slide +
+  trail knobs. What doesn't: windows/rects, ports, sample rate, buffer size,
+  attack/release (those two could move to the live set easily -- tell me).
+- On an =edo= change the shared trail is cleared (its stored pitch classes are
+  mod the old edo); sounding notes keep their struck frequency, and the register
+  offset is kept as-is.
+- The drum sampler's amplitude is NOT hot-reloadable yet (that sink's stream was
+  being reworked by the drum-pads task while I built this; easy follow-up).
+
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
 - =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's

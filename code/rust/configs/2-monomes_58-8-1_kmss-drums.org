@@ -45,6 +45,16 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   grids; drums are untouched). One shared switch -- either grid's button, one state.
   The curve's =distortion_scale= / =distortion_shape= live on the synth sink; see
   [[../../../learnings/distortion.org]].
+- *slide toggle* -- =(1,1)= (right of the distortion toggle): while on, a new note
+  re-triggers the nearest pitch released within the last
+  ~slide_candidate_window_ms~ and *glides* it into the new pitch over
+  ~slide_duration_ms~ (both in the ~[surfaces]~ table). A used slide source leaves
+  the candidate set. Global switch, mirrored on both grids; each grid keeps its own
+  candidate history.
+- *mono toggle* -- =(1,2)= (below slide): while on, each new note cuts that grid's
+  other fingered notes (through the normal release path, so accrete still captures
+  them). With slide on too, the candidate set is a singleton -- you glide from
+  exactly the note you cut. Global switch.
 - *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
   to the *sustained set* keep ringing after their fingers lift, until *clear*. Both
@@ -84,7 +94,8 @@ overlays drawn on top:
   col: 0   1   2   3   4   5  ...        13  14  15
   row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls THIS
                                                                grid: waveform (0..3) + volume
-  row 1  DIST .   .   .   .                    .   .   .   <- global distortion on/off
+  row 1  DIST SLIDE  .  .  .                   .   .   .   <- global toggles
+  row 2   .  MONO .   .   .                    .   .   .   <- global toggle
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
   row 14  .   .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- scroll pad
@@ -92,9 +103,9 @@ overlays drawn on top:
 #+end_example
 
 - The whole top row (0,0)..(15,0), the pad cells (13..15, 14..15), the accrete
-  buttons (0..2, 15), and the distortion toggle (0,1) *occlude* the play grid:
-  pressing them re-timbres / sets volume / scrolls / sustains / distorts rather than
-  sounding a note.
+  buttons (0..2, 15), and the toggles -- distortion (0,1), slide (1,1), mono (1,2)
+  -- *occlude* the play grid: pressing them re-timbres / sets volume / scrolls /
+  sustains / toggles rather than sounding a note.
 - The scroll-pad corners follow the looper's convention: top-left = down an octave
   (notes sound lower), top-right = up an octave; arrows raise pitch down/right,
   lower it up/left. See =midi_pulse::edo_play=.
@@ -121,8 +132,8 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
 - *Volume strip*: the active cell is lit, the rest dark; it shows the grid's own volume.
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
-- *Distortion toggle*: *dim* at rest, *bright* while the global distortion is on;
-  mirrored on both grids (one switch).
+- *Distortion / slide / mono toggles*: *dim* at rest, *bright* while on; each is
+  one global switch mirrored on both grids.
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
   clear while pressed, needs-holding while on, accrete while the accreting condition is
   live. Mirrored on both grids (one shared state). A *sustained* note paints exactly
@@ -195,24 +206,46 @@ don't alias). The drums bypass it. The curve is the algebraic soft-clipper
 are the sink's =distortion_scale= / =distortion_shape= (defaults 1.0 / 2.0 -- a
 clearly-audible, smooth saturation).
 
+* slide and mono
+
+*Slide* (=(1,1)=; key-down toggles): each grid remembers its recently *released*
+notes (audible releases only -- a note that became an accrete drone is still
+ringing and never a slide source). When a new note is struck with slide on, the
+nearest remembered pitch released within ~slide_candidate_window_ms~ (default
+1000) is consumed as the *source*: the new note's voice starts at the source
+pitch and glides -- pitch-linearly -- into the struck pitch over
+~slide_duration_ms~ (default 100). Ties break toward the more recent release; a
+source is never reused.
+
+*Mono* (=(1,2)=; key-down toggles): a new note cuts the same grid's other
+fingered notes. Cuts go through the ordinary release path: under a live accrete
+condition a cut note still joins the sustained set, and (slide) the cut note
+becomes the sole slide candidate -- so mono+slide plays like a portamento
+monosynth per grid.
+
+Both are global switches (either grid's button, one state), like distortion.
+
 * the KMSS drumkit
 
 Identical to [[./kmss-drumkit.org]] -- the same pedal->sample map, the same tether-
 mode velocity path, the same =cpal_sampler= sink. The surfaces runtime *consumes*
 the drumkit's bring-up (=drumkit_runtime::start=) rather than forking it, so any
-future drum change (kit, decode, velocity feel) is inherited for free. Pedal map:
+future drum change (kit, decode, velocity feel) is inherited for free. Pedal map
+(see =kmss-drumkit.org= "the mapping" for the *ditto* pad's semantics and the
+8-vs-9-cowbell / wood-block-drop rationale):
 
-| foot  | pedal | voice        |
-|-------+-------+--------------|
-| left  |     1 | kick         |
-| left  |     2 | snare        |
-| left  |     6 | low tom      |
-| left  |     7 | high tom     |
-| left  |     8 | crash        |
-| right |     4 | hat          |
-| right |     5 | ride         |
-| right |     9 | cowbell      |
-| right |     0 | wood block   |
+| foot  | pedal | voice                    |
+|-------+-------+--------------------------|
+| left  |     1 | snare                    |
+| left  |     2 | kick                     |
+| left  |     6 | high tom                 |
+| left  |     7 | low tom                  |
+| left  |     8 | cowbell                  |
+| right |     4 | closed hat               |
+| right |     5 | open hat                 |
+| right |     9 | ride                     |
+| right |     0 | crash (electronic)       |
+| --    |     3 | ditto (repeats last hit) |
 
 * what is deliberately NOT here
 

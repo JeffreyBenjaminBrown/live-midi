@@ -122,6 +122,8 @@ impl SurfaceSink {
       VoiceState {
         id,
         freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
         phase: 0.0,
         env: 0.0,
         target_env: 1.0,
@@ -133,6 +135,44 @@ impl SurfaceSink {
         fm_phase: 0.0,
       },
     );
+  }
+
+  /// Adopt hot-reloaded tuning + pluck parameters (the 'r' reload). Future notes
+  /// use them; sounding voices keep their struck frequency and envelope.
+  pub fn retune(&mut self, fund: f64, edo: i32, sustain_level: f32, decay_secs: f32) {
+    self.fund = fund;
+    self.edo = edo;
+    let (sustain_env, decay_per_sample) =
+      pluck_envelope(sustain_level, decay_secs, 1.0, self.sample_rate);
+    self.sustain_env = sustain_env;
+    self.decay_per_sample = decay_per_sample;
+  }
+
+  /// `note_on`, but the voice STARTS at `from_pitch` and glides into `pitch` over
+  /// `glide_secs` (the slide feature). The frequency walks multiplicatively, so the
+  /// glide is pitch-linear; the engine snaps it onto the target and ends the glide
+  /// (`VoiceState::glide_per_sample`). Same pitch = a plain `note_on`.
+  pub fn note_on_gliding(
+    &mut self,
+    cell: (i32, i32),
+    pitch: i32,
+    from_pitch: i32,
+    timbre: Timbre,
+    glide_secs: f32,
+  ) {
+    if from_pitch == pitch {
+      return self.note_on(cell, pitch, timbre);
+    }
+    self.note_on(cell, pitch, timbre);
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
+      let from = freq_for_pitch(from_pitch, self.fund, self.edo);
+      let to = state.freq;
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq = from;
+      state.freq_target = to;
+      state.glide_per_sample = (to / from).powf(1.0 / samples);
+    }
   }
 
   /// Release `cell`: its voice rings out (ramps to zero over `release_secs`).
@@ -249,6 +289,30 @@ mod tests {
     let mut a = sink(0, &voices);
     a.note_off((9, 9)); // must not panic
     assert_eq!(count(&voices), 0);
+  }
+
+  #[test]
+  fn note_on_gliding_starts_at_the_source_pitch_and_targets_the_new_one() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on_gliding((3, 4), 30, 20, Timbre::default(), 0.1);
+    let v = voices.lock().unwrap();
+    let state = v.get(&voice_key(0, (3, 4))).unwrap();
+    let from = crate::pitch::freq_for_pitch(20, 80.0, 58);
+    let to = crate::pitch::freq_for_pitch(30, 80.0, 58);
+    assert_eq!(state.freq, from, "starts at the slide source's frequency");
+    assert_eq!(state.freq_target, to, "targets the struck pitch");
+    assert!(state.glide_per_sample > 1.0, "an upward slide walks the freq up");
+  }
+
+  #[test]
+  fn note_on_gliding_from_the_same_pitch_is_a_plain_note() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on_gliding((3, 4), 30, 30, Timbre::default(), 0.1);
+    let v = voices.lock().unwrap();
+    let state = v.get(&voice_key(0, (3, 4))).unwrap();
+    assert_eq!(state.glide_per_sample, 1.0, "no glide");
   }
 
   #[test]

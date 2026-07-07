@@ -321,6 +321,11 @@ pub struct SurfacesConfig {
   /// The most *distinct* pitch classes the shared trail keeps at once (newest first);
   /// older ones drop off the end. Default 7.
   pub trails_max: usize,
+  /// The slide feature's candidate window, in ms: a new note may slide from a note
+  /// released no longer ago than this. Default 1000.
+  pub slide_candidate_window_ms: u64,
+  /// How long a slide takes to reach the new pitch, in ms. Default 100.
+  pub slide_duration_ms: u64,
 }
 
 impl Default for SurfacesConfig {
@@ -328,8 +333,18 @@ impl Default for SurfacesConfig {
     Self {
       trail_clobber_radius: default_trail_clobber_radius(),
       trails_max: default_trails_max(),
+      slide_candidate_window_ms: default_slide_candidate_window_ms(),
+      slide_duration_ms: default_slide_duration_ms(),
     }
   }
+}
+
+fn default_slide_candidate_window_ms() -> u64 {
+  1000
+}
+
+fn default_slide_duration_ms() -> u64 {
+  100
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -665,6 +680,22 @@ pub enum MonomeWindowConfig {
     monome: String,
     rect: [i32; 4],
   },
+  // A single-cell on/off toggle for the slide feature (surfaces runtime): while on,
+  // a new note re-triggers the nearest recently-released pitch and glides it into
+  // the new one. Window/candidate knobs live in the `[surfaces]` table.
+  SlideToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell on/off toggle for mono mode (surfaces runtime): while on, each new
+  // note on a grid cuts off that grid's other fingered notes (and the slide
+  // candidate set is effectively a singleton).
+  MonoToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
   // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
   // notes join a sustained set that rings after the fingers lift, until cleared.
@@ -835,6 +866,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::WaveformSelector { id, .. }
       | MonomeWindowConfig::VolumeStrip { id, .. }
       | MonomeWindowConfig::DistortionToggle { id, .. }
+      | MonomeWindowConfig::SlideToggle { id, .. }
+      | MonomeWindowConfig::MonoToggle { id, .. }
       | MonomeWindowConfig::AccreteControl { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
@@ -865,6 +898,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::WaveformSelector { monome, .. }
       | MonomeWindowConfig::VolumeStrip { monome, .. }
       | MonomeWindowConfig::DistortionToggle { monome, .. }
+      | MonomeWindowConfig::SlideToggle { monome, .. }
+      | MonomeWindowConfig::MonoToggle { monome, .. }
       | MonomeWindowConfig::AccreteControl { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
@@ -895,6 +930,8 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::WaveformSelector { rect, .. }
       | MonomeWindowConfig::VolumeStrip { rect, .. }
       | MonomeWindowConfig::DistortionToggle { rect, .. }
+      | MonomeWindowConfig::SlideToggle { rect, .. }
+      | MonomeWindowConfig::MonoToggle { rect, .. }
       | MonomeWindowConfig::AccreteControl { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
@@ -926,6 +963,8 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
       MonomeWindowConfig::VolumeStrip { .. } => "volume_strip",
       MonomeWindowConfig::DistortionToggle { .. } => "distortion_toggle",
+      MonomeWindowConfig::SlideToggle { .. } => "slide_toggle",
+      MonomeWindowConfig::MonoToggle { .. } => "mono_toggle",
       MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
@@ -975,16 +1014,23 @@ impl MonomeWindowConfig {
 }
 
 /// One pedal's assignment inside a `drumkit` window: the printed pedal label
-/// (1..9, then 0) and the sample file to fire. `gain` is the voice's FULL-velocity
-/// level; the tether runtime scales it down for softer hits (see
-/// `drumkit_runtime::decode`).
+/// (1..9, then 0) and either a sample file to fire or `ditto = true`. `gain` is the
+/// voice's FULL-velocity level for a sample pad; the tether runtime scales it down
+/// for softer hits (see `drumkit_runtime::decode`). A `ditto` pad ignores `gain` --
+/// it replays the most recently played sample in its window at THAT hit's already-
+/// resolved (velocity-scaled) gain, "a generalized double-bass pedal" (see
+/// `drumkit_runtime::mod` for the trigger logic). Validation requires exactly one of
+/// `sample` / `ditto = true` per pad, and at most one ditto pad per window.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DrumPadConfig {
   pub pedal: u8,
-  pub sample: String,
+  #[serde(default)]
+  pub sample: Option<String>,
   #[serde(default = "default_pad_gain")]
   pub gain: f32,
+  #[serde(default)]
+  pub ditto: bool,
 }
 
 fn default_pad_gain() -> f32 {
@@ -1361,7 +1407,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_waveform_selectors(config)?;
   validate_volume_strips(config)?;
   validate_accrete_controls(config)?;
-  validate_distortion_toggles(config)?;
+  validate_single_cell_toggles(config)?;
   validate_timbres(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
@@ -1401,19 +1447,30 @@ fn validate_timbres(config: &Config) -> Result<(), String> {
   Ok(())
 }
 
-/// A `distortion_toggle` is a single cell on a monome that has an `edo_note_grid`,
-/// at most one per monome (a second would be a redundant twin of the same global
-/// switch).
-fn validate_distortion_toggles(config: &Config) -> Result<(), String> {
-  let mut seen: HashSet<&str> = HashSet::new();
-  for window in &config.monome_windows {
-    let MonomeWindowConfig::DistortionToggle { id, monome, rect } = window else {
-      continue;
-    };
-    let [x0, y0, x1, y1] = *rect;
+/// The single-cell global toggles (`distortion_toggle`, `slide_toggle`,
+/// `mono_toggle`): each is one cell on a monome that has an `edo_note_grid`, at most
+/// one of each kind per monome (a second would be a redundant twin of the same
+/// global switch).
+fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
+  // (kind label, id, monome, rect) for every toggle window.
+  let toggles = config.monome_windows.iter().filter_map(|w| match w {
+    MonomeWindowConfig::DistortionToggle { id, monome, rect } => {
+      Some(("distortion_toggle", id, monome, *rect))
+    }
+    MonomeWindowConfig::SlideToggle { id, monome, rect } => {
+      Some(("slide_toggle", id, monome, *rect))
+    }
+    MonomeWindowConfig::MonoToggle { id, monome, rect } => {
+      Some(("mono_toggle", id, monome, *rect))
+    }
+    _ => None,
+  });
+  let mut seen: HashSet<(&str, &str)> = HashSet::new();
+  for (kind, id, monome, rect) in toggles {
+    let [x0, y0, x1, y1] = rect;
     if x0 != x1 || y0 != y1 {
       return Err(format!(
-        "distortion_toggle window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
+        "{kind} window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
       ));
     }
     let has_edo_grid = config.monome_windows.iter().any(|w| {
@@ -1421,7 +1478,7 @@ fn validate_distortion_toggles(config: &Config) -> Result<(), String> {
     });
     if !has_edo_grid {
       return Err(format!(
-        "distortion_toggle window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+        "{kind} window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
     let [gw, gh] = config
@@ -1432,13 +1489,11 @@ fn validate_distortion_toggles(config: &Config) -> Result<(), String> {
       .unwrap_or([16, 16]);
     if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
       return Err(format!(
-        "distortion_toggle window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+        "{kind} window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
       ));
     }
-    if !seen.insert(monome.as_str()) {
-      return Err(format!(
-        "monome {monome:?} declares more than one distortion_toggle (window {id:?})",
-      ));
+    if !seen.insert((kind, monome.as_str())) {
+      return Err(format!("monome {monome:?} declares more than one {kind} (window {id:?})"));
     }
   }
   Ok(())
@@ -1650,6 +1705,9 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
         }
         let device_claims = claimed.entry(window.softstep()).or_default();
         let mut this_window: HashSet<u8> = HashSet::new();
+        // At most one ditto pad per window (it retriggers "the" last hit in this
+        // window; two would leave which-one-means-what ambiguous).
+        let mut ditto_pedal: Option<u8> = None;
         for pad in pads {
           if pad.pedal > 9 {
             return Err(format!(
@@ -1670,10 +1728,27 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
               window.softstep(),
             ));
           }
+          if pad.sample.is_some() == pad.ditto {
+            return Err(format!(
+              "drumkit window {id:?} pad {} needs exactly one of `sample` or `ditto = true`",
+              pad.pedal,
+            ));
+          }
+          if pad.ditto {
+            if let Some(first) = ditto_pedal {
+              return Err(format!(
+                "drumkit window {id:?} has two ditto pads (pedals {first} and {}); at most one per window",
+                pad.pedal,
+              ));
+            }
+            ditto_pedal = Some(pad.pedal);
+            continue; // no gain/sample-path checks for a ditto pad
+          }
           if !pad.gain.is_finite() || pad.gain < 0.0 {
             return Err(format!("drumkit window {id:?} pad {} gain must be nonnegative", pad.pedal));
           }
-          validate_asset_subpath("drumkit sample", id, &pad.sample)?;
+          let sample = pad.sample.as_ref().expect("checked above: sample is Some when ditto is false");
+          validate_asset_subpath("drumkit sample", id, sample)?;
         }
       }
     }
@@ -2937,6 +3012,47 @@ pads = [
     assert!(err.contains("more than one window"), "{err}");
   }
 
+  // ---- ditto pads ----
+
+  #[test]
+  fn ditto_pad_is_valid_with_no_sample() {
+    let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },");
+    let config = parse_config(&toml).expect("a ditto pad with no sample should be valid");
+    let SoftstepWindowConfig::Drumkit { pads, .. } = &config.softstep_windows[0];
+    let ditto = pads.iter().find(|p| p.pedal == 0).expect("pedal 0");
+    assert!(ditto.ditto, "ditto flag set");
+    assert_eq!(ditto.sample, None, "a ditto pad names no sample");
+  }
+
+  #[test]
+  fn pad_with_neither_sample_nor_ditto_is_rejected() {
+    let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0 },");
+    let err = parse_config(&toml).expect_err("a pad with neither sample nor ditto should fail");
+    assert!(err.contains("exactly one of `sample` or `ditto = true`"), "{err}");
+  }
+
+  #[test]
+  fn pad_with_both_sample_and_ditto_is_rejected() {
+    let toml = DRUMKIT_TOML.replace(
+      "{ pedal = 0, sample = \"wood_block.wav\" },",
+      "{ pedal = 0, sample = \"wood_block.wav\", ditto = true },",
+    );
+    let err = parse_config(&toml).expect_err("a pad with both sample and ditto should fail");
+    assert!(err.contains("exactly one of `sample` or `ditto = true`"), "{err}");
+  }
+
+  #[test]
+  fn two_ditto_pads_in_one_window_is_rejected() {
+    let toml = format!(
+      "{}\n",
+      DRUMKIT_TOML
+        .replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },")
+        .replace("{ pedal = 2, sample = \"snare.wav\" },", "{ pedal = 2, ditto = true },"),
+    );
+    let err = parse_config(&toml).expect_err("two ditto pads in one window should fail");
+    assert!(err.contains("two ditto pads"), "{err}");
+  }
+
   // ---- edo_shift_pad as a generally-valid window (freed from the looper) ----
 
   #[test]
@@ -3284,6 +3400,37 @@ fm_freq = 6.0
     let toml = format!("{SURFACES_MIN}{}", TIMBRES_FOUR.replace("am_depth = 0.5", "am_depth = 1.5"));
     let err = parse_config(&toml).expect_err("am_depth > 1 fails");
     assert!(err.contains("am_depth"), "{err}");
+  }
+
+  #[test]
+  fn slide_and_mono_toggles_validate_like_distortion() {
+    let toggles = r#"
+[[monome_windows]]
+id = "slide-a"
+monome = "a"
+kind = "slide_toggle"
+rect = [1, 1, 1, 1]
+
+[[monome_windows]]
+id = "mono-a"
+monome = "a"
+kind = "mono_toggle"
+rect = [1, 2, 1, 2]
+"#;
+    let config = parse_config(&format!("{SURFACES_MIN}{toggles}")).expect("both toggles validate");
+    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::SlideToggle { .. })));
+    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::MonoToggle { .. })));
+    // The [surfaces] slide knobs default sensibly.
+    let surfaces = config.surfaces.unwrap_or_default();
+    assert_eq!(surfaces.slide_candidate_window_ms, 1000);
+    assert_eq!(surfaces.slide_duration_ms, 100);
+    // A 2-cell slide toggle fails like any single-cell toggle.
+    let err = parse_config(&format!(
+      "{SURFACES_MIN}{}",
+      toggles.replace("rect = [1, 1, 1, 1]", "rect = [1, 1, 2, 1]"),
+    ))
+    .expect_err("a 2-cell slide toggle should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
   }
 
   #[test]

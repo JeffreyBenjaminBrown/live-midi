@@ -138,6 +138,12 @@ pub struct VoiceState {
   // attack peak, and the per-full-rate-sample retention of the distance to it.
   pub sustain_env:     f32,
   pub decay_per_sample: f32,
+  // Frequency glide (the slide feature): while glide_per_sample != 1.0, freq is
+  // multiplied by it each full-rate sample until it crosses freq_target, then
+  // snaps there and the glide ends. glide_per_sample == 1.0 = no glide, and
+  // freq_target is IGNORED (so plain voices need not keep it in sync with freq).
+  pub freq_target:     f32,
+  pub glide_per_sample: f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
   pub timbre:          Timbre,

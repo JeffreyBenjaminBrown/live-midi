@@ -270,6 +270,8 @@ Built-in unbundled window kinds:
 - ~volume_strip~
 - ~accrete_control~
 - ~distortion_toggle~
+- ~slide_toggle~
+- ~mono_toggle~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -349,6 +351,14 @@ rect = [0, 1, 0, 1]       # exactly one cell
 
 The button is dim at rest, bright while on; key-down toggles, key-up does nothing.
 See =learnings/distortion.org= for the curve family.
+
+A ~slide_toggle~ / ~mono_toggle~ is the same shape (single cell, at most one of
+each per monome, global switch, dim/bright LED). Slide: a new note re-triggers the
+nearest pitch released within ~slide_candidate_window_ms~ and glides it into the
+new pitch over ~slide_duration_ms~ (both optional in the ~[surfaces]~ table;
+defaults 1000 / 100). Mono: each new note cuts that grid's other fingered notes
+(and with slide on, the candidate set is a singleton -- you glide from the note
+you just cut).
 
 The bundled 12-EDO offset/root board is:
 

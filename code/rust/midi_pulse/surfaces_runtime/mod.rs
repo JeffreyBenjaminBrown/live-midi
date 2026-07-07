@@ -25,11 +25,13 @@
 mod accrete;
 pub mod audio;
 mod grid;
+mod slide;
 mod synth;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,7 +39,8 @@ use std::time::{Duration, Instant};
 use rosc::{decoder, OscPacket, OscType};
 
 use midi_pulse::config::{
-  AccreteControlKind, AmShapeFamilyConfig, Config, MonomeWindowConfig, SinkConfig, WaveformChoice,
+  load_named_config, AccreteControlKind, AmShapeFamilyConfig, Config, MonomeWindowConfig,
+  SinkConfig, WaveformChoice,
 };
 use midi_pulse::device_assign::assign_distinct_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
@@ -49,6 +52,7 @@ use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
 use crate::voices::Distortion;
 
 use accrete::AccreteState;
+use slide::SlideCandidates;
 use grid::{
   levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos, ButtonOverlay,
   BRIGHT, DIM, SELECTOR_CELLS,
@@ -74,11 +78,79 @@ const NO_RECT: [i32; 4] = [-1, -1, -1, -1];
 /// `[[timbres]]` entry (or a plain-waveform default). `amplitude` multiplies below
 /// the grid's volume fader at note-on.
 #[derive(Clone, Copy)]
-struct TimbreSlot {
+pub(crate) struct TimbreSlot {
   waveform: Waveform,
   amplitude: f32,
   am: Am,
   fm: Fm,
+}
+
+/// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
+/// instrument can adopt without rebinding grids, sockets, or streams: the synth
+/// master amplitude, the distortion curve, the four timbres, the tuning, the pluck
+/// envelope, and the slide/trail knobs. See TODO/misc.org "config reload".
+pub(crate) struct Live {
+  /// Bumped on every successful reload; grid threads refresh their copies when it
+  /// moves (the audio callback reads the params fresh every callback).
+  generation: AtomicU64,
+  params: Mutex<LiveParams>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LiveParams {
+  pub amplitude: f32,
+  pub distortion: Distortion,
+  pub timbres: [TimbreSlot; SELECTOR_CELLS],
+  pub x_step: i32,
+  pub y_step: i32,
+  pub edo: i32,
+  pub fund: f64,
+  pub sustain_level: f32,
+  pub decay_secs: f32,
+  pub slide_window: Duration,
+  pub slide_duration_secs: f32,
+  pub trail_clobber_radius: i32,
+  pub trails_max: usize,
+}
+
+/// The live subset of resolved settings.
+fn live_params(s: &Settings) -> LiveParams {
+  LiveParams {
+    amplitude: s.amplitude,
+    distortion: s.distortion,
+    timbres: s.timbres,
+    x_step: s.x_step,
+    y_step: s.y_step,
+    edo: s.edo,
+    fund: s.fund,
+    sustain_level: s.sustain_level,
+    decay_secs: s.decay_secs,
+    slide_window: s.slide_window,
+    slide_duration_secs: s.slide_duration_secs,
+    trail_clobber_radius: s.trail_clobber_radius,
+    trails_max: s.trails_max,
+  }
+}
+
+/// Re-read `name`'s config and adopt its live parameters (everything else -- window
+/// layout, ports, sinks' sample rates -- needs a restart and is silently kept as
+/// is). A config that fails to load or resolve leaves the old parameters running.
+fn reload_live(name: &str, live: &Live) {
+  match load_named_config(name).and_then(|config| adopt_config(&config, live)) {
+    Ok(()) => println!(
+      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / slide / trail applied (layout + ports need a restart)",
+    ),
+    Err(e) => eprintln!("reload of {name} failed; keeping the running parameters: {e}"),
+  }
+}
+
+/// Adopt `config`'s live parameters into `live` and bump the generation. Everything
+/// non-live (window layout, ports, sinks' sample rates) is silently kept as-is.
+fn adopt_config(config: &Config, live: &Live) -> Result<(), String> {
+  let s = resolve_settings(config).map_err(|e| e.to_string())?;
+  *live.params.lock().unwrap_or_else(|e| e.into_inner()) = live_params(&s);
+  live.generation.fetch_add(1, Ordering::SeqCst);
+  Ok(())
 }
 
 /// The startup-selected slot: 1 = triangle in the default slots, matching the old
@@ -113,7 +185,10 @@ impl Drop for StopOnExit {
   }
 }
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_config(
+  config: &Config,
+  reload_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
   print_inventory(config);
   // Block SIGINT/SIGTERM and start the STOP-setting waiter BEFORE any audio/MIDI/grid
   // thread spawns, so the block is inherited by all of them (a stray default SIGINT
@@ -122,7 +197,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
   // Headless / mock runs set MIDI_PULSE_NO_AUDIO to skip the cpal stream.
   let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
   STOP.store(false, Ordering::SeqCst);
-  run(config, monome::detector_port(), no_audio)
+  run(config, monome::detector_port(), no_audio, reload_name)
 }
 
 fn print_inventory(config: &Config) {
@@ -161,6 +236,9 @@ struct GridSettings {
   accrete_rect: [i32; 4],
   /// The global-distortion toggle's cell, `NO_RECT` when absent (one shared switch).
   distortion_rect: [i32; 4],
+  /// The slide / mono toggles' cells, `NO_RECT` when absent (global switches too).
+  slide_rect: [i32; 4],
+  mono_rect: [i32; 4],
 }
 
 struct Settings {
@@ -197,6 +275,10 @@ struct Settings {
   trail_clobber_radius: i32,
   /// Max distinct pitch classes in the shared trail (`[surfaces].trails_max`).
   trails_max: usize,
+  /// The slide feature's knobs (`[surfaces]`): how recently a note must have been
+  /// released to be a slide source, and how long the glide takes.
+  slide_window: Duration,
+  slide_duration_secs: f32,
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -319,6 +401,22 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let slide_rect = config
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowConfig::SlideToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
+    let mono_rect = config
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowConfig::MonoToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       listen_port: monome_cfg.listen_port,
@@ -333,6 +431,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
       accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
       distortion_rect,
+      slide_rect,
+      mono_rect,
     });
   }
 
@@ -372,6 +472,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     has_drums: !config.softstep_windows.is_empty(),
     trail_clobber_radius: surfaces.trail_clobber_radius,
     trails_max: surfaces.trails_max,
+    slide_window: Duration::from_millis(surfaces.slide_candidate_window_ms),
+    slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
   })
 }
 
@@ -402,9 +504,37 @@ fn resolve_timbre_slots(config: &Config) -> [TimbreSlot; SELECTOR_CELLS] {
 /// `no_audio` skips the cpal stream (headless / mock). Loops until STOP. Signal
 /// handling is installed by `run_from_config`, not here, so tests can call this
 /// directly and stop it by setting STOP.
-fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run(
+  config: &Config,
+  detector_port: u16,
+  no_audio: bool,
+  reload_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
   let s = resolve_settings(config)?;
   let num_grids = s.grids.len();
+  // The hot-reloadable parameters ('r' + Enter re-reads the config; see `Live`).
+  let live = Arc::new(Live {
+    generation: AtomicU64::new(0),
+    params: Mutex::new(live_params(&s)),
+  });
+  if let Some(name) = reload_name {
+    let live_for_stdin = Arc::clone(&live);
+    let name = name.to_string();
+    thread::spawn(move || {
+      // Line-based (press 'r' then Enter): raw-mode single-key input would need
+      // termios surgery that could leave the terminal broken on a crash.
+      for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        if STOP.load(Ordering::SeqCst) {
+          break;
+        }
+        if line.trim() == "r" {
+          reload_live(&name, &live_for_stdin);
+        }
+      }
+    });
+    println!("press 'r' + Enter to hot-reload the config (amplitude / timbres / tuning / pluck / slide / trail / distortion curve).");
+  }
 
   // Discover all grids on the first grid's socket, then assign each a distinct device.
   let sock0 = UdpSocket::bind(("0.0.0.0", s.grids[0].listen_port))
@@ -437,6 +567,10 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
   // The global distortion on/off, shared by every grid's toggle and the audio callback.
   let distortion_on = Arc::new(AtomicBool::new(false));
+  // The global slide / mono switches (each grid keeps its own candidate history,
+  // but the modes are instrument-wide, like distortion).
+  let slide_on = Arc::new(AtomicBool::new(false));
+  let mono_on = Arc::new(AtomicBool::new(false));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -444,10 +578,9 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       Arc::clone(&voices),
       s.sample_rate,
       s.buffer_frames,
-      s.amplitude,
       s.oversample as usize,
       s.am_shape_family,
-      s.distortion,
+      Arc::clone(&live),
       Arc::clone(&distortion_on),
     )?
   };
@@ -518,6 +651,8 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       needs_holding_rect: g.needs_holding_rect,
       accrete_rect: g.accrete_rect,
       distortion_rect: g.distortion_rect,
+      slide_rect: g.slide_rect,
+      mono_rect: g.mono_rect,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -534,6 +669,12 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       accrete: Arc::clone(&accrete),
       held_all: Arc::clone(&held_all),
       distortion_on: Arc::clone(&distortion_on),
+      slide_on: Arc::clone(&slide_on),
+      mono_on: Arc::clone(&mono_on),
+      live: Arc::clone(&live),
+      slide: SlideCandidates::new(),
+      slide_window: s.slide_window,
+      slide_duration_secs: s.slide_duration_secs,
       voices: Arc::clone(&voices),
       sink: SurfaceSink::new(
         grid_index,
@@ -590,6 +731,9 @@ struct GridThread {
   accrete_rect: [i32; 4],
   /// The global-distortion toggle's cell on this grid (`NO_RECT` if absent).
   distortion_rect: [i32; 4],
+  /// The slide / mono toggles' cells on this grid (`NO_RECT` if absent).
+  slide_rect: [i32; 4],
+  mono_rect: [i32; 4],
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -615,6 +759,16 @@ struct GridThread {
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   /// The global distortion on/off (both grids' toggles + the audio callback).
   distortion_on: Arc<AtomicBool>,
+  /// The global slide / mono switches (both grids' toggles).
+  slide_on: Arc<AtomicBool>,
+  mono_on: Arc<AtomicBool>,
+  /// THIS grid's recently-released notes (slide sources) + the slide knobs.
+  slide: SlideCandidates,
+  slide_window: Duration,
+  slide_duration_secs: f32,
+  /// The hot-reloadable parameters; refreshed into the fields above when the
+  /// generation moves (see `refresh_live`).
+  live: Arc<Live>,
   /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
   sink: SurfaceSink,
@@ -643,8 +797,15 @@ fn grid_thread(mut rt: GridThread) {
   let mut last_quads: Vec<[u8; 8]> = vec![];
   let mut next_pulse = Instant::now() + DIM_PULSE.period;
   let mut buf = [0u8; 2048];
+  let mut live_generation = rt.live.generation.load(Ordering::SeqCst);
 
   while !STOP.load(Ordering::SeqCst) {
+    // Adopt hot-reloaded parameters ('r'): cheap generation check per iteration.
+    let generation = rt.live.generation.load(Ordering::SeqCst);
+    if generation != live_generation {
+      live_generation = generation;
+      refresh_live(&mut rt);
+    }
     if let Ok((n, _)) = rt.sock.recv_from(&mut buf) {
       if let Ok((_, OscPacket::Message(msg))) = decoder::decode_udp(&buf[..n]) {
         if msg.addr == "/serialosc/device" && msg.args.len() >= 3 {
@@ -695,6 +856,8 @@ fn grid_thread(mut rt: GridThread) {
     let volume_col = volume_active_col(&rt);
     let (mut buttons, sustained_classes) = accrete_view(&rt);
     buttons.push((rt.distortion_rect, rt.distortion_on.load(Ordering::Relaxed)));
+    buttons.push((rt.slide_rect, rt.slide_on.load(Ordering::Relaxed)));
+    buttons.push((rt.mono_rect, rt.mono_on.load(Ordering::Relaxed)));
     let mut sounding_classes = union_sounding(&rt.sounding);
     sounding_classes.extend(sustained_classes);
     let trail_classes = trail_set(&rt.trail);
@@ -768,6 +931,19 @@ fn handle_key(
     }
     return;
   }
+  // Slide / mono toggles: key-down flips the GLOBAL switch; key-up does nothing.
+  if in_overlay(rt.slide_rect, cell) {
+    if press {
+      let _ = rt.slide_on.fetch_xor(true, Ordering::Relaxed);
+    }
+    return;
+  }
+  if in_overlay(rt.mono_rect, cell) {
+    if press {
+      let _ = rt.mono_on.fetch_xor(true, Ordering::Relaxed);
+    }
+    return;
+  }
   // The accrete (sustain) buttons. All three act on the SHARED state, so either
   // grid's trio works. Decisions are made under the accrete lock, voices are touched
   // after it drops (the module's no-nested-locks rule).
@@ -815,37 +991,86 @@ fn handle_key(
   }
   if press {
     let pitch = step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1);
+    // Mono: a new note cuts this grid's other fingered notes first. The cut goes
+    // through the ordinary release path, so accrete still captures it and the cut
+    // note lands in the slide candidate set (misc.org: with mono, the candidate
+    // set is a singleton -- exactly the note this one cuts).
+    if rt.mono_on.load(Ordering::Relaxed) {
+      let others: Vec<(i32, i32)> = held.keys().filter(|c| **c != cell).copied().collect();
+      for other in others {
+        release_cell(rt, held, other);
+      }
+    }
     let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
+    let timbre =
+      Timbre { waveform: slot.waveform, gain: slot.amplitude * gain, am: slot.am, fm: slot.fm };
+    // Slide: while on, re-trigger the nearest recently-released pitch and glide it
+    // into this one (consuming it as a source); otherwise a plain note.
+    let source = if rt.slide_on.load(Ordering::Relaxed) {
+      rt.slide.pick(pitch, Instant::now(), rt.slide_window)
+    } else {
+      None
+    };
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
-    rt.sink.note_on(
-      cell,
-      pitch,
-      Timbre { waveform: slot.waveform, gain: slot.amplitude * gain, am: slot.am, fm: slot.fm },
-    );
+    match source {
+      Some(from) => rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs),
+      None => rt.sink.note_on(cell, pitch, timbre),
+    }
     held.insert(cell, pitch);
     rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).note_played(rt.grid_index, pitch);
     push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
   } else {
-    // A note in the sustained set (or released under a live accreting condition)
-    // keeps ringing: its voice moves to the sustain register instead of releasing.
-    let sustains = held.get(&cell).copied().map(|pitch| {
-      let keep = rt
-        .accrete
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .note_released_sustains(rt.grid_index, pitch);
-      (pitch, keep)
-    });
-    match sustains {
-      Some((pitch, true)) => rt.sink.sustain_note(cell, pitch),
-      _ => rt.sink.note_off(cell),
-    }
-    held.remove(&cell);
+    release_cell(rt, held, cell);
   }
   publish_held(&rt.held_all, rt.grid_index, held);
   publish_sounding(&rt.sounding, rt.grid_index, held, rt.edo);
+}
+
+/// The one release path (finger up, or a mono cut): a note in the sustained set --
+/// or released under a live accreting condition -- keeps ringing (its voice moves to
+/// the sustain register); anything else releases normally and becomes a slide
+/// candidate (sustained notes don't: they are still audible, and sliding "from" a
+/// ringing drone would double it).
+fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>, cell: (i32, i32)) {
+  let Some(pitch) = held.get(&cell).copied() else {
+    rt.sink.note_off(cell);
+    return;
+  };
+  let keep = rt
+    .accrete
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .note_released_sustains(rt.grid_index, pitch);
+  if keep {
+    rt.sink.sustain_note(cell, pitch);
+  } else {
+    rt.sink.note_off(cell);
+    let mono = rt.mono_on.load(Ordering::Relaxed);
+    rt.slide.note_released(pitch, Instant::now(), mono);
+  }
+  held.remove(&cell);
+}
+
+/// Adopt the current `Live` parameters into this grid thread's working copies. An
+/// `edo` change invalidates every stored pitch *class*, so the shared trail is
+/// cleared (held pitches keep sounding; their classes are recomputed from the raw
+/// pitch on the next publish).
+fn refresh_live(rt: &mut GridThread) {
+  let p = *rt.live.params.lock().unwrap_or_else(|e| e.into_inner());
+  if p.edo != rt.edo {
+    rt.trail.lock().unwrap_or_else(|e| e.into_inner()).clear();
+  }
+  rt.x_step = p.x_step;
+  rt.y_step = p.y_step;
+  rt.edo = p.edo;
+  rt.trail_clobber_radius = p.trail_clobber_radius;
+  rt.trails_max = p.trails_max;
+  rt.slide_window = p.slide_window;
+  rt.slide_duration_secs = p.slide_duration_secs;
+  rt.timbres = p.timbres;
+  rt.sink.retune(p.fund, p.edo, p.sustain_level, p.decay_secs);
 }
 
 /// Mirror this grid's held map into the shared per-grid registry (for accrete's
@@ -1212,7 +1437,12 @@ mod tests {
       assert_eq!(g.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
       assert_eq!(g.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
       assert_eq!(g.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
+      assert_eq!(g.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
+      assert_eq!(g.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
     }
+    // The [surfaces] slide knobs flow into the settings.
+    assert_eq!(s.slide_window, Duration::from_millis(1000));
+    assert!((s.slide_duration_secs - 0.1).abs() < 1e-6);
     // The sink's distortion curve flows into the settings.
     assert_eq!(s.distortion, Distortion { scale: 1.0, shape: 2.0 });
     // The `[surfaces]` table flows into the settings (this config asks for 9 trails).
@@ -1248,7 +1478,7 @@ mod tests {
     let handle = {
       let config = config.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true) {
+        if let Err(e) = run(&config, detector_port, true, None) {
           eprintln!("mock surfaces run error: {e}");
         }
       })
@@ -1302,6 +1532,40 @@ mod tests {
     STOP.store(false, Ordering::SeqCst);
   }
 
+  #[test]
+  fn adopt_config_swaps_the_live_parameters_and_bumps_the_generation() {
+    // Start from the mock config, then "edit" it (amplitude, tuning, a timbre, the
+    // slide knobs) and reload: the live params reflect every change and the
+    // generation moves, so grid threads and the audio callback pick them up.
+    let base = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("config loads");
+    let s = resolve_settings(&base).expect("resolves");
+    let live = Live { generation: AtomicU64::new(0), params: Mutex::new(live_params(&s)) };
+
+    let source = std::fs::read_to_string(
+      midi_pulse::config::mock_config_dir().join("2-monomes_58-8-1_kmss-drums-mock.toml"),
+    )
+    .expect("read mock toml");
+    let edited = source
+      .replace("amplitude = 0.15", "amplitude = 0.25")
+      .replace("edo = 58", "edo = 41")
+      .replace("x_step = 8", "x_step = 7")
+      .replace(WAVE_SQUARE, "waveform = \"square\"\nfm_depth_cents = 25.0")
+      .replace("slide_duration_ms = 100", "slide_duration_ms = 250");
+    let config = midi_pulse::config::parse_config(&edited).expect("edited config parses");
+    adopt_config(&config, &live).expect("adopts");
+
+    assert_eq!(live.generation.load(Ordering::SeqCst), 1, "generation bumped");
+    let p = live.params.lock().unwrap();
+    assert_eq!(p.amplitude, 0.25);
+    assert_eq!(p.edo, 41);
+    assert_eq!(p.x_step, 7);
+    assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
+    assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
+  }
+
+  /// The `[[timbres]]` square entry, replaced by the reload test.
+  const WAVE_SQUARE: &str = "waveform = \"square\"";
+
   /// The accrete (sustain) buttons end-to-end: toggle accrete mode on grid a, play a
   /// note, release it -- it keeps ringing (stays bright on BOTH grids) -- then clear
   /// from grid B (the state is shared), and the note drops to the dim trail. Also
@@ -1321,7 +1585,7 @@ mod tests {
     let handle = {
       let config = config.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true) {
+        if let Err(e) = run(&config, detector_port, true, None) {
           eprintln!("mock accrete run error: {e}");
         }
       })
@@ -1374,10 +1638,11 @@ mod tests {
     STOP.store(false, Ordering::SeqCst);
   }
 
-  /// The distortion toggle end-to-end: rests dim at (0,1), a press lights it on BOTH
-  /// grids (one global switch), a second press (from the other grid) turns it off.
+  /// The global toggles (distortion / slide / mono) end-to-end: each rests dim, a
+  /// press lights it on BOTH grids (one global switch each), a second press (from
+  /// the other grid) turns it off.
   #[test]
-  fn distortion_toggle_mirrors_across_grids() {
+  fn global_toggles_mirror_across_grids() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1390,7 +1655,7 @@ mod tests {
     let handle = {
       let config = config.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true) {
+        if let Err(e) = run(&config, detector_port, true, None) {
           eprintln!("mock distortion run error: {e}");
         }
       })
@@ -1400,16 +1665,19 @@ mod tests {
     let b = rig.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    assert!(wait_until(secs(3), || a.level_at(0, 1) == 4 && b.level_at(0, 1) == 4),
-      "the toggle rests dim on both grids");
-    a.press(0, 1);
-    a.release(0, 1);
-    assert!(wait_until(secs(3), || a.level_at(0, 1) == 15), "on: lit on grid a");
-    assert!(wait_until(secs(3), || b.level_at(0, 1) == 15), "on: lit on grid b (global)");
-    b.press(0, 1);
-    b.release(0, 1);
-    assert!(wait_until(secs(3), || a.level_at(0, 1) == 4 && b.level_at(0, 1) == 4),
-      "off again from the other grid");
+    // (0,1) distortion, (1,1) slide, (1,2) mono -- same toggle machinery each.
+    for (x, y, name) in [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono")] {
+      assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
+        "{name} rests dim on both grids");
+      a.press(x, y);
+      a.release(x, y);
+      assert!(wait_until(secs(3), || a.level_at(x, y) == 15), "{name} on: lit on grid a");
+      assert!(wait_until(secs(3), || b.level_at(x, y) == 15), "{name} on: lit on grid b (global)");
+      b.press(x, y);
+      b.release(x, y);
+      assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
+        "{name} off again from the other grid");
+    }
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();
@@ -1436,7 +1704,7 @@ mod tests {
     let handle = {
       let config = config.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true) {
+        if let Err(e) = run(&config, detector_port, true, None) {
           eprintln!("mock monobright run error: {e}");
         }
       })

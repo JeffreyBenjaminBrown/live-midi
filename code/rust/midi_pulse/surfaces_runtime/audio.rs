@@ -10,8 +10,9 @@ use cpal::SampleFormat;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::Live;
 use crate::types::{AmShapeFamily, VoiceMap};
-use crate::voices::{BlockRenderer, Distortion};
+use crate::voices::BlockRenderer;
 
 pub struct Audio {
   /// Kept alive for the run; dropping it stops the stream. `None` in the null path
@@ -32,10 +33,9 @@ pub fn start(
   voices: Arc<Mutex<VoiceMap>>,
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
-  amplitude: f32,
   oversample: usize,
   am_shape_family: AmShapeFamily,
-  distortion: Distortion,
+  live: Arc<Live>,
   distortion_on: Arc<AtomicBool>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
@@ -80,10 +80,15 @@ pub fn start(
   let stream = device.build_output_stream(
     &stream_config,
     move |data: &mut [f32], _| {
+      // The master amplitude + distortion curve are hot-reloadable ('r'), and the
+      // distortion toggle is live -- read all three fresh each callback.
+      let (amplitude, distortion_params) = {
+        let p = live.params.lock().unwrap_or_else(|e| e.into_inner());
+        (p.amplitude, p.distortion)
+      };
+      let distortion = distortion_on.load(Ordering::Relaxed).then_some(distortion_params);
       // Recover from poisoning so a panicked grid thread can't permanently kill audio.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-      // The distortion toggle is live: read per callback, applied to the summed mix.
-      let distortion = distortion_on.load(Ordering::Relaxed).then_some(distortion);
       // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.
       renderer.render_with_distortion(
         &mut voices, data, channels, sample_rate, amplitude, am_shape_family, distortion,

@@ -108,6 +108,8 @@ impl SawNoteSink {
       VoiceState {
         id,
         freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
         phase: 0.0,
         env: 0.0,
         target_env: 1.0,
