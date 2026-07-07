@@ -20,10 +20,11 @@ use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
 /// Set the per-voice gain of every voice belonging to `grid`, in place. Drives the
-/// *live* volume control: a grid's volume strip re-timbres the *other* grid, and moving
-/// it must change notes that are already sounding (a fader, not a radio) -- so we walk
-/// the shared map and rescale that grid's voices. Future note-ons pick up the new gain
-/// from the shared per-grid state; this only touches the ones already in flight.
+/// *live* volume control: a volume strip sets the loudness of whatever grid it
+/// `controls` (its own, in the current rigs), and moving it must change notes that are
+/// already sounding (a fader, not a radio) -- so we walk the shared map and rescale
+/// that grid's voices. Future note-ons pick up the new gain from the shared per-grid
+/// state; this only touches the ones already in flight.
 pub fn set_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {

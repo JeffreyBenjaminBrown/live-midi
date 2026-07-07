@@ -241,17 +241,16 @@ Built-in unbundled window kinds:
 - ~volume_strip~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
-to right) that sets the timbre of the monome named by its ~controls~ field -- which
-may differ from the window's own ~monome~. The surfaces runtime uses it to let each
-of two play grids re-timbre the *other* (see
+to right) that sets the timbre of the monome named by its ~controls~ field -- usually
+the window's own ~monome~, though a different play grid is legal (cross-control).
+The surfaces runtime uses it to give each play grid its own timbre control (see
 [[./2-monomes_58-8-1_kmss-drums.org]]). Its rect must cover exactly the four cells
 (one row, four wide).
 
 A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
-loudness of the monome named by its ~controls~ field. Like ~waveform_selector~ it
-*cross-controls* (each grid's strip sets the OTHER grid's volume) and is *live* --
-moving it rescales that grid's sounding voices, not just future notes. The active
-cell is lit, the rest dark.
+loudness of the monome named by its ~controls~ field (again usually its own grid)
+and is *live* -- moving it rescales that grid's sounding voices, not just future
+notes. The active cell is lit, the rest dark.
 
 #+begin_src toml
 [[monome_windows]]
@@ -259,7 +258,7 @@ id = "vol-a"
 monome = "a"               # drawn on grid A's top row
 kind = "volume_strip"
 rect = [4, 0, 15, 0]       # 12 cells, right of the 4-cell waveform strip
-controls = "b"             # -> sets grid B's loudness
+controls = "a"             # -> sets grid A's own loudness
 #+end_src
 
 #+begin_src toml
@@ -268,7 +267,7 @@ id = "wave-a"
 monome = "a"               # drawn on grid A's top row
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "b"             # -> sets grid B's timbre (must have an edo_note_grid)
+controls = "a"             # -> sets grid A's own timbre (must have an edo_note_grid)
 #+end_src
 
 The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a

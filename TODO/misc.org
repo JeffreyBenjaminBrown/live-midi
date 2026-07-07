@@ -1,0 +1,52 @@
+* Don't cross the waveform, amplitude controls.
+In a few of the configs at code/rust/configs/,
+the waveform and amplitude for one monome
+are controlled by the other monome.
+In the case of the complex looper-plus-edo rig,
+leave it that way.
+But for the rig(s) that have two edo-grid monomes,
+let's have each grid host its own timbre and amplitude controls,
+rather than the other's.
+* better FM
+According to (someone?), "The most advanced linear synths use "Through-Zero FM." If the modulation forces the frequency below 0 Hz, the oscillator doesn't stop; it flips its phase (180°) and runs backward, exactly like a Ring Modulator (DSB-SC) does at the zero line."
+
+I don't know whether we already do this. If not, let's,
+wherever we do FM.
+* sustain ("accrete")
+For the 3-surfaces rig(s) -- that is, softstep + 2 monomes --
+let's put three buttons in the bottom row on the left:
+- clear : Silences and flushes all accreted notes. Lights when pressed. Works on key-down; does nothing on key up.
+- accrete-needs-holding : Pressing this changes the way the third button behaves. Key down toggles state; key up does nothing. When accrete needs holding, this is lit; otherwise accrete does not need holding.
+- accrete : If "accrete needs holding", then holding this key down causes any notes fingered on the big edo grid (even if they were pressed before this, as long as they are now held) to be added to the sustained set. The sustained set of notes will continue ringing even when they stop being fingered, until the sustained set is cleared. If accrete does not need holding, then key-down toggles 'accrete mode', where every note played (plus any that were being held when it entered accrete mode) becomes part of the sustained set. key-up does nothing. When accrete mode is un-toggled, new notes are not added to the sustained set, but nothing is deleted from the sustained set until 'clear' is pressed.
+* distortion
+Let's add a button in the second row from the top, far left --
+I think that's button (0,1),
+and will describe coordinates that wayfrom now on --
+for both of the monomes in 3-surfaces, that turns on
+a *global* distortion, applied to the sum of all the voices.
+Somewhere in this codebase already, I think,
+is a distortion algorithm that's nice and simple,
+with a scale parameter and a shape parameter.
+Let's make those two parameters configurable in the config.
+The live distortion control is just on/off.
+* config reload
+If I adjust parameters in the config,
+pressing 'r' should cause the new ones to be read and applied.
+For some kinds of parameters that would probably be hard;
+don't worry about those.
+I'm just thinking about amplitude, timbre and pitch changes,
+all of which I think should be easy to hot-reload.
+* synth attacks should be louder
+Here I'm only talking about the synth, not the drum samples.
+Please find online (or maybe you know by heart)
+how a plucked guitar string's amplitude changes over time.
+Adjust the synths to follow that kind of curve.
+It doesn't have to be completely accurate;
+a simple decay rate algorithm would probably do the job.
+I'm just trying to make new notes easier to distinguish by ear
+from notes that were struck earlier.
+* configure the four waveforms
+Currently there are four timbres available:
+sin, tri, square, saw.
+And there are a bunch of parameters available for them:
+FM, AM, etc.

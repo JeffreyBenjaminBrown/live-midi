@@ -23,10 +23,11 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   by an octave. Reuses the looper's =edo_shift_pad=.
 - *waveform strip / selector* -- a 4-cell radio on a grid's top row
   (=[0,0]..[3,0]=): sine / triangle / square / saw, left to right. Each grid's strip
-  sets the *other* grid's timbre (cross-control). No AM/FM.
+  sets its *own* timbre (self-control, since 2026-07; the =controls= field can still
+  point strips across grids, but this rig no longer does). No AM/FM.
 - *volume strip / fader* -- the 12 cells right of the waveform strip (=[4,0]..[15,0]=): a
   log fader over 30 dB, top cell = unity, starting at column 10. Like the waveform strip it
-  sets the *other* grid's loudness (cross-control), and it is *live* -- moving it rescales
+  sets its *own* grid's loudness, and it is *live* -- moving it rescales
   that grid's already-sounding voices, not just future notes.
 - *trail* -- up to ~trails_max~ recently played *pitch classes* (octave-independent; 9
   here), shared across both grids, shown dim on both as a backdrop; a currently-sounding
@@ -66,12 +67,12 @@ test (=surfaces_runtime::tests::two_grids_run_against_mock_grids=) against the
 
 * per-grid layout
 
-Both grids are identical except for which grid their strip controls. The whole
-16x16 is the play surface, with two overlays drawn on top:
+The two grids are identical. The whole 16x16 is the play surface, with two
+overlays drawn on top:
 
 #+begin_example
   col: 0   1   2   3   4   5  ...        13  14  15
-  row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls the OTHER
+  row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls THIS
                                                                grid: waveform (0..3) + volume
   row 1   .   .   .   .   .                    .   .   .
    ...                     (58-EDO play cells)
@@ -104,8 +105,8 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
   within ~1/trail_clobber_radius~ of an octave (1/27 here) -- so the dim backdrop stays
   sparse. Both are set in the ~[surfaces]~ table.
 - *Waveform strip*: the selected waveform is bright, the other three dim; a grid's strip
-  shows the waveform *it controls* (the other grid's timbre).
-- *Volume strip*: the active cell is lit, the rest dark; it shows the *other* grid's volume.
+  shows the waveform *it controls* (its own timbre, in this rig).
+- *Volume strip*: the active cell is lit, the rest dark; it shows the grid's own volume.
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
 
@@ -117,9 +118,9 @@ level. The runtime decides per grid from the *serial id* (both report type "mono
 With many dim cells lit at once the flash slows into mild flicker on the monobright grid
 -- an accepted trade.
 
-* the cross-grid waveform control (how to read it)
+* the waveform control (how to read it)
 
-Each grid's strip re-timbres the *other* grid. In the config this is the =controls=
+Each grid's strip re-timbres its *own* grid. In the config this is the =controls=
 field of the =waveform_selector= window:
 
 #+begin_src toml
@@ -128,15 +129,18 @@ id = "wave-a"
 monome = "a"
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "b"            # -> sets grid B's timbre
+controls = "a"            # -> sets grid A's own timbre
 #+end_src
 
-So: press a cell on *grid A's* strip -> *grid B's* future notes use that waveform,
-and grid A's strip lights the chosen cell (because A's strip *displays what it
-controls*, which is B's timbre). The change is *radio* semantics: it affects future
-notes on the target grid; notes already held keep their waveform. This keeps each
-grid visible while you shape the other's tone from across the table (6_plan-style
-"edit X on the not-X surface").
+So: press a cell on *grid A's* strip -> *grid A's* future notes use that waveform,
+and the strip lights the chosen cell (a strip always *displays what it controls*).
+The change is *radio* semantics: it affects future notes on the target grid; notes
+already held keep their waveform.
+
+Historical note: this rig originally *cross-controlled* (each strip set the OTHER
+grid, 6_plan-style "edit X on the not-X surface"); per =TODO/misc.org= (2026-07)
+the two-edo-grid rigs now self-control. The =controls= field still accepts any
+play grid, so cross-wiring remains a config choice, not a code change.
 
 * the KMSS drumkit
 

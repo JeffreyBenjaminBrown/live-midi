@@ -1,6 +1,7 @@
 //! The surfaces runtime: two independent EDO play grids (each with a scroll pad and a
-//! waveform selector that re-timbres the *other* grid) plus the KMSS pedalboard as a
-//! drumkit -- three surfaces at once, in one process.
+//! waveform selector + volume strip -- wired per config via `controls`, which the
+//! current rigs point at the strip's own grid) plus the KMSS pedalboard as a drumkit
+//! -- three surfaces at once, in one process.
 //!
 //! `midi_pulse.rs::main` dispatches to exactly one runtime, and the three features
 //! each otherwise take over the whole app (EDO grid+synth = sawwave, the scroll pad =
@@ -453,7 +454,7 @@ struct GridThread {
   /// Per-grid volume position (column within the strip) and linear gain.
   volume_pos: Arc<Mutex<Vec<i32>>>,
   gains: Arc<Mutex<Vec<f32>>>,
-  /// The shared voice map, for the live volume rescale of another grid's voices.
+  /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
   sink: SurfaceSink,
 }
@@ -525,9 +526,9 @@ fn grid_thread(mut rt: GridThread) {
       }
     }
 
-    // Repaint. The overlays show what THIS grid controls on the OTHER grid; the play
-    // cells reflect the union of both grids' sounding classes (bright) and the shared
-    // trail (dim), through the current register.
+    // Repaint. The overlays show the state of whatever grid THIS grid's strips control
+    // (its own, in the current rigs); the play cells reflect the union of both grids'
+    // sounding classes (bright) and the shared trail (dim), through the current register.
     let selector_waveform = current_waveform(&rt.waveforms, rt.controls_index);
     let volume_col = volume_active_col(&rt);
     let sounding_classes = union_sounding(&rt.sounding);
@@ -869,9 +870,10 @@ mod tests {
 
   #[test]
   fn selector_writes_the_controlled_grids_waveform_slot() {
-    // A grid's selector re-timbres the grid at `controls_index`, leaving its own
-    // slot untouched. With grid 0's strip controlling grid 1 (the config's cross-
-    // wiring), a press on grid 0's saw cell must set grid 1's waveform to Saw only.
+    // A grid's selector re-timbres the grid at `controls_index`, leaving every other
+    // slot untouched. Wire grid 0's strip to grid 1 (cross-control is still legal
+    // config even though the current rigs self-control): a press on grid 0's saw cell
+    // must set grid 1's waveform to Saw only.
     let waveforms = Arc::new(Mutex::new(vec![Waveform::default(); 2]));
     set_waveform(&waveforms, 1, Waveform::Saw); // grid 0's selector -> grid 1
     assert_eq!(current_waveform(&waveforms, 1), Waveform::Saw, "grid 1 (controlled) got saw");
@@ -916,16 +918,18 @@ mod tests {
   }
 
   #[test]
-  fn resolves_two_grids_with_cross_control() {
+  fn resolves_two_grids_with_self_control() {
     let config = load_named_config("2-monomes_58-8-1_kmss-drums").expect("config loads");
     let s = resolve_settings(&config).expect("resolves without hardware");
     assert_eq!(s.grids.len(), 2, "two play grids");
     assert!(s.has_drums, "the KMSS drumkit is present");
-    // Each grid's selector and volume strip control the OTHER grid.
-    assert_eq!(s.grids[0].controls_index, 1, "grid 0's strip re-timbres grid 1");
-    assert_eq!(s.grids[1].controls_index, 0, "grid 1's strip re-timbres grid 0");
-    assert_eq!(s.grids[0].volume_controls_index, 1, "grid 0's volume sets grid 1");
-    assert_eq!(s.grids[1].volume_controls_index, 0, "grid 1's volume sets grid 0");
+    // Each grid's selector and volume strip control its OWN grid (per TODO/misc.org,
+    // 2026-07; the looper-plus-edo rig keeps its cross-surface timbre editing, which
+    // is a different mechanism entirely).
+    assert_eq!(s.grids[0].controls_index, 0, "grid 0's strip re-timbres grid 0");
+    assert_eq!(s.grids[1].controls_index, 1, "grid 1's strip re-timbres grid 1");
+    assert_eq!(s.grids[0].volume_controls_index, 0, "grid 0's volume sets grid 0");
+    assert_eq!(s.grids[1].volume_controls_index, 1, "grid 1's volume sets grid 1");
     // Both grids carry a scroll pad, a selector, and a volume strip.
     for g in &s.grids {
       assert_ne!(g.scroll_rect, NO_RECT, "grid {:?} has a scroll pad", g.monome_id);
@@ -998,16 +1002,17 @@ mod tests {
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "released note lingers dim on grid a");
     assert!(wait_until(secs(3), || b.level_at(5, 5) == 4), "released note lingers dim on grid b");
 
-    // Grid a's selector sets grid b's waveform to SAW (cell (3,0)) -> grid a's strip
-    // repaints to show saw selected.
+    // Grid a's selector sets grid a's OWN waveform to SAW (cell (3,0)) -> its strip
+    // repaints to show saw selected; grid b's strip (b's own waveform) is untouched.
     a.press(3, 0);
     a.release(3, 0);
     assert!(wait_until(secs(3), || a.level_at(3, 0) == 15 && a.level_at(1, 0) == 4),
       "grid a strip now shows saw selected (triangle dims)");
+    assert!(wait_until(secs(3), || b.level_at(1, 0) == 15), "grid b's strip still shows its own triangle");
 
-    // Volume strip (feature 2): grid a's strip shows grid b's volume, starting at the
-    // default column 10; pressing another cell on grid a moves grid b's active column.
-    assert!(wait_until(secs(3), || a.level_at(10, 0) == 15), "grid a shows grid b's default volume (col 10)");
+    // Volume strip (feature 2): grid a's strip shows grid a's own volume, starting at
+    // the default column 10; pressing another cell moves its active column.
+    assert!(wait_until(secs(3), || a.level_at(10, 0) == 15), "grid a shows its own default volume (col 10)");
     a.press(4, 0);
     a.release(4, 0);
     assert!(wait_until(secs(3), || a.level_at(4, 0) == 15 && a.level_at(10, 0) == 0),

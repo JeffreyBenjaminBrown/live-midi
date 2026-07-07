@@ -9,11 +9,11 @@ title = "Two monomes (58-8-1) + KMSS drums"
 #     independent scroll register and its own voices;
 #   - the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.
 #
-# Each grid also carries a 4-cell waveform strip on its top row that sets the
-# *other* grid's timbre (cross-control), and a 3x2 scroll pad in the bottom-
-# right that moves *that* grid's pitch window. The same pitch fingered on both
-# grids is two independent voices (releasing one never cuts the other), each in
-# its grid's currently-selected waveform.
+# Each grid also carries a 4-cell waveform strip on its top row that sets its
+# OWN timbre, a volume fader that sets its OWN loudness, and a 3x2 scroll pad
+# in the bottom-right that moves *that* grid's pitch window. The same pitch
+# fingered on both grids is two independent voices (releasing one never cuts
+# the other), each in its grid's currently-selected waveform.
 #
 # Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
 #   pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
@@ -73,7 +73,7 @@ prefix = "/surface-b"
 select.size = [16, 16]
 
 # ---------------------------------------------------------------------------
-# GRID A -- 58-EDO play surface. Its waveform strip sets grid B's timbre.
+# GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 # ---------------------------------------------------------------------------
 
 [[monome_windows]]
@@ -84,15 +84,15 @@ rect = [0, 0, 15, 15]
 tuning = "main"
 sink = "synth"
 
-# 4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID B.
+# 4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID A.
 [[monome_windows]]
 id = "wave-a"
 monome = "a"
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "b"
+controls = "a"
 
-# 12-cell volume strip filling the rest of the top row, sets GRID B's loudness. Live
+# 12-cell volume strip filling the rest of the top row, sets GRID A's loudness. Live
 # (a fader, not a radio), logarithmic over 30 dB, top cell = unity; the active cell is
 # lit and the rest dark. Starts at column 10 (5 cells of headroom to its right).
 [[monome_windows]]
@@ -100,7 +100,7 @@ id = "vol-a"
 monome = "a"
 kind = "volume_strip"
 rect = [4, 0, 15, 0]
-controls = "b"
+controls = "a"
 
 # 3x2 scroll pad, bottom-right: arrows shift grid A's pitch window by one cell,
 # the two top corners by an octave.
@@ -111,7 +111,7 @@ kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
 
 # ---------------------------------------------------------------------------
-# GRID B -- 58-EDO play surface. Its waveform strip sets grid A's timbre.
+# GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 # ---------------------------------------------------------------------------
 
 [[monome_windows]]
@@ -127,14 +127,14 @@ id = "wave-b"
 monome = "b"
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "a"
+controls = "b"
 
 [[monome_windows]]
 id = "vol-b"
 monome = "b"
 kind = "volume_strip"
 rect = [4, 0, 15, 0]
-controls = "a"
+controls = "b"
 
 [[monome_windows]]
 id = "scroll-b"

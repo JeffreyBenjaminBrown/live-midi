@@ -538,22 +538,23 @@ pub enum MonomeWindowConfig {
   },
   // A 4-cell waveform picker (sine / triangle / square / saw) overlaid on the edo
   // grid. Used by the surfaces runtime: each grid's strip sets the timbre of the
-  // monome named by `controls` (the config wires each grid's strip to the OTHER
-  // grid). Purely a radio selector -- no gain/AM/FM, fixed volume.
+  // monome named by `controls` -- the strip's own grid in the current rigs, but any
+  // play grid is legal (cross-control). Purely a radio selector -- no gain/AM/FM,
+  // fixed volume.
   WaveformSelector {
     id: String,
     monome: String,
     rect: [i32; 4],
-    /// The monome id whose play voices this strip re-timbres (may differ from
-    /// `monome`, which is the surfaces cross-control the config uses).
+    /// The monome id whose play voices this strip re-timbres (usually `monome`
+    /// itself; a different id cross-controls that grid instead).
     controls: String,
   },
   // A one-row volume strip overlaid on the edo grid (surfaces runtime). The 12 cells
   // right of the waveform selector on the top row; the active cell is lit, the rest
   // dark. Log-spaced over a fixed dB range; the top cell is unity. Like the waveform
-  // strip it *cross-controls* -- each grid's volume sets the loudness of the monome
-  // named by `controls` (the OTHER grid), and it is *live* (moving it rescales that
-  // grid's sounding voices, not just future notes).
+  // strip it sets the loudness of the monome named by `controls` (its own grid in the
+  // current rigs), and it is *live* (moving it rescales that grid's sounding voices,
+  // not just future notes).
   VolumeStrip {
     id: String,
     monome: String,
