@@ -19,17 +19,25 @@ use std::sync::{Arc, Mutex};
 use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
+/// The `chord` offset that marks a voice as *sustained* (accreted) rather than
+/// fingered: a sustained voice from grid `g` is keyed `Accreted { chord: SUSTAIN_BASE
+/// + g, .. }`. Far above any real grid index, so finger and sustain keys never
+/// collide in the shared map.
+pub const SUSTAIN_BASE: usize = 0x100;
+
 /// Set the per-voice gain of every voice belonging to `grid`, in place. Drives the
 /// *live* volume control: a volume strip sets the loudness of whatever grid it
 /// `controls` (its own, in the current rigs), and moving it must change notes that are
 /// already sounding (a fader, not a radio) -- so we walk the shared map and rescale
 /// that grid's voices. Future note-ons pick up the new gain from the shared per-grid
-/// state; this only touches the ones already in flight.
+/// state; this only touches the ones already in flight. Sustained (accreted) voices
+/// keep following the fader of the grid they came from -- a drone you can only kill
+/// with `clear` should at least obey a volume pedal.
 pub fn set_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
     if let VoiceSource::Accreted { chord, .. } = src {
-      if *chord == grid {
+      if *chord == grid || *chord == SUSTAIN_BASE + grid {
         state.timbre.gain = gain;
       }
     }
@@ -42,6 +50,12 @@ pub fn set_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
 /// so `y * 256 + x` is collision-free for any real grid.
 fn voice_key(grid: usize, cell: (i32, i32)) -> VoiceSource {
   VoiceSource::Accreted { chord: grid, pitch: cell.1 * 256 + cell.0 }
+}
+
+/// The key of a *sustained* voice: per source grid and absolute pitch (the accrete
+/// set is keyed the same way), disjoint from every finger key via `SUSTAIN_BASE`.
+fn sustain_key(grid: usize, pitch: i32) -> VoiceSource {
+  VoiceSource::Accreted { chord: SUSTAIN_BASE + grid, pitch }
 }
 
 /// One grid's voice driver into a *shared* `VoiceMap` (both grids + the audio stream
@@ -101,6 +115,41 @@ impl SurfaceSink {
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+    }
+  }
+
+  /// The accrete path's note-off: instead of releasing, move `cell`'s voice under the
+  /// sustain key for `pitch` (its struck pitch), so it keeps ringing -- seamlessly,
+  /// since it is the same `VoiceState` continuing. If a sustained voice already rings
+  /// at that key (the pitch was sustained twice from this grid), release the finger
+  /// voice normally instead: overwriting a mid-ring voice with a phase-mismatched one
+  /// would click, and one drone at the pitch is enough.
+  pub fn sustain_note(&mut self, cell: (i32, i32), pitch: i32) {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut state) = voices.remove(&voice_key(self.grid, cell)) else {
+      return;
+    };
+    let key = sustain_key(self.grid, pitch);
+    if voices.contains_key(&key) {
+      state.target_env = 0.0;
+      state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+      voices.insert(voice_key(self.grid, cell), state);
+    } else {
+      voices.insert(key, state);
+    }
+  }
+
+  /// The accrete 'clear': ramp EVERY sustained voice (both grids') to silence over
+  /// this sink's release time. Fingered voices are untouched.
+  pub fn release_all_sustained(&mut self) {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    for (src, state) in voices.iter_mut() {
+      if let VoiceSource::Accreted { chord, .. } = src {
+        if *chord >= SUSTAIN_BASE {
+          state.target_env = 0.0;
+          state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+        }
+      }
     }
   }
 }
@@ -173,5 +222,65 @@ mod tests {
     let mut a = sink(0, &voices);
     a.note_off((9, 9)); // must not panic
     assert_eq!(count(&voices), 0);
+  }
+
+  #[test]
+  fn sustain_note_keeps_the_voice_ringing_under_the_sustain_key() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre::default());
+    a.sustain_note((3, 4), 20);
+    assert_eq!(count(&voices), 1, "the voice moved, not duplicated");
+    let v = voices.lock().unwrap();
+    let state = v.get(&sustain_key(0, 20)).expect("re-keyed under the sustain key");
+    assert_eq!(state.target_env, 1.0, "still ringing (no release ramp)");
+    assert!(v.get(&voice_key(0, (3, 4))).is_none(), "the finger key is gone");
+  }
+
+  #[test]
+  fn sustaining_the_same_pitch_twice_releases_the_second_finger_voice() {
+    // Cells (0,8) and (1,0) both sound step 8 in 58-8-1. Sustaining both: the first
+    // becomes the drone; the second releases normally (no click, no double drone).
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((0, 8), 8, Timbre::default());
+    a.note_on((1, 0), 8, Timbre::default());
+    a.sustain_note((0, 8), 8);
+    a.sustain_note((1, 0), 8);
+    assert_eq!(target_env(&voices, 0, (1, 0)), Some(0.0), "second finger voice ramps out");
+    let v = voices.lock().unwrap();
+    assert_eq!(v.get(&sustain_key(0, 8)).map(|s| s.target_env), Some(1.0), "one drone rings");
+  }
+
+  #[test]
+  fn release_all_sustained_silences_both_grids_drones_only() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let mut b = sink(1, &voices);
+    a.note_on((3, 4), 20, Timbre::default());
+    a.sustain_note((3, 4), 20);
+    b.note_on((5, 5), 33, Timbre::default());
+    b.sustain_note((5, 5), 33);
+    a.note_on((6, 6), 40, Timbre::default()); // a still-fingered note
+    a.release_all_sustained();
+    let v = voices.lock().unwrap();
+    assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(0.0), "grid a drone released");
+    assert_eq!(v.get(&sustain_key(1, 33)).map(|s| s.target_env), Some(0.0), "grid b drone released");
+    assert_eq!(v.get(&voice_key(0, (6, 6))).map(|s| s.target_env), Some(1.0), "fingered note untouched");
+  }
+
+  #[test]
+  fn the_volume_fader_reaches_sustained_voices_from_its_grid() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let mut b = sink(1, &voices);
+    a.note_on((3, 4), 20, Timbre::default());
+    a.sustain_note((3, 4), 20);
+    b.note_on((3, 4), 20, Timbre::default());
+    b.sustain_note((3, 4), 20);
+    set_grid_gain(&voices, 0, 0.25);
+    let v = voices.lock().unwrap();
+    assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain), Some(0.25), "grid 0's drone rescaled");
+    assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.timbre.gain), Some(1.0), "grid 1's drone untouched");
   }
 }

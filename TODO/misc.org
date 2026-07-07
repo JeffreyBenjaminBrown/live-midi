@@ -35,12 +35,25 @@ If what you actually want is audible through-zero *linear* FM as a playable
 timbre dimension, that's a new timbre parameter + config surface -- happy to
 build it, but since nothing existing would change sound, I stopped here.
 (Also noted in jeff-maybe-review-this.org.)
-* sustain ("accrete")
+* DONE sustain ("accrete")
 For the 3-surfaces rig(s) -- that is, softstep + 2 monomes --
 let's put three buttons in the bottom row on the left:
 - clear : Silences and flushes all accreted notes. Lights when pressed. Works on key-down; does nothing on key up.
 - accrete-needs-holding : Pressing this changes the way the third button behaves. Key down toggles state; key up does nothing. When accrete needs holding, this is lit; otherwise accrete does not need holding.
 - accrete : If "accrete needs holding", then holding this key down causes any notes fingered on the big edo grid (even if they were pressed before this, as long as they are now held) to be added to the sustained set. The sustained set of notes will continue ringing even when they stop being fingered, until the sustained set is cleared. If accrete does not need holding, then key-down toggles 'accrete mode', where every note played (plus any that were being held when it entered accrete mode) becomes part of the sustained set. key-up does nothing. When accrete mode is un-toggled, new notes are not added to the sustained set, but nothing is deleted from the sustained set until 'clear' is pressed.
+** [Claude] done -- buttons at (0,15)(1,15)(2,15) on BOTH grids, one shared state
+New =accrete_control= window kind (clear / needs_holding / accrete), wired into
+=2-monomes_58-8-1_kmss-drums= (+ its mock) on both grids; either grid's buttons
+act on the one instrument-wide state, and notes from *either* grid can sustain
+("the big edo grid" read as "the edo play surfaces"). Full behavior + layout:
+=code/rust/configs/2-monomes_58-8-1_kmss-drums.org=, "sustain (accrete)".
+Choices you might revisit (details in jeff-maybe-review-this.org):
+- needs-holding starts OFF (accrete is a toggle until you say otherwise);
+- idle buttons glow *dim* (findable, like the scroll arrows), bright when active;
+- sustained notes paint bright on both grids and follow the volume fader of the
+  grid they came from;
+- a note released while accrete is held/on joins the set at release time too
+  (the "as long as they are now held" continuous reading).
 * distortion
 Let's add a button in the second row from the top, far left --
 I think that's button (0,1),
@@ -80,3 +93,41 @@ It should also have choices for each of the numeric parameters,
 including amplitude.
 They can all (except amplitude) be configured to 'off' initially.
 They should all be commented to indicate reasonable value range.
+* slide
+Let's introduce a janky slide algorithm.
+Toggle it (key up does nothing) with the button
+right next to the distortion button (so (1,1)).
+
+Remember what notes have been played.
+(Maybe something else already does.)
+Each time a new note is played,
+find all notes that were being held within the last
+'slide-candidate-window' miliseconds but released before it.
+The nearest should be re-triggered,
+and should slide into the new pitch,
+taking 'slide-duration' miliseconds to reach it.
+
+When that happens, the source pitch
+(the early one, sliding into the target, which comes later)
+is removed from the candidate set for any further notes
+that might be triggered in the future.
+* mono
+This button should be right next to slide (so (1,2)).
+If it's on, each new note cuts off the old one.
+This interacts with slide -- the set of candidates is a singleton.
+* feet accrete
+As described above, there will be three buttons for
+accreting sustained notes in the bottom-left of both monomes.
+Let's put one more toggle switch 'sofstep-accretes'
+on both monomes, at (0,14) (so just above those three).
+When this button is on (key up does nothing),
+it mirrors those three buttons on the softstep.
+The older monome (you can see which one is the older one,
+somehow -- I believe there is code that already does this,
+because the older one is treated differently,
+flashing by hand to get dimness because it
+doesn't recognize that part of the serialoscd protocol, maybe?)
+gets mirrored to softstep pads 1, 2 and 3,
+and the other to pads 8,9,0.
+While those pads are mirroring the monome accrete controls,
+they do not control samples.

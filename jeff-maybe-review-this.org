@@ -1,0 +1,66 @@
+#+title: Decisions Claude made that Jeff might want to revisit
+#+date: 2026-07-07
+
+Running log for this work session (TODO/misc.org execution). Newest at the
+bottom of each section; each entry says what I chose and why, so you can
+reverse it cheaply if you disagree.
+
+* uncrossing the waveform/volume controls
+- I only rewired the *configs* (=2-monomes_58-8-1_kmss-drums.toml= + its mock):
+  =controls = "b"= -> ="a"= etc. The =controls= field itself stays general, so
+  cross-wiring remains a config choice. If you'd rather delete the field (self-
+  control always, less config surface), that's a small further change.
+- The looper-plus-edo rig needed no edit: its cross-surface timbre editing is
+  the timbre-editor mechanism, not =waveform_selector=/=volume_strip= windows.
+  Nothing else in the repo used cross-control.
+
+* through-zero FM
+- Our FM is *exponential* (depth in cents => frequency multiplier =2^(x)= > 0),
+  so no modulation can push the carrier below 0 Hz -- through-zero literally
+  cannot arise from the current controls. Full explanation inline in
+  TODO/misc.org.
+- Rather than do nothing, I made the shared oscillator core through-zero-
+  capable (negative phase increments run backward, PolyBLEP on =|dt|=), so any
+  future *linear* FM gets the behavior for free. No audible change to anything
+  existing.
+- *Revisit if:* you wanted audible through-zero linear FM as a playable timbre
+  dimension. That means a new timbre parameter (deviation in Hz, not cents) and
+  a config/editor surface for it -- say the word and I'll build it.
+
+* sustain ("accrete") -- choices where the spec was silent
+- *Which grid(s).* You wrote "the big edo grid"; this rig has two equal 16x16 play
+  grids, so I put the button trio on BOTH grids' bottom-left and made the state
+  *shared* -- either grid's buttons act globally, and notes from either grid can
+  sustain. If you meant only one grid, delete the other grid's three
+  =accrete_control= windows from the toml (the runtime handles any subset of grids
+  having the trio).
+- *needs-holding default: OFF* -- accrete starts as a toggle. Rationale: the toggle
+  costs no finger while playing, and the modifier button starting dark reads as
+  "nothing special active". Flip one boolean (=AccreteState::new=) to change.
+- *Idle LEDs are dim, not dark.* Spec says the buttons light when active; a fully
+  dark idle button is unfindable on a dark grid, so idle = dim (the scroll-arrow
+  convention). If you want spec-literal dark-at-rest, it's one constant in
+  =grid.rs= (=AccreteOverlay::level_at=).
+- *Sustained set keyed by (grid, pitch).* The same pitch sustained from both grids
+  is two drones (the surfaces "independent voices" ethos); the same pitch sustained
+  twice from ONE grid stays one drone (no doubling, no click).
+- *Sustained notes obey the volume fader* of the grid they came from (a drone you
+  can only kill with clear should at least obey a fader). They do NOT change
+  waveform retroactively (the radio-semantics rule: timbre is stamped at note-on).
+- *Clear vs still-fingered notes.* Clear flushes the set and silences the
+  *sustained* voices; notes still under a finger keep sounding as ordinary notes.
+  If accrete is still held/on when such a note is later released, it re-joins the
+  set at release time (I read "as long as they are now held" as a continuous
+  condition, not an edge). If you wanted clear to also end the accreting condition
+  itself, say so -- one line.
+- *LED semantics for sustained notes*: bright on both grids (they are sounding;
+  "only what you hear lights up"). They drop to the dim trail when cleared.
+
+* a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
+- =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
+  (changed in commit 63149a2, "complicate the softstep code"), while the file's
+  *name*, =title=, comments, its .org reference, and the mock config all still
+  say 58-8-1. I left the tuning as-is (it looked deliberate -- maybe you're
+  trying 46-EDO?) and left the name alone. If 46 is here to stay, the config
+  deserves a rename or at least a comment; if it was accidental cargo in that
+  commit, flip it back to =edo = 58, x_step = 8=.

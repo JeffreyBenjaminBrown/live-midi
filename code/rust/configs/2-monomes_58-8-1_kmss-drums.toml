@@ -110,6 +110,33 @@ monome = "a"
 kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
 
+# The sustain ("accrete") buttons, bottom row left (shared state -- either grid's
+# trio acts globally; see TODO/misc.org "sustain (accrete)"):
+#   (0,15) clear         -- silence + flush every sustained note (lit while pressed)
+#   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
+#   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
+#                           they ring until cleared
+[[monome_windows]]
+id = "acc-clear-a"
+monome = "a"
+kind = "accrete_control"
+rect = [0, 15, 0, 15]
+control = "clear"
+
+[[monome_windows]]
+id = "acc-hold-a"
+monome = "a"
+kind = "accrete_control"
+rect = [1, 15, 1, 15]
+control = "needs_holding"
+
+[[monome_windows]]
+id = "acc-accrete-a"
+monome = "a"
+kind = "accrete_control"
+rect = [2, 15, 2, 15]
+control = "accrete"
+
 # ---------------------------------------------------------------------------
 # GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 # ---------------------------------------------------------------------------
@@ -141,6 +168,33 @@ id = "scroll-b"
 monome = "b"
 kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
+
+# The sustain ("accrete") buttons, bottom row left (shared state -- either grid's
+# trio acts globally; see TODO/misc.org "sustain (accrete)"):
+#   (0,15) clear         -- silence + flush every sustained note (lit while pressed)
+#   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
+#   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
+#                           they ring until cleared
+[[monome_windows]]
+id = "acc-clear-b"
+monome = "b"
+kind = "accrete_control"
+rect = [0, 15, 0, 15]
+control = "clear"
+
+[[monome_windows]]
+id = "acc-hold-b"
+monome = "b"
+kind = "accrete_control"
+rect = [1, 15, 1, 15]
+control = "needs_holding"
+
+[[monome_windows]]
+id = "acc-accrete-b"
+monome = "b"
+kind = "accrete_control"
+rect = [2, 15, 2, 15]
+control = "accrete"
 
 # ---------------------------------------------------------------------------
 # KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit layout.

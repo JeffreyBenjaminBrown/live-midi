@@ -22,6 +22,7 @@
 //! the grid loops; teardown blanks both grids, drops audio, and restores the KMSS to
 //! standalone mode.
 
+mod accrete;
 pub mod audio;
 mod grid;
 mod synth;
@@ -35,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use rosc::{decoder, OscPacket, OscType};
 
-use midi_pulse::config::{Config, MonomeWindowConfig, SinkConfig};
+use midi_pulse::config::{AccreteControlKind, Config, MonomeWindowConfig, SinkConfig};
 use midi_pulse::device_assign::assign_distinct_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
 use midi_pulse::monome::{self, DeviceInfo};
@@ -44,7 +45,11 @@ use midi_pulse::monome_brightness::PulseBrightness;
 use crate::drumkit_runtime;
 use crate::types::{Timbre, VoiceMap, Waveform};
 
-use grid::{levels_for_grid, volume_cells, volume_gain_for_pos, waveform_for_selector_cell, BRIGHT, DIM};
+use accrete::AccreteState;
+use grid::{
+  levels_for_grid, volume_cells, volume_gain_for_pos, waveform_for_selector_cell, AccreteOverlay,
+  BRIGHT, DIM,
+};
 use synth::{set_grid_gain, SurfaceSink};
 
 /// The volume strip's total dB span (top cell unity, bottom cell -30 dB).
@@ -115,6 +120,11 @@ struct GridSettings {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets (self if it has no volume strip).
   volume_controls_index: usize,
+  /// The three accrete (sustain) buttons' cells, `NO_RECT` when absent. Both grids'
+  /// buttons drive ONE shared accrete state.
+  clear_rect: [i32; 4],
+  needs_holding_rect: [i32; 4],
+  accrete_rect: [i32; 4],
 }
 
 struct Settings {
@@ -235,6 +245,22 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       }
       None => (NO_RECT, index_of(monome_id).unwrap()),
     };
+    // The accrete (sustain) buttons, one rect per control kind (validation already
+    // guarantees a monome has either the whole trio or none of it).
+    let accrete_rect_on = |kind: AccreteControlKind| {
+      config
+        .monome_windows
+        .iter()
+        .find_map(|w| match w {
+          MonomeWindowConfig::AccreteControl { monome, rect, control, .. }
+            if monome == monome_id && *control == kind =>
+          {
+            Some(*rect)
+          }
+          _ => None,
+        })
+        .unwrap_or(NO_RECT)
+    };
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       listen_port: monome_cfg.listen_port,
@@ -245,6 +271,9 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       controls_index,
       volume_rect,
       volume_controls_index,
+      clear_rect: accrete_rect_on(AccreteControlKind::Clear),
+      needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
+      accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
     });
   }
 
@@ -345,6 +374,11 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   }
   let volume_pos = Arc::new(Mutex::new(volume_pos_init));
   let gains = Arc::new(Mutex::new(gains_init));
+  // The shared accrete (sustain) state -- one instrument-wide machine, driven by both
+  // grids' button trios -- and a mirror of every grid's held notes (cell -> struck
+  // pitch), so an accrete activation can capture what is fingered on ALL grids.
+  let accrete = Arc::new(Mutex::new(AccreteState::new()));
+  let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
 
   // Bring up the drumkit alongside the grids, if the config declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
@@ -379,6 +413,9 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       controls_index: g.controls_index,
       volume_rect: g.volume_rect,
       volume_controls_index: g.volume_controls_index,
+      clear_rect: g.clear_rect,
+      needs_holding_rect: g.needs_holding_rect,
+      accrete_rect: g.accrete_rect,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -391,6 +428,8 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       trail: Arc::clone(&trail),
       volume_pos: Arc::clone(&volume_pos),
       gains: Arc::clone(&gains),
+      accrete: Arc::clone(&accrete),
+      held_all: Arc::clone(&held_all),
       voices: Arc::clone(&voices),
       sink: SurfaceSink::new(
         grid_index,
@@ -437,6 +476,10 @@ struct GridThread {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets the loudness of.
   volume_controls_index: usize,
+  /// The three accrete (sustain) buttons' cells on this grid (`NO_RECT` if absent).
+  clear_rect: [i32; 4],
+  needs_holding_rect: [i32; 4],
+  accrete_rect: [i32; 4],
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -454,6 +497,11 @@ struct GridThread {
   /// Per-grid volume position (column within the strip) and linear gain.
   volume_pos: Arc<Mutex<Vec<i32>>>,
   gains: Arc<Mutex<Vec<f32>>>,
+  /// The shared accrete (sustain) state; either grid's buttons act on it.
+  accrete: Arc<Mutex<AccreteState>>,
+  /// Every grid's held notes (cell -> struck pitch), for accrete's capture-on-
+  /// activation. Each grid thread rewrites only its own slot.
+  held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
   sink: SurfaceSink,
@@ -528,10 +576,13 @@ fn grid_thread(mut rt: GridThread) {
 
     // Repaint. The overlays show the state of whatever grid THIS grid's strips control
     // (its own, in the current rigs); the play cells reflect the union of both grids'
-    // sounding classes (bright) and the shared trail (dim), through the current register.
+    // sounding classes (bright; sustained notes count -- you hear them) and the shared
+    // trail (dim), through the current register.
     let selector_waveform = current_waveform(&rt.waveforms, rt.controls_index);
     let volume_col = volume_active_col(&rt);
-    let sounding_classes = union_sounding(&rt.sounding);
+    let (accrete_overlay, sustained_classes) = accrete_view(&rt);
+    let mut sounding_classes = union_sounding(&rt.sounding);
+    sounding_classes.extend(sustained_classes);
     let trail_classes = trail_set(&rt.trail);
     let levels = levels_for_grid(
       &sounding_classes,
@@ -542,6 +593,7 @@ fn grid_thread(mut rt: GridThread) {
       rt.volume_rect,
       volume_col,
       rt.scroll_rect,
+      &accrete_overlay,
       register,
       rt.x_step,
       rt.y_step,
@@ -594,6 +646,39 @@ fn handle_key(
     }
     return;
   }
+  // The accrete (sustain) buttons. All three act on the SHARED state, so either
+  // grid's trio works. Decisions are made under the accrete lock, voices are touched
+  // after it drops (the module's no-nested-locks rule).
+  if in_overlay(rt.clear_rect, cell) {
+    if press {
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).press_clear();
+      rt.sink.release_all_sustained();
+    } else {
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).release_clear();
+    }
+    return;
+  }
+  if in_overlay(rt.needs_holding_rect, cell) {
+    if press {
+      let activated =
+        rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).press_needs_holding();
+      if activated {
+        capture_all_held(rt);
+      }
+    }
+    return;
+  }
+  if in_overlay(rt.accrete_rect, cell) {
+    if press {
+      let activated = rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).press_accrete();
+      if activated {
+        capture_all_held(rt);
+      }
+    } else {
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).release_accrete();
+    }
+    return;
+  }
   // Scroll pad: a press moves THIS grid's play register.
   if let Some(shift) = shift_for_cell(rt.scroll_rect, cell) {
     if press {
@@ -612,12 +697,72 @@ fn handle_key(
     let gain = current_gain(&rt.gains, rt.grid_index);
     rt.sink.note_on(cell, pitch, Timbre { waveform, gain, ..Timbre::default() });
     held.insert(cell, pitch);
+    rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).note_played(rt.grid_index, pitch);
     push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
   } else {
-    rt.sink.note_off(cell);
+    // A note in the sustained set (or released under a live accreting condition)
+    // keeps ringing: its voice moves to the sustain register instead of releasing.
+    let sustains = held.get(&cell).copied().map(|pitch| {
+      let keep = rt
+        .accrete
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .note_released_sustains(rt.grid_index, pitch);
+      (pitch, keep)
+    });
+    match sustains {
+      Some((pitch, true)) => rt.sink.sustain_note(cell, pitch),
+      _ => rt.sink.note_off(cell),
+    }
     held.remove(&cell);
   }
+  publish_held(&rt.held_all, rt.grid_index, held);
   publish_sounding(&rt.sounding, rt.grid_index, held, rt.edo);
+}
+
+/// Mirror this grid's held map into the shared per-grid registry (for accrete's
+/// capture-on-activation, which must see BOTH grids' fingers).
+fn publish_held(
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  index: usize,
+  held: &HashMap<(i32, i32), i32>,
+) {
+  let mut all = held_all.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(slot) = all.get_mut(index) {
+    *slot = held.clone();
+  }
+}
+
+/// The accreting condition just turned on: add every currently-held note (all grids)
+/// to the sustained set. Snapshot the held registry first, then feed the accrete
+/// state -- two short, non-nested locks.
+fn capture_all_held(rt: &GridThread) {
+  let snapshot: Vec<(usize, i32)> = {
+    let all = rt.held_all.lock().unwrap_or_else(|e| e.into_inner());
+    all
+      .iter()
+      .enumerate()
+      .flat_map(|(g, m)| m.values().map(move |p| (g, *p)))
+      .collect()
+  };
+  rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).capture_held(snapshot);
+}
+
+/// One lock: the accrete buttons' LED view for this grid plus the sustained pitch
+/// classes (which paint bright -- they are sounding).
+fn accrete_view(rt: &GridThread) -> (AccreteOverlay, HashSet<i32>) {
+  let s = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+  (
+    AccreteOverlay {
+      clear_rect: rt.clear_rect,
+      needs_holding_rect: rt.needs_holding_rect,
+      accrete_rect: rt.accrete_rect,
+      clear_lit: s.clear_lit(),
+      needs_holding_lit: s.needs_holding_lit(),
+      accrete_lit: s.accrete_lit(),
+    },
+    s.sustained_classes(rt.edo),
+  )
 }
 
 /// A serialosc serial id that names an old monobright "Series" grid (per-LED on/off
@@ -1017,6 +1162,78 @@ mod tests {
     a.release(4, 0);
     assert!(wait_until(secs(3), || a.level_at(4, 0) == 15 && a.level_at(10, 0) == 0),
       "the volume strip moves the active cell to col 4");
+
+    STOP.store(true, Ordering::SeqCst);
+    let _ = handle.join();
+    STOP.store(false, Ordering::SeqCst);
+  }
+
+  /// The accrete (sustain) buttons end-to-end: toggle accrete mode on grid a, play a
+  /// note, release it -- it keeps ringing (stays bright on BOTH grids) -- then clear
+  /// from grid B (the state is shared), and the note drops to the dim trail. Also
+  /// checks the buttons' own LEDs (dim at rest, bright when active, mirrored across
+  /// grids).
+  #[test]
+  fn accrete_sustains_notes_until_cleared() {
+    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+
+    let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+      .expect("start mock rig");
+    let detector_port = rig.detector_port();
+    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+
+    STOP.store(false, Ordering::SeqCst);
+    let handle = {
+      let config = config.clone();
+      thread::spawn(move || {
+        if let Err(e) = run(&config, detector_port, true) {
+          eprintln!("mock accrete run error: {e}");
+        }
+      })
+    };
+
+    let a = rig.grid(0);
+    let b = rig.grid(1);
+    let secs = Duration::from_secs;
+    assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
+
+    // At rest all three buttons glow dim (findable), on both grids.
+    for (x, name) in [(0, "clear"), (1, "needs_holding"), (2, "accrete")] {
+      assert!(wait_until(secs(3), || a.level_at(x, 15) == 4), "grid a {name} rests dim");
+      assert!(wait_until(secs(3), || b.level_at(x, 15) == 4), "grid b {name} rests dim");
+    }
+
+    // Tap accrete on grid a: needs_holding starts OFF, so key-down toggles accrete
+    // mode on -- the button lights on BOTH grids (one shared state).
+    a.press(2, 15);
+    a.release(2, 15);
+    assert!(wait_until(secs(3), || a.level_at(2, 15) == 15), "accrete lit on grid a");
+    assert!(wait_until(secs(3), || b.level_at(2, 15) == 15), "accrete lit on grid b too");
+
+    // Play and release a note on grid a: sustained, it stays BRIGHT (not trail-dim).
+    a.press(5, 5);
+    assert!(wait_until(secs(3), || a.level_at(5, 5) == 15), "fingered note lights");
+    a.release(5, 5);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(a.level_at(5, 5), 15, "released note keeps ringing bright on grid a");
+    assert_eq!(b.level_at(5, 5), 15, "and reflects bright on grid b");
+
+    // needs_holding from grid b: lights everywhere, and cancels the toggled mode
+    // (accrete dims) -- but the sustained note keeps ringing.
+    b.press(1, 15);
+    b.release(1, 15);
+    assert!(wait_until(secs(3), || a.level_at(1, 15) == 15), "needs_holding lit on grid a");
+    assert!(wait_until(secs(3), || a.level_at(2, 15) == 4), "accrete mode cancelled -> dim");
+    assert_eq!(a.level_at(5, 5), 15, "the sustained note survives the mode flip");
+
+    // Clear from grid B: lit while held, and the note falls back to the dim trail.
+    b.press(0, 15);
+    assert!(wait_until(secs(3), || a.level_at(0, 15) == 15), "clear lit (on the other grid too)");
+    b.release(0, 15);
+    assert!(wait_until(secs(3), || a.level_at(0, 15) == 4), "clear dims on key-up");
+    assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "cleared note drops to the trail on a");
+    assert!(wait_until(secs(3), || b.level_at(5, 5) == 4), "and on b");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

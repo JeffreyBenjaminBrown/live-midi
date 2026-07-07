@@ -56,6 +56,49 @@ pub fn volume_cells(rect: OverlayRect) -> i32 {
   }
 }
 
+/// The three accrete (sustain) buttons' display state: their single-cell rects plus
+/// whether each is lit. A button paints `BRIGHT` when lit, `DIM` at rest -- the resting
+/// glow keeps an idle button findable on the play grid, like the scroll arrows. The
+/// buttons occlude the play cells beneath them.
+#[derive(Clone, Copy)]
+pub struct AccreteOverlay {
+  pub clear_rect: OverlayRect,
+  pub needs_holding_rect: OverlayRect,
+  pub accrete_rect: OverlayRect,
+  pub clear_lit: bool,
+  pub needs_holding_lit: bool,
+  pub accrete_lit: bool,
+}
+
+impl AccreteOverlay {
+  /// No accrete buttons on this grid (every rect is the never-matching sentinel).
+  /// The runtime builds the same shape from its `NO_RECT` fields; this named twin
+  /// keeps the tests readable.
+  #[allow(dead_code)]
+  pub const ABSENT: AccreteOverlay = AccreteOverlay {
+    clear_rect: [-1, -1, -1, -1],
+    needs_holding_rect: [-1, -1, -1, -1],
+    accrete_rect: [-1, -1, -1, -1],
+    clear_lit: false,
+    needs_holding_lit: false,
+    accrete_lit: false,
+  };
+
+  /// The level for `(x, y)` if it is one of the three buttons, else None.
+  fn level_at(&self, x: i32, y: i32) -> Option<i32> {
+    let lit_level = |lit: bool| if lit { BRIGHT } else { DIM };
+    if in_rect(self.clear_rect, x, y) {
+      Some(lit_level(self.clear_lit))
+    } else if in_rect(self.needs_holding_rect, x, y) {
+      Some(lit_level(self.needs_holding_lit))
+    } else if in_rect(self.accrete_rect, x, y) {
+      Some(lit_level(self.accrete_lit))
+    } else {
+      None
+    }
+  }
+}
+
 /// Compute the full LED level vector (row-major, `grid_w * grid_h`) for one grid.
 ///
 /// Overlays occlude the play grid (they are drawn on top) and are checked first:
@@ -63,9 +106,10 @@ pub fn volume_cells(rect: OverlayRect) -> i32 {
 /// - *volume* cells: `BRIGHT` at the active column (`volume_col`), else `OFF`;
 /// - *scroll-pad* cells: `DIM` for the four arrows, `OFF` for the two octave corners
 ///   (the pad fully occludes the edo grid beneath it -- no note ever shows there);
+/// - *accrete* buttons: `BRIGHT` when lit (pressed / on / accreting), else `DIM`;
 /// - a play cell inside `edo_rect`: its class under the *current register* is `BRIGHT`
-///   if octave-equivalent to a sounding note (either grid), else `DIM` if in the trail,
-///   else `OFF`;
+///   if octave-equivalent to a sounding note (either grid, fingered or sustained),
+///   else `DIM` if in the trail, else `OFF`;
 /// - anything else: `OFF`.
 ///
 /// `sounding_classes` and `trail_classes` are pitch classes (`0..edo`). A class that is
@@ -80,6 +124,7 @@ pub fn levels_for_grid(
   volume_rect: OverlayRect,
   volume_col: i32,
   scroll_rect: OverlayRect,
+  accrete: &AccreteOverlay,
   register: i32,
   x_step: i32,
   y_step: i32,
@@ -101,6 +146,8 @@ pub fn levels_for_grid(
         } else {
           OFF
         }
+      } else if let Some(level) = accrete.level_at(x, y) {
+        level
       } else if in_rect(scroll_rect, x, y) {
         match shift_for_cell(scroll_rect, (x, y)) {
           Some(Shift::Up | Shift::Down | Shift::Left | Shift::Right) => DIM,
@@ -163,7 +210,7 @@ mod tests {
   ) -> Vec<i32> {
     levels_for_grid(
       sounding, trail, FULL, SELECTOR, Waveform::Triangle, VOLUME, volume_col, SCROLL,
-      register, XS, YS, EDO, 16, 16,
+      &AccreteOverlay::ABSENT, register, XS, YS, EDO, 16, 16,
     )
   }
 
@@ -185,10 +232,33 @@ mod tests {
   #[test]
   fn selector_lights_selected_bright_others_dim() {
     let levels = levels_for_grid(
-      &empty(), &empty(), FULL, SELECTOR, Waveform::Square, NONE, -1, NONE, 0, XS, YS, EDO, 16, 16,
+      &empty(), &empty(), FULL, SELECTOR, Waveform::Square, NONE, -1, NONE,
+      &AccreteOverlay::ABSENT, 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 2, 0), BRIGHT, "square selected");
     assert_eq!(at(&levels, 0, 0), DIM, "sine unselected dim");
+  }
+
+  #[test]
+  fn accrete_buttons_paint_dim_at_rest_bright_when_lit_and_occlude_notes() {
+    // The trio sits at (0,15) (1,15) (2,15). needs_holding is lit; the others rest.
+    let overlay = AccreteOverlay {
+      clear_rect: [0, 15, 0, 15],
+      needs_holding_rect: [1, 15, 1, 15],
+      accrete_rect: [2, 15, 2, 15],
+      clear_lit: false,
+      needs_holding_lit: true,
+      accrete_lit: false,
+    };
+    // Make the class under the clear button "sound" -- the button must occlude it.
+    let cls: HashSet<i32> = [class_at(0, 0, 15)].into_iter().collect();
+    let levels = levels_for_grid(
+      &cls, &empty(), FULL, SELECTOR, Waveform::Triangle, VOLUME, 10, SCROLL, &overlay,
+      0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&levels, 0, 15), DIM, "clear rests dim even though its class sounds");
+    assert_eq!(at(&levels, 1, 15), BRIGHT, "needs_holding lit");
+    assert_eq!(at(&levels, 2, 15), DIM, "accrete rests dim");
   }
 
   #[test]

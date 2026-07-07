@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -562,6 +562,15 @@ pub enum MonomeWindowConfig {
     /// The monome id whose play voices this strip sets the volume of.
     controls: String,
   },
+  // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
+  // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
+  // notes join a sustained set that rings after the fingers lift, until cleared.
+  AccreteControl {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    control: AccreteControlKind,
+  },
   // ---- Looper windows (see 6_plan.org). ----
   // The 3x2 shift pad overlaid on the lower-right of the edo grid.
   EdoShiftPad {
@@ -680,6 +689,19 @@ pub enum ScaleControlKind {
   Empty,
 }
 
+// The surfaces sustain ("accrete") buttons -- see TODO/misc.org "sustain (accrete)".
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccreteControlKind {
+  /// Silence and flush the whole sustained set (key-down; lit while pressed).
+  Clear,
+  /// Toggle whether `accrete` must be *held* (vs toggling an accrete mode).
+  NeedsHolding,
+  /// Hold (or toggle, per `needs_holding`) to add played/held notes to the
+  /// sustained set, which rings until cleared.
+  Accrete,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopControlKind {
@@ -709,6 +731,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { id, .. }
       | MonomeWindowConfig::WaveformSelector { id, .. }
       | MonomeWindowConfig::VolumeStrip { id, .. }
+      | MonomeWindowConfig::AccreteControl { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
       | MonomeWindowConfig::LoopControl { id, .. }
@@ -737,6 +760,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { monome, .. }
       | MonomeWindowConfig::WaveformSelector { monome, .. }
       | MonomeWindowConfig::VolumeStrip { monome, .. }
+      | MonomeWindowConfig::AccreteControl { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
       | MonomeWindowConfig::LoopControl { monome, .. }
@@ -765,6 +789,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { rect, .. }
       | MonomeWindowConfig::WaveformSelector { rect, .. }
       | MonomeWindowConfig::VolumeStrip { rect, .. }
+      | MonomeWindowConfig::AccreteControl { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
       | MonomeWindowConfig::LoopControl { rect, .. }
@@ -794,6 +819,7 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::ScaleControl { .. } => "scale_control",
       MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
       MonomeWindowConfig::VolumeStrip { .. } => "volume_strip",
+      MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
       MonomeWindowConfig::LoopControl { .. } => "loop_control",
@@ -1227,9 +1253,69 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_shift_pads(config)?;
   validate_waveform_selectors(config)?;
   validate_volume_strips(config)?;
+  validate_accrete_controls(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// The `accrete_control` sustain buttons (surfaces runtime). Each is a single cell on
+/// a monome that has an `edo_note_grid` (the play surface whose notes it sustains).
+/// Per monome they are all-or-nothing -- declaring any of clear / needs_holding /
+/// accrete requires all three, each exactly once -- since the trio only makes sense
+/// together (accrete with no clear would be an un-silenceable drone).
+fn validate_accrete_controls(config: &Config) -> Result<(), String> {
+  let mut per_monome: HashMap<&str, Vec<AccreteControlKind>> = HashMap::new();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::AccreteControl { id, monome, rect, control } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x0 != x1 || y0 != y1 {
+      return Err(format!(
+        "accrete_control window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
+      ));
+    }
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "accrete_control window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "accrete_control window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    let kinds = per_monome.entry(monome.as_str()).or_default();
+    if kinds.contains(control) {
+      return Err(format!(
+        "duplicate accrete_control kind {control:?} on monome {monome:?} (in window {id:?})",
+      ));
+    }
+    kinds.push(*control);
+  }
+  for (monome, kinds) in &per_monome {
+    for required in
+      [AccreteControlKind::Clear, AccreteControlKind::NeedsHolding, AccreteControlKind::Accrete]
+    {
+      if !kinds.contains(&required) {
+        return Err(format!(
+          "monome {monome:?} declares accrete_control windows but is missing kind {required:?} \
+           (the clear / needs_holding / accrete trio is all-or-nothing per monome)",
+        ));
+      }
+    }
+  }
   Ok(())
 }
 
@@ -2846,5 +2932,87 @@ controls = "a"
       + "\n[[monome_windows]]\nid = \"wave-c\"\nmonome = \"c\"\nkind = \"waveform_selector\"\nrect = [0, 0, 3, 0]\ncontrols = \"a\"\n";
     let err = parse_config(&toml).expect_err("controlling a gridless monome should fail");
     assert!(err.contains("no edo_note_grid"), "{err}");
+  }
+
+  // ---- accrete_control (surfaces sustain buttons) ----
+
+  /// The clear / needs_holding / accrete trio on monome "a", bottom row left.
+  const ACCRETE_TRIO: &str = r#"
+[[monome_windows]]
+id = "acc-clear"
+monome = "a"
+kind = "accrete_control"
+rect = [0, 15, 0, 15]
+control = "clear"
+
+[[monome_windows]]
+id = "acc-hold"
+monome = "a"
+kind = "accrete_control"
+rect = [1, 15, 1, 15]
+control = "needs_holding"
+
+[[monome_windows]]
+id = "acc-accrete"
+monome = "a"
+kind = "accrete_control"
+rect = [2, 15, 2, 15]
+control = "accrete"
+"#;
+
+  #[test]
+  fn accrete_control_trio_is_valid() {
+    let toml = format!("{SURFACES_MIN}{ACCRETE_TRIO}");
+    let config = parse_config(&toml).expect("a full accrete trio should validate");
+    let kinds: Vec<AccreteControlKind> = config
+      .monome_windows
+      .iter()
+      .filter_map(|w| match w {
+        MonomeWindowConfig::AccreteControl { control, .. } => Some(*control),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(kinds.len(), 3, "all three buttons parse");
+    assert!(kinds.contains(&AccreteControlKind::Clear));
+    assert!(kinds.contains(&AccreteControlKind::NeedsHolding));
+    assert!(kinds.contains(&AccreteControlKind::Accrete));
+  }
+
+  #[test]
+  fn accrete_control_trio_is_all_or_nothing_per_monome() {
+    // Drop the accrete button: the trio is incomplete, so the config must fail.
+    let cut = ACCRETE_TRIO.find("\n[[monome_windows]]\nid = \"acc-accrete\"").unwrap();
+    let toml = format!("{SURFACES_MIN}{}", &ACCRETE_TRIO[..cut]);
+    let err = parse_config(&toml).expect_err("a partial trio should fail");
+    assert!(err.contains("missing kind Accrete"), "{err}");
+  }
+
+  #[test]
+  fn accrete_control_must_be_a_single_cell() {
+    let toml =
+      format!("{SURFACES_MIN}{}", ACCRETE_TRIO.replace("rect = [0, 15, 0, 15]", "rect = [0, 15, 1, 15]"));
+    let err = parse_config(&toml).expect_err("a 2-cell accrete button should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  #[test]
+  fn accrete_control_kinds_must_be_unique_per_monome() {
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      ACCRETE_TRIO.replace("control = \"needs_holding\"", "control = \"clear\""),
+    );
+    let err = parse_config(&toml).expect_err("two clear buttons on one monome should fail");
+    assert!(err.contains("duplicate accrete_control kind"), "{err}");
+  }
+
+  #[test]
+  fn accrete_control_needs_an_edo_grid_on_its_monome() {
+    // Declare the trio on a monome that has no edo_note_grid.
+    let toml = format!(
+      "{SURFACES_MIN}\n[[monomes]]\nid = \"c\"\nlisten_port = 9002\nprefix = \"/c\"\n{}",
+      ACCRETE_TRIO.replace("monome = \"a\"", "monome = \"c\""),
+    );
+    let err = parse_config(&toml).expect_err("accrete buttons on a gridless monome should fail");
+    assert!(err.contains("needs an edo_note_grid"), "{err}");
   }
 }

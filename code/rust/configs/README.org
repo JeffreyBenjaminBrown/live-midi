@@ -239,6 +239,7 @@ Built-in unbundled window kinds:
 - ~remap_undo_button~
 - ~waveform_selector~
 - ~volume_strip~
+- ~accrete_control~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -273,6 +274,30 @@ controls = "a"             # -> sets grid A's own timbre (must have an edo_note_
 The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
 *generally-valid* window now: it may sit on any grid that has an ~edo_note_grid~,
 not only in a full looper stack.
+
+An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Three
+kinds -- set by its ~control~ field -- form a per-monome all-or-nothing trio, and
+both grids' trios drive ONE shared state:
+
+#+begin_src toml
+[[monome_windows]]
+id = "acc-clear-a"
+monome = "a"                 # must have an edo_note_grid
+kind = "accrete_control"
+rect = [0, 15, 0, 15]        # exactly one cell
+control = "clear"            # or "needs_holding" or "accrete"
+#+end_src
+
+- ~clear~ (key-down; lit while pressed) silences and flushes every sustained note.
+- ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ must be
+  *held* or is itself a toggle.
+- ~accrete~: while the accreting condition is live (button held, or accrete mode
+  toggled on), notes played -- plus notes already held when it went live -- join the
+  *sustained set* and keep ringing after their fingers lift, until ~clear~. Lit
+  while the condition is live, dim otherwise.
+
+Sustained notes paint like any sounding note (bright octave-equivalents on both
+grids) and follow the volume fader of the grid they came from.
 
 The bundled 12-EDO offset/root board is:
 
