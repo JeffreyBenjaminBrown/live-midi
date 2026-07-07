@@ -30,15 +30,36 @@ use audio::{Sampler, Trigger, VoiceId};
 use decode::{collect_control_changes, gain_from_velocity, DrumEvent, TetherDecoder};
 use samples::DrumSample;
 
-/// One pedal's resolved binding: which sample to fire, at what *base* gain (the
-/// vel-127 level, scaled down by velocity), into which sink. Cloning a `Trigger` is
-/// cheap (an `Arc`), so a pad copies its sink's handle.
-struct PadBinding {
+/// The most recently played (non-ditto) hit in a drumkit window: its sample and the
+/// gain it actually played at (already velocity-scaled), so a `Ditto` pad can
+/// reproduce the exact same hit.
+struct LastHit {
   sample: Arc<DrumSample>,
   gain: f32,
+}
+
+/// What a pad does when struck.
+enum PadKind {
+  /// Fire this sample at `gain` (the vel-127 level; the timer scales it down by
+  /// velocity). `voice_label` is for the startup summary / trace only.
+  Sample { sample: Arc<DrumSample>, gain: f32, voice_label: String },
+  /// "A generalized double-bass pedal": retrigger the most recently played sample in
+  /// this window, at THAT hit's already-resolved gain (not this press's own
+  /// velocity). A no-op if nothing has played yet. A ditto press never updates
+  /// `last` itself, so pad, ditto, ditto repeats the same hit rather than the ditto
+  /// echoing itself.
+  Ditto,
+}
+
+/// One pedal's resolved binding: what it does when struck, into which sink, and the
+/// window-shared "last hit" cell a `Ditto` pad reads from. Cloning a `Trigger` is
+/// cheap (an `Arc`), so a pad copies its sink's handle.
+struct PadBinding {
+  kind: PadKind,
   trigger: Trigger,
-  /// For the startup summary / trace only.
-  voice_label: String,
+  /// Shared by every pad in the same drumkit window (one cell per window, created
+  /// while building that window's pads).
+  last: Arc<Mutex<Option<LastHit>>>,
 }
 
 /// What a single KMSS device needs at runtime: its pedal table (indexed by printed
@@ -155,15 +176,21 @@ pub fn start(
     let device = devices
       .get_mut(softstep)
       .ok_or_else(|| format!("drumkit window references unknown softstep {softstep:?}"))?;
+    // One "last hit" cell per window, shared by every pad in it (including its
+    // ditto pad, if any) -- see `PadKind::Ditto`.
+    let last: Arc<Mutex<Option<LastHit>>> = Arc::new(Mutex::new(None));
     for pad in pads {
-      let path = drum_samples_dir().join(&pad.sample);
-      let sample = samples::load_wav(&path)?;
-      device.pedal_map[(pad.pedal % 10) as usize] = Some(PadBinding {
-        sample,
-        gain: pad.gain,
-        trigger: sampler.trigger(),
-        voice_label: pad.sample.clone(),
-      });
+      let kind = if pad.ditto {
+        PadKind::Ditto
+      } else {
+        // Validated: a non-ditto pad always names a sample.
+        let sample_name = pad.sample.as_ref().expect("validated: sample present when ditto is false");
+        let path = drum_samples_dir().join(sample_name);
+        let sample = samples::load_wav(&path)?;
+        PadKind::Sample { sample, gain: pad.gain, voice_label: sample_name.clone() }
+      };
+      device.pedal_map[(pad.pedal % 10) as usize] =
+        Some(PadBinding { kind, trigger: sampler.trigger(), last: Arc::clone(&last) });
     }
   }
 
@@ -239,6 +266,45 @@ pub fn start(
   })
 }
 
+/// What a `Fire` on this pad should do: the sample + RESOLVED gain to play (already
+/// velocity-scaled for a `Sample` pad, or copied verbatim from `last` for a `Ditto`
+/// pad), or `None` for a silent no-op (only possible for `Ditto`, before anything in
+/// its window has played). A `Sample` fire records itself into `last` (for a sibling
+/// ditto pad to find later); a `Ditto` fire deliberately does NOT touch `last`, so
+/// pad, ditto, ditto repeats the ORIGINAL hit rather than the ditto echoing itself.
+/// Pure apart from the `last` mutex, so this is the unit-testable core of the ditto
+/// trigger logic (`run_voice_timer` just wires its result to a real `Trigger`).
+fn resolve_fire(
+  kind: &PadKind,
+  last: &Mutex<Option<LastHit>>,
+  velocity: u8,
+  db_range: f32,
+) -> Option<(Arc<DrumSample>, f32)> {
+  match kind {
+    PadKind::Sample { sample, gain, .. } => {
+      let resolved = gain * gain_from_velocity(velocity, db_range);
+      *last.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(LastHit { sample: Arc::clone(sample), gain: resolved });
+      Some((Arc::clone(sample), resolved))
+    }
+    PadKind::Ditto => last
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .as_ref()
+      .map(|hit| (Arc::clone(&hit.sample), hit.gain)),
+  }
+}
+
+/// What a `Revise` on this pad should ramp its currently-playing voice to, or `None`
+/// to leave it alone. A ditto pad's gain is fixed to the hit it copied, not to its own
+/// press, so it ignores mid-window revises entirely.
+fn resolve_revise(kind: &PadKind, velocity: u8, db_range: f32) -> Option<f32> {
+  match kind {
+    PadKind::Sample { gain, .. } => Some(gain * gain_from_velocity(velocity, db_range)),
+    PadKind::Ditto => None,
+  }
+}
+
 /// The poll loop for one device: every ~1 ms, ask the decoder for events. A `Fire` starts
 /// a voice at `pad.gain * gain_from_velocity(velocity)`; a `Revise` ramps that pad's
 /// current voice up to a higher velocity read later in the attack window.
@@ -266,14 +332,22 @@ fn run_voice_timer(
         DrumEvent::Fire { label, velocity } => {
           let slot = (label % 10) as usize;
           if let Some(binding) = &pad_map[slot] {
-            let gain = binding.gain * gain_from_velocity(velocity, db_range);
-            if trace {
-              eprintln!(
-                "[kmss]   pad {label} FIRE vel {velocity} -> {} (gain {gain:.3})",
-                binding.voice_label,
-              );
+            match resolve_fire(&binding.kind, &binding.last, velocity, db_range) {
+              Some((sample, gain)) => {
+                if trace {
+                  let desc = match &binding.kind {
+                    PadKind::Sample { voice_label, .. } => voice_label.as_str(),
+                    PadKind::Ditto => "ditto",
+                  };
+                  eprintln!("[kmss]   pad {label} FIRE vel {velocity} -> {desc} (gain {gain:.3})");
+                }
+                current[slot] = Some(binding.trigger.fire(sample, gain));
+              }
+              // Only a Ditto pad can resolve to nothing: no sample has played in its
+              // window yet.
+              None if trace => eprintln!("[kmss]   pad {label} DITTO: nothing has played yet, no-op"),
+              None => {}
             }
-            current[slot] = Some(binding.trigger.fire(Arc::clone(&binding.sample), gain));
           } else if trace {
             eprintln!("[kmss]   pad {label} vel {velocity}: unmapped");
           }
@@ -281,11 +355,12 @@ fn run_voice_timer(
         DrumEvent::Revise { label, velocity } => {
           let slot = (label % 10) as usize;
           if let (Some(binding), Some(id)) = (&pad_map[slot], current[slot]) {
-            let gain = binding.gain * gain_from_velocity(velocity, db_range);
-            if trace {
-              eprintln!("[kmss]   pad {label} REVISE vel {velocity} -> gain {gain:.3}");
+            if let Some(gain) = resolve_revise(&binding.kind, velocity, db_range) {
+              if trace {
+                eprintln!("[kmss]   pad {label} REVISE vel {velocity} -> gain {gain:.3}");
+              }
+              binding.trigger.set_target_gain(id, gain);
             }
-            binding.trigger.set_target_gain(id, gain);
           }
         }
       }
@@ -327,7 +402,82 @@ fn print_device_summary(
   // Print in printed-label order 1..9, then 0, skipping unmapped pedals.
   for label in (1..=9).chain(std::iter::once(0)) {
     if let Some(binding) = &pedal_map[label as usize] {
-      println!("    pedal {label} -> {}", binding.voice_label);
+      let desc = match &binding.kind {
+        PadKind::Sample { voice_label, .. } => voice_label.as_str(),
+        PadKind::Ditto => "ditto (repeats the last-played sample)",
+      };
+      println!("    pedal {label} -> {desc}");
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const DB_RANGE: f32 = 20.0;
+
+  fn sample(tag: f32) -> Arc<DrumSample> {
+    // A one-sample "sample" whose single frame IDs it for equality checks below.
+    Arc::new(DrumSample { frames: vec![tag], sample_rate: 48000 })
+  }
+
+  #[test]
+  fn a_sample_fire_resolves_velocity_scaled_gain_and_records_last() {
+    let last: Mutex<Option<LastHit>> = Mutex::new(None);
+    let snare = sample(1.0);
+    let kind = PadKind::Sample { sample: Arc::clone(&snare), gain: 1.0, voice_label: "snare.wav".into() };
+    let (fired, gain) = resolve_fire(&kind, &last, 127, DB_RANGE).expect("a Sample pad always fires");
+    assert!(Arc::ptr_eq(&fired, &snare), "fires its own sample");
+    assert!((gain - 1.0).abs() < 1e-6, "vel 127 = unity gain: {gain}");
+    let recorded = last.lock().unwrap();
+    assert!(recorded.is_some(), "a Sample fire records itself into `last`");
+    assert!((recorded.as_ref().unwrap().gain - gain).abs() < 1e-6, "records the resolved gain");
+  }
+
+  #[test]
+  fn ditto_before_anything_played_is_a_silent_no_op() {
+    let last: Mutex<Option<LastHit>> = Mutex::new(None);
+    assert_eq!(resolve_fire(&PadKind::Ditto, &last, 100, DB_RANGE), None, "nothing to retrigger yet");
+  }
+
+  #[test]
+  fn ditto_retriggers_the_last_sample_at_its_resolved_gain_ignoring_its_own_velocity() {
+    let last: Mutex<Option<LastHit>> = Mutex::new(None);
+    let kick = sample(2.0);
+    let kick_kind = PadKind::Sample { sample: Arc::clone(&kick), gain: 0.8, voice_label: "kick.wav".into() };
+    // A soft-ish kick hit: gain < 0.8 (its base gain).
+    let (_, kick_gain) = resolve_fire(&kick_kind, &last, 60, DB_RANGE).unwrap();
+    assert!(kick_gain < 0.8, "a soft hit resolves below the base gain");
+    // Ditto fires even at max velocity -- the copied gain must NOT reflect that.
+    let (echoed, echoed_gain) = resolve_fire(&PadKind::Ditto, &last, 127, DB_RANGE)
+      .expect("a hit has played -- ditto retriggers it");
+    assert!(Arc::ptr_eq(&echoed, &kick), "ditto retriggers the kick's own sample");
+    assert!((echoed_gain - kick_gain).abs() < 1e-6, "ditto copies the ORIGINAL resolved gain, not its own velocity");
+  }
+
+  #[test]
+  fn ditto_press_does_not_become_the_new_last_hit() {
+    // "pad, ditto, ditto" must repeat the SAME sound, not have the second ditto echo
+    // the first -- i.e. a Ditto fire must never write into `last`.
+    let last: Mutex<Option<LastHit>> = Mutex::new(None);
+    let snare = sample(3.0);
+    let kind = PadKind::Sample { sample: Arc::clone(&snare), gain: 1.0, voice_label: "snare.wav".into() };
+    let (_, gain) = resolve_fire(&kind, &last, 100, DB_RANGE).unwrap();
+    resolve_fire(&PadKind::Ditto, &last, 20, DB_RANGE).expect("first ditto");
+    resolve_fire(&PadKind::Ditto, &last, 5, DB_RANGE).expect("second ditto");
+    let recorded = last.lock().unwrap();
+    let hit = recorded.as_ref().expect("still holds the original hit");
+    assert!(Arc::ptr_eq(&hit.sample, &snare), "still the snare, not a ditto sample");
+    assert!((hit.gain - gain).abs() < 1e-6, "still the snare's original resolved gain");
+  }
+
+  #[test]
+  fn revise_scales_a_sample_pad_but_never_a_ditto_pad() {
+    let s = sample(4.0);
+    let sample_kind = PadKind::Sample { sample: s, gain: 1.0, voice_label: "hat.wav".into() };
+    let scaled = resolve_revise(&sample_kind, 64, DB_RANGE).expect("a Sample pad revises");
+    assert!(scaled > 0.0 && scaled < 1.0, "a sub-max velocity revises below unity: {scaled}");
+    assert_eq!(resolve_revise(&PadKind::Ditto, 127, DB_RANGE), None, "ditto's gain is fixed, never revised");
   }
 }
