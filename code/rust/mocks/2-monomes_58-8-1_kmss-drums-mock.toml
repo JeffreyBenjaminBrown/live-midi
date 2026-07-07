@@ -33,6 +33,12 @@ amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# Global distortion (heard only while a distortion_toggle window is on): the
+# soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the summed mix.
+# scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.
+distortion_scale = 1.0
+# shape k: elbow harshness; 1 gentlest, 2 smooth sweet spot, 4-8 hard-ish edge.
+distortion_shape = 2.0
 
 [[monomes]]
 id = "a"
@@ -101,6 +107,14 @@ kind = "accrete_control"
 rect = [2, 15, 2, 15]
 control = "accrete"
 
+# The global-distortion toggle (key-down flips; see learnings/distortion.org for the
+# curve). One shared switch: either grid's button turns it on/off for the whole mix.
+[[monome_windows]]
+id = "dist-a"
+monome = "a"
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]
+
 [[monome_windows]]
 id = "grid-b"
 monome = "b"
@@ -155,3 +169,11 @@ monome = "b"
 kind = "accrete_control"
 rect = [2, 15, 2, 15]
 control = "accrete"
+
+# The global-distortion toggle (key-down flips; see learnings/distortion.org for the
+# curve). One shared switch: either grid's button turns it on/off for the whole mix.
+[[monome_windows]]
+id = "dist-b"
+monome = "b"
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]

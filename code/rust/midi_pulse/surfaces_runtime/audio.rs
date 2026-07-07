@@ -7,10 +7,11 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::types::{AmShapeFamily, VoiceMap};
-use crate::voices::BlockRenderer;
+use crate::voices::{BlockRenderer, Distortion};
 
 pub struct Audio {
   /// Kept alive for the run; dropping it stops the stream. `None` in the null path
@@ -32,6 +33,8 @@ pub fn start(
   requested_buffer_frames: u32,
   amplitude: f32,
   oversample: usize,
+  distortion: Distortion,
+  distortion_on: Arc<AtomicBool>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
   // card via PipeWire, rather than cpal's default ALSA host grabbing the device
@@ -77,8 +80,12 @@ pub fn start(
     move |data: &mut [f32], _| {
       // Recover from poisoning so a panicked grid thread can't permanently kill audio.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+      // The distortion toggle is live: read per callback, applied to the summed mix.
+      let distortion = distortion_on.load(Ordering::Relaxed).then_some(distortion);
       // No AM/FM in surfaces (default timbres bar the waveform), so the family is inert.
-      renderer.render(&mut voices, data, channels, sample_rate, amplitude, AmShapeFamily::default());
+      renderer.render_with_distortion(
+        &mut voices, data, channels, sample_rate, amplitude, AmShapeFamily::default(), distortion,
+      );
     },
     |error| eprintln!("surfaces audio stream error: {error:?}"),
     None,

@@ -54,7 +54,7 @@ Choices you might revisit (details in jeff-maybe-review-this.org):
   grid they came from;
 - a note released while accrete is held/on joins the set at release time too
   (the "as long as they are now held" continuous reading).
-* distortion
+* DONE distortion
 Let's add a button in the second row from the top, far left --
 I think that's button (0,1),
 and will describe coordinates that wayfrom now on --
@@ -65,6 +65,17 @@ is a distortion algorithm that's nice and simple,
 with a scale parameter and a shape parameter.
 Let's make those two parameters configurable in the config.
 The live distortion control is just on/off.
+** [Claude] done -- =distortion_toggle= at (0,1) on both grids, one global switch
+The algorithm you remembered is the algebraic soft-clipper worked out in
+=learnings/distortion.org= -- =f(y) = y / (1 + |y/s|^k)^(1/k)= -- which had
+notes but no implementation; it's now =distort()= in =sawwave/voices.rs=,
+applied to the *summed* synth mix (both grids, fingered + sustained voices)
+pre-clamp and inside the oversampling loop, so its harmonics don't alias.
+Drums bypass it (they're a separate sink; "sum of all the voices" read as the
+synth voices). =s=/=k= are =distortion_scale= / =distortion_shape= on the
+=cpal_synth= sink (defaults 1.0 / 2.0, ranges commented in the toml). The
+button: key-down toggles, dim at rest / bright while on, mirrored on both
+grids (one switch).
 * config reload
 If I adjust parameters in the config,
 pressing 'r' should cause the new ones to be read and applied.
@@ -131,3 +142,16 @@ gets mirrored to softstep pads 1, 2 and 3,
 and the other to pads 8,9,0.
 While those pads are mirroring the monome accrete controls,
 they do not control samples.
+* move pads, and add a 'ditto' pad
+New arrangement for pads:
+| high tom | low tom | cowbell |          9 | crash (was at 8) |
+| snare    | kick    | ditto   | closed hat | open hat         |
+Where I wrote 9 I mean whatever sample is already at 9.
+(What is that sample called?)
+I think the hat that's been at 4 is a closed hat;
+I'd like you to find an open one online
+and add it to the sample bank.
+The 'ditto' pad retriggers the last sample.
+(It will serve as a generalized double-bass pedal.)
+* drop the amplitude row
+Instead I'll use the config to tune each waveform's amplitude.

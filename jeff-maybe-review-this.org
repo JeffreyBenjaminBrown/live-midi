@@ -56,6 +56,19 @@ reverse it cheaply if you disagree.
 - *LED semantics for sustained notes*: bright on both grids (they are sounding;
   "only what you hear lights up"). They drop to the dim trail when cleared.
 
+* distortion -- choices where the spec was silent
+- *Drums are NOT distorted.* "The sum of all the voices" -- I took "voices" to mean
+  the synth voices (the drum sampler is a separate sink/stream, and distorting
+  808 one-shots by default seemed unlikely to be the intent). If you want the drums
+  in the dirt too, that's a similar patch to the sampler's render.
+- *Defaults*: =distortion_scale = 1.0= (strong, clearly a pedal), =shape = 2.0=
+  (the smooth branchless sweet spot). Both commented with ranges in the toml.
+- *Placement in the chain*: after the per-voice gains and the master =amplitude=,
+  before the output clamp -- so the sink =amplitude= acts as the drive into the
+  clipper (turn it up for more grind, per the "drive" section of
+  learnings/distortion.org). No makeup gain is applied.
+- The toggle rests *dim* (findable), like the accrete buttons.
+
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
 - =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's

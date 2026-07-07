@@ -167,6 +167,29 @@ pub fn fm_factor(depth_cents: f32, fm_phase: f32) -> f32 {
   2.0_f32.powf(depth_cents * (std::f32::consts::TAU * fm_phase).sin() / 1200.0)
 }
 
+/// A global saturating distortion applied to the *summed* voice mix (not per voice):
+/// the algebraic soft-clipper `f(y) = y / (1 + |y/s|^k)^(1/k)` from
+/// `learnings/distortion.org`. `scale` (s) is the asymptote -- the output can never
+/// exceed +-s, smaller = earlier/heavier bite; `shape` (k) is the elbow's harshness --
+/// 1 = gentlest, 2 = the smooth sweet spot, ~4+ = hard-ish, -> inf = hard clip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Distortion {
+  pub scale: f32,
+  pub shape: f32,
+}
+
+/// One sample of the soft-clipper. Odd (no DC), unity slope at the origin, monotone,
+/// plateauing at +-scale. Runs on the summed mix at the (possibly oversampled) render
+/// rate, so the harmonics it manufactures are band-limited by the same decimation
+/// path as the rest of the nonlinear mix.
+pub fn distort(y: f32, d: Distortion) -> f32 {
+  if d.scale <= 0.0 || d.shape <= 0.0 {
+    return y; // degenerate parameters: pass through rather than blow up
+  }
+  let u = (y / d.scale).abs();
+  y / (1.0 + u.powf(d.shape)).powf(1.0 / d.shape)
+}
+
 // Render one cpal callback's worth of audio into `data` from `voices`.
 // Pulled out of the cpal closure so unit tests can exercise it
 // without cpal or PipeWire.
@@ -259,26 +282,49 @@ impl BlockRenderer {
     amplitude: f32,
     shape_family: AmShapeFamily,
   ) {
+    self.render_with_distortion(voices, data, channels, sample_rate, amplitude, shape_family, None);
+  }
+
+  /// `render`, with an optional global distortion applied to the summed mix (pre-
+  /// clamp, at the oversampled rate when oversampling -- a nonlinearity belongs
+  /// inside the anti-aliasing loop, like the clamp). `None` is bit-identical to
+  /// `render`. The surfaces runtime passes `Some` while its distortion toggle is on.
+  #[allow(clippy::too_many_arguments)]
+  pub fn render_with_distortion(
+    &mut self,
+    voices: &mut VoiceMap,
+    data: &mut [f32],
+    channels: usize,
+    sample_rate: f32,
+    amplitude: f32,
+    shape_family: AmShapeFamily,
+    distortion: Option<Distortion>,
+  ) {
     let oversample = self.oversample;
+    let post = |mix: f32| match distortion {
+      Some(d) => distort(mix, d).clamp(-0.95, 0.95),
+      None => mix.clamp(-0.95, 0.95),
+    };
     match &mut self.decimator {
       // Plain path: one sub-step per output sample, no filtering, no latency.
       None => {
         for frame in data.chunks_mut(channels) {
           let mix = accumulate_voices(voices, 1.0, sample_rate, amplitude, shape_family);
-          let s = mix.clamp(-0.95, 0.95);
+          let s = post(mix);
           for out in frame.iter_mut() {
             *out = s;
           }
         }
       }
-      // Oversampled path: N sub-steps per output sample, then decimate. The clamp runs
-      // at the high rate, so even hard-clip distortion is band-limited before folding.
+      // Oversampled path: N sub-steps per output sample, then decimate. The distortion
+      // and clamp run at the high rate, so their harmonics are band-limited before
+      // they can fold.
       Some(decim) => {
         let frac = 1.0 / oversample as f32;
         for frame in data.chunks_mut(channels) {
           for _ in 0..oversample {
             let mix = accumulate_voices(voices, frac, sample_rate, amplitude, shape_family);
-            decim.push(mix.clamp(-0.95, 0.95));
+            decim.push(post(mix));
           }
           let s = decim.output();
           for out in frame.iter_mut() {
@@ -687,6 +733,69 @@ mod tests {
       let p = i as f32 / 100.0;
       assert_eq!(poly_blep(p, dt), poly_blep(p, -dt), "poly_blep must depend on |dt| only");
     }
+  }
+
+  #[test]
+  fn distort_is_a_bounded_odd_soft_clipper_with_unity_slope_at_zero() {
+    let d = Distortion { scale: 1.0, shape: 2.0 };
+    // Odd: no DC asymmetry.
+    for y in [0.1_f32, 0.5, 1.0, 3.0] {
+      assert!((distort(-y, d) + distort(y, d)).abs() < 1e-6, "odd at {y}");
+    }
+    // Unity slope through the origin: tiny signals pass ~unchanged (clean when quiet).
+    let tiny = 1e-3_f32;
+    assert!((distort(tiny, d) / tiny - 1.0).abs() < 1e-3, "transparent near zero");
+    // Bounded by the scale asymptote, approached monotonically.
+    let mut prev = 0.0;
+    for i in 1..200 {
+      let y = i as f32 * 0.1;
+      let out = distort(y, d);
+      assert!(out < d.scale, "never exceeds the asymptote: f({y}) = {out}");
+      assert!(out > prev, "monotone at {y}");
+      prev = out;
+    }
+    assert!(prev > 0.95 * d.scale, "plateaus near the asymptote: {prev}");
+    // k = 2 has the closed form y/sqrt(1 + y^2) at s = 1.
+    let y = 1.3_f32;
+    assert!((distort(y, d) - y / (1.0 + y * y).sqrt()).abs() < 1e-5);
+    // A smaller scale bites harder at the same level.
+    let heavy = Distortion { scale: 0.3, shape: 2.0 };
+    assert!(distort(1.0, heavy) < distort(1.0, d), "smaller scale = heavier");
+  }
+
+  #[test]
+  fn render_distortion_compresses_the_summed_mix_and_off_is_identical() {
+    // Two loud voices sum past the elbow: with distortion the output RMS drops; with
+    // `None` the render is bit-identical to the plain `render` path.
+    let sr = 48000.0;
+    let mk_voices = || {
+      let mut voices: VoiceMap = HashMap::new();
+      for (i, freq) in [220.0_f32, 330.0].iter().enumerate() {
+        voices.insert(VoiceSource::Fingered { xy: (i as i32, 0) }, VoiceState {
+          id: i as u64, freq: *freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+          timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+          am_phase: 0.0, fm_phase: 0.0,
+        });
+      }
+      voices
+    };
+    let render = |distortion: Option<Distortion>| {
+      let mut voices = mk_voices();
+      let mut data = vec![0.0_f32; 4800];
+      BlockRenderer::new(1).render_with_distortion(
+        &mut voices, &mut data, 1, sr, 0.8, AmShapeFamily::default(), distortion,
+      );
+      data
+    };
+    let clean = render(None);
+    let heavy = render(Some(Distortion { scale: 0.3, shape: 2.0 }));
+    let rms = |d: &[f32]| (d.iter().map(|x| x * x).sum::<f32>() / d.len() as f32).sqrt();
+    assert!(rms(&heavy) < rms(&clean) * 0.7, "distortion compresses: clean={} heavy={}", rms(&clean), rms(&heavy));
+    assert!(heavy.iter().all(|s| s.abs() < 0.3 + 1e-4), "bounded by the scale asymptote");
+    let mut plain_voices = mk_voices();
+    let mut plain = vec![0.0_f32; 4800];
+    BlockRenderer::new(1).render(&mut plain_voices, &mut plain, 1, sr, 0.8, AmShapeFamily::default());
+    assert_eq!(clean, plain, "distortion None is bit-identical to render()");
   }
 
   #[test]

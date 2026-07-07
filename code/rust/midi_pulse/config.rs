@@ -424,6 +424,16 @@ pub enum SinkConfig {
     /// unchanged.
     #[serde(default = "default_oversample")]
     oversample: u32,
+    /// The global distortion's scale `s` (the soft-clipper's asymptote; see
+    /// learnings/distortion.org). Smaller = earlier/heavier bite; ~0.3 heavy,
+    /// ~1.0 strong, >=5 nearly clean. Only heard while a `distortion_toggle`
+    /// window is on.
+    #[serde(default = "default_distortion_scale")]
+    distortion_scale: f32,
+    /// The global distortion's shape `k` (elbow harshness): 1 = gentlest,
+    /// 2 = the smooth sweet spot, ~4+ = hard-ish, very large = hard clip.
+    #[serde(default = "default_distortion_shape")]
+    distortion_shape: f32,
   },
   /// A one-shot sample player: each trigger plays a loaded WAV to completion,
   /// mixed polyphonically. Drives the `drumkit` softstep window. Uses the same
@@ -438,6 +448,14 @@ pub enum SinkConfig {
 
 fn default_oversample() -> u32 {
   1
+}
+
+fn default_distortion_scale() -> f32 {
+  1.0 // "strong" on a unit-scale mix -- clearly a pedal, not a subtlety
+}
+
+fn default_distortion_shape() -> f32 {
+  2.0 // the smooth sweet spot (y / sqrt(1 + (y/s)^2))
 }
 
 impl SinkConfig {
@@ -561,6 +579,15 @@ pub enum MonomeWindowConfig {
     rect: [i32; 4],
     /// The monome id whose play voices this strip sets the volume of.
     controls: String,
+  },
+  // A single-cell on/off toggle for the GLOBAL distortion (surfaces runtime): the
+  // summed synth mix runs through the soft-clipper while on. The scale/shape live on
+  // the cpal_synth sink (`distortion_scale` / `distortion_shape`); this button is
+  // just the live on/off.
+  DistortionToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
   },
   // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
   // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
@@ -731,6 +758,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { id, .. }
       | MonomeWindowConfig::WaveformSelector { id, .. }
       | MonomeWindowConfig::VolumeStrip { id, .. }
+      | MonomeWindowConfig::DistortionToggle { id, .. }
       | MonomeWindowConfig::AccreteControl { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
@@ -760,6 +788,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { monome, .. }
       | MonomeWindowConfig::WaveformSelector { monome, .. }
       | MonomeWindowConfig::VolumeStrip { monome, .. }
+      | MonomeWindowConfig::DistortionToggle { monome, .. }
       | MonomeWindowConfig::AccreteControl { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
@@ -789,6 +818,7 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { rect, .. }
       | MonomeWindowConfig::WaveformSelector { rect, .. }
       | MonomeWindowConfig::VolumeStrip { rect, .. }
+      | MonomeWindowConfig::DistortionToggle { rect, .. }
       | MonomeWindowConfig::AccreteControl { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
@@ -819,6 +849,7 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::ScaleControl { .. } => "scale_control",
       MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
       MonomeWindowConfig::VolumeStrip { .. } => "volume_strip",
+      MonomeWindowConfig::DistortionToggle { .. } => "distortion_toggle",
       MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
@@ -1254,9 +1285,53 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_waveform_selectors(config)?;
   validate_volume_strips(config)?;
   validate_accrete_controls(config)?;
+  validate_distortion_toggles(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// A `distortion_toggle` is a single cell on a monome that has an `edo_note_grid`,
+/// at most one per monome (a second would be a redundant twin of the same global
+/// switch).
+fn validate_distortion_toggles(config: &Config) -> Result<(), String> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::DistortionToggle { id, monome, rect } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x0 != x1 || y0 != y1 {
+      return Err(format!(
+        "distortion_toggle window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
+      ));
+    }
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "distortion_toggle window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "distortion_toggle window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!(
+        "monome {monome:?} declares more than one distortion_toggle (window {id:?})",
+      ));
+    }
+  }
   Ok(())
 }
 
@@ -3014,5 +3089,51 @@ control = "accrete"
     );
     let err = parse_config(&toml).expect_err("accrete buttons on a gridless monome should fail");
     assert!(err.contains("needs an edo_note_grid"), "{err}");
+  }
+
+  // ---- distortion_toggle (surfaces global distortion on/off) ----
+
+  const DISTORTION_TOGGLE: &str = r#"
+[[monome_windows]]
+id = "dist-a"
+monome = "a"
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]
+"#;
+
+  #[test]
+  fn distortion_toggle_is_valid_and_sink_defaults_apply() {
+    let toml = format!("{SURFACES_MIN}{DISTORTION_TOGGLE}");
+    let config = parse_config(&toml).expect("a single-cell distortion toggle validates");
+    assert!(config
+      .monome_windows
+      .iter()
+      .any(|w| matches!(w, MonomeWindowConfig::DistortionToggle { .. })));
+    // The sink's distortion curve defaults (scale 1.0, shape 2.0) fill in when absent.
+    let SinkConfig::CpalSynth { distortion_scale, distortion_shape, .. } = &config.sinks[0] else {
+      panic!("first sink is the synth");
+    };
+    assert_eq!(*distortion_scale, 1.0);
+    assert_eq!(*distortion_shape, 2.0);
+  }
+
+  #[test]
+  fn distortion_toggle_must_be_a_single_cell() {
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      DISTORTION_TOGGLE.replace("rect = [0, 1, 0, 1]", "rect = [0, 1, 1, 1]"),
+    );
+    let err = parse_config(&toml).expect_err("a 2-cell toggle should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  #[test]
+  fn distortion_toggle_at_most_one_per_monome() {
+    let twin = DISTORTION_TOGGLE
+      .replace("dist-a", "dist-a2")
+      .replace("rect = [0, 1, 0, 1]", "rect = [1, 1, 1, 1]");
+    let toml = format!("{SURFACES_MIN}{DISTORTION_TOGGLE}{twin}");
+    let err = parse_config(&toml).expect_err("two toggles on one monome should fail");
+    assert!(err.contains("more than one distortion_toggle"), "{err}");
   }
 }

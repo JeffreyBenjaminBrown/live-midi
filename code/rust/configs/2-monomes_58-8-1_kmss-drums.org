@@ -40,6 +40,11 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   voices; releasing one never cuts the other. Even two cells on one grid that collide
   to the same pitch are independent (one voice per finger). Voices are keyed by
   =(grid, cell)=, not by pitch (contrast the looper, which ref-counts by pitch).
+- *distortion toggle* -- a single cell at =(0,1)= (second row, far left) on each
+  grid: key-down flips a *global* soft-clip distortion on the summed synth mix (both
+  grids; drums are untouched). One shared switch -- either grid's button, one state.
+  The curve's =distortion_scale= / =distortion_shape= live on the synth sink; see
+  [[../../../learnings/distortion.org]].
 - *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
   to the *sustained set* keep ringing after their fingers lift, until *clear*. Both
@@ -79,16 +84,17 @@ overlays drawn on top:
   col: 0   1   2   3   4   5  ...        13  14  15
   row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls THIS
                                                                grid: waveform (0..3) + volume
-  row 1   .   .   .   .   .                    .   .   .
+  row 1  DIST .   .   .   .                    .   .   .   <- global distortion on/off
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
   row 14  .   .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- scroll pad
   row 15 CLR HOLD ACC  .  .  . . . . . . .  LEFT DOWN RIGHT  <- accrete + scroll pad
 #+end_example
 
-- The whole top row (0,0)..(15,0), the pad cells (13..15, 14..15), and the accrete
-  buttons (0..2, 15) *occlude* the play grid: pressing them re-timbres / sets volume /
-  scrolls / sustains rather than sounding a note.
+- The whole top row (0,0)..(15,0), the pad cells (13..15, 14..15), the accrete
+  buttons (0..2, 15), and the distortion toggle (0,1) *occlude* the play grid:
+  pressing them re-timbres / sets volume / scrolls / sustains / distorts rather than
+  sounding a note.
 - The scroll-pad corners follow the looper's convention: top-left = down an octave
   (notes sound lower), top-right = up an octave; arrows raise pitch down/right,
   lower it up/left. See =midi_pulse::edo_play=.
@@ -115,6 +121,8 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
 - *Volume strip*: the active cell is lit, the rest dark; it shows the grid's own volume.
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
+- *Distortion toggle*: *dim* at rest, *bright* while the global distortion is on;
+  mirrored on both grids (one switch).
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
   clear while pressed, needs-holding while on, accrete while the accreting condition is
   live. Mirrored on both grids (one shared state). A *sustained* note paints exactly
@@ -176,6 +184,16 @@ Three buttons at each grid's bottom-left; both grids drive *one* shared state
 - Toggling *needs-holding* cancels an active accrete mode (the set is untouched).
 - Sustained voices follow the *volume fader* of the grid they came from, and paint
   bright on both grids like any sounding note.
+
+* distortion
+
+The =(0,1)= cell on either grid toggles a *global* distortion (key-down; key-up does
+nothing) applied to the *sum* of all synth voices -- fingered and sustained, both
+grids -- before the output clamp (and inside the oversampling loop, so its harmonics
+don't alias). The drums bypass it. The curve is the algebraic soft-clipper
+=f(y) = y / (1 + |y/s|^k)^(1/k)= ([[../../../learnings/distortion.org]]); =s= and =k=
+are the sink's =distortion_scale= / =distortion_shape= (defaults 1.0 / 2.0 -- a
+clearly-audible, smooth saturation).
 
 * the KMSS drumkit
 

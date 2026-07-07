@@ -44,10 +44,11 @@ use midi_pulse::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
 use crate::types::{Timbre, VoiceMap, Waveform};
+use crate::voices::Distortion;
 
 use accrete::AccreteState;
 use grid::{
-  levels_for_grid, volume_cells, volume_gain_for_pos, waveform_for_selector_cell, AccreteOverlay,
+  levels_for_grid, volume_cells, volume_gain_for_pos, waveform_for_selector_cell, ButtonOverlay,
   BRIGHT, DIM,
 };
 use synth::{set_grid_gain, SurfaceSink};
@@ -125,6 +126,8 @@ struct GridSettings {
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
+  /// The global-distortion toggle's cell, `NO_RECT` when absent (one shared switch).
+  distortion_rect: [i32; 4],
 }
 
 struct Settings {
@@ -144,6 +147,9 @@ struct Settings {
   oversample: u32,
   attack: f32,
   release: f32,
+  /// The global distortion's curve (scale + shape from the cpal_synth sink); the
+  /// on/off lives in a shared AtomicBool flipped by the distortion_toggle windows.
+  distortion: Distortion,
   has_drums: bool,
   /// Trail clobber radius as a divisor of the octave (`[surfaces].trail_clobber_radius`):
   /// a played note clears trailed classes within `edo / this` steps of it.
@@ -190,7 +196,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
   let SinkConfig::CpalSynth {
-    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample, ..
+    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
+    distortion_scale, distortion_shape, ..
   } = sink
   else {
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
@@ -261,6 +268,16 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
         })
         .unwrap_or(NO_RECT)
     };
+    let distortion_rect = config
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowConfig::DistortionToggle { monome, rect, .. } if monome == monome_id => {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       listen_port: monome_cfg.listen_port,
@@ -274,6 +291,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       clear_rect: accrete_rect_on(AccreteControlKind::Clear),
       needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
       accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
+      distortion_rect,
     });
   }
 
@@ -302,6 +320,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     oversample: *oversample,
     attack: *attack_secs,
     release: *release_secs,
+    distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
     has_drums: !config.softstep_windows.is_empty(),
     trail_clobber_radius: surfaces.trail_clobber_radius,
     trails_max: surfaces.trails_max,
@@ -345,10 +364,20 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
   // sink's `amplitude` is the single master "synth volume" (both grids); the per-grid
   // volume strips are live trims that multiply below it.
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+  // The global distortion on/off, shared by every grid's toggle and the audio callback.
+  let distortion_on = Arc::new(AtomicBool::new(false));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
-    audio::start(Arc::clone(&voices), s.sample_rate, s.buffer_frames, s.amplitude, s.oversample as usize)?
+    audio::start(
+      Arc::clone(&voices),
+      s.sample_rate,
+      s.buffer_frames,
+      s.amplitude,
+      s.oversample as usize,
+      s.distortion,
+      Arc::clone(&distortion_on),
+    )?
   };
 
   // Per-grid current waveform (index = grid index). Each element is written only by the
@@ -416,6 +445,7 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       clear_rect: g.clear_rect,
       needs_holding_rect: g.needs_holding_rect,
       accrete_rect: g.accrete_rect,
+      distortion_rect: g.distortion_rect,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -430,6 +460,7 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       gains: Arc::clone(&gains),
       accrete: Arc::clone(&accrete),
       held_all: Arc::clone(&held_all),
+      distortion_on: Arc::clone(&distortion_on),
       voices: Arc::clone(&voices),
       sink: SurfaceSink::new(
         grid_index,
@@ -480,6 +511,8 @@ struct GridThread {
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
+  /// The global-distortion toggle's cell on this grid (`NO_RECT` if absent).
+  distortion_rect: [i32; 4],
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -502,6 +535,8 @@ struct GridThread {
   /// Every grid's held notes (cell -> struck pitch), for accrete's capture-on-
   /// activation. Each grid thread rewrites only its own slot.
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  /// The global distortion on/off (both grids' toggles + the audio callback).
+  distortion_on: Arc<AtomicBool>,
   /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
   sink: SurfaceSink,
@@ -580,7 +615,8 @@ fn grid_thread(mut rt: GridThread) {
     // trail (dim), through the current register.
     let selector_waveform = current_waveform(&rt.waveforms, rt.controls_index);
     let volume_col = volume_active_col(&rt);
-    let (accrete_overlay, sustained_classes) = accrete_view(&rt);
+    let (mut buttons, sustained_classes) = accrete_view(&rt);
+    buttons.push((rt.distortion_rect, rt.distortion_on.load(Ordering::Relaxed)));
     let mut sounding_classes = union_sounding(&rt.sounding);
     sounding_classes.extend(sustained_classes);
     let trail_classes = trail_set(&rt.trail);
@@ -593,7 +629,7 @@ fn grid_thread(mut rt: GridThread) {
       rt.volume_rect,
       volume_col,
       rt.scroll_rect,
-      &accrete_overlay,
+      &buttons,
       register,
       rt.x_step,
       rt.y_step,
@@ -643,6 +679,14 @@ fn handle_key(
   if in_overlay(rt.volume_rect, cell) {
     if press {
       set_volume(rt, cell.0);
+    }
+    return;
+  }
+  // Distortion toggle: key-down flips the GLOBAL on/off (the audio callback reads it
+  // live); key-up does nothing.
+  if in_overlay(rt.distortion_rect, cell) {
+    if press {
+      let _ = rt.distortion_on.fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
@@ -750,17 +794,14 @@ fn capture_all_held(rt: &GridThread) {
 
 /// One lock: the accrete buttons' LED view for this grid plus the sustained pitch
 /// classes (which paint bright -- they are sounding).
-fn accrete_view(rt: &GridThread) -> (AccreteOverlay, HashSet<i32>) {
+fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
   let s = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
   (
-    AccreteOverlay {
-      clear_rect: rt.clear_rect,
-      needs_holding_rect: rt.needs_holding_rect,
-      accrete_rect: rt.accrete_rect,
-      clear_lit: s.clear_lit(),
-      needs_holding_lit: s.needs_holding_lit(),
-      accrete_lit: s.accrete_lit(),
-    },
+    vec![
+      (rt.clear_rect, s.clear_lit()),
+      (rt.needs_holding_rect, s.needs_holding_lit()),
+      (rt.accrete_rect, s.accrete_lit()),
+    ],
     s.sustained_classes(rt.edo),
   )
 }
@@ -1075,12 +1116,19 @@ mod tests {
     assert_eq!(s.grids[1].controls_index, 1, "grid 1's strip re-timbres grid 1");
     assert_eq!(s.grids[0].volume_controls_index, 0, "grid 0's volume sets grid 0");
     assert_eq!(s.grids[1].volume_controls_index, 1, "grid 1's volume sets grid 1");
-    // Both grids carry a scroll pad, a selector, and a volume strip.
+    // Both grids carry a scroll pad, a selector, a volume strip, the accrete trio,
+    // and the distortion toggle.
     for g in &s.grids {
       assert_ne!(g.scroll_rect, NO_RECT, "grid {:?} has a scroll pad", g.monome_id);
       assert_ne!(g.selector_rect, NO_RECT, "grid {:?} has a selector", g.monome_id);
       assert_ne!(g.volume_rect, NO_RECT, "grid {:?} has a volume strip", g.monome_id);
+      assert_eq!(g.clear_rect, [0, 15, 0, 15], "grid {:?} clear button", g.monome_id);
+      assert_eq!(g.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
+      assert_eq!(g.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
+      assert_eq!(g.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
     }
+    // The sink's distortion curve flows into the settings.
+    assert_eq!(s.distortion, Distortion { scale: 1.0, shape: 2.0 });
     // The `[surfaces]` table flows into the settings (this config asks for 9 trails).
     assert_eq!(s.trail_clobber_radius, 27, "trail_clobber_radius from [surfaces]");
     assert_eq!(s.trails_max, 9, "trails_max from [surfaces]");
@@ -1234,6 +1282,48 @@ mod tests {
     assert!(wait_until(secs(3), || a.level_at(0, 15) == 4), "clear dims on key-up");
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "cleared note drops to the trail on a");
     assert!(wait_until(secs(3), || b.level_at(5, 5) == 4), "and on b");
+
+    STOP.store(true, Ordering::SeqCst);
+    let _ = handle.join();
+    STOP.store(false, Ordering::SeqCst);
+  }
+
+  /// The distortion toggle end-to-end: rests dim at (0,1), a press lights it on BOTH
+  /// grids (one global switch), a second press (from the other grid) turns it off.
+  #[test]
+  fn distortion_toggle_mirrors_across_grids() {
+    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+
+    let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+      .expect("start mock rig");
+    let detector_port = rig.detector_port();
+    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+
+    STOP.store(false, Ordering::SeqCst);
+    let handle = {
+      let config = config.clone();
+      thread::spawn(move || {
+        if let Err(e) = run(&config, detector_port, true) {
+          eprintln!("mock distortion run error: {e}");
+        }
+      })
+    };
+
+    let a = rig.grid(0);
+    let b = rig.grid(1);
+    let secs = Duration::from_secs;
+    assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
+    assert!(wait_until(secs(3), || a.level_at(0, 1) == 4 && b.level_at(0, 1) == 4),
+      "the toggle rests dim on both grids");
+    a.press(0, 1);
+    a.release(0, 1);
+    assert!(wait_until(secs(3), || a.level_at(0, 1) == 15), "on: lit on grid a");
+    assert!(wait_until(secs(3), || b.level_at(0, 1) == 15), "on: lit on grid b (global)");
+    b.press(0, 1);
+    b.release(0, 1);
+    assert!(wait_until(secs(3), || a.level_at(0, 1) == 4 && b.level_at(0, 1) == 4),
+      "off again from the other grid");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

@@ -56,47 +56,19 @@ pub fn volume_cells(rect: OverlayRect) -> i32 {
   }
 }
 
-/// The three accrete (sustain) buttons' display state: their single-cell rects plus
-/// whether each is lit. A button paints `BRIGHT` when lit, `DIM` at rest -- the resting
-/// glow keeps an idle button findable on the play grid, like the scroll arrows. The
-/// buttons occlude the play cells beneath them.
-#[derive(Clone, Copy)]
-pub struct AccreteOverlay {
-  pub clear_rect: OverlayRect,
-  pub needs_holding_rect: OverlayRect,
-  pub accrete_rect: OverlayRect,
-  pub clear_lit: bool,
-  pub needs_holding_lit: bool,
-  pub accrete_lit: bool,
-}
+/// A single-cell control button overlaid on the play grid: its rect (`NO_RECT`
+/// sentinel when absent) and whether it is lit. Buttons paint `BRIGHT` when lit,
+/// `DIM` at rest -- the resting glow keeps an idle button findable on the play grid,
+/// like the scroll arrows -- and occlude the play cells beneath them. Used for the
+/// accrete (sustain) trio and the distortion toggle.
+pub type ButtonOverlay = (OverlayRect, bool);
 
-impl AccreteOverlay {
-  /// No accrete buttons on this grid (every rect is the never-matching sentinel).
-  /// The runtime builds the same shape from its `NO_RECT` fields; this named twin
-  /// keeps the tests readable.
-  #[allow(dead_code)]
-  pub const ABSENT: AccreteOverlay = AccreteOverlay {
-    clear_rect: [-1, -1, -1, -1],
-    needs_holding_rect: [-1, -1, -1, -1],
-    accrete_rect: [-1, -1, -1, -1],
-    clear_lit: false,
-    needs_holding_lit: false,
-    accrete_lit: false,
-  };
-
-  /// The level for `(x, y)` if it is one of the three buttons, else None.
-  fn level_at(&self, x: i32, y: i32) -> Option<i32> {
-    let lit_level = |lit: bool| if lit { BRIGHT } else { DIM };
-    if in_rect(self.clear_rect, x, y) {
-      Some(lit_level(self.clear_lit))
-    } else if in_rect(self.needs_holding_rect, x, y) {
-      Some(lit_level(self.needs_holding_lit))
-    } else if in_rect(self.accrete_rect, x, y) {
-      Some(lit_level(self.accrete_lit))
-    } else {
-      None
-    }
-  }
+/// The level for `(x, y)` if it is one of the buttons, else None.
+fn button_level_at(buttons: &[ButtonOverlay], x: i32, y: i32) -> Option<i32> {
+  buttons
+    .iter()
+    .find(|(rect, _)| in_rect(*rect, x, y))
+    .map(|(_, lit)| if *lit { BRIGHT } else { DIM })
 }
 
 /// Compute the full LED level vector (row-major, `grid_w * grid_h`) for one grid.
@@ -106,7 +78,8 @@ impl AccreteOverlay {
 /// - *volume* cells: `BRIGHT` at the active column (`volume_col`), else `OFF`;
 /// - *scroll-pad* cells: `DIM` for the four arrows, `OFF` for the two octave corners
 ///   (the pad fully occludes the edo grid beneath it -- no note ever shows there);
-/// - *accrete* buttons: `BRIGHT` when lit (pressed / on / accreting), else `DIM`;
+/// - control `buttons` (the accrete trio, the distortion toggle): `BRIGHT` when lit
+///   (pressed / on / accreting), else `DIM`;
 /// - a play cell inside `edo_rect`: its class under the *current register* is `BRIGHT`
 ///   if octave-equivalent to a sounding note (either grid, fingered or sustained),
 ///   else `DIM` if in the trail, else `OFF`;
@@ -124,7 +97,7 @@ pub fn levels_for_grid(
   volume_rect: OverlayRect,
   volume_col: i32,
   scroll_rect: OverlayRect,
-  accrete: &AccreteOverlay,
+  buttons: &[ButtonOverlay],
   register: i32,
   x_step: i32,
   y_step: i32,
@@ -146,7 +119,7 @@ pub fn levels_for_grid(
         } else {
           OFF
         }
-      } else if let Some(level) = accrete.level_at(x, y) {
+      } else if let Some(level) = button_level_at(buttons, x, y) {
         level
       } else if in_rect(scroll_rect, x, y) {
         match shift_for_cell(scroll_rect, (x, y)) {
@@ -210,7 +183,7 @@ mod tests {
   ) -> Vec<i32> {
     levels_for_grid(
       sounding, trail, FULL, SELECTOR, Waveform::Triangle, VOLUME, volume_col, SCROLL,
-      &AccreteOverlay::ABSENT, register, XS, YS, EDO, 16, 16,
+      &[], register, XS, YS, EDO, 16, 16,
     )
   }
 
@@ -233,32 +206,32 @@ mod tests {
   fn selector_lights_selected_bright_others_dim() {
     let levels = levels_for_grid(
       &empty(), &empty(), FULL, SELECTOR, Waveform::Square, NONE, -1, NONE,
-      &AccreteOverlay::ABSENT, 0, XS, YS, EDO, 16, 16,
+      &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 2, 0), BRIGHT, "square selected");
     assert_eq!(at(&levels, 0, 0), DIM, "sine unselected dim");
   }
 
   #[test]
-  fn accrete_buttons_paint_dim_at_rest_bright_when_lit_and_occlude_notes() {
-    // The trio sits at (0,15) (1,15) (2,15). needs_holding is lit; the others rest.
-    let overlay = AccreteOverlay {
-      clear_rect: [0, 15, 0, 15],
-      needs_holding_rect: [1, 15, 1, 15],
-      accrete_rect: [2, 15, 2, 15],
-      clear_lit: false,
-      needs_holding_lit: true,
-      accrete_lit: false,
-    };
+  fn control_buttons_paint_dim_at_rest_bright_when_lit_and_occlude_notes() {
+    // The accrete trio at (0,15)..(2,15) -- needs_holding lit -- plus a lit
+    // distortion toggle at (0,1).
+    let buttons: Vec<ButtonOverlay> = vec![
+      ([0, 15, 0, 15], false), // clear, at rest
+      ([1, 15, 1, 15], true),  // needs_holding, on
+      ([2, 15, 2, 15], false), // accrete, at rest
+      ([0, 1, 0, 1], true),    // distortion, on
+    ];
     // Make the class under the clear button "sound" -- the button must occlude it.
     let cls: HashSet<i32> = [class_at(0, 0, 15)].into_iter().collect();
     let levels = levels_for_grid(
-      &cls, &empty(), FULL, SELECTOR, Waveform::Triangle, VOLUME, 10, SCROLL, &overlay,
+      &cls, &empty(), FULL, SELECTOR, Waveform::Triangle, VOLUME, 10, SCROLL, &buttons,
       0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 0, 15), DIM, "clear rests dim even though its class sounds");
     assert_eq!(at(&levels, 1, 15), BRIGHT, "needs_holding lit");
     assert_eq!(at(&levels, 2, 15), DIM, "accrete rests dim");
+    assert_eq!(at(&levels, 0, 1), BRIGHT, "distortion toggle lit");
   }
 
   #[test]
