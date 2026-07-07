@@ -31,7 +31,9 @@ pub fn triangle(phase: f32) -> f32 {
 
 /// One sample of `waveform` at `phase` in [0,1). `dt` is the per-sample phase
 /// increment (effective_freq / sample_rate); the discontinuous waveforms (square,
-/// saw) use it for PolyBLEP band-limiting. sine/triangle ignore it.
+/// saw) use it for PolyBLEP band-limiting. sine/triangle ignore it. A *negative*
+/// `dt` (a through-zero oscillator running backward) band-limits on its magnitude
+/// -- the edge width is the same whichever way the phase crosses it.
 pub fn osc(waveform: Waveform, phase: f32, dt: f32) -> f32 {
   match waveform {
     Waveform::Sine => (std::f32::consts::TAU * phase).sin(),
@@ -51,9 +53,12 @@ pub fn osc(waveform: Waveform, phase: f32, dt: f32) -> f32 {
 
 /// PolyBLEP residual for a unit *upward* step at phase 0 (wrapping). Subtract it
 /// for a downward step. The standard 2-sample polynomial correction; with no
-/// increment (dt<=0) there's nothing to band-limit.
+/// increment (dt=0) there's nothing to band-limit. Only the increment's magnitude
+/// matters: a backward-running (through-zero) oscillator crosses the same
+/// discontinuity over the same number of samples.
 fn poly_blep(t: f32, dt: f32) -> f32 {
-  if dt <= 0.0 {
+  let dt = dt.abs();
+  if dt == 0.0 {
     return 0.0;
   }
   if t < dt {
@@ -147,6 +152,14 @@ pub fn am_multiplier(am: Am, family: AmShapeFamily, am_phase: f32) -> f32 {
 
 /// The FM carrier-frequency multiplier: 2^(depth_cents * sin(2*pi*fm_phase) / 1200).
 /// depth_cents 0 returns 1.0 (no FM).
+///
+/// This FM is *exponential* (depth in cents, i.e. a pitch offset), so the multiplier
+/// is always > 0: no modulation depth can push the carrier frequency below 0 Hz. That
+/// makes "through-zero FM" -- the linear-FM behavior where a below-zero frequency
+/// flips phase and runs the oscillator backward -- unreachable from these controls.
+/// The oscillator core itself IS through-zero-capable (a negative increment runs the
+/// phase backward, band-limited on |dt|; see `accumulate_voices` / `poly_blep`), so
+/// any future *linear* FM gets through-zero behavior for free.
 pub fn fm_factor(depth_cents: f32, fm_phase: f32) -> f32 {
   if depth_cents == 0.0 {
     return 1.0;
@@ -205,8 +218,10 @@ fn accumulate_voices(
     // FM modulates the carrier increment; PolyBLEP band-limits at this same dt -- the
     // per-sub-sample increment, so it stays correct at whatever rate we step.
     let dt = v.freq * fm_factor(v.timbre.fm.depth_cents, v.fm_phase) * frac / sample_rate;
-    v.phase += dt;
-    if v.phase >= 1.0 { v.phase -= 1.0; }
+    // Through-zero: rem_euclid keeps phase in [0,1) even for a negative dt (a
+    // "negative-frequency" voice runs backward -- for a sine, exactly a 180-degree
+    // phase flip, as a through-zero FM oscillator should) or a |dt| > 1.
+    v.phase = (v.phase + dt).rem_euclid(1.0);
     let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
     let wf_norm = waveform_norm(v.timbre.waveform);
     mix += osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * amplitude;
@@ -623,6 +638,55 @@ mod tests {
     assert!(alias_os < alias_plain * 0.1, "4x oversampling should kill it: plain={alias_plain} os={alias_os}");
     let (pass_plain, pass_os) = (rms(1_000.0, 1), rms(1_000.0, 4));
     assert!(pass_os > pass_plain * 0.8, "an in-band 1 kHz tone must pass: plain={pass_plain} os={pass_os}");
+  }
+
+  #[test]
+  fn through_zero_a_negative_frequency_sine_is_the_forward_sine_phase_flipped() {
+    // Through-zero FM behavior (TODO/misc.org): an oscillator forced below 0 Hz must
+    // not stop; it runs backward, which for a sine is exactly a 180-degree phase flip
+    // (sin(-x) = -sin(x)) -- the ring-modulator identity at the zero line. Render the
+    // same voice at +f and -f: sample for sample, one is the negation of the other.
+    let sr = 48000.0;
+    let render = |freq: f32| {
+      let v = VoiceState {
+        id: 0, freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+        am_phase: 0.0, fm_phase: 0.0,
+      };
+      render_voice(v, 1024, sr)
+    };
+    let (fwd, bwd) = (render(300.0), render(-300.0));
+    let peak = fwd.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+    assert!(peak > 0.05, "the forward render must actually sound: peak={peak}");
+    for (i, (a, b)) in fwd.iter().zip(&bwd).enumerate() {
+      assert!((a + b).abs() < 1e-4, "sample {i}: backward {b} should be -(forward {a})");
+    }
+  }
+
+  #[test]
+  fn through_zero_keeps_phase_in_range_and_saw_band_limited() {
+    // A backward-running voice must keep its phase in [0,1) (rem_euclid wrap) and
+    // PolyBLEP must band-limit on |dt|, so a discontinuous waveform stays bounded.
+    let sr = 48000.0;
+    let v = VoiceState {
+      id: 0, freq: -220.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+      timbre: Timbre { waveform: Waveform::Saw, ..Timbre::default() },
+      am_phase: 0.0, fm_phase: 0.0,
+    };
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+    let mut data = vec![0.0_f32; 4096];
+    render_block(&mut voices, &mut data, 1, sr);
+    let state = voices.values().next().expect("voice survives");
+    assert!((0.0..1.0).contains(&state.phase), "phase wrapped into [0,1): {}", state.phase);
+    let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+    assert!(peak > 0.05 && peak <= 0.95, "backward saw sounds and stays bounded: {peak}");
+    // The PolyBLEP correction itself is symmetric in dt.
+    let dt = 1.0 / 100.0;
+    for i in 0..100 {
+      let p = i as f32 / 100.0;
+      assert_eq!(poly_blep(p, dt), poly_blep(p, -dt), "poly_blep must depend on |dt| only");
+    }
   }
 
   #[test]
