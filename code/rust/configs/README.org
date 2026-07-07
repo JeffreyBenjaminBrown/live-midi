@@ -310,8 +310,9 @@ The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
 not only in a full looper stack.
 
 An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Three
-kinds -- set by its ~control~ field -- form a per-monome all-or-nothing trio, and
-both grids' trios drive ONE shared state:
+kinds -- set by its ~control~ field -- form a per-monome all-or-nothing trio.
+Each monome's trio drives its OWN accrete bank: only notes fingered on that grid
+can join its sustained set, and its ~clear~ leaves the other bank ringing:
 
 #+begin_src toml
 [[monome_windows]]
@@ -322,13 +323,14 @@ rect = [0, 15, 0, 15]        # exactly one cell
 control = "clear"            # or "needs_holding" or "accrete"
 #+end_src
 
-- ~clear~ (key-down; lit while pressed) silences and flushes every sustained note.
+- ~clear~ (key-down; lit while pressed) silences and flushes this bank's sustained
+  notes.
 - ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ must be
   *held* or is itself a toggle.
 - ~accrete~: while the accreting condition is live (button held, or accrete mode
-  toggled on), notes played -- plus notes already held when it went live -- join the
-  *sustained set* and keep ringing after their fingers lift, until ~clear~. Lit
-  while the condition is live, dim otherwise.
+  toggled on), notes played on this grid -- plus notes already held here when it
+  went live -- join the bank's *sustained set* and keep ringing after their fingers
+  lift, until ~clear~. Lit while the condition is live, dim otherwise.
 
 Sustained notes paint like any sounding note (bright octave-equivalents on both
 grids) and follow the volume fader of the grid they came from.
@@ -355,13 +357,16 @@ The button is dim at rest, bright while on; key-down toggles, key-up does nothin
 See =learnings/distortion.org= for the curve family.
 
 A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
-(single cell, at most one of each per monome, global switch, dim/bright LED). Slide: a new note re-triggers the
+(single cell, at most one of each per monome, dim/bright LED). Slide and mono are
+global switches. Slide: a new note re-triggers the
 nearest pitch released within ~slide_candidate_window_ms~ and glides it into the
 new pitch over ~slide_duration_ms~ (both optional in the ~[surfaces]~ table;
 defaults 1000 / 100). Mono: each new note cuts that grid's other fingered notes
 (and with slide on, the candidate set is a singleton -- you glide from the note
-you just cut). Softstep-accretes: while on, KMSS pedals 1/2/3 and 8/9/0 mirror
-the accrete trio instead of playing samples (see the config's .org).
+you just cut). Softstep-accretes is PER-GRID: while grid g's toggle is on, the
+KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
+for the other) mirrors g's accrete trio instead of playing samples -- one
+monome, both, or neither (see the config's .org).
 
 A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
 per monome, on a monome with an ~edo_note_grid~): tap twice within

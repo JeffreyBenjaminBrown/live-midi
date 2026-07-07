@@ -1,18 +1,22 @@
 //! The sustain ("accrete") state machine for the surfaces runtime -- pure logic, no
 //! I/O, unit-tested without a device. See TODO/misc.org "sustain (accrete)".
 //!
-//! Three buttons (per grid; both grids share ONE state, so either grid's buttons act
-//! globally):
-//! - *clear* silences and flushes the whole sustained set (key-down; lit while held);
+//! One `AccreteState` is one *bank*, and each monome gets its own (misc.org "two
+//! monome-specific accrete banks"): a grid's button trio drives only its own bank,
+//! and only notes fingered on that grid can join its sustained set. The runtime
+//! holds the banks in one `Vec` under one lock; the same pitch sustained from both
+//! grids is one entry in each bank (and two voices), matching the surfaces
+//! "independent voices" rule.
+//!
+//! Three buttons (per grid):
+//! - *clear* silences and flushes this bank's sustained set (key-down; lit while held);
 //! - *needs_holding* toggles how *accrete* behaves (key-down; lit while on);
 //! - *accrete*: with needs_holding, notes fingered while it is HELD join the sustained
 //!   set; without, key-down toggles an accrete *mode* during which every note played
 //!   joins. Either way, entering the accreting condition also captures the notes
-//!   already held at that moment, and a note in the set keeps ringing after its finger
-//!   lifts, until *clear*.
+//!   already held at that moment (on this bank's grid), and a note in the set keeps
+//!   ringing after its finger lifts, until *clear*.
 //!
-//! Membership is keyed by `(grid, pitch)` -- the same pitch sustained from both grids
-//! is two entries (and two voices), matching the surfaces "independent voices" rule.
 //! Nothing ever leaves the set except through `press_clear` (un-toggling accrete mode
 //! stops *additions* only).
 //!
@@ -31,13 +35,14 @@ pub struct AccreteState {
   needs_holding: bool,
   /// The toggle-mode "accrete mode" flag (only consulted when !needs_holding).
   mode_on: bool,
-  /// How many accrete buttons are physically held right now (either grid). Tracked
-  /// unconditionally so a needs-holding flip mid-hold stays consistent.
+  /// How many accrete buttons are physically held right now (the on-grid button and
+  /// its pedal mirror can overlap). Tracked unconditionally so a needs-holding flip
+  /// mid-hold stays consistent.
   hold_count: usize,
   /// How many clear buttons are physically held (drives that button's LED only).
   clear_count: usize,
-  /// The sustained set: `(grid index, absolute pitch)`.
-  sustained: HashSet<(usize, i32)>,
+  /// The sustained set: absolute pitches (this bank's grid only).
+  sustained: HashSet<i32>,
 }
 
 impl AccreteState {
@@ -86,7 +91,7 @@ impl AccreteState {
   }
 
   /// Key-down on *accrete*. Returns true if this press started the accreting
-  /// condition (caller captures the notes currently held on all grids).
+  /// condition (caller captures the notes currently held on this bank's grid).
   pub fn press_accrete(&mut self) -> bool {
     let before = self.accreting();
     self.hold_count += 1;
@@ -102,32 +107,35 @@ impl AccreteState {
     self.hold_count = self.hold_count.saturating_sub(1);
   }
 
-  /// A note-on happened. If accreting, it joins the sustained set immediately.
-  pub fn note_played(&mut self, grid: usize, pitch: i32) {
+  /// A note-on happened on this bank's grid. If accreting, it joins the sustained
+  /// set immediately.
+  pub fn note_played(&mut self, pitch: i32) {
     if self.accreting() {
-      self.sustained.insert((grid, pitch));
+      self.sustained.insert(pitch);
     }
   }
 
-  /// Bulk-capture the notes currently held (both grids) -- called when the
+  /// Bulk-capture the notes currently held on this bank's grid -- called when the
   /// accreting condition turns on.
-  pub fn capture_held<I: IntoIterator<Item = (usize, i32)>>(&mut self, held: I) {
+  pub fn capture_held<I: IntoIterator<Item = i32>>(&mut self, held: I) {
     self.sustained.extend(held);
   }
 
-  /// A note-off is happening: should this note keep ringing (be transferred to a
-  /// sustain voice) instead of releasing? True if it is already in the set, or the
-  /// accreting condition holds at release time (joining the set on the spot).
-  pub fn note_released_sustains(&mut self, grid: usize, pitch: i32) -> bool {
+  /// A note-off is happening on this bank's grid: should this note keep ringing (be
+  /// transferred to a sustain voice) instead of releasing? True if it is already in
+  /// the set, or the accreting condition holds at release time (joining the set on
+  /// the spot).
+  pub fn note_released_sustains(&mut self, pitch: i32) -> bool {
     if self.accreting() {
-      self.sustained.insert((grid, pitch));
+      self.sustained.insert(pitch);
     }
-    self.sustained.contains(&(grid, pitch))
+    self.sustained.contains(&pitch)
   }
 
-  /// The sustained pitch *classes* (for the shared bright-LED reflection).
+  /// The sustained pitch *classes* (for the shared bright-LED reflection; the
+  /// runtime paints the union of every bank's classes -- they are all sounding).
   pub fn sustained_classes(&self, edo: i32) -> HashSet<i32> {
-    self.sustained.iter().map(|(_, p)| p.rem_euclid(edo)).collect()
+    self.sustained.iter().map(|p| p.rem_euclid(edo)).collect()
   }
 
   // --- LED states ---
@@ -176,17 +184,17 @@ mod tests {
     assert!(s.accrete_lit(), "key-down toggled accrete mode on");
     s.release_accrete();
     assert!(s.accrete_lit(), "key-up does nothing in toggle mode");
-    s.note_played(0, 30);
-    s.note_played(1, 42);
-    assert!(s.note_released_sustains(0, 30), "a note played during the mode sustains");
-    assert!(s.note_released_sustains(1, 42));
+    s.note_played(30);
+    s.note_played(42);
+    assert!(s.note_released_sustains(30), "a note played during the mode sustains");
+    assert!(s.note_released_sustains(42));
     // Un-toggle: new notes stop joining, but nothing is deleted.
     s.press_accrete();
     s.release_accrete();
     assert!(!s.accrete_lit());
-    s.note_played(0, 50);
-    assert!(!s.note_released_sustains(0, 50), "a note played after the mode does not sustain");
-    assert!(s.note_released_sustains(0, 30), "the earlier note still sustains");
+    s.note_played(50);
+    assert!(!s.note_released_sustains(50), "a note played after the mode does not sustain");
+    assert!(s.note_released_sustains(30), "the earlier note still sustains");
   }
 
   #[test]
@@ -202,7 +210,7 @@ mod tests {
 
     s.press_needs_holding();
     assert!(s.press_accrete(), "first hold: activation");
-    assert!(!s.press_accrete(), "second simultaneous hold (other grid): already on");
+    assert!(!s.press_accrete(), "second simultaneous hold (pedal mirror): already on");
     s.release_accrete();
     assert!(s.accrete_lit(), "still held once");
     s.release_accrete();
@@ -217,12 +225,12 @@ mod tests {
     assert!(s.needs_holding_lit());
     assert!(s.press_accrete(), "accrete down starts the condition -> capture held notes");
     assert!(s.accrete_lit());
-    s.note_played(0, 30);
+    s.note_played(30);
     s.release_accrete();
     assert!(!s.accrete_lit(), "key-up ends the condition in needs-holding mode");
-    assert!(s.note_released_sustains(0, 30), "captured while held -> still sustains");
-    s.note_played(0, 44);
-    assert!(!s.note_released_sustains(0, 44), "played after the hold -> does not sustain");
+    assert!(s.note_released_sustains(30), "captured while held -> still sustains");
+    s.note_played(44);
+    assert!(!s.note_released_sustains(44), "played after the hold -> does not sustain");
   }
 
   #[test]
@@ -232,14 +240,14 @@ mod tests {
     let mut s = AccreteState::new();
     s.press_needs_holding();
     s.press_accrete();
-    assert!(s.note_released_sustains(0, 25), "released under a held accrete -> joins the set");
+    assert!(s.note_released_sustains(25), "released under a held accrete -> joins the set");
   }
 
   #[test]
   fn clear_flushes_but_does_not_stop_accretion() {
     let mut s = AccreteState::new();
     s.press_accrete(); // toggle mode on
-    s.note_played(0, 30);
+    s.note_played(30);
     assert_eq!(s.sustained_len(), 1);
     s.press_clear();
     assert!(s.clear_lit(), "clear lights while pressed");
@@ -247,8 +255,8 @@ mod tests {
     s.release_clear();
     assert!(!s.clear_lit(), "clear goes dark on key-up");
     assert!(s.accrete_lit(), "clear does not exit accrete mode");
-    s.note_played(0, 31);
-    assert!(s.note_released_sustains(0, 31), "accretion continues after a clear");
+    s.note_played(31);
+    assert!(s.note_released_sustains(31), "accretion continues after a clear");
   }
 
   #[test]
@@ -280,21 +288,35 @@ mod tests {
   }
 
   #[test]
-  fn capture_held_takes_both_grids() {
+  fn capture_held_takes_a_batch() {
     let mut s = AccreteState::new();
     s.press_accrete();
-    s.capture_held([(0, 10), (1, 10), (1, 20)]);
-    assert!(s.note_released_sustains(0, 10));
-    assert!(s.note_released_sustains(1, 10));
-    assert!(s.note_released_sustains(1, 20));
+    s.capture_held([10, 20]);
+    assert!(s.note_released_sustains(10));
+    assert!(s.note_released_sustains(20));
     assert_eq!(s.sustained_classes(58), [10, 20].into_iter().collect());
+  }
+
+  #[test]
+  fn banks_are_independent() {
+    // Two banks (one per monome): accreting on one adds nothing to -- and clears
+    // nothing from -- the other.
+    let mut banks = [AccreteState::new(), AccreteState::new()];
+    banks[0].press_accrete(); // bank 0 into toggle mode
+    banks[0].note_played(30);
+    banks[1].note_played(30); // bank 1 is not accreting
+    assert!(banks[0].note_released_sustains(30), "bank 0 sustains its own note");
+    assert!(!banks[1].note_released_sustains(30), "bank 1 does not follow suit");
+    banks[1].press_clear();
+    assert!(banks[0].note_released_sustains(30), "bank 1's clear leaves bank 0 ringing");
+    assert!(!banks[1].accrete_lit(), "bank 1 never entered accrete mode");
   }
 
   #[test]
   fn sustained_classes_fold_octaves() {
     let mut s = AccreteState::new();
     s.press_accrete();
-    s.capture_held([(0, 60), (0, 2), (1, -56)]);
+    s.capture_held([60, 2, -56]);
     // 60 % 58 = 2, -56 mod 58 = 2: all one class.
     assert_eq!(s.sustained_classes(58), [2].into_iter().collect());
   }

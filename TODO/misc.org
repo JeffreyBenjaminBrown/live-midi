@@ -35,17 +35,17 @@ If what you actually want is audible through-zero *linear* FM as a playable
 timbre dimension, that's a new timbre parameter + config surface -- happy to
 build it, but since nothing existing would change sound, I stopped here.
 (Also noted in jeff-maybe-review-this.org.)
-* DONE sustain ("accrete")
+* ONGOING sustain ("accrete")
 For the 3-surfaces rig(s) -- that is, softstep + 2 monomes --
 let's put three buttons in the bottom row on the left:
 - clear : Silences and flushes all accreted notes. Lights when pressed. Works on key-down; does nothing on key up.
 - accrete-needs-holding : Pressing this changes the way the third button behaves. Key down toggles state; key up does nothing. When accrete needs holding, this is lit; otherwise accrete does not need holding.
 - accrete : If "accrete needs holding", then holding this key down causes any notes fingered on the big edo grid (even if they were pressed before this, as long as they are now held) to be added to the sustained set. The sustained set of notes will continue ringing even when they stop being fingered, until the sustained set is cleared. If accrete does not need holding, then key-down toggles 'accrete mode', where every note played (plus any that were being held when it entered accrete mode) becomes part of the sustained set. key-up does nothing. When accrete mode is un-toggled, new notes are not added to the sustained set, but nothing is deleted from the sustained set until 'clear' is pressed.
-** [Claude] done -- buttons at (0,15)(1,15)(2,15) on BOTH grids, one shared state
+** [Claude] done -- buttons at (0,15)(1,15)(2,15) on BOTH grids
 New =accrete_control= window kind (clear / needs_holding / accrete), wired into
-=2-monomes_58-8-1_kmss-drums= (+ its mock) on both grids; either grid's buttons
-act on the one instrument-wide state, and notes from *either* grid can sustain
-("the big edo grid" read as "the edo play surfaces"). Full behavior + layout:
+=2-monomes_58-8-1_kmss-drums= (+ its mock) on both grids. (Originally one shared
+instrument-wide state; superseded by the per-monome banks item below.) Full
+behavior + layout:
 =code/rust/configs/2-monomes_58-8-1_kmss-drums.org=, "sustain (accrete)".
 Choices you might revisit (details in jeff-maybe-review-this.org):
 - needs-holding starts OFF (accrete is a toggle until you say otherwise);
@@ -54,7 +54,28 @@ Choices you might revisit (details in jeff-maybe-review-this.org):
   grid they came from;
 - a note released while accrete is held/on joins the set at release time too
   (the "as long as they are now held" continuous reading).
-* DONE distortion
+** DONE There should be two monome-specific accrete banks.
+That is, if accrete is on in only one monome,
+then that monome accretes sustained notes,
+but notes from the other monome do not.
+There should therefore be two 'needs-holding' and two 'accrete-on' states
+(one per monome), and these are what the softstep reflects
+when it is duplicating the accrete functionality --
+again something it can do for one monome at a time, both, or neither.
+*** [Claude] done -- one full bank per monome; the softstep mirrors one, both, or neither
+Each grid's trio now drives its OWN =AccreteState= bank; only notes fingered on
+that grid join its set. I read "banks" as splitting *everything*, so *clear* and
+the sustained sets are per-monome too (grid B's clear leaves grid A's drones
+ringing) -- flag me if you wanted a global clear. The softstep: pedals 1/2/3 map
+to the *older* (monobright) monome's bank and 8/9/0 to the other's (your original
+feet-accrete mapping, now meaningful), and the =(0,14)= toggle is per-grid --
+"the softstep accretes for THIS monome" -- so each triple mirrors only while its
+grid's toggle is on (the un-mirrored triple keeps drumming). Sustained notes
+still paint bright on BOTH grids (they're sounding; same rule as the cross-grid
+note reflection) even though control is split. Docs updated (config .org
+"sustain (accrete)" + "feet accrete", README.org); more in
+jeff-maybe-review-this.org, "two monome-specific accrete banks".
+* ONGOING distortion
 Let's add a button in the second row from the top, far left --
 I think that's button (0,1),
 and will describe coordinates that wayfrom now on --
@@ -76,6 +97,8 @@ synth voices). =s=/=k= are =distortion_scale= / =distortion_shape= on the
 =cpal_synth= sink (defaults 1.0 / 2.0, ranges commented in the toml). The
 button: key-down toggles, dim at rest / bright while on, mirrored on both
 grids (one switch).
+** TODO This should be per-monome, too.
+Distortion on in one distorts only notes from that monome.
 * DONE config reload
 If I adjust parameters in the config,
 pressing 'r' should cause the new ones to be read and applied.
@@ -148,7 +171,7 @@ edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a
 timbre's amplitude survives fader changes. The tremolo LFO's wave family is
 the existing instrument-wide =[am]= table. Docs: configs/README.org
 "Timbres".
-* DONE slide
+* ONGOING slide
 Let's introduce a janky slide algorithm.
 Toggle it (key up does nothing) with the button
 right next to the distortion button (so (1,1)).
@@ -175,7 +198,8 @@ pitch wins, ties to the more recent release; a used source is consumed. The two
 knobs are =[surfaces] slide_candidate_window_ms= (default 1000) and
 =slide_duration_ms= (default 100). The toggle is a *global* switch mirrored on
 both grids, like distortion. Docs: the config .org, "slide and mono".
-* DONE mono
+** TODO This should be per-monome rather than global, too.
+* ONGOING mono
 This button should be right next to slide (so (1,2)).
 If it's on, each new note cuts off the old one.
 This interacts with slide -- the set of candidates is a singleton.
@@ -185,6 +209,7 @@ grids -- each grid stays its own monosynth; accrete drones are not cut). Cuts go
 through the ordinary release path, so a cut under a live accrete condition still
 joins the sustained set, and with slide on the cut note is exactly the singleton
 slide candidate. Global toggle mirrored on both grids.
+** TODO slide when mono is on should not re-trigger the attack
 * DONE feet accrete
 As described above, there will be three buttons for
 accreting sustained notes in the bottom-left of both monomes.
@@ -205,15 +230,15 @@ they do not control samples.
 While the toggle is on, those six pedals drive the accrete state and play no
 samples (4-7 keep drumming); off, they drum as usual. Two notes:
 - You guessed right about detecting the older monome (it's the serial-id
-  =is_monobright= check, used for the fake-dim flashing) -- but since both
-  grids share ONE accrete state (see the accrete item above), "older grid ->
-  1/2/3, other -> 8/9/0" collapses: both triples are the same three buttons,
-  in the trio's on-grid order (clear / needs-holding / accrete). If you ever
-  split the accrete state per grid, the older-monome mapping is ready to mean
-  something again.
+  =is_monobright= check, used for the fake-dim flashing). Originally both grids
+  shared ONE accrete state, so the two triples were copies of the same buttons;
+  since the per-monome banks item (under "sustain (accrete)" above), the mapping
+  is live: older grid -> 1/2/3, other -> 8/9/0, each triple in the trio's
+  on-grid order (clear / needs-holding / accrete), each gated by its own grid's
+  now-per-grid (0,14) toggle.
 - The tether decoder now emits foot-lift (Release) events, so *holding* pedal
   3 or 0 in needs-holding mode really is holding the accrete button.
-* DONE move pads, and add a 'ditto' pad
+* ONGOING move pads, and add a 'ditto' pad
 New arrangement for pads:
 | high tom | low tom | cowbell |          9 | crash (was at 8) |
 | snare    | kick    | ditto   | closed hat | open hat         |
@@ -254,6 +279,10 @@ no-op if nothing has played yet. See =drumkit_runtime/mod.rs= (=PadKind=,
 
 Details / choices you didn't specify: see =jeff-maybe-review-this.org=,
 "drum pads / ditto -- choices where the spec was silent".
+** TODO ditto should use its own velocity
+That is, use the sample from a previous hit,
+but don't reuse the previous velocity.
+** TODO Where I wrote cowbell I meant wood block.
 * DONE drop the amplitude row
 Instead I'll use the config to tune each waveform's amplitude.
 ** [Claude] done -- volume strips removed from the surfaces rig

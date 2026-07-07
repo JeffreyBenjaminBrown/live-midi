@@ -211,20 +211,26 @@ impl SurfaceSink {
     }
   }
 
-  /// The accrete 'clear': ramp EVERY sustained voice (both grids') to silence over
-  /// this sink's release time. Fingered voices are untouched.
-  pub fn release_all_sustained(&mut self) {
-    release_sustained_voices(&self.voices, self.release_secs, self.sample_rate);
+  /// This bank's accrete 'clear': ramp THIS grid's sustained voices to silence over
+  /// the sink's release time. The other grid's drones and all fingered voices are
+  /// untouched (accrete banks are per-monome).
+  pub fn release_sustained(&mut self) {
+    release_sustained_voices(&self.voices, self.grid, self.release_secs, self.sample_rate);
   }
 }
 
-/// Ramp every sustained voice (any grid's) to silence -- the accrete 'clear', in a
+/// Ramp one grid's sustained voices to silence -- that bank's accrete 'clear', in a
 /// form the feet-accrete pedal hook can call without owning a sink.
-pub fn release_sustained_voices(voices: &Arc<Mutex<VoiceMap>>, release_secs: f32, sample_rate: f32) {
+pub fn release_sustained_voices(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  release_secs: f32,
+  sample_rate: f32,
+) {
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
     if let VoiceSource::Accreted { chord, .. } = src {
-      if *chord >= SUSTAIN_BASE {
+      if *chord == SUSTAIN_BASE + grid {
         state.target_env = 0.0;
         state.ramp_per_sample = state.env / (release_secs * sample_rate);
       }
@@ -356,7 +362,7 @@ mod tests {
   }
 
   #[test]
-  fn release_all_sustained_silences_both_grids_drones_only() {
+  fn release_sustained_silences_only_its_own_grids_drones() {
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
@@ -365,10 +371,10 @@ mod tests {
     b.note_on((5, 5), 33, Timbre::default(), None);
     b.sustain_note((5, 5), 33);
     a.note_on((6, 6), 40, Timbre::default(), None); // a still-fingered note
-    a.release_all_sustained();
+    a.release_sustained();
     let v = voices.lock().unwrap();
     assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(0.0), "grid a drone released");
-    assert_eq!(v.get(&sustain_key(1, 33)).map(|s| s.target_env), Some(0.0), "grid b drone released");
+    assert_eq!(v.get(&sustain_key(1, 33)).map(|s| s.target_env), Some(1.0), "grid b drone keeps ringing (banks are per-monome)");
     assert_eq!(v.get(&voice_key(0, (6, 6))).map(|s| s.target_env), Some(1.0), "fingered note untouched");
   }
 

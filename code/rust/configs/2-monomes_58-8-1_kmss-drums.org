@@ -56,10 +56,12 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   other fingered notes (through the normal release path, so accrete still captures
   them). With slide on too, the candidate set is a singleton -- you glide from
   exactly the note you cut. Global switch.
-- *feet-accrete toggle* -- =(0,14)= (just above the accrete trio): while on, KMSS
-  pedals 1/2/3 and 8/9/0 mirror the trio (clear / needs-holding / accrete) instead
-  of playing samples; pedals 4-7 keep drumming. Holding pedal 3 or 0 IS holding the
-  accrete button (the tether decoder reports foot lifts). Global switch.
+- *feet-accrete toggle* -- =(0,14)= (just above the accrete trio): PER-GRID -- while
+  grid g's toggle is on, the KMSS pedal triple mapped to grid g (1/2/3 for the older
+  monobright grid, 8/9/0 for the other) mirrors g's accrete trio (clear /
+  needs-holding / accrete) instead of playing samples; pedals 4-7 keep drumming.
+  The softstep can mirror one monome, both, or neither. Holding pedal 3 or 0 IS
+  holding that bank's accrete button (the tether decoder reports foot lifts).
 - *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
   over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to set the tempo; the
   factor buttons scale it exactly (2^a x 3^b); notes struck while a tempo is applied
@@ -67,9 +69,9 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   state, mirrored on both grids. See *polyrhythm* below.
 - *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
-  to the *sustained set* keep ringing after their fingers lift, until *clear*. Both
-  grids share ONE accrete state, so either grid's buttons act globally. See *sustain
-  (accrete)* below.
+  to the *sustained set* keep ringing after their fingers lift, until *clear*. One
+  accrete BANK per monome: a grid's trio drives only its own bank, and only notes
+  fingered on that grid can join it. See *sustain (accrete)* below.
 - *drumkit* -- the KMSS as nine TR-808 one-shots, velocity-sensitive (tether mode).
   Reused verbatim from =kmss-drumkit= (see [[./kmss-drumkit.org]]).
 
@@ -141,12 +143,14 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
   shows the waveform *it controls* (its own timbre, in this rig).
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
-- *Distortion / slide / mono / feet-accrete toggles*: *dim* at rest, *bright* while
-  on; each is one global switch mirrored on both grids.
+- *Distortion / slide / mono toggles*: *dim* at rest, *bright* while on; each is one
+  global switch mirrored on both grids. The *feet-accrete toggle* looks the same but
+  is PER-GRID: each grid's cell shows only its own switch.
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
   clear while pressed, needs-holding while on, accrete while the accreting condition is
-  live. Mirrored on both grids (one shared state). A *sustained* note paints exactly
-  like a fingered one: bright octave-equivalents on both grids, until cleared.
+  live. Each grid's trio shows its OWN bank (per-monome, not mirrored). A *sustained*
+  note still paints exactly like a fingered one -- bright octave-equivalents on BOTH
+  grids (it is sounding) -- until its own grid's clear.
 
 *Monobright vs varibright.* One of the two 16x16 grids (an old Series 256, id =m256-282=)
 cannot dim a single LED -- it thresholds any level <= 7 to off. So its "dim" (unselected
@@ -182,28 +186,33 @@ play grid, so cross-wiring remains a config choice, not a code change.
 
 * sustain ("accrete")
 
-Three buttons at each grid's bottom-left; both grids drive *one* shared state
-(pressing clear on grid B kills a drone started from grid A). Requested in
-=TODO/misc.org= "sustain (accrete)".
+Three buttons at each grid's bottom-left, driving one accrete *bank* per monome
+(misc.org "two monome-specific accrete banks"): grid A's trio controls only grid
+A's bank, only notes fingered on grid A can join it, and clear on grid B leaves
+grid A's drones ringing. Requested in =TODO/misc.org= "sustain (accrete)".
 
-| cell   | button        | on key-down                            | LED                     |
-|--------+---------------+----------------------------------------+-------------------------|
-| (0,15) | clear         | silence + flush the sustained set      | bright while pressed    |
-| (1,15) | needs-holding | toggle how *accrete* behaves           | bright while on         |
-| (2,15) | accrete       | hold / toggle accretion (see below)    | bright while accreting  |
+| cell   | button        | on key-down                             | LED                     |
+|--------+---------------+-----------------------------------------+-------------------------|
+| (0,15) | clear         | silence + flush THIS grid's sustained set | bright while pressed  |
+| (1,15) | needs-holding | toggle how THIS grid's *accrete* behaves  | bright while on       |
+| (2,15) | accrete       | hold / toggle accretion (see below)     | bright while accreting  |
 
 - *needs-holding OFF* (the default): tapping *accrete* toggles "accrete mode". While
-  it is on, every note played -- plus any that were held when it turned on -- joins
-  the *sustained set*. Un-toggling stops additions; nothing leaves the set.
-- *needs-holding ON*: notes fingered while *accrete* is physically held join the set
-  (including notes pressed before the hold began -- they are captured at the moment
-  the hold starts, or when they are released under a live hold).
+  it is on, every note played on this grid -- plus any that were held here when it
+  turned on -- joins this bank's *sustained set*. Un-toggling stops additions;
+  nothing leaves the set.
+- *needs-holding ON*: notes fingered on this grid while *accrete* is physically held
+  join the set (including notes pressed before the hold began -- they are captured
+  at the moment the hold starts, or when they are released under a live hold).
 - A note in the set keeps ringing after its finger lifts -- the very same voice, so
-  the transition is seamless -- until *clear* flushes everything. There is no
-  per-note removal.
+  the transition is seamless -- until this grid's *clear* flushes the bank. There is
+  no per-note removal.
 - Toggling *needs-holding* cancels an active accrete mode (the set is untouched).
+- The banks are fully independent: the other grid's trio, notes, and clear never
+  touch this one. The trio LEDs show their own grid's bank only.
 - Sustained voices follow the *volume fader* of the grid they came from, and paint
-  bright on both grids like any sounding note.
+  bright on both grids like any sounding note (you hear them everywhere, so you see
+  them everywhere).
 
 * distortion
 
@@ -236,15 +245,16 @@ Both are global switches (either grid's button, one state), like distortion.
 
 * feet accrete
 
-The =(0,14)= toggle (key-down flips, mirrored on both grids) hands the accrete trio
-to your feet: while it is on, pedals *1 / 2 / 3* and *8 / 9 / 0* act as
-*clear / needs-holding / accrete* -- in the trio's on-grid order -- and play no
-samples; pedals 4-7 (the hats and toms) keep drumming. Because both grids share one
-accrete state, the two pedal triples are two copies of the same three buttons (the
-"older monome to 1/2/3, the other to 8/9/0" distinction from misc.org collapses).
-Foot lifts are real releases (the tether decoder reports them), so *holding* pedal
-3 in needs-holding mode behaves exactly like holding the on-grid accrete button.
-Turn the toggle off and every pedal is a drum again.
+Each grid's =(0,14)= toggle (key-down flips; per-grid, NOT mirrored) hands that
+grid's accrete trio to your feet: pedals *1 / 2 / 3* act as the *older*
+(monobright) monome's *clear / needs-holding / accrete*, and pedals *8 / 9 / 0*
+as the other monome's -- each triple in the trio's on-grid order, and each only
+while its own grid's toggle is on. A mirroring pedal plays no sample; pedals 4-7
+(the hats and toms) keep drumming, and a triple whose toggle is off drums as
+usual -- so the softstep can accrete for one monome, both, or neither. Foot
+lifts are real releases (the tether decoder reports them), so *holding* pedal 3
+or 0 in needs-holding mode behaves exactly like holding that grid's accrete
+button. Turn a toggle off and its triple is drums again.
 
 * polyrhythm
 

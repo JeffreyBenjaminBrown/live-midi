@@ -233,8 +233,8 @@ struct GridSettings {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets (self if it has no volume strip).
   volume_controls_index: usize,
-  /// The three accrete (sustain) buttons' cells, `NO_RECT` when absent. Both grids'
-  /// buttons drive ONE shared accrete state.
+  /// The three accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
+  /// trio drives its own per-monome accrete bank.
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
@@ -244,6 +244,7 @@ struct GridSettings {
   slide_rect: [i32; 4],
   mono_rect: [i32; 4],
   /// The feet-accrete (softstep-accretes) toggle's cell, `NO_RECT` when absent.
+  /// Per-grid: it enables the pedal mirror for THIS grid's accrete bank.
   feet_accrete_rect: [i32; 4],
   /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
   poly_rect: [i32; 4],
@@ -602,9 +603,12 @@ fn run(
   // but the modes are instrument-wide, like distortion).
   let slide_on = Arc::new(AtomicBool::new(false));
   let mono_on = Arc::new(AtomicBool::new(false));
-  // Feet accrete: while on, the KMSS pedals 1/2/3 and 8/9/0 act as the accrete trio
-  // instead of playing samples (see the pedal hook below).
-  let feet_accrete_on = Arc::new(AtomicBool::new(false));
+  // Feet accrete, one switch per grid: while grid g's toggle is on, the KMSS pedal
+  // triple mapped to grid g acts as that grid's accrete trio instead of playing
+  // samples (see the pedal hook below) -- the softstep can mirror one monome, both,
+  // or neither.
+  let feet_accrete_on: Arc<Vec<AtomicBool>> =
+    Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + factor): one instrument-wide machine, both
   // grids' pads.
   let poly = Arc::new(Mutex::new(PolyrhythmState::new()));
@@ -645,20 +649,27 @@ fn run(
   }
   let volume_pos = Arc::new(Mutex::new(volume_pos_init));
   let gains = Arc::new(Mutex::new(gains_init));
-  // The shared accrete (sustain) state -- one instrument-wide machine, driven by both
-  // grids' button trios -- and a mirror of every grid's held notes (cell -> struck
-  // pitch), so an accrete activation can capture what is fingered on ALL grids.
-  let accrete = Arc::new(Mutex::new(AccreteState::new()));
+  // The accrete (sustain) banks -- one per monome, under one lock (misc.org "two
+  // monome-specific accrete banks"): a grid's trio drives only its own bank, and only
+  // that grid's notes can join it. Alongside: a mirror of every grid's held notes
+  // (cell -> struck pitch), so a bank's activation can capture what is fingered on
+  // its grid even from the pedal hook.
+  let accrete: Arc<Mutex<Vec<AccreteState>>> =
+    Arc::new(Mutex::new((0..num_grids).map(|_| AccreteState::new()).collect()));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
 
   // Bring up the drumkit alongside the grids, if the config declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
   // mode on drop. We own the signal handling, so the tether session is unarmed. The
-  // pedal hook is the feet-accrete mirror: while its toggle is on, pedals 1/2/3 and
-  // 8/9/0 drive the shared accrete state instead of playing samples.
+  // pedal hook is the feet-accrete mirror: pedals 1/2/3 drive the older (monobright)
+  // grid's accrete bank and 8/9/0 the other's (Jeff's mapping, misc.org "feet
+  // accrete"), each triple only while its grid's toggle is on.
   let drums = if s.has_drums {
+    let older = assigned.iter().position(|d| is_monobright(&d.id)).unwrap_or(0);
+    let other = (0..num_grids).find(|g| *g != older).unwrap_or(older);
     let hook = feet_accrete_hook(
       Arc::clone(&feet_accrete_on),
+      [older, other],
       Arc::clone(&accrete),
       Arc::clone(&held_all),
       Arc::clone(&voices),
@@ -812,8 +823,9 @@ struct GridThread {
   /// Per-grid volume position (column within the strip) and linear gain.
   volume_pos: Arc<Mutex<Vec<i32>>>,
   gains: Arc<Mutex<Vec<f32>>>,
-  /// The shared accrete (sustain) state; either grid's buttons act on it.
-  accrete: Arc<Mutex<AccreteState>>,
+  /// The accrete (sustain) banks, one per monome under one lock; this grid's trio
+  /// drives `accrete[grid_index]` only.
+  accrete: Arc<Mutex<Vec<AccreteState>>>,
   /// Every grid's held notes (cell -> struck pitch), for accrete's capture-on-
   /// activation. Each grid thread rewrites only its own slot.
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
@@ -822,8 +834,9 @@ struct GridThread {
   /// The global slide / mono switches (both grids' toggles).
   slide_on: Arc<AtomicBool>,
   mono_on: Arc<AtomicBool>,
-  /// The global feet-accrete switch (pedals mirror the accrete trio while on).
-  feet_accrete_on: Arc<AtomicBool>,
+  /// The per-grid feet-accrete switches; this grid's toggle flips (and its LED
+  /// shows) element `grid_index` -- "the softstep accretes for THIS monome".
+  feet_accrete_on: Arc<Vec<AtomicBool>>,
   /// The shared polyrhythm state (tap tempo + factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
   tap_window: Duration,
@@ -923,7 +936,7 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push((rt.distortion_rect, rt.distortion_on.load(Ordering::Relaxed)));
     buttons.push((rt.slide_rect, rt.slide_on.load(Ordering::Relaxed)));
     buttons.push((rt.mono_rect, rt.mono_on.load(Ordering::Relaxed)));
-    buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on.load(Ordering::Relaxed)));
+    buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on[rt.grid_index].load(Ordering::Relaxed)));
     if rt.poly_rect != NO_RECT {
       // The pad's six cells: the tap cell blinks (10% duty at the applied tempo);
       // the factor cells show which way the factor leans, =1 lights when pressing
@@ -1028,9 +1041,11 @@ fn handle_key(
     }
     return;
   }
+  // Feet-accrete toggle: key-down flips THIS grid's switch (does the softstep
+  // mirror this monome's accrete bank?); key-up does nothing.
   if in_overlay(rt.feet_accrete_rect, cell) {
     if press {
-      let _ = rt.feet_accrete_on.fetch_xor(true, Ordering::Relaxed);
+      let _ = rt.feet_accrete_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
@@ -1051,36 +1066,37 @@ fn handle_key(
     }
     return;
   }
-  // The accrete (sustain) buttons. All three act on the SHARED state, so either
-  // grid's trio works. Decisions are made under the accrete lock, voices are touched
-  // after it drops (the module's no-nested-locks rule).
+  // The accrete (sustain) buttons. Each grid's trio acts on ITS OWN bank (misc.org
+  // "two monome-specific accrete banks"). Decisions are made under the accrete lock,
+  // voices are touched after it drops (the module's no-nested-locks rule).
   if in_overlay(rt.clear_rect, cell) {
     if press {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).press_clear();
-      rt.sink.release_all_sustained();
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_clear();
+      rt.sink.release_sustained();
     } else {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).release_clear();
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_clear();
     }
     return;
   }
   if in_overlay(rt.needs_holding_rect, cell) {
     if press {
-      let activated =
-        rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).press_needs_holding();
+      let activated = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .press_needs_holding();
       if activated {
-        capture_all_held(rt);
+        capture_grid_held(rt);
       }
     }
     return;
   }
   if in_overlay(rt.accrete_rect, cell) {
     if press {
-      let activated = rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).press_accrete();
+      let activated =
+        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_accrete();
       if activated {
-        capture_all_held(rt);
+        capture_grid_held(rt);
       }
     } else {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).release_accrete();
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_accrete();
     }
     return;
   }
@@ -1130,7 +1146,7 @@ fn handle_key(
       None => rt.sink.note_on(cell, pitch, timbre, pulse),
     }
     held.insert(cell, pitch);
-    rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).note_played(rt.grid_index, pitch);
+    rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_played(pitch);
     push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
   } else {
     release_cell(rt, held, cell);
@@ -1149,11 +1165,8 @@ fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>, cell: 
     rt.sink.note_off(cell);
     return;
   };
-  let keep = rt
-    .accrete
-    .lock()
-    .unwrap_or_else(|e| e.into_inner())
-    .note_released_sustains(rt.grid_index, pitch);
+  let keep = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+    .note_released_sustains(pitch);
   if keep {
     rt.sink.sustain_note(cell, pitch);
   } else {
@@ -1186,7 +1199,7 @@ fn refresh_live(rt: &mut GridThread) {
 }
 
 /// Mirror this grid's held map into the shared per-grid registry (for accrete's
-/// capture-on-activation, which must see BOTH grids' fingers).
+/// capture-on-activation, which the pedal hook must reach from outside this thread).
 fn publish_held(
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   index: usize,
@@ -1198,68 +1211,79 @@ fn publish_held(
   }
 }
 
-/// The accreting condition just turned on: add every currently-held note (all grids)
-/// to the sustained set. Snapshot the held registry first, then feed the accrete
-/// state -- two short, non-nested locks.
-fn capture_all_held(rt: &GridThread) {
-  capture_all_held_into(&rt.held_all, &rt.accrete);
+/// The accreting condition just turned on for this grid's bank: add the notes
+/// currently held ON THIS GRID to its sustained set. Snapshot the held registry
+/// first, then feed the bank -- two short, non-nested locks.
+fn capture_grid_held(rt: &GridThread) {
+  capture_grid_held_into(&rt.held_all, &rt.accrete, rt.grid_index);
 }
 
-/// `capture_all_held` for callers that aren't a grid thread (the pedal hook).
-fn capture_all_held_into(
+/// `capture_grid_held` for callers that aren't a grid thread (the pedal hook).
+fn capture_grid_held_into(
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
-  accrete: &Arc<Mutex<AccreteState>>,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  grid: usize,
 ) {
-  let snapshot: Vec<(usize, i32)> = {
+  let snapshot: Vec<i32> = {
     let all = held_all.lock().unwrap_or_else(|e| e.into_inner());
-    all
-      .iter()
-      .enumerate()
-      .flat_map(|(g, m)| m.values().map(move |p| (g, *p)))
-      .collect()
+    all.get(grid).map(|m| m.values().copied().collect()).unwrap_or_default()
   };
-  accrete.lock().unwrap_or_else(|e| e.into_inner()).capture_held(snapshot);
+  let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(bank) = banks.get_mut(grid) {
+    bank.capture_held(snapshot);
+  }
 }
 
-/// Which accrete button a KMSS pedal mirrors while feet-accrete is on. Jeff's
-/// mapping (misc.org "feet accrete"): the older (monobright) grid's trio -> pedals
-/// 1/2/3, the other grid's -> 8/9/0 -- but both grids share ONE accrete state, so
-/// the two pedal triples are simply two copies of the same three buttons, in the
-/// on-grid order clear / needs-holding / accrete.
-fn feet_accrete_button(pedal: u8) -> Option<AccreteControlKind> {
+/// Which accrete button a KMSS pedal mirrors, and for which pedal TRIPLE (0 =
+/// pedals 1/2/3, 1 = pedals 8/9/0). Jeff's mapping (misc.org "feet accrete" + "two
+/// monome-specific accrete banks"): the older (monobright) grid's bank -> 1/2/3,
+/// the other grid's -> 8/9/0, each triple in the on-grid order clear /
+/// needs-holding / accrete.
+fn feet_accrete_button(pedal: u8) -> Option<(usize, AccreteControlKind)> {
   match pedal {
-    1 | 8 => Some(AccreteControlKind::Clear),
-    2 | 9 => Some(AccreteControlKind::NeedsHolding),
-    3 | 0 => Some(AccreteControlKind::Accrete),
+    1 => Some((0, AccreteControlKind::Clear)),
+    2 => Some((0, AccreteControlKind::NeedsHolding)),
+    3 => Some((0, AccreteControlKind::Accrete)),
+    8 => Some((1, AccreteControlKind::Clear)),
+    9 => Some((1, AccreteControlKind::NeedsHolding)),
+    0 => Some((1, AccreteControlKind::Accrete)),
     _ => None,
   }
 }
 
-/// Build the drumkit pedal hook that mirrors the accrete trio onto the KMSS while
-/// `feet_accrete_on` is set (TODO/misc.org "feet accrete"). Consuming an event
-/// suppresses that pedal's sample; with the toggle off every pedal drums as usual.
-/// A pedal "press" is the decoder's Fire (down) and its Release (up), so holding
-/// pedal 3 or 0 is exactly holding the accrete button.
+/// Build the drumkit pedal hook that mirrors the accrete trios onto the KMSS
+/// (TODO/misc.org "feet accrete"). `triple_banks[t]` is the grid whose bank pedal
+/// triple `t` drives (0 = pedals 1/2/3 = the older grid, 1 = pedals 8/9/0); a
+/// triple mirrors only while ITS grid's feet-accrete toggle is on, so the softstep
+/// can accrete for one monome, both, or neither. Consuming an event suppresses
+/// that pedal's sample; a pedal whose toggle is off drums as usual. A pedal
+/// "press" is the decoder's Fire (down) and its Release (up), so holding pedal 3
+/// or 0 is exactly holding that bank's accrete button.
 fn feet_accrete_hook(
-  feet_accrete_on: Arc<AtomicBool>,
-  accrete: Arc<Mutex<AccreteState>>,
+  feet_accrete_on: Arc<Vec<AtomicBool>>,
+  triple_banks: [usize; 2],
+  accrete: Arc<Mutex<Vec<AccreteState>>>,
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: Arc<Mutex<VoiceMap>>,
   release_secs: f32,
   sample_rate: f32,
 ) -> drumkit_runtime::PedalHook {
   Arc::new(move |pedal, down| {
-    if !feet_accrete_on.load(Ordering::Relaxed) {
-      return false;
-    }
-    let Some(button) = feet_accrete_button(pedal) else {
+    let Some((triple, button)) = feet_accrete_button(pedal) else {
       return false;
     };
+    let grid = triple_banks[triple];
+    if !feet_accrete_on.get(grid).map(|b| b.load(Ordering::Relaxed)).unwrap_or(false) {
+      return false;
+    }
     // Decide under the accrete lock, touch voices after it drops (the module's
     // no-nested-locks rule), exactly like the on-grid buttons.
     let mut activated = false;
     {
-      let mut state = accrete.lock().unwrap_or_else(|e| e.into_inner());
+      let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+      let Some(state) = banks.get_mut(grid) else {
+        return false;
+      };
       match (button, down) {
         (AccreteControlKind::Clear, true) => state.press_clear(),
         (AccreteControlKind::Clear, false) => state.release_clear(),
@@ -1270,27 +1294,31 @@ fn feet_accrete_hook(
       }
     }
     if button == AccreteControlKind::Clear && down {
-      synth::release_sustained_voices(&voices, release_secs, sample_rate);
+      synth::release_sustained_voices(&voices, grid, release_secs, sample_rate);
     }
     if activated {
-      capture_all_held_into(&held_all, &accrete);
+      capture_grid_held_into(&held_all, &accrete, grid);
     }
     true
   })
 }
 
-/// One lock: the accrete buttons' LED view for this grid plus the sustained pitch
-/// classes (which paint bright -- they are sounding).
+/// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the
+/// union of every bank's sustained pitch classes (which paint bright on every
+/// grid -- they are all sounding, like the cross-grid note reflection).
 fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
-  let s = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
-  (
-    vec![
-      (rt.clear_rect, s.clear_lit()),
-      (rt.needs_holding_rect, s.needs_holding_lit()),
-      (rt.accrete_rect, s.accrete_lit()),
-    ],
-    s.sustained_classes(rt.edo),
-  )
+  let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+  let s = &banks[rt.grid_index];
+  let buttons = vec![
+    (rt.clear_rect, s.clear_lit()),
+    (rt.needs_holding_rect, s.needs_holding_lit()),
+    (rt.accrete_rect, s.accrete_lit()),
+  ];
+  let mut classes = HashSet::new();
+  for bank in banks.iter() {
+    classes.extend(bank.sustained_classes(rt.edo));
+  }
+  (buttons, classes)
 }
 
 /// A serialosc serial id that names an old monobright "Series" grid (per-LED on/off
@@ -1747,15 +1775,18 @@ mod tests {
   const WAVE_SQUARE: &str = "waveform = \"square\"";
 
   #[test]
-  fn the_pedal_hook_mirrors_the_accrete_trio_only_while_on() {
-    use crate::types::Timbre;
+  fn the_pedal_hook_mirrors_each_banks_trio_only_while_its_toggle_is_on() {
+    use crate::types::{Timbre, VoiceSource};
 
-    let feet_on = Arc::new(AtomicBool::new(false));
-    let accrete = Arc::new(Mutex::new(AccreteState::new()));
+    // Triple 0 (pedals 1/2/3) -> grid 0's bank, triple 1 (8/9/0) -> grid 1's.
+    let feet_on: Arc<Vec<AtomicBool>> =
+      Arc::new((0..2).map(|_| AtomicBool::new(false)).collect());
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new(), AccreteState::new()]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let hook = feet_accrete_hook(
       Arc::clone(&feet_on),
+      [0, 1],
       Arc::clone(&accrete),
       Arc::clone(&held_all),
       Arc::clone(&voices),
@@ -1763,35 +1794,65 @@ mod tests {
       48000.0,
     );
 
-    // Toggle off: nothing is consumed; the pedals drum as usual.
+    // Both toggles off: nothing is consumed; the pedals drum as usual.
     assert!(!hook(3, true), "off: pedal 3 stays a drum pad");
-    assert!(!accrete.lock().unwrap().accreting());
+    assert!(!accrete.lock().unwrap()[0].accreting());
 
-    feet_on.store(true, Ordering::Relaxed);
+    feet_on[0].store(true, Ordering::Relaxed);
     // Unmapped pedals still drum even while on.
     assert!(!hook(4, true), "pedal 4 (closed hat) is never mirrored");
-    // Pedal 3 = accrete: default needs-holding is OFF, so a tap toggles the mode --
-    // and the activation captures currently-held notes from BOTH grids' registries.
-    held_all.lock().unwrap()[1].insert((2, 3), 44);
+    // The other triple's grid is still off: its pedals keep drumming.
+    assert!(!hook(0, true), "pedal 0 drums while grid 1's toggle is off");
+    // Pedal 3 = grid 0's accrete: default needs-holding is OFF, so a tap toggles the
+    // mode -- and the activation captures held notes from grid 0's registry ONLY.
+    held_all.lock().unwrap()[0].insert((2, 3), 44);
+    held_all.lock().unwrap()[1].insert((7, 7), 51);
     assert!(hook(3, true), "on: pedal 3 is consumed");
     hook(3, false);
-    assert!(accrete.lock().unwrap().accreting(), "accrete mode toggled by foot");
+    assert!(accrete.lock().unwrap()[0].accreting(), "grid 0's accrete mode toggled by foot");
+    assert!(!accrete.lock().unwrap()[1].accreting(), "grid 1's bank untouched");
     assert!(
-      accrete.lock().unwrap().note_released_sustains(1, 44),
-      "the held note was captured on activation",
+      accrete.lock().unwrap()[0].note_released_sustains(44),
+      "grid 0's held note was captured on activation",
     );
-    // Sustain a voice, then clear from pedal 8 (the other triple's clear).
-    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
-    sink.note_on((5, 5), 20, Timbre::default(), None);
-    sink.sustain_note((5, 5), 20);
-    assert!(hook(8, true), "pedal 8 = clear, consumed");
+    assert!(
+      accrete.lock().unwrap()[1].sustained_classes(58).is_empty(),
+      "grid 1's held note was NOT captured (banks are per-monome)",
+    );
+
+    // Turn grid 1's toggle on, accrete a note there, then clear it from pedal 8:
+    // only grid 1's bank and drone are cleared.
+    feet_on[1].store(true, Ordering::Relaxed);
+    assert!(hook(0, true), "pedal 0 = grid 1's accrete, now consumed");
+    hook(0, false);
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    a.note_on((5, 5), 20, Timbre::default(), None);
+    a.sustain_note((5, 5), 20);
+    b.note_on((6, 6), 31, Timbre::default(), None);
+    b.sustain_note((6, 6), 31);
+    accrete.lock().unwrap()[1].note_played(31);
+    assert!(hook(8, true), "pedal 8 = grid 1's clear, consumed");
     hook(8, false);
     let v = voices.lock().unwrap();
-    let drone = v.values().next().expect("the drone still ramps out");
-    assert_eq!(drone.target_env, 0.0, "clear released the sustained voice");
+    for (src, state) in v.iter() {
+      let VoiceSource::Accreted { chord, .. } = src else { continue };
+      if *chord < synth::SUSTAIN_BASE {
+        continue; // a fingered voice, not a drone
+      }
+      match chord - synth::SUSTAIN_BASE {
+        0 => assert_eq!(state.target_env, 1.0, "grid 0's drone keeps ringing"),
+        1 => assert_eq!(state.target_env, 0.0, "grid 1's drone released by its clear"),
+        g => panic!("unexpected sustained voice for grid {g}"),
+      }
+    }
     assert!(
-      accrete.lock().unwrap().sustained_classes(58).is_empty(),
-      "the set was flushed (accrete mode itself stays on -- clear never exits it)",
+      accrete.lock().unwrap()[1].sustained_classes(58).is_empty(),
+      "grid 1's set was flushed (accrete mode itself stays on -- clear never exits it)",
+    );
+    assert!(
+      !accrete.lock().unwrap()[0].sustained_classes(58).is_empty(),
+      "grid 0's set survives grid 1's clear",
     );
   }
 
@@ -1852,13 +1913,13 @@ mod tests {
     STOP.store(false, Ordering::SeqCst);
   }
 
-  /// The accrete (sustain) buttons end-to-end: toggle accrete mode on grid a, play a
-  /// note, release it -- it keeps ringing (stays bright on BOTH grids) -- then clear
-  /// from grid B (the state is shared), and the note drops to the dim trail. Also
-  /// checks the buttons' own LEDs (dim at rest, bright when active, mirrored across
-  /// grids).
+  /// The accrete (sustain) banks end-to-end: toggle accrete mode on grid a (its trio
+  /// lights on grid a ONLY -- one bank per monome), play and release a note there --
+  /// it keeps ringing (bright on BOTH grids: drones are sounding everywhere) -- while
+  /// a note on grid b does NOT sustain, grid b's clear does NOT touch grid a's drone,
+  /// and grid a's own clear finally drops it to the dim trail.
   #[test]
-  fn accrete_sustains_notes_until_cleared() {
+  fn accrete_banks_are_per_monome_and_sustain_until_their_own_clear() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1889,13 +1950,15 @@ mod tests {
     }
 
     // Tap accrete on grid a: needs_holding starts OFF, so key-down toggles accrete
-    // mode on -- the button lights on BOTH grids (one shared state).
+    // mode on -- on grid a's bank ONLY (one bank per monome).
     a.press(2, 15);
     a.release(2, 15);
     assert!(wait_until(secs(3), || a.level_at(2, 15) == 15), "accrete lit on grid a");
-    assert!(wait_until(secs(3), || b.level_at(2, 15) == 15), "accrete lit on grid b too");
+    thread::sleep(Duration::from_millis(300)); // let grid b repaint before the negative check
+    assert_eq!(b.level_at(2, 15), 4, "grid b's accrete stays dim (its own bank is off)");
 
-    // Play and release a note on grid a: sustained, it stays BRIGHT (not trail-dim).
+    // Play and release a note on grid a: sustained, it stays BRIGHT (not trail-dim)
+    // on BOTH grids -- the drone is sounding, so it reflects everywhere.
     a.press(5, 5);
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 15), "fingered note lights");
     a.release(5, 5);
@@ -1903,19 +1966,34 @@ mod tests {
     assert_eq!(a.level_at(5, 5), 15, "released note keeps ringing bright on grid a");
     assert_eq!(b.level_at(5, 5), 15, "and reflects bright on grid b");
 
-    // needs_holding from grid b: lights everywhere, and cancels the toggled mode
-    // (accrete dims) -- but the sustained note keeps ringing.
+    // A note on grid b does NOT sustain: its bank is not accreting.
+    b.press(8, 5);
+    assert!(wait_until(secs(3), || b.level_at(8, 5) == 15), "grid b's note lights");
+    b.release(8, 5);
+    assert!(wait_until(secs(3), || b.level_at(8, 5) == 4), "and drops to the trail on release");
+
+    // needs_holding on grid b: lights on grid b ONLY, and does NOT cancel grid a's
+    // toggled mode (independent banks).
     b.press(1, 15);
     b.release(1, 15);
-    assert!(wait_until(secs(3), || a.level_at(1, 15) == 15), "needs_holding lit on grid a");
-    assert!(wait_until(secs(3), || a.level_at(2, 15) == 4), "accrete mode cancelled -> dim");
-    assert_eq!(a.level_at(5, 5), 15, "the sustained note survives the mode flip");
+    assert!(wait_until(secs(3), || b.level_at(1, 15) == 15), "needs_holding lit on grid b");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(a.level_at(1, 15), 4, "grid a's needs_holding stays dim");
+    assert_eq!(a.level_at(2, 15), 15, "grid a's accrete mode survives");
 
-    // Clear from grid B: lit while held, and the note falls back to the dim trail.
+    // Clear from grid B: lights there while held, but grid a's drone keeps ringing.
     b.press(0, 15);
-    assert!(wait_until(secs(3), || a.level_at(0, 15) == 15), "clear lit (on the other grid too)");
+    assert!(wait_until(secs(3), || b.level_at(0, 15) == 15), "grid b's clear lit while held");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(a.level_at(0, 15), 4, "grid a's clear stays dim");
     b.release(0, 15);
-    assert!(wait_until(secs(3), || a.level_at(0, 15) == 4), "clear dims on key-up");
+    assert!(wait_until(secs(3), || b.level_at(0, 15) == 4), "clear dims on key-up");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(a.level_at(5, 5), 15, "grid b's clear leaves grid a's drone ringing");
+
+    // Clear from grid A: NOW the note falls back to the dim trail on both grids.
+    a.press(0, 15);
+    a.release(0, 15);
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "cleared note drops to the trail on a");
     assert!(wait_until(secs(3), || b.level_at(5, 5) == 4), "and on b");
 
@@ -1926,7 +2004,8 @@ mod tests {
 
   /// The global toggles (distortion / slide / mono) end-to-end: each rests dim, a
   /// press lights it on BOTH grids (one global switch each), a second press (from
-  /// the other grid) turns it off.
+  /// the other grid) turns it off. The feet-accrete toggle contrasts: it is
+  /// per-grid, so each grid's press lights (and later dims) only its own cell.
   #[test]
   fn global_toggles_mirror_across_grids() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
@@ -1951,11 +2030,8 @@ mod tests {
     let b = rig.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    // (0,1) distortion, (1,1) slide, (1,2) mono, (0,14) feet-accrete -- same
-    // toggle machinery each.
-    for (x, y, name) in
-      [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono"), (0, 14, "feet-accrete")]
-    {
+    // (0,1) distortion, (1,1) slide, (1,2) mono -- same toggle machinery each.
+    for (x, y, name) in [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono")] {
       assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
         "{name} rests dim on both grids");
       a.press(x, y);
@@ -1967,6 +2043,24 @@ mod tests {
       assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
         "{name} off again from the other grid");
     }
+
+    // The feet-accrete toggle at (0,14) is PER-GRID (misc.org "two monome-specific
+    // accrete banks"): grid a's press lights grid a only, and grid b's toggle is a
+    // separate switch (b's press turns b ON, not a off).
+    assert!(wait_until(secs(3), || a.level_at(0, 14) == 4 && b.level_at(0, 14) == 4),
+      "feet-accrete rests dim on both grids");
+    a.press(0, 14);
+    a.release(0, 14);
+    assert!(wait_until(secs(3), || a.level_at(0, 14) == 15), "feet-accrete on: lit on grid a");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(b.level_at(0, 14), 4, "grid b's feet-accrete stays dim (per-grid switch)");
+    b.press(0, 14);
+    b.release(0, 14);
+    assert!(wait_until(secs(3), || b.level_at(0, 14) == 15), "grid b's own toggle turns b on");
+    assert_eq!(a.level_at(0, 14), 15, "grid a stays on -- independent switches");
+    a.press(0, 14);
+    a.release(0, 14);
+    assert!(wait_until(secs(3), || a.level_at(0, 14) == 4), "grid a off again from grid a");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

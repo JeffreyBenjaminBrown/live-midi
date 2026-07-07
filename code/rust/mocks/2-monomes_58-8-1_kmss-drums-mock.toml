@@ -114,9 +114,10 @@ monome = "a"
 kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
 
-# The sustain ("accrete") buttons, bottom row left (shared state -- either grid's
-# trio acts globally; see TODO/misc.org "sustain (accrete)"):
-#   (0,15) clear         -- silence + flush every sustained note (lit while pressed)
+# The sustain ("accrete") buttons, bottom row left. One accrete BANK per monome:
+# this trio drives only this grid's bank, and only notes fingered on this grid can
+# join it (see TODO/misc.org "sustain (accrete)"):
+#   (0,15) clear         -- silence + flush this grid's sustained notes (lit while pressed)
 #   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
 #   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
 #                           they ring until cleared
@@ -165,9 +166,11 @@ monome = "a"
 kind = "mono_toggle"
 rect = [1, 2, 1, 2]
 
-# Feet accrete (key-down flips; global): while on, KMSS pedals 1/2/3 and 8/9/0
-# mirror the accrete trio below (clear / needs-holding / accrete) instead of
-# playing samples. Just above the on-grid trio.
+# Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
+# to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
+# mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
+# playing samples. The softstep can mirror one monome, both, or neither. Just
+# above the on-grid trio.
 [[monome_windows]]
 id = "feet-accrete-a"
 monome = "a"
@@ -207,9 +210,10 @@ monome = "b"
 kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
 
-# The sustain ("accrete") buttons, bottom row left (shared state -- either grid's
-# trio acts globally; see TODO/misc.org "sustain (accrete)"):
-#   (0,15) clear         -- silence + flush every sustained note (lit while pressed)
+# The sustain ("accrete") buttons, bottom row left. One accrete BANK per monome:
+# this trio drives only this grid's bank, and only notes fingered on this grid can
+# join it (see TODO/misc.org "sustain (accrete)"):
+#   (0,15) clear         -- silence + flush this grid's sustained notes (lit while pressed)
 #   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
 #   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
 #                           they ring until cleared
@@ -258,9 +262,11 @@ monome = "b"
 kind = "mono_toggle"
 rect = [1, 2, 1, 2]
 
-# Feet accrete (key-down flips; global): while on, KMSS pedals 1/2/3 and 8/9/0
-# mirror the accrete trio below (clear / needs-holding / accrete) instead of
-# playing samples. Just above the on-grid trio.
+# Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
+# to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
+# mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
+# playing samples. The softstep can mirror one monome, both, or neither. Just
+# above the on-grid trio.
 [[monome_windows]]
 id = "feet-accrete-b"
 monome = "b"

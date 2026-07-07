@@ -202,3 +202,27 @@ reverse it cheaply if you disagree.
   trying 46-EDO?) and left the name alone. If 46 is here to stay, the config
   deserves a rename or at least a comment; if it was accidental cargo in that
   commit, flip it back to =edo = 58, x_step = 8=.
+
+* two monome-specific accrete banks -- choices where the spec was silent
+
+- You named "two 'needs-holding' and two 'accrete-on' states"; I read "banks" as
+  splitting *everything*, so each monome also has its own *sustained set* and its
+  *clear* flushes only its own bank (grid B's clear leaves grid A's drones
+  ringing). If you wanted one global clear -- or a global "clear both" gesture --
+  say so; it's a small change (the clear handler would loop the banks and release
+  both grids' sustain registers).
+- Sustained notes still paint bright on BOTH grids even though control is split:
+  they are audible everywhere, and the existing cross-grid note reflection works
+  the same way. If you'd rather each grid show only its own bank's drones (so the
+  LEDs tell you *which* bank holds them), that's one line in =accrete_view=.
+- Pedal triples: 1/2/3 -> the *older* (monobright-serial) grid's bank, 8/9/0 ->
+  the other, per your original feet-accrete spec. If NEITHER grid is monobright
+  (e.g. the mock rig), grid 0 (the config's first =[[monomes]]= entry, "a") takes
+  the 1/2/3 slot; if both were, the first monobright wins.
+- The =(0,14)= toggle went per-grid to get "one monome at a time, both, or
+  neither": grid g's toggle means "the softstep accretes for monome g", and only
+  that triple stops drumming. The alternative -- one global toggle enabling both
+  triples -- can't express "one at a time", so I didn't take it.
+- The needs-holding flip and the hold-count bookkeeping are per-bank; holding
+  pedal 3 while tapping grid A's on-grid accrete still nets one held count on
+  that one bank (they overlap safely), exactly as before but scoped.
