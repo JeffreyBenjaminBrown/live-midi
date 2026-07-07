@@ -105,12 +105,6 @@ kind = "waveform_selector"
 rect = [0, 0, 3, 0]
 controls = "a"
 
-[[monome_windows]]
-id = "vol-a"
-monome = "a"
-kind = "volume_strip"
-rect = [4, 0, 15, 0]
-controls = "a"
 
 [[monome_windows]]
 id = "scroll-a"
@@ -193,12 +187,6 @@ kind = "waveform_selector"
 rect = [0, 0, 3, 0]
 controls = "b"
 
-[[monome_windows]]
-id = "vol-b"
-monome = "b"
-kind = "volume_strip"
-rect = [4, 0, 15, 0]
-controls = "b"
 
 [[monome_windows]]
 id = "scroll-b"

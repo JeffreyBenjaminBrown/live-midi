@@ -1529,19 +1529,18 @@ mod tests {
     let s = resolve_settings(&config).expect("resolves without hardware");
     assert_eq!(s.grids.len(), 2, "two play grids");
     assert!(s.has_drums, "the KMSS drumkit is present");
-    // Each grid's selector and volume strip control its OWN grid (per TODO/misc.org,
-    // 2026-07; the looper-plus-edo rig keeps its cross-surface timbre editing, which
-    // is a different mechanism entirely).
+    // Each grid's selector controls its OWN grid (per TODO/misc.org, 2026-07; the
+    // looper-plus-edo rig keeps its cross-surface timbre editing, which is a
+    // different mechanism entirely).
     assert_eq!(s.grids[0].controls_index, 0, "grid 0's strip re-timbres grid 0");
     assert_eq!(s.grids[1].controls_index, 1, "grid 1's strip re-timbres grid 1");
-    assert_eq!(s.grids[0].volume_controls_index, 0, "grid 0's volume sets grid 0");
-    assert_eq!(s.grids[1].volume_controls_index, 1, "grid 1's volume sets grid 1");
-    // Both grids carry a scroll pad, a selector, a volume strip, the accrete trio,
-    // and the distortion toggle.
+    // Both grids carry a scroll pad, a selector, the accrete trio, and the
+    // toggles -- but NO volume strip (dropped per misc.org "drop the amplitude
+    // row": [[timbres]] amplitude replaced it).
     for g in &s.grids {
       assert_ne!(g.scroll_rect, NO_RECT, "grid {:?} has a scroll pad", g.monome_id);
       assert_ne!(g.selector_rect, NO_RECT, "grid {:?} has a selector", g.monome_id);
-      assert_ne!(g.volume_rect, NO_RECT, "grid {:?} has a volume strip", g.monome_id);
+      assert_eq!(g.volume_rect, NO_RECT, "grid {:?} has no volume strip", g.monome_id);
       assert_eq!(g.clear_rect, [0, 15, 0, 15], "grid {:?} clear button", g.monome_id);
       assert_eq!(g.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
       assert_eq!(g.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
@@ -1629,13 +1628,13 @@ mod tests {
       "grid a strip now shows saw selected (triangle dims)");
     assert!(wait_until(secs(3), || b.level_at(1, 0) == 15), "grid b's strip still shows its own triangle");
 
-    // Volume strip (feature 2): grid a's strip shows grid a's own volume, starting at
-    // the default column 10; pressing another cell moves its active column.
-    assert!(wait_until(secs(3), || a.level_at(10, 0) == 15), "grid a shows its own default volume (col 10)");
-    a.press(4, 0);
-    a.release(4, 0);
-    assert!(wait_until(secs(3), || a.level_at(4, 0) == 15 && a.level_at(10, 0) == 0),
-      "the volume strip moves the active cell to col 4");
+    // The old volume strip is gone (misc.org "drop the amplitude row"): its cells
+    // are ordinary play cells now -- pressing (10,0) sounds a note (lights bright)
+    // and releases into the dim trail rather than moving any fader.
+    a.press(10, 0);
+    assert!(wait_until(secs(3), || a.level_at(10, 0) == 15), "(10,0) is a play cell now");
+    a.release(10, 0);
+    assert!(wait_until(secs(3), || a.level_at(10, 0) == 4), "released into the trail");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

@@ -25,10 +25,11 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   (=[0,0]..[3,0]=): sine / triangle / square / saw, left to right. Each grid's strip
   sets its *own* timbre (self-control, since 2026-07; the =controls= field can still
   point strips across grids, but this rig no longer does). No AM/FM.
-- *volume strip / fader* -- the 12 cells right of the waveform strip (=[4,0]..[15,0]=): a
-  log fader over 30 dB, top cell = unity, starting at column 10. Like the waveform strip it
-  sets its *own* grid's loudness, and it is *live* -- moving it rescales
-  that grid's already-sounding voices, not just future notes.
+- *(volume strip -- removed 2026-07.)* The old 12-cell fader right of the waveform
+  strip is gone (misc.org "drop the amplitude row"); per-waveform loudness now lives
+  in the config's =[[timbres]] amplitude= (hot-reloadable with 'r'), and the master
+  is the synth sink's =amplitude=. Cells 4..12 of the top row are play cells again;
+  13..15 belong to the polyrhythm pad.
 - *trail* -- up to ~trails_max~ recently played *pitch classes* (octave-independent; 9
   here), shared across both grids, shown dim on both as a backdrop; a currently-sounding
   class shows bright instead. Repeating a note refreshes its single entry (so hammering one
@@ -96,8 +97,8 @@ overlays drawn on top:
 
 #+begin_example
   col: 0   1   2   3   4   5  ...        13  14  15
-  row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls THIS
-                                                               grid: waveform (0..3) + volume
+  row 0  [SIN TRI SQR SAW]  .   .  (play cells)  x3  x2 TAP  <- waveform strip + polyrhythm
+                                                               (see the polyrhythm section)
   row 1  DIST SLIDE  .  .  .                   .   .   .   <- global toggles
   row 2   .  MONO .   .   .                    .   .   .   <- global toggle
    ...                     (58-EDO play cells)
@@ -133,7 +134,6 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
   sparse. Both are set in the ~[surfaces]~ table.
 - *Waveform strip*: the selected waveform is bright, the other three dim; a grid's strip
   shows the waveform *it controls* (its own timbre, in this rig).
-- *Volume strip*: the active cell is lit, the rest dark; it shows the grid's own volume.
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
 - *Distortion / slide / mono / feet-accrete toggles*: *dim* at rest, *bright* while

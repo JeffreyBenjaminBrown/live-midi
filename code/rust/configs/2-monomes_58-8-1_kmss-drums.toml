@@ -136,15 +136,6 @@ kind = "waveform_selector"
 rect = [0, 0, 3, 0]
 controls = "a"
 
-# 12-cell volume strip filling the rest of the top row, sets GRID A's loudness. Live
-# (a fader, not a radio), logarithmic over 30 dB, top cell = unity; the active cell is
-# lit and the rest dark. Starts at column 10 (5 cells of headroom to its right).
-[[monome_windows]]
-id = "vol-a"
-monome = "a"
-kind = "volume_strip"
-rect = [4, 0, 15, 0]
-controls = "a"
 
 # 3x2 scroll pad, bottom-right: arrows shift grid A's pitch window by one cell,
 # the two top corners by an octave.
@@ -233,12 +224,6 @@ kind = "waveform_selector"
 rect = [0, 0, 3, 0]
 controls = "b"
 
-[[monome_windows]]
-id = "vol-b"
-monome = "b"
-kind = "volume_strip"
-rect = [4, 0, 15, 0]
-controls = "b"
 
 [[monome_windows]]
 id = "scroll-b"

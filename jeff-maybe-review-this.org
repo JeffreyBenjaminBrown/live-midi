@@ -165,6 +165,16 @@ reverse it cheaply if you disagree.
   (same as for drum hits); a debounce-suppressed press can also release without
   having "pressed" -- the accrete state's counters saturate, so this is harmless.
 
+* dropping the amplitude row
+- Only the surfaces rig lost its =volume_strip= windows; the window kind (and its
+  runtime support) remains for other configs. If you want the kind deleted
+  outright, say so.
+- The fader was *live* (rescaled sounding voices, including accrete drones);
+  =[[timbres]] amplitude= via 'r' applies to future notes only. If a live master
+  volume matters (e.g. taming a runaway drone), the sink =amplitude= is also
+  'r'-reloadable and IS live (the audio callback reads it fresh) -- that's the
+  knob to reach for.
+
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
 - =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's

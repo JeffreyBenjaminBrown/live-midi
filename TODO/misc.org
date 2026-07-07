@@ -254,8 +254,16 @@ no-op if nothing has played yet. See =drumkit_runtime/mod.rs= (=PadKind=,
 
 Details / choices you didn't specify: see =jeff-maybe-review-this.org=,
 "drum pads / ditto -- choices where the spec was silent".
-* drop the amplitude row
+* DONE drop the amplitude row
 Instead I'll use the config to tune each waveform's amplitude.
+** [Claude] done -- volume strips removed from the surfaces rig
+The =vol-a=/=vol-b= windows are gone from the config (+ mock); top-row cells
+4..12 play notes again and 13..15 host the polyrhythm pad. Loudness now:
+=[[timbres]] amplitude= per waveform (hot-reloadable with 'r') under the synth
+sink's master =amplitude=. The =volume_strip= window *kind* still exists for
+other configs; only this rig dropped it. One behavior note: the live per-grid
+fader (and its live rescale of sounding voices, incl. accrete drones) has no
+replacement -- 'r'-reloading a timbre amplitude affects only future notes.
 * polyrhythm interface
 ** tap tempo button
 It blinks (10% duty cycle) to indicate the current tempo.
