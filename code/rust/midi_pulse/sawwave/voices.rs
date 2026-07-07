@@ -221,20 +221,24 @@ pub fn render_block(
 }
 
 /// Advance every voice by `frac` of one output sample (1.0 on the plain path, 1/N
-/// when oversampling) and return their summed contribution, pre-clamp. Running the
-/// nonlinear per-voice work (osc, AM, FM, and the AM multiply) at N x the rate is the
-/// whole point of oversampling: the harmonics/sidebands it manufactures then land
-/// below the *high-rate* Nyquist instead of folding back into the band. Dead voices
-/// are dropped here, exactly as the single-rate path did.
-fn accumulate_voices(
+/// when oversampling) and return the summed contributions, pre-clamp, split into a
+/// `(clean, dirty)` pair by the `dirty` route (the per-monome distortion: the dirty
+/// bus gets distorted, the clean one does not; see `render_with_distortion`).
+/// Running the nonlinear per-voice work (osc, AM, FM, and the AM multiply) at N x
+/// the rate is the whole point of oversampling: the harmonics/sidebands it
+/// manufactures then land below the *high-rate* Nyquist instead of folding back
+/// into the band. Dead voices are dropped here, exactly as the single-rate path did.
+fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
   voices: &mut VoiceMap,
   frac: f32,
   sample_rate: f32,
   amplitude: f32,
   shape_family: AmShapeFamily,
-) -> f32 {
-  let mut mix = 0.0_f32;
-  voices.retain(|_, v| {
+  dirty: &F,
+) -> (f32, f32) {
+  let mut clean = 0.0_f32;
+  let mut dirt = 0.0_f32;
+  voices.retain(|src, v| {
     // Envelope. Linear attack toward target_env; when the attack peaks on a held
     // voice whose sustain sits below the peak, the target drops to sustain_env and
     // the env DECAYS toward it exponentially (the pluck) -- so a fresh strike rings
@@ -307,10 +311,15 @@ fn accumulate_voices(
     v.phase = (v.phase + dt).rem_euclid(1.0);
     let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
     let wf_norm = waveform_norm(v.timbre.waveform);
-    mix += osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * pulse * amplitude;
+    let s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * pulse * amplitude;
+    if dirty(src) {
+      dirt += s;
+    } else {
+      clean += s;
+    }
     true
   });
-  mix
+  (clean, dirt)
 }
 
 /// A stateful per-stream renderer. With `oversample > 1` it runs the mix at N x the
@@ -342,15 +351,21 @@ impl BlockRenderer {
     amplitude: f32,
     shape_family: AmShapeFamily,
   ) {
-    self.render_with_distortion(voices, data, channels, sample_rate, amplitude, shape_family, None);
+    self.render_with_distortion(
+      voices, data, channels, sample_rate, amplitude, shape_family, None, |_| false,
+    );
   }
 
-  /// `render`, with an optional global distortion applied to the summed mix (pre-
+  /// `render`, with an optional distortion applied to the summed DIRTY bus (pre-
   /// clamp, at the oversampled rate when oversampling -- a nonlinearity belongs
-  /// inside the anti-aliasing loop, like the clamp). `None` is bit-identical to
-  /// `render`. The surfaces runtime passes `Some` while its distortion toggle is on.
+  /// inside the anti-aliasing loop, like the clamp). `dirty` routes each voice:
+  /// dirty voices are summed and distorted together, clean voices bypass and are
+  /// added after -- the per-monome distortion (misc.org "distortion / This should
+  /// be per-monome"). `None` is bit-identical to `render` whatever the route. The
+  /// surfaces runtime passes `Some` while any grid's distortion toggle is on,
+  /// routing that grid's voices dirty.
   #[allow(clippy::too_many_arguments)]
-  pub fn render_with_distortion(
+  pub fn render_with_distortion<F: Fn(&VoiceSource) -> bool>(
     &mut self,
     voices: &mut VoiceMap,
     data: &mut [f32],
@@ -359,18 +374,20 @@ impl BlockRenderer {
     amplitude: f32,
     shape_family: AmShapeFamily,
     distortion: Option<Distortion>,
+    dirty: F,
   ) {
     let oversample = self.oversample;
-    let post = |mix: f32| match distortion {
-      Some(d) => distort(mix, d).clamp(-0.95, 0.95),
-      None => mix.clamp(-0.95, 0.95),
+    let post = |clean: f32, dirt: f32| match distortion {
+      Some(d) => (clean + distort(dirt, d)).clamp(-0.95, 0.95),
+      None => (clean + dirt).clamp(-0.95, 0.95),
     };
     match &mut self.decimator {
       // Plain path: one sub-step per output sample, no filtering, no latency.
       None => {
         for frame in data.chunks_mut(channels) {
-          let mix = accumulate_voices(voices, 1.0, sample_rate, amplitude, shape_family);
-          let s = post(mix);
+          let (clean, dirt) =
+            accumulate_voices(voices, 1.0, sample_rate, amplitude, shape_family, &dirty);
+          let s = post(clean, dirt);
           for out in frame.iter_mut() {
             *out = s;
           }
@@ -383,8 +400,9 @@ impl BlockRenderer {
         let frac = 1.0 / oversample as f32;
         for frame in data.chunks_mut(channels) {
           for _ in 0..oversample {
-            let mix = accumulate_voices(voices, frac, sample_rate, amplitude, shape_family);
-            decim.push(post(mix));
+            let (clean, dirt) =
+              accumulate_voices(voices, frac, sample_rate, amplitude, shape_family, &dirty);
+            decim.push(post(clean, dirt));
           }
           let s = decim.output();
           for out in frame.iter_mut() {
@@ -1000,7 +1018,7 @@ mod tests {
       let mut voices = mk_voices();
       let mut data = vec![0.0_f32; 4800];
       BlockRenderer::new(1).render_with_distortion(
-        &mut voices, &mut data, 1, sr, 0.8, AmShapeFamily::default(), distortion,
+        &mut voices, &mut data, 1, sr, 0.8, AmShapeFamily::default(), distortion, |_| true,
       );
       data
     };
@@ -1013,6 +1031,47 @@ mod tests {
     let mut plain = vec![0.0_f32; 4800];
     BlockRenderer::new(1).render(&mut plain_voices, &mut plain, 1, sr, 0.8, AmShapeFamily::default());
     assert_eq!(clean, plain, "distortion None is bit-identical to render()");
+  }
+
+  #[test]
+  fn per_voice_routing_distorts_only_the_dirty_bus() {
+    // Voice A routes dirty, voice B clean: the output equals distort(A) + B exactly
+    // -- B bypasses the clipper entirely (the per-monome distortion contract).
+    let sr = 48000.0;
+    let heavy = Distortion { scale: 0.3, shape: 2.0 };
+    let mk = |xy: (i32, i32), freq: f32| {
+      (VoiceSource::Fingered { xy }, VoiceState {
+        id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+        timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+        am_phase: 0.0, fm_phase: 0.0,
+      })
+    };
+    let render = |sources: &[(VoiceSource, VoiceState)], distortion, dirty: fn(&VoiceSource) -> bool| {
+      let mut voices: VoiceMap = sources.iter().cloned().collect();
+      let mut data = vec![0.0_f32; 480];
+      BlockRenderer::new(1).render_with_distortion(
+        &mut voices, &mut data, 1, sr, 0.4, AmShapeFamily::default(), distortion, dirty,
+      );
+      data
+    };
+    let a = mk((0, 0), 220.0);
+    let b = mk((1, 0), 330.0);
+    let routed = render(&[a.clone(), b.clone()], Some(heavy), |src| {
+      matches!(src, VoiceSource::Fingered { xy: (0, 0) })
+    });
+    let a_dirty_alone = render(&[a], Some(heavy), |_| true);
+    let b_clean_alone = render(&[b.clone()], Some(heavy), |_| false);
+    let b_plain = render(&[b], None, |_| false);
+    assert_eq!(b_clean_alone, b_plain, "a clean-routed voice bypasses the clipper exactly");
+    for i in 0..routed.len() {
+      let expect = a_dirty_alone[i] + b_clean_alone[i];
+      assert!(
+        (routed[i] - expect).abs() < 1e-6,
+        "sample {i}: routed={} vs distort(A)+B={}",
+        routed[i],
+        expect,
+      );
+    }
   }
 
   #[test]

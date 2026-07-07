@@ -335,9 +335,10 @@ control = "clear"            # or "needs_holding" or "accrete"
 Sustained notes paint like any sounding note (bright octave-equivalents on both
 grids) and follow the volume fader of the grid they came from.
 
-A ~distortion_toggle~ is a single-cell on/off for a *global* soft-clip distortion on
-the summed synth mix (surfaces runtime; at most one per monome, and every grid's
-toggle flips the same switch). The curve's parameters live on the ~cpal_synth~ sink:
+A ~distortion_toggle~ is a single-cell on/off for a *per-monome* soft-clip
+distortion (surfaces runtime; at most one per monome, each grid's toggle switching
+its OWN voices onto the distorted bus -- grids left off bypass the clipper). The
+curve's parameters live on the ~cpal_synth~ sink:
 
 #+begin_src toml
 [[sinks]]
@@ -357,13 +358,14 @@ The button is dim at rest, bright while on; key-down toggles, key-up does nothin
 See =learnings/distortion.org= for the curve family.
 
 A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
-(single cell, at most one of each per monome, dim/bright LED). Slide and mono are
-global switches. Slide: a new note re-triggers the
-nearest pitch released within ~slide_candidate_window_ms~ and glides it into the
-new pitch over ~slide_duration_ms~ (both optional in the ~[surfaces]~ table;
-defaults 1000 / 100). Mono: each new note cuts that grid's other fingered notes
-(and with slide on, the new note *steals* the cut note's voice and glides it
-over -- true legato, no attack re-trigger). Softstep-accretes is PER-GRID: while grid g's toggle is on, the
+(single cell, at most one of each per monome, dim/bright LED). Mono is a global
+switch; slide and softstep-accretes are per-grid. Slide: a new note on that grid
+re-triggers the nearest pitch released within ~slide_candidate_window_ms~ and
+glides it into the new pitch over ~slide_duration_ms~ (both optional in the
+~[surfaces]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
+other fingered notes (and with that grid's slide on, the new note *steals* the
+cut note's voice and glides it over -- true legato, no attack re-trigger).
+Softstep-accretes: while grid g's toggle is on, the
 KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
 for the other) mirrors g's accrete trio instead of playing samples -- one
 monome, both, or neither (see the config's .org).

@@ -95,10 +95,18 @@ pre-clamp and inside the oversampling loop, so its harmonics don't alias.
 Drums bypass it (they're a separate sink; "sum of all the voices" read as the
 synth voices). =s=/=k= are =distortion_scale= / =distortion_shape= on the
 =cpal_synth= sink (defaults 1.0 / 2.0, ranges commented in the toml). The
-button: key-down toggles, dim at rest / bright while on, mirrored on both
-grids (one switch).
-** TODO This should be per-monome, too.
+button: key-down toggles, dim at rest / bright while on. (Originally one global
+switch mirrored on both grids; superseded by the per-monome item below.)
+** DONE This should be per-monome, too.
 Distortion on in one distorts only notes from that monome.
+*** [Claude] done -- each grid's (0,1) toggles distortion for ITS voices only
+The render now carries two buses: voices of switched-on grids sum onto a dirty
+bus that goes through the clipper, everything else bypasses it, and the buses
+add before the clamp (still inside the oversampling loop). Accrete drones
+follow the grid they came from. One judgment call: with BOTH toggles on, the
+two grids share one clipper (they intermodulate, exactly like the old global
+mode) rather than getting separate clippers -- see jeff-maybe-review-this.org,
+"per-monome distortion + slide", if you'd rather they distort independently.
 * DONE config reload
 If I adjust parameters in the config,
 pressing 'r' should cause the new ones to be read and applied.
@@ -196,9 +204,17 @@ with a fresh attack. Candidates are per grid, audible releases only (a note that
 became an accrete drone still rings, so it is never a slide source); nearest
 pitch wins, ties to the more recent release; a used source is consumed. The two
 knobs are =[surfaces] slide_candidate_window_ms= (default 1000) and
-=slide_duration_ms= (default 100). The toggle is a *global* switch mirrored on
-both grids, like distortion. Docs: the config .org, "slide and mono".
-** TODO This should be per-monome rather than global, too.
+=slide_duration_ms= (default 100). (Originally a global switch mirrored on both
+grids; superseded by the per-monome item below.) Docs: the config .org, "slide
+and mono".
+** DONE This should be per-monome rather than global, too.
+*** [Claude] done -- each grid's (1,1) now switches slide for that grid only
+The candidate histories were already per-grid; now the switch is too (same
+pattern as the feet-accrete and distortion toggles: independent flags, each
+grid's LED shows its own). The mono+slide legato steal follows the NEW note's
+grid's slide switch. Mono stays the one global toggle -- you didn't ask for it,
+and its cut is already per-grid in effect; say the word if you want it split
+too.
 * ONGOING mono
 This button should be right next to slide (so (1,2)).
 If it's on, each new note cuts off the old one.

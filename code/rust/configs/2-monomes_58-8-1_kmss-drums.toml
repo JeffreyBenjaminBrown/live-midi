@@ -89,8 +89,8 @@ accretion_level = 0.5
 sustain_level = 0.35
 # decay_secs: the decay time constant; ~0.3 snappy, ~1.5 slow ring, <= 0 disables.
 decay_secs = 0.5
-# Global distortion (heard only while a distortion_toggle window is on): the
-# soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the summed mix.
+# Distortion (per-monome; heard only while a grid's distortion_toggle is on): the
+# soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the switched-on grids' summed mix.
 # scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.
 distortion_scale = 1.0
 # shape k: elbow harshness; 1 gentlest, 2 smooth sweet spot, 4-8 hard-ish edge.
@@ -175,16 +175,17 @@ kind = "accrete_control"
 rect = [2, 15, 2, 15]
 control = "accrete"
 
-# The global-distortion toggle (key-down flips; see learnings/distortion.org for the
-# curve). One shared switch: either grid's button turns it on/off for the whole mix.
+# The distortion toggle (key-down flips; see learnings/distortion.org for the
+# curve). PER-GRID: this grid's button routes this grid's voices through the
+# distorted bus; a grid left off bypasses the clipper.
 [[monome_windows]]
 id = "dist-a"
 monome = "a"
 kind = "distortion_toggle"
 rect = [0, 1, 0, 1]
 
-# Slide toggle (key-down flips; global): a new note re-triggers the nearest
-# recently-released pitch and glides it into the new one. Knobs: [surfaces].
+# Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
+# nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
 [[monome_windows]]
 id = "slide-a"
 monome = "a"
@@ -192,7 +193,7 @@ kind = "slide_toggle"
 rect = [1, 1, 1, 1]
 
 # Mono toggle (key-down flips; global): each new note cuts this grid's other
-# fingered notes (with slide on, you glide from exactly the note you cut).
+# fingered notes (with slide on, the new note steals the cut voice -- legato).
 [[monome_windows]]
 id = "mono-a"
 monome = "a"
@@ -275,16 +276,17 @@ kind = "accrete_control"
 rect = [2, 15, 2, 15]
 control = "accrete"
 
-# The global-distortion toggle (key-down flips; see learnings/distortion.org for the
-# curve). One shared switch: either grid's button turns it on/off for the whole mix.
+# The distortion toggle (key-down flips; see learnings/distortion.org for the
+# curve). PER-GRID: this grid's button routes this grid's voices through the
+# distorted bus; a grid left off bypasses the clipper.
 [[monome_windows]]
 id = "dist-b"
 monome = "b"
 kind = "distortion_toggle"
 rect = [0, 1, 0, 1]
 
-# Slide toggle (key-down flips; global): a new note re-triggers the nearest
-# recently-released pitch and glides it into the new one. Knobs: [surfaces].
+# Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
+# nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
 [[monome_windows]]
 id = "slide-b"
 monome = "b"
@@ -292,7 +294,7 @@ kind = "slide_toggle"
 rect = [1, 1, 1, 1]
 
 # Mono toggle (key-down flips; global): each new note cuts this grid's other
-# fingered notes (with slide on, you glide from exactly the note you cut).
+# fingered notes (with slide on, the new note steals the cut voice -- legato).
 [[monome_windows]]
 id = "mono-b"
 monome = "b"

@@ -278,3 +278,19 @@ reverse it cheaply if you disagree.
 - Slide WITHOUT mono still re-triggers with attack (your item scoped the change
   to "when mono is on"; released voices are ramping out and stealing them would
   clash with their release).
+
+* per-monome distortion + slide -- choices where the spec was silent
+
+- Distortion with BOTH grids on: the switched-on grids sum onto ONE dirty bus and
+  share one clipper, so they intermodulate exactly like the old global mode (and
+  toggling the second grid changes how hard the first drives the clipper). The
+  alternative -- one clipper per monome, so each grid's tone is independent of
+  the other's toggle -- is a small change in =render_with_distortion= if you
+  want it; I kept the your-original-spec behavior for the both-on case.
+- Accrete drones route by the grid they came from (a drone born on grid A
+  distorts with grid A), matching the volume-fader rule.
+- Slide was the easy half: candidates were already per-grid, so only the switch
+  split. The mono+slide legato steal is gated by the NEW note's grid's slide
+  switch (the only coherent reading -- the stolen voice is on the same grid).
+- Mono remains the one global toggle (you flagged distortion and slide only, and
+  mono's cut already acts per grid). The LED docs now say so explicitly.

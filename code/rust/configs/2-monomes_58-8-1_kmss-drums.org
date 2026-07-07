@@ -42,16 +42,16 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   to the same pitch are independent (one voice per finger). Voices are keyed by
   =(grid, cell)=, not by pitch (contrast the looper, which ref-counts by pitch).
 - *distortion toggle* -- a single cell at =(0,1)= (second row, far left) on each
-  grid: key-down flips a *global* soft-clip distortion on the summed synth mix (both
-  grids; drums are untouched). One shared switch -- either grid's button, one state.
-  The curve's =distortion_scale= / =distortion_shape= live on the synth sink; see
+  grid: key-down flips a soft-clip distortion for THIS grid's voices (per-monome;
+  drums are untouched). The switched-on grids' voices are summed and distorted
+  together; a grid with its toggle off bypasses the clipper entirely. The curve's
+  =distortion_scale= / =distortion_shape= live on the synth sink; see
   [[../../../learnings/distortion.org]].
 - *slide toggle* -- =(1,1)= (right of the distortion toggle): while on, a new note
-  re-triggers the nearest pitch released within the last
+  on THIS grid re-triggers the nearest pitch released within the last
   ~slide_candidate_window_ms~ and *glides* it into the new pitch over
   ~slide_duration_ms~ (both in the ~[surfaces]~ table). A used slide source leaves
-  the candidate set. Global switch, mirrored on both grids; each grid keeps its own
-  candidate history.
+  the candidate set. Per-monome switch; each grid keeps its own candidate history.
 - *mono toggle* -- =(1,2)= (below slide): while on, each new note cuts that grid's
   other fingered notes (through the normal release path, so accrete still captures
   them). With slide on too, the new note *steals* the cut note's voice and glides
@@ -106,7 +106,7 @@ overlays drawn on top:
   col: 0   1   2   3   4   5  ...        13  14  15
   row 0  [SIN TRI SQR SAW]  .   .  (play cells)  x3  x2 TAP  <- waveform strip + polyrhythm
                                                                (see the polyrhythm section)
-  row 1  DIST SLIDE  .  .  .                   .   .   .   <- global toggles
+  row 1  DIST SLIDE  .  .  .                   .   .   .   <- per-grid toggles
   row 2   .  MONO .   .   .                    .   .   .   <- global toggle
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
@@ -143,9 +143,9 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
   shows the waveform *it controls* (its own timbre, in this rig).
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
-- *Distortion / slide / mono toggles*: *dim* at rest, *bright* while on; each is one
-  global switch mirrored on both grids. The *feet-accrete toggle* looks the same but
-  is PER-GRID: each grid's cell shows only its own switch.
+- *Toggles* (distortion / slide / mono / feet-accrete): *dim* at rest, *bright*
+  while on. Mono is one global switch mirrored on both grids; distortion, slide,
+  and feet-accrete are PER-GRID -- each grid's cell shows only its own switch.
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
   clear while pressed, needs-holding while on, accrete while the accreting condition is
   live. Each grid's trio shows its OWN bank (per-monome, not mirrored). A *sustained*
@@ -216,24 +216,29 @@ grid A's drones ringing. Requested in =TODO/misc.org= "sustain (accrete)".
 
 * distortion
 
-The =(0,1)= cell on either grid toggles a *global* distortion (key-down; key-up does
-nothing) applied to the *sum* of all synth voices -- fingered and sustained, both
-grids -- before the output clamp (and inside the oversampling loop, so its harmonics
-don't alias). The drums bypass it. The curve is the algebraic soft-clipper
-=f(y) = y / (1 + |y/s|^k)^(1/k)= ([[../../../learnings/distortion.org]]); =s= and =k=
-are the sink's =distortion_scale= / =distortion_shape= (defaults 1.0 / 2.0 -- a
-clearly-audible, smooth saturation).
+Each grid's =(0,1)= cell toggles distortion for THAT grid (key-down; key-up does
+nothing; per-monome, not mirrored). A grid's voices -- fingered and sustained --
+route to a *dirty bus* while its toggle is on; the dirty bus is summed and
+distorted (so two switched-on grids intermodulate, as the old global mode did),
+the switched-off grids' voices bypass the clipper entirely, and the two buses are
+summed before the output clamp (inside the oversampling loop, so the distortion
+harmonics don't alias). The drums bypass it always. The curve is the algebraic
+soft-clipper =f(y) = y / (1 + |y/s|^k)^(1/k)=
+([[../../../learnings/distortion.org]]); =s= and =k= are the sink's
+=distortion_scale= / =distortion_shape= (defaults 1.0 / 2.0 -- a clearly-audible,
+smooth saturation).
 
 * slide and mono
 
-*Slide* (=(1,1)=; key-down toggles): each grid remembers its recently *released*
-notes (audible releases only -- a note that became an accrete drone is still
-ringing and never a slide source). When a new note is struck with slide on, the
-nearest remembered pitch released within ~slide_candidate_window_ms~ (default
-1000) is consumed as the *source*: the new note's voice starts at the source
-pitch and glides -- pitch-linearly -- into the struck pitch over
-~slide_duration_ms~ (default 100). Ties break toward the more recent release; a
-source is never reused.
+*Slide* (=(1,1)=; key-down toggles; PER-GRID -- each grid's toggle governs its
+own notes): each grid remembers its recently *released* notes (audible releases
+only -- a note that became an accrete drone is still ringing and never a slide
+source). When a new note is struck with that grid's slide on, the nearest
+remembered pitch released within ~slide_candidate_window_ms~ (default 1000) is
+consumed as the *source*: the new note's voice starts at the source pitch and
+glides -- pitch-linearly -- into the struck pitch over ~slide_duration_ms~
+(default 100). Ties break toward the more recent release; a source is never
+reused.
 
 *Mono* (=(1,2)=; key-down toggles): a new note cuts the same grid's other
 fingered notes. Cuts go through the ordinary release path: under a live accrete
@@ -247,7 +252,8 @@ becomes an accrete drone instead, it cannot be stolen -- the new note falls back
 to the ordinary slide above (a fresh strike gliding from the nearest recent
 release).
 
-Both are global switches (either grid's button, one state), like distortion.
+Mono is the one *global* switch (either grid's button, one state); slide -- like
+distortion and feet-accrete -- is per-monome.
 
 * feet accrete
 
