@@ -226,3 +226,24 @@ reverse it cheaply if you disagree.
 - The needs-holding flip and the hold-count bookkeeping are per-bank; holding
   pedal 3 while tapping grid A's on-grid accrete still nets one held count on
   that one bank (they overlap safely), exactly as before but scoped.
+
+* mono+slide legato -- choices where the spec was silent
+
+- "Should not re-trigger the attack" implemented as a true voice steal: the cut
+  note's voice is re-keyed under the new cell and aimed at the new pitch; env,
+  oscillator phase, pluck state, timbre, and gain all just continue. So a legato
+  line keeps the FIRST note's waveform/amplitude until you lift fully and strike
+  fresh -- standard legato-mono behavior, but flag me if you'd rather the timbre
+  update mid-line.
+- The polyrhythm pulse: a legato transition re-aims the pulse RATE at the current
+  applied tempo but keeps the pulse phase (no amplitude step at the seam). A
+  fresh strike still resets the pulse phase as before.
+- If mono's cut becomes an accrete drone (live accreting condition), the drone
+  wins -- the voice can't be stolen, and the new note falls back to the ordinary
+  slide re-trigger (with attack). Starting the new note at env 0 with no attack
+  would have been silence.
+- With no note held (the first note of a phrase), there is nothing to steal, so
+  the phrase's first note attacks normally -- also standard.
+- Slide WITHOUT mono still re-triggers with attack (your item scoped the change
+  to "when mono is on"; released voices are ramping out and stealing them would
+  clash with their release).

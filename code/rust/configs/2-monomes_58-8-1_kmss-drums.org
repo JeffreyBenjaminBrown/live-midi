@@ -54,8 +54,8 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   candidate history.
 - *mono toggle* -- =(1,2)= (below slide): while on, each new note cuts that grid's
   other fingered notes (through the normal release path, so accrete still captures
-  them). With slide on too, the candidate set is a singleton -- you glide from
-  exactly the note you cut. Global switch.
+  them). With slide on too, the new note *steals* the cut note's voice and glides
+  it over -- true legato, no attack re-trigger. Global switch.
 - *feet-accrete toggle* -- =(0,14)= (just above the accrete trio): PER-GRID -- while
   grid g's toggle is on, the KMSS pedal triple mapped to grid g (1/2/3 for the older
   monobright grid, 8/9/0 for the other) mirrors g's accrete trio (clear /
@@ -237,9 +237,15 @@ source is never reused.
 
 *Mono* (=(1,2)=; key-down toggles): a new note cuts the same grid's other
 fingered notes. Cuts go through the ordinary release path: under a live accrete
-condition a cut note still joins the sustained set, and (slide) the cut note
-becomes the sole slide candidate -- so mono+slide plays like a portamento
-monosynth per grid.
+condition a cut note still joins the sustained set.
+
+*Mono + slide together* play like a true legato monosynth per grid: the new note
+does not strike a fresh voice at all -- it STEALS the voice of the note it cuts,
+gliding it into the new pitch while the envelope simply continues (no attack, no
+pluck re-trigger; the stolen voice keeps its timbre and gain). If the cut note
+becomes an accrete drone instead, it cannot be stolen -- the new note falls back
+to the ordinary slide above (a fresh strike gliding from the nearest recent
+release).
 
 Both are global switches (either grid's button, one state), like distortion.
 

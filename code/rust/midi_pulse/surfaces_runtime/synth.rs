@@ -181,6 +181,40 @@ impl SurfaceSink {
     }
   }
 
+  /// The mono+slide note-on: STEAL the voice still sounding at `from_cell` (the
+  /// note mono is cutting) and glide it into `pitch` under the new cell's key. The
+  /// envelope simply continues -- no attack and no pluck re-trigger (misc.org
+  /// "slide when mono is on should not re-trigger the attack") -- and the voice
+  /// keeps its timbre and gain (it IS the same voice). `pulse_hz` re-aims the
+  /// polyrhythm pulse's rate at this onset, but the pulse phase continues (no
+  /// amplitude step). Returns false if nothing sounds at `from_cell` (the caller
+  /// falls back to a fresh strike).
+  pub fn note_on_legato(
+    &mut self,
+    from_cell: (i32, i32),
+    cell: (i32, i32),
+    pitch: i32,
+    glide_secs: f32,
+    pulse_hz: Option<f32>,
+  ) -> bool {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut state) = voices.remove(&voice_key(self.grid, from_cell)) else {
+      return false;
+    };
+    let to = freq_for_pitch(pitch, self.fund, self.edo);
+    let from = state.freq; // wherever it is NOW, mid-glide included
+    if to == from {
+      state.glide_per_sample = 1.0;
+    } else {
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq_target = to;
+      state.glide_per_sample = (to / from).powf(1.0 / samples);
+    }
+    state.tempo_am_freq = pulse_hz.unwrap_or(0.0);
+    voices.insert(voice_key(self.grid, cell), state);
+    true
+  }
+
   /// Release `cell`: its voice rings out (ramps to zero over `release_secs`).
   pub fn note_off(&mut self, cell: (i32, i32)) {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -307,6 +341,53 @@ mod tests {
     let mut a = sink(0, &voices);
     a.note_off((9, 9)); // must not panic
     assert_eq!(count(&voices), 0);
+  }
+
+  #[test]
+  fn legato_steals_the_voice_instead_of_restriking() {
+    // The mono+slide path: the cut note's voice is re-keyed under the new cell and
+    // aimed at the new pitch. Envelope, timbre, and gain carry over untouched -- no
+    // attack (env stays where it was), no pluck re-trigger.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre { gain: 0.7, ..Timbre::default() }, None);
+    {
+      // Pretend the attack finished a while ago (mid-note state).
+      let mut v = voices.lock().unwrap();
+      let s = v.get_mut(&voice_key(0, (3, 4))).unwrap();
+      s.env = 0.9;
+      s.phase = 0.37;
+    }
+    assert!(a.note_on_legato((3, 4), (5, 5), 30, 0.1, None), "the voice was there to steal");
+    assert_eq!(count(&voices), 1, "moved, not duplicated");
+    let v = voices.lock().unwrap();
+    let s = v.get(&voice_key(0, (5, 5))).expect("re-keyed under the new cell");
+    assert_eq!(s.env, 0.9, "the envelope continues -- no attack re-trigger");
+    assert_eq!(s.phase, 0.37, "the oscillator continues");
+    assert_eq!(s.timbre.gain, 0.7, "the stolen voice keeps its gain");
+    assert_eq!(s.freq, freq_for_pitch(20, 80.0, 58), "the glide starts at the old pitch");
+    assert_eq!(s.freq_target, freq_for_pitch(30, 80.0, 58), "aimed at the new pitch");
+    assert!(s.glide_per_sample > 1.0, "gliding upward");
+  }
+
+  #[test]
+  fn legato_to_the_same_pitch_moves_the_voice_without_a_glide() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((0, 8), 8, Timbre::default(), None);
+    assert!(a.note_on_legato((0, 8), (1, 0), 8, 0.1, None));
+    let v = voices.lock().unwrap();
+    let s = v.get(&voice_key(0, (1, 0))).unwrap();
+    assert_eq!(s.glide_per_sample, 1.0, "same pitch: the glide stays inert");
+    assert_eq!(s.freq, freq_for_pitch(8, 80.0, 58));
+  }
+
+  #[test]
+  fn legato_with_no_voice_reports_false() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    assert!(!a.note_on_legato((9, 9), (5, 5), 30, 0.1, None), "nothing to steal");
+    assert_eq!(count(&voices), 0, "and nothing appears");
   }
 
   #[test]

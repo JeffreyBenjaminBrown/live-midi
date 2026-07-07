@@ -1114,23 +1114,38 @@ fn handle_key(
   }
   if press {
     let pitch = step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1);
-    // Mono: a new note cuts this grid's other fingered notes first. The cut goes
-    // through the ordinary release path, so accrete still captures it and the cut
-    // note lands in the slide candidate set (misc.org: with mono, the candidate
-    // set is a singleton -- exactly the note this one cuts).
+    // Mono: a new note cuts this grid's other fingered notes first. With slide on
+    // too, the nearest cut note is not released but STOLEN: its voice will glide
+    // into the new pitch legato-style, with no attack re-trigger (misc.org "slide
+    // when mono is on should not re-trigger the attack"). Other cuts go through
+    // the ordinary release path, so accrete still captures them -- and a cut that
+    // sustains (accrete) becomes a drone as usual and cannot be stolen.
+    let mut legato_from: Option<(i32, i32)> = None;
     if rt.mono_on.load(Ordering::Relaxed) {
-      let others: Vec<(i32, i32)> = held.keys().filter(|c| **c != cell).copied().collect();
-      for other in others {
-        release_cell(rt, held, other);
+      let slide = rt.slide_on.load(Ordering::Relaxed);
+      let mut others: Vec<((i32, i32), i32)> =
+        held.iter().filter(|(c, _)| **c != cell).map(|(c, p)| (*c, *p)).collect();
+      // The nearest cut pitch is the legato source (with mono playing, the cut is
+      // a single note anyway).
+      others.sort_by_key(|(_, p)| (*p - pitch).abs());
+      for (i, (other, _)) in others.into_iter().enumerate() {
+        if slide && i == 0 {
+          if cut_for_legato(rt, held, other) {
+            legato_from = Some(other);
+          }
+        } else {
+          release_cell(rt, held, other);
+        }
       }
     }
     let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
     let timbre =
       Timbre { waveform: slot.waveform, gain: slot.amplitude * gain, am: slot.am, fm: slot.fm };
-    // Slide: while on, re-trigger the nearest recently-released pitch and glide it
-    // into this one (consuming it as a source); otherwise a plain note.
-    let source = if rt.slide_on.load(Ordering::Relaxed) {
+    // Slide: while on, glide into this note -- legato from the voice mono just
+    // cut, or, with no stolen voice, by re-triggering the nearest recently-
+    // released pitch (consuming it as a source); otherwise a plain note.
+    let source = if legato_from.is_none() && rt.slide_on.load(Ordering::Relaxed) {
       rt.slide.pick(pitch, Instant::now(), rt.slide_window)
     } else {
       None
@@ -1139,11 +1154,17 @@ fn handle_key(
     let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).applied_hz();
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
-    match source {
-      Some(from) => {
-        rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs, pulse)
+    // (A stolen legato voice keeps ITS timbre and gain -- it is the same voice.)
+    let stole = legato_from
+      .map(|from| rt.sink.note_on_legato(from, cell, pitch, rt.slide_duration_secs, pulse))
+      .unwrap_or(false);
+    if !stole {
+      match source {
+        Some(from) => {
+          rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs, pulse)
+        }
+        None => rt.sink.note_on(cell, pitch, timbre, pulse),
       }
-      None => rt.sink.note_on(cell, pitch, timbre, pulse),
     }
     held.insert(cell, pitch);
     rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_played(pitch);
@@ -1175,6 +1196,29 @@ fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>, cell: 
     rt.slide.note_released(pitch, Instant::now(), mono);
   }
   held.remove(&cell);
+}
+
+/// Mono's cut of the note a slide is about to glide from: like `release_cell`,
+/// but a note that would release audibly is NOT released -- its voice is left
+/// sounding at `cell` for `note_on_legato` to steal, and it never becomes a slide
+/// candidate (it keeps sounding). A note that sustains (accrete) becomes a drone
+/// as usual and cannot be stolen. Returns true if the voice awaits stealing.
+fn cut_for_legato(
+  rt: &mut GridThread,
+  held: &mut HashMap<(i32, i32), i32>,
+  cell: (i32, i32),
+) -> bool {
+  let Some(pitch) = held.get(&cell).copied() else {
+    return false;
+  };
+  let keep = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+    .note_released_sustains(pitch);
+  held.remove(&cell);
+  if keep {
+    rt.sink.sustain_note(cell, pitch);
+    return false;
+  }
+  true
 }
 
 /// Adopt the current `Live` parameters into this grid thread's working copies. An

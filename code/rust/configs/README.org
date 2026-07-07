@@ -362,8 +362,8 @@ global switches. Slide: a new note re-triggers the
 nearest pitch released within ~slide_candidate_window_ms~ and glides it into the
 new pitch over ~slide_duration_ms~ (both optional in the ~[surfaces]~ table;
 defaults 1000 / 100). Mono: each new note cuts that grid's other fingered notes
-(and with slide on, the candidate set is a singleton -- you glide from the note
-you just cut). Softstep-accretes is PER-GRID: while grid g's toggle is on, the
+(and with slide on, the new note *steals* the cut note's voice and glides it
+over -- true legato, no attack re-trigger). Softstep-accretes is PER-GRID: while grid g's toggle is on, the
 KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
 for the other) mirrors g's accrete trio instead of playing samples -- one
 monome, both, or neither (see the config's .org).

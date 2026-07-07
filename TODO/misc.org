@@ -207,9 +207,18 @@ This interacts with slide -- the set of candidates is a singleton.
 A new note cuts the same grid's other *fingered* notes (per grid, not across
 grids -- each grid stays its own monosynth; accrete drones are not cut). Cuts go
 through the ordinary release path, so a cut under a live accrete condition still
-joins the sustained set, and with slide on the cut note is exactly the singleton
-slide candidate. Global toggle mirrored on both grids.
-** TODO slide when mono is on should not re-trigger the attack
+joins the sustained set, and with slide on the cut note is exactly what you
+glide from (see the legato item below). Global toggle mirrored on both grids.
+** DONE slide when mono is on should not re-trigger the attack
+*** [Claude] done -- mono+slide is now true legato (the cut voice is stolen)
+With both on, a new note no longer strikes a fresh voice: it re-keys the voice
+of the note mono cuts and glides it into the new pitch, envelope untouched --
+no attack, no pluck re-strike. The stolen voice keeps its timbre/gain (a
+waveform-slot change mid-line takes effect on the next fresh strike). If the
+cut note becomes an accrete drone it can't be stolen; the new note falls back
+to the ordinary slide (fresh strike + glide, attack and all). Slide without
+mono is unchanged (released notes re-struck with attack). Details in
+jeff-maybe-review-this.org, "mono+slide legato".
 * DONE feet accrete
 As described above, there will be three buttons for
 accreting sustained notes in the bottom-left of both monomes.
