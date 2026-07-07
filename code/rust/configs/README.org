@@ -215,6 +215,28 @@ distortion_shape = 2.0
 A third sink kind, ~cpal_sampler~ (a one-shot WAV player), drives the SoftStep
 ~drumkit~ window; see the SoftStep section below.
 
+* Timbres (the waveform strip's four choices)
+
+An optional top-level ~[[timbres]]~ array (exactly four entries when present)
+defines what each cell of a ~waveform_selector~ strip selects, left to right.
+Absent, the strip selects the plain four waveforms -- identical behavior. Each
+entry has a ~waveform~ ("sin"/"sine", "tri"/"triangle", "square", "saw") plus
+numeric parameters, all optional and (except ~amplitude~, default 1.0) "off":
+
+#+begin_src toml
+[[timbres]]
+waveform = "saw"
+amplitude = 0.8        # per-timbre gain below the volume fader; 0..1 typical
+am_depth = 0.4         # tremolo depth 0..1 (0 = off)
+am_freq = 3.0          # tremolo Hz, ~0.1..10
+am_shape = 0.2         # LFO morph 0..1 (0 smooth .. 1 near-square)
+fm_depth_cents = 12.0  # vibrato cents (~5..50 subtle; 0 = off)
+fm_freq = 5.5          # vibrato Hz, ~0.1..10
+#+end_src
+
+The tremolo's LFO wave family comes from the instrument-wide ~[am]~ table. Notes
+snapshot their timbre at note-on (radio semantics).
+
 * Monome windows
 
 Monome windows reference configured monomes, tunings, and sinks by ID.

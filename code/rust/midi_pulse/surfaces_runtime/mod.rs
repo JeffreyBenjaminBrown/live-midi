@@ -36,22 +36,24 @@ use std::time::{Duration, Instant};
 
 use rosc::{decoder, OscPacket, OscType};
 
-use midi_pulse::config::{AccreteControlKind, Config, MonomeWindowConfig, SinkConfig};
+use midi_pulse::config::{
+  AccreteControlKind, AmShapeFamilyConfig, Config, MonomeWindowConfig, SinkConfig, WaveformChoice,
+};
 use midi_pulse::device_assign::assign_distinct_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
 use midi_pulse::monome::{self, DeviceInfo};
 use midi_pulse::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
-use crate::types::{Timbre, VoiceMap, Waveform};
+use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
 use crate::voices::Distortion;
 
 use accrete::AccreteState;
 use grid::{
-  levels_for_grid, volume_cells, volume_gain_for_pos, waveform_for_selector_cell, ButtonOverlay,
-  BRIGHT, DIM,
+  levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos, ButtonOverlay,
+  BRIGHT, DIM, SELECTOR_CELLS,
 };
-use synth::{set_grid_gain, SurfaceSink};
+use synth::{rescale_grid_gain, SurfaceSink};
 
 /// The volume strip's total dB span (top cell unity, bottom cell -30 dB).
 const VOLUME_DB_RANGE: f32 = 30.0;
@@ -67,6 +69,37 @@ const DIM_PULSE: PulseBrightness = PulseBrightness::one_thirty_second(15_000);
 
 /// The sentinel rect (never matches a cell) for an absent scroll pad / selector.
 const NO_RECT: [i32; 4] = [-1, -1, -1, -1];
+
+/// One selectable timbre behind a selector cell: the resolved form of a config
+/// `[[timbres]]` entry (or a plain-waveform default). `amplitude` multiplies below
+/// the grid's volume fader at note-on.
+#[derive(Clone, Copy)]
+struct TimbreSlot {
+  waveform: Waveform,
+  amplitude: f32,
+  am: Am,
+  fm: Fm,
+}
+
+/// The startup-selected slot: 1 = triangle in the default slots, matching the old
+/// `Waveform::default()` behavior (and any custom `[[timbres]]` layout's cell 1).
+const DEFAULT_SLOT: usize = 1;
+
+/// The pre-`[[timbres]]` behavior: the four plain waveforms, everything else off.
+fn default_timbre_slots() -> [TimbreSlot; SELECTOR_CELLS] {
+  let plain = |waveform| TimbreSlot {
+    waveform,
+    amplitude: 1.0,
+    am: Am::default(),
+    fm: Fm::default(),
+  };
+  [
+    plain(Waveform::Sine),
+    plain(Waveform::Triangle),
+    plain(Waveform::Square),
+    plain(Waveform::Saw),
+  ]
+}
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -151,6 +184,10 @@ struct Settings {
   /// peak, then decay toward the sustain so they ring out over held notes.
   sustain_level: f32,
   decay_secs: f32,
+  /// The four selectable timbres (config `[[timbres]]`, or the plain waveforms).
+  timbres: [TimbreSlot; SELECTOR_CELLS],
+  /// The instrument-wide AM LFO morph family (config `[am]`).
+  am_shape_family: AmShapeFamily,
   /// The global distortion's curve (scale + shape from the cpal_synth sink); the
   /// on/off lives in a shared AtomicBool flipped by the distortion_toggle windows.
   distortion: Distortion,
@@ -326,11 +363,39 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     release: *release_secs,
     sustain_level: *sustain_level,
     decay_secs: *decay_secs,
+    timbres: resolve_timbre_slots(config),
+    am_shape_family: match config.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
+      AmShapeFamilyConfig::SinToSquare => AmShapeFamily::SinToSquare,
+      AmShapeFamilyConfig::TriToSquare => AmShapeFamily::TriToSquare,
+    },
     distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
     has_drums: !config.softstep_windows.is_empty(),
     trail_clobber_radius: surfaces.trail_clobber_radius,
     trails_max: surfaces.trails_max,
   })
+}
+
+/// The config's `[[timbres]]` mapped onto the four selector slots (validation
+/// guarantees exactly four when present); absent = the plain waveforms.
+fn resolve_timbre_slots(config: &Config) -> [TimbreSlot; SELECTOR_CELLS] {
+  if config.timbres.is_empty() {
+    return default_timbre_slots();
+  }
+  let mut slots = default_timbre_slots();
+  for (slot, t) in slots.iter_mut().zip(&config.timbres) {
+    *slot = TimbreSlot {
+      waveform: match t.waveform {
+        WaveformChoice::Sine => Waveform::Sine,
+        WaveformChoice::Triangle => Waveform::Triangle,
+        WaveformChoice::Square => Waveform::Square,
+        WaveformChoice::Saw => Waveform::Saw,
+      },
+      amplitude: t.amplitude,
+      am: Am { depth: t.am_depth, freq: t.am_freq, shape: t.am_shape },
+      fm: Fm { depth_cents: t.fm_depth_cents, freq: t.fm_freq },
+    };
+  }
+  slots
 }
 
 /// The I/O shell. `detector_port` is the serialosc(-mock) port to discover grids on;
@@ -381,14 +446,15 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       s.buffer_frames,
       s.amplitude,
       s.oversample as usize,
+      s.am_shape_family,
       s.distortion,
       Arc::clone(&distortion_on),
     )?
   };
 
-  // Per-grid current waveform (index = grid index). Each element is written only by the
-  // grid whose selector controls it; every grid reads all of it (cross-grid reflection).
-  let waveforms = Arc::new(Mutex::new(vec![Waveform::default(); num_grids]));
+  // Per-grid selected timbre slot (index = grid index). Each element is written only
+  // by the grid whose selector controls it; every grid reads all of it.
+  let selected = Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids]));
   // Per-grid sounding pitch-classes (union drives cross-grid note reflection), the
   // shared recent-note trail (dim backdrop), and the per-grid volume state (position +
   // linear gain), each defaulting to column `VOLUME_DEFAULT_COL` of its own strip.
@@ -459,7 +525,8 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
       edo: s.edo,
       trail_clobber_radius: s.trail_clobber_radius,
       trails_max: s.trails_max,
-      waveforms: Arc::clone(&waveforms),
+      timbres: s.timbres,
+      selected: Arc::clone(&selected),
       sounding: Arc::clone(&sounding),
       trail: Arc::clone(&trail),
       volume_pos: Arc::clone(&volume_pos),
@@ -512,6 +579,8 @@ struct GridThread {
   selector_rect: [i32; 4],
   /// The grid index this grid's waveform selector re-timbres.
   controls_index: usize,
+  /// The four selectable timbres (shared instrument-wide table, copied per thread).
+  timbres: [TimbreSlot; SELECTOR_CELLS],
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets the loudness of.
   volume_controls_index: usize,
@@ -530,7 +599,8 @@ struct GridThread {
   trail_clobber_radius: i32,
   /// Max distinct pitch classes the shared trail keeps.
   trails_max: usize,
-  waveforms: Arc<Mutex<Vec<Waveform>>>,
+  /// Per-grid selected timbre slot; written by whichever grid's selector controls it.
+  selected: Arc<Mutex<Vec<usize>>>,
   /// Per-grid sounding pitch-classes; the union drives cross-grid note reflection.
   sounding: Arc<Mutex<Vec<HashSet<i32>>>>,
   /// Shared recent-note trail (pitch classes), newest first.
@@ -621,7 +691,7 @@ fn grid_thread(mut rt: GridThread) {
     // (its own, in the current rigs); the play cells reflect the union of both grids'
     // sounding classes (bright; sustained notes count -- you hear them) and the shared
     // trail (dim), through the current register.
-    let selector_waveform = current_waveform(&rt.waveforms, rt.controls_index);
+    let selector_slot = current_slot(&rt.selected, rt.controls_index);
     let volume_col = volume_active_col(&rt);
     let (mut buttons, sustained_classes) = accrete_view(&rt);
     buttons.push((rt.distortion_rect, rt.distortion_on.load(Ordering::Relaxed)));
@@ -633,7 +703,7 @@ fn grid_thread(mut rt: GridThread) {
       &trail_classes,
       rt.edo_rect,
       rt.selector_rect,
-      selector_waveform,
+      selector_slot,
       rt.volume_rect,
       volume_col,
       rt.scroll_rect,
@@ -675,10 +745,10 @@ fn handle_key(
   cell: (i32, i32),
   press: bool,
 ) {
-  // Selector: a press sets the *controlled* grid's waveform (radio; future notes).
-  if let Some(waveform) = waveform_for_selector_cell(rt.selector_rect, cell) {
+  // Selector: a press sets the *controlled* grid's timbre slot (radio; future notes).
+  if let Some(slot) = slot_for_selector_cell(rt.selector_rect, cell) {
     if press {
-      set_waveform(&rt.waveforms, rt.controls_index, waveform);
+      set_slot(&rt.selected, rt.controls_index, slot);
     }
     return;
   }
@@ -745,9 +815,15 @@ fn handle_key(
   }
   if press {
     let pitch = step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1);
-    let waveform = current_waveform(&rt.waveforms, rt.grid_index);
+    let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
-    rt.sink.note_on(cell, pitch, Timbre { waveform, gain, ..Timbre::default() });
+    // The note's gain = the slot's amplitude x the grid's fader; the live fader
+    // rescale is ratio-based, so the slot amplitude survives later fader moves.
+    rt.sink.note_on(
+      cell,
+      pitch,
+      Timbre { waveform: slot.waveform, gain: slot.amplitude * gain, am: slot.am, fm: slot.fm },
+    );
     held.insert(cell, pitch);
     rt.accrete.lock().unwrap_or_else(|e| e.into_inner()).note_played(rt.grid_index, pitch);
     push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
@@ -844,13 +920,15 @@ fn set_volume(rt: &GridThread, pressed_x: i32) {
       *slot = pos;
     }
   }
-  {
+  let old_gain = {
     let mut g = rt.gains.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(slot) = g.get_mut(target) {
-      *slot = gain;
+    match g.get_mut(target) {
+      Some(slot) => std::mem::replace(slot, gain),
+      None => gain,
     }
-  }
-  set_grid_gain(&rt.voices, target, gain);
+  };
+  // Ratio-rescale the sounding voices so each keeps its timbre slot's amplitude.
+  rescale_grid_gain(&rt.voices, target, gain / old_gain);
 }
 
 /// The absolute column of the active volume cell this grid should light (the *controlled*
@@ -984,15 +1062,15 @@ fn send_binary_frame(
   }
 }
 
-fn current_waveform(waveforms: &Arc<Mutex<Vec<Waveform>>>, index: usize) -> Waveform {
-  let guard = waveforms.lock().unwrap_or_else(|e| e.into_inner());
-  guard.get(index).copied().unwrap_or_default()
+fn current_slot(selected: &Arc<Mutex<Vec<usize>>>, index: usize) -> usize {
+  let guard = selected.lock().unwrap_or_else(|e| e.into_inner());
+  guard.get(index).copied().unwrap_or(DEFAULT_SLOT)
 }
 
-fn set_waveform(waveforms: &Arc<Mutex<Vec<Waveform>>>, index: usize, waveform: Waveform) {
-  let mut guard = waveforms.lock().unwrap_or_else(|e| e.into_inner());
-  if let Some(slot) = guard.get_mut(index) {
-    *slot = waveform;
+fn set_slot(selected: &Arc<Mutex<Vec<usize>>>, index: usize, slot: usize) {
+  let mut guard = selected.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(entry) = guard.get_mut(index) {
+    *entry = slot;
   }
 }
 
@@ -1063,15 +1141,15 @@ mod tests {
   static MOCK_LOCK: Mutex<()> = Mutex::new(());
 
   #[test]
-  fn selector_writes_the_controlled_grids_waveform_slot() {
+  fn selector_writes_the_controlled_grids_timbre_slot() {
     // A grid's selector re-timbres the grid at `controls_index`, leaving every other
-    // slot untouched. Wire grid 0's strip to grid 1 (cross-control is still legal
-    // config even though the current rigs self-control): a press on grid 0's saw cell
-    // must set grid 1's waveform to Saw only.
-    let waveforms = Arc::new(Mutex::new(vec![Waveform::default(); 2]));
-    set_waveform(&waveforms, 1, Waveform::Saw); // grid 0's selector -> grid 1
-    assert_eq!(current_waveform(&waveforms, 1), Waveform::Saw, "grid 1 (controlled) got saw");
-    assert_eq!(current_waveform(&waveforms, 0), Waveform::Triangle, "grid 0 unchanged");
+    // entry untouched. Wire grid 0's strip to grid 1 (cross-control is still legal
+    // config even though the current rigs self-control): a press on grid 0's cell 3
+    // must select slot 3 for grid 1 only.
+    let selected = Arc::new(Mutex::new(vec![DEFAULT_SLOT; 2]));
+    set_slot(&selected, 1, 3); // grid 0's selector -> grid 1
+    assert_eq!(current_slot(&selected, 1), 3, "grid 1 (controlled) got slot 3");
+    assert_eq!(current_slot(&selected, 0), DEFAULT_SLOT, "grid 0 unchanged");
   }
 
   #[test]

@@ -40,6 +40,62 @@ pub struct Config {
   /// configs; the surfaces runtime falls back to `SurfacesConfig::default`.
   #[serde(default)]
   pub surfaces: Option<SurfacesConfig>,
+  /// The four selectable timbres behind a `waveform_selector` strip, left to right
+  /// (surfaces runtime). Absent = the plain four waveforms (sine / triangle /
+  /// square / saw, everything else off) -- exactly the pre-timbres behavior. When
+  /// present there must be exactly four entries.
+  #[serde(default)]
+  pub timbres: Vec<TimbreConfig>,
+}
+
+/// One selectable timbre (`[[timbres]]`): a base waveform plus its numeric
+/// parameters. Everything except `waveform` is optional; the defaults are "off"
+/// (no AM, no FM) at full amplitude.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TimbreConfig {
+  /// One of "sin"/"sine", "tri"/"triangle", "square", "saw".
+  pub waveform: WaveformChoice,
+  /// Per-timbre linear gain, multiplied below the volume fader. 0..1 typical
+  /// (values above 1 amplify and can push the mix into the clamp). Default 1.0.
+  #[serde(default = "default_timbre_amplitude")]
+  pub amplitude: f32,
+  /// Tremolo depth in [0,1]: 0 = off (default), 1 = dips to silence.
+  #[serde(default)]
+  pub am_depth: f32,
+  /// Tremolo rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
+  #[serde(default = "default_timbre_freq")]
+  pub am_freq: f32,
+  /// Tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the config's
+  /// `[am]` family), 1 = near-square chop. Default 0.
+  #[serde(default)]
+  pub am_shape: f32,
+  /// Vibrato depth in cents: 0 = off (default); ~5..50 subtle, 100+ = seasick.
+  #[serde(default)]
+  pub fm_depth_cents: f32,
+  /// Vibrato rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
+  #[serde(default = "default_timbre_freq")]
+  pub fm_freq: f32,
+}
+
+fn default_timbre_amplitude() -> f32 {
+  1.0
+}
+
+fn default_timbre_freq() -> f32 {
+  1.0
+}
+
+/// A waveform name in a config file. Accepts Jeff's short spellings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum WaveformChoice {
+  #[serde(alias = "sin")]
+  Sine,
+  #[serde(alias = "tri")]
+  Triangle,
+  Square,
+  Saw,
 }
 
 /// `[am]` table: instrument-wide amplitude-modulation settings. The shape *family*
@@ -1306,9 +1362,42 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_volume_strips(config)?;
   validate_accrete_controls(config)?;
   validate_distortion_toggles(config)?;
+  validate_timbres(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// The `[[timbres]]` table: when present it must have exactly four entries (the
+/// waveform strip has four cells), and every numeric parameter must be in range.
+fn validate_timbres(config: &Config) -> Result<(), String> {
+  if config.timbres.is_empty() {
+    return Ok(());
+  }
+  if config.timbres.len() != 4 {
+    return Err(format!(
+      "[[timbres]] must have exactly 4 entries (the waveform strip's four cells), got {}",
+      config.timbres.len(),
+    ));
+  }
+  for (i, t) in config.timbres.iter().enumerate() {
+    if t.amplitude < 0.0 {
+      return Err(format!("timbre {i}: amplitude must be >= 0, got {}", t.amplitude));
+    }
+    if !(0.0..=1.0).contains(&t.am_depth) {
+      return Err(format!("timbre {i}: am_depth must be in 0..=1, got {}", t.am_depth));
+    }
+    if !(0.0..=1.0).contains(&t.am_shape) {
+      return Err(format!("timbre {i}: am_shape must be in 0..=1, got {}", t.am_shape));
+    }
+    if t.fm_depth_cents < 0.0 {
+      return Err(format!("timbre {i}: fm_depth_cents must be >= 0, got {}", t.fm_depth_cents));
+    }
+    if t.am_freq <= 0.0 || t.fm_freq <= 0.0 {
+      return Err(format!("timbre {i}: am_freq/fm_freq must be > 0"));
+    }
+  }
   Ok(())
 }
 
@@ -3145,6 +3234,56 @@ rect = [0, 1, 0, 1]
     );
     let err = parse_config(&toml).expect_err("a 2-cell toggle should fail");
     assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  // ---- [[timbres]] (the four selectable timbres behind the waveform strip) ----
+
+  const TIMBRES_FOUR: &str = r#"
+[[timbres]]
+waveform = "sin"
+[[timbres]]
+waveform = "tri"
+am_depth = 0.5
+am_freq = 3.0
+am_shape = 1.0
+[[timbres]]
+waveform = "square"
+amplitude = 0.6
+[[timbres]]
+waveform = "saw"
+fm_depth_cents = 30.0
+fm_freq = 6.0
+"#;
+
+  #[test]
+  fn timbres_parse_with_short_names_and_off_defaults() {
+    let toml = format!("{SURFACES_MIN}{TIMBRES_FOUR}");
+    let config = parse_config(&toml).expect("a 4-entry [[timbres]] table validates");
+    assert_eq!(config.timbres.len(), 4);
+    assert_eq!(config.timbres[0].waveform, WaveformChoice::Sine, "'sin' alias");
+    assert_eq!(config.timbres[1].waveform, WaveformChoice::Triangle, "'tri' alias");
+    // Defaults: full amplitude, modulation off.
+    assert_eq!(config.timbres[0].amplitude, 1.0);
+    assert_eq!(config.timbres[0].am_depth, 0.0);
+    assert_eq!(config.timbres[0].fm_depth_cents, 0.0);
+    // Explicit values land.
+    assert_eq!(config.timbres[1].am_depth, 0.5);
+    assert_eq!(config.timbres[2].amplitude, 0.6);
+    assert_eq!(config.timbres[3].fm_freq, 6.0);
+  }
+
+  #[test]
+  fn timbres_must_have_exactly_four_entries() {
+    let three = TIMBRES_FOUR.rsplit_once("[[timbres]]").unwrap().0;
+    let err = parse_config(&format!("{SURFACES_MIN}{three}")).expect_err("3 entries fail");
+    assert!(err.contains("exactly 4"), "{err}");
+  }
+
+  #[test]
+  fn timbres_reject_out_of_range_parameters() {
+    let toml = format!("{SURFACES_MIN}{}", TIMBRES_FOUR.replace("am_depth = 0.5", "am_depth = 1.5"));
+    let err = parse_config(&toml).expect_err("am_depth > 1 fails");
+    assert!(err.contains("am_depth"), "{err}");
   }
 
   #[test]

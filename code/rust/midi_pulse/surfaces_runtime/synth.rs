@@ -26,20 +26,25 @@ use crate::voices::pluck_envelope;
 /// collide in the shared map.
 pub const SUSTAIN_BASE: usize = 0x100;
 
-/// Set the per-voice gain of every voice belonging to `grid`, in place. Drives the
-/// *live* volume control: a volume strip sets the loudness of whatever grid it
-/// `controls` (its own, in the current rigs), and moving it must change notes that are
-/// already sounding (a fader, not a radio) -- so we walk the shared map and rescale
-/// that grid's voices. Future note-ons pick up the new gain from the shared per-grid
-/// state; this only touches the ones already in flight. Sustained (accreted) voices
-/// keep following the fader of the grid they came from -- a drone you can only kill
-/// with `clear` should at least obey a volume pedal.
-pub fn set_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+/// Multiply the per-voice gain of every voice belonging to `grid` by `ratio`, in
+/// place. Drives the *live* volume control: a volume strip sets the loudness of
+/// whatever grid it `controls` (its own, in the current rigs), and moving it must
+/// change notes that are already sounding (a fader, not a radio) -- so we walk the
+/// shared map and rescale that grid's voices by new_fader / old_fader. Ratio (not
+/// assignment) because a voice's gain also carries its timbre slot's `amplitude`,
+/// which must survive fader moves. Future note-ons pick up the new fader from the
+/// shared per-grid state; this only touches the ones already in flight. Sustained
+/// (accreted) voices keep following the fader of the grid they came from -- a drone
+/// you can only kill with `clear` should at least obey a volume pedal.
+pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32) {
+  if !ratio.is_finite() {
+    return; // an old fader gain of 0 never happens (the log fader bottoms at -30 dB)
+  }
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
     if let VoiceSource::Accreted { chord, .. } = src {
       if *chord == grid || *chord == SUSTAIN_BASE + grid {
-        state.timbre.gain = gain;
+        state.timbre.gain *= ratio;
       }
     }
   }
@@ -296,13 +301,16 @@ mod tests {
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
-    a.note_on((3, 4), 20, Timbre::default());
+    // Grid 0's drone carries a timbre-slot amplitude of 0.8 in its gain; the fader
+    // rescale is a ratio, so that factor must survive.
+    a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() });
     a.sustain_note((3, 4), 20);
     b.note_on((3, 4), 20, Timbre::default());
     b.sustain_note((3, 4), 20);
-    set_grid_gain(&voices, 0, 0.25);
+    rescale_grid_gain(&voices, 0, 0.25);
     let v = voices.lock().unwrap();
-    assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain), Some(0.25), "grid 0's drone rescaled");
+    let g0 = v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain).unwrap();
+    assert!((g0 - 0.2).abs() < 1e-6, "grid 0's drone rescaled by the ratio: {g0}");
     assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.timbre.gain), Some(1.0), "grid 1's drone untouched");
   }
 }

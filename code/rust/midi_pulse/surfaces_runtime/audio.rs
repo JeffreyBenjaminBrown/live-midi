@@ -27,12 +27,14 @@ pub fn start_null(requested_sample_rate: u32) -> Audio {
   Audio { _stream: None, sample_rate: requested_sample_rate as f32 }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start(
   voices: Arc<Mutex<VoiceMap>>,
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
   amplitude: f32,
   oversample: usize,
+  am_shape_family: AmShapeFamily,
   distortion: Distortion,
   distortion_on: Arc<AtomicBool>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
@@ -82,9 +84,9 @@ pub fn start(
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
       // The distortion toggle is live: read per callback, applied to the summed mix.
       let distortion = distortion_on.load(Ordering::Relaxed).then_some(distortion);
-      // No AM/FM in surfaces (default timbres bar the waveform), so the family is inert.
+      // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.
       renderer.render_with_distortion(
-        &mut voices, data, channels, sample_rate, amplitude, AmShapeFamily::default(), distortion,
+        &mut voices, data, channels, sample_rate, amplitude, am_shape_family, distortion,
       );
     },
     |error| eprintln!("surfaces audio stream error: {error:?}"),

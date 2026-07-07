@@ -17,17 +17,15 @@ use std::collections::HashSet;
 
 use midi_pulse::edo_play::{shift_for_cell, step_for_cell, Shift};
 
-use crate::types::{MonomeKey, Waveform};
+use crate::types::MonomeKey;
 
 /// OSC LED levels (0..15). The three visible states the painter emits.
 pub const OFF: i32 = 0;
 pub const DIM: i32 = 4;
 pub const BRIGHT: i32 = 15;
 
-/// The four waveform cells of a selector strip, left to right: sine, triangle,
-/// square, saw (`rect = [x0, y0, x0+3, y0]`).
-const SELECTOR_WAVEFORMS: [Waveform; 4] =
-  [Waveform::Sine, Waveform::Triangle, Waveform::Square, Waveform::Saw];
+/// The number of cells in (and timbre slots behind) a selector strip.
+pub const SELECTOR_CELLS: usize = 4;
 
 /// An optional overlay rect: `[-1, -1, -1, -1]` means "not present" (the sentinel the
 /// runtime uses for an absent overlay), which `in_rect` never matches.
@@ -39,12 +37,15 @@ fn in_rect(rect: [i32; 4], x: i32, y: i32) -> bool {
   x >= x0 && x <= x1 && y >= y0 && y <= y1
 }
 
-/// Which waveform a press on a selector cell selects, if any.
-pub fn waveform_for_selector_cell(rect: [i32; 4], cell: MonomeKey) -> Option<Waveform> {
+/// Which timbre slot (0..4, left to right) a press on a selector cell selects, if
+/// any. The slots are the config's `[[timbres]]` (or the plain sine / triangle /
+/// square / saw when absent).
+pub fn slot_for_selector_cell(rect: [i32; 4], cell: MonomeKey) -> Option<usize> {
   if !in_rect(rect, cell.0, cell.1) {
     return None;
   }
-  SELECTOR_WAVEFORMS.get((cell.0 - rect[0]) as usize).copied()
+  let slot = (cell.0 - rect[0]) as usize;
+  (slot < SELECTOR_CELLS).then_some(slot)
 }
 
 /// The number of cells in a volume strip (its inclusive width). 0 if absent.
@@ -74,7 +75,7 @@ fn button_level_at(buttons: &[ButtonOverlay], x: i32, y: i32) -> Option<i32> {
 /// Compute the full LED level vector (row-major, `grid_w * grid_h`) for one grid.
 ///
 /// Overlays occlude the play grid (they are drawn on top) and are checked first:
-/// - *selector* cells: `BRIGHT` for the selected waveform, else `DIM`;
+/// - *selector* cells: `BRIGHT` for the selected timbre slot, else `DIM`;
 /// - *volume* cells: `BRIGHT` at the active column (`volume_col`), else `OFF`;
 /// - *scroll-pad* cells: `DIM` for the four arrows, `OFF` for the two octave corners
 ///   (the pad fully occludes the edo grid beneath it -- no note ever shows there);
@@ -93,7 +94,7 @@ pub fn levels_for_grid(
   trail_classes: &HashSet<i32>,
   edo_rect: [i32; 4],
   selector_rect: OverlayRect,
-  selector_waveform: Waveform,
+  selected_slot: usize,
   volume_rect: OverlayRect,
   volume_col: i32,
   scroll_rect: OverlayRect,
@@ -109,8 +110,8 @@ pub fn levels_for_grid(
   for y in 0..grid_h {
     for x in 0..grid_w {
       let level = if in_rect(selector_rect, x, y) {
-        match waveform_for_selector_cell(selector_rect, (x, y)) {
-          Some(w) if w == selector_waveform => BRIGHT,
+        match slot_for_selector_cell(selector_rect, (x, y)) {
+          Some(slot) if slot == selected_slot => BRIGHT,
           _ => DIM,
         }
       } else if in_rect(volume_rect, x, y) {
@@ -182,7 +183,7 @@ mod tests {
     volume_col: i32,
   ) -> Vec<i32> {
     levels_for_grid(
-      sounding, trail, FULL, SELECTOR, Waveform::Triangle, VOLUME, volume_col, SCROLL,
+      sounding, trail, FULL, SELECTOR, 1, VOLUME, volume_col, SCROLL,
       &[], register, XS, YS, EDO, 16, 16,
     )
   }
@@ -197,19 +198,19 @@ mod tests {
 
   #[test]
   fn selector_cells_map_left_to_right() {
-    assert_eq!(waveform_for_selector_cell(SELECTOR, (0, 0)), Some(Waveform::Sine));
-    assert_eq!(waveform_for_selector_cell(SELECTOR, (3, 0)), Some(Waveform::Saw));
-    assert_eq!(waveform_for_selector_cell(SELECTOR, (4, 0)), None, "past the strip");
+    assert_eq!(slot_for_selector_cell(SELECTOR, (0, 0)), Some(0));
+    assert_eq!(slot_for_selector_cell(SELECTOR, (3, 0)), Some(3));
+    assert_eq!(slot_for_selector_cell(SELECTOR, (4, 0)), None, "past the strip");
   }
 
   #[test]
   fn selector_lights_selected_bright_others_dim() {
     let levels = levels_for_grid(
-      &empty(), &empty(), FULL, SELECTOR, Waveform::Square, NONE, -1, NONE,
+      &empty(), &empty(), FULL, SELECTOR, 2, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&levels, 2, 0), BRIGHT, "square selected");
-    assert_eq!(at(&levels, 0, 0), DIM, "sine unselected dim");
+    assert_eq!(at(&levels, 2, 0), BRIGHT, "slot 2 (square) selected");
+    assert_eq!(at(&levels, 0, 0), DIM, "slot 0 unselected dim");
   }
 
   #[test]
@@ -225,7 +226,7 @@ mod tests {
     // Make the class under the clear button "sound" -- the button must occlude it.
     let cls: HashSet<i32> = [class_at(0, 0, 15)].into_iter().collect();
     let levels = levels_for_grid(
-      &cls, &empty(), FULL, SELECTOR, Waveform::Triangle, VOLUME, 10, SCROLL, &buttons,
+      &cls, &empty(), FULL, SELECTOR, 1, VOLUME, 10, SCROLL, &buttons,
       0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 0, 15), DIM, "clear rests dim even though its class sounds");

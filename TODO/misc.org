@@ -110,7 +110,7 @@ notes get the same curve (they go through the same sink); chord-accretion
 voices stay flat drones. If the looper rigs shouldn't have changed, set
 =sustain_level = 1.0= in their tomls (also flagged in
 jeff-maybe-review-this.org).
-* configure the four waveforms
+* DONE configure the four waveforms
 Currently there are four timbres available:
 sin, tri, square, saw.
 And there are a bunch of parameters available for them:
@@ -122,6 +122,17 @@ It should also have choices for each of the numeric parameters,
 including amplitude.
 They can all (except amplitude) be configured to 'off' initially.
 They should all be commented to indicate reasonable value range.
+** [Claude] done -- a top-level =[[timbres]]= array of exactly four entries
+The waveform strip's four cells now select configurable *timbres*, not bare
+waveforms. Each entry: =waveform= (accepts your spellings: sin, tri, square,
+saw), =amplitude= (default 1.0), and per-timbre =am_depth= / =am_freq= /
+=am_shape= / =fm_depth_cents= / =fm_freq=, all defaulting to off. The
+surfaces toml ships with the four plain waveforms and a comment block giving
+each parameter's reasonable range, so nothing sounds different until you
+edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a
+timbre's amplitude survives fader changes. The tremolo LFO's wave family is
+the existing instrument-wide =[am]= table. Docs: configs/README.org
+"Timbres".
 * slide
 Let's introduce a janky slide algorithm.
 Toggle it (key up does nothing) with the button
@@ -173,3 +184,40 @@ The 'ditto' pad retriggers the last sample.
 (It will serve as a generalized double-bass pedal.)
 * drop the amplitude row
 Instead I'll use the config to tune each waveform's amplitude.
+* polyrhythm interface
+** tap tempo button
+It blinks (10% duty cycle) to indicate the current tempo.
+Tap it twice in an interval of less than
+'tap-tempo-window' seconds to change that tempo.
+(It's a rolling window -- the user shouldn't have to worry
+about straddling the boundary between two windows.)
+
+If you tap it three times in one tap tempo window,
+the third tap will do nothing without a fourth,
+and if the fourth lands, the time dictated by taps 3 and 4
+overrides the time (which was briefly in effect)
+dictated by taps 1 and 2.
+** x2, /2, x3, /3, unity
+The 'tempo-tapped' is one tempo.
+The 'tempo-applied' is equal to the tapped tempo
+multipled by a 'tempo-applied-factor', which is initially unity.
+These buttons change the tempo factor.
+Pressing x2 multiples it by 2, pressing /2 divides it, etc.
+
+The 'unity' button is special: it resets the factor to unity.
+** button layout
+Top right corner.
+| x3 | x2 | tap |
+| /3 | /2 | =1  |
+** what they do
+They apply sawtooth amplitude modulation.
+A note's amplitude starts at 1, the peak of the sawtooth.
+(No effort is made to keep notes in sync --
+if two start very close together they can phase, that's fine.)
+The frequency of a note's AM is dictated by the tempo-applied
+at its onset. If the tempo applied thereafter changes,
+that note's AM frequency does not change.
+
+This AM should be separate from any AM
+that is part of the note's "timbre"
+(which after these changes will be settable via the config toml).
