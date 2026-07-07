@@ -294,7 +294,7 @@ mode velocity path, the same =cpal_sampler= sink. The surfaces runtime *consumes
 the drumkit's bring-up (=drumkit_runtime::start=) rather than forking it, so any
 future drum change (kit, decode, velocity feel) is inherited for free. Pedal map
 (see =kmss-drumkit.org= "the mapping" for the *ditto* pad's semantics and the
-8-vs-9-cowbell / wood-block-drop rationale):
+wood-block-at-8 / cowbell-at-9 rationale):
 
 | foot  | pedal | voice                    |
 |-------+-------+--------------------------|
@@ -302,10 +302,10 @@ future drum change (kit, decode, velocity feel) is inherited for free. Pedal map
 | left  |     2 | kick                     |
 | left  |     6 | high tom                 |
 | left  |     7 | low tom                  |
-| left  |     8 | cowbell                  |
+| left  |     8 | wood block               |
 | right |     4 | closed hat               |
 | right |     5 | open hat                 |
-| right |     9 | ride                     |
+| right |     9 | cowbell                  |
 | right |     0 | crash (electronic)       |
 | --    |     3 | ditto (repeats last hit) |
 

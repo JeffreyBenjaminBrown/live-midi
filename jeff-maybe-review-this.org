@@ -227,6 +227,37 @@ reverse it cheaply if you disagree.
   pedal 3 while tapping grid A's on-grid accrete still nets one held count on
   that one bank (they overlap safely), exactly as before but scoped.
 
+* ditto velocity + wood block -- choices where the spec was silent
+
+- *This supersedes part of "drum pads / ditto" above.* That section's bullet
+  about ditto "ignor[ing] its own press's velocity entirely" and mid-window
+  REVISE events is now stale -- you asked for the opposite, so I built it.
+- *Gain components, split by source.* A ditto fire now plays the ORIGINAL
+  sample from a two-part gain: the SOURCE pad's static per-pad =gain= trim
+  (its loudness relative to the rest of the kit -- a property of the sample
+  choice/mix, e.g. the crash's 0.5 trim) times a velocity factor computed from
+  the DITTO PRESS's own velocity (via the same =gain_from_velocity= curve every
+  other pad uses). None of the original hit's velocity survives into the ditto
+  echo -- only which sample it was and that sample's trim.
+- *`LastHit.gain` changed meaning*: it used to store the source hit's fully
+  resolved (velocity-scaled) gain; it now stores the source pad's raw static
+  trim instead, since the resolved number is no longer reusable once ditto has
+  its own velocity factor to multiply in.
+- *Mid-window REVISE now applies to ditto too.* The old code deliberately
+  ignored a Revise on the ditto pedal ("its gain is fixed to the copied hit").
+  Since ditto's gain is now driven by its OWN press, a harder second peak
+  during the SAME ditto press's attack window ramps it up exactly like a
+  normal pad would -- this wasn't explicitly requested, but leaving Revise
+  disabled would have made ditto's Fire velocity-sensitive while its Revise
+  stayed frozen, which felt like an inconsistent half-implementation. Say the
+  word if you'd rather Revise stayed a no-op for ditto specifically.
+- *Wood block / cowbell swap.* Restored pedal 8 = =wood_block.wav=, pedal 9 =
+  =cowbell.wav= (each back in its original slot). =ride.wav= drops out of the
+  kit entirely now that it's no longer needed to avoid double-cowbell -- the
+  file stays in =drum-samples/=, just unreferenced by either config. This also
+  makes the "*Pedal 9 = ride, not cowbell twice*" bullet in "drum pads / ditto"
+  above stale (that rationale no longer applies).
+
 * mono+slide legato -- choices where the spec was silent
 
 - "Should not re-trigger the attack" implemented as a true voice steal: the cut

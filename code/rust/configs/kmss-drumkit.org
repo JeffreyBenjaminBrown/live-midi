@@ -47,10 +47,10 @@ MIDI_PULSE_NO_AUDIO=1 cargo run --bin midi_pulse -- kmss-drumkit
 | left  |     2 | kick                     |
 | left  |     6 | high tom                 |
 | left  |     7 | low tom                  |
-| left  |     8 | cowbell                  |
+| left  |     8 | wood block               |
 | right |     4 | closed hat               |
 | right |     5 | open hat                 |
-| right |     9 | ride cymbal              |
+| right |     9 | cowbell                  |
 | right |     0 | crash (electronic)       |
 | --    |     3 | ditto (repeats last hit) |
 
@@ -59,20 +59,24 @@ foot owns the right (=9 0= top, =4 5= bottom); =3= (bottom-middle) is the gap
 between the feet -- fittingly where *ditto* sits, since either foot can reach it.
 
 *Ditto* (pedal 3) is not a sample: it retriggers whatever sample most recently
-played on ANY pedal in this window, at THAT hit's already velocity-scaled gain --
-"a generalized double-bass pedal". It does nothing until something else has played,
-and a ditto press never itself becomes "the last hit" (so pad, ditto, ditto repeats
-the same sound rather than the ditto echoing itself. See "config shape" below for
-the =ditto = true= pad schema, and =drumkit_runtime/mod.rs= (=PadKind::Ditto=) for
-the implementation.
+played on ANY pedal in this window, using THIS press's OWN velocity against that
+sample's own pad's static gain trim ("a generalized double-bass pedal") -- not the
+velocity the original hit was struck at. It does nothing until something else has
+played, and a ditto press never itself becomes "the last hit" (so pad, ditto, ditto
+repeats the same sample rather than the ditto echoing itself). See "config shape"
+below for the =ditto = true= pad schema, and =drumkit_runtime/mod.rs=
+(=PadKind::Ditto=) for the implementation.
 
-*Pedal 9 is =ride.wav=, not cowbell twice.* An earlier arrangement had cowbell at 9;
-this one moves cowbell to 8 and gives 9 the ride cymbal instead (freed up when the
-open hat took pedal 5). *=wood_block.wav=* (the old pedal-0 occupant) and the plain
-=crash.wav= (the old pedal-8 occupant, a TR-808 cymbal near-identical to =ride.wav=)
-both drop out of the kit -- pedal 0 now plays =crash_electronic.wav= (a synthesized,
-clearly-distinct crash), consistent with the other KMSS-drums config. The WAV files
-themselves stay in =drum-samples/=, just unreferenced.
+*Pedal 8 is =wood_block.wav=, pedal 9 is =cowbell.wav=.* An earlier arrangement
+(mis-transcribed from the original wish list, which said "cowbell" where "wood
+block" was meant) put cowbell at 8 and gave 9 =ride.wav= instead, since cowbell
+would otherwise have landed at both 8 and 9. That was wrong: 8 is wood block (its
+original spot) and 9 is cowbell (its original spot); =ride.wav= drops back out of
+the kit. The plain =crash.wav= (the old pedal-8 occupant, a TR-808 cymbal
+near-identical to =ride.wav=) also stays out -- pedal 0 still plays
+=crash_electronic.wav= (a synthesized, clearly-distinct crash), consistent with the
+other KMSS-drums config. The unused WAV files stay in =drum-samples/=, just
+unreferenced.
 
 * config shape
 
@@ -124,8 +128,8 @@ top-level =drum-samples/= folder (a =sample= may name a subpath, e.g.
 =808/kick.wav=, for multi-kit layouts) -- with an optional =gain= (default 1.0;
 the KMSS sends no velocity today, so level is fixed per pad) -- *or* =ditto =
 true=, with no =sample= and no meaningful =gain=: it retriggers the most
-recently played sample in the SAME window, at that hit's own resolved gain (see
-"the mapping" above).
+recently played sample in the SAME window, using its OWN press's velocity against
+that sample's own pad's =gain= trim (see "the mapping" above).
 
 * behavior notes
 

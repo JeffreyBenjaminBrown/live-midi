@@ -38,8 +38,9 @@ use samples::DrumSample;
 pub type PedalHook = Arc<dyn Fn(u8, bool) -> bool + Send + Sync>;
 
 /// The most recently played (non-ditto) hit in a drumkit window: its sample and the
-/// gain it actually played at (already velocity-scaled), so a `Ditto` pad can
-/// reproduce the exact same hit.
+/// source pad's static per-pad `gain` trim (NOT velocity-scaled), so a `Ditto` pad
+/// can reproduce the same sample at the same trim while still resolving loudness
+/// from its OWN press's velocity.
 struct LastHit {
   sample: Arc<DrumSample>,
   gain: f32,
@@ -51,10 +52,10 @@ enum PadKind {
   /// velocity). `voice_label` is for the startup summary / trace only.
   Sample { sample: Arc<DrumSample>, gain: f32, voice_label: String },
   /// "A generalized double-bass pedal": retrigger the most recently played sample in
-  /// this window, at THAT hit's already-resolved gain (not this press's own
-  /// velocity). A no-op if nothing has played yet. A ditto press never updates
-  /// `last` itself, so pad, ditto, ditto repeats the same hit rather than the ditto
-  /// echoing itself.
+  /// this window, using that sample's own pad's static `gain` trim but THIS press's
+  /// OWN velocity (not the original hit's velocity). A no-op if nothing has played
+  /// yet. A ditto press never updates `last` itself, so pad, ditto, ditto repeats
+  /// the same sample rather than the ditto echoing itself.
   Ditto,
 }
 
@@ -286,14 +287,16 @@ pub fn start_with_hook(
   })
 }
 
-/// What a `Fire` on this pad should do: the sample + RESOLVED gain to play (already
-/// velocity-scaled for a `Sample` pad, or copied verbatim from `last` for a `Ditto`
-/// pad), or `None` for a silent no-op (only possible for `Ditto`, before anything in
-/// its window has played). A `Sample` fire records itself into `last` (for a sibling
-/// ditto pad to find later); a `Ditto` fire deliberately does NOT touch `last`, so
-/// pad, ditto, ditto repeats the ORIGINAL hit rather than the ditto echoing itself.
-/// Pure apart from the `last` mutex, so this is the unit-testable core of the ditto
-/// trigger logic (`run_voice_timer` just wires its result to a real `Trigger`).
+/// What a `Fire` on this pad should do: the sample + RESOLVED gain to play (always
+/// velocity-scaled by THIS press's own `velocity` -- for a `Ditto` pad, its source
+/// pad's static `gain` trim scaled by the ditto press's own velocity, not the
+/// original hit's), or `None` for a silent no-op (only possible for `Ditto`, before
+/// anything in its window has played). A `Sample` fire records its sample and its
+/// own static `gain` trim into `last` (for a sibling ditto pad to find later); a
+/// `Ditto` fire deliberately does NOT touch `last`, so pad, ditto, ditto repeats the
+/// ORIGINAL sample rather than the ditto echoing itself. Pure apart from the `last`
+/// mutex, so this is the unit-testable core of the ditto trigger logic
+/// (`run_voice_timer` just wires its result to a real `Trigger`).
 fn resolve_fire(
   kind: &PadKind,
   last: &Mutex<Option<LastHit>>,
@@ -304,24 +307,36 @@ fn resolve_fire(
     PadKind::Sample { sample, gain, .. } => {
       let resolved = gain * gain_from_velocity(velocity, db_range);
       *last.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(LastHit { sample: Arc::clone(sample), gain: resolved });
+        Some(LastHit { sample: Arc::clone(sample), gain: *gain });
       Some((Arc::clone(sample), resolved))
     }
-    PadKind::Ditto => last
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .as_ref()
-      .map(|hit| (Arc::clone(&hit.sample), hit.gain)),
+    PadKind::Ditto => {
+      let guard = last.lock().unwrap_or_else(|e| e.into_inner());
+      let hit = guard.as_ref()?;
+      Some((Arc::clone(&hit.sample), hit.gain * gain_from_velocity(velocity, db_range)))
+    }
   }
 }
 
 /// What a `Revise` on this pad should ramp its currently-playing voice to, or `None`
-/// to leave it alone. A ditto pad's gain is fixed to the hit it copied, not to its own
-/// press, so it ignores mid-window revises entirely.
-fn resolve_revise(kind: &PadKind, velocity: u8, db_range: f32) -> Option<f32> {
+/// to leave it alone. A ditto pad's gain now comes from its OWN press (like a
+/// `Sample` pad's), so a mid-window revise of the ditto press itself ramps it too --
+/// scaling the copied sample's static trim (read back out of `last`) by the revised
+/// velocity. `None` only if `last` is empty (shouldn't happen mid-window; a Revise
+/// implies an earlier Fire already populated it).
+fn resolve_revise(
+  kind: &PadKind,
+  last: &Mutex<Option<LastHit>>,
+  velocity: u8,
+  db_range: f32,
+) -> Option<f32> {
   match kind {
     PadKind::Sample { gain, .. } => Some(gain * gain_from_velocity(velocity, db_range)),
-    PadKind::Ditto => None,
+    PadKind::Ditto => {
+      let guard = last.lock().unwrap_or_else(|e| e.into_inner());
+      let hit = guard.as_ref()?;
+      Some(hit.gain * gain_from_velocity(velocity, db_range))
+    }
   }
 }
 
@@ -385,7 +400,7 @@ fn run_voice_timer(
         DrumEvent::Revise { label, velocity } => {
           let slot = (label % 10) as usize;
           if let (Some(binding), Some(id)) = (&pad_map[slot], current[slot]) {
-            if let Some(gain) = resolve_revise(&binding.kind, velocity, db_range) {
+            if let Some(gain) = resolve_revise(&binding.kind, &binding.last, velocity, db_range) {
               if trace {
                 eprintln!("[kmss]   pad {label} REVISE vel {velocity} -> gain {gain:.3}");
               }
@@ -459,16 +474,21 @@ mod tests {
   }
 
   #[test]
-  fn a_sample_fire_resolves_velocity_scaled_gain_and_records_last() {
+  fn a_sample_fire_resolves_velocity_scaled_gain_and_records_its_static_trim() {
     let last: Mutex<Option<LastHit>> = Mutex::new(None);
     let snare = sample(1.0);
-    let kind = PadKind::Sample { sample: Arc::clone(&snare), gain: 1.0, voice_label: "snare.wav".into() };
-    let (fired, gain) = resolve_fire(&kind, &last, 127, DB_RANGE).expect("a Sample pad always fires");
+    let kind = PadKind::Sample { sample: Arc::clone(&snare), gain: 0.8, voice_label: "snare.wav".into() };
+    let (fired, gain) = resolve_fire(&kind, &last, 64, DB_RANGE).expect("a Sample pad always fires");
     assert!(Arc::ptr_eq(&fired, &snare), "fires its own sample");
-    assert!((gain - 1.0).abs() < 1e-6, "vel 127 = unity gain: {gain}");
+    assert!(gain < 0.8, "a sub-max-velocity hit resolves below the pad's base gain: {gain}");
     let recorded = last.lock().unwrap();
-    assert!(recorded.is_some(), "a Sample fire records itself into `last`");
-    assert!((recorded.as_ref().unwrap().gain - gain).abs() < 1e-6, "records the resolved gain");
+    let hit = recorded.as_ref().expect("a Sample fire records itself into `last`");
+    assert!(Arc::ptr_eq(&hit.sample, &snare));
+    assert!(
+      (hit.gain - 0.8).abs() < 1e-6,
+      "records the pad's static gain TRIM (0.8), not the velocity-resolved gain ({gain}): got {}",
+      hit.gain
+    );
   }
 
   #[test]
@@ -478,18 +498,35 @@ mod tests {
   }
 
   #[test]
-  fn ditto_retriggers_the_last_sample_at_its_resolved_gain_ignoring_its_own_velocity() {
+  fn ditto_uses_the_source_pads_trim_but_its_own_presss_velocity() {
     let last: Mutex<Option<LastHit>> = Mutex::new(None);
     let kick = sample(2.0);
     let kick_kind = PadKind::Sample { sample: Arc::clone(&kick), gain: 0.8, voice_label: "kick.wav".into() };
-    // A soft-ish kick hit: gain < 0.8 (its base gain).
-    let (_, kick_gain) = resolve_fire(&kick_kind, &last, 60, DB_RANGE).unwrap();
-    assert!(kick_gain < 0.8, "a soft hit resolves below the base gain");
-    // Ditto fires even at max velocity -- the copied gain must NOT reflect that.
+    resolve_fire(&kick_kind, &last, 60, DB_RANGE).unwrap();
+    // A max-velocity ditto press: same sample, gain = the KICK's 0.8 trim scaled by
+    // the DITTO's own (max) velocity -- i.e. unity velocity factor -> 0.8 exactly.
     let (echoed, echoed_gain) = resolve_fire(&PadKind::Ditto, &last, 127, DB_RANGE)
       .expect("a hit has played -- ditto retriggers it");
     assert!(Arc::ptr_eq(&echoed, &kick), "ditto retriggers the kick's own sample");
-    assert!((echoed_gain - kick_gain).abs() < 1e-6, "ditto copies the ORIGINAL resolved gain, not its own velocity");
+    assert!((echoed_gain - 0.8).abs() < 1e-6, "vel 127 against the kick's 0.8 trim = 0.8: {echoed_gain}");
+  }
+
+  #[test]
+  fn a_hard_ditto_press_plays_louder_than_the_soft_hit_it_echoes() {
+    // "soft hit on pad X, hard ditto press": same sample, but the gain must come
+    // from the DITTO press's own (hard) velocity, not the original soft hit's.
+    let last: Mutex<Option<LastHit>> = Mutex::new(None);
+    let hat = sample(5.0);
+    let hat_kind = PadKind::Sample { sample: Arc::clone(&hat), gain: 1.0, voice_label: "hat.wav".into() };
+    let (_, soft_gain) = resolve_fire(&hat_kind, &last, 20, DB_RANGE).unwrap();
+    let (echoed, hard_ditto_gain) =
+      resolve_fire(&PadKind::Ditto, &last, 127, DB_RANGE).expect("a hit has played -- ditto retriggers it");
+    assert!(Arc::ptr_eq(&echoed, &hat), "still the same (hat) sample");
+    assert!(
+      hard_ditto_gain > soft_gain,
+      "a hard ditto press ({hard_ditto_gain}) must play louder than the soft original hit ({soft_gain})"
+    );
+    assert!((hard_ditto_gain - 1.0).abs() < 1e-6, "vel 127 against the hat's 1.0 trim = unity: {hard_ditto_gain}");
   }
 
   #[test]
@@ -499,21 +536,35 @@ mod tests {
     let last: Mutex<Option<LastHit>> = Mutex::new(None);
     let snare = sample(3.0);
     let kind = PadKind::Sample { sample: Arc::clone(&snare), gain: 1.0, voice_label: "snare.wav".into() };
-    let (_, gain) = resolve_fire(&kind, &last, 100, DB_RANGE).unwrap();
+    resolve_fire(&kind, &last, 100, DB_RANGE).unwrap();
     resolve_fire(&PadKind::Ditto, &last, 20, DB_RANGE).expect("first ditto");
     resolve_fire(&PadKind::Ditto, &last, 5, DB_RANGE).expect("second ditto");
     let recorded = last.lock().unwrap();
     let hit = recorded.as_ref().expect("still holds the original hit");
     assert!(Arc::ptr_eq(&hit.sample, &snare), "still the snare, not a ditto sample");
-    assert!((hit.gain - gain).abs() < 1e-6, "still the snare's original resolved gain");
+    assert!((hit.gain - 1.0).abs() < 1e-6, "still the snare pad's own static trim");
   }
 
   #[test]
-  fn revise_scales_a_sample_pad_but_never_a_ditto_pad() {
-    let s = sample(4.0);
-    let sample_kind = PadKind::Sample { sample: s, gain: 1.0, voice_label: "hat.wav".into() };
-    let scaled = resolve_revise(&sample_kind, 64, DB_RANGE).expect("a Sample pad revises");
+  fn revise_scales_a_sample_pad_and_a_ditto_pad_once_something_has_played() {
+    let last: Mutex<Option<LastHit>> = Mutex::new(None);
+    let hat = sample(4.0);
+    let hat_kind = PadKind::Sample { sample: Arc::clone(&hat), gain: 1.0, voice_label: "hat.wav".into() };
+    let scaled = resolve_revise(&hat_kind, &last, 64, DB_RANGE).expect("a Sample pad revises");
     assert!(scaled > 0.0 && scaled < 1.0, "a sub-max velocity revises below unity: {scaled}");
-    assert_eq!(resolve_revise(&PadKind::Ditto, 127, DB_RANGE), None, "ditto's gain is fixed, never revised");
+
+    // Before anything has played, a ditto revise has no sample to revise against.
+    assert_eq!(
+      resolve_revise(&PadKind::Ditto, &last, 127, DB_RANGE),
+      None,
+      "nothing has played yet -- no last hit to revise against"
+    );
+
+    // Once a hit has played, a ditto press's OWN revise now ramps too (its gain is
+    // its own velocity's, not the original hit's, so it must correct the same way).
+    resolve_fire(&hat_kind, &last, 60, DB_RANGE).unwrap();
+    let ditto_scaled = resolve_revise(&PadKind::Ditto, &last, 127, DB_RANGE)
+      .expect("a hit has played -- ditto revises against its trim");
+    assert!((ditto_scaled - 1.0).abs() < 1e-6, "vel 127 against the hat's 1.0 trim = unity: {ditto_scaled}");
   }
 }

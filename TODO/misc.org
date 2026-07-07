@@ -288,10 +288,28 @@ no-op if nothing has played yet. See =drumkit_runtime/mod.rs= (=PadKind=,
 
 Details / choices you didn't specify: see =jeff-maybe-review-this.org=,
 "drum pads / ditto -- choices where the spec was silent".
-** TODO ditto should use its own velocity
+** DONE ditto should use its own velocity
 That is, use the sample from a previous hit,
 but don't reuse the previous velocity.
-** TODO Where I wrote cowbell I meant wood block.
+*** [Claude] done -- ditto now resolves gain from its OWN press, not the copied hit
+=LastHit= now stores the source pad's static =gain= trim (not its already
+velocity-scaled gain); =resolve_fire= scales that trim by the ditto press's
+own velocity via the same =gain_from_velocity= path a normal pad uses. Also
+made mid-window =Revise= events on the ditto pad ramp the same way (previously
+ignored, since the old "fixed to the copied hit" rationale no longer holds).
+Updated/added unit tests in =drumkit_runtime/mod.rs=, incl. one hitting pad X
+softly then ditto hard and asserting the ditto plays louder from its own
+velocity. See =jeff-maybe-review-this.org= for the gain-component breakdown.
+** DONE Where I wrote cowbell I meant wood block.
+*** [Claude] done -- pedal 8 is wood_block.wav again, pedal 9 is cowbell.wav
+Swapped both drumkit configs (=2-monomes_58-8-1_kmss-drums.toml= and
+=kmss-drumkit.toml=, which share one pad list): pedal 8 -> =wood_block.wav=,
+pedal 9 -> =cowbell.wav= (its original occupant, restored). =ride.wav= drops
+back out of the kit -- it was only there to avoid cowbell landing at both 8
+and 9, which no longer applies. Updated the pad-list comments and the mapping
+tables in =kmss-drumkit.org= and =2-monomes_58-8-1_kmss-drums.org= to match;
+no mock config needed changes (the KMSS drumkit is deliberately omitted from
+the mock rig).
 * DONE drop the amplitude row
 Instead I'll use the config to tune each waveform's amplitude.
 ** [Claude] done -- volume strips removed from the surfaces rig
