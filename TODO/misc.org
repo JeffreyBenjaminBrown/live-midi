@@ -1,4 +1,4 @@
-* Don't cross the waveform, amplitude controls.
+* DONE Don't cross the waveform, amplitude controls.
 In a few of the configs at code/rust/configs/,
 the waveform and amplitude for one monome
 are controlled by the other monome.
@@ -7,11 +7,34 @@ leave it that way.
 But for the rig(s) that have two edo-grid monomes,
 let's have each grid host its own timbre and amplitude controls,
 rather than the other's.
-* better FM
+* DONE better FM
 According to (someone?), "The most advanced linear synths use "Through-Zero FM." If the modulation forces the frequency below 0 Hz, the oscillator doesn't stop; it flips its phase (180°) and runs backward, exactly like a Ring Modulator (DSB-SC) does at the zero line."
 
 I don't know whether we already do this. If not, let's,
 wherever we do FM.
+** [Claude] answer: our FM can't reach 0 Hz -- but the oscillator core now handles it anyway
+The only FM in this codebase is the per-voice vibrato in
+=code/rust/midi_pulse/sawwave/voices.rs= (=fm_factor=), shared by all three
+synth runtimes (sawwave, looper, surfaces). It is *exponential* FM: the depth
+is in *cents*, so the carrier frequency is multiplied by =2^(depth*sin/1200)=,
+which is always > 0. No depth can force the frequency below (or even to) 0 Hz,
+so through-zero territory is *unreachable* -- it's a property of *linear* FM
+(freq = carrier + deviation in Hz), which we don't have.
+
+That said, the oscillator core is now genuinely through-zero-capable:
+- the phase accumulator wraps with =rem_euclid=, so a negative increment runs
+  the oscillator backward instead of walking the phase out of range -- for a
+  sine that is exactly the 180° flip the quote describes (=sin(-x) = -sin(x)=,
+  the ring-mod identity at the zero line);
+- PolyBLEP band-limiting uses =|dt|=, so square/saw stay band-limited while
+  running backward.
+Unit tests pin both behaviors. If we ever add *linear* FM (or any modulator
+that can push frequency negative), through-zero comes for free.
+
+If what you actually want is audible through-zero *linear* FM as a playable
+timbre dimension, that's a new timbre parameter + config surface -- happy to
+build it, but since nothing existing would change sound, I stopped here.
+(Also noted in jeff-maybe-review-this.org.)
 * sustain ("accrete")
 For the 3-surfaces rig(s) -- that is, softstep + 2 monomes --
 let's put three buttons in the bottom row on the left:
@@ -50,3 +73,10 @@ Currently there are four timbres available:
 sin, tri, square, saw.
 And there are a bunch of parameters available for them:
 FM, AM, etc.
+Let's make each waveform configurable in the .toml.
+It should have a 'waveform' choice,
+which must be one of sin, tri, square, saw.
+It should also have choices for each of the numeric parameters,
+including amplitude.
+They can all (except amplitude) be configured to 'off' initially.
+They should all be commented to indicate reasonable value range.
