@@ -147,6 +147,10 @@ struct Settings {
   oversample: u32,
   attack: f32,
   release: f32,
+  /// The pluck envelope (cpal_synth `sustain_level` / `decay_secs`): fresh strikes
+  /// peak, then decay toward the sustain so they ring out over held notes.
+  sustain_level: f32,
+  decay_secs: f32,
   /// The global distortion's curve (scale + shape from the cpal_synth sink); the
   /// on/off lives in a shared AtomicBool flipped by the distortion_toggle windows.
   distortion: Distortion,
@@ -197,7 +201,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .ok_or("edo_note_grid references an unknown sink")?;
   let SinkConfig::CpalSynth {
     sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
-    distortion_scale, distortion_shape, ..
+    distortion_scale, distortion_shape, sustain_level, decay_secs, ..
   } = sink
   else {
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
@@ -320,6 +324,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     oversample: *oversample,
     attack: *attack_secs,
     release: *release_secs,
+    sustain_level: *sustain_level,
+    decay_secs: *decay_secs,
     distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
     has_drums: !config.softstep_windows.is_empty(),
     trail_clobber_radius: surfaces.trail_clobber_radius,
@@ -470,6 +476,8 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
         audio.sample_rate,
         s.attack,
         s.release,
+        s.sustain_level,
+        s.decay_secs,
       ),
     };
     handles.push(thread::spawn(move || grid_thread(rt)));

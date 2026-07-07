@@ -49,6 +49,14 @@ amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# Pluck envelope: a fresh strike peaks, then decays exponentially toward
+# sustain_level x peak (time constant decay_secs), so new notes ring out over held
+# ones -- a rough plucked-string curve that plateaus instead of dying (held notes
+# and accrete drones keep ringing at the sustain).
+# sustain_level: fraction of the strike peak; 0.2..0.5 natural, >= 1.0 disables.
+sustain_level = 0.35
+# decay_secs: the decay time constant; ~0.3 snappy, ~1.5 slow ring, <= 0 disables.
+decay_secs = 0.5
 # Global distortion (heard only while a distortion_toggle window is on): the
 # soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the summed mix.
 # scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.

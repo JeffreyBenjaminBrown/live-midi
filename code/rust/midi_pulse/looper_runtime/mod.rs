@@ -134,6 +134,9 @@ struct Settings {
   oversample: u32,
   attack: f32,
   release: f32,
+  /// The pluck envelope (cpal_synth `sustain_level` / `decay_secs`).
+  sustain_level: f32,
+  decay_secs: f32,
   flash_ms: u64,
   clock_period: Duration,
   clock_duty: f64,
@@ -254,7 +257,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
   let SinkConfig::CpalSynth {
-    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample, ..
+    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
+    sustain_level, decay_secs, ..
   } = sink
   else {
     return Err("looper requires a cpal_synth sink".into());
@@ -308,6 +312,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     oversample: *oversample,
     attack: *attack_secs,
     release: *release_secs,
+    sustain_level: *sustain_level,
+    decay_secs: *decay_secs,
     flash_ms: looper.flash_ms,
     // One beat = one cycle: period (ns) = 60_000_000_000 / bpm. 300 bpm -> 200 ms.
     clock_period: Duration::from_nanos((60_000_000_000.0 / looper.clock_bpm) as u64),
@@ -370,7 +376,10 @@ fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dy
     )?
   };
   let looper_sink =
-    sink::SawNoteSink::new(Arc::clone(&voices), s.fund, s.edo, audio.sample_rate, s.attack, s.release);
+    sink::SawNoteSink::with_pluck(
+      Arc::clone(&voices), s.fund, s.edo, audio.sample_rate, s.attack, s.release,
+      s.sustain_level, s.decay_secs,
+    );
   let looper_state = Arc::new(Mutex::new(LooperState::new(
     looper_sink,
     LooperParams {

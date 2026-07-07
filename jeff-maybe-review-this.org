@@ -69,6 +69,19 @@ reverse it cheaply if you disagree.
   learnings/distortion.org). No makeup gain is applied.
 - The toggle rests *dim* (findable), like the accrete buttons.
 
+* pluck envelope -- choices where the spec was silent
+- *It decays to a sustain plateau, not to silence.* A literal guitar curve dies
+  out, which would silence held notes and accrete drones. Default sustain = 0.35
+  of the strike peak (~-9 dB), decay time constant 0.5 s.
+- *It is ON by default for every synth rig* (sawwave, looper, surfaces) -- you
+  said "the synths", so the serde defaults enable it everywhere without touching
+  each toml. Any rig can opt out with =sustain_level = 1.0=. If you'd rather the
+  default were off-except-surfaces, that's a two-line default change.
+- *Loop playback notes pluck too* (same sink); chord-accretion voices stay flat.
+- The peak level is unchanged (attack still hits the old full amplitude); it is
+  the *ringing* notes that got quieter, which reads as "attacks louder" without
+  risking new clipping.
+
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
 - =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's

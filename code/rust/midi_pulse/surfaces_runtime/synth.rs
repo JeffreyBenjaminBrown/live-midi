@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
+use crate::voices::pluck_envelope;
 
 /// The `chord` offset that marks a voice as *sustained* (accreted) rather than
 /// fingered: a sustained voice from grid `g` is keyed `Accreted { chord: SUSTAIN_BASE
@@ -71,9 +72,13 @@ pub struct SurfaceSink {
   sample_rate: f32,
   attack_secs: f32,
   release_secs: f32,
+  /// The pluck envelope for every struck note (see `voices::pluck_envelope`).
+  sustain_env: f32,
+  decay_per_sample: f32,
 }
 
 impl SurfaceSink {
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     grid: usize,
     voices: Arc<Mutex<VoiceMap>>,
@@ -82,8 +87,22 @@ impl SurfaceSink {
     sample_rate: f32,
     attack_secs: f32,
     release_secs: f32,
+    sustain_level: f32,
+    decay_secs: f32,
   ) -> Self {
-    SurfaceSink { grid, voices, next_id: 0, fund, edo, sample_rate, attack_secs, release_secs }
+    let (sustain_env, decay_per_sample) = pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
+    SurfaceSink {
+      grid,
+      voices,
+      next_id: 0,
+      fund,
+      edo,
+      sample_rate,
+      attack_secs,
+      release_secs,
+      sustain_env,
+      decay_per_sample,
+    }
   }
 
   /// Start `cell` sounding `pitch` (an absolute EDO step) with `timbre`. Spawns a
@@ -102,6 +121,8 @@ impl SurfaceSink {
         env: 0.0,
         target_env: 1.0,
         ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        sustain_env: self.sustain_env,
+        decay_per_sample: self.decay_per_sample,
         timbre,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -165,7 +186,8 @@ mod tests {
   }
 
   fn sink(grid: usize, voices: &Arc<Mutex<VoiceMap>>) -> SurfaceSink {
-    SurfaceSink::new(grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05)
+    // sustain_level 1.0 = no pluck decay, so target_env assertions stay exact.
+    SurfaceSink::new(grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5)
   }
 
   fn count(voices: &Arc<Mutex<VoiceMap>>) -> usize {

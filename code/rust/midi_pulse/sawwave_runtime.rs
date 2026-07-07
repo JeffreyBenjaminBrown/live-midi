@@ -58,6 +58,8 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     release_secs,
     accretion_level,
     oversample,
+    sustain_level,
+    decay_secs,
     ..
   } = sink
   else {
@@ -80,6 +82,8 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     attack_secs: *attack_secs,
     release_secs: *release_secs,
     accretion_level: *accretion_level,
+    sustain_level: *sustain_level,
+    decay_secs: *decay_secs,
     windows: config_windows(&config.monome_windows),
   })
 }
@@ -100,6 +104,8 @@ struct RuntimeSettings {
   attack_secs: f32,
   release_secs: f32,
   accretion_level: f32,
+  sustain_level: f32,
+  decay_secs: f32,
   windows: Vec<Window>,
 }
 
@@ -146,6 +152,8 @@ fn run(settings: RuntimeSettings) -> Result<(), Box<dyn std::error::Error>> {
       attack_secs: settings.attack_secs,
       release_secs: settings.release_secs,
       accretion_level: settings.accretion_level,
+      sustain_level: settings.sustain_level,
+      decay_secs: settings.decay_secs,
     },
   );
   repaint(&sock, device, &settings.prefix, &settings.windows, &state);

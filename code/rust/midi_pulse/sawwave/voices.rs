@@ -150,6 +150,22 @@ pub fn am_multiplier(am: Am, family: AmShapeFamily, am_phase: f32) -> f32 {
   1.0 - am.depth * (1.0 - unipolar)
 }
 
+/// The `(sustain_env, decay_per_sample)` pair for a voice struck to `peak` under a
+/// sink's pluck settings (see TODO/misc.org "synth attacks should be louder"): after
+/// the attack the envelope decays exponentially, time constant `decay_secs`, toward
+/// `sustain_level * peak` -- a rough plucked-string curve (instant rise, exponential
+/// fall) that plateaus at a sustain instead of dying, so held notes and accrete
+/// drones keep ringing. `sustain_level >= 1` or `decay_secs <= 0` disables the decay
+/// (the flat pre-pluck envelope). The sustain is floored just above zero so a held
+/// voice never becomes a released one.
+pub fn pluck_envelope(sustain_level: f32, decay_secs: f32, peak: f32, sample_rate: f32) -> (f32, f32) {
+  if sustain_level >= 1.0 || decay_secs <= 0.0 {
+    return (peak, 1.0);
+  }
+  let sustain = sustain_level.max(0.001) * peak;
+  (sustain, (-1.0 / (decay_secs * sample_rate)).exp())
+}
+
 /// The FM carrier-frequency multiplier: 2^(depth_cents * sin(2*pi*fm_phase) / 1200).
 /// depth_cents 0 returns 1.0 (no FM).
 ///
@@ -219,15 +235,35 @@ fn accumulate_voices(
 ) -> f32 {
   let mut mix = 0.0_f32;
   voices.retain(|_, v| {
-    // Step env toward target_env (by `frac` of a full-rate step).
-    let ramp = v.ramp_per_sample * frac;
-    let delta = v.target_env - v.env;
-    if delta.abs() <= ramp {
+    // Envelope. Linear attack toward target_env; when the attack peaks on a held
+    // voice whose sustain sits below the peak, the target drops to sustain_env and
+    // the env DECAYS toward it exponentially (the pluck) -- so a fresh strike rings
+    // out over already-sounding notes. note_off ramps linearly to 0 as ever.
+    if v.target_env > 0.0 && v.env >= v.target_env && v.sustain_env < v.target_env {
       v.env = v.target_env;
-    } else if delta > 0.0 {
-      v.env += ramp;
+      v.target_env = v.sustain_env;
+    }
+    if v.target_env > 0.0 && v.env > v.target_env && v.decay_per_sample < 1.0 {
+      // The pluck decay: retain `decay_per_sample` of the distance to sustain each
+      // full-rate sample (linearized for `frac` sub-steps), snapping when close.
+      // (A flat voice above a positive target -- e.g. the chord-accretion
+      // transform -- keeps the linear ramp below instead.)
+      let keep = 1.0 - (1.0 - v.decay_per_sample) * frac;
+      v.env = v.target_env + (v.env - v.target_env) * keep;
+      if v.env - v.target_env < 1e-4 {
+        v.env = v.target_env;
+      }
     } else {
-      v.env -= ramp;
+      // Step env linearly toward target_env (by `frac` of a full-rate step).
+      let ramp = v.ramp_per_sample * frac;
+      let delta = v.target_env - v.env;
+      if delta.abs() <= ramp {
+        v.env = v.target_env;
+      } else if delta > 0.0 {
+        v.env += ramp;
+      } else {
+        v.env -= ramp;
+      }
     }
     // Voice is gone once env and target both reach 0.
     if v.env == 0.0 && v.target_env == 0.0 {
@@ -436,6 +472,9 @@ pub fn spawn_accretion_voice(
     env: 0.0,
     target_env: accretion_level,
     ramp_per_sample: accretion_level / (attack_secs * sample_rate),
+    // Accretion voices are steady drones: no pluck decay.
+    sustain_env: accretion_level,
+    decay_per_sample: 1.0,
     timbre: Timbre::default(),
     am_phase: 0.0,
     fm_phase: 0.0,
@@ -488,7 +527,7 @@ mod tests {
     let sr = 48000.0;
     let v = VoiceState {
       id: 0, freq: 440.0, phase: 0.0, env: 1.0,
-      target_env: 1.0, ramp_per_sample: 0.0,
+      target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
     };
     let data = render_voice(v, 1024, sr);
@@ -506,6 +545,7 @@ mod tests {
       id: 0, freq: 220.0, phase: 0.0, env: 1.0,
       target_env: 0.0,
       ramp_per_sample: 1.0 / (RELEASE_SECS * sr),
+      sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
@@ -536,7 +576,7 @@ mod tests {
   fn per_voice_gain_scales_amplitude() {
     let sr = 48000.0;
     let mk = |gain: f32| VoiceState {
-      id: 0, freq: 440.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+      id: 0, freq: 440.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0,
     };
     let peak = |g: f32| render_voice(mk(g), 1024, sr).iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
@@ -552,7 +592,7 @@ mod tests {
     let sr = 48000.0;
     let rms = |waveform: Waveform| {
       let v = VoiceState {
-        id: 0, freq: 100.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        id: 0, freq: 100.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform, gain: 1.0, am: Am::default(), fm: Fm::default() },
         am_phase: 0.0, fm_phase: 0.0,
       };
@@ -638,7 +678,7 @@ mod tests {
     let rms = |depth: f32| {
       let mut voices: VoiceMap = HashMap::new();
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
-        id: 0, freq: 1000.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        id: 0, freq: 1000.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
           waveform: Waveform::Sine, gain: 1.0,
           am: Am { depth, freq: 50.0, shape: 0.0 }, fm: Fm::default(),
@@ -667,7 +707,7 @@ mod tests {
       voices.insert(
         VoiceSource::Fingered { xy: (0, 0) },
         VoiceState {
-          id: 0, freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+          id: 0, freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
           timbre: Timbre {
             waveform: Waveform::Sine, gain: 1.0, am: Am::default(), fm: Fm::default(),
           },
@@ -695,7 +735,7 @@ mod tests {
     let sr = 48000.0;
     let render = |freq: f32| {
       let v = VoiceState {
-        id: 0, freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        id: 0, freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
         am_phase: 0.0, fm_phase: 0.0,
       };
@@ -715,7 +755,7 @@ mod tests {
     // PolyBLEP must band-limit on |dt|, so a discontinuous waveform stays bounded.
     let sr = 48000.0;
     let v = VoiceState {
-      id: 0, freq: -220.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+      id: 0, freq: -220.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Saw, ..Timbre::default() },
       am_phase: 0.0, fm_phase: 0.0,
     };
@@ -733,6 +773,83 @@ mod tests {
       let p = i as f32 / 100.0;
       assert_eq!(poly_blep(p, dt), poly_blep(p, -dt), "poly_blep must depend on |dt| only");
     }
+  }
+
+  #[test]
+  fn pluck_envelope_maps_settings_to_voice_fields() {
+    let sr = 48000.0;
+    // Disabled: sustain at/above 1, or no decay time.
+    assert_eq!(pluck_envelope(1.0, 0.5, 1.0, sr), (1.0, 1.0));
+    assert_eq!(pluck_envelope(0.35, 0.0, 1.0, sr), (1.0, 1.0));
+    // Enabled: sustain scales the peak; the retention is just under 1.
+    let (sus, keep) = pluck_envelope(0.35, 0.5, 1.0, sr);
+    assert!((sus - 0.35).abs() < 1e-6);
+    assert!(keep < 1.0 && keep > 0.9999, "per-sample retention ~ 1-1/(tau*sr): {keep}");
+    // A zero sustain is floored above zero so a held voice never reads as released.
+    let (sus0, _) = pluck_envelope(0.0, 0.5, 1.0, sr);
+    assert!(sus0 > 0.0);
+  }
+
+  #[test]
+  fn pluck_strikes_ring_out_then_settle_at_the_sustain() {
+    // A plucked voice: fast attack to the peak, exponential decay toward 0.35, and
+    // it neither dies out while held nor stays at the peak. Use a short 50 ms time
+    // constant so one second of audio spans many taus.
+    let sr = 48000.0;
+    let (sustain_env, decay_per_sample) = pluck_envelope(0.35, 0.05, 1.0, sr);
+    let v = VoiceState {
+      id: 0, freq: 220.0, phase: 0.0, env: 0.0,
+      target_env: 1.0,
+      ramp_per_sample: 1.0 / (0.003 * sr),
+      sustain_env, decay_per_sample,
+      timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+      am_phase: 0.0, fm_phase: 0.0,
+    };
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+    let mut data = vec![0.0_f32; sr as usize];
+    render_block(&mut voices, &mut data, 1, sr);
+    let peak = |range: std::ops::Range<usize>| {
+      data[range].iter().fold(0.0_f32, |a, &x| a.max(x.abs()))
+    };
+    let early = peak(0..4800); // the strike (attack + first tau)
+    let late = peak(43_200..48_000); // long settled (> 15 taus)
+    let full = AMPLITUDE * waveform_norm(Waveform::Sine);
+    assert!(early > 0.9 * full, "the strike reaches the full peak: {early} vs {full}");
+    let settled = late / early;
+    assert!((settled - 0.35).abs() < 0.05, "settles at the sustain fraction: {settled}");
+    // Still held: the voice survives, ringing at the sustain.
+    let state = voices.values().next().expect("held voice survives");
+    assert!((state.env - sustain_env).abs() < 1e-3, "env parked at sustain: {}", state.env);
+    // Release from the sustain still dies to zero and drops the voice.
+    {
+      let v = voices.values_mut().next().unwrap();
+      v.target_env = 0.0;
+      v.ramp_per_sample = v.env / (0.05 * sr);
+    }
+    let mut tail = vec![0.0_f32; 4800];
+    render_block(&mut voices, &mut tail, 1, sr);
+    assert!(voices.is_empty(), "released voice is removed");
+  }
+
+  #[test]
+  fn a_flat_voice_above_a_positive_target_still_ramps_down_linearly() {
+    // The chord-accretion transform: a full-env voice re-targeted to the (lower)
+    // accretion level with NO pluck decay must ramp down the linear way, not stall.
+    let sr = 48000.0;
+    let v = VoiceState {
+      id: 0, freq: 220.0, phase: 0.0, env: 1.0,
+      target_env: 0.5,
+      ramp_per_sample: 0.5 / (0.05 * sr),
+      sustain_env: 0.5, decay_per_sample: 1.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
+    };
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert(VoiceSource::Accreted { chord: 0, pitch: 10 }, v);
+    let mut data = vec![0.0_f32; 9600]; // 200 ms >> the 50 ms ramp
+    render_block(&mut voices, &mut data, 1, sr);
+    let state = voices.values().next().expect("voice survives");
+    assert_eq!(state.env, 0.5, "ramped down to the accretion level");
   }
 
   #[test]
@@ -772,7 +889,7 @@ mod tests {
       let mut voices: VoiceMap = HashMap::new();
       for (i, freq) in [220.0_f32, 330.0].iter().enumerate() {
         voices.insert(VoiceSource::Fingered { xy: (i as i32, 0) }, VoiceState {
-          id: i as u64, freq: *freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+          id: i as u64, freq: *freq, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
           timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
           am_phase: 0.0, fm_phase: 0.0,
         });
@@ -804,7 +921,7 @@ mod tests {
     let render = |depth_cents: f32| {
       let mut voices: VoiceMap = HashMap::new();
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
-        id: 0, freq: 300.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        id: 0, freq: 300.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
           waveform: Waveform::Sine, gain: 1.0, am: Am::default(),
           fm: Fm { depth_cents, freq: 6.0 },

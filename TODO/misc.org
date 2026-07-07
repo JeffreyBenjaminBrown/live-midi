@@ -83,7 +83,7 @@ For some kinds of parameters that would probably be hard;
 don't worry about those.
 I'm just thinking about amplitude, timbre and pitch changes,
 all of which I think should be easy to hot-reload.
-* synth attacks should be louder
+* DONE synth attacks should be louder
 Here I'm only talking about the synth, not the drum samples.
 Please find online (or maybe you know by heart)
 how a plucked guitar string's amplitude changes over time.
@@ -92,6 +92,24 @@ It doesn't have to be completely accurate;
 a simple decay rate algorithm would probably do the job.
 I'm just trying to make new notes easier to distinguish by ear
 from notes that were struck earlier.
+** [Claude] done -- exponential pluck decay to a sustain plateau, all synth rigs
+A real pluck rises in a few ms and decays exponentially (the fundamental's
+time constant is roughly 0.5..1.5 s on a guitar); I kept the fast linear
+attack and added the exponential decay -- but toward a *sustain plateau*
+(default 0.35 of the peak, ~-9 dB) rather than to silence, because notes that
+die out entirely would make held notes and (especially) accrete drones fall
+silent. So: strike = full peak, ringing notes settle at the sustain -- fresh
+notes stand out exactly as you asked.
+
+Two new optional =cpal_synth= fields (defaults apply to EVERY synth rig --
+sawwave, looper, surfaces -- since you said "the synths"):
+- =sustain_level= (default 0.35; >= 1.0 disables, restoring the old flat envelope)
+- =decay_secs= (default 0.5; the exponential time constant; <= 0 disables)
+Both commented in the surfaces toml and configs/README.org. Loop playback
+notes get the same curve (they go through the same sink); chord-accretion
+voices stay flat drones. If the looper rigs shouldn't have changed, set
+=sustain_level = 1.0= in their tomls (also flagged in
+jeff-maybe-review-this.org).
 * configure the four waveforms
 Currently there are four timbres available:
 sin, tri, square, saw.

@@ -434,6 +434,18 @@ pub enum SinkConfig {
     /// 2 = the smooth sweet spot, ~4+ = hard-ish, very large = hard clip.
     #[serde(default = "default_distortion_shape")]
     distortion_shape: f32,
+    /// Pluck envelope (see TODO/misc.org "synth attacks should be louder"): after the
+    /// attack peaks, the envelope decays exponentially toward `sustain_level` x the
+    /// peak, so fresh strikes ring out over held notes -- a rough plucked-string
+    /// curve that plateaus instead of dying (held notes and accrete drones keep
+    /// ringing). >= 1.0 disables the decay (flat envelope); 0.2..0.5 is a natural
+    /// pluck. Default 0.35.
+    #[serde(default = "default_sustain_level")]
+    sustain_level: f32,
+    /// The pluck decay's time constant, in seconds (~0.3 snappy, ~1.5 slow ring;
+    /// <= 0 disables). Default 0.5.
+    #[serde(default = "default_decay_secs")]
+    decay_secs: f32,
   },
   /// A one-shot sample player: each trigger plays a loaded WAV to completion,
   /// mixed polyphonically. Drives the `drumkit` softstep window. Uses the same
@@ -456,6 +468,14 @@ fn default_distortion_scale() -> f32 {
 
 fn default_distortion_shape() -> f32 {
   2.0 // the smooth sweet spot (y / sqrt(1 + (y/s)^2))
+}
+
+fn default_sustain_level() -> f32 {
+  0.35 // ~ -9 dB below the strike peak: audible pluck, notes still ring
+}
+
+fn default_decay_secs() -> f32 {
+  0.5 // a guitar-ish decay time constant
 }
 
 impl SinkConfig {
