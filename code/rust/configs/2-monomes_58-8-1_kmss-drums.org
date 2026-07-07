@@ -55,7 +55,7 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
 - *mono toggle* -- =(1,2)= (below slide): while on, each new note cuts that grid's
   other fingered notes (through the normal release path, so accrete still captures
   them). With slide on too, the new note *steals* the cut note's voice and glides
-  it over -- true legato, no attack re-trigger. Global switch.
+  it over -- true legato, no attack re-trigger. Per-monome switch, like the rest.
 - *feet-accrete toggle* -- =(0,14)= (just above the accrete trio): PER-GRID -- while
   grid g's toggle is on, the KMSS pedal triple mapped to grid g (1/2/3 for the older
   monobright grid, 8/9/0 for the other) mirrors g's accrete trio (clear /
@@ -107,7 +107,7 @@ overlays drawn on top:
   row 0  [SIN TRI SQR SAW]  .   .  (play cells)  x3  x2 TAP  <- waveform strip + polyrhythm
                                                                (see the polyrhythm section)
   row 1  DIST SLIDE  .  .  .                   .   .   .   <- per-grid toggles
-  row 2   .  MONO .   .   .                    .   .   .   <- global toggle
+  row 2   .  MONO .   .   .                    .   .   .   <- per-grid toggle
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
   row 14 FEET .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- feet-accrete + scroll pad
@@ -144,8 +144,8 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
 - *Toggles* (distortion / slide / mono / feet-accrete): *dim* at rest, *bright*
-  while on. Mono is one global switch mirrored on both grids; distortion, slide,
-  and feet-accrete are PER-GRID -- each grid's cell shows only its own switch.
+  while on. Every toggle is PER-GRID -- each grid's cell shows only its own
+  switch; nothing mirrors.
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
   clear while pressed, needs-holding while on, accrete while the accreting condition is
   live. Each grid's trio shows its OWN bank (per-monome, not mirrored). A *sustained*
@@ -240,9 +240,9 @@ glides -- pitch-linearly -- into the struck pitch over ~slide_duration_ms~
 (default 100). Ties break toward the more recent release; a source is never
 reused.
 
-*Mono* (=(1,2)=; key-down toggles): a new note cuts the same grid's other
-fingered notes. Cuts go through the ordinary release path: under a live accrete
-condition a cut note still joins the sustained set.
+*Mono* (=(1,2)=; key-down toggles; PER-GRID, like every toggle): a new note
+cuts the same grid's other fingered notes. Cuts go through the ordinary release
+path: under a live accrete condition a cut note still joins the sustained set.
 
 *Mono + slide together* play like a true legato monosynth per grid: the new note
 does not strike a fresh voice at all -- it STEALS the voice of the note it cuts,
@@ -252,8 +252,8 @@ becomes an accrete drone instead, it cannot be stolen -- the new note falls back
 to the ordinary slide above (a fresh strike gliding from the nearest recent
 release).
 
-Mono is the one *global* switch (either grid's button, one state); slide -- like
-distortion and feet-accrete -- is per-monome.
+All four toggles -- distortion, slide, mono, feet-accrete -- are per-monome;
+one grid can play as a legato monosynth while the other stays polyphonic.
 
 * feet accrete
 

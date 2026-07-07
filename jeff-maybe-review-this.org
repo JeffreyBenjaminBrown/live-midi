@@ -292,5 +292,8 @@ reverse it cheaply if you disagree.
 - Slide was the easy half: candidates were already per-grid, so only the switch
   split. The mono+slide legato steal is gated by the NEW note's grid's slide
   switch (the only coherent reading -- the stolen voice is on the same grid).
-- Mono remains the one global toggle (you flagged distortion and slide only, and
-  mono's cut already acts per grid). The LED docs now say so explicitly.
+- Mono initially remained the one global toggle; you then asked for it
+  per-monome too (chat, 2026-07-07), so now ALL four toggles are per-grid --
+  nothing about the toggles mirrors across grids anymore. Only the switch moved
+  (the cut and legato steal were already per-grid in effect), so there was
+  nothing else to decide.

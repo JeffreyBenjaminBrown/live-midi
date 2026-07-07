@@ -212,9 +212,8 @@ and mono".
 The candidate histories were already per-grid; now the switch is too (same
 pattern as the feet-accrete and distortion toggles: independent flags, each
 grid's LED shows its own). The mono+slide legato steal follows the NEW note's
-grid's slide switch. Mono stays the one global toggle -- you didn't ask for it,
-and its cut is already per-grid in effect; say the word if you want it split
-too.
+grid's slide switch. (Mono initially stayed global; you said the word, and it
+went per-monome too -- see the mono headline below.)
 * ONGOING mono
 This button should be right next to slide (so (1,2)).
 If it's on, each new note cuts off the old one.
@@ -224,8 +223,16 @@ A new note cuts the same grid's other *fingered* notes (per grid, not across
 grids -- each grid stays its own monosynth; accrete drones are not cut). Cuts go
 through the ordinary release path, so a cut under a live accrete condition still
 joins the sustained set, and with slide on the cut note is exactly what you
-glide from (see the legato item below). Global toggle mirrored on both grids.
-** DONE slide when mono is on should not re-trigger the attack
+glide from (see the legato item below). (Originally a global toggle mirrored on
+both grids; per-monome since the chat request below.)
+** DONE make mono per-monome, too [chat request, 2026-07-07]
+*** [Claude] done -- each grid's (1,2) now switches mono for that grid only
+Same split as distortion and slide (independent per-grid flags; each grid's LED
+shows its own). The cut and the legato steal were already per-grid in effect,
+so only the switch moved; one grid can now play as a legato monosynth while the
+other stays polyphonic. Every toggle in the rig is per-monome now -- nothing
+mirrors except the accrete drones' bright painting and the shared trail/
+polyrhythm state.
 *** [Claude] done -- mono+slide is now true legato (the cut voice is stolen)
 With both on, a new note no longer strikes a fresh voice: it re-keys the voice
 of the note mono cuts and glides it into the new pitch, envelope untouched --

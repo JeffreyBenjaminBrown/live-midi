@@ -192,7 +192,7 @@ monome = "a"
 kind = "slide_toggle"
 rect = [1, 1, 1, 1]
 
-# Mono toggle (key-down flips; global): each new note cuts this grid's other
+# Mono toggle (key-down flips; PER-GRID): each new note cuts this grid's other
 # fingered notes (with slide on, the new note steals the cut voice -- legato).
 [[monome_windows]]
 id = "mono-a"
@@ -293,7 +293,7 @@ monome = "b"
 kind = "slide_toggle"
 rect = [1, 1, 1, 1]
 
-# Mono toggle (key-down flips; global): each new note cuts this grid's other
+# Mono toggle (key-down flips; PER-GRID): each new note cuts this grid's other
 # fingered notes (with slide on, the new note steals the cut voice -- legato).
 [[monome_windows]]
 id = "mono-b"

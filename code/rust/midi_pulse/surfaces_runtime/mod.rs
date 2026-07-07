@@ -601,11 +601,12 @@ fn run(
   // toggle routes grid g's voices through the distorted bus in the audio callback.
   let distortion_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
-  // The per-grid slide switches (each grid keeps its own candidate history too) and
-  // the global mono switch (instrument-wide).
+  // The per-grid slide / mono switches (each grid keeps its own candidate history
+  // too; every toggle in this rig is per-monome now).
   let slide_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
-  let mono_on = Arc::new(AtomicBool::new(false));
+  let mono_on: Arc<Vec<AtomicBool>> =
+    Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // Feet accrete, one switch per grid: while grid g's toggle is on, the KMSS pedal
   // triple mapped to grid g acts as that grid's accrete trio instead of playing
   // samples (see the pedal hook below) -- the softstep can mirror one monome, both,
@@ -835,10 +836,9 @@ struct GridThread {
   /// The per-grid distortion switches; this grid's toggle flips (and its LED shows)
   /// element `grid_index`, and the audio callback routes voices by them.
   distortion_on: Arc<Vec<AtomicBool>>,
-  /// The per-grid slide switches (this grid uses element `grid_index`) and the
-  /// global mono switch (one state, both grids' toggles).
+  /// The per-grid slide / mono switches (this grid uses element `grid_index`).
   slide_on: Arc<Vec<AtomicBool>>,
-  mono_on: Arc<AtomicBool>,
+  mono_on: Arc<Vec<AtomicBool>>,
   /// The per-grid feet-accrete switches; this grid's toggle flips (and its LED
   /// shows) element `grid_index` -- "the softstep accretes for THIS monome".
   feet_accrete_on: Arc<Vec<AtomicBool>>,
@@ -940,7 +940,7 @@ fn grid_thread(mut rt: GridThread) {
     let (mut buttons, sustained_classes) = accrete_view(&rt);
     buttons.push((rt.distortion_rect, rt.distortion_on[rt.grid_index].load(Ordering::Relaxed)));
     buttons.push((rt.slide_rect, rt.slide_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.mono_rect, rt.mono_on.load(Ordering::Relaxed)));
+    buttons.push((rt.mono_rect, rt.mono_on[rt.grid_index].load(Ordering::Relaxed)));
     buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on[rt.grid_index].load(Ordering::Relaxed)));
     if rt.poly_rect != NO_RECT {
       // The pad's six cells: the tap cell blinks (10% duty at the applied tempo);
@@ -1040,10 +1040,10 @@ fn handle_key(
     }
     return;
   }
-  // Mono toggle: key-down flips the GLOBAL switch; key-up does nothing.
+  // Mono toggle: key-down flips THIS grid's switch; key-up does nothing.
   if in_overlay(rt.mono_rect, cell) {
     if press {
-      let _ = rt.mono_on.fetch_xor(true, Ordering::Relaxed);
+      let _ = rt.mono_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
@@ -1127,7 +1127,7 @@ fn handle_key(
     // the ordinary release path, so accrete still captures them -- and a cut that
     // sustains (accrete) becomes a drone as usual and cannot be stolen.
     let mut legato_from: Option<(i32, i32)> = None;
-    if rt.mono_on.load(Ordering::Relaxed) {
+    if rt.mono_on[rt.grid_index].load(Ordering::Relaxed) {
       let slide = rt.slide_on[rt.grid_index].load(Ordering::Relaxed);
       let mut others: Vec<((i32, i32), i32)> =
         held.iter().filter(|(c, _)| **c != cell).map(|(c, p)| (*c, *p)).collect();
@@ -1198,7 +1198,7 @@ fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>, cell: 
     rt.sink.sustain_note(cell, pitch);
   } else {
     rt.sink.note_off(cell);
-    let mono = rt.mono_on.load(Ordering::Relaxed);
+    let mono = rt.mono_on[rt.grid_index].load(Ordering::Relaxed);
     rt.slide.note_released(pitch, Instant::now(), mono);
   }
   held.remove(&cell);
@@ -2052,12 +2052,11 @@ mod tests {
     STOP.store(false, Ordering::SeqCst);
   }
 
-  /// The toggles end-to-end. Mono is the one global switch left: it rests dim,
-  /// a press lights it on BOTH grids, a second press (from the other grid) turns
-  /// it off. Distortion, slide, and feet-accrete are PER-GRID: each grid's press
-  /// lights only its own cell, and the two grids' switches are independent.
+  /// The toggles end-to-end: every one (distortion / slide / mono / feet-accrete)
+  /// is PER-GRID -- each rests dim, a press lights only that grid's cell, the two
+  /// grids' switches are independent, and each turns off from its own grid.
   #[test]
-  fn global_toggles_mirror_across_grids() {
+  fn every_toggle_is_per_grid_and_independent() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2080,22 +2079,12 @@ mod tests {
     let b = rig.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    // Mono at (1,2): the one global toggle left.
-    assert!(wait_until(secs(3), || a.level_at(1, 2) == 4 && b.level_at(1, 2) == 4),
-      "mono rests dim on both grids");
-    a.press(1, 2);
-    a.release(1, 2);
-    assert!(wait_until(secs(3), || a.level_at(1, 2) == 15), "mono on: lit on grid a");
-    assert!(wait_until(secs(3), || b.level_at(1, 2) == 15), "mono on: lit on grid b (global)");
-    b.press(1, 2);
-    b.release(1, 2);
-    assert!(wait_until(secs(3), || a.level_at(1, 2) == 4 && b.level_at(1, 2) == 4),
-      "mono off again from the other grid");
-
-    // Distortion (0,1), slide (1,1), and feet-accrete (0,14) are PER-GRID: grid a's
-    // press lights grid a only, and grid b's toggle is a separate switch (b's press
-    // turns b ON, not a off).
-    for (x, y, name) in [(0, 1, "distortion"), (1, 1, "slide"), (0, 14, "feet-accrete")] {
+    // Distortion (0,1), slide (1,1), mono (1,2), and feet-accrete (0,14) are all
+    // PER-GRID: grid a's press lights grid a only, and grid b's toggle is a
+    // separate switch (b's press turns b ON, not a off).
+    for (x, y, name) in
+      [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono"), (0, 14, "feet-accrete")]
+    {
       assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
         "{name} rests dim on both grids");
       a.press(x, y);
