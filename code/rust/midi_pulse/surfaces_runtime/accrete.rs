@@ -8,19 +8,25 @@
 //! grids is one entry in each bank (and two voices), matching the surfaces
 //! "independent voices" rule.
 //!
-//! Three buttons (per grid):
+//! Four buttons (per grid):
 //! - *clear* silences and flushes this bank's sustained set (key-down; lit while held);
-//! - *needs_holding* toggles how *accrete* behaves (key-down; lit while on);
+//! - *needs_holding* toggles how *accrete* AND *erase* behave (key-down; lit while on);
 //! - *accrete*: with needs_holding, notes fingered while it is HELD join the sustained
 //!   set; without, key-down toggles an accrete *mode* during which every note played
 //!   joins. Either way, entering the accreting condition also captures the notes
 //!   already held at that moment (on this bank's grid), and a note in the set keeps
 //!   ringing after its finger lifts, until *clear*.
+//! - *erase* (misc.org "erase button"): the same hold-or-toggle shape as *accrete*,
+//!   under the same *needs_holding*, but it REMOVES pressed pitches from the sustained
+//!   set -- each keeps sounding until its own finger lifts (the runtime's ordinary
+//!   release, which no longer sustains it). Entering the erasing condition also erases
+//!   the notes already held on this grid. When both conditions are live, erase wins.
 //!
-//! Nothing ever leaves the set except through `press_clear` (un-toggling accrete mode
-//! stops *additions* only). Retriggering a sustaining pitch does not touch the set
+//! Nothing else ever leaves the set except through `press_clear` (un-toggling accrete
+//! mode stops *additions* only). Retriggering a sustaining pitch does not touch the set
 //! either: the runtime cuts the old drone VOICE (`SurfaceSink::cut_sustained`) and the
-//! new note takes its place -- still a member, so its release re-drones it.
+//! new note takes its place -- still a member, so its release re-drones it (unless
+//! erase is live, in which case the press removed it from the set).
 //!
 //! The runtime asks `note_released_sustains` at each note-off: a note sustains if it
 //! is already in the set OR the accreting condition holds right then. The latter makes
@@ -32,8 +38,8 @@
 use std::collections::HashSet;
 
 pub struct AccreteState {
-  /// Whether *accrete* must be held (vs toggling a mode). Starts false: accrete is a
-  /// toggle until the needs-holding button says otherwise.
+  /// Whether *accrete* and *erase* must be held (vs toggling a mode). Starts false:
+  /// both are toggles until the needs-holding button says otherwise.
   needs_holding: bool,
   /// The toggle-mode "accrete mode" flag (only consulted when !needs_holding).
   mode_on: bool,
@@ -41,10 +47,24 @@ pub struct AccreteState {
   /// its pedal mirror can overlap). Tracked unconditionally so a needs-holding flip
   /// mid-hold stays consistent.
   hold_count: usize,
+  /// The toggle-mode "erase mode" flag (only consulted when !needs_holding).
+  erase_mode_on: bool,
+  /// How many erase buttons are physically held right now (same bookkeeping as
+  /// `hold_count`).
+  erase_hold_count: usize,
   /// How many clear buttons are physically held (drives that button's LED only).
   clear_count: usize,
   /// The sustained set: absolute pitches (this bank's grid only).
   sustained: HashSet<i32>,
+}
+
+/// Which conditions a `press_needs_holding` flip turned ON (off -> on edges only).
+/// The caller must then apply the corresponding bulk action to the notes currently
+/// held on this bank's grid: capture them (accrete) or erase them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activated {
+  pub accrete: bool,
+  pub erase: bool,
 }
 
 impl AccreteState {
@@ -53,6 +73,8 @@ impl AccreteState {
       needs_holding: false,
       mode_on: false,
       hold_count: 0,
+      erase_mode_on: false,
+      erase_hold_count: 0,
       clear_count: 0,
       sustained: HashSet::new(),
     }
@@ -64,6 +86,17 @@ impl AccreteState {
       self.hold_count > 0
     } else {
       self.mode_on
+    }
+  }
+
+  /// Is the erasing condition live right now? Same shape as `accreting`, driven by
+  /// the erase button under the same needs-holding switch. Both conditions can be
+  /// live at once; where they conflict, erase wins.
+  pub fn erasing(&self) -> bool {
+    if self.needs_holding {
+      self.erase_hold_count > 0
+    } else {
+      self.erase_mode_on
     }
   }
 
@@ -79,17 +112,22 @@ impl AccreteState {
     self.clear_count = self.clear_count.saturating_sub(1);
   }
 
-  /// Key-down on *needs_holding*: flip the accrete button's behavior. Entering
-  /// needs-holding cancels any toggled accrete mode (the set is untouched). Returns
-  /// true if this press *started* the accreting condition (an already-held accrete
-  /// button suddenly counts), in which case the caller must capture held notes.
-  pub fn press_needs_holding(&mut self) -> bool {
-    let before = self.accreting();
+  /// Key-down on *needs_holding*: flip how the accrete AND erase buttons behave.
+  /// Entering needs-holding cancels any toggled accrete/erase mode (the set is
+  /// untouched). Returns which conditions this press *started* (an already-held
+  /// button suddenly counts), for which the caller must bulk-apply held notes.
+  pub fn press_needs_holding(&mut self) -> Activated {
+    let acc_before = self.accreting();
+    let erase_before = self.erasing();
     self.needs_holding = !self.needs_holding;
     if self.needs_holding {
       self.mode_on = false;
+      self.erase_mode_on = false;
     }
-    self.accreting() && !before
+    Activated {
+      accrete: self.accreting() && !acc_before,
+      erase: self.erasing() && !erase_before,
+    }
   }
 
   /// Key-down on *accrete*. Returns true if this press started the accreting
@@ -109,25 +147,61 @@ impl AccreteState {
     self.hold_count = self.hold_count.saturating_sub(1);
   }
 
-  /// A note-on happened on this bank's grid. If accreting, it joins the sustained
-  /// set immediately.
+  /// Key-down on *erase*: the accrete button's shape (hold or toggle, per the same
+  /// needs_holding). Returns true if this press started the erasing condition
+  /// (caller erases the notes currently held on this bank's grid).
+  pub fn press_erase(&mut self) -> bool {
+    let before = self.erasing();
+    self.erase_hold_count += 1;
+    if !self.needs_holding {
+      self.erase_mode_on = !self.erase_mode_on;
+    }
+    self.erasing() && !before
+  }
+
+  /// Key-up on *erase*: only meaningful in needs-holding mode, but always tracked.
+  pub fn release_erase(&mut self) {
+    self.erase_hold_count = self.erase_hold_count.saturating_sub(1);
+  }
+
+  /// A note-on happened on this bank's grid. If erasing, the pitch leaves the
+  /// sustained set (the note itself keeps sounding until its finger lifts; erase
+  /// overrides accrete); else if accreting, it joins immediately.
   pub fn note_played(&mut self, pitch: i32) {
-    if self.accreting() {
+    if self.erasing() {
+      self.sustained.remove(&pitch);
+    } else if self.accreting() {
       self.sustained.insert(pitch);
     }
   }
 
   /// Bulk-capture the notes currently held on this bank's grid -- called when the
-  /// accreting condition turns on.
+  /// accreting condition turns on. Inert while erase is live (erase wins).
   pub fn capture_held<I: IntoIterator<Item = i32>>(&mut self, held: I) {
+    if self.erasing() {
+      return;
+    }
     self.sustained.extend(held);
   }
 
+  /// Bulk-erase the notes currently held on this bank's grid -- called when the
+  /// erasing condition turns on (they keep sounding under their fingers).
+  pub fn erase_held<I: IntoIterator<Item = i32>>(&mut self, held: I) {
+    for pitch in held {
+      self.sustained.remove(&pitch);
+    }
+  }
+
   /// A note-off is happening on this bank's grid: should this note keep ringing (be
-  /// transferred to a sustain voice) instead of releasing? True if it is already in
-  /// the set, or the accreting condition holds at release time (joining the set on
-  /// the spot).
+  /// transferred to a sustain voice) instead of releasing? Under a live erasing
+  /// condition, never -- the pitch leaves the set on the spot (the continuous
+  /// reading, mirroring accrete's). Otherwise true if it is already in the set, or
+  /// the accreting condition holds at release time (joining the set on the spot).
   pub fn note_released_sustains(&mut self, pitch: i32) -> bool {
+    if self.erasing() {
+      self.sustained.remove(&pitch);
+      return false;
+    }
     if self.accreting() {
       self.sustained.insert(pitch);
     }
@@ -152,6 +226,12 @@ impl AccreteState {
 
   pub fn accrete_lit(&self) -> bool {
     self.accreting()
+  }
+
+  /// Lit while the erasing condition is live. Independent of `accrete_lit`: with
+  /// both conditions on, both buttons light (the override is behavioral).
+  pub fn erase_lit(&self) -> bool {
+    self.erasing()
   }
 
   #[cfg(test)]
@@ -223,7 +303,7 @@ mod tests {
   #[test]
   fn needs_holding_mode_accretes_only_while_held() {
     let mut s = AccreteState::new();
-    assert!(!s.press_needs_holding(), "flipping the mode with accrete unheld activates nothing");
+    assert!(!s.press_needs_holding().accrete, "flipping the mode with accrete unheld activates nothing");
     assert!(s.needs_holding_lit());
     assert!(s.press_accrete(), "accrete down starts the condition -> capture held notes");
     assert!(s.accrete_lit());
@@ -267,7 +347,7 @@ mod tests {
     s.press_accrete(); // tap: toggle mode on...
     s.release_accrete(); // ...and lift the finger
     assert!(s.accrete_lit());
-    assert!(!s.press_needs_holding(), "no activation: the condition just turned OFF");
+    assert!(!s.press_needs_holding().accrete, "no activation: the condition just turned OFF");
     assert!(!s.accrete_lit(), "needs-holding cancels the toggled mode");
     assert!(s.needs_holding_lit());
   }
@@ -279,13 +359,13 @@ mod tests {
     // physically-held button now satisfies the hold condition -- an activation edge
     // only if the condition was off; here it was ON (mode), so no new capture.
     s.press_accrete();
-    assert!(!s.press_needs_holding(), "condition stayed on (mode -> hold), no re-capture");
+    assert!(!s.press_needs_holding().accrete, "condition stayed on (mode -> hold), no re-capture");
     assert!(s.accrete_lit(), "still accreting via the held button");
     s.release_accrete();
     assert!(!s.accrete_lit());
     // With accrete held but the condition off (needs_holding on, nothing held), toggle
     // needs-holding back off: mode_on was cleared, so nothing activates.
-    assert!(!s.press_needs_holding(), "leaving needs-holding with no mode on: inert");
+    assert!(!s.press_needs_holding().accrete, "leaving needs-holding with no mode on: inert");
     assert!(!s.accrete_lit());
   }
 
@@ -321,5 +401,122 @@ mod tests {
     s.capture_held([60, 2, -56]);
     // 60 % 58 = 2, -56 mod 58 = 2: all one class.
     assert_eq!(s.sustained_classes(58), [2].into_iter().collect());
+  }
+
+  #[test]
+  fn erase_toggle_mode_removes_pressed_pitches_until_untoggled() {
+    let mut s = AccreteState::new();
+    s.press_accrete(); // accrete mode on
+    s.note_played(30);
+    s.note_played(42);
+    s.press_accrete(); // accrete mode off (both pitches stay)
+    assert!(s.press_erase(), "erase-mode entry is an activation (erase held notes)");
+    s.release_erase();
+    assert!(s.erase_lit(), "key-down toggled erase mode on; key-up does nothing");
+    s.note_played(30);
+    assert!(!s.note_released_sustains(30), "a pitch pressed under erase leaves the set");
+    assert_eq!(s.sustained_classes(58), [42].into_iter().collect(), "unpressed pitches stay");
+    // Un-toggle: erasure stops.
+    s.press_erase();
+    s.release_erase();
+    assert!(!s.erase_lit());
+    s.note_played(42);
+    assert!(s.note_released_sustains(42), "after erase mode ends, presses stop erasing");
+  }
+
+  #[test]
+  fn erase_activation_edges_mirror_accretes() {
+    let mut s = AccreteState::new();
+    assert!(s.press_erase(), "toggle-mode entry is an activation (erase held notes)");
+    s.release_erase();
+    assert!(!s.press_erase(), "toggle-mode exit: no activation");
+    s.release_erase();
+    s.press_needs_holding();
+    assert!(s.press_erase(), "first hold under needs-holding: activation");
+    assert!(!s.press_erase(), "second simultaneous hold: already on");
+    s.release_erase();
+    assert!(s.erase_lit(), "still held once");
+    s.release_erase();
+    assert!(!s.erase_lit(), "key-up ends the condition in needs-holding mode");
+  }
+
+  #[test]
+  fn needs_holding_governs_erase_like_accrete() {
+    let mut s = AccreteState::new();
+    s.press_accrete(); // tap: accrete mode on, fill the set
+    s.release_accrete();
+    s.note_played(30);
+    s.press_accrete(); // tap: and off again
+    s.release_accrete();
+    s.press_needs_holding();
+    s.press_erase();
+    assert!(s.erase_lit(), "erase live while held");
+    s.note_played(30);
+    assert!(!s.note_released_sustains(30), "pressed under a held erase -> removed");
+    s.release_erase();
+    assert!(!s.erase_lit());
+    s.note_played(30); // does nothing: neither condition live
+    assert!(!s.note_released_sustains(30), "30 was erased and never re-added");
+  }
+
+  #[test]
+  fn entering_needs_holding_cancels_a_toggled_erase_mode() {
+    let mut s = AccreteState::new();
+    s.press_erase(); // toggle erase mode on...
+    s.release_erase(); // ...and lift
+    assert!(s.erase_lit());
+    let a = s.press_needs_holding();
+    assert!(!a.erase, "no activation: the condition just turned OFF");
+    assert!(!s.erase_lit(), "needs-holding cancels the toggled erase mode");
+  }
+
+  #[test]
+  fn flipping_needs_holding_with_erase_held_activates_erase() {
+    let mut s = AccreteState::new();
+    s.press_accrete();
+    s.note_played(30);
+    s.press_accrete(); // set holds 30; accrete off
+    s.press_needs_holding(); // needs-holding on
+    s.press_needs_holding(); // and back off (toggle semantics restored)
+    s.press_erase(); // toggle mode: erase on (and held)
+    let a = s.press_needs_holding(); // held button now satisfies the hold condition
+    assert!(!a.erase, "condition stayed on (mode -> hold): not an edge");
+    assert!(s.erase_lit(), "still erasing via the held button");
+    s.release_erase();
+    assert!(!s.erase_lit());
+  }
+
+  #[test]
+  fn erase_overrides_accrete_when_both_are_live() {
+    let mut s = AccreteState::new();
+    s.press_accrete(); // accrete mode on
+    s.note_played(30);
+    assert!(s.press_erase(), "erase mode on too (activation)");
+    s.note_played(30);
+    assert!(!s.note_released_sustains(30), "pressed under both -> erased, not re-added");
+    s.note_played(44);
+    assert!(!s.note_released_sustains(44), "a fresh pitch under both is NOT captured");
+    assert!(s.accrete_lit() && s.erase_lit(), "both LEDs show their own condition");
+    // capture_held is inert while erase is live (erase wins for bulk actions too).
+    s.capture_held([50]);
+    assert!(!s.note_released_sustains(50), "bulk capture under live erase adds nothing");
+    // Un-toggle erase: accrete mode is still on and resumes adding.
+    s.press_erase();
+    s.note_played(44);
+    assert!(s.note_released_sustains(44), "accrete resumes once erase ends");
+  }
+
+  #[test]
+  fn erase_held_bulk_removes_only_the_given_pitches() {
+    let mut s = AccreteState::new();
+    s.press_accrete();
+    s.capture_held([10, 20, 30]);
+    s.press_accrete(); // accrete off; set = {10, 20, 30}
+    s.press_erase(); // erase on: the caller bulk-erases held notes
+    s.erase_held([10, 30]);
+    assert_eq!(s.sustained_classes(58), [20].into_iter().collect(), "only the held pitches left");
+    s.press_erase(); // erase off again
+    s.release_erase();
+    assert!(s.note_released_sustains(20), "the survivor still sustains");
   }
 }

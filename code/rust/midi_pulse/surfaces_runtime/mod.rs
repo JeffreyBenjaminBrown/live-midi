@@ -233,11 +233,12 @@ struct GridSettings {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets (self if it has no volume strip).
   volume_controls_index: usize,
-  /// The three accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
-  /// trio drives its own per-monome accrete bank.
+  /// The accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
+  /// trio (+ optional erase) drives its own per-monome accrete bank.
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
+  erase_rect: [i32; 4],
   /// The global-distortion toggle's cell, `NO_RECT` when absent (one shared switch).
   distortion_rect: [i32; 4],
   /// The slide / mono toggles' cells, `NO_RECT` when absent (global switches too).
@@ -459,6 +460,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       clear_rect: accrete_rect_on(AccreteControlKind::Clear),
       needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
       accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
+      erase_rect: accrete_rect_on(AccreteControlKind::Erase),
       distortion_rect,
       slide_rect,
       mono_rect,
@@ -716,6 +718,7 @@ fn run(
       clear_rect: g.clear_rect,
       needs_holding_rect: g.needs_holding_rect,
       accrete_rect: g.accrete_rect,
+      erase_rect: g.erase_rect,
       distortion_rect: g.distortion_rect,
       slide_rect: g.slide_rect,
       mono_rect: g.mono_rect,
@@ -796,10 +799,11 @@ struct GridThread {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets the loudness of.
   volume_controls_index: usize,
-  /// The three accrete (sustain) buttons' cells on this grid (`NO_RECT` if absent).
+  /// The accrete (sustain) buttons' cells on this grid (`NO_RECT` if absent).
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
+  erase_rect: [i32; 4],
   /// The global-distortion toggle's cell on this grid (`NO_RECT` if absent).
   distortion_rect: [i32; 4],
   /// The slide / mono toggles' cells on this grid (`NO_RECT` if absent).
@@ -1098,8 +1102,11 @@ fn handle_key(
     if press {
       let activated = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
         .press_needs_holding();
-      if activated {
+      if activated.accrete {
         capture_grid_held(rt);
+      }
+      if activated.erase {
+        erase_grid_held(rt);
       }
     }
     return;
@@ -1113,6 +1120,21 @@ fn handle_key(
       }
     } else {
       rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_accrete();
+    }
+    return;
+  }
+  // The erase button (misc.org "erase button"): accrete's shape under the same
+  // needs-holding switch, but pressed pitches LEAVE this grid's sustained set
+  // (each keeps sounding until its own finger lifts).
+  if in_overlay(rt.erase_rect, cell) {
+    if press {
+      let activated =
+        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_erase();
+      if activated {
+        erase_grid_held(rt);
+      }
+    } else {
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_erase();
     }
     return;
   }
@@ -1290,14 +1312,39 @@ fn capture_grid_held_into(
   accrete: &Arc<Mutex<Vec<AccreteState>>>,
   grid: usize,
 ) {
-  let snapshot: Vec<i32> = {
-    let all = held_all.lock().unwrap_or_else(|e| e.into_inner());
-    all.get(grid).map(|m| m.values().copied().collect()).unwrap_or_default()
-  };
+  let snapshot = held_pitches(held_all, grid);
   let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
   if let Some(bank) = banks.get_mut(grid) {
     bank.capture_held(snapshot);
   }
+}
+
+/// The erase mirror of `capture_grid_held`: when the erasing condition turns on,
+/// the notes currently held on this grid leave the sustained set (they keep
+/// sounding under their fingers).
+fn erase_grid_held(rt: &GridThread) {
+  erase_grid_held_into(&rt.held_all, &rt.accrete, rt.grid_index);
+}
+
+fn erase_grid_held_into(
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  grid: usize,
+) {
+  let snapshot = held_pitches(held_all, grid);
+  let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(bank) = banks.get_mut(grid) {
+    bank.erase_held(snapshot);
+  }
+}
+
+/// Snapshot one grid's currently-held pitches (its own lock; never nested).
+fn held_pitches(
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  grid: usize,
+) -> Vec<i32> {
+  let all = held_all.lock().unwrap_or_else(|e| e.into_inner());
+  all.get(grid).map(|m| m.values().copied().collect()).unwrap_or_default()
 }
 
 /// Which accrete button a KMSS pedal mirrors, and for which pedal TRIPLE (0 =
@@ -1344,7 +1391,7 @@ fn feet_accrete_hook(
     }
     // Decide under the accrete lock, touch voices after it drops (the module's
     // no-nested-locks rule), exactly like the on-grid buttons.
-    let mut activated = false;
+    let mut activated = accrete::Activated::default();
     {
       let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
       let Some(state) = banks.get_mut(grid) else {
@@ -1355,15 +1402,22 @@ fn feet_accrete_hook(
         (AccreteControlKind::Clear, false) => state.release_clear(),
         (AccreteControlKind::NeedsHolding, true) => activated = state.press_needs_holding(),
         (AccreteControlKind::NeedsHolding, false) => {}
-        (AccreteControlKind::Accrete, true) => activated = state.press_accrete(),
+        (AccreteControlKind::Accrete, true) => activated.accrete = state.press_accrete(),
         (AccreteControlKind::Accrete, false) => state.release_accrete(),
+        // The pedals mirror only the trio; erase has no pedal (feet_accrete_button
+        // never yields it).
+        (AccreteControlKind::Erase, _) => return false,
       }
     }
     if button == AccreteControlKind::Clear && down {
       synth::release_sustained_voices(&voices, grid, release_secs, sample_rate);
     }
-    if activated {
+    if activated.accrete {
       capture_grid_held_into(&held_all, &accrete, grid);
+    }
+    if activated.erase {
+      // A pedal needs-holding flip can activate a physically-held ERASE button.
+      erase_grid_held_into(&held_all, &accrete, grid);
     }
     true
   })
@@ -1379,6 +1433,7 @@ fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
     (rt.clear_rect, button_level(s.clear_lit())),
     (rt.needs_holding_rect, button_level(s.needs_holding_lit())),
     (rt.accrete_rect, button_level(s.accrete_lit())),
+    (rt.erase_rect, button_level(s.erase_lit())),
   ];
   let mut classes = HashSet::new();
   for bank in banks.iter() {
@@ -1707,6 +1762,7 @@ mod tests {
       assert_eq!(g.clear_rect, [0, 15, 0, 15], "grid {:?} clear button", g.monome_id);
       assert_eq!(g.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
       assert_eq!(g.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
+      assert_eq!(g.erase_rect, [1, 14, 1, 14], "grid {:?} erase button", g.monome_id);
       assert_eq!(g.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
       assert_eq!(g.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
       assert_eq!(g.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);

@@ -309,10 +309,11 @@ The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
 *generally-valid* window now: it may sit on any grid that has an ~edo_note_grid~,
 not only in a full looper stack.
 
-An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Three
-kinds -- set by its ~control~ field -- form a per-monome all-or-nothing trio.
-Each monome's trio drives its OWN accrete bank: only notes fingered on that grid
-can join its sustained set, and its ~clear~ leaves the other bank ringing:
+An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Four
+kinds -- set by its ~control~ field: the clear / needs_holding / accrete trio is
+all-or-nothing per monome, and ~erase~ is optional on top of it. Each monome's
+buttons drive its OWN accrete bank: only notes fingered on that grid can join
+its sustained set, and its ~clear~ leaves the other bank ringing:
 
 #+begin_src toml
 [[monome_windows]]
@@ -320,17 +321,22 @@ id = "acc-clear-a"
 monome = "a"                 # must have an edo_note_grid
 kind = "accrete_control"
 rect = [0, 15, 0, 15]        # exactly one cell
-control = "clear"            # or "needs_holding" or "accrete"
+control = "clear"            # or "needs_holding", "accrete", "erase"
 #+end_src
 
 - ~clear~ (key-down; lit while pressed) silences and flushes this bank's sustained
   notes.
-- ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ must be
-  *held* or is itself a toggle.
+- ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ and
+  ~erase~ must be *held* or are themselves toggles.
 - ~accrete~: while the accreting condition is live (button held, or accrete mode
   toggled on), notes played on this grid -- plus notes already held here when it
   went live -- join the bank's *sustained set* and keep ringing after their fingers
   lift, until ~clear~. Lit while the condition is live, dim otherwise.
+- ~erase~ (optional): accrete's mirror image, under the same ~needs_holding~ rule.
+  While the erasing condition is live, pitches pressed on this grid -- plus those
+  already held when it went live -- LEAVE the sustained set; each keeps sounding
+  until its own finger lifts. With accrete and erase both live, erase wins. Lit
+  while the condition is live.
 
 Sustained notes paint like any sounding note (bright octave-equivalents on both
 grids) and follow the volume fader of the grid they came from. Re-fingering a

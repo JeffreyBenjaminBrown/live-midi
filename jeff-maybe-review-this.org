@@ -328,3 +328,22 @@ reverse it cheaply if you disagree.
 - On the monobright grid the change is mostly invisible (its "dim" was already
   faked by brief flashes, so the blink read as black <-> lit there); the
   varibright grid is where you'll see the difference.
+
+* erase button -- choices where the spec was silent
+
+- "Any pitch pressed is removed" got the same *continuous* reading as accrete's
+  capture: pitches already held when the erasing condition turns on are erased
+  at that moment, and a pitch whose finger lifts under a live erase is erased at
+  release. If you wanted press-edges only (a note held from before erase went
+  live keeps its membership), say so -- it's the =erase_held= call on activation
+  plus one branch in =note_released_sustains=.
+- With accrete and erase both live, BOTH buttons light and erase wins
+  behaviorally (presses remove; nothing is added, including bulk captures). The
+  alternative -- erase's LED suppressing accrete's while overridden -- is one
+  line in =accrete_view= if you want the lights to show the precedence.
+- Erase has no softstep pedal: the feet-accrete triples still mirror only
+  clear / needs-holding / accrete. A fourth pedal per grid would collide with
+  the drum pads (4-7), so I left feet out until you pick a pedal.
+- Config-wise ~erase~ is optional on top of the all-or-nothing trio (declaring
+  only erase is rejected for the same reason accrete-without-clear is). Both
+  2-monomes tomls (real + mock) now declare it at (1,14).

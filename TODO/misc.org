@@ -413,3 +413,25 @@ level. Before any tempo exists it still rests dim, so the button stays findable
 overlays now carry an LED level instead of a bool, so any button can paint
 off/dim/bright -- the erase button and future three-state buttons get that for
 free.)
+* DONE erase button [chat request, 2026-07-08]
+A fifth accrete-related button, at (1,14). The mode-select
+(requires-hold or toggle) button that affects the accrete button
+affects this one the same way. When in effect, any pitch pressed is
+removed from the sustained set, but continues playing until the finger
+that was used to identify that pitch is also removed. If both are on,
+erase overrides accrete.
+** [Claude] done -- =accrete_control= grew an optional =erase= kind, wired at (1,14) on both grids
+Exactly your spec: hold it (needs-holding on) or tap to toggle "erase mode"
+(needs-holding off); a pitch pressed under a live erase leaves this grid's
+sustained set and keeps sounding until its own finger lifts (the retrigger
+change already makes that press replace the drone's voice, so the handoff is
+seamless); erase beats accrete when both are live. Readings you might revisit
+(details in jeff-maybe-review-this.org, "erase button"):
+- notes already HELD when erase goes live are erased too, and a note released
+  under a live erase is erased at release -- the same continuous reading as
+  accrete's capture;
+- with both conditions on, BOTH LEDs light (the override is behavioral);
+- entering needs-holding cancels a toggled erase mode, like accrete's;
+- no pedal mirror (the softstep triples stay clear / needs-holding / accrete);
+- in the config schema the trio stays all-or-nothing and =erase= is optional on
+  top, so the older rigs need no edits.
