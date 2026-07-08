@@ -23,11 +23,13 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   by an octave. Reuses the looper's =edo_shift_pad=.
 - *waveform strip / selector* -- a 4-cell radio on a grid's top row
   (=[0,0]..[3,0]=): sine / triangle / square / saw, left to right. Each grid's strip
-  sets the *other* grid's timbre (cross-control). No AM/FM.
-- *volume strip / fader* -- the 12 cells right of the waveform strip (=[4,0]..[15,0]=): a
-  log fader over 30 dB, top cell = unity, starting at column 10. Like the waveform strip it
-  sets the *other* grid's loudness (cross-control), and it is *live* -- moving it rescales
-  that grid's already-sounding voices, not just future notes.
+  sets its *own* timbre (self-control, since 2026-07; the =controls= field can still
+  point strips across grids, but this rig no longer does). No AM/FM.
+- *(volume strip -- removed 2026-07.)* The old 12-cell fader right of the waveform
+  strip is gone (misc.org "drop the amplitude row"); per-waveform loudness now lives
+  in the config's =[[timbres]] amplitude= (hot-reloadable with 'r'), and the master
+  is the synth sink's =amplitude=. Cells 4..12 of the top row are play cells again;
+  13..15 belong to the polyrhythm pad.
 - *trail* -- up to ~trails_max~ recently played *pitch classes* (octave-independent; 9
   here), shared across both grids, shown dim on both as a backdrop; a currently-sounding
   class shows bright instead. Repeating a note refreshes its single entry (so hammering one
@@ -39,6 +41,37 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   voices; releasing one never cuts the other. Even two cells on one grid that collide
   to the same pitch are independent (one voice per finger). Voices are keyed by
   =(grid, cell)=, not by pitch (contrast the looper, which ref-counts by pitch).
+- *distortion toggle* -- a single cell at =(0,1)= (second row, far left) on each
+  grid: key-down flips a soft-clip distortion for THIS grid's voices (per-monome;
+  drums are untouched). The switched-on grids' voices are summed and distorted
+  together; a grid with its toggle off bypasses the clipper entirely. The curve's
+  =distortion_scale= / =distortion_shape= live on the synth sink; see
+  [[../../../learnings/distortion.org]].
+- *slide toggle* -- =(1,1)= (right of the distortion toggle): while on, a new note
+  on THIS grid re-triggers the nearest pitch released within the last
+  ~slide_candidate_window_ms~ and *glides* it into the new pitch over
+  ~slide_duration_ms~ (both in the ~[surfaces]~ table). A used slide source leaves
+  the candidate set. Per-monome switch; each grid keeps its own candidate history.
+- *mono toggle* -- =(1,2)= (below slide): while on, each new note cuts that grid's
+  other fingered notes (through the normal release path, so accrete still captures
+  them). With slide on too, the new note *steals* the cut note's voice and glides
+  it over -- true legato, no attack re-trigger. Per-monome switch, like the rest.
+- *feet-accrete toggle* -- =(0,14)= (just above the accrete trio): PER-GRID -- while
+  grid g's toggle is on, the KMSS pedal triple mapped to grid g (1/2/3 for the older
+  monobright grid, 8/9/0 for the other) mirrors g's accrete trio (clear /
+  needs-holding / accrete) instead of playing samples; pedals 4-7 keep drumming.
+  The softstep can mirror one monome, both, or neither. Holding pedal 3 or 0 IS
+  holding that bank's accrete button (the tether decoder reports foot lifts).
+- *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
+  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to set the tempo; the
+  factor buttons scale it exactly (2^a x 3^b); notes struck while a tempo is applied
+  pulse with a *descending sawtooth* at the applied tempo at their onset. One shared
+  state, mirrored on both grids. See *polyrhythm* below.
+- *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
+  of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
+  to the *sustained set* keep ringing after their fingers lift, until *clear*. One
+  accrete BANK per monome: a grid's trio drives only its own bank, and only notes
+  fingered on that grid can join it. See *sustain (accrete)* below.
 - *drumkit* -- the KMSS as nine TR-808 one-shots, velocity-sensitive (tether mode).
   Reused verbatim from =kmss-drumkit= (see [[./kmss-drumkit.org]]).
 
@@ -66,22 +99,25 @@ test (=surfaces_runtime::tests::two_grids_run_against_mock_grids=) against the
 
 * per-grid layout
 
-Both grids are identical except for which grid their strip controls. The whole
-16x16 is the play surface, with two overlays drawn on top:
+The two grids are identical. The whole 16x16 is the play surface, with two
+overlays drawn on top:
 
 #+begin_example
   col: 0   1   2   3   4   5  ...        13  14  15
-  row 0  [SIN TRI SQR SAW][ volume fader: columns 4..15 ]   <- top row controls the OTHER
-                                                               grid: waveform (0..3) + volume
-  row 1   .   .   .   .   .                    .   .   .
+  row 0  [SIN TRI SQR SAW]  .   .  (play cells)  x3  x2 TAP  <- waveform strip + polyrhythm
+                                                               (see the polyrhythm section)
+  row 1  DIST SLIDE  .  .  .                   .   .   .   <- per-grid toggles
+  row 2   .  MONO .   .   .                    .   .   .   <- per-grid toggle
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
-  row 14  .   .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- scroll pad
-  row 15  .   .   .   .   .  . . . . . . .  LEFT DOWN RIGHT  <- scroll pad
+  row 14 FEET .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- feet-accrete + scroll pad
+  row 15 CLR HOLD ACC  .  .  . . . . . . .  LEFT DOWN RIGHT  <- accrete + scroll pad
 #+end_example
 
-- The whole top row (0,0)..(15,0) and the pad cells (13..15, 14..15) *occlude* the play
-  grid: pressing them re-timbres / sets volume / scrolls rather than sounding a note.
+- The whole top row (0,0)..(15,0), the pad cells (13..15, 14..15), the accrete
+  buttons (0..2, 15), and the toggles -- distortion (0,1), slide (1,1), mono (1,2)
+  -- *occlude* the play grid: pressing them re-timbres / sets volume / scrolls /
+  sustains / toggles rather than sounding a note.
 - The scroll-pad corners follow the looper's convention: top-left = down an octave
   (notes sound lower), top-right = up an octave; arrows raise pitch down/right,
   lower it up/left. See =midi_pulse::edo_play=.
@@ -104,10 +140,17 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
   within ~1/trail_clobber_radius~ of an octave (1/27 here) -- so the dim backdrop stays
   sparse. Both are set in the ~[surfaces]~ table.
 - *Waveform strip*: the selected waveform is bright, the other three dim; a grid's strip
-  shows the waveform *it controls* (the other grid's timbre).
-- *Volume strip*: the active cell is lit, the rest dark; it shows the *other* grid's volume.
+  shows the waveform *it controls* (its own timbre, in this rig).
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
   occludes the edo grid beneath it -- no note or trail ever shows on a pad cell.
+- *Toggles* (distortion / slide / mono / feet-accrete): *dim* at rest, *bright*
+  while on. Every toggle is PER-GRID -- each grid's cell shows only its own
+  switch; nothing mirrors.
+- *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
+  clear while pressed, needs-holding while on, accrete while the accreting condition is
+  live. Each grid's trio shows its OWN bank (per-monome, not mirrored). A *sustained*
+  note still paints exactly like a fingered one -- bright octave-equivalents on BOTH
+  grids (it is sounding) -- until its own grid's clear.
 
 *Monobright vs varibright.* One of the two 16x16 grids (an old Series 256, id =m256-282=)
 cannot dim a single LED -- it thresholds any level <= 7 to off. So its "dim" (unselected
@@ -117,9 +160,9 @@ level. The runtime decides per grid from the *serial id* (both report type "mono
 With many dim cells lit at once the flash slows into mild flicker on the monobright grid
 -- an accepted trade.
 
-* the cross-grid waveform control (how to read it)
+* the waveform control (how to read it)
 
-Each grid's strip re-timbres the *other* grid. In the config this is the =controls=
+Each grid's strip re-timbres its *own* grid. In the config this is the =controls=
 field of the =waveform_selector= window:
 
 #+begin_src toml
@@ -128,34 +171,149 @@ id = "wave-a"
 monome = "a"
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "b"            # -> sets grid B's timbre
+controls = "a"            # -> sets grid A's own timbre
 #+end_src
 
-So: press a cell on *grid A's* strip -> *grid B's* future notes use that waveform,
-and grid A's strip lights the chosen cell (because A's strip *displays what it
-controls*, which is B's timbre). The change is *radio* semantics: it affects future
-notes on the target grid; notes already held keep their waveform. This keeps each
-grid visible while you shape the other's tone from across the table (6_plan-style
-"edit X on the not-X surface").
+So: press a cell on *grid A's* strip -> *grid A's* future notes use that waveform,
+and the strip lights the chosen cell (a strip always *displays what it controls*).
+The change is *radio* semantics: it affects future notes on the target grid; notes
+already held keep their waveform.
+
+Historical note: this rig originally *cross-controlled* (each strip set the OTHER
+grid, 6_plan-style "edit X on the not-X surface"); per =TODO/misc.org= (2026-07)
+the two-edo-grid rigs now self-control. The =controls= field still accepts any
+play grid, so cross-wiring remains a config choice, not a code change.
+
+* sustain ("accrete")
+
+Three buttons at each grid's bottom-left, driving one accrete *bank* per monome
+(misc.org "two monome-specific accrete banks"): grid A's trio controls only grid
+A's bank, only notes fingered on grid A can join it, and clear on grid B leaves
+grid A's drones ringing. Requested in =TODO/misc.org= "sustain (accrete)".
+
+| cell   | button        | on key-down                             | LED                     |
+|--------+---------------+-----------------------------------------+-------------------------|
+| (0,15) | clear         | silence + flush THIS grid's sustained set | bright while pressed  |
+| (1,15) | needs-holding | toggle how THIS grid's *accrete* behaves  | bright while on       |
+| (2,15) | accrete       | hold / toggle accretion (see below)     | bright while accreting  |
+
+- *needs-holding OFF* (the default): tapping *accrete* toggles "accrete mode". While
+  it is on, every note played on this grid -- plus any that were held here when it
+  turned on -- joins this bank's *sustained set*. Un-toggling stops additions;
+  nothing leaves the set.
+- *needs-holding ON*: notes fingered on this grid while *accrete* is physically held
+  join the set (including notes pressed before the hold began -- they are captured
+  at the moment the hold starts, or when they are released under a live hold).
+- A note in the set keeps ringing after its finger lifts -- the very same voice, so
+  the transition is seamless -- until this grid's *clear* flushes the bank. There is
+  no per-note removal.
+- Toggling *needs-holding* cancels an active accrete mode (the set is untouched).
+- The banks are fully independent: the other grid's trio, notes, and clear never
+  touch this one. The trio LEDs show their own grid's bank only.
+- Sustained voices follow the *volume fader* of the grid they came from, and paint
+  bright on both grids like any sounding note (you hear them everywhere, so you see
+  them everywhere).
+
+* distortion
+
+Each grid's =(0,1)= cell toggles distortion for THAT grid (key-down; key-up does
+nothing; per-monome, not mirrored). A grid's voices -- fingered and sustained --
+route to a *dirty bus* while its toggle is on; the dirty bus is summed and
+distorted (so two switched-on grids intermodulate, as the old global mode did),
+the switched-off grids' voices bypass the clipper entirely, and the two buses are
+summed before the output clamp (inside the oversampling loop, so the distortion
+harmonics don't alias). The drums bypass it always. The curve is the algebraic
+soft-clipper =f(y) = y / (1 + |y/s|^k)^(1/k)=
+([[../../../learnings/distortion.org]]); =s= and =k= are the sink's
+=distortion_scale= / =distortion_shape= (defaults 1.0 / 2.0 -- a clearly-audible,
+smooth saturation).
+
+* slide and mono
+
+*Slide* (=(1,1)=; key-down toggles; PER-GRID -- each grid's toggle governs its
+own notes): each grid remembers its recently *released* notes (audible releases
+only -- a note that became an accrete drone is still ringing and never a slide
+source). When a new note is struck with that grid's slide on, the nearest
+remembered pitch released within ~slide_candidate_window_ms~ (default 1000) is
+consumed as the *source*: the new note's voice starts at the source pitch and
+glides -- pitch-linearly -- into the struck pitch over ~slide_duration_ms~
+(default 100). Ties break toward the more recent release; a source is never
+reused.
+
+*Mono* (=(1,2)=; key-down toggles; PER-GRID, like every toggle): a new note
+cuts the same grid's other fingered notes. Cuts go through the ordinary release
+path: under a live accrete condition a cut note still joins the sustained set.
+
+*Mono + slide together* play like a true legato monosynth per grid: the new note
+does not strike a fresh voice at all -- it STEALS the voice of the note it cuts,
+gliding it into the new pitch while the envelope simply continues (no attack, no
+pluck re-trigger; the stolen voice keeps its timbre and gain). If the cut note
+becomes an accrete drone instead, it cannot be stolen -- the new note falls back
+to the ordinary slide above (a fresh strike gliding from the nearest recent
+release).
+
+All four toggles -- distortion, slide, mono, feet-accrete -- are per-monome;
+one grid can play as a legato monosynth while the other stays polyphonic.
+
+* feet accrete
+
+Each grid's =(0,14)= toggle (key-down flips; per-grid, NOT mirrored) hands that
+grid's accrete trio to your feet: pedals *1 / 2 / 3* act as the *older*
+(monobright) monome's *clear / needs-holding / accrete*, and pedals *8 / 9 / 0*
+as the other monome's -- each triple in the trio's on-grid order, and each only
+while its own grid's toggle is on. A mirroring pedal plays no sample; pedals 4-7
+(the hats and toms) keep drumming, and a triple whose toggle is off drums as
+usual -- so the softstep can accrete for one monome, both, or neither. Foot
+lifts are real releases (the tether decoder reports them), so *holding* pedal 3
+or 0 in needs-holding mode behaves exactly like holding that grid's accrete
+button. Turn a toggle off and its triple is drums again.
+
+* polyrhythm
+
+The top-right 3x2 pad (both grids, one shared state):
+
+| =(13,0)= x3 | =(14,0)= x2 | =(15,0)= tap |
+| =(13,1)= /3 | =(14,1)= /2 | =(15,1)= =1  |
+
+- *Tap tempo.* Tap twice within ~tap_tempo_window_ms~ (default 2000; the window
+  *rolls*, so a stale first tap simply re-arms) and the interval becomes the
+  *tapped tempo*. Taps pair up: a third tap inside the window does nothing until
+  its fourth arrives, and that pair overrides the first. The tap cell *blinks* --
+  lit for the first 10% of each cycle of the *applied* tempo, phase-anchored to
+  your taps -- and rests dim before any tempo exists.
+- *Factor.* Applied tempo = tapped x 2^a x 3^b. x2 / /2 / x3 / /3 nudge the
+  exponents (so x3 then /3 is *exactly* unity); =1 zeroes them. LEDs: each
+  direction lights while the factor leans its way; =1 lights exactly when pressing
+  it would change something.
+- *The pulse.* Every note struck while a tempo is applied gets a descending
+  sawtooth amplitude pulse -- full at onset, fading to silence, restarting each
+  cycle -- at the applied tempo *at its onset* (later tempo changes leave sounding
+  notes alone; notes are deliberately NOT phase-synced to each other). This is a
+  separate mechanism from any ~[[timbres]]~ AM. Before the first tap, notes play
+  un-pulsed; there is no "off" other than never having tapped (see
+  jeff-maybe-review-this.org).
 
 * the KMSS drumkit
 
 Identical to [[./kmss-drumkit.org]] -- the same pedal->sample map, the same tether-
 mode velocity path, the same =cpal_sampler= sink. The surfaces runtime *consumes*
 the drumkit's bring-up (=drumkit_runtime::start=) rather than forking it, so any
-future drum change (kit, decode, velocity feel) is inherited for free. Pedal map:
+future drum change (kit, decode, velocity feel) is inherited for free. Pedal map
+(see =kmss-drumkit.org= "the mapping" for the *ditto* pad's semantics and the
+wood-block-at-8 / cowbell-at-9 rationale):
 
-| foot  | pedal | voice        |
-|-------+-------+--------------|
-| left  |     1 | kick         |
-| left  |     2 | snare        |
-| left  |     6 | low tom      |
-| left  |     7 | high tom     |
-| left  |     8 | crash        |
-| right |     4 | hat          |
-| right |     5 | ride         |
-| right |     9 | cowbell      |
-| right |     0 | wood block   |
+| foot  | pedal | voice                    |
+|-------+-------+--------------------------|
+| left  |     1 | snare                    |
+| left  |     2 | kick                     |
+| left  |     6 | high tom                 |
+| left  |     7 | low tom                  |
+| left  |     8 | wood block               |
+| right |     4 | closed hat               |
+| right |     5 | open hat                 |
+| right |     9 | cowbell                  |
+| right |     0 | crash (electronic)       |
+| --    |     3 | ditto (repeats last hit) |
 
 * what is deliberately NOT here
 

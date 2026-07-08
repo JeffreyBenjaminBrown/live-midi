@@ -41,6 +41,12 @@ pub enum DrumEvent {
   Fire { label: u8, velocity: u8 },
   /// The pad's current voice should get louder -- ramp it toward `velocity`.
   Revise { label: u8, velocity: u8 },
+  /// The pad's pressure fell below the off threshold (or de-sticked to zero): the
+  /// foot lifted. One-shot samples ignore this; the feet-accrete mirror needs it
+  /// (holding a pedal = holding the accrete button). A debounce-suppressed press
+  /// releases without ever having Fired -- consumers must tolerate an unpaired
+  /// Release.
+  Release { label: u8 },
 }
 
 /// Linear gain multiplier for a velocity 1..127, spread over `db_range` dB (vel 127 -> 1.0).
@@ -142,7 +148,10 @@ impl TetherDecoder {
         }
         PadState::Idle => PadState::Idle,
         // Released (or de-sticked to 0) before the window closed: the voice plays out.
-        PadState::Watching { .. } if sum < self.off_sum => PadState::Idle,
+        PadState::Watching { .. } if sum < self.off_sum => {
+          out.push(DrumEvent::Release { label });
+          PadState::Idle
+        }
         PadState::Watching { onset, peak, sent_vel } => {
           let peak = peak.max(sum);
           let velocity = velocity_from_peak(peak, self.velocity_full_scale);
@@ -158,7 +167,10 @@ impl TetherDecoder {
             PadState::Watching { onset, peak, sent_vel }
           }
         }
-        PadState::Held if sum < self.off_sum => PadState::Idle,
+        PadState::Held if sum < self.off_sum => {
+          out.push(DrumEvent::Release { label });
+          PadState::Idle
+        }
         PadState::Held => PadState::Held,
       };
     }
@@ -438,6 +450,43 @@ mod tests {
     let mut ev = Vec::new();
     d.poll(t0, &mut ev);
     assert!(fires(&ev).is_empty(), "non-key CCs produce no drum hits");
+  }
+
+  #[test]
+  fn a_release_event_follows_the_foot_lifting() {
+    // Fire on press; a Release fires once the pad's sum falls below the off
+    // threshold -- whether that happens during the attack window or after it. The
+    // feet-accrete mirror relies on this down/up pairing (sensor base 44 = label 1).
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    let mut ev = Vec::new();
+    d.on_cc(44, 100, t0);
+    d.poll(t0, &mut ev);
+    assert!(ev.iter().any(|e| matches!(e, DrumEvent::Fire { label: 1, .. })), "fires on press");
+    // Still held past the attack window: no Release yet.
+    ev.clear();
+    d.on_cc(44, 100, t0 + ATTACK * 2);
+    d.poll(t0 + ATTACK * 2, &mut ev);
+    assert!(!ev.iter().any(|e| matches!(e, DrumEvent::Release { .. })), "held: no Release");
+    // Lift the foot (sum to zero): a Release for the same label.
+    ev.clear();
+    d.on_cc(44, 0, t0 + ATTACK * 3);
+    d.poll(t0 + ATTACK * 3, &mut ev);
+    assert!(
+      ev.iter().any(|e| matches!(e, DrumEvent::Release { label: 1 })),
+      "the lift emits a Release: {ev:?}",
+    );
+    // A quick tap released DURING the window also pairs Fire with Release.
+    ev.clear();
+    d.on_cc(44, 100, t0 + ATTACK * 5);
+    d.poll(t0 + ATTACK * 5, &mut ev);
+    d.on_cc(44, 0, t0 + ATTACK * 5 + Duration::from_millis(2));
+    d.poll(t0 + ATTACK * 5 + Duration::from_millis(2), &mut ev);
+    assert!(ev.iter().any(|e| matches!(e, DrumEvent::Fire { label: 1, .. })));
+    assert!(
+      ev.iter().any(|e| matches!(e, DrumEvent::Release { label: 1 })),
+      "an in-window lift also emits a Release: {ev:?}",
+    );
   }
 
   #[test]

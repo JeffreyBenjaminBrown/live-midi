@@ -1,4 +1,10 @@
-* move to README
+* ? easy
+** special keys for changing timbre
+** each pad gets velocity-tuned separately
+** synth with momentum
+** each note should evolve
+Could just reduce each parameter's amplitude logarithmically.
+* internalize | move to README
 ** remember this program
 *** the softstep meter
 python3 code/python/softstep/meter/main.py
@@ -7,6 +13,8 @@ python3 code/python/softstep/meter/main.py
 Just prefix 'pw-jack' to the command:
 
 pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
+** run the KMSS drumkit (without monomes)
+pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 * pitch-aware energy feedback synth
 * Need a way to get only slightly buzzier.
 From sine to triangle is too much,
@@ -35,29 +43,10 @@ Let's also introduce a 'flush' command, triggered with 'f', that closes all open
 *** if some attacks sound dull
 The lever is tau (GAIN_RAMP_SECS, currently 5 ms, a single const in audio.rs): shorter (say 2–3 ms) lets the gain reach the peak before the transient is over — snappier, more of the hit's character at full velocity — at the cost of getting nearer a hard step. If it sounds dull when you try it, drop tau before you drop the whole approach. Want me to pull GAIN_RAMP_SECS out into the config so you can
 tune it by ear with a reload?
-* easy
-** edo synth attack should be louder
-to distinguish new notes
-** slide
-Time to transition is calculated as the time
-between the last two touches. That time is updated continuously,
-so (e.g.) if the destination is tapped again ... uh ...
-** mono
-** each pad gets velocity-tuned separately
-* each note should evolve
-Could just reduce each parameter's amplitude logarithmically.
-* KMSS drumkit
-** run the KMSS drumkit
-pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 * looper (includes bugs)
 ** BUG: Can't play a note live when the loop is, or vice-versa.
 ** shift one row of the loop in time
 ** A loop view can be collapsed along pitch, time or both.
-* remember to run the synth 'under pw-jack'
-Just prefix 'pw-jack' to the command:
-
-pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
-* lately using [[./code/rust/configs/README.org]]
 * BUG: Can't play a note live when the loop is, or vice-versa.
 * shift one row of the loop in time
 * A loop view can be collapsed along pitch, time or both.
@@ -194,12 +183,6 @@ Press the old note (it is displayed).
 Then press the new note.
 It is moved. The display updates.
 *** transpose chord slot
-* better FM
-Through-Zero FM: The most advanced linear synths use "Through-Zero FM." If the modulation forces the frequency below 0 Hz, the oscillator doesn't stop; it flips its phase (180°) and runs backward, exactly like a Ring Modulator (DSB-SC) does at the zero line.
-* ONGOING the volume starts too high
-It's at an unreachable value, beyond the maximum amplitude.
-* TODO multi-loop
-** What are the extant loop controls?
 * ONGOING , maybe done : [[./TODO/DONE/timbre-manip]]
 * AWAITS looper improvements
 ** the old plans
@@ -289,9 +272,6 @@ of the bottom-left key, not the top-left
 by source (chord storage v. live edo grid)
 by pitch order among voices
 by pitch range
-* dubstep
-** special keys are for changing timbre
-** make a scide synth with momentum
 * arpeggiator
 ** one hand plays pattern
 ** one hand chooses notes

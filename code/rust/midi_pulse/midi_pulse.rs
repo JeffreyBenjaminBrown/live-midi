@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Two-plus EDO play grids and/or a KMSS drumkit composed in one config. Leads the
     // dispatch: it is a superset of both the drumkit and sawwave predicates (it can
     // carry softstep windows AND edo grids), so it must be checked before them.
-    surfaces_runtime::run_from_config(&config)?;
+    surfaces_runtime::run_from_config(&config, Some(&config_name))?;
   } else if is_drumkit_config(&config) {
     // A KMSS drumkit config is unambiguous (it has softstep_windows and no
     // monome windows), so it can lead the remaining dispatch.

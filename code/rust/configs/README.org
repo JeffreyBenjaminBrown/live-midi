@@ -203,10 +203,39 @@ amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# Optional (defaults shown). Pluck envelope: a strike peaks, then decays toward
+# sustain_level x peak with time constant decay_secs (>= 1.0 / <= 0 disable):
+sustain_level = 0.35
+decay_secs = 0.5
+# Optional. Global distortion curve, heard only under a distortion_toggle window:
+distortion_scale = 1.0
+distortion_shape = 2.0
 #+end_src
 
 A third sink kind, ~cpal_sampler~ (a one-shot WAV player), drives the SoftStep
 ~drumkit~ window; see the SoftStep section below.
+
+* Timbres (the waveform strip's four choices)
+
+An optional top-level ~[[timbres]]~ array (exactly four entries when present)
+defines what each cell of a ~waveform_selector~ strip selects, left to right.
+Absent, the strip selects the plain four waveforms -- identical behavior. Each
+entry has a ~waveform~ ("sin"/"sine", "tri"/"triangle", "square", "saw") plus
+numeric parameters, all optional and (except ~amplitude~, default 1.0) "off":
+
+#+begin_src toml
+[[timbres]]
+waveform = "saw"
+amplitude = 0.8        # per-timbre gain below the volume fader; 0..1 typical
+am_depth = 0.4         # tremolo depth 0..1 (0 = off)
+am_freq = 3.0          # tremolo Hz, ~0.1..10
+am_shape = 0.2         # LFO morph 0..1 (0 smooth .. 1 near-square)
+fm_depth_cents = 12.0  # vibrato cents (~5..50 subtle; 0 = off)
+fm_freq = 5.5          # vibrato Hz, ~0.1..10
+#+end_src
+
+The tremolo's LFO wave family comes from the instrument-wide ~[am]~ table. Notes
+snapshot their timbre at note-on (radio semantics).
 
 * Monome windows
 
@@ -239,19 +268,24 @@ Built-in unbundled window kinds:
 - ~remap_undo_button~
 - ~waveform_selector~
 - ~volume_strip~
+- ~accrete_control~
+- ~distortion_toggle~
+- ~slide_toggle~
+- ~mono_toggle~
+- ~softstep_accretes_toggle~
+- ~tap_tempo_pad~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
-to right) that sets the timbre of the monome named by its ~controls~ field -- which
-may differ from the window's own ~monome~. The surfaces runtime uses it to let each
-of two play grids re-timbre the *other* (see
+to right) that sets the timbre of the monome named by its ~controls~ field -- usually
+the window's own ~monome~, though a different play grid is legal (cross-control).
+The surfaces runtime uses it to give each play grid its own timbre control (see
 [[./2-monomes_58-8-1_kmss-drums.org]]). Its rect must cover exactly the four cells
 (one row, four wide).
 
 A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
-loudness of the monome named by its ~controls~ field. Like ~waveform_selector~ it
-*cross-controls* (each grid's strip sets the OTHER grid's volume) and is *live* --
-moving it rescales that grid's sounding voices, not just future notes. The active
-cell is lit, the rest dark.
+loudness of the monome named by its ~controls~ field (again usually its own grid)
+and is *live* -- moving it rescales that grid's sounding voices, not just future
+notes. The active cell is lit, the rest dark.
 
 #+begin_src toml
 [[monome_windows]]
@@ -259,7 +293,7 @@ id = "vol-a"
 monome = "a"               # drawn on grid A's top row
 kind = "volume_strip"
 rect = [4, 0, 15, 0]       # 12 cells, right of the 4-cell waveform strip
-controls = "b"             # -> sets grid B's loudness
+controls = "a"             # -> sets grid A's own loudness
 #+end_src
 
 #+begin_src toml
@@ -268,12 +302,81 @@ id = "wave-a"
 monome = "a"               # drawn on grid A's top row
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "b"             # -> sets grid B's timbre (must have an edo_note_grid)
+controls = "a"             # -> sets grid A's own timbre (must have an edo_note_grid)
 #+end_src
 
 The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
 *generally-valid* window now: it may sit on any grid that has an ~edo_note_grid~,
 not only in a full looper stack.
+
+An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Three
+kinds -- set by its ~control~ field -- form a per-monome all-or-nothing trio.
+Each monome's trio drives its OWN accrete bank: only notes fingered on that grid
+can join its sustained set, and its ~clear~ leaves the other bank ringing:
+
+#+begin_src toml
+[[monome_windows]]
+id = "acc-clear-a"
+monome = "a"                 # must have an edo_note_grid
+kind = "accrete_control"
+rect = [0, 15, 0, 15]        # exactly one cell
+control = "clear"            # or "needs_holding" or "accrete"
+#+end_src
+
+- ~clear~ (key-down; lit while pressed) silences and flushes this bank's sustained
+  notes.
+- ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ must be
+  *held* or is itself a toggle.
+- ~accrete~: while the accreting condition is live (button held, or accrete mode
+  toggled on), notes played on this grid -- plus notes already held here when it
+  went live -- join the bank's *sustained set* and keep ringing after their fingers
+  lift, until ~clear~. Lit while the condition is live, dim otherwise.
+
+Sustained notes paint like any sounding note (bright octave-equivalents on both
+grids) and follow the volume fader of the grid they came from.
+
+A ~distortion_toggle~ is a single-cell on/off for a *per-monome* soft-clip
+distortion (surfaces runtime; at most one per monome, each grid's toggle switching
+its OWN voices onto the distorted bus -- grids left off bypass the clipper). The
+curve's parameters live on the ~cpal_synth~ sink:
+
+#+begin_src toml
+[[sinks]]
+kind = "cpal_synth"
+# ...
+distortion_scale = 1.0   # s: the asymptote; ~0.3 heavy, ~1.0 strong, >=5 nearly clean
+distortion_shape = 2.0   # k: elbow harshness; 1 gentle, 2 smooth, 4-8 hard-ish
+
+[[monome_windows]]
+id = "dist-a"
+monome = "a"              # must have an edo_note_grid
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]       # exactly one cell
+#+end_src
+
+The button is dim at rest, bright while on; key-down toggles, key-up does nothing.
+See =learnings/distortion.org= for the curve family.
+
+A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
+(single cell, at most one of each per monome, dim/bright LED). All are
+per-grid switches, like the distortion toggle. Slide: a new note on that grid
+re-triggers the nearest pitch released within ~slide_candidate_window_ms~ and
+glides it into the new pitch over ~slide_duration_ms~ (both optional in the
+~[surfaces]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
+other fingered notes -- its own grid's switch (and with that grid's slide on,
+the new note *steals* the cut note's voice and glides it over -- true legato,
+no attack re-trigger).
+Softstep-accretes: while grid g's toggle is on, the
+KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
+for the other) mirrors g's accrete trio instead of playing samples -- one
+monome, both, or neither (see the config's .org).
+
+A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
+per monome, on a monome with an ~edo_note_grid~): tap twice within
+~[surfaces].tap_tempo_window_ms~ (default 2000) to set a tempo, scale it with the
+exact 2^a x 3^b factor buttons, and every note struck while a tempo is applied
+pulses with a descending sawtooth at that tempo (fixed at onset). The tap cell
+blinks at 10% duty at the applied tempo.
 
 The bundled 12-EDO offset/root board is:
 

@@ -38,9 +38,15 @@ pub struct SawNoteSink {
   sample_rate: f32,
   attack_secs: f32,
   release_secs: f32,
+  /// The pluck envelope for every struck note (see `voices::pluck_envelope`).
+  sustain_env: f32,
+  decay_per_sample: f32,
 }
 
 impl SawNoteSink {
+  /// Test convenience: `with_pluck` minus the pluck (the flat envelope). The
+  /// runtime itself always calls `with_pluck` with the config's values.
+  #[cfg(test)]
   pub fn new(
     voices: Arc<Mutex<VoiceMap>>,
     fund: f64,
@@ -49,6 +55,25 @@ impl SawNoteSink {
     attack_secs: f32,
     release_secs: f32,
   ) -> Self {
+    Self::with_pluck(voices, fund, edo, sample_rate, attack_secs, release_secs, 1.0, 0.0)
+  }
+
+  /// `new` plus the pluck envelope (`sustain_level` / `decay_secs`, see
+  /// `voices::pluck_envelope`). `new` itself keeps the flat envelope, so the
+  /// existing tests and callers are unchanged.
+  #[allow(clippy::too_many_arguments)]
+  pub fn with_pluck(
+    voices: Arc<Mutex<VoiceMap>>,
+    fund: f64,
+    edo: i32,
+    sample_rate: f32,
+    attack_secs: f32,
+    release_secs: f32,
+    sustain_level: f32,
+    decay_secs: f32,
+  ) -> Self {
+    let (sustain_env, decay_per_sample) =
+      crate::voices::pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
     SawNoteSink {
       voices,
       refs: HashMap::new(),
@@ -58,6 +83,8 @@ impl SawNoteSink {
       sample_rate,
       attack_secs,
       release_secs,
+      sustain_env,
+      decay_per_sample,
     }
   }
 
@@ -81,10 +108,15 @@ impl SawNoteSink {
       VoiceState {
         id,
         freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
+        tempo_am_freq: 0.0, tempo_am_phase: 0.0,
         phase: 0.0,
         env: 0.0,
         target_env: 1.0,
         ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        sustain_env: self.sustain_env,
+        decay_per_sample: self.decay_per_sample,
         timbre,
         am_phase: 0.0,
         fm_phase: 0.0,

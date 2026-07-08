@@ -9,11 +9,11 @@ title = "Two monomes (58-8-1) + KMSS drums"
 #     independent scroll register and its own voices;
 #   - the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.
 #
-# Each grid also carries a 4-cell waveform strip on its top row that sets the
-# *other* grid's timbre (cross-control), and a 3x2 scroll pad in the bottom-
-# right that moves *that* grid's pitch window. The same pitch fingered on both
-# grids is two independent voices (releasing one never cuts the other), each in
-# its grid's currently-selected waveform.
+# Each grid also carries a 4-cell waveform strip on its top row that sets its
+# OWN timbre, a volume fader that sets its OWN loudness, and a 3x2 scroll pad
+# in the bottom-right that moves *that* grid's pitch window. The same pitch
+# fingered on both grids is two independent voices (releasing one never cuts
+# the other), each in its grid's currently-selected waveform.
 #
 # Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
 #   pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
@@ -27,6 +27,13 @@ title = "Two monomes (58-8-1) + KMSS drums"
 trail_clobber_radius = 27
 # How many distinct pitch classes the trail keeps at once (newest first).
 trails_max = 9
+# Slide (the slide_toggle windows): a new note may glide from a note released
+# within this many ms...
+slide_candidate_window_ms = 1000
+# ...taking this long to arrive at the new pitch.
+slide_duration_ms = 100
+# Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
+tap_tempo_window_ms = 2000
 
 [[tunings]]
 id = "main"
@@ -34,6 +41,31 @@ edo = 46
 x_step = 9
 y_step = 1
 fundamental_hz = 80
+
+# ---------------------------------------------------------------------------
+# The four selectable timbres behind each grid's waveform strip, left to right.
+# Each has a base waveform ("sin"/"sine", "tri"/"triangle", "square", "saw") and
+# numeric parameters; everything but amplitude ships "off". Ranges:
+#   amplitude      per-timbre gain, multiplied below the volume fader; 0..1
+#                  typical (above 1 amplifies -- watch the clamp). Default 1.0.
+#   am_depth       tremolo depth 0..1 (0 = off; 1 dips to silence)
+#   am_freq        tremolo rate in Hz; ~0.1..10 musical (default 1.0)
+#   am_shape       tremolo LFO morph 0..1 (0 smooth .. 1 near-square chop)
+#   fm_depth_cents vibrato depth in cents; ~5..50 subtle, 100+ seasick (0 = off)
+#   fm_freq        vibrato rate in Hz; ~0.1..10 musical (default 1.0)
+# ---------------------------------------------------------------------------
+
+[[timbres]]
+waveform = "sin"
+
+[[timbres]]
+waveform = "tri"
+
+[[timbres]]
+waveform = "square"
+
+[[timbres]]
+waveform = "saw"
 
 # The play-grid synth (both grids' voices go here; each voice carries its grid's
 # waveform). Waveform-only timbre -- gain/AM/FM stay at their inert defaults.
@@ -49,6 +81,20 @@ amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
 accretion_level = 0.5
+# Pluck envelope: a fresh strike peaks, then decays exponentially toward
+# sustain_level x peak (time constant decay_secs), so new notes ring out over held
+# ones -- a rough plucked-string curve that plateaus instead of dying (held notes
+# and accrete drones keep ringing at the sustain).
+# sustain_level: fraction of the strike peak; 0.2..0.5 natural, >= 1.0 disables.
+sustain_level = 0.35
+# decay_secs: the decay time constant; ~0.3 snappy, ~1.5 slow ring, <= 0 disables.
+decay_secs = 0.5
+# Distortion (per-monome; heard only while a grid's distortion_toggle is on): the
+# soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the switched-on grids' summed mix.
+# scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.
+distortion_scale = 1.0
+# shape k: elbow harshness; 1 gentlest, 2 smooth sweet spot, 4-8 hard-ish edge.
+distortion_shape = 2.0
 
 # The drum sampler (one-shot WAVs). Same cpal/JACK path as the synth.
 [[sinks]]
@@ -73,7 +119,7 @@ prefix = "/surface-b"
 select.size = [16, 16]
 
 # ---------------------------------------------------------------------------
-# GRID A -- 58-EDO play surface. Its waveform strip sets grid B's timbre.
+# GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 # ---------------------------------------------------------------------------
 
 [[monome_windows]]
@@ -84,23 +130,14 @@ rect = [0, 0, 15, 15]
 tuning = "main"
 sink = "synth"
 
-# 4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID B.
+# 4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID A.
 [[monome_windows]]
 id = "wave-a"
 monome = "a"
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "b"
+controls = "a"
 
-# 12-cell volume strip filling the rest of the top row, sets GRID B's loudness. Live
-# (a fader, not a radio), logarithmic over 30 dB, top cell = unity; the active cell is
-# lit and the rest dark. Starts at column 10 (5 cells of headroom to its right).
-[[monome_windows]]
-id = "vol-a"
-monome = "a"
-kind = "volume_strip"
-rect = [4, 0, 15, 0]
-controls = "b"
 
 # 3x2 scroll pad, bottom-right: arrows shift grid A's pitch window by one cell,
 # the two top corners by an octave.
@@ -110,8 +147,83 @@ monome = "a"
 kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
 
+# The sustain ("accrete") buttons, bottom row left. One accrete BANK per monome:
+# this trio drives only this grid's bank, and only notes fingered on this grid can
+# join it (see TODO/misc.org "sustain (accrete)"):
+#   (0,15) clear         -- silence + flush this grid's sustained notes (lit while pressed)
+#   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
+#   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
+#                           they ring until cleared
+[[monome_windows]]
+id = "acc-clear-a"
+monome = "a"
+kind = "accrete_control"
+rect = [0, 15, 0, 15]
+control = "clear"
+
+[[monome_windows]]
+id = "acc-hold-a"
+monome = "a"
+kind = "accrete_control"
+rect = [1, 15, 1, 15]
+control = "needs_holding"
+
+[[monome_windows]]
+id = "acc-accrete-a"
+monome = "a"
+kind = "accrete_control"
+rect = [2, 15, 2, 15]
+control = "accrete"
+
+# The distortion toggle (key-down flips; see learnings/distortion.org for the
+# curve). PER-GRID: this grid's button routes this grid's voices through the
+# distorted bus; a grid left off bypasses the clipper.
+[[monome_windows]]
+id = "dist-a"
+monome = "a"
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]
+
+# Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
+# nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+[[monome_windows]]
+id = "slide-a"
+monome = "a"
+kind = "slide_toggle"
+rect = [1, 1, 1, 1]
+
+# Mono toggle (key-down flips; PER-GRID): each new note cuts this grid's other
+# fingered notes (with slide on, the new note steals the cut voice -- legato).
+[[monome_windows]]
+id = "mono-a"
+monome = "a"
+kind = "mono_toggle"
+rect = [1, 2, 1, 2]
+
+# Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
+# to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
+# mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
+# playing samples. The softstep can mirror one monome, both, or neither. Just
+# above the on-grid trio.
+[[monome_windows]]
+id = "feet-accrete-a"
+monome = "a"
+kind = "softstep_accretes_toggle"
+rect = [0, 14, 0, 14]
+
+# The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
+# [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
+# duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
+# while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+# per note, separate from any [[timbres]] AM).
+[[monome_windows]]
+id = "poly-a"
+monome = "a"
+kind = "tap_tempo_pad"
+rect = [13, 0, 15, 1]
+
 # ---------------------------------------------------------------------------
-# GRID B -- 58-EDO play surface. Its waveform strip sets grid A's timbre.
+# GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 # ---------------------------------------------------------------------------
 
 [[monome_windows]]
@@ -127,20 +239,89 @@ id = "wave-b"
 monome = "b"
 kind = "waveform_selector"
 rect = [0, 0, 3, 0]
-controls = "a"
+controls = "b"
 
-[[monome_windows]]
-id = "vol-b"
-monome = "b"
-kind = "volume_strip"
-rect = [4, 0, 15, 0]
-controls = "a"
 
 [[monome_windows]]
 id = "scroll-b"
 monome = "b"
 kind = "edo_shift_pad"
 rect = [13, 14, 15, 15]
+
+# The sustain ("accrete") buttons, bottom row left. One accrete BANK per monome:
+# this trio drives only this grid's bank, and only notes fingered on this grid can
+# join it (see TODO/misc.org "sustain (accrete)"):
+#   (0,15) clear         -- silence + flush this grid's sustained notes (lit while pressed)
+#   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
+#   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
+#                           they ring until cleared
+[[monome_windows]]
+id = "acc-clear-b"
+monome = "b"
+kind = "accrete_control"
+rect = [0, 15, 0, 15]
+control = "clear"
+
+[[monome_windows]]
+id = "acc-hold-b"
+monome = "b"
+kind = "accrete_control"
+rect = [1, 15, 1, 15]
+control = "needs_holding"
+
+[[monome_windows]]
+id = "acc-accrete-b"
+monome = "b"
+kind = "accrete_control"
+rect = [2, 15, 2, 15]
+control = "accrete"
+
+# The distortion toggle (key-down flips; see learnings/distortion.org for the
+# curve). PER-GRID: this grid's button routes this grid's voices through the
+# distorted bus; a grid left off bypasses the clipper.
+[[monome_windows]]
+id = "dist-b"
+monome = "b"
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]
+
+# Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
+# nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+[[monome_windows]]
+id = "slide-b"
+monome = "b"
+kind = "slide_toggle"
+rect = [1, 1, 1, 1]
+
+# Mono toggle (key-down flips; PER-GRID): each new note cuts this grid's other
+# fingered notes (with slide on, the new note steals the cut voice -- legato).
+[[monome_windows]]
+id = "mono-b"
+monome = "b"
+kind = "mono_toggle"
+rect = [1, 2, 1, 2]
+
+# Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
+# to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
+# mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
+# playing samples. The softstep can mirror one monome, both, or neither. Just
+# above the on-grid trio.
+[[monome_windows]]
+id = "feet-accrete-b"
+monome = "b"
+kind = "softstep_accretes_toggle"
+rect = [0, 14, 0, 14]
+
+# The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
+# [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
+# duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
+# while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+# per note, separate from any [[timbres]] AM).
+[[monome_windows]]
+id = "poly-b"
+monome = "b"
+kind = "tap_tempo_pad"
+rect = [13, 0, 15, 1]
 
 # ---------------------------------------------------------------------------
 # KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit layout.
@@ -157,13 +338,21 @@ kind = "drumkit"
 sink = "drums"
 # Detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml.
 pads = [
-  { pedal = 1, sample = "kick.wav" },
-  { pedal = 2, sample = "snare.wav" },
-  { pedal = 6, sample = "low_tom.wav" },
-  { pedal = 7, sample = "high_tom.wav" },
-  { pedal = 8, sample = "crash_electronic.wav", gain = 0.5 },  # real crash (synth, CC0), not the 808 CY; fuller than the kit -> trimmed a bit
+  { pedal = 1, sample = "snare.wav" },
+  { pedal = 2, sample = "kick.wav" },
+  # Pedal 3 sits in the gap between the feet -- either foot can reach it. It
+  # retriggers the most recently played sample on ANY pedal in this window, using
+  # THIS press's own velocity against that sample's own pad's static gain trim
+  # ("a generalized double-bass pedal"); a ditto press does not itself become "the
+  # last hit" (pad, ditto, ditto repeats the same sample, it does not echo the
+  # ditto). Does nothing if nothing has played yet. See drumkit_runtime/mod.rs
+  # (`PadKind::Ditto`).
+  { pedal = 3, ditto = true },
   { pedal = 4, sample = "hat.wav" },
-  { pedal = 5, sample = "ride.wav" },
+  { pedal = 5, sample = "open_hat.wav" },
+  { pedal = 6, sample = "high_tom.wav" },
+  { pedal = 7, sample = "low_tom.wav" },
+  { pedal = 8, sample = "wood_block.wav" },
   { pedal = 9, sample = "cowbell.wav" },
-  { pedal = 0, sample = "wood_block.wav" },
+  { pedal = 0, sample = "crash_electronic.wav", gain = 0.5 },  # real crash (synth, CC0), not the 808 CY; fuller than the kit -> trimmed a bit
 ]

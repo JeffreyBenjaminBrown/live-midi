@@ -7,9 +7,12 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::types::{AmShapeFamily, VoiceMap};
+use super::synth::SUSTAIN_BASE;
+use super::Live;
+use crate::types::{AmShapeFamily, VoiceMap, VoiceSource};
 use crate::voices::BlockRenderer;
 
 pub struct Audio {
@@ -26,12 +29,15 @@ pub fn start_null(requested_sample_rate: u32) -> Audio {
   Audio { _stream: None, sample_rate: requested_sample_rate as f32 }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start(
   voices: Arc<Mutex<VoiceMap>>,
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
-  amplitude: f32,
   oversample: usize,
+  am_shape_family: AmShapeFamily,
+  live: Arc<Live>,
+  distortion_on: Arc<Vec<AtomicBool>>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
   // card via PipeWire, rather than cpal's default ALSA host grabbing the device
@@ -70,15 +76,46 @@ pub fn start(
     buffer_size: cpal::BufferSize::Fixed(requested_buffer_frames),
   };
   // The decimation filter is stateful across callbacks, so the renderer lives outside
-  // the closure (moved in, mutated each call).
+  // the closure (moved in, mutated each call). `flags` is the per-grid distortion
+  // snapshot, reused across callbacks to keep allocation out of the audio path.
   let mut renderer = BlockRenderer::new(oversample);
+  let mut flags = vec![false; distortion_on.len()];
   let stream = device.build_output_stream(
     &stream_config,
     move |data: &mut [f32], _| {
+      // The master amplitude + distortion curve are hot-reloadable ('r'), and the
+      // per-grid distortion toggles are live -- read everything fresh each callback.
+      let (amplitude, distortion_params) = {
+        let p = live.params.lock().unwrap_or_else(|e| e.into_inner());
+        (p.amplitude, p.distortion)
+      };
+      for (f, b) in flags.iter_mut().zip(distortion_on.iter()) {
+        *f = b.load(Ordering::Relaxed);
+      }
+      let distortion = flags.iter().any(|f| *f).then_some(distortion_params);
       // Recover from poisoning so a panicked grid thread can't permanently kill audio.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-      // No AM/FM in surfaces (default timbres bar the waveform), so the family is inert.
-      renderer.render(&mut voices, data, channels, sample_rate, amplitude, AmShapeFamily::default());
+      // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.
+      // Distortion is per-monome: a voice routes to the dirty (distorted) bus iff
+      // its grid's toggle is on. Fingered voices carry `chord: grid`; sustained
+      // (accrete) drones carry `chord: SUSTAIN_BASE + grid` -- both follow their
+      // grid's toggle.
+      renderer.render_with_distortion(
+        &mut voices,
+        data,
+        channels,
+        sample_rate,
+        amplitude,
+        am_shape_family,
+        distortion,
+        |src| {
+          let VoiceSource::Accreted { chord, .. } = src else {
+            return false;
+          };
+          let grid = if *chord >= SUSTAIN_BASE { *chord - SUSTAIN_BASE } else { *chord };
+          flags.get(grid).copied().unwrap_or(false)
+        },
+      );
     },
     |error| eprintln!("surfaces audio stream error: {error:?}"),
     None,

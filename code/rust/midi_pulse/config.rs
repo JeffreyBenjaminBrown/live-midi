@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -40,6 +40,62 @@ pub struct Config {
   /// configs; the surfaces runtime falls back to `SurfacesConfig::default`.
   #[serde(default)]
   pub surfaces: Option<SurfacesConfig>,
+  /// The four selectable timbres behind a `waveform_selector` strip, left to right
+  /// (surfaces runtime). Absent = the plain four waveforms (sine / triangle /
+  /// square / saw, everything else off) -- exactly the pre-timbres behavior. When
+  /// present there must be exactly four entries.
+  #[serde(default)]
+  pub timbres: Vec<TimbreConfig>,
+}
+
+/// One selectable timbre (`[[timbres]]`): a base waveform plus its numeric
+/// parameters. Everything except `waveform` is optional; the defaults are "off"
+/// (no AM, no FM) at full amplitude.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TimbreConfig {
+  /// One of "sin"/"sine", "tri"/"triangle", "square", "saw".
+  pub waveform: WaveformChoice,
+  /// Per-timbre linear gain, multiplied below the volume fader. 0..1 typical
+  /// (values above 1 amplify and can push the mix into the clamp). Default 1.0.
+  #[serde(default = "default_timbre_amplitude")]
+  pub amplitude: f32,
+  /// Tremolo depth in [0,1]: 0 = off (default), 1 = dips to silence.
+  #[serde(default)]
+  pub am_depth: f32,
+  /// Tremolo rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
+  #[serde(default = "default_timbre_freq")]
+  pub am_freq: f32,
+  /// Tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the config's
+  /// `[am]` family), 1 = near-square chop. Default 0.
+  #[serde(default)]
+  pub am_shape: f32,
+  /// Vibrato depth in cents: 0 = off (default); ~5..50 subtle, 100+ = seasick.
+  #[serde(default)]
+  pub fm_depth_cents: f32,
+  /// Vibrato rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
+  #[serde(default = "default_timbre_freq")]
+  pub fm_freq: f32,
+}
+
+fn default_timbre_amplitude() -> f32 {
+  1.0
+}
+
+fn default_timbre_freq() -> f32 {
+  1.0
+}
+
+/// A waveform name in a config file. Accepts Jeff's short spellings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum WaveformChoice {
+  #[serde(alias = "sin")]
+  Sine,
+  #[serde(alias = "tri")]
+  Triangle,
+  Square,
+  Saw,
 }
 
 /// `[am]` table: instrument-wide amplitude-modulation settings. The shape *family*
@@ -265,6 +321,14 @@ pub struct SurfacesConfig {
   /// The most *distinct* pitch classes the shared trail keeps at once (newest first);
   /// older ones drop off the end. Default 7.
   pub trails_max: usize,
+  /// The slide feature's candidate window, in ms: a new note may slide from a note
+  /// released no longer ago than this. Default 1000.
+  pub slide_candidate_window_ms: u64,
+  /// The tap-tempo pairing window, in ms: two taps at most this far apart set the
+  /// tapped tempo (rolling window). Default 2000.
+  pub tap_tempo_window_ms: u64,
+  /// How long a slide takes to reach the new pitch, in ms. Default 100.
+  pub slide_duration_ms: u64,
 }
 
 impl Default for SurfacesConfig {
@@ -272,8 +336,23 @@ impl Default for SurfacesConfig {
     Self {
       trail_clobber_radius: default_trail_clobber_radius(),
       trails_max: default_trails_max(),
+      slide_candidate_window_ms: default_slide_candidate_window_ms(),
+      tap_tempo_window_ms: default_tap_tempo_window_ms(),
+      slide_duration_ms: default_slide_duration_ms(),
     }
   }
+}
+
+fn default_slide_candidate_window_ms() -> u64 {
+  1000
+}
+
+fn default_tap_tempo_window_ms() -> u64 {
+  2000
+}
+
+fn default_slide_duration_ms() -> u64 {
+  100
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -424,6 +503,28 @@ pub enum SinkConfig {
     /// unchanged.
     #[serde(default = "default_oversample")]
     oversample: u32,
+    /// The global distortion's scale `s` (the soft-clipper's asymptote; see
+    /// learnings/distortion.org). Smaller = earlier/heavier bite; ~0.3 heavy,
+    /// ~1.0 strong, >=5 nearly clean. Only heard while a `distortion_toggle`
+    /// window is on.
+    #[serde(default = "default_distortion_scale")]
+    distortion_scale: f32,
+    /// The global distortion's shape `k` (elbow harshness): 1 = gentlest,
+    /// 2 = the smooth sweet spot, ~4+ = hard-ish, very large = hard clip.
+    #[serde(default = "default_distortion_shape")]
+    distortion_shape: f32,
+    /// Pluck envelope (see TODO/misc.org "synth attacks should be louder"): after the
+    /// attack peaks, the envelope decays exponentially toward `sustain_level` x the
+    /// peak, so fresh strikes ring out over held notes -- a rough plucked-string
+    /// curve that plateaus instead of dying (held notes and accrete drones keep
+    /// ringing). >= 1.0 disables the decay (flat envelope); 0.2..0.5 is a natural
+    /// pluck. Default 0.35.
+    #[serde(default = "default_sustain_level")]
+    sustain_level: f32,
+    /// The pluck decay's time constant, in seconds (~0.3 snappy, ~1.5 slow ring;
+    /// <= 0 disables). Default 0.5.
+    #[serde(default = "default_decay_secs")]
+    decay_secs: f32,
   },
   /// A one-shot sample player: each trigger plays a loaded WAV to completion,
   /// mixed polyphonically. Drives the `drumkit` softstep window. Uses the same
@@ -438,6 +539,22 @@ pub enum SinkConfig {
 
 fn default_oversample() -> u32 {
   1
+}
+
+fn default_distortion_scale() -> f32 {
+  1.0 // "strong" on a unit-scale mix -- clearly a pedal, not a subtlety
+}
+
+fn default_distortion_shape() -> f32 {
+  2.0 // the smooth sweet spot (y / sqrt(1 + (y/s)^2))
+}
+
+fn default_sustain_level() -> f32 {
+  0.35 // ~ -9 dB below the strike peak: audible pluck, notes still ring
+}
+
+fn default_decay_secs() -> f32 {
+  0.5 // a guitar-ish decay time constant
 }
 
 impl SinkConfig {
@@ -538,28 +655,83 @@ pub enum MonomeWindowConfig {
   },
   // A 4-cell waveform picker (sine / triangle / square / saw) overlaid on the edo
   // grid. Used by the surfaces runtime: each grid's strip sets the timbre of the
-  // monome named by `controls` (the config wires each grid's strip to the OTHER
-  // grid). Purely a radio selector -- no gain/AM/FM, fixed volume.
+  // monome named by `controls` -- the strip's own grid in the current rigs, but any
+  // play grid is legal (cross-control). Purely a radio selector -- no gain/AM/FM,
+  // fixed volume.
   WaveformSelector {
     id: String,
     monome: String,
     rect: [i32; 4],
-    /// The monome id whose play voices this strip re-timbres (may differ from
-    /// `monome`, which is the surfaces cross-control the config uses).
+    /// The monome id whose play voices this strip re-timbres (usually `monome`
+    /// itself; a different id cross-controls that grid instead).
     controls: String,
   },
   // A one-row volume strip overlaid on the edo grid (surfaces runtime). The 12 cells
   // right of the waveform selector on the top row; the active cell is lit, the rest
   // dark. Log-spaced over a fixed dB range; the top cell is unity. Like the waveform
-  // strip it *cross-controls* -- each grid's volume sets the loudness of the monome
-  // named by `controls` (the OTHER grid), and it is *live* (moving it rescales that
-  // grid's sounding voices, not just future notes).
+  // strip it sets the loudness of the monome named by `controls` (its own grid in the
+  // current rigs), and it is *live* (moving it rescales that grid's sounding voices,
+  // not just future notes).
   VolumeStrip {
     id: String,
     monome: String,
     rect: [i32; 4],
     /// The monome id whose play voices this strip sets the volume of.
     controls: String,
+  },
+  // A single-cell on/off toggle for the GLOBAL distortion (surfaces runtime): the
+  // summed synth mix runs through the soft-clipper while on. The scale/shape live on
+  // the cpal_synth sink (`distortion_scale` / `distortion_shape`); this button is
+  // just the live on/off.
+  DistortionToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell on/off toggle for the slide feature (surfaces runtime): while on,
+  // a new note re-triggers the nearest recently-released pitch and glides it into
+  // the new one. Window/candidate knobs live in the `[surfaces]` table.
+  SlideToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell on/off toggle for mono mode (surfaces runtime): while on, each new
+  // note on a grid cuts off that grid's other fingered notes (and the slide
+  // candidate set is effectively a singleton).
+  MonoToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // The 3x2 polyrhythm pad (surfaces runtime), by convention in the top-right:
+  //   | x3 | x2 | tap |
+  //   | /3 | /2 | =1  |
+  // Tap twice within [surfaces].tap_tempo_window_ms to set the tapped tempo; the
+  // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
+  // applied pulse with a descending sawtooth at that tempo. See TODO/misc.org
+  // "polyrhythm interface".
+  TapTempoPad {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell on/off toggle (surfaces runtime): while on, the KMSS pedals
+  // 1/2/3 and 8/9/0 mirror the accrete button trio (clear / needs_holding /
+  // accrete) instead of playing samples. See TODO/misc.org "feet accrete".
+  SoftstepAccretesToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
+  // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
+  // notes join a sustained set that rings after the fingers lift, until cleared.
+  AccreteControl {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    control: AccreteControlKind,
   },
   // ---- Looper windows (see 6_plan.org). ----
   // The 3x2 shift pad overlaid on the lower-right of the edo grid.
@@ -679,6 +851,19 @@ pub enum ScaleControlKind {
   Empty,
 }
 
+// The surfaces sustain ("accrete") buttons -- see TODO/misc.org "sustain (accrete)".
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccreteControlKind {
+  /// Silence and flush the whole sustained set (key-down; lit while pressed).
+  Clear,
+  /// Toggle whether `accrete` must be *held* (vs toggling an accrete mode).
+  NeedsHolding,
+  /// Hold (or toggle, per `needs_holding`) to add played/held notes to the
+  /// sustained set, which rings until cleared.
+  Accrete,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopControlKind {
@@ -708,6 +893,12 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { id, .. }
       | MonomeWindowConfig::WaveformSelector { id, .. }
       | MonomeWindowConfig::VolumeStrip { id, .. }
+      | MonomeWindowConfig::DistortionToggle { id, .. }
+      | MonomeWindowConfig::SlideToggle { id, .. }
+      | MonomeWindowConfig::MonoToggle { id, .. }
+      | MonomeWindowConfig::SoftstepAccretesToggle { id, .. }
+      | MonomeWindowConfig::TapTempoPad { id, .. }
+      | MonomeWindowConfig::AccreteControl { id, .. }
       | MonomeWindowConfig::EdoShiftPad { id, .. }
       | MonomeWindowConfig::LoopSlots { id, .. }
       | MonomeWindowConfig::LoopControl { id, .. }
@@ -736,6 +927,12 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { monome, .. }
       | MonomeWindowConfig::WaveformSelector { monome, .. }
       | MonomeWindowConfig::VolumeStrip { monome, .. }
+      | MonomeWindowConfig::DistortionToggle { monome, .. }
+      | MonomeWindowConfig::SlideToggle { monome, .. }
+      | MonomeWindowConfig::MonoToggle { monome, .. }
+      | MonomeWindowConfig::SoftstepAccretesToggle { monome, .. }
+      | MonomeWindowConfig::TapTempoPad { monome, .. }
+      | MonomeWindowConfig::AccreteControl { monome, .. }
       | MonomeWindowConfig::EdoShiftPad { monome, .. }
       | MonomeWindowConfig::LoopSlots { monome, .. }
       | MonomeWindowConfig::LoopControl { monome, .. }
@@ -764,6 +961,12 @@ impl MonomeWindowConfig {
       | MonomeWindowConfig::ScaleControl { rect, .. }
       | MonomeWindowConfig::WaveformSelector { rect, .. }
       | MonomeWindowConfig::VolumeStrip { rect, .. }
+      | MonomeWindowConfig::DistortionToggle { rect, .. }
+      | MonomeWindowConfig::SlideToggle { rect, .. }
+      | MonomeWindowConfig::MonoToggle { rect, .. }
+      | MonomeWindowConfig::SoftstepAccretesToggle { rect, .. }
+      | MonomeWindowConfig::TapTempoPad { rect, .. }
+      | MonomeWindowConfig::AccreteControl { rect, .. }
       | MonomeWindowConfig::EdoShiftPad { rect, .. }
       | MonomeWindowConfig::LoopSlots { rect, .. }
       | MonomeWindowConfig::LoopControl { rect, .. }
@@ -793,6 +996,12 @@ impl MonomeWindowConfig {
       MonomeWindowConfig::ScaleControl { .. } => "scale_control",
       MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
       MonomeWindowConfig::VolumeStrip { .. } => "volume_strip",
+      MonomeWindowConfig::DistortionToggle { .. } => "distortion_toggle",
+      MonomeWindowConfig::SlideToggle { .. } => "slide_toggle",
+      MonomeWindowConfig::MonoToggle { .. } => "mono_toggle",
+      MonomeWindowConfig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
+      MonomeWindowConfig::TapTempoPad { .. } => "tap_tempo_pad",
+      MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
       MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
       MonomeWindowConfig::LoopControl { .. } => "loop_control",
@@ -841,16 +1050,23 @@ impl MonomeWindowConfig {
 }
 
 /// One pedal's assignment inside a `drumkit` window: the printed pedal label
-/// (1..9, then 0) and the sample file to fire. `gain` is the voice's FULL-velocity
-/// level; the tether runtime scales it down for softer hits (see
-/// `drumkit_runtime::decode`).
+/// (1..9, then 0) and either a sample file to fire or `ditto = true`. `gain` is the
+/// voice's FULL-velocity level for a sample pad; the tether runtime scales it down
+/// for softer hits (see `drumkit_runtime::decode`). A `ditto` pad ignores `gain` --
+/// it replays the most recently played sample in its window at THAT hit's already-
+/// resolved (velocity-scaled) gain, "a generalized double-bass pedal" (see
+/// `drumkit_runtime::mod` for the trigger logic). Validation requires exactly one of
+/// `sample` / `ditto = true` per pad, and at most one ditto pad per window.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DrumPadConfig {
   pub pedal: u8,
-  pub sample: String,
+  #[serde(default)]
+  pub sample: Option<String>,
   #[serde(default = "default_pad_gain")]
   pub gain: f32,
+  #[serde(default)]
+  pub ditto: bool,
 }
 
 fn default_pad_gain() -> f32 {
@@ -1226,9 +1442,200 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   validate_shift_pads(config)?;
   validate_waveform_selectors(config)?;
   validate_volume_strips(config)?;
+  validate_accrete_controls(config)?;
+  validate_single_cell_toggles(config)?;
+  validate_tap_tempo_pads(config)?;
+  validate_timbres(config)?;
   validate_looper(config)?;
   validate_softsteps(config)?;
 
+  Ok(())
+}
+
+/// The `[[timbres]]` table: when present it must have exactly four entries (the
+/// waveform strip has four cells), and every numeric parameter must be in range.
+fn validate_timbres(config: &Config) -> Result<(), String> {
+  if config.timbres.is_empty() {
+    return Ok(());
+  }
+  if config.timbres.len() != 4 {
+    return Err(format!(
+      "[[timbres]] must have exactly 4 entries (the waveform strip's four cells), got {}",
+      config.timbres.len(),
+    ));
+  }
+  for (i, t) in config.timbres.iter().enumerate() {
+    if t.amplitude < 0.0 {
+      return Err(format!("timbre {i}: amplitude must be >= 0, got {}", t.amplitude));
+    }
+    if !(0.0..=1.0).contains(&t.am_depth) {
+      return Err(format!("timbre {i}: am_depth must be in 0..=1, got {}", t.am_depth));
+    }
+    if !(0.0..=1.0).contains(&t.am_shape) {
+      return Err(format!("timbre {i}: am_shape must be in 0..=1, got {}", t.am_shape));
+    }
+    if t.fm_depth_cents < 0.0 {
+      return Err(format!("timbre {i}: fm_depth_cents must be >= 0, got {}", t.fm_depth_cents));
+    }
+    if t.am_freq <= 0.0 || t.fm_freq <= 0.0 {
+      return Err(format!("timbre {i}: am_freq/fm_freq must be > 0"));
+    }
+  }
+  Ok(())
+}
+
+/// A `tap_tempo_pad` is exactly 3x2 cells on a monome that has an `edo_note_grid`,
+/// at most one per monome (its six sub-cells are the fixed x3/x2/tap and /3/2/=1
+/// layout).
+fn validate_tap_tempo_pads(config: &Config) -> Result<(), String> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::TapTempoPad { id, monome, rect } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x1 - x0 != 2 || y1 - y0 != 1 {
+      return Err(format!(
+        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
+      ));
+    }
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "tap_tempo_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!("monome {monome:?} declares more than one tap_tempo_pad (window {id:?})"));
+    }
+  }
+  Ok(())
+}
+
+/// The single-cell global toggles (`distortion_toggle`, `slide_toggle`,
+/// `mono_toggle`): each is one cell on a monome that has an `edo_note_grid`, at most
+/// one of each kind per monome (a second would be a redundant twin of the same
+/// global switch).
+fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
+  // (kind label, id, monome, rect) for every toggle window.
+  let toggles = config.monome_windows.iter().filter_map(|w| match w {
+    MonomeWindowConfig::DistortionToggle { id, monome, rect } => {
+      Some(("distortion_toggle", id, monome, *rect))
+    }
+    MonomeWindowConfig::SlideToggle { id, monome, rect } => {
+      Some(("slide_toggle", id, monome, *rect))
+    }
+    MonomeWindowConfig::MonoToggle { id, monome, rect } => {
+      Some(("mono_toggle", id, monome, *rect))
+    }
+    MonomeWindowConfig::SoftstepAccretesToggle { id, monome, rect } => {
+      Some(("softstep_accretes_toggle", id, monome, *rect))
+    }
+    _ => None,
+  });
+  let mut seen: HashSet<(&str, &str)> = HashSet::new();
+  for (kind, id, monome, rect) in toggles {
+    let [x0, y0, x1, y1] = rect;
+    if x0 != x1 || y0 != y1 {
+      return Err(format!(
+        "{kind} window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
+      ));
+    }
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "{kind} window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "{kind} window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert((kind, monome.as_str())) {
+      return Err(format!("monome {monome:?} declares more than one {kind} (window {id:?})"));
+    }
+  }
+  Ok(())
+}
+
+/// The `accrete_control` sustain buttons (surfaces runtime). Each is a single cell on
+/// a monome that has an `edo_note_grid` (the play surface whose notes it sustains).
+/// Per monome they are all-or-nothing -- declaring any of clear / needs_holding /
+/// accrete requires all three, each exactly once -- since the trio only makes sense
+/// together (accrete with no clear would be an un-silenceable drone).
+fn validate_accrete_controls(config: &Config) -> Result<(), String> {
+  let mut per_monome: HashMap<&str, Vec<AccreteControlKind>> = HashMap::new();
+  for window in &config.monome_windows {
+    let MonomeWindowConfig::AccreteControl { id, monome, rect, control } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x0 != x1 || y0 != y1 {
+      return Err(format!(
+        "accrete_control window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
+      ));
+    }
+    let has_edo_grid = config.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "accrete_control window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = config
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "accrete_control window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    let kinds = per_monome.entry(monome.as_str()).or_default();
+    if kinds.contains(control) {
+      return Err(format!(
+        "duplicate accrete_control kind {control:?} on monome {monome:?} (in window {id:?})",
+      ));
+    }
+    kinds.push(*control);
+  }
+  for (monome, kinds) in &per_monome {
+    for required in
+      [AccreteControlKind::Clear, AccreteControlKind::NeedsHolding, AccreteControlKind::Accrete]
+    {
+      if !kinds.contains(&required) {
+        return Err(format!(
+          "monome {monome:?} declares accrete_control windows but is missing kind {required:?} \
+           (the clear / needs_holding / accrete trio is all-or-nothing per monome)",
+        ));
+      }
+    }
+  }
   Ok(())
 }
 
@@ -1379,6 +1786,9 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
         }
         let device_claims = claimed.entry(window.softstep()).or_default();
         let mut this_window: HashSet<u8> = HashSet::new();
+        // At most one ditto pad per window (it retriggers "the" last hit in this
+        // window; two would leave which-one-means-what ambiguous).
+        let mut ditto_pedal: Option<u8> = None;
         for pad in pads {
           if pad.pedal > 9 {
             return Err(format!(
@@ -1399,10 +1809,27 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
               window.softstep(),
             ));
           }
+          if pad.sample.is_some() == pad.ditto {
+            return Err(format!(
+              "drumkit window {id:?} pad {} needs exactly one of `sample` or `ditto = true`",
+              pad.pedal,
+            ));
+          }
+          if pad.ditto {
+            if let Some(first) = ditto_pedal {
+              return Err(format!(
+                "drumkit window {id:?} has two ditto pads (pedals {first} and {}); at most one per window",
+                pad.pedal,
+              ));
+            }
+            ditto_pedal = Some(pad.pedal);
+            continue; // no gain/sample-path checks for a ditto pad
+          }
           if !pad.gain.is_finite() || pad.gain < 0.0 {
             return Err(format!("drumkit window {id:?} pad {} gain must be nonnegative", pad.pedal));
           }
-          validate_asset_subpath("drumkit sample", id, &pad.sample)?;
+          let sample = pad.sample.as_ref().expect("checked above: sample is Some when ditto is false");
+          validate_asset_subpath("drumkit sample", id, sample)?;
         }
       }
     }
@@ -2666,6 +3093,47 @@ pads = [
     assert!(err.contains("more than one window"), "{err}");
   }
 
+  // ---- ditto pads ----
+
+  #[test]
+  fn ditto_pad_is_valid_with_no_sample() {
+    let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },");
+    let config = parse_config(&toml).expect("a ditto pad with no sample should be valid");
+    let SoftstepWindowConfig::Drumkit { pads, .. } = &config.softstep_windows[0];
+    let ditto = pads.iter().find(|p| p.pedal == 0).expect("pedal 0");
+    assert!(ditto.ditto, "ditto flag set");
+    assert_eq!(ditto.sample, None, "a ditto pad names no sample");
+  }
+
+  #[test]
+  fn pad_with_neither_sample_nor_ditto_is_rejected() {
+    let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0 },");
+    let err = parse_config(&toml).expect_err("a pad with neither sample nor ditto should fail");
+    assert!(err.contains("exactly one of `sample` or `ditto = true`"), "{err}");
+  }
+
+  #[test]
+  fn pad_with_both_sample_and_ditto_is_rejected() {
+    let toml = DRUMKIT_TOML.replace(
+      "{ pedal = 0, sample = \"wood_block.wav\" },",
+      "{ pedal = 0, sample = \"wood_block.wav\", ditto = true },",
+    );
+    let err = parse_config(&toml).expect_err("a pad with both sample and ditto should fail");
+    assert!(err.contains("exactly one of `sample` or `ditto = true`"), "{err}");
+  }
+
+  #[test]
+  fn two_ditto_pads_in_one_window_is_rejected() {
+    let toml = format!(
+      "{}\n",
+      DRUMKIT_TOML
+        .replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },")
+        .replace("{ pedal = 2, sample = \"snare.wav\" },", "{ pedal = 2, ditto = true },"),
+    );
+    let err = parse_config(&toml).expect_err("two ditto pads in one window should fail");
+    assert!(err.contains("two ditto pads"), "{err}");
+  }
+
   // ---- edo_shift_pad as a generally-valid window (freed from the looper) ----
 
   #[test]
@@ -2845,5 +3313,231 @@ controls = "a"
       + "\n[[monome_windows]]\nid = \"wave-c\"\nmonome = \"c\"\nkind = \"waveform_selector\"\nrect = [0, 0, 3, 0]\ncontrols = \"a\"\n";
     let err = parse_config(&toml).expect_err("controlling a gridless monome should fail");
     assert!(err.contains("no edo_note_grid"), "{err}");
+  }
+
+  // ---- accrete_control (surfaces sustain buttons) ----
+
+  /// The clear / needs_holding / accrete trio on monome "a", bottom row left.
+  const ACCRETE_TRIO: &str = r#"
+[[monome_windows]]
+id = "acc-clear"
+monome = "a"
+kind = "accrete_control"
+rect = [0, 15, 0, 15]
+control = "clear"
+
+[[monome_windows]]
+id = "acc-hold"
+monome = "a"
+kind = "accrete_control"
+rect = [1, 15, 1, 15]
+control = "needs_holding"
+
+[[monome_windows]]
+id = "acc-accrete"
+monome = "a"
+kind = "accrete_control"
+rect = [2, 15, 2, 15]
+control = "accrete"
+"#;
+
+  #[test]
+  fn accrete_control_trio_is_valid() {
+    let toml = format!("{SURFACES_MIN}{ACCRETE_TRIO}");
+    let config = parse_config(&toml).expect("a full accrete trio should validate");
+    let kinds: Vec<AccreteControlKind> = config
+      .monome_windows
+      .iter()
+      .filter_map(|w| match w {
+        MonomeWindowConfig::AccreteControl { control, .. } => Some(*control),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(kinds.len(), 3, "all three buttons parse");
+    assert!(kinds.contains(&AccreteControlKind::Clear));
+    assert!(kinds.contains(&AccreteControlKind::NeedsHolding));
+    assert!(kinds.contains(&AccreteControlKind::Accrete));
+  }
+
+  #[test]
+  fn accrete_control_trio_is_all_or_nothing_per_monome() {
+    // Drop the accrete button: the trio is incomplete, so the config must fail.
+    let cut = ACCRETE_TRIO.find("\n[[monome_windows]]\nid = \"acc-accrete\"").unwrap();
+    let toml = format!("{SURFACES_MIN}{}", &ACCRETE_TRIO[..cut]);
+    let err = parse_config(&toml).expect_err("a partial trio should fail");
+    assert!(err.contains("missing kind Accrete"), "{err}");
+  }
+
+  #[test]
+  fn accrete_control_must_be_a_single_cell() {
+    let toml =
+      format!("{SURFACES_MIN}{}", ACCRETE_TRIO.replace("rect = [0, 15, 0, 15]", "rect = [0, 15, 1, 15]"));
+    let err = parse_config(&toml).expect_err("a 2-cell accrete button should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  #[test]
+  fn accrete_control_kinds_must_be_unique_per_monome() {
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      ACCRETE_TRIO.replace("control = \"needs_holding\"", "control = \"clear\""),
+    );
+    let err = parse_config(&toml).expect_err("two clear buttons on one monome should fail");
+    assert!(err.contains("duplicate accrete_control kind"), "{err}");
+  }
+
+  #[test]
+  fn accrete_control_needs_an_edo_grid_on_its_monome() {
+    // Declare the trio on a monome that has no edo_note_grid.
+    let toml = format!(
+      "{SURFACES_MIN}\n[[monomes]]\nid = \"c\"\nlisten_port = 9002\nprefix = \"/c\"\n{}",
+      ACCRETE_TRIO.replace("monome = \"a\"", "monome = \"c\""),
+    );
+    let err = parse_config(&toml).expect_err("accrete buttons on a gridless monome should fail");
+    assert!(err.contains("needs an edo_note_grid"), "{err}");
+  }
+
+  // ---- distortion_toggle (surfaces global distortion on/off) ----
+
+  const DISTORTION_TOGGLE: &str = r#"
+[[monome_windows]]
+id = "dist-a"
+monome = "a"
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]
+"#;
+
+  #[test]
+  fn distortion_toggle_is_valid_and_sink_defaults_apply() {
+    let toml = format!("{SURFACES_MIN}{DISTORTION_TOGGLE}");
+    let config = parse_config(&toml).expect("a single-cell distortion toggle validates");
+    assert!(config
+      .monome_windows
+      .iter()
+      .any(|w| matches!(w, MonomeWindowConfig::DistortionToggle { .. })));
+    // The sink's distortion curve defaults (scale 1.0, shape 2.0) fill in when absent.
+    let SinkConfig::CpalSynth { distortion_scale, distortion_shape, .. } = &config.sinks[0] else {
+      panic!("first sink is the synth");
+    };
+    assert_eq!(*distortion_scale, 1.0);
+    assert_eq!(*distortion_shape, 2.0);
+  }
+
+  #[test]
+  fn distortion_toggle_must_be_a_single_cell() {
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      DISTORTION_TOGGLE.replace("rect = [0, 1, 0, 1]", "rect = [0, 1, 1, 1]"),
+    );
+    let err = parse_config(&toml).expect_err("a 2-cell toggle should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  // ---- [[timbres]] (the four selectable timbres behind the waveform strip) ----
+
+  const TIMBRES_FOUR: &str = r#"
+[[timbres]]
+waveform = "sin"
+[[timbres]]
+waveform = "tri"
+am_depth = 0.5
+am_freq = 3.0
+am_shape = 1.0
+[[timbres]]
+waveform = "square"
+amplitude = 0.6
+[[timbres]]
+waveform = "saw"
+fm_depth_cents = 30.0
+fm_freq = 6.0
+"#;
+
+  #[test]
+  fn timbres_parse_with_short_names_and_off_defaults() {
+    let toml = format!("{SURFACES_MIN}{TIMBRES_FOUR}");
+    let config = parse_config(&toml).expect("a 4-entry [[timbres]] table validates");
+    assert_eq!(config.timbres.len(), 4);
+    assert_eq!(config.timbres[0].waveform, WaveformChoice::Sine, "'sin' alias");
+    assert_eq!(config.timbres[1].waveform, WaveformChoice::Triangle, "'tri' alias");
+    // Defaults: full amplitude, modulation off.
+    assert_eq!(config.timbres[0].amplitude, 1.0);
+    assert_eq!(config.timbres[0].am_depth, 0.0);
+    assert_eq!(config.timbres[0].fm_depth_cents, 0.0);
+    // Explicit values land.
+    assert_eq!(config.timbres[1].am_depth, 0.5);
+    assert_eq!(config.timbres[2].amplitude, 0.6);
+    assert_eq!(config.timbres[3].fm_freq, 6.0);
+  }
+
+  #[test]
+  fn timbres_must_have_exactly_four_entries() {
+    let three = TIMBRES_FOUR.rsplit_once("[[timbres]]").unwrap().0;
+    let err = parse_config(&format!("{SURFACES_MIN}{three}")).expect_err("3 entries fail");
+    assert!(err.contains("exactly 4"), "{err}");
+  }
+
+  #[test]
+  fn timbres_reject_out_of_range_parameters() {
+    let toml = format!("{SURFACES_MIN}{}", TIMBRES_FOUR.replace("am_depth = 0.5", "am_depth = 1.5"));
+    let err = parse_config(&toml).expect_err("am_depth > 1 fails");
+    assert!(err.contains("am_depth"), "{err}");
+  }
+
+  #[test]
+  fn slide_and_mono_toggles_validate_like_distortion() {
+    let toggles = r#"
+[[monome_windows]]
+id = "slide-a"
+monome = "a"
+kind = "slide_toggle"
+rect = [1, 1, 1, 1]
+
+[[monome_windows]]
+id = "mono-a"
+monome = "a"
+kind = "mono_toggle"
+rect = [1, 2, 1, 2]
+"#;
+    let config = parse_config(&format!("{SURFACES_MIN}{toggles}")).expect("both toggles validate");
+    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::SlideToggle { .. })));
+    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::MonoToggle { .. })));
+    // The [surfaces] slide knobs default sensibly.
+    let surfaces = config.surfaces.unwrap_or_default();
+    assert_eq!(surfaces.slide_candidate_window_ms, 1000);
+    assert_eq!(surfaces.slide_duration_ms, 100);
+    // A 2-cell slide toggle fails like any single-cell toggle.
+    let err = parse_config(&format!(
+      "{SURFACES_MIN}{}",
+      toggles.replace("rect = [1, 1, 1, 1]", "rect = [1, 1, 2, 1]"),
+    ))
+    .expect_err("a 2-cell slide toggle should fail");
+    assert!(err.contains("exactly one cell"), "{err}");
+  }
+
+  #[test]
+  fn tap_tempo_pad_must_be_three_by_two() {
+    let pad = r#"
+[[monome_windows]]
+id = "poly-a"
+monome = "a"
+kind = "tap_tempo_pad"
+rect = [13, 0, 15, 1]
+"#;
+    let config = parse_config(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
+    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::TapTempoPad { .. })));
+    assert_eq!(config.surfaces.unwrap_or_default().tap_tempo_window_ms, 2000, "default window");
+    let err = parse_config(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
+      .expect_err("a 3x3 pad should fail");
+    assert!(err.contains("exactly 3x2"), "{err}");
+  }
+
+  #[test]
+  fn distortion_toggle_at_most_one_per_monome() {
+    let twin = DISTORTION_TOGGLE
+      .replace("dist-a", "dist-a2")
+      .replace("rect = [0, 1, 0, 1]", "rect = [1, 1, 1, 1]");
+    let toml = format!("{SURFACES_MIN}{DISTORTION_TOGGLE}{twin}");
+    let err = parse_config(&toml).expect_err("two toggles on one monome should fail");
+    assert!(err.contains("more than one distortion_toggle"), "{err}");
   }
 }

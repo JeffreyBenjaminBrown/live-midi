@@ -37,6 +37,10 @@ impl AppState {
         attack_secs: ATTACK_SECS,
         release_secs: RELEASE_SECS,
         accretion_level: ACCRETION_TARGET,
+        // The bare-consts constructor keeps the flat envelope; the runtime passes
+        // the config's pluck through new_with_audio_params.
+        sustain_level: 1.0,
+        decay_secs: 0.0,
       },
     )
   }
@@ -96,12 +100,19 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
   state.next_voice_id += 1;
   {
     let mut vs = state.voices.lock().unwrap();
+    let (sustain_env, decay_per_sample) = crate::voices::pluck_envelope(
+      state.audio.sustain_level, state.audio.decay_secs, 1.0, state.sample_rate,
+    );
     vs.insert(VoiceSource::Fingered { xy: cell }, VoiceState {
       id,
       freq: freq_for_pitch(abs_pitch, state.fund, state.edo),
+      freq_target: 0.0,
+      glide_per_sample: 1.0,
+      tempo_am_freq: 0.0, tempo_am_phase: 0.0,
       phase: 0.0, env: 0.0,
       target_env: 1.0,
       ramp_per_sample: 1.0 / (state.audio.attack_secs * state.sample_rate),
+      sustain_env, decay_per_sample,
       timbre: crate::types::Timbre::default(),
       am_phase: 0.0,
       fm_phase: 0.0,
@@ -177,11 +188,13 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       let chord = em.unwrap();
       let v = vs.remove(&VoiceSource::Fingered { xy: cell }).unwrap();
       vs.insert(VoiceSource::Accreted { chord, pitch: abs_pitch }, VoiceState {
-        id: v.id, freq: v.freq, phase: v.phase, env: v.env,
+        id: v.id, freq: v.freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: v.phase, env: v.env,
         target_env: state.audio.accretion_level,
         ramp_per_sample:
           (v.env - state.audio.accretion_level).abs()
             / (state.audio.release_secs * state.sample_rate),
+        // Accretion voices are steady drones: no pluck decay.
+        sustain_env: state.audio.accretion_level, decay_per_sample: 1.0,
         timbre: v.timbre, am_phase: v.am_phase, fm_phase: v.fm_phase,
       });
     } else if let Some(v) = vs.get_mut(&VoiceSource::Fingered { xy: cell }) {

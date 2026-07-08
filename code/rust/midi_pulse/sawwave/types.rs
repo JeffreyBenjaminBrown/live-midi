@@ -119,9 +119,13 @@ impl Default for Timbre {
   }
 }
 
-// Per-voice audio state. The envelope is "ramp env toward target_env
-// by ramp_per_sample each sample, clamping at target." A voice is
-// removed once env=0 AND target_env=0.
+// Per-voice audio state. The envelope: ramp env linearly toward target_env by
+// ramp_per_sample each sample (the attack; also the release once target_env is 0);
+// when the attack peaks and `sustain_env < target_env`, target_env drops to
+// sustain_env and env *decays* toward it exponentially (the pluck -- multiply the
+// distance by decay_per_sample each sample), so fresh strikes ring out over held
+// notes. sustain_env == target_env (with decay_per_sample 1.0) is the flat,
+// pre-pluck envelope. A voice is removed once env=0 AND target_env=0.
 #[derive(Debug, Clone, Copy)]
 pub struct VoiceState {
   pub id:              VoiceId,
@@ -130,6 +134,22 @@ pub struct VoiceState {
   pub env:             f32,
   pub target_env:      f32,
   pub ramp_per_sample: f32,
+  // The pluck decay (see above): the level the envelope settles at after the
+  // attack peak, and the per-full-rate-sample retention of the distance to it.
+  pub sustain_env:     f32,
+  pub decay_per_sample: f32,
+  // Frequency glide (the slide feature): while glide_per_sample != 1.0, freq is
+  // multiplied by it each full-rate sample until it crosses freq_target, then
+  // snaps there and the glide ends. glide_per_sample == 1.0 = no glide, and
+  // freq_target is IGNORED (so plain voices need not keep it in sync with freq).
+  pub freq_target:     f32,
+  pub glide_per_sample: f32,
+  // The polyrhythm pulse: a descending-sawtooth amplitude multiplier (1 at each
+  // cycle start, falling to 0) at tempo_am_freq Hz -- the tempo applied at the
+  // note's onset, fixed for its life. 0.0 = no pulse. Deliberately separate from
+  // the note's timbre AM.
+  pub tempo_am_freq:   f32,
+  pub tempo_am_phase:  f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
   pub timbre:          Timbre,
@@ -228,6 +248,10 @@ pub struct AudioParams {
   pub attack_secs: f32,
   pub release_secs: f32,
   pub accretion_level: f32,
+  // The pluck envelope (cpal_synth `sustain_level` / `decay_secs`): fingered notes
+  // strike to a peak, then decay toward the sustain. Accretion voices stay flat.
+  pub sustain_level: f32,
+  pub decay_secs: f32,
 }
 
 pub struct AppState {
