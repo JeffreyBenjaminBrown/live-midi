@@ -297,3 +297,26 @@ reverse it cheaply if you disagree.
   nothing about the toggles mirrors across grids anymore. Only the switch moved
   (the cut and legato steal were already per-grid in effect), so there was
   nothing else to decide.
+
+* retrigger of a sustaining note -- choices where the spec was silent
+
+- "Cut off and replace" I read as *voice* replacement, not set removal: the old
+  drone is cut at the strike, and the pitch KEEPS its sustained-set membership,
+  so releasing the replacing finger re-drones it seamlessly -- even if accrete is
+  off at that moment. So a retrigger *re-articulates* a drone (fresh pluck, no
+  doubling) and can never silently delete one; *clear* remains the only removal
+  (and your erase button will be the deliberate per-note one). If you wanted the
+  other reading -- retrigger PULLS the pitch out of the set, so the new note dies
+  on release unless accrete is live -- that's a two-line change (remove the pitch
+  in =handle_key= and let the release path decide afresh).
+- The cut is *per-bank*, like everything accrete: retriggering a pitch on grid B
+  does not touch grid A's drone at that pitch (the banks' same-pitch drones are
+  independent voices, and A's trio/clear stays sovereign over its own). If you
+  want a retrigger ANYWHERE to replace ALL drones at that pitch, the strike would
+  just loop both sinks.
+- "The same note" means the same *absolute pitch* (58-EDO step), not the same
+  cell: registers may have scrolled since the drone was struck, and two cells
+  colliding to one pitch count as the same note here. The old tail rings out its
+  normal 50 ms release under a retired key, so a fast retrigger crossfades
+  instead of clicking, and the sustain slot is free for the new note immediately.
+

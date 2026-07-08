@@ -1144,6 +1144,12 @@ fn handle_key(
         }
       }
     }
+    // A manual retrigger of a sustaining pitch cuts this grid's drone and the new
+    // note replaces it (misc.org "retriggering a sustaining note replaces it") --
+    // no doubling. The pitch keeps its place in the accrete set, so releasing the
+    // replacing note re-drones it. After the mono block, so a colliding-pitch
+    // drone a mono cut just captured is cut like any other.
+    rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
     let timbre =

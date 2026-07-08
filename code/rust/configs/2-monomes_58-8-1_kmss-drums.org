@@ -207,6 +207,11 @@ grid A's drones ringing. Requested in =TODO/misc.org= "sustain (accrete)".
 - A note in the set keeps ringing after its finger lifts -- the very same voice, so
   the transition is seamless -- until this grid's *clear* flushes the bank. There is
   no per-note removal.
+- *Retriggering a sustaining note replaces it*: fingering a pitch that is ringing in
+  THIS grid's sustained set cuts the old drone at the strike -- no doubling -- and
+  the new voice takes its place. The pitch keeps its set membership, so releasing
+  the new finger re-drones it (accrete need not be live); you can re-articulate a
+  drone without stacking or losing it.
 - Toggling *needs-holding* cancels an active accrete mode (the set is untouched).
 - The banks are fully independent: the other grid's trio, notes, and clear never
   touch this one. The trio LEDs show their own grid's bank only.

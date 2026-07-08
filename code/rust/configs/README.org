@@ -333,7 +333,9 @@ control = "clear"            # or "needs_holding" or "accrete"
   lift, until ~clear~. Lit while the condition is live, dim otherwise.
 
 Sustained notes paint like any sounding note (bright octave-equivalents on both
-grids) and follow the volume fader of the grid they came from.
+grids) and follow the volume fader of the grid they came from. Re-fingering a
+pitch that is sustaining in this grid's bank cuts the old drone and the new note
+replaces it (the pitch stays in the set, so releasing the new finger re-drones it).
 
 A ~distortion_toggle~ is a single-cell on/off for a *per-monome* soft-clip
 distortion (surfaces runtime; at most one per monome, each grid's toggle switching

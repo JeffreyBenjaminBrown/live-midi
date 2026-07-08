@@ -18,7 +18,9 @@
 //!   ringing after its finger lifts, until *clear*.
 //!
 //! Nothing ever leaves the set except through `press_clear` (un-toggling accrete mode
-//! stops *additions* only).
+//! stops *additions* only). Retriggering a sustaining pitch does not touch the set
+//! either: the runtime cuts the old drone VOICE (`SurfaceSink::cut_sustained`) and the
+//! new note takes its place -- still a member, so its release re-drones it.
 //!
 //! The runtime asks `note_released_sustains` at each note-off: a note sustains if it
 //! is already in the set OR the accreting condition holds right then. The latter makes

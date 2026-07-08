@@ -35,7 +35,7 @@ If what you actually want is audible through-zero *linear* FM as a playable
 timbre dimension, that's a new timbre parameter + config surface -- happy to
 build it, but since nothing existing would change sound, I stopped here.
 (Also noted in jeff-maybe-review-this.org.)
-* ONGOING sustain ("accrete")
+* DONE sustain ("accrete")
 For the 3-surfaces rig(s) -- that is, softstep + 2 monomes --
 let's put three buttons in the bottom row on the left:
 - clear : Silences and flushes all accreted notes. Lights when pressed. Works on key-down; does nothing on key up.
@@ -75,7 +75,20 @@ still paint bright on BOTH grids (they're sounding; same rule as the cross-grid
 note reflection) even though control is split. Docs updated (config .org
 "sustain (accrete)" + "feet accrete", README.org); more in
 jeff-maybe-review-this.org, "two monome-specific accrete banks".
-* ONGOING distortion
+** DONE retriggering a sustaining note cuts and replaces it [chat request, 2026-07-08]
+*** [Claude] done -- the strike cuts this grid's drone; the new note takes over
+Fingering a pitch that is ringing in a grid's sustained set now cuts that drone
+at the moment of the strike (=SurfaceSink::cut_sustained=; the old tail rings
+out its normal release while the new voice attacks), so a retrigger no longer
+doubles the pitch. It lives in the surfaces sink, so every rig on this runtime
+inherits it, as you asked. One reading you might want reversed (details in
+jeff-maybe-review-this.org, "retrigger of a sustaining note"): the pitch KEEPS
+its set membership -- releasing the replacing finger re-drones it, even with
+accrete off -- so a retrigger re-articulates a drone rather than deleting it
+(clear stays the only removal; your erase button will be the per-note one).
+Per-bank, like everything accrete: retriggering on the OTHER grid leaves this
+grid's drone alone (the two banks' same-pitch drones are independent voices).
+* DONE distortion
 Let's add a button in the second row from the top, far left --
 I think that's button (0,1),
 and will describe coordinates that wayfrom now on --
@@ -179,7 +192,7 @@ edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a
 timbre's amplitude survives fader changes. The tremolo LFO's wave family is
 the existing instrument-wide =[am]= table. Docs: configs/README.org
 "Timbres".
-* ONGOING slide
+* DONE slide
 Let's introduce a janky slide algorithm.
 Toggle it (key up does nothing) with the button
 right next to the distortion button (so (1,1)).
@@ -214,7 +227,7 @@ pattern as the feet-accrete and distortion toggles: independent flags, each
 grid's LED shows its own). The mono+slide legato steal follows the NEW note's
 grid's slide switch. (Mono initially stayed global; you said the word, and it
 went per-monome too -- see the mono headline below.)
-* ONGOING mono
+* DONE mono
 This button should be right next to slide (so (1,2)).
 If it's on, each new note cuts off the old one.
 This interacts with slide -- the set of candidates is a singleton.
@@ -270,7 +283,7 @@ samples (4-7 keep drumming); off, they drum as usual. Two notes:
   now-per-grid (0,14) toggle.
 - The tether decoder now emits foot-lift (Release) events, so *holding* pedal
   3 or 0 in needs-holding mode really is holding the accrete button.
-* ONGOING move pads, and add a 'ditto' pad
+* DONE move pads, and add a 'ditto' pad
 New arrangement for pads:
 | high tom | low tom | cowbell |          9 | crash (was at 8) |
 | snare    | kick    | ditto   | closed hat | open hat         |
