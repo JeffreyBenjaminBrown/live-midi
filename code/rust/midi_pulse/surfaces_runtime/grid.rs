@@ -58,18 +58,25 @@ pub fn volume_cells(rect: OverlayRect) -> i32 {
 }
 
 /// A single-cell control button overlaid on the play grid: its rect (`NO_RECT`
-/// sentinel when absent) and whether it is lit. Buttons paint `BRIGHT` when lit,
-/// `DIM` at rest -- the resting glow keeps an idle button findable on the play grid,
-/// like the scroll arrows -- and occlude the play cells beneath them. Used for the
-/// accrete (sustain) trio and the distortion toggle.
-pub type ButtonOverlay = (OverlayRect, bool);
+/// sentinel when absent) and the level it paints. It occludes the play cells
+/// beneath it. Most buttons are two-state via `button_level` (BRIGHT when lit, DIM
+/// at rest -- the resting glow keeps an idle button findable on the play grid, like
+/// the scroll arrows); the tap-tempo cell also uses `OFF`, blinking black <->
+/// fully lit once a tempo exists (misc.org "tap blink between black and fully lit").
+pub type ButtonOverlay = (OverlayRect, i32);
+
+/// The steady on/off buttons' level: `BRIGHT` when lit, `DIM` at rest.
+pub fn button_level(lit: bool) -> i32 {
+  if lit {
+    BRIGHT
+  } else {
+    DIM
+  }
+}
 
 /// The level for `(x, y)` if it is one of the buttons, else None.
 fn button_level_at(buttons: &[ButtonOverlay], x: i32, y: i32) -> Option<i32> {
-  buttons
-    .iter()
-    .find(|(rect, _)| in_rect(*rect, x, y))
-    .map(|(_, lit)| if *lit { BRIGHT } else { DIM })
+  buttons.iter().find(|(rect, _)| in_rect(*rect, x, y)).map(|(_, level)| *level)
 }
 
 /// Compute the full LED level vector (row-major, `grid_w * grid_h`) for one grid.
@@ -79,8 +86,9 @@ fn button_level_at(buttons: &[ButtonOverlay], x: i32, y: i32) -> Option<i32> {
 /// - *volume* cells: `BRIGHT` at the active column (`volume_col`), else `OFF`;
 /// - *scroll-pad* cells: `DIM` for the four arrows, `OFF` for the two octave corners
 ///   (the pad fully occludes the edo grid beneath it -- no note ever shows there);
-/// - control `buttons` (the accrete trio, the distortion toggle): `BRIGHT` when lit
-///   (pressed / on / accreting), else `DIM`;
+/// - control `buttons` (the accrete trio, the toggles, the polyrhythm pad): the level
+///   each carries -- `BRIGHT` when lit (pressed / on / accreting), `DIM` at rest, and
+///   the tap cell's blink-off `OFF`;
 /// - a play cell inside `edo_rect`: its class under the *current register* is `BRIGHT`
 ///   if octave-equivalent to a sounding note (either grid, fingered or sustained),
 ///   else `DIM` if in the trail, else `OFF`;
@@ -218,10 +226,10 @@ mod tests {
     // The accrete trio at (0,15)..(2,15) -- needs_holding lit -- plus a lit
     // distortion toggle at (0,1).
     let buttons: Vec<ButtonOverlay> = vec![
-      ([0, 15, 0, 15], false), // clear, at rest
-      ([1, 15, 1, 15], true),  // needs_holding, on
-      ([2, 15, 2, 15], false), // accrete, at rest
-      ([0, 1, 0, 1], true),    // distortion, on
+      ([0, 15, 0, 15], button_level(false)), // clear, at rest
+      ([1, 15, 1, 15], button_level(true)),  // needs_holding, on
+      ([2, 15, 2, 15], button_level(false)), // accrete, at rest
+      ([0, 1, 0, 1], button_level(true)),    // distortion, on
     ];
     // Make the class under the clear button "sound" -- the button must occlude it.
     let cls: HashSet<i32> = [class_at(0, 0, 15)].into_iter().collect();
@@ -233,6 +241,19 @@ mod tests {
     assert_eq!(at(&levels, 1, 15), BRIGHT, "needs_holding lit");
     assert_eq!(at(&levels, 2, 15), DIM, "accrete rests dim");
     assert_eq!(at(&levels, 0, 1), BRIGHT, "distortion toggle lit");
+  }
+
+  #[test]
+  fn an_off_button_paints_dark_and_still_occludes() {
+    // The tap-tempo cell between flashes: it carries OFF, and must go truly dark
+    // even when a sounding class lands under it (black <-> fully lit blink).
+    let buttons: Vec<ButtonOverlay> = vec![([15, 0, 15, 0], OFF)];
+    let cls: HashSet<i32> = [class_at(0, 15, 0)].into_iter().collect();
+    let levels = levels_for_grid(
+      &cls, &empty(), FULL, NONE, 1, NONE, -1, SCROLL, &buttons,
+      0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&levels, 15, 0), OFF, "blink-off tap cell is black, not dim");
   }
 
   #[test]

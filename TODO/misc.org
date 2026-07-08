@@ -404,3 +404,12 @@ Choices you might revisit (details in jeff-maybe-review-this.org): the blink
 follows the *applied* (factored) tempo; factor-button LEDs show lean direction
 and =1 lights only when actionable; there is no pulse-off button -- notes pulse
 forever once a tempo exists.
+** DONE tap blink between black and fully lit [chat request, 2026-07-08]
+*** [Claude] done -- the blink's off-phase is now dark, not dim
+The tap cell now flashes full-on against BLACK (10% duty at the applied tempo,
+same phase anchor); previously the off-phase rested at the control-button dim
+level. Before any tempo exists it still rests dim, so the button stays findable
+-- say the word if you'd rather it start dark too. (Under the hood, button
+overlays now carry an LED level instead of a bool, so any button can paint
+off/dim/bright -- the erase button and future three-state buttons get that for
+free.)

@@ -92,8 +92,9 @@ impl PolyrhythmState {
   }
 
   /// Is the tap button's blink ON at `now`? Lit for the first `BLINK_DUTY` of each
-  /// applied-tempo cycle, phase-anchored to the tap that set the tempo. Always off
-  /// before a tempo exists (the button rests dim instead).
+  /// applied-tempo cycle, phase-anchored to the tap that set the tempo. The painter
+  /// renders ON as fully lit and OFF as black (misc.org "tap blink between black and
+  /// fully lit"). Always off before a tempo exists (the button rests dim instead).
   pub fn tap_blink(&self, now: Instant) -> bool {
     let (Some(hz), Some(anchor)) = (self.applied_hz(), self.anchor) else {
       return false;

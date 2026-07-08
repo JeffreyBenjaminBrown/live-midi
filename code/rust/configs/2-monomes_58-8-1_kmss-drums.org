@@ -283,9 +283,10 @@ The top-right 3x2 pad (both grids, one shared state):
 - *Tap tempo.* Tap twice within ~tap_tempo_window_ms~ (default 2000; the window
   *rolls*, so a stale first tap simply re-arms) and the interval becomes the
   *tapped tempo*. Taps pair up: a third tap inside the window does nothing until
-  its fourth arrives, and that pair overrides the first. The tap cell *blinks* --
-  lit for the first 10% of each cycle of the *applied* tempo, phase-anchored to
-  your taps -- and rests dim before any tempo exists.
+  its fourth arrives, and that pair overrides the first. The tap cell *blinks*
+  between black and fully lit -- full-on for the first 10% of each cycle of the
+  *applied* tempo, dark between flashes, phase-anchored to your taps -- and rests
+  dim before any tempo exists.
 - *Factor.* Applied tempo = tapped x 2^a x 3^b. x2 / /2 / x3 / /3 nudge the
   exponents (so x3 then /3 is *exactly* unity); =1 zeroes them. LEDs: each
   direction lights while the factor leans its way; =1 lights exactly when pressing

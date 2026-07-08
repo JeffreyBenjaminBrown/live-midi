@@ -56,8 +56,8 @@ use accrete::AccreteState;
 use polyrhythm::{FactorButton, PolyrhythmState};
 use slide::SlideCandidates;
 use grid::{
-  levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos, ButtonOverlay,
-  BRIGHT, DIM, SELECTOR_CELLS,
+  button_level, levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos,
+  ButtonOverlay, BRIGHT, DIM, OFF, SELECTOR_CELLS,
 };
 use synth::{rescale_grid_gain, SurfaceSink};
 
@@ -938,26 +938,36 @@ fn grid_thread(mut rt: GridThread) {
     let selector_slot = current_slot(&rt.selected, rt.controls_index);
     let volume_col = volume_active_col(&rt);
     let (mut buttons, sustained_classes) = accrete_view(&rt);
-    buttons.push((rt.distortion_rect, rt.distortion_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.slide_rect, rt.slide_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.mono_rect, rt.mono_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on[rt.grid_index].load(Ordering::Relaxed)));
+    let toggle = |rect, on: &[AtomicBool]| (rect, button_level(on[rt.grid_index].load(Ordering::Relaxed)));
+    buttons.push(toggle(rt.distortion_rect, &rt.distortion_on));
+    buttons.push(toggle(rt.slide_rect, &rt.slide_on));
+    buttons.push(toggle(rt.mono_rect, &rt.mono_on));
+    buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
     if rt.poly_rect != NO_RECT {
-      // The pad's six cells: the tap cell blinks (10% duty at the applied tempo);
-      // the factor cells show which way the factor leans, =1 lights when pressing
-      // it would act. Rests dim like every control button.
+      // The pad's six cells: the factor cells show which way the factor leans, =1
+      // lights when pressing it would act (bright/dim like every control button).
+      // The tap cell blinks BLACK <-> FULLY LIT (10% duty at the applied tempo;
+      // misc.org "tap blink between black and fully lit") -- it only rests dim
+      // before any tempo exists, to stay findable.
       let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
-      for (dx, dy, lit) in [
-        (0, 0, p.factor_lit(FactorButton::Times3)),
-        (1, 0, p.factor_lit(FactorButton::Times2)),
-        (2, 0, p.tap_blink(now)),
-        (0, 1, p.factor_lit(FactorButton::Div3)),
-        (1, 1, p.factor_lit(FactorButton::Div2)),
-        (2, 1, p.factor_lit(FactorButton::Unity)),
+      let tap_level = if p.applied_hz().is_none() {
+        DIM
+      } else if p.tap_blink(now) {
+        BRIGHT
+      } else {
+        OFF
+      };
+      for (dx, dy, level) in [
+        (0, 0, button_level(p.factor_lit(FactorButton::Times3))),
+        (1, 0, button_level(p.factor_lit(FactorButton::Times2))),
+        (2, 0, tap_level),
+        (0, 1, button_level(p.factor_lit(FactorButton::Div3))),
+        (1, 1, button_level(p.factor_lit(FactorButton::Div2))),
+        (2, 1, button_level(p.factor_lit(FactorButton::Unity))),
       ] {
         let (x, y) = (rt.poly_rect[0] + dx, rt.poly_rect[1] + dy);
-        buttons.push(([x, y, x, y], lit));
+        buttons.push(([x, y, x, y], level));
       }
     }
     let mut sounding_classes = union_sounding(&rt.sounding);
@@ -1366,9 +1376,9 @@ fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
   let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
   let s = &banks[rt.grid_index];
   let buttons = vec![
-    (rt.clear_rect, s.clear_lit()),
-    (rt.needs_holding_rect, s.needs_holding_lit()),
-    (rt.accrete_rect, s.accrete_lit()),
+    (rt.clear_rect, button_level(s.clear_lit())),
+    (rt.needs_holding_rect, button_level(s.needs_holding_lit())),
+    (rt.accrete_rect, button_level(s.accrete_lit())),
   ];
   let mut classes = HashSet::new();
   for bank in banks.iter() {

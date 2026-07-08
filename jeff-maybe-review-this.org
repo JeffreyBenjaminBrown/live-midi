@@ -320,3 +320,11 @@ reverse it cheaply if you disagree.
   normal 50 ms release under a retired key, so a fast retrigger crossfades
   instead of clicking, and the sustain slot is free for the new note immediately.
 
+* tap blink black <-> fully lit
+
+- Before any tempo exists the tap cell still RESTS DIM (findable, like every
+  idle control button); only the blink's off-phase went dark. If you want the
+  cell dark until the first tap too, it's one line.
+- On the monobright grid the change is mostly invisible (its "dim" was already
+  faked by brief flashes, so the blink read as black <-> lit there); the
+  varibright grid is where you'll see the difference.
