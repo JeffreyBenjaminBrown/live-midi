@@ -343,6 +343,31 @@ wood-block-at-8 / cowbell-at-9 rationale):
 | right |     0 | crash (electronic)       |
 | --    |     3 | ditto (repeats last hit) |
 
+* robustness to missing gear
+
+This rig brings up whatever is connected and loads *around* what is not, instead
+of refusing to start (TODO.org "robust to missing gear"). On startup it lists, in
+*red*, every component it skipped for a missing dependency, then plays on.
+
+- *One grid unplugged.* The connected grid loads and plays normally (its own
+  waveform strip, accrete bank, toggles, scroll pad, polyrhythm pad all work); the
+  absent grid's surface + overlays are skipped and reported. Cross-grid reflection
+  simply has nothing to reflect from the missing side. (These rigs self-control
+  their strips, so the present grid keeps its own timbre control.)
+- *No grids, SoftStep only.* The drumkit still comes up as a standalone velocity-
+  sensitive sample trigger -- it never depended on the monomes. The feet-accrete
+  toggles live on the (absent) grids, so they never turn on and all ten pedals
+  drum. =Ctrl-C= restores the KMSS to standalone mode as always.
+- *No SoftStep.* The two play grids load; the drumkit is skipped and reported. The
+  feet-accrete toggles still light and flip, but with no pedals attached they do
+  nothing (harmless).
+- *Nothing connected.* The run errors out ("no gear present") rather than idling.
+
+A *cross-controlling* strip (a ~waveform_selector~/~volume_strip~ whose ~controls~
+names the OTHER grid) is a genuine functional dependency: if its target grid is
+absent, the strip is dropped (its cells become play cells) and named in the red
+report. The shipped rig self-controls, so this only bites a hand-wired cross rig.
+
 * what is deliberately NOT here
 
 - No looper (no slots / transport / loop display), no remap, no piano.

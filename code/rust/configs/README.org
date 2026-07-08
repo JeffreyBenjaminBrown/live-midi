@@ -79,6 +79,18 @@ title = "Monome EDO Sawwave"
 Unknown fields are rejected. Tables with a ~kind~ field are tagged variants:
 fields for one kind cannot be mixed with fields from another kind.
 
+An optional top-level ~echo_input~ toggles echoing each fingered note to the
+terminal (~press grid=.. x=.. y=.. f=.. Hz~ on stderr):
+
+#+begin_src toml
+echo_input = false   # default; set true only when debugging
+#+end_src
+
+It defaults *off* so a startup warning -- e.g. the surfaces runtime's red report
+of components that could not load for missing gear (see *Surfaces*) -- stays on
+screen instead of scrolling away under a stream of key echoes as you play. The
+surfaces and sawwave runtimes honor it.
+
 * Coordinates
 
 Monome rectangles are inclusive:
@@ -586,6 +598,31 @@ trails_max = 9             # keep at most this many distinct classes (newest fir
 
 The whole table (and each field) is optional; omitting it uses the defaults, so behaviour
 is unchanged for configs that don't declare it. Only the surfaces runtime consults it.
+
+** Robustness to missing gear
+
+The surfaces runtime no longer requires every device the config declares to be
+connected. It brings up whatever is present and skips only the components that
+*functionally depend* on something missing, reporting each skipped component to
+the player in *red* on startup -- then plays on. The rule is simple: a component
+loads iff every device it depends on is present.
+
+- *An absent grid* drops only its own play surface and overlays. The other grid
+  (and the drumkit) still load.
+- *Cross-surface control.* A ~waveform_selector~ / ~volume_strip~ whose
+  ~controls~ names a *different* grid (one monome setting the other's timbre or
+  volume) is dropped when that target grid is absent -- its cells revert to plain
+  play cells. A *self*-controlling strip (the current rigs) is unaffected.
+- *The SoftStep drumkit is standalone.* It loads whenever its SoftStep is
+  present, even with *no* grids connected -- it is a sample-trigger surface in
+  its own right (the monome->softstep accretion mirror is an add-on a grid
+  enables, never a load-time requirement). With grids absent, the feet-accrete
+  toggles simply never turn on, so every pedal drums.
+- If *nothing* runnable is present (no grids and no SoftStep), the run errors
+  rather than idling.
+
+Set ~echo_input = false~ (the default) so this red report is not scrolled off
+screen by note echoes while you play.
 
 * Looper
 

@@ -369,3 +369,39 @@ reverse it cheaply if you disagree.
   it keeps blinking while cycling is off (it is the display you asked for).
   Switching a grid's cycling on/off never touches already-sounding notes --
   only new strikes read the switch, same rule as tempo changes.
+
+* robust to missing gear + echo_input (2026-07-08)
+Making the surfaces runtime load around absent devices instead of erroring
+(TODO.org "config -> rig; robust to missing gear"). Decisions you might revisit:
+
+- *The rule.* A component loads iff every device it functionally depends on is
+  present. =plan_bringup= (surfaces_runtime/mod.rs) is the pure statement of it;
+  =assign_available_devices= (device_assign.rs) is the tolerant discovery.
+- *Cross-control to an absent grid -> DROP the strip.* A waveform_selector /
+  volume_strip whose =controls= names a *different*, absent grid is not loaded;
+  its cells revert to plain play cells (and it's named in the red report). The
+  alternative was leaving it loaded-but-inert (dead cells). I chose "drop" to
+  match your "components that were NOT loaded ... report ... but load the rest."
+  Self-controlling strips (all shipped rigs) are never affected. Reverse by
+  deleting the =drop_selector/drop_volume= handling.
+- *Stuck-at-default nuance (cross rigs only).* If grid A cross-controls grid B's
+  timbre and B is present but A (its controller) is absent, B keeps playing but
+  is stuck at the default timbre -- its control lived on A. Not separately
+  reported (A's absence already is). Only matters for a hand-wired cross rig.
+- *echo_input is TOP-LEVEL, default false.* The one pre-existing "echo input to
+  screen" was the sawwave runtime's =press x=.. y=..= line. I gated *that* behind
+  the new option AND added a matching (gated) echo to the surfaces runtime, so
+  the option actually does something in the runtime that shows the red report.
+  If you'd rather surfaces never echo, delete the =rt.echo_input= block in
+  =handle_key=. Off by default keeps the red warning on screen while you play.
+- *Present devices fill the LOW grid indices.* With one of two grids connected,
+  it always becomes grid 0 (=assign_available_devices= fills low indices first).
+  Fine because the two grids are interchangeable + identical here (documented);
+  a rig with genuinely different per-grid layouts would give the lone device
+  grid 0's layout. Say the word if you want device->config-slot pinning.
+- *feet-accrete older/other with one grid:* degrades gracefully -- the absent
+  grid's pedal triple just keeps drumming (its toggle never turns on).
+- *Red report:* stderr, bold red, colour only on a TTY (=IsTerminal=), printed
+  last before "surfaces running" so it sits at the bottom.
+- *No-gear guard:* if neither a grid nor the SoftStep is present, the run errors
+  ("no gear present") instead of idling silently.
