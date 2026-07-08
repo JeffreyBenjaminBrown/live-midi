@@ -85,6 +85,7 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     sustain_level: *sustain_level,
     decay_secs: *decay_secs,
     windows: config_windows(&config.monome_windows),
+    echo_input: config.echo_input,
   })
 }
 
@@ -107,6 +108,9 @@ struct RuntimeSettings {
   sustain_level: f32,
   decay_secs: f32,
   windows: Vec<Window>,
+  /// Echo each fingered note to stderr (`[surfaces].echo_input` / top-level
+  /// `echo_input`). Off by default; see the config field's doc.
+  echo_input: bool,
 }
 
 fn run(settings: RuntimeSettings) -> Result<(), Box<dyn std::error::Error>> {
@@ -254,8 +258,10 @@ fn run(settings: RuntimeSettings) -> Result<(), Box<dyn std::error::Error>> {
     let diffs: Vec<LedCmd> = match window {
       WindowId::Edo => {
         if press {
-          let f = freq_for(*x, *y, settings.fund, settings.edo, settings.x_step, settings.y_step);
-          eprintln!("press x={x:>2} y={y:>2} f={f:.2} Hz");
+          if settings.echo_input {
+            let f = freq_for(*x, *y, settings.fund, settings.edo, settings.x_step, settings.y_step);
+            eprintln!("press x={x:>2} y={y:>2} f={f:.2} Hz");
+          }
           edo_press(&mut state, cell)
         } else {
           edo_release(&mut state, cell)

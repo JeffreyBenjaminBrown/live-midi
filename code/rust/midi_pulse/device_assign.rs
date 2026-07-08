@@ -13,15 +13,11 @@ use std::collections::HashMap;
 
 use crate::monome::DeviceInfo;
 
-/// Pick `count` distinct grids of `size` from a discovery reply list, in
-/// first-appearance order, taking the newest port for each id. Errs (loudly,
-/// naming what was seen) if fewer than `count` distinct live ids of that size
-/// were found.
-pub fn assign_distinct_devices(
-  devices: &[DeviceInfo],
-  size: [i32; 2],
-  count: usize,
-) -> Result<Vec<DeviceInfo>, String> {
+/// The distinct live grids of `size` in a discovery reply, in first-appearance
+/// order, keeping the newest port per id (serialosc can report one id on several
+/// ports; RUNTIME-NOTES.org "Ghost tty devices"). The shared core of both the
+/// strict and the tolerant assignment below.
+fn distinct_newest(devices: &[DeviceInfo], size: [i32; 2]) -> Vec<DeviceInfo> {
   let mut order: Vec<String> = vec![];
   let mut newest: HashMap<String, DeviceInfo> = HashMap::new();
   for device in devices {
@@ -34,7 +30,19 @@ pub fn assign_distinct_devices(
     // Reply order is oldest-first, so the last write per id is the newest port.
     newest.insert(device.id.clone(), device.clone());
   }
-  let chosen: Vec<DeviceInfo> = order.iter().map(|id| newest[id].clone()).collect();
+  order.iter().map(|id| newest[id].clone()).collect()
+}
+
+/// Pick `count` distinct grids of `size` from a discovery reply list, in
+/// first-appearance order, taking the newest port for each id. Errs (loudly,
+/// naming what was seen) if fewer than `count` distinct live ids of that size
+/// were found.
+pub fn assign_distinct_devices(
+  devices: &[DeviceInfo],
+  size: [i32; 2],
+  count: usize,
+) -> Result<Vec<DeviceInfo>, String> {
+  let chosen = distinct_newest(devices, size);
   if chosen.len() < count {
     let seen: Vec<(&str, u16)> = chosen.iter().map(|d| (d.id.as_str(), d.port)).collect();
     let all: Vec<(&str, u16, i32, i32)> = devices
@@ -48,6 +56,27 @@ pub fn assign_distinct_devices(
     ));
   }
   Ok(chosen.into_iter().take(count).collect())
+}
+
+/// Like [`assign_distinct_devices`], but tolerant of missing gear: returns a slot for
+/// each of the `count` requested grids -- `Some(device)` for the grids that have a
+/// live device to bind (the distinct ids of `size`, newest port each, in first-
+/// appearance order, filling the low indices first) and `None` for the grids with no
+/// device present. Never errors: absent gear is the caller's to report and route
+/// around, so a runtime can load the surfaces it *can* bring up (the "robust to
+/// missing gear" path -- see the surfaces runtime). With every grid present this is
+/// exactly `assign_distinct_devices` wrapped in `Some`, so the all-connected behaviour
+/// is unchanged.
+pub fn assign_available_devices(
+  devices: &[DeviceInfo],
+  size: [i32; 2],
+  count: usize,
+) -> Vec<Option<DeviceInfo>> {
+  let mut chosen = distinct_newest(devices, size);
+  chosen.truncate(count);
+  let mut slots: Vec<Option<DeviceInfo>> = chosen.into_iter().map(Some).collect();
+  slots.resize(count, None);
+  slots
 }
 
 #[cfg(test)]
@@ -102,5 +131,42 @@ mod tests {
     let devices = [dev("a", 1, 16, 16), dev("b", 2, 16, 16), dev("c", 3, 16, 16)];
     let got = assign_distinct_devices(&devices, [16, 16], 2).unwrap();
     assert_eq!(got.len(), 2);
+  }
+
+  #[test]
+  fn available_fills_present_grids_and_leaves_the_rest_none() {
+    // One grid of a two-grid request is connected: slot 0 gets it, slot 1 is None
+    // (no error). This is the "one grid unplugged" path the surfaces runtime loads
+    // around.
+    let devices = [dev("a", 9000, 16, 16)];
+    let got = assign_available_devices(&devices, [16, 16], 2);
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0].as_ref().map(|d| d.id.as_str()), Some("a"));
+    assert!(got[1].is_none(), "the second grid is absent");
+  }
+
+  #[test]
+  fn available_all_present_matches_the_strict_assignment() {
+    let devices = [dev("a", 9000, 16, 16), dev("b", 9001, 16, 16)];
+    let got = assign_available_devices(&devices, [16, 16], 2);
+    assert_eq!(
+      got.iter().map(|d| d.as_ref().map(|d| d.id.clone())).collect::<Vec<_>>(),
+      [Some("a".to_string()), Some("b".to_string())],
+    );
+  }
+
+  #[test]
+  fn available_with_no_devices_is_all_none() {
+    let got = assign_available_devices(&[], [16, 16], 2);
+    assert_eq!(got.len(), 2);
+    assert!(got.iter().all(|d| d.is_none()), "nothing connected -> every slot None");
+  }
+
+  #[test]
+  fn available_keeps_newest_port_per_ghosted_id() {
+    let devices = [dev("a", 9000, 16, 16), dev("a", 9005, 16, 16)];
+    let got = assign_available_devices(&devices, [16, 16], 2);
+    assert_eq!(got[0].as_ref().map(|d| d.port), Some(9005), "newest port for a ghosted id");
+    assert!(got[1].is_none(), "one id is still one grid");
   }
 }

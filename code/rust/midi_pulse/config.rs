@@ -46,6 +46,13 @@ pub struct Config {
   /// present there must be exactly four entries.
   #[serde(default)]
   pub timbres: Vec<TimbreConfig>,
+  /// Echo each fingered note to the terminal (`press grid=.. x=.. y=.. f=.. Hz`).
+  /// Off by default so a startup warning -- e.g. the surfaces runtime's red report of
+  /// components that could not load for missing gear -- stays on screen instead of
+  /// scrolling away under a stream of key echoes while you play. Turn it on for
+  /// debugging. Honored by the surfaces and sawwave runtimes.
+  #[serde(default)]
+  pub echo_input: bool,
 }
 
 /// One selectable timbre (`[[timbres]]`): a base waveform plus its numeric

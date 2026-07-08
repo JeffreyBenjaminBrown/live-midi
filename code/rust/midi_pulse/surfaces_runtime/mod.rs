@@ -43,7 +43,7 @@ use midi_pulse::config::{
   load_named_config, AccreteControlKind, AmShapeFamilyConfig, Config, MonomeWindowConfig,
   SinkConfig, WaveformChoice,
 };
-use midi_pulse::device_assign::assign_distinct_devices;
+use midi_pulse::device_assign::assign_available_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
 use midi_pulse::monome::{self, DeviceInfo};
 use midi_pulse::monome_brightness::PulseBrightness;
@@ -291,6 +291,10 @@ struct Settings {
   slide_duration_secs: f32,
   /// The tap-tempo pairing window (`[surfaces].tap_tempo_window_ms`).
   tap_window: Duration,
+  /// Echo each fingered note to stderr (top-level `echo_input`). Off by default so the
+  /// startup red report of components that couldn't load stays on screen instead of
+  /// scrolling away under key echoes as you play.
+  echo_input: bool,
 }
 
 fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -508,6 +512,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     slide_window: Duration::from_millis(surfaces.slide_candidate_window_ms),
     slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
     tap_window: Duration::from_millis(surfaces.tap_tempo_window_ms),
+    echo_input: config.echo_input,
   })
 }
 
@@ -532,6 +537,112 @@ fn resolve_timbre_slots(config: &Config) -> [TimbreSlot; SELECTOR_CELLS] {
     };
   }
   slots
+}
+
+/// The bring-up decision for one run: given which configured grids have a live device
+/// (and whether the SoftStep is present), what loads and what is skipped for a missing
+/// dependency. The clean statement of the independence rule: *a component loads iff
+/// every device it functionally depends on is present.* Pure -- unit-tested without
+/// hardware (see `plan_*` tests).
+struct BringUp {
+  /// Per grid index: does this grid have a live device to bind?
+  present: Vec<bool>,
+  /// Per grid index: drop this grid's waveform selector (it cross-controls an absent
+  /// grid, so it would do nothing -- its cells become plain play cells).
+  drop_selector: Vec<bool>,
+  /// Per grid index: drop this grid's volume strip (same reason).
+  drop_volume: Vec<bool>,
+  /// Bring up the KMSS drumkit? (its SoftStep is present).
+  drums: bool,
+  /// Human-readable red lines: every component skipped for a missing dependency, in
+  /// the player's terms. Empty when everything the rig declares came up.
+  report: Vec<String>,
+}
+
+impl BringUp {
+  fn any_grid(&self) -> bool {
+    self.present.iter().any(|p| *p)
+  }
+}
+
+/// Work out [`BringUp`] from the resolved grids, which ones are present, and the
+/// SoftStep's presence. The dependencies:
+/// - a grid's own windows depend on that grid's device;
+/// - a waveform selector / volume strip that *cross-controls* another grid also
+///   depends on that grid (the "one monome controls the other's timbre" case);
+/// - the drumkit depends only on its SoftStep -- never on any grid (it is a
+///   standalone sample-trigger surface).
+fn plan_bringup(
+  grids: &[GridSettings],
+  present: &[bool],
+  want_drums: bool,
+  softstep_present: bool,
+) -> BringUp {
+  let n = grids.len();
+  let mut drop_selector = vec![false; n];
+  let mut drop_volume = vec![false; n];
+  let mut report = Vec::new();
+
+  // Absent grids: their whole window set (play surface + every overlay) does not load.
+  for (i, g) in grids.iter().enumerate() {
+    if !present[i] {
+      report.push(format!(
+        "monome {:?} is not connected -- its play surface and all its overlays did not load",
+        g.monome_id,
+      ));
+    }
+  }
+  // Cross-surface functional dependencies. A present grid whose selector/volume strip
+  // controls an ABSENT grid can affect nothing, so drop it (reported).
+  for (i, g) in grids.iter().enumerate() {
+    if !present[i] {
+      continue;
+    }
+    if g.selector_rect != NO_RECT && !present[g.controls_index] {
+      drop_selector[i] = true;
+      report.push(format!(
+        "monome {:?}'s waveform selector re-timbres monome {:?}, which is not connected \
+         -- the selector did not load (those cells play notes instead)",
+        g.monome_id, grids[g.controls_index].monome_id,
+      ));
+    }
+    if g.volume_rect != NO_RECT && !present[g.volume_controls_index] {
+      drop_volume[i] = true;
+      report.push(format!(
+        "monome {:?}'s volume strip sets monome {:?}, which is not connected \
+         -- the volume strip did not load",
+        g.monome_id, grids[g.volume_controls_index].monome_id,
+      ));
+    }
+  }
+  // The drumkit depends only on the SoftStep.
+  let drums = want_drums && softstep_present;
+  if want_drums && !softstep_present {
+    report.push("the SoftStep is not connected -- the drumkit did not load".to_string());
+  }
+
+  BringUp { present: present.to_vec(), drop_selector, drop_volume, drums, report }
+}
+
+/// Print the red report of components skipped for a missing dependency. Silent when
+/// nothing was skipped. Coloured only on a terminal (so a redirected log stays clean).
+fn print_missing_report(report: &[String]) {
+  if report.is_empty() {
+    return;
+  }
+  use std::io::IsTerminal;
+  let (red, reset) = if std::io::stderr().is_terminal() {
+    ("\x1b[1;31m", "\x1b[0m")
+  } else {
+    ("", "")
+  };
+  eprintln!("{red}surfaces: some components did not load (missing gear):{reset}");
+  for line in report {
+    eprintln!("{red}  - {line}{reset}");
+  }
+  eprintln!(
+    "{red}  (playing what loaded; reconnect the gear and restart to get the rest){reset}"
+  );
 }
 
 /// The I/O shell. `detector_port` is the serialosc(-mock) port to discover grids on;
@@ -570,28 +681,63 @@ fn run(
     println!("press 'r' + Enter to hot-reload the config (amplitude / timbres / tuning / pluck / slide / trail / distortion curve).");
   }
 
-  // Discover all grids on the first grid's socket, then assign each a distinct device.
+  // Discover whatever grids are actually connected and assign each configured grid a
+  // distinct live device, tolerating absence: `assign_available_devices` leaves the
+  // absent grids as `None` instead of erroring. A missing grid then disables only the
+  // components that depend on it; everything else still loads (TODO.org "robust to
+  // missing gear"). With both grids present this is the old behaviour exactly.
   let sock0 = UdpSocket::bind(("0.0.0.0", s.grids[0].listen_port))
     .map_err(|e| format!("bind UDP :{}: {e}", s.grids[0].listen_port))?;
   sock0.set_read_timeout(Some(Duration::from_millis(50)))?;
   let devices = monome::discover_devices_via(&sock0, s.grids[0].listen_port, detector_port);
-  let assigned: Vec<DeviceInfo> = assign_distinct_devices(&devices, s.size, num_grids)?;
+  let assigned: Vec<Option<DeviceInfo>> = assign_available_devices(&devices, s.size, num_grids);
+  let present: Vec<bool> = assigned.iter().map(Option::is_some).collect();
   for (g, dev) in s.grids.iter().zip(&assigned) {
-    println!("surfaces: grid {:?} -> id={:?} port={}", g.monome_id, dev.id, dev.port);
+    if let Some(d) = dev {
+      println!("surfaces: grid {:?} -> id={:?} port={}", g.monome_id, d.id, d.port);
+    }
   }
   // Drain leftover /serialosc/device enumeration replies so grid 0's first recv is a
   // key event, not a stale reply.
   let mut drain = [0u8; 2048];
   while sock0.recv_from(&mut drain).is_ok() {}
 
-  // Sockets for every grid (grid 0 reuses the discovery socket).
-  let mut sockets: Vec<UdpSocket> = Vec::with_capacity(num_grids);
-  sockets.push(sock0);
-  for g in &s.grids[1..] {
-    let sock = UdpSocket::bind(("0.0.0.0", g.listen_port))
-      .map_err(|e| format!("bind UDP :{}: {e}", g.listen_port))?;
-    sock.set_read_timeout(Some(Duration::from_millis(50)))?;
-    sockets.push(sock);
+  // Is the KMSS actually plugged in? The drumkit is a *standalone* sample-trigger
+  // surface -- it loads whenever its SoftStep is present, even with no grids connected
+  // (TODO.org: "the softstep ... should load ... even if there are no monomes
+  // present"). The probe opens nothing.
+  let softstep_present = s.has_drums && drumkit_runtime::any_softstep_present(config);
+
+  // Decide what loads and what is skipped for a missing dependency (reported in red).
+  let plan = plan_bringup(&s.grids, &present, s.has_drums, softstep_present);
+  if !plan.any_grid() && !plan.drums {
+    return Err(
+      "no gear present: found no monome grids and no SoftStep -- nothing to run \
+       (reconnect a grid or the SoftStep, or check serialosc)"
+        .into(),
+    );
+  }
+
+  // Sockets, one per PRESENT grid (grid 0 reuses the discovery socket; an absent grid
+  // gets none, and no thread). The index space stays 0..num_grids so all the shared
+  // per-grid state (the `Arc<Vec<_>>`s) keeps its indices -- absent grids just leave
+  // idle slots.
+  let mut sockets: Vec<Option<UdpSocket>> = Vec::with_capacity(num_grids);
+  if present[0] {
+    sockets.push(Some(sock0));
+  } else {
+    drop(sock0);
+    sockets.push(None);
+  }
+  for (i, g) in s.grids.iter().enumerate().skip(1) {
+    if present[i] {
+      let sock = UdpSocket::bind(("0.0.0.0", g.listen_port))
+        .map_err(|e| format!("bind UDP :{}: {e}", g.listen_port))?;
+      sock.set_read_timeout(Some(Duration::from_millis(50)))?;
+      sockets.push(Some(sock));
+    } else {
+      sockets.push(None);
+    }
   }
 
   // Shared audio: one voice map + one synth stream; each voice carries its grid's
@@ -670,8 +816,14 @@ fn run(
   // pedal hook is the feet-accrete mirror: pedals 1/2/3 drive the older (monobright)
   // grid's accrete bank and 8/9/0 the other's (Jeff's mapping, misc.org "feet
   // accrete"), each triple only while its grid's toggle is on.
-  let drums = if s.has_drums {
-    let older = assigned.iter().position(|d| is_monobright(&d.id)).unwrap_or(0);
+  let drums = if plan.drums {
+    // Which present grid is the older (monobright) one? Its accrete trio maps to pedals
+    // 1/2/3, the other grid's to 8/9/0 (the feet-accrete mirror). A grid that's absent
+    // never turns its feet toggle on, so its triple simply keeps drumming.
+    let older = assigned
+      .iter()
+      .position(|d| d.as_ref().is_some_and(|d| is_monobright(&d.id)))
+      .unwrap_or(0);
     let other = (0..num_grids).find(|g| *g != older).unwrap_or(older);
     let hook = feet_accrete_hook(
       Arc::clone(&feet_accrete_on),
@@ -691,13 +843,25 @@ fn run(
     None
   };
 
+  // The red report of everything skipped for a missing dependency, printed just before
+  // "running" so it is the last thing on screen -- and, with `echo_input` off (the
+  // default), it stays there while you play.
+  print_missing_report(&plan.report);
   println!("surfaces running; Ctrl-C to exit.");
 
-  // Spawn one key/LED loop per grid.
+  // Spawn one key/LED loop per PRESENT grid (absent grids have `None` for both their
+  // socket and their device, so they are skipped).
   let mut handles = Vec::with_capacity(num_grids);
-  let assigned_ports: Vec<u16> = assigned.iter().map(|d| d.port).collect();
-  for ((grid_index, sock), dev) in sockets.into_iter().enumerate().zip(&assigned) {
+  for (grid_index, sock) in sockets.into_iter().enumerate() {
+    let (Some(sock), Some(dev)) = (sock, assigned[grid_index].clone()) else {
+      continue;
+    };
     let g = &s.grids[grid_index];
+    // A cross-controlling waveform selector / volume strip whose TARGET grid is absent
+    // can't do anything, so it does not load: its cells revert to plain play cells
+    // (and it's named in the red report). Self-controlling strips are untouched.
+    let selector_rect = if plan.drop_selector[grid_index] { NO_RECT } else { g.selector_rect };
+    let volume_rect = if plan.drop_volume[grid_index] { NO_RECT } else { g.volume_rect };
     let rt = GridThread {
       grid_index,
       sock,
@@ -711,9 +875,9 @@ fn run(
       monobright: is_monobright(&dev.id),
       edo_rect: g.edo_rect,
       scroll_rect: g.scroll_rect,
-      selector_rect: g.selector_rect,
+      selector_rect,
       controls_index: g.controls_index,
-      volume_rect: g.volume_rect,
+      volume_rect,
       volume_controls_index: g.volume_controls_index,
       clear_rect: g.clear_rect,
       needs_holding_rect: g.needs_holding_rect,
@@ -729,6 +893,8 @@ fn run(
       x_step: s.x_step,
       y_step: s.y_step,
       edo: s.edo,
+      fund: s.fund,
+      echo_input: s.echo_input,
       trail_clobber_radius: s.trail_clobber_radius,
       trails_max: s.trails_max,
       timbres: s.timbres,
@@ -765,13 +931,25 @@ fn run(
     handles.push(thread::spawn(move || grid_thread(rt)));
   }
 
-  for handle in handles {
-    let _ = handle.join();
+  if handles.is_empty() {
+    // Drums-only (every grid absent): there is no grid loop to join, so park until a
+    // signal (or a test) sets STOP, then tear down. The drumkit runs on its own MIDI /
+    // timer threads meanwhile.
+    while !STOP.load(Ordering::SeqCst) {
+      thread::sleep(Duration::from_millis(50));
+    }
+  } else {
+    for handle in handles {
+      let _ = handle.join();
+    }
   }
 
-  // Authoritative teardown regardless of how the threads exited.
-  for (g, port) in s.grids.iter().zip(&assigned_ports) {
-    blank_grid(*port, &g.prefix);
+  // Authoritative teardown regardless of how the threads exited: blank the grids that
+  // were actually brought up.
+  for (g, dev) in s.grids.iter().zip(&assigned) {
+    if let Some(d) = dev {
+      blank_grid(d.port, &g.prefix);
+    }
   }
   drop(audio);
   drop(drums);
@@ -818,6 +996,11 @@ struct GridThread {
   x_step: i32,
   y_step: i32,
   edo: i32,
+  /// Tuning fundamental (Hz), for the optional `echo_input` note echo.
+  fund: f64,
+  /// Echo each fingered note on this grid to stderr; off unless the rig sets
+  /// `echo_input`. Kept off so a startup warning isn't scrolled away as you play.
+  echo_input: bool,
   /// Trail clobber radius as a divisor of the octave (see `Settings`).
   trail_clobber_radius: i32,
   /// Max distinct pitch classes the shared trail keeps.
@@ -1155,6 +1338,12 @@ fn handle_key(
   }
   if press {
     let pitch = step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1);
+    // Optional note echo (`echo_input`, off by default): mirrors the sawwave runtime,
+    // but stays quiet unless asked so a startup warning isn't scrolled off screen.
+    if rt.echo_input {
+      let f = rt.fund * 2f64.powf(pitch as f64 / rt.edo as f64);
+      eprintln!("press grid={} x={:>2} y={:>2} f={f:.2} Hz", rt.grid_index, cell.0, cell.1);
+    }
     // Mono: a new note cuts this grid's other fingered notes first. With slide on
     // too, the nearest cut note is not released but STOLEN: its voice will glide
     // into the new pitch legato-style, with no attack re-trigger (misc.org "slide
@@ -1795,6 +1984,93 @@ mod tests {
     assert_eq!(s.trails_max, 7, "default trail length is 7");
   }
 
+  /// A minimal self-controlling grid for the `plan_bringup` tests: `id`'s selector
+  /// (present iff `has_selector`) re-timbres `controls_index`; no other overlays.
+  fn gs(id: &str, controls_index: usize, has_selector: bool) -> GridSettings {
+    GridSettings {
+      monome_id: id.to_string(),
+      listen_port: 9000,
+      prefix: format!("/{id}"),
+      edo_rect: [0, 0, 15, 15],
+      scroll_rect: NO_RECT,
+      selector_rect: if has_selector { [0, 0, 3, 0] } else { NO_RECT },
+      controls_index,
+      volume_rect: NO_RECT,
+      volume_controls_index: controls_index,
+      clear_rect: NO_RECT,
+      needs_holding_rect: NO_RECT,
+      accrete_rect: NO_RECT,
+      erase_rect: NO_RECT,
+      distortion_rect: NO_RECT,
+      slide_rect: NO_RECT,
+      mono_rect: NO_RECT,
+      feet_accrete_rect: NO_RECT,
+      poly_rect: NO_RECT,
+    }
+  }
+
+  #[test]
+  fn plan_all_present_and_softstep_present_loads_everything_silently() {
+    let grids = [gs("a", 0, true), gs("b", 1, true)];
+    let plan = plan_bringup(&grids, &[true, true], true, true);
+    assert!(plan.report.is_empty(), "nothing skipped -> empty report: {:?}", plan.report);
+    assert!(plan.drums, "the SoftStep is present");
+    assert!(!plan.drop_selector[0] && !plan.drop_selector[1], "self-control keeps both selectors");
+  }
+
+  #[test]
+  fn plan_absent_grid_is_reported_but_the_present_one_still_loads() {
+    // The common "one grid unplugged" case: grid b is gone; grid a (self-controlling)
+    // still loads, and only b is reported.
+    let grids = [gs("a", 0, true), gs("b", 1, true)];
+    let plan = plan_bringup(&grids, &[true, false], false, false);
+    assert!(plan.any_grid(), "grid a is present");
+    assert!(!plan.drop_selector[0], "a self-controls a present grid -> keep its selector");
+    assert_eq!(plan.report.len(), 1, "exactly one skip (grid b)");
+    assert!(plan.report[0].contains("\"b\""), "names the absent grid: {:?}", plan.report[0]);
+  }
+
+  #[test]
+  fn plan_cross_control_to_an_absent_grid_drops_the_selector() {
+    // Grid a is present but its selector re-timbres grid b (absent): a keeps playing,
+    // but the selector can't do anything, so it does not load -- and is reported.
+    let grids = [gs("a", 1, true), gs("b", 1, true)];
+    let plan = plan_bringup(&grids, &[true, false], false, false);
+    assert!(plan.drop_selector[0], "a's selector controls absent b -> dropped");
+    // Two report lines: b absent, and a's selector dropped.
+    assert_eq!(plan.report.len(), 2, "{:?}", plan.report);
+    assert!(
+      plan.report.iter().any(|l| l.contains("waveform selector") && l.contains("\"b\"")),
+      "reports the dead cross-control: {:?}",
+      plan.report,
+    );
+  }
+
+  #[test]
+  fn plan_missing_softstep_drops_only_the_drumkit() {
+    let grids = [gs("a", 0, true)];
+    let plan = plan_bringup(&grids, &[true], true, false);
+    assert!(!plan.drums, "no SoftStep -> no drums");
+    assert!(plan.any_grid(), "the grid still loads");
+    assert!(
+      plan.report.iter().any(|l| l.contains("SoftStep") && l.contains("drumkit")),
+      "reports the missing drumkit: {:?}",
+      plan.report,
+    );
+  }
+
+  #[test]
+  fn plan_drums_stand_alone_when_no_grids_are_present() {
+    // The SoftStep special case: no grids, but the SoftStep is present -> the drumkit
+    // loads on its own (both grids reported absent). `run`'s no-gear guard passes
+    // because drums load.
+    let grids = [gs("a", 0, true), gs("b", 1, true)];
+    let plan = plan_bringup(&grids, &[false, false], true, true);
+    assert!(!plan.any_grid(), "no grids present");
+    assert!(plan.drums, "the SoftStep alone still brings up the drumkit");
+    assert_eq!(plan.report.len(), 2, "both grids reported absent: {:?}", plan.report);
+  }
+
   /// End-to-end against two virtual grids (the monome mock) with null audio: the whole
   /// device layer -- discovery, both grids binding, LED output, key input routing --
   /// which the pure tests cannot cover. No hardware, no sound. See MOCK-MONOME.org.
@@ -1860,6 +2136,48 @@ mod tests {
     assert!(wait_until(secs(3), || a.level_at(10, 0) == 15), "(10,0) is a play cell now");
     a.release(10, 0);
     assert!(wait_until(secs(3), || a.level_at(10, 0) == 4), "released into the trail");
+
+    STOP.store(true, Ordering::SeqCst);
+    let _ = handle.join();
+    STOP.store(false, Ordering::SeqCst);
+  }
+
+  /// Robust-to-missing-gear (TODO.org): a two-grid rig with only ONE grid connected
+  /// still brings up the present grid -- it discovers a single device, binds it as
+  /// grid 0, and skips the absent grid 1 (named in the red report) instead of erroring
+  /// out the whole run.
+  #[test]
+  fn one_grid_absent_still_runs_the_present_grid() {
+    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+
+    let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Only grid "a" exists; the 2-monome mock rig config wants two.
+    let rig = MockRig::start(0, &[GridSpec::grid_256("a")]).expect("start one mock grid");
+    let detector_port = rig.detector_port();
+    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+
+    STOP.store(false, Ordering::SeqCst);
+    let handle = {
+      let config = config.clone();
+      thread::spawn(move || {
+        if let Err(e) = run(&config, detector_port, true, None) {
+          eprintln!("mock one-grid run error: {e}");
+        }
+      })
+    };
+
+    let a = rig.grid(0);
+    let secs = Duration::from_secs;
+    // The present grid registers and repaints even though its sibling is absent.
+    assert!(wait_until(secs(5), || a.registered()), "the present grid registers");
+    assert!(wait_until(secs(3), || a.generation() > 0), "first repaint");
+    // Its own selector still works (self-control, its target present): triangle lit.
+    assert!(wait_until(secs(3), || a.level_at(1, 0) == 15), "grid a selector shows triangle");
+    // And it plays: a fingered note lights, then lingers dim in the trail on release.
+    a.press(5, 5);
+    assert!(wait_until(secs(3), || a.level_at(5, 5) == 15), "fingered note lights on the present grid");
+    a.release(5, 5);
+    assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "released note lingers dim");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

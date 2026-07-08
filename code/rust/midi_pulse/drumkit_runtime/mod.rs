@@ -421,6 +421,28 @@ fn run_voice_timer(
 
 /// Choose the KMSS input port: any whose name contains `substring`, preferring the
 /// performance port ("MIDI 1") -- the one that carries the tether sensor stream.
+/// A side-effect-free probe: is at least one of the config's SoftStep devices plugged
+/// in right now? Enumerates MIDI input ports and matches each `[[softsteps]]`
+/// `select` substring the same way [`select_input_port`] binds it -- but opens no
+/// device and enters no tether mode. The surfaces runtime uses this to decide whether
+/// to bring up the drumkit at all (a missing SoftStep should skip the drums, not sink
+/// the whole run). Returns false when the config declares no softsteps, or when the
+/// MIDI subsystem can't even be opened.
+pub fn any_softstep_present(config: &Config) -> bool {
+  if config.softsteps.is_empty() {
+    return false;
+  }
+  let Ok(midi_in) = MidiInput::new("kmss-probe") else {
+    return false;
+  };
+  let names: Vec<String> =
+    midi_in.ports().iter().filter_map(|p| midi_in.port_name(p).ok()).collect();
+  config
+    .softsteps
+    .iter()
+    .any(|s| names.iter().any(|n| n.contains(s.select.name_substring())))
+}
+
 fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPort, String> {
   let mut matches: Vec<(MidiInputPort, String)> = midi_in
     .ports()
