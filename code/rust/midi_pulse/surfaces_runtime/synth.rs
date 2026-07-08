@@ -26,6 +26,12 @@ use crate::voices::pluck_envelope;
 /// collide in the shared map.
 pub const SUSTAIN_BASE: usize = 0x100;
 
+/// The `chord` offset for *retired* voices: drones cut by a retrigger of their own
+/// pitch (`cut_sustained`). A retired voice only rings out its release ramp; moving
+/// it off the sustain key frees that key for the replacing note immediately, so the
+/// pitch can re-drone before the old tail has died. Far above `SUSTAIN_BASE + grid`.
+const RETIRED_BASE: usize = 0x10000;
+
 /// Multiply the per-voice gain of every voice belonging to `grid` by `ratio`, in
 /// place. Drives the *live* volume control: a volume strip sets the loudness of
 /// whatever grid it `controls` (its own, in the current rigs), and moving it must
@@ -251,6 +257,27 @@ impl SurfaceSink {
   pub fn release_sustained(&mut self) {
     release_sustained_voices(&self.voices, self.grid, self.release_secs, self.sample_rate);
   }
+
+  /// A manual retrigger of a sustaining pitch: cut THIS grid's drone at `pitch` so
+  /// the incoming strike replaces it instead of doubling it (misc.org "retriggering
+  /// a sustaining note replaces it"). The dying voice is re-keyed under a unique
+  /// retired slot -- freeing the sustain key at once -- and rings out its release
+  /// ramp there (the render reaps it at silence). The accrete SET is not this
+  /// sink's to touch: the pitch keeps its sustained membership, so releasing the
+  /// replacing note re-drones it. No-op when no drone rings at `pitch` (a pitch
+  /// merely *in the set* while still fingered has no drone voice yet).
+  pub fn cut_sustained(&mut self, pitch: i32) {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut state) = voices.remove(&sustain_key(self.grid, pitch)) else {
+      return;
+    };
+    state.target_env = 0.0;
+    state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+    // next_id doubles as the retired-key uniquifier: two cuts never collide.
+    let uniq = self.next_id as i32;
+    self.next_id += 1;
+    voices.insert(VoiceSource::Accreted { chord: RETIRED_BASE + self.grid, pitch: uniq }, state);
+  }
 }
 
 /// Ramp one grid's sustained voices to silence -- that bank's accrete 'clear', in a
@@ -440,6 +467,61 @@ mod tests {
     assert_eq!(target_env(&voices, 0, (1, 0)), Some(0.0), "second finger voice ramps out");
     let v = voices.lock().unwrap();
     assert_eq!(v.get(&sustain_key(0, 8)).map(|s| s.target_env), Some(1.0), "one drone rings");
+  }
+
+  #[test]
+  fn cut_sustained_ramps_the_drone_and_frees_the_sustain_key_for_a_replacement() {
+    // Retrigger of a sustaining pitch (misc.org "retriggering a sustaining note
+    // replaces it"): the old drone is cut -- moved off the sustain key, ramping
+    // out -- and the very next strike + release can re-drone the pitch while the
+    // old tail is still fading.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.sustain_note((3, 4), 20);
+    a.cut_sustained(20);
+    {
+      let v = voices.lock().unwrap();
+      assert!(v.get(&sustain_key(0, 20)).is_none(), "the sustain key frees immediately");
+      assert_eq!(v.len(), 1, "the drone moved (retired), not vanished");
+      assert_eq!(v.values().next().map(|s| s.target_env), Some(0.0), "and it is ramping out");
+    }
+    // The replacing note: strike the same pitch, release it under a live accrete.
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.sustain_note((3, 4), 20);
+    let v = voices.lock().unwrap();
+    assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(1.0), "the new drone rings");
+    assert_eq!(v.len(), 2, "old tail still fading beside it");
+  }
+
+  #[test]
+  fn cut_sustained_without_a_drone_is_a_noop() {
+    // No drone at the pitch -- including the still-fingered case (the pitch may sit
+    // in the accrete SET, but its voice is a finger voice until release).
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.cut_sustained(20); // empty map: must not panic
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.cut_sustained(20);
+    assert_eq!(target_env(&voices, 0, (3, 4)), Some(1.0), "the fingered voice is untouched");
+    assert_eq!(count(&voices), 1);
+  }
+
+  #[test]
+  fn cut_sustained_only_touches_its_own_grids_drone() {
+    // Banks are per-monome: retriggering a pitch on grid a leaves grid b's drone
+    // at the same pitch ringing.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let mut b = sink(1, &voices);
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.sustain_note((3, 4), 20);
+    b.note_on((3, 4), 20, Timbre::default(), None);
+    b.sustain_note((3, 4), 20);
+    a.cut_sustained(20);
+    let v = voices.lock().unwrap();
+    assert!(v.get(&sustain_key(0, 20)).is_none(), "grid a's drone was cut");
+    assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.target_env), Some(1.0), "grid b's drone keeps ringing");
   }
 
   #[test]

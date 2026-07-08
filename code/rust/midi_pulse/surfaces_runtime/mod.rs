@@ -56,8 +56,8 @@ use accrete::AccreteState;
 use polyrhythm::{FactorButton, PolyrhythmState};
 use slide::SlideCandidates;
 use grid::{
-  levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos, ButtonOverlay,
-  BRIGHT, DIM, SELECTOR_CELLS,
+  button_level, levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos,
+  ButtonOverlay, BRIGHT, DIM, OFF, SELECTOR_CELLS,
 };
 use synth::{rescale_grid_gain, SurfaceSink};
 
@@ -233,11 +233,12 @@ struct GridSettings {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets (self if it has no volume strip).
   volume_controls_index: usize,
-  /// The three accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
-  /// trio drives its own per-monome accrete bank.
+  /// The accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
+  /// trio (+ optional erase) drives its own per-monome accrete bank.
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
+  erase_rect: [i32; 4],
   /// The global-distortion toggle's cell, `NO_RECT` when absent (one shared switch).
   distortion_rect: [i32; 4],
   /// The slide / mono toggles' cells, `NO_RECT` when absent (global switches too).
@@ -459,6 +460,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       clear_rect: accrete_rect_on(AccreteControlKind::Clear),
       needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
       accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
+      erase_rect: accrete_rect_on(AccreteControlKind::Erase),
       distortion_rect,
       slide_rect,
       mono_rect,
@@ -615,7 +617,7 @@ fn run(
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + factor): one instrument-wide machine, both
   // grids' pads.
-  let poly = Arc::new(Mutex::new(PolyrhythmState::new()));
+  let poly = Arc::new(Mutex::new(PolyrhythmState::new(num_grids)));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -716,6 +718,7 @@ fn run(
       clear_rect: g.clear_rect,
       needs_holding_rect: g.needs_holding_rect,
       accrete_rect: g.accrete_rect,
+      erase_rect: g.erase_rect,
       distortion_rect: g.distortion_rect,
       slide_rect: g.slide_rect,
       mono_rect: g.mono_rect,
@@ -796,10 +799,11 @@ struct GridThread {
   volume_rect: [i32; 4],
   /// The grid index this grid's volume strip sets the loudness of.
   volume_controls_index: usize,
-  /// The three accrete (sustain) buttons' cells on this grid (`NO_RECT` if absent).
+  /// The accrete (sustain) buttons' cells on this grid (`NO_RECT` if absent).
   clear_rect: [i32; 4],
   needs_holding_rect: [i32; 4],
   accrete_rect: [i32; 4],
+  erase_rect: [i32; 4],
   /// The global-distortion toggle's cell on this grid (`NO_RECT` if absent).
   distortion_rect: [i32; 4],
   /// The slide / mono toggles' cells on this grid (`NO_RECT` if absent).
@@ -938,26 +942,37 @@ fn grid_thread(mut rt: GridThread) {
     let selector_slot = current_slot(&rt.selected, rt.controls_index);
     let volume_col = volume_active_col(&rt);
     let (mut buttons, sustained_classes) = accrete_view(&rt);
-    buttons.push((rt.distortion_rect, rt.distortion_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.slide_rect, rt.slide_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.mono_rect, rt.mono_on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push((rt.feet_accrete_rect, rt.feet_accrete_on[rt.grid_index].load(Ordering::Relaxed)));
+    let toggle = |rect, on: &[AtomicBool]| (rect, button_level(on[rt.grid_index].load(Ordering::Relaxed)));
+    buttons.push(toggle(rt.distortion_rect, &rt.distortion_on));
+    buttons.push(toggle(rt.slide_rect, &rt.slide_on));
+    buttons.push(toggle(rt.mono_rect, &rt.mono_on));
+    buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
     if rt.poly_rect != NO_RECT {
-      // The pad's six cells: the tap cell blinks (10% duty at the applied tempo);
-      // the factor cells show which way the factor leans, =1 lights when pressing
-      // it would act. Rests dim like every control button.
+      // The pad's six cells, all per-THIS-grid state: the factor cells show which
+      // way this grid's factor leans; =1 shows this grid's pulse switch (bright
+      // while its amplitude cycling is on). The tap cell blinks BLACK <-> FULLY
+      // LIT (10% duty at this grid's applied tempo; misc.org "tap blink between
+      // black and fully lit") whether or not cycling is on -- it is the tempo
+      // display -- and only rests dim before any tempo exists, to stay findable.
       let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
-      for (dx, dy, lit) in [
-        (0, 0, p.factor_lit(FactorButton::Times3)),
-        (1, 0, p.factor_lit(FactorButton::Times2)),
-        (2, 0, p.tap_blink(now)),
-        (0, 1, p.factor_lit(FactorButton::Div3)),
-        (1, 1, p.factor_lit(FactorButton::Div2)),
-        (2, 1, p.factor_lit(FactorButton::Unity)),
+      let tap_level = if p.applied_hz(rt.grid_index).is_none() {
+        DIM
+      } else if p.tap_blink(rt.grid_index, now) {
+        BRIGHT
+      } else {
+        OFF
+      };
+      for (dx, dy, level) in [
+        (0, 0, button_level(p.factor_lit(rt.grid_index, FactorButton::Times3))),
+        (1, 0, button_level(p.factor_lit(rt.grid_index, FactorButton::Times2))),
+        (2, 0, tap_level),
+        (0, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Div3))),
+        (1, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Div2))),
+        (2, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Unity))),
       ] {
         let (x, y) = (rt.poly_rect[0] + dx, rt.poly_rect[1] + dy);
-        buttons.push(([x, y, x, y], lit));
+        buttons.push(([x, y, x, y], level));
       }
     }
     let mut sounding_classes = union_sounding(&rt.sounding);
@@ -1055,18 +1070,20 @@ fn handle_key(
     }
     return;
   }
-  // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only.
+  // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only. The tap sets the
+  // GLOBAL tempo; the factor buttons and the =1 pulse switch act on THIS grid.
   if in_overlay(rt.poly_rect, cell) {
     if press {
       let (dx, dy) = (cell.0 - rt.poly_rect[0], cell.1 - rt.poly_rect[1]);
+      let now = Instant::now();
       let mut p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       match (dx, dy) {
-        (2, 0) => p.tap(Instant::now(), rt.tap_window),
-        (0, 0) => p.press(FactorButton::Times3),
-        (1, 0) => p.press(FactorButton::Times2),
-        (0, 1) => p.press(FactorButton::Div3),
-        (1, 1) => p.press(FactorButton::Div2),
-        (2, 1) => p.press(FactorButton::Unity),
+        (2, 0) => p.tap(now, rt.tap_window),
+        (0, 0) => p.press(rt.grid_index, FactorButton::Times3, now),
+        (1, 0) => p.press(rt.grid_index, FactorButton::Times2, now),
+        (0, 1) => p.press(rt.grid_index, FactorButton::Div3, now),
+        (1, 1) => p.press(rt.grid_index, FactorButton::Div2, now),
+        (2, 1) => p.press(rt.grid_index, FactorButton::Unity, now),
         _ => {}
       }
     }
@@ -1088,8 +1105,11 @@ fn handle_key(
     if press {
       let activated = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
         .press_needs_holding();
-      if activated {
+      if activated.accrete {
         capture_grid_held(rt);
+      }
+      if activated.erase {
+        erase_grid_held(rt);
       }
     }
     return;
@@ -1103,6 +1123,21 @@ fn handle_key(
       }
     } else {
       rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_accrete();
+    }
+    return;
+  }
+  // The erase button (misc.org "erase button"): accrete's shape under the same
+  // needs-holding switch, but pressed pitches LEAVE this grid's sustained set
+  // (each keeps sounding until its own finger lifts).
+  if in_overlay(rt.erase_rect, cell) {
+    if press {
+      let activated =
+        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_erase();
+      if activated {
+        erase_grid_held(rt);
+      }
+    } else {
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_erase();
     }
     return;
   }
@@ -1144,6 +1179,12 @@ fn handle_key(
         }
       }
     }
+    // A manual retrigger of a sustaining pitch cuts this grid's drone and the new
+    // note replaces it (misc.org "retriggering a sustaining note replaces it") --
+    // no doubling. The pitch keeps its place in the accrete set, so releasing the
+    // replacing note re-drones it. After the mono block, so a colliding-pitch
+    // drone a mono cut just captured is cut like any other.
+    rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
     let timbre =
@@ -1156,8 +1197,9 @@ fn handle_key(
     } else {
       None
     };
-    // The polyrhythm pulse at THIS note's onset (fixed for the note's life).
-    let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).applied_hz();
+    // The polyrhythm pulse at THIS note's onset (fixed for the note's life):
+    // this grid's applied tempo, and only while its =1 pulse switch is on.
+    let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).pulse_hz(rt.grid_index);
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
     // (A stolen legato voice keeps ITS timbre and gain -- it is the same voice.)
@@ -1274,14 +1316,39 @@ fn capture_grid_held_into(
   accrete: &Arc<Mutex<Vec<AccreteState>>>,
   grid: usize,
 ) {
-  let snapshot: Vec<i32> = {
-    let all = held_all.lock().unwrap_or_else(|e| e.into_inner());
-    all.get(grid).map(|m| m.values().copied().collect()).unwrap_or_default()
-  };
+  let snapshot = held_pitches(held_all, grid);
   let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
   if let Some(bank) = banks.get_mut(grid) {
     bank.capture_held(snapshot);
   }
+}
+
+/// The erase mirror of `capture_grid_held`: when the erasing condition turns on,
+/// the notes currently held on this grid leave the sustained set (they keep
+/// sounding under their fingers).
+fn erase_grid_held(rt: &GridThread) {
+  erase_grid_held_into(&rt.held_all, &rt.accrete, rt.grid_index);
+}
+
+fn erase_grid_held_into(
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  grid: usize,
+) {
+  let snapshot = held_pitches(held_all, grid);
+  let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(bank) = banks.get_mut(grid) {
+    bank.erase_held(snapshot);
+  }
+}
+
+/// Snapshot one grid's currently-held pitches (its own lock; never nested).
+fn held_pitches(
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  grid: usize,
+) -> Vec<i32> {
+  let all = held_all.lock().unwrap_or_else(|e| e.into_inner());
+  all.get(grid).map(|m| m.values().copied().collect()).unwrap_or_default()
 }
 
 /// Which accrete button a KMSS pedal mirrors, and for which pedal TRIPLE (0 =
@@ -1328,7 +1395,7 @@ fn feet_accrete_hook(
     }
     // Decide under the accrete lock, touch voices after it drops (the module's
     // no-nested-locks rule), exactly like the on-grid buttons.
-    let mut activated = false;
+    let mut activated = accrete::Activated::default();
     {
       let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
       let Some(state) = banks.get_mut(grid) else {
@@ -1339,15 +1406,22 @@ fn feet_accrete_hook(
         (AccreteControlKind::Clear, false) => state.release_clear(),
         (AccreteControlKind::NeedsHolding, true) => activated = state.press_needs_holding(),
         (AccreteControlKind::NeedsHolding, false) => {}
-        (AccreteControlKind::Accrete, true) => activated = state.press_accrete(),
+        (AccreteControlKind::Accrete, true) => activated.accrete = state.press_accrete(),
         (AccreteControlKind::Accrete, false) => state.release_accrete(),
+        // The pedals mirror only the trio; erase has no pedal (feet_accrete_button
+        // never yields it).
+        (AccreteControlKind::Erase, _) => return false,
       }
     }
     if button == AccreteControlKind::Clear && down {
       synth::release_sustained_voices(&voices, grid, release_secs, sample_rate);
     }
-    if activated {
+    if activated.accrete {
       capture_grid_held_into(&held_all, &accrete, grid);
+    }
+    if activated.erase {
+      // A pedal needs-holding flip can activate a physically-held ERASE button.
+      erase_grid_held_into(&held_all, &accrete, grid);
     }
     true
   })
@@ -1360,9 +1434,10 @@ fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
   let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
   let s = &banks[rt.grid_index];
   let buttons = vec![
-    (rt.clear_rect, s.clear_lit()),
-    (rt.needs_holding_rect, s.needs_holding_lit()),
-    (rt.accrete_rect, s.accrete_lit()),
+    (rt.clear_rect, button_level(s.clear_lit())),
+    (rt.needs_holding_rect, button_level(s.needs_holding_lit())),
+    (rt.accrete_rect, button_level(s.accrete_lit())),
+    (rt.erase_rect, button_level(s.erase_lit())),
   ];
   let mut classes = HashSet::new();
   for bank in banks.iter() {
@@ -1691,6 +1766,7 @@ mod tests {
       assert_eq!(g.clear_rect, [0, 15, 0, 15], "grid {:?} clear button", g.monome_id);
       assert_eq!(g.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
       assert_eq!(g.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
+      assert_eq!(g.erase_rect, [1, 14, 1, 14], "grid {:?} erase button", g.monome_id);
       assert_eq!(g.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
       assert_eq!(g.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
       assert_eq!(g.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
@@ -1906,11 +1982,13 @@ mod tests {
     );
   }
 
-  /// The polyrhythm pad end-to-end: cells rest dim; two quick taps start the tap
-  /// cell blinking (caught mid-flash); a factor press lights its cell (and =1, now
-  /// actionable) on BOTH grids; =1 resets everything to rest.
+  /// The polyrhythm pad end-to-end: cells rest dim; two quick taps set the ONE
+  /// global tempo (the tap cell blinks on both grids, caught mid-flash); the
+  /// factor buttons and the =1 pulse switch are PER-GRID -- a factor press lights
+  /// only its own grid, a lone =1 tap turns that grid's cycling on (lit) and
+  /// resets its factor, and a fast =1 double-tap turns the cycling back off.
   #[test]
-  fn tap_tempo_pad_blinks_and_mirrors_factor_state() {
+  fn tap_tempo_pad_blinks_globally_and_the_pulse_switch_is_per_grid() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1947,16 +2025,30 @@ mod tests {
     assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "the tap cell blinks on grid a");
     assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "and on grid b (one shared tempo)");
 
-    // x2 from grid b: its cell lights on grid a too, and =1 becomes actionable.
+    // x2 from grid b: PER-GRID -- b's cell lights, a's stays at rest.
     b.press(14, 0);
     b.release(14, 0);
-    assert!(wait_until(secs(3), || a.level_at(14, 0) == 15), "x2 lit (factor leans up)");
-    assert!(wait_until(secs(3), || a.level_at(15, 1) == 15), "=1 lit (pressing it would act)");
-    // =1 resets: both go back to resting dim.
-    a.press(15, 1);
-    a.release(15, 1);
-    assert!(wait_until(secs(3), || a.level_at(14, 0) == 4 && a.level_at(15, 1) == 4),
-      "unity resets the factor lights");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its factor leans up)");
+    assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (factors are per-grid)");
+
+    // A lone =1 tap on grid b: b's cycling turns ON (=1 lit) and its factor resets
+    // (x2 back to dim). Grid a's switch is untouched.
+    b.press(15, 1);
+    b.release(15, 1);
+    assert!(wait_until(secs(3), || b.level_at(15, 1) == 15), "grid b's =1 lit: cycling on");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 4), "=1 reset grid b's factor");
+    assert_eq!(a.level_at(15, 1), 4, "grid a's =1 stays dim (the switch is per-grid)");
+
+    // A fast =1 double-tap on grid b: cycling back OFF (the tempo display -- the
+    // tap-cell blink -- survives). The four presses land well inside the 400 ms
+    // double-tap window; the >400 ms sleep first makes tap one a LONE tap.
+    thread::sleep(Duration::from_millis(500));
+    b.press(15, 1);
+    b.release(15, 1);
+    b.press(15, 1);
+    b.release(15, 1);
+    assert!(wait_until(secs(3), || b.level_at(15, 1) == 4), "a fast double-tap: cycling off");
+    assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "the tap cell still blinks the tempo");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

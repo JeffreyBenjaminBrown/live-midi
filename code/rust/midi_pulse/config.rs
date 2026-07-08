@@ -857,11 +857,15 @@ pub enum ScaleControlKind {
 pub enum AccreteControlKind {
   /// Silence and flush the whole sustained set (key-down; lit while pressed).
   Clear,
-  /// Toggle whether `accrete` must be *held* (vs toggling an accrete mode).
+  /// Toggle whether `accrete` AND `erase` must be *held* (vs toggling a mode).
   NeedsHolding,
   /// Hold (or toggle, per `needs_holding`) to add played/held notes to the
   /// sustained set, which rings until cleared.
   Accrete,
+  /// Hold (or toggle, per `needs_holding`) to REMOVE pressed/held pitches from
+  /// the sustained set -- each keeps sounding until its finger lifts. When both
+  /// erase and accrete are live, erase wins. Optional (the trio is not).
+  Erase,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -1582,9 +1586,10 @@ fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
 
 /// The `accrete_control` sustain buttons (surfaces runtime). Each is a single cell on
 /// a monome that has an `edo_note_grid` (the play surface whose notes it sustains).
-/// Per monome they are all-or-nothing -- declaring any of clear / needs_holding /
-/// accrete requires all three, each exactly once -- since the trio only makes sense
-/// together (accrete with no clear would be an un-silenceable drone).
+/// Per monome the trio is all-or-nothing -- declaring any accrete_control requires
+/// clear / needs_holding / accrete, each at most once -- since the trio only makes
+/// sense together (accrete with no clear would be an un-silenceable drone). The
+/// `erase` kind is optional on top of the trio (misc.org "erase button").
 fn validate_accrete_controls(config: &Config) -> Result<(), String> {
   let mut per_monome: HashMap<&str, Vec<AccreteControlKind>> = HashMap::new();
   for window in &config.monome_windows {

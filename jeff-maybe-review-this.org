@@ -297,3 +297,75 @@ reverse it cheaply if you disagree.
   nothing about the toggles mirrors across grids anymore. Only the switch moved
   (the cut and legato steal were already per-grid in effect), so there was
   nothing else to decide.
+
+* retrigger of a sustaining note -- choices where the spec was silent
+
+- "Cut off and replace" I read as *voice* replacement, not set removal: the old
+  drone is cut at the strike, and the pitch KEEPS its sustained-set membership,
+  so releasing the replacing finger re-drones it seamlessly -- even if accrete is
+  off at that moment. So a retrigger *re-articulates* a drone (fresh pluck, no
+  doubling) and can never silently delete one; *clear* remains the only removal
+  (and your erase button will be the deliberate per-note one). If you wanted the
+  other reading -- retrigger PULLS the pitch out of the set, so the new note dies
+  on release unless accrete is live -- that's a two-line change (remove the pitch
+  in =handle_key= and let the release path decide afresh).
+- The cut is *per-bank*, like everything accrete: retriggering a pitch on grid B
+  does not touch grid A's drone at that pitch (the banks' same-pitch drones are
+  independent voices, and A's trio/clear stays sovereign over its own). If you
+  want a retrigger ANYWHERE to replace ALL drones at that pitch, the strike would
+  just loop both sinks.
+- "The same note" means the same *absolute pitch* (58-EDO step), not the same
+  cell: registers may have scrolled since the drone was struck, and two cells
+  colliding to one pitch count as the same note here. The old tail rings out its
+  normal 50 ms release under a retired key, so a fast retrigger crossfades
+  instead of clicking, and the sustain slot is free for the new note immediately.
+
+* tap blink black <-> fully lit
+
+- Before any tempo exists the tap cell still RESTS DIM (findable, like every
+  idle control button); only the blink's off-phase went dark. If you want the
+  cell dark until the first tap too, it's one line.
+- On the monobright grid the change is mostly invisible (its "dim" was already
+  faked by brief flashes, so the blink read as black <-> lit there); the
+  varibright grid is where you'll see the difference.
+
+* erase button -- choices where the spec was silent
+
+- "Any pitch pressed is removed" got the same *continuous* reading as accrete's
+  capture: pitches already held when the erasing condition turns on are erased
+  at that moment, and a pitch whose finger lifts under a live erase is erased at
+  release. If you wanted press-edges only (a note held from before erase went
+  live keeps its membership), say so -- it's the =erase_held= call on activation
+  plus one branch in =note_released_sustains=.
+- With accrete and erase both live, BOTH buttons light and erase wins
+  behaviorally (presses remove; nothing is added, including bulk captures). The
+  alternative -- erase's LED suppressing accrete's while overridden -- is one
+  line in =accrete_view= if you want the lights to show the precedence.
+- Erase has no softstep pedal: the feet-accrete triples still mirror only
+  clear / needs-holding / accrete. A fourth pedal per grid would collide with
+  the drum pads (4-7), so I left feet out until you pick a pedal.
+- Config-wise ~erase~ is optional on top of the all-or-nothing trio (declaring
+  only erase is rejected for the same reason accrete-without-clear is). Both
+  2-monomes tomls (real + mock) now declare it at (1,14).
+
+* per-monome polyrhythm + the =1 pulse switch -- choices where the spec was silent
+
+- =1 KEPT its reset-to-unity job: a lone tap zeroes the grid's exponents AND
+  turns its cycling on. Side effect: with cycling off you cannot reset the
+  factor without also switching cycling on -- harmless (an off grid's factor is
+  inaudible) but worth knowing. If you want reset-without-on, the natural move
+  is "single tap = on/reset, double-tap = off, and reset happens only when
+  cycling was already on" -- say the word.
+- "Fast" is a fixed 400 ms double-tap window (=UNITY_DOUBLE_TAP= in
+  polyrhythm.rs), not a =[surfaces]= knob. Two fast taps while cycling is OFF
+  net to off (tap 1 on, tap 2 off); a tap while off ALWAYS turns on, however
+  soon it follows the previous one.
+- The =1 LED now shows the pulse switch (bright while this grid's cycling is
+  on), replacing the old "lights when pressing it would change something" --
+  with =1 doing two jobs, the switch state seemed the thing you'd need to see.
+  The factor's lean still shows on the four direction LEDs.
+- The tap-cell blink displays each grid's APPLIED tempo (so the two grids can
+  blink at different, factor-related rates), phase-anchored to the shared taps;
+  it keeps blinking while cycling is off (it is the display you asked for).
+  Switching a grid's cycling on/off never touches already-sounding notes --
+  only new strikes read the switch, same rule as tempo changes.

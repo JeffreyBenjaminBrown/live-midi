@@ -63,15 +63,19 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   The softstep can mirror one monome, both, or neither. Holding pedal 3 or 0 IS
   holding that bank's accrete button (the tether decoder reports foot lifts).
 - *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
-  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to set the tempo; the
-  factor buttons scale it exactly (2^a x 3^b); notes struck while a tempo is applied
-  pulse with a *descending sawtooth* at the applied tempo at their onset. One shared
-  state, mirrored on both grids. See *polyrhythm* below.
-- *accrete buttons / sustained set* -- three single-cell buttons at the bottom-left
-  of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete). Notes added
-  to the *sustained set* keep ringing after their fingers lift, until *clear*. One
-  accrete BANK per monome: a grid's trio drives only its own bank, and only notes
-  fingered on that grid can join it. See *sustain (accrete)* below.
+  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to define the ONE
+  global tapped tempo (displayed by the blinking tap cell; defining it starts
+  nothing). Each grid then has its own *applied* tempo -- tapped x its own 2^a x
+  3^b factor -- and its own amplitude-cycling switch on =1 (tap on, fast
+  double-tap off; starts off). While a grid's cycling is on, its notes pulse with
+  a *descending sawtooth* at its applied tempo at their onset. See *polyrhythm*
+  below.
+- *accrete buttons / sustained set* -- four single-cell buttons at the bottom-left
+  of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete, =(1,14)=
+  erase). Notes added to the *sustained set* keep ringing after their fingers lift,
+  until *clear* flushes them or *erase* removes them one by one. One accrete BANK
+  per monome: a grid's buttons drive only its own bank, and only notes fingered on
+  that grid can join it. See *sustain (accrete)* below.
 - *drumkit* -- the KMSS as nine TR-808 one-shots, velocity-sensitive (tether mode).
   Reused verbatim from =kmss-drumkit= (see [[./kmss-drumkit.org]]).
 
@@ -110,13 +114,13 @@ overlays drawn on top:
   row 2   .  MONO .   .   .                    .   .   .   <- per-grid toggle
    ...                     (58-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
-  row 14 FEET .   .   .   .  . . . . . . .  8vaDN UP  8vaUP  <- feet-accrete + scroll pad
+  row 14 FEET ERASE .  .  .  . . . . . . .  8vaDN UP  8vaUP  <- feet-accrete + erase + scroll pad
   row 15 CLR HOLD ACC  .  .  . . . . . . .  LEFT DOWN RIGHT  <- accrete + scroll pad
 #+end_example
 
 - The whole top row (0,0)..(15,0), the pad cells (13..15, 14..15), the accrete
-  buttons (0..2, 15), and the toggles -- distortion (0,1), slide (1,1), mono (1,2)
-  -- *occlude* the play grid: pressing them re-timbres / sets volume / scrolls /
+  buttons (0..2, 15), erase (1,14), and the toggles -- distortion (0,1), slide
+  (1,1), mono (1,2), feet-accrete (0,14) -- *occlude* the play grid: pressing them re-timbres / sets volume / scrolls /
   sustains / toggles rather than sounding a note.
 - The scroll-pad corners follow the looper's convention: top-left = down an octave
   (notes sound lower), top-right = up an octave; arrows raise pitch down/right,
@@ -147,8 +151,9 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
   while on. Every toggle is PER-GRID -- each grid's cell shows only its own
   switch; nothing mirrors.
 - *Accrete buttons*: *dim* at rest (findable, like the arrows), *bright* when active --
-  clear while pressed, needs-holding while on, accrete while the accreting condition is
-  live. Each grid's trio shows its OWN bank (per-monome, not mirrored). A *sustained*
+  clear while pressed, needs-holding while on, accrete / erase while their condition is
+  live (with both live, both light; erase wins behaviorally). Each grid's buttons show
+  their OWN bank (per-monome, not mirrored). A *sustained*
   note still paints exactly like a fingered one -- bright octave-equivalents on BOTH
   grids (it is sounding) -- until its own grid's clear.
 
@@ -191,11 +196,12 @@ Three buttons at each grid's bottom-left, driving one accrete *bank* per monome
 A's bank, only notes fingered on grid A can join it, and clear on grid B leaves
 grid A's drones ringing. Requested in =TODO/misc.org= "sustain (accrete)".
 
-| cell   | button        | on key-down                             | LED                     |
-|--------+---------------+-----------------------------------------+-------------------------|
-| (0,15) | clear         | silence + flush THIS grid's sustained set | bright while pressed  |
-| (1,15) | needs-holding | toggle how THIS grid's *accrete* behaves  | bright while on       |
-| (2,15) | accrete       | hold / toggle accretion (see below)     | bright while accreting  |
+| cell   | button        | on key-down                                  | LED                    |
+|--------+---------------+----------------------------------------------+------------------------|
+| (0,15) | clear         | silence + flush THIS grid's sustained set    | bright while pressed   |
+| (1,15) | needs-holding | toggle how *accrete* and *erase* behave      | bright while on        |
+| (2,15) | accrete       | hold / toggle accretion (see below)          | bright while accreting |
+| (1,14) | erase         | hold / toggle erasure (see below)            | bright while erasing   |
 
 - *needs-holding OFF* (the default): tapping *accrete* toggles "accrete mode". While
   it is on, every note played on this grid -- plus any that were held here when it
@@ -205,9 +211,24 @@ grid A's drones ringing. Requested in =TODO/misc.org= "sustain (accrete)".
   join the set (including notes pressed before the hold began -- they are captured
   at the moment the hold starts, or when they are released under a live hold).
 - A note in the set keeps ringing after its finger lifts -- the very same voice, so
-  the transition is seamless -- until this grid's *clear* flushes the bank. There is
-  no per-note removal.
-- Toggling *needs-holding* cancels an active accrete mode (the set is untouched).
+  the transition is seamless -- until this grid's *clear* flushes the bank or its
+  *erase* removes that pitch (the per-note removal).
+- *Retriggering a sustaining note replaces it*: fingering a pitch that is ringing in
+  THIS grid's sustained set cuts the old drone at the strike -- no doubling -- and
+  the new voice takes its place. The pitch keeps its set membership, so releasing
+  the new finger re-drones it (accrete need not be live); you can re-articulate a
+  drone without stacking or losing it.
+- Toggling *needs-holding* cancels an active accrete OR erase mode (the set is
+  untouched).
+- *erase* (=(1,14)=): the accrete button's mirror image, under the same
+  *needs-holding* rule -- hold it (needs-holding on) or tap it to toggle "erase
+  mode" (needs-holding off). While the erasing condition is live, every pitch
+  pressed on this grid LEAVES the sustained set; the note keeps sounding until its
+  own finger lifts, then releases normally instead of re-droning. Notes already
+  held when erase went live are removed the same way (still sounding under their
+  fingers). When accrete and erase are both live, erase wins -- nothing is added.
+  Erase has no pedal mirror (the softstep triple stays clear / needs-holding /
+  accrete).
 - The banks are fully independent: the other grid's trio, notes, and clear never
   touch this one. The trio LEDs show their own grid's bank only.
 - Sustained voices follow the *volume fader* of the grid they came from, and paint
@@ -270,28 +291,35 @@ button. Turn a toggle off and its triple is drums again.
 
 * polyrhythm
 
-The top-right 3x2 pad (both grids, one shared state):
+The top-right 3x2 pad (both grids). The TAP button sets one global tempo; the
+factor buttons and the =1 pulse switch belong to the grid you press them on:
 
 | =(13,0)= x3 | =(14,0)= x2 | =(15,0)= tap |
 | =(13,1)= /3 | =(14,1)= /2 | =(15,1)= =1  |
 
-- *Tap tempo.* Tap twice within ~tap_tempo_window_ms~ (default 2000; the window
-  *rolls*, so a stale first tap simply re-arms) and the interval becomes the
-  *tapped tempo*. Taps pair up: a third tap inside the window does nothing until
-  its fourth arrives, and that pair overrides the first. The tap cell *blinks* --
-  lit for the first 10% of each cycle of the *applied* tempo, phase-anchored to
-  your taps -- and rests dim before any tempo exists.
-- *Factor.* Applied tempo = tapped x 2^a x 3^b. x2 / /2 / x3 / /3 nudge the
-  exponents (so x3 then /3 is *exactly* unity); =1 zeroes them. LEDs: each
-  direction lights while the factor leans its way; =1 lights exactly when pressing
-  it would change something.
-- *The pulse.* Every note struck while a tempo is applied gets a descending
-  sawtooth amplitude pulse -- full at onset, fading to silence, restarting each
-  cycle -- at the applied tempo *at its onset* (later tempo changes leave sounding
-  notes alone; notes are deliberately NOT phase-synced to each other). This is a
-  separate mechanism from any ~[[timbres]]~ AM. Before the first tap, notes play
-  un-pulsed; there is no "off" other than never having tapped (see
-  jeff-maybe-review-this.org).
+- *Tap tempo (global).* Tap twice within ~tap_tempo_window_ms~ (default 2000; the
+  window *rolls*, so a stale first tap simply re-arms) and the interval becomes
+  the *tapped tempo* -- shared by both grids. Taps pair up: a third tap inside the
+  window does nothing until its fourth arrives, and that pair overrides the
+  first. Tapping only DEFINES the tempo; no cycling starts. The tap cell is the
+  tempo *display*: it *blinks* between black and fully lit -- full-on for the
+  first 10% of each cycle of THIS grid's applied tempo, dark between flashes,
+  phase-anchored to your taps, whether or not this grid's cycling is on -- and
+  rests dim before any tempo exists.
+- *Factor (per grid).* A grid's applied tempo = tapped x 2^a x 3^b, nudged by its
+  own x2 / /2 / x3 / /3 (exponents, so x3 then /3 is *exactly* unity); =1 zeroes
+  them. Each direction's LED lights while that grid's factor leans its way.
+- *The =1 pulse switch (per grid).* A grid's amplitude cycling starts OFF. A tap
+  of =1 turns it on (and resets the factor, as always); a fast double-tap (two
+  presses within 400 ms) turns it off. The =1 LED shows the switch: bright while
+  this grid's cycling is on.
+- *The pulse.* Every note struck while its grid's cycling is on (and a tempo
+  exists) gets a descending sawtooth amplitude pulse -- full at onset, fading to
+  silence, restarting each cycle -- at that grid's applied tempo *at its onset*
+  (later tempo/switch changes leave sounding notes alone; notes are deliberately
+  NOT phase-synced to each other). This is a separate mechanism from any
+  ~[[timbres]]~ AM. One grid can pulse at 3/2 the rate of the other, or alone
+  (see jeff-maybe-review-this.org).
 
 * the KMSS drumkit
 

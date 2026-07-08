@@ -121,6 +121,9 @@ rect = [13, 14, 15, 15]
 #   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
 #   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
 #                           they ring until cleared
+#   (1,14) erase         -- accrete's mirror image (same needs_holding rule): pressed
+#                           pitches LEAVE the sustained set, each sounding until its
+#                           own finger lifts; when both are live, erase wins
 [[monome_windows]]
 id = "acc-clear-a"
 monome = "a"
@@ -141,6 +144,13 @@ monome = "a"
 kind = "accrete_control"
 rect = [2, 15, 2, 15]
 control = "accrete"
+
+[[monome_windows]]
+id = "acc-erase-a"
+monome = "a"
+kind = "accrete_control"
+rect = [1, 14, 1, 14]
+control = "erase"
 
 # The distortion toggle (key-down flips; see learnings/distortion.org for the
 # curve). PER-GRID: this grid's button routes this grid's voices through the
@@ -218,6 +228,9 @@ rect = [13, 14, 15, 15]
 #   (1,15) needs_holding -- toggles whether accrete must be held (lit when on)
 #   (2,15) accrete       -- hold (or, untoggled, tap) to sustain played/held notes;
 #                           they ring until cleared
+#   (1,14) erase         -- accrete's mirror image (same needs_holding rule): pressed
+#                           pitches LEAVE the sustained set, each sounding until its
+#                           own finger lifts; when both are live, erase wins
 [[monome_windows]]
 id = "acc-clear-b"
 monome = "b"
@@ -238,6 +251,13 @@ monome = "b"
 kind = "accrete_control"
 rect = [2, 15, 2, 15]
 control = "accrete"
+
+[[monome_windows]]
+id = "acc-erase-b"
+monome = "b"
+kind = "accrete_control"
+rect = [1, 14, 1, 14]
+control = "erase"
 
 # The distortion toggle (key-down flips; see learnings/distortion.org for the
 # curve). PER-GRID: this grid's button routes this grid's voices through the
