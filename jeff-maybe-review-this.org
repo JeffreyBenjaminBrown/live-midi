@@ -347,3 +347,25 @@ reverse it cheaply if you disagree.
 - Config-wise ~erase~ is optional on top of the all-or-nothing trio (declaring
   only erase is rejected for the same reason accrete-without-clear is). Both
   2-monomes tomls (real + mock) now declare it at (1,14).
+
+* per-monome polyrhythm + the =1 pulse switch -- choices where the spec was silent
+
+- =1 KEPT its reset-to-unity job: a lone tap zeroes the grid's exponents AND
+  turns its cycling on. Side effect: with cycling off you cannot reset the
+  factor without also switching cycling on -- harmless (an off grid's factor is
+  inaudible) but worth knowing. If you want reset-without-on, the natural move
+  is "single tap = on/reset, double-tap = off, and reset happens only when
+  cycling was already on" -- say the word.
+- "Fast" is a fixed 400 ms double-tap window (=UNITY_DOUBLE_TAP= in
+  polyrhythm.rs), not a =[surfaces]= knob. Two fast taps while cycling is OFF
+  net to off (tap 1 on, tap 2 off); a tap while off ALWAYS turns on, however
+  soon it follows the previous one.
+- The =1 LED now shows the pulse switch (bright while this grid's cycling is
+  on), replacing the old "lights when pressing it would change something" --
+  with =1 doing two jobs, the switch state seemed the thing you'd need to see.
+  The factor's lean still shows on the four direction LEDs.
+- The tap-cell blink displays each grid's APPLIED tempo (so the two grids can
+  blink at different, factor-related rates), phase-anchored to the shared taps;
+  it keeps blinking while cycling is off (it is the display you asked for).
+  Switching a grid's cycling on/off never touches already-sounding notes --
+  only new strikes read the switch, same rule as tempo changes.

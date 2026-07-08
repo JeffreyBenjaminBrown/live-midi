@@ -413,6 +413,30 @@ level. Before any tempo exists it still rests dim, so the button stays findable
 overlays now carry an LED level instead of a bool, so any button can paint
 off/dim/bright -- the erase button and future three-state buttons get that for
 free.)
+** DONE fast double-tap of the =1 button to turn off the amplitude cycles [chat request, 2026-07-08]
+Tapping it once turns it back on. It starts off.
+Tapping a tempo should not turn it on (like it currently does),
+but instead should merely define the tempo,
+which should be displayed.
+There is only one global tapped tempo,
+but each monome can have a separate applied tempo based on it,
+and whether the amplitude cycling that it causes is on
+should also be a per-monome property (controlled by
+single- and double-taps of the =1 button).
+*** [Claude] done -- global tapped tempo; per-grid factor + =1 pulse switch
+Exactly your split: the tap button defines the ONE tapped tempo (and starts
+nothing -- notes stay un-pulsed); each grid's x2 / /2 / x3 / /3 now nudge that
+grid's OWN exponents; and each grid's =1 is its cycling switch -- tap on, fast
+double-tap off, starting off. The tap cell keeps blinking (the display you
+asked for) at ITS grid's applied tempo whether or not cycling is on. This
+supersedes the two flagged choices above (=1's "actionable" LED and "no
+pulse-off button"). Readings you might revisit (details in
+jeff-maybe-review-this.org, "per-monome polyrhythm + the =1 pulse switch"):
+- a =1 tap still resets the factor to unity, so with cycling off, resetting
+  the factor also switches cycling on;
+- "fast" is a fixed 400 ms window (a const, not a config knob -- say the word);
+- the =1 LED now shows the switch (bright while cycling on);
+- the blink still follows the (now per-grid) applied tempo, not the tapped one.
 * DONE erase button [chat request, 2026-07-08]
 A fifth accrete-related button, at (1,14). The mode-select
 (requires-hold or toggle) button that affects the accrete button

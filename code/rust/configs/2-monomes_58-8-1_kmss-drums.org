@@ -63,10 +63,13 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   The softstep can mirror one monome, both, or neither. Holding pedal 3 or 0 IS
   holding that bank's accrete button (the tether decoder reports foot lifts).
 - *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
-  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to set the tempo; the
-  factor buttons scale it exactly (2^a x 3^b); notes struck while a tempo is applied
-  pulse with a *descending sawtooth* at the applied tempo at their onset. One shared
-  state, mirrored on both grids. See *polyrhythm* below.
+  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to define the ONE
+  global tapped tempo (displayed by the blinking tap cell; defining it starts
+  nothing). Each grid then has its own *applied* tempo -- tapped x its own 2^a x
+  3^b factor -- and its own amplitude-cycling switch on =1 (tap on, fast
+  double-tap off; starts off). While a grid's cycling is on, its notes pulse with
+  a *descending sawtooth* at its applied tempo at their onset. See *polyrhythm*
+  below.
 - *accrete buttons / sustained set* -- four single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete, =(1,14)=
   erase). Notes added to the *sustained set* keep ringing after their fingers lift,
@@ -288,29 +291,35 @@ button. Turn a toggle off and its triple is drums again.
 
 * polyrhythm
 
-The top-right 3x2 pad (both grids, one shared state):
+The top-right 3x2 pad (both grids). The TAP button sets one global tempo; the
+factor buttons and the =1 pulse switch belong to the grid you press them on:
 
 | =(13,0)= x3 | =(14,0)= x2 | =(15,0)= tap |
 | =(13,1)= /3 | =(14,1)= /2 | =(15,1)= =1  |
 
-- *Tap tempo.* Tap twice within ~tap_tempo_window_ms~ (default 2000; the window
-  *rolls*, so a stale first tap simply re-arms) and the interval becomes the
-  *tapped tempo*. Taps pair up: a third tap inside the window does nothing until
-  its fourth arrives, and that pair overrides the first. The tap cell *blinks*
-  between black and fully lit -- full-on for the first 10% of each cycle of the
-  *applied* tempo, dark between flashes, phase-anchored to your taps -- and rests
-  dim before any tempo exists.
-- *Factor.* Applied tempo = tapped x 2^a x 3^b. x2 / /2 / x3 / /3 nudge the
-  exponents (so x3 then /3 is *exactly* unity); =1 zeroes them. LEDs: each
-  direction lights while the factor leans its way; =1 lights exactly when pressing
-  it would change something.
-- *The pulse.* Every note struck while a tempo is applied gets a descending
-  sawtooth amplitude pulse -- full at onset, fading to silence, restarting each
-  cycle -- at the applied tempo *at its onset* (later tempo changes leave sounding
-  notes alone; notes are deliberately NOT phase-synced to each other). This is a
-  separate mechanism from any ~[[timbres]]~ AM. Before the first tap, notes play
-  un-pulsed; there is no "off" other than never having tapped (see
-  jeff-maybe-review-this.org).
+- *Tap tempo (global).* Tap twice within ~tap_tempo_window_ms~ (default 2000; the
+  window *rolls*, so a stale first tap simply re-arms) and the interval becomes
+  the *tapped tempo* -- shared by both grids. Taps pair up: a third tap inside the
+  window does nothing until its fourth arrives, and that pair overrides the
+  first. Tapping only DEFINES the tempo; no cycling starts. The tap cell is the
+  tempo *display*: it *blinks* between black and fully lit -- full-on for the
+  first 10% of each cycle of THIS grid's applied tempo, dark between flashes,
+  phase-anchored to your taps, whether or not this grid's cycling is on -- and
+  rests dim before any tempo exists.
+- *Factor (per grid).* A grid's applied tempo = tapped x 2^a x 3^b, nudged by its
+  own x2 / /2 / x3 / /3 (exponents, so x3 then /3 is *exactly* unity); =1 zeroes
+  them. Each direction's LED lights while that grid's factor leans its way.
+- *The =1 pulse switch (per grid).* A grid's amplitude cycling starts OFF. A tap
+  of =1 turns it on (and resets the factor, as always); a fast double-tap (two
+  presses within 400 ms) turns it off. The =1 LED shows the switch: bright while
+  this grid's cycling is on.
+- *The pulse.* Every note struck while its grid's cycling is on (and a tempo
+  exists) gets a descending sawtooth amplitude pulse -- full at onset, fading to
+  silence, restarting each cycle -- at that grid's applied tempo *at its onset*
+  (later tempo/switch changes leave sounding notes alone; notes are deliberately
+  NOT phase-synced to each other). This is a separate mechanism from any
+  ~[[timbres]]~ AM. One grid can pulse at 3/2 the rate of the other, or alone
+  (see jeff-maybe-review-this.org).
 
 * the KMSS drumkit
 

@@ -617,7 +617,7 @@ fn run(
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + factor): one instrument-wide machine, both
   // grids' pads.
-  let poly = Arc::new(Mutex::new(PolyrhythmState::new()));
+  let poly = Arc::new(Mutex::new(PolyrhythmState::new(num_grids)));
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -948,27 +948,28 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.mono_rect, &rt.mono_on));
     buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
     if rt.poly_rect != NO_RECT {
-      // The pad's six cells: the factor cells show which way the factor leans, =1
-      // lights when pressing it would act (bright/dim like every control button).
-      // The tap cell blinks BLACK <-> FULLY LIT (10% duty at the applied tempo;
-      // misc.org "tap blink between black and fully lit") -- it only rests dim
-      // before any tempo exists, to stay findable.
+      // The pad's six cells, all per-THIS-grid state: the factor cells show which
+      // way this grid's factor leans; =1 shows this grid's pulse switch (bright
+      // while its amplitude cycling is on). The tap cell blinks BLACK <-> FULLY
+      // LIT (10% duty at this grid's applied tempo; misc.org "tap blink between
+      // black and fully lit") whether or not cycling is on -- it is the tempo
+      // display -- and only rests dim before any tempo exists, to stay findable.
       let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
-      let tap_level = if p.applied_hz().is_none() {
+      let tap_level = if p.applied_hz(rt.grid_index).is_none() {
         DIM
-      } else if p.tap_blink(now) {
+      } else if p.tap_blink(rt.grid_index, now) {
         BRIGHT
       } else {
         OFF
       };
       for (dx, dy, level) in [
-        (0, 0, button_level(p.factor_lit(FactorButton::Times3))),
-        (1, 0, button_level(p.factor_lit(FactorButton::Times2))),
+        (0, 0, button_level(p.factor_lit(rt.grid_index, FactorButton::Times3))),
+        (1, 0, button_level(p.factor_lit(rt.grid_index, FactorButton::Times2))),
         (2, 0, tap_level),
-        (0, 1, button_level(p.factor_lit(FactorButton::Div3))),
-        (1, 1, button_level(p.factor_lit(FactorButton::Div2))),
-        (2, 1, button_level(p.factor_lit(FactorButton::Unity))),
+        (0, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Div3))),
+        (1, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Div2))),
+        (2, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Unity))),
       ] {
         let (x, y) = (rt.poly_rect[0] + dx, rt.poly_rect[1] + dy);
         buttons.push(([x, y, x, y], level));
@@ -1069,18 +1070,20 @@ fn handle_key(
     }
     return;
   }
-  // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only.
+  // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only. The tap sets the
+  // GLOBAL tempo; the factor buttons and the =1 pulse switch act on THIS grid.
   if in_overlay(rt.poly_rect, cell) {
     if press {
       let (dx, dy) = (cell.0 - rt.poly_rect[0], cell.1 - rt.poly_rect[1]);
+      let now = Instant::now();
       let mut p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       match (dx, dy) {
-        (2, 0) => p.tap(Instant::now(), rt.tap_window),
-        (0, 0) => p.press(FactorButton::Times3),
-        (1, 0) => p.press(FactorButton::Times2),
-        (0, 1) => p.press(FactorButton::Div3),
-        (1, 1) => p.press(FactorButton::Div2),
-        (2, 1) => p.press(FactorButton::Unity),
+        (2, 0) => p.tap(now, rt.tap_window),
+        (0, 0) => p.press(rt.grid_index, FactorButton::Times3, now),
+        (1, 0) => p.press(rt.grid_index, FactorButton::Times2, now),
+        (0, 1) => p.press(rt.grid_index, FactorButton::Div3, now),
+        (1, 1) => p.press(rt.grid_index, FactorButton::Div2, now),
+        (2, 1) => p.press(rt.grid_index, FactorButton::Unity, now),
         _ => {}
       }
     }
@@ -1194,8 +1197,9 @@ fn handle_key(
     } else {
       None
     };
-    // The polyrhythm pulse at THIS note's onset (fixed for the note's life).
-    let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).applied_hz();
+    // The polyrhythm pulse at THIS note's onset (fixed for the note's life):
+    // this grid's applied tempo, and only while its =1 pulse switch is on.
+    let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).pulse_hz(rt.grid_index);
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
     // (A stolen legato voice keeps ITS timbre and gain -- it is the same voice.)
@@ -1978,11 +1982,13 @@ mod tests {
     );
   }
 
-  /// The polyrhythm pad end-to-end: cells rest dim; two quick taps start the tap
-  /// cell blinking (caught mid-flash); a factor press lights its cell (and =1, now
-  /// actionable) on BOTH grids; =1 resets everything to rest.
+  /// The polyrhythm pad end-to-end: cells rest dim; two quick taps set the ONE
+  /// global tempo (the tap cell blinks on both grids, caught mid-flash); the
+  /// factor buttons and the =1 pulse switch are PER-GRID -- a factor press lights
+  /// only its own grid, a lone =1 tap turns that grid's cycling on (lit) and
+  /// resets its factor, and a fast =1 double-tap turns the cycling back off.
   #[test]
-  fn tap_tempo_pad_blinks_and_mirrors_factor_state() {
+  fn tap_tempo_pad_blinks_globally_and_the_pulse_switch_is_per_grid() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2019,16 +2025,30 @@ mod tests {
     assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "the tap cell blinks on grid a");
     assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "and on grid b (one shared tempo)");
 
-    // x2 from grid b: its cell lights on grid a too, and =1 becomes actionable.
+    // x2 from grid b: PER-GRID -- b's cell lights, a's stays at rest.
     b.press(14, 0);
     b.release(14, 0);
-    assert!(wait_until(secs(3), || a.level_at(14, 0) == 15), "x2 lit (factor leans up)");
-    assert!(wait_until(secs(3), || a.level_at(15, 1) == 15), "=1 lit (pressing it would act)");
-    // =1 resets: both go back to resting dim.
-    a.press(15, 1);
-    a.release(15, 1);
-    assert!(wait_until(secs(3), || a.level_at(14, 0) == 4 && a.level_at(15, 1) == 4),
-      "unity resets the factor lights");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its factor leans up)");
+    assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (factors are per-grid)");
+
+    // A lone =1 tap on grid b: b's cycling turns ON (=1 lit) and its factor resets
+    // (x2 back to dim). Grid a's switch is untouched.
+    b.press(15, 1);
+    b.release(15, 1);
+    assert!(wait_until(secs(3), || b.level_at(15, 1) == 15), "grid b's =1 lit: cycling on");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 4), "=1 reset grid b's factor");
+    assert_eq!(a.level_at(15, 1), 4, "grid a's =1 stays dim (the switch is per-grid)");
+
+    // A fast =1 double-tap on grid b: cycling back OFF (the tempo display -- the
+    // tap-cell blink -- survives). The four presses land well inside the 400 ms
+    // double-tap window; the >400 ms sleep first makes tap one a LONE tap.
+    thread::sleep(Duration::from_millis(500));
+    b.press(15, 1);
+    b.release(15, 1);
+    b.press(15, 1);
+    b.release(15, 1);
+    assert!(wait_until(secs(3), || b.level_at(15, 1) == 4), "a fast double-tap: cycling off");
+    assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "the tap cell still blinks the tempo");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();
