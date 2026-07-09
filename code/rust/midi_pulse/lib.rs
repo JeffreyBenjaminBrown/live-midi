@@ -1,4 +1,5 @@
 pub mod rig;
+pub mod rig_org;
 pub mod device_assign;
 pub mod edo_play;
 pub mod mapping;

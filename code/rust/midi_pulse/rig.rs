@@ -1239,17 +1239,20 @@ pub fn rig_path(name: &str) -> Result<PathBuf, String> {
   if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
     return Err(format!("rig name must not be a path, got {name:?}"));
   }
-  // Prefer a real rig; fall back to the mock dir so a mock-rig rig resolves by
-  // name (the integration tests and `cargo run -- <name>-mock`). If neither exists,
-  // return the rigs/ path so the not-found error names the expected location.
-  let primary = rig_dir().join(name).with_extension("toml");
-  if !primary.exists() {
-    let mock = mock_rig_dir().join(name).with_extension("toml");
-    if mock.exists() {
-      return Ok(mock);
+  // Prefer a real rig over the mock dir (the integration tests / `cargo run --
+  // <name>-mock`). Within a dir, `.toml` is authoritative when present: a rig's `.org`
+  // sibling is currently its *documentation*, not its definition, so a rig only loads
+  // as `.org` once its `.toml` is gone (migration writes the `.org` -- which folds the
+  // doc into its bodies -- and deletes the `.toml`). See TODO/toml-to-org-rig-format.org.
+  for dir in [rig_dir(), mock_rig_dir()] {
+    for ext in ["toml", "org"] {
+      let candidate = dir.join(name).with_extension(ext);
+      if candidate.exists() {
+        return Ok(candidate);
+      }
     }
   }
-  Ok(primary)
+  Ok(rig_dir().join(name).with_extension("toml"))
 }
 
 pub fn load_named_rig(name: &str) -> Result<Rig, String> {
@@ -1260,7 +1263,12 @@ pub fn load_named_rig(name: &str) -> Result<Rig, String> {
 pub fn load_rig_file(path: &Path) -> Result<Rig, String> {
   let source = std::fs::read_to_string(path)
     .map_err(|e| format!("read rig {}: {e}", path.display()))?;
-  parse_rig(&source).map_err(|e| format!("parse rig {}: {e}", path.display()))
+  let parsed = if path.extension().and_then(|e| e.to_str()) == Some("org") {
+    crate::rig_org::parse_org_rig(&source)
+  } else {
+    parse_rig(&source)
+  };
+  parsed.map_err(|e| format!("parse rig {}: {e}", path.display()))
 }
 
 pub fn parse_rig(source: &str) -> Result<Rig, String> {
