@@ -1,4 +1,4 @@
-* ONGOING : config -> rig; robust to missing gear
+* DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
 - code/rust/configs/README.org
@@ -35,6 +35,20 @@ because I can imagine it getting messy, or contradicting earlier code.
 There is no need for adversarial agents to double-check
 things that you consider obviouslyy already correct;
 I trust you more than that (and I don't have a huge token budget).
+** [Claude] BOTH halves DONE (2026-07-09), committed.
+- *Robust to missing gear*: surfaces loads around absent devices; red report of
+  skipped components (missing dependency); standalone softstep (drums load with
+  no grids); cross-control strips dropped when their target grid is absent; echo
+  hidden behind top-level =echo_input= (default off). Decisions in
+  jeff-maybe-review-this.org "robust to missing gear + echo_input"; behaviour in
+  code/rust/rigs/README.org (Surfaces) + 2-monomes_58-8-1_kmss-drums.org.
+- *config -> rig rename*: whole-tree sweep -- dir =configs/= -> =rigs/=, every
+  identifier (=Config=->=Rig= incl. the sub-structs, =config_dir=->=rig_dir=, the
+  =config= module -> =rig=, =CONFIG_NAME=->=RIG_NAME=, ...), and the live docs.
+  Spared: cpal =StreamConfig= etc., the words configure/configuration, =#[cfg]=,
+  =host-nix-config-copy=, the Python meter, and the TODO/DONE/ archive. Scope +
+  the sub-struct decision are in jeff-maybe-review-this.org "config -> rig rename".
+- 88 lib + 324 bin + 29 meter tests green; 0 warnings. No adversarial agents used.
 * TODO change .toml to .org
 Top-level headlines, and their descendents down to some level,
 are just for grouping, otherwise ignored by the code.
@@ -45,6 +59,74 @@ It is valid for that description to merely
 refer to some other (presumably ancestral) non-parameter headline,
 because those grouping headlines can also contain bodies
 explaining what their contents are for.
+
+To perfectly mirror the .toml syntax we might need more syntax,
+-- TABLE, I imagine. Maybe TABLES should nest -- is toml like that?
+(Wherever I ask questions, please answer inlline, in a subheadline,
+prefixing your response "TODO Claude to Jeff : ".)
+I don't consider the syntax details especially high-stakes,
+so feel free to make decisions on your own as usual,
+just making sure to report them all somewhere.
+
+Since (I think) numerous code paths consume .toml,
+this probably warrants a shared library.
+** TODO Claude to Jeff : yes, TOML nests; here's the proposed org syntax
+Full design + migration plan: [[file:TODO/toml-to-org-rig-format.org]]. Short version:
+
+TOML has three shapes we must mirror: scalars (=k = v=), *tables* =[a]= (which
+DO nest, dotted: =[a.b]=), and *arrays of tables* =[[a]]= (repeatable). So one
+=TABLE= keyword isn't quite enough -- we need to distinguish "a table" from "one
+element of an array of tables." Proposed keywords (headline title prefixes):
+
+- =PARAM key = value= -- a scalar leaf. The value after =\== is ordinary TOML
+  value syntax, so inline arrays/tables just work: =PARAM rect = [0, 0, 15, 15]=,
+  =PARAM select.size = [16, 16]= (dotted key), =PARAM waveform = "saw"=.
+- =TABLE key= -- a (sub)table; its descendant PARAM/TABLE/ELEM headlines are its
+  contents. TABLEs nest (a TABLE inside a TABLE == =[a.b]=).
+- =ELEM key= -- ONE element of the array-of-tables =key= (== one =[[key]]=
+  block). Repeat sibling =ELEM key= headlines to grow the array, in order.
+- A headline with none of those prefixes is pure grouping: *transparent* to the
+  data (its PARAM/TABLE/ELEM descendants attach to the nearest enclosing
+  TABLE/ELEM), existing only to organize + document -- exactly as you described.
+- Bodies are documentation; the parser ignores them (so a body may freely refer
+  to an ancestral grouping headline, per your note).
+
+The TOML comments become the headline bodies -- these heavily-commented rigs are
+a *better* fit for org than TOML. The "shared library" is one org->=Config=
+loader (org tree -> =toml::Value= -> existing serde derives), so every current
+consumer keeps using the same typed structs and validation; only the front-end
+(=load_config_file=) changes from =toml::from_str= to the org loader. I'll queue
+implementation after the rename lands. Keyword names (=ELEM= etc.) are easy to
+change -- say the word.
+** [Claude] MECHANISM DONE (2026-07-09); file migration gated on one decision.
+Committed the =rig_org= parser + loader seam (=code/rust/midi_pulse/rig_org.rs=;
+=load_rig_file= dispatches on extension). An =.org= rig deserializes + validates
+through the SAME typed model as =.toml= (reuses =parse_rig=). 94 lib + 324 bin
+green, incl. a round-trip proving a hand-converted =monome-edo-sawwave.org= ==
+its =.toml=. NOT done: converting the rig files -- blocked on a naming decision
+(rig =.org= vs the existing doc =.org= that shares 4 rigs' basenames). Options
+A/B/C + the migration mechanics are in [[file:TODO/toml-to-org-rig-format.org]]
+under "STATUS"; pick one and I'll finish the conversion. Left this item TODO.
+* DONE rewrite sofstep pressure meter in Rust
+It should do everything the actual softstep drum code does,
+including the 'ditto' pad (but not the monome-interaction code).
+When you report what you did please tell me how to run it.
+
+Leave the Python-based meter in place, because I might want to compare them,
+but have the Python one explain to the user that the Rust one is probably better.
+** [Claude] DONE (2026-07-09). Run: =cargo run --bin softstep_meter=
+New =code/rust/midi_pulse/softstep_meter.rs= binary (+ =softstep_meter.org= doc).
+It drives the REAL, unmodified drum decoder (=drumkit_runtime/decode.rs=) and
+tether bring-up (=tether.rs=) via =#[path]= includes, so detection / debounce /
+de-stick / attack / velocity are exactly the drumkit's, and it replicates the
+ditto pad (pad 3), including "pad, ditto, ditto repeats the ORIGINAL". No
+monome-interaction code. Shows per-pad pressure bars (sum-of-4, 0..508) with a
+decaying peak-hold, per-hit velocity/gain, the live SoftstepParams, and an event
+log. Optional audio audition behind =SOFTSTEP_METER_AUDIO=1= (=pw-play= a
+sample). Restores standalone mode on 'q' or Ctrl-C. The Python meter stays (for
+its .org event-group logger) with a startup banner pointing at the Rust one.
+29 meter tests (14 reused decode + 15 new); 88 lib + 324 bin still green.
+Delegated to a Sonnet agent; I reviewed + verified the build/tests before commit.
 * DONE misc
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
