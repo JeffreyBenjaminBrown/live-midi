@@ -1,0 +1,245 @@
+#+title: Slide math: guitar-style pitch ramps, and Hz ↔ pitch
+#+author: notes
+
+* The short answer
+
+A guitar slide is *linear in period*, not linear in Hz and not linear in pitch.
+
+With the ramp normalized to \(t \in [0,1]\), start \(f_0\), end \(f_1\):
+
+\[
+f(t) \;=\; \frac{1}{\dfrac{1-t}{f_0} + \dfrac{t}{f_1}}
+\;=\; \frac{f_0 f_1}{f_1 + t\,(f_0 - f_1)}
+\]
+
+That is the harmonic (reciprocal) interpolation between \(f_0\) and \(f_1\), as
+against the arithmetic interpolation \((1-t)f_0 + t f_1\) that a Hz-linear ramp
+uses.
+
+Hz gives the simpler closed form — it is a ratio of linear functions, with no
+transcendentals. But the *simplest* dependent variable is neither Hz nor pitch:
+it is the period \(T = 1/f\), where the ramp is just a lerp,
+
+\[
+T(t) = (1-t)\,T_0 + t\,T_1 .
+\]
+
+Everything below is downstream of that one line.
+
+* Derivation
+
+** The string
+
+For an ideal string of vibrating length \(L\), tension \(\tau\), linear density \(\mu\):
+
+\[
+f = \frac{1}{2L}\sqrt{\frac{\tau}{\mu}} = \frac{v}{2L}
+\]
+
+Sliding a finger (or a bottleneck) along the neck changes \(L\) and leaves
+\(\tau\) and \(\mu\) alone, so \(v\) is constant and
+
+\[
+f \propto \frac{1}{L}.
+\]
+
+** Constant slide velocity
+
+"The string length changes linearly" means the hand moves at constant speed:
+
+\[
+L(t) = (1-t)\,L_0 + t\,L_1 .
+\]
+
+Substitute \(L_i = v / (2 f_i)\):
+
+\[
+f(t) = \frac{v}{2\big[(1-t)L_0 + t L_1\big]}
+     = \frac{v}{2\Big[(1-t)\frac{v}{2f_0} + t\frac{v}{2f_1}\Big]}
+     = \frac{1}{\dfrac{1-t}{f_0} + \dfrac{t}{f_1}} .
+\]
+
+The \(v\) cancels, which is why the result depends only on the endpoints and not
+on the physical scale of the instrument. Clearing the compound fraction:
+
+\[
+\boxed{\;f(t) = \frac{f_0 f_1}{(1-t)\,f_1 + t\,f_0} = \frac{f_0 f_1}{f_1 + t\,(f_0-f_1)}\;}
+\]
+
+Check: \(f(0) = f_0f_1/f_1 = f_0\); \(f(1) = f_0f_1/f_0 = f_1\). ✓
+
+** Read it in the period
+
+Take reciprocals of the first form:
+
+\[
+\frac{1}{f(t)} = \frac{1-t}{f_0} + \frac{t}{f_1}
+\qquad\Longleftrightarrow\qquad
+T(t) = (1-t)T_0 + t T_1 .
+\]
+
+So the whole content of "guitar-style" is: *the period ramps linearly*.
+Equivalently the wavelength \(\lambda = v/f \propto L\) ramps linearly — which is
+just restating that the hand moves at constant speed. The three descriptions
+(linear length, linear wavelength, linear period) are the same statement.
+
+** In pitch
+
+Let \(p\) be pitch in semitones, \(p = p_{\text{ref}} + 12\log_2(f/f_{\text{ref}})\). Then
+
+\[
+p(t) = p_0 + 12\log_2\!\frac{f(t)}{f_0}
+     = p_0 - 12\log_2\!\Big[(1-t) + t\,\frac{f_0}{f_1}\Big]
+\]
+
+and writing \(\Delta = p_1 - p_0\) for the total interval in semitones, so that
+\(f_0/f_1 = 2^{-\Delta/12}\):
+
+\[
+\boxed{\;p(t) = p_0 - 12\log_2\!\Big[1 - t\big(1 - 2^{-\Delta/12}\big)\Big]\;}
+\]
+
+Sanity: \(t=0\) gives \(p_0\); \(t=1\) gives \(p_0 - 12\log_2 2^{-\Delta/12} = p_0 + \Delta = p_1\). ✓
+
+Hz is the simpler of the two. So: *use the Hz form*, or better, lerp the
+period and take one reciprocal.
+
+* Why it is the reverse of a Hz-linear ramp
+
+The thing you actually hear is \(dp/dt\), the glide rate in semitones per unit
+time. For any ramp, \(\frac{dp}{dt} = \frac{12}{\ln 2}\cdot\frac{f'(t)}{f(t)}\).
+
+** Hz-linear
+
+\(f(t) = f_0 + t(f_1-f_0)\), so \(f'\) is constant and
+
+\[
+\frac{dp}{dt} = \frac{12}{\ln 2}\,\frac{f_1-f_0}{f(t)} \;\propto\; \frac{1}{f}.
+\]
+
+Fast through low pitches, slow through high ones. Confirms the premise.
+
+** Guitar
+
+\(f = 1/T\) with \(T\) linear, so \(f' = -T'/T^2 = -(T_1-T_0)\,f^2\), giving
+\(f'/f = (T_0-T_1)\,f\) and
+
+\[
+\frac{dp}{dt} = \frac{12}{\ln 2}\Big(\frac{1}{f_0}-\frac{1}{f_1}\Big) f(t) \;\propto\; f.
+\]
+
+Exactly inverted. Sliding *up* the neck at constant speed, you cross semitones
+faster and faster — which is the same fact as frets getting closer together as
+you climb. The fretboard's geometry *is* this formula.
+
+** The family that contains both
+
+Both are members of the power-mean interpolation
+
+\[
+f_s(t) = \Big[(1-t)\,f_0^{\,s} + t\,f_1^{\,s}\Big]^{1/s},
+\qquad s\in\mathbb{R},\; s=0\text{ by limit},
+\]
+
+for which \(\dfrac{dp}{dt} = \dfrac{12}{\ln 2}\cdot\dfrac{f_1^{\,s}-f_0^{\,s}}{s}\cdot f^{-s} \;\propto\; f^{-s}\).
+
+| \(s\)  | ramp                | \(f(t)\)                     | midpoint \(f(\tfrac12)\)        | glide rate    |
+|--------+---------------------+------------------------------+---------------------------------+---------------|
+| \(+1\) | linear in Hz        | \((1-t)f_0 + tf_1\)          | arithmetic \(\frac{f_0+f_1}{2}\) | \(\propto 1/f\) |
+| \(0\)  | linear in pitch     | \(f_0 (f_1/f_0)^t\)          | geometric \(\sqrt{f_0 f_1}\)     | constant      |
+| \(-1\) | linear in period ⇒ /guitar/ | \(\big[\frac{1-t}{f_0}+\frac{t}{f_1}\big]^{-1}\) | harmonic \(\frac{2f_0f_1}{f_0+f_1}\) | \(\propto f\) |
+
+AM ≥ GM ≥ HM, so an upward guitar slide always sits *below* the exponential
+glide: it hangs near the low note and then bolts for the high one.
+
+** An exact duality
+
+For every \(s\) and every \(t\),
+
+\[
+f_s(t)\cdot f_{-s}(1-t) = f_0 f_1,
+\qquad\text{i.e.}\qquad
+p_s(t) + p_{-s}(1-t) = p_0 + p_1 .
+\]
+
+/Proof./ \(f_{-s}(1-t)^{-s} = t f_0^{-s} + (1-t) f_1^{-s} = \dfrac{(1-t)f_0^{\,s} + t f_1^{\,s}}{(f_0f_1)^{s}} = \dfrac{f_s(t)^{\,s}}{(f_0f_1)^{s}}\).
+Rearrange and take the \(1/s\) power. ∎
+
+Setting \(s=1\): the guitar ramp is the Hz-linear ramp *run backwards and
+reflected through the geometric mean*. The exponential ramp \(s=0\) is the fixed
+point of that symmetry — which is why it looks like the "neutral" glide.
+
+This is the user's intuition ("on a guitar the reverse happens") stated exactly:
+not merely qualitatively opposite, but the precise involution \(s \mapsto -s\).
+
+* Worked example: A2 → A4 (110 → 440 Hz, two octaves)
+
+Semitones are measured above A2.
+
+| \(t\)  | guitar Hz | guitar st | pitch-linear Hz | st | Hz-linear Hz | st |
+|--------+-----------+-----------+-----------------+----+--------------+----|
+| 0.00   |   110.000 |     0.000 |         110.000 |  0 |      110.000 |  0.000 |
+| 0.25   |   135.385 |     3.595 |         155.563 |  6 |      192.500 |  9.688 |
+| 0.50   |   176.000 |     8.137 |         220.000 | 12 |      275.000 | 15.863 |
+| 0.75   |   251.429 |    14.312 |         311.127 | 18 |      357.500 | 20.405 |
+| 1.00   |   440.000 |    24.000 |         440.000 | 24 |      440.000 | 24.000 |
+
+Halfway through the slide you are only 8.14 of 24 semitones up — a third of the
+way musically, in half the time. The Hz-linear ramp is at 15.86, and
+\(8.137 + 15.863 = 24\): the duality above, at \(t=\tfrac12\), where it reads
+\(\mathrm{HM}\cdot\mathrm{AM} = \mathrm{GM}^2 = f_0f_1\).
+
+* Implementation
+
+** Per-sample
+
+Lerp the period; reciprocate once.
+
+#+begin_src rust
+// t in [0,1]
+let t0 = 1.0 / f0;
+let t1 = 1.0 / f1;
+let f  = 1.0 / (t0 + (t1 - t0) * t);   // guitar
+#+end_src
+
+Numerically this is well-behaved everywhere: \(T(t)\) is a convex combination of
+two positive numbers, so it never approaches zero and the reciprocal never blows
+up. (The Hz-linear ramp has the same property. The naive "lerp in Hz then
+convert to pitch" is where people get bitten, not here.)
+
+** Exact accumulated phase
+
+Driving an oscillator, phase in *cycles* over a ramp of real duration \(D\)
+seconds is \(\Phi(t) = D\int_0^t f(u)\,du\). For the guitar ramp this integrates
+in closed form:
+
+\[
+\Phi(t) = \frac{D}{T_1 - T_0}\,\ln\!\frac{T(t)}{T_0},
+\qquad T(t) = T_0 + (T_1-T_0)t .
+\]
+
+Guard the degenerate case: as \(T_1 \to T_0\) this tends to \(f_0 D t\), so branch
+on \(|T_1 - T_0| < \varepsilon\).
+
+Checked against a 48 kHz sample-by-sample accumulator over 110→440 Hz in 2 s:
+both give 406.6463 cycles (agreement to \(10^{-8}\)). You only need the closed
+form if you must seek to arbitrary \(t\) without replaying the ramp; a running
+accumulator is otherwise fine.
+
+*Aside.* The mean frequency over the ramp, \(\Phi(1)/D\), is the reciprocal of
+the *logarithmic mean* of the two periods. (For an exponential glide it is the
+logarithmic mean of the two frequencies. Pleasant, and of no practical use.)
+
+** Caveats about actual guitars
+
+- This is a *slide* — bottleneck, or a fretless neck — at constant hand speed.
+  Fretted playing quantizes the same curve to \(L_n = L_0\,2^{-n/12}\), and those
+  fret positions are spaced logarithmically *because* length is not linear in
+  pitch. The fretboard is the \(s=0\) ramp; the slide is the \(s=-1\) one.
+- A *bend* is a different law. It changes tension, and \(f \propto \sqrt{\tau/\mu}\);
+  the map from finger displacement to tension is itself nonlinear. Same for a
+  whammy bar. Do not model a bend with this formula.
+- A trombone slide and a slide whistle change acoustic length the same way, so
+  they obey the identical \(s=-1\) ramp. Tape varispeed gives \(f \propto\) tape
+  speed, so linear spooldown is a Hz-linear ramp (\(s=+1\)). A theremin is
+  roughly \(s=0\).
