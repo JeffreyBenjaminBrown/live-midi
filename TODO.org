@@ -175,7 +175,44 @@ your earlier request -- at each grid's own applied tempo); factor exponents and
 the =1 cycling switch are per-monome; cycling starts off; =1's LED shows the
 switch. A =1 tap still resets that grid's factor. "Fast" = 400 ms (a const --
 say the word for a config knob).
-* AWAITS continue ? softstep pressure meter
+* ? easy
+** special keys for changing timbre
+** each pad gets velocity-tuned separately
+** synth with momentum
+** each note should evolve
+Could just reduce each parameter's amplitude logarithmically.
+** edo synth attack should be louder
+to distinguish new notes
+** slide
+Time to transition is calculated as the time
+between the last two touches. That time is updated continuously,
+so (e.g.) if the destination is tapped again ... uh ...
+** mono
+* internalize | move to README
+** remember this program
+*** the softstep meter
+python3 code/python/softstep/meter/main.py
+** lately using [[./code/rust/configs/README.org]]
+** remember to run the synth 'under pw-jack'
+Just prefix 'pw-jack' to the command:
+
+pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
+** run the KMSS drumkit (without monomes)
+pw-jack cargo run --bin midi_pulse -- kmss-drumkit
+* pitch-aware energy feedback synth
+* Need a way to get only slightly buzzier.
+From sine to triangle is too much,
+when harmony needs clarification with more harmonics.
+* The core can now do through-zero FM, but it's UI-unreachable.
+Through-zero means when frequency goes below zero,
+the oscillator runs backward.
+Since the UI measures FM amplitude in cents,
+it can't actually go negative.
+* Futz with decay_secs.
+* KMSS drumkit
+** some cool KMSS velocity/aftertouch measurement code
+python3 code/python/softstep/meter/main.py
+* ONGOING softstep pressure meter
 ** how to run it
 python3 code/python/softstep/meter/main.py
 ** TODO implement
@@ -199,36 +236,10 @@ Let's also introduce a 'flush' command, triggered with 'f', that closes all open
 *** if some attacks sound dull
 The lever is tau (GAIN_RAMP_SECS, currently 5 ms, a single const in audio.rs): shorter (say 2–3 ms) lets the gain reach the peak before the transient is over — snappier, more of the hit's character at full velocity — at the cost of getting nearer a hard step. If it sounds dull when you try it, drop tau before you drop the whole approach. Want me to pull GAIN_RAMP_SECS out into the config so you can
 tune it by ear with a reload?
-* The core can now do through-zero FM, but it's UI-unreachable.
-Through-zero means when frequency goes below zero,
-the oscillator runs backward.
-Since the UI measures FM amplitude in cents,
-it can't actually go negative.
-* Futz with decay_secs.
-* easy
-** edo synth attack should be louder
-to distinguish new notes
-** slide
-Time to transition is calculated as the time
-between the last two touches. That time is updated continuously,
-so (e.g.) if the destination is tapped again ... uh ...
-** mono
-** each pad gets velocity-tuned separately
-* each note should evolve
-Could just reduce each parameter's amplitude logarithmically.
-* KMSS drumkit
-** run the KMSS drumkit
-pw-jack cargo run --bin midi_pulse -- kmss-drumkit
-** some cool KMSS velocity/aftertouch measurement code
-python3 code/python/softstep/meter/main.py
-* remember to run the synth 'under pw-jack'
-Just prefix 'pw-jack' to the command:
-
-pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
-* lately using [[./code/rust/configs/README.org]]
-* BUG: Can't play a note live when the loop is, or vice-versa.
-* shift one row of the loop in time
-* A loop view can be collapsed along pitch, time or both.
+* looper (includes bugs)
+** BUG: Can't play a note live when the loop is, or vice-versa.
+** shift one row of the loop in time
+** A loop view can be collapsed along pitch, time or both.
 * vision
 ** There's no difference between a chord and a loop.
 A chord is a loop during which the notes don't change.
