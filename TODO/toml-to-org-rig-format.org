@@ -156,3 +156,48 @@ Errors report the headline line number + the offending title/value.
   keep the toml parser (it's the round-trip test oracle) but ship .org rigs.
 - Case sensitivity of keywords: require upper-case =PARAM/TABLE/ELEM= (greppable,
   matches your =PARAM= example).
+
+* STATUS (2026-07-09): mechanism landed; migration gated on one decision
+Committed: the =rig_org= parser + the loader seam (=load_rig_file= dispatches on
+extension; =rig_path= prefers =.toml=, falls back to =.org=). 94 lib + 324 bin
+green, incl. a round-trip proving a hand-converted =monome-edo-sawwave.org= is
+the identical =Rig= as its =.toml=. What's NOT done: converting the rig files.
+
+** The blocker: rig-vs-doc .org name collision
+=rigs/= already holds =.org= *documentation* next to the =.toml= rigs -- and with
+the SAME basename for 4 rigs: =2-monomes_58-8-1_kmss-drums=, =kmss-drumkit=,
+=monome-looper-58-8-1=, =monome-looper-58-8-1-timbre= each have both a =.toml=
+(the rig) and a =.org= (a rich reference: glossary, layout diagrams, LED tables).
+Plus =README.org= and =RUNTIME-NOTES.org=. So "the rig is =<name>.org=" collides
+with "the doc is =<name>.org=". (This is why the loader prefers =.toml=: a bare
+=.org= today means *documentation*.)
+
+The 10 OTHER rigs have no =.org= sibling (edo-un12_* x4, edo12n-piano(-monome),
+monome-edo-midi_* x2, monome-edo-sawwave; plus the shared =softstep.toml=), so
+they can convert with no collision.
+
+** TODO Claude to Jeff : how should rig .org and doc .org coexist? (pick one)
+- *A (the vision): merge.* Each rig becomes =<name>.org= with the =.toml=
+  comments folded into per-PARAM bodies; the 4 rich standalone docs fold into the
+  rig file's grouping-headline bodies (or a top "* reference" section). Delete the
+  =.toml= and the old standalone doc. One file per rig = data + docs. Heaviest,
+  but it's the "org is a better home for the comments" idea in full.
+- *B (pragmatic): rig = <name>.org, doc renamed.* Rig data (+ its own comments)
+  -> =<name>.org=; the rich reference doc -> =<name>-reference.org= (or a
+  =rigs/reference/= subdir). Delete the =.toml=. Preserves the big docs as-is;
+  costs a rename + updating links (ORIENTATION.org etc.).
+- *C: leave the 4 documented rigs as .toml for now*, migrate only the 10 plain
+  ones. Half-migrated but unblocked and reversible.
+My lean: *B* (keeps your rich reference docs intact, resolves the collision
+cleanly), or *C* first as a stepping stone. I did not want to rename/merge your
+docs unprompted, so I stopped here.
+
+** Migration mechanics, once the above is settled
+- Convert each rig .toml -> .org (PARAM/TABLE/ELEM per this doc; fold comments
+  into bodies). VERIFY each: =parse_org_rig(new) == parse_rig(old)= before
+  deleting the .toml (the round-trip is the safety net).
+- Update =loads_default_rigs=: skip =softstep.toml=; load =.toml= rigs; load a
+  =.org= iff it has NO sibling =.toml= and is not a known doc (=README.org=,
+  =RUNTIME-NOTES.org=, and -- under option B -- =*-reference.org=).
+- Update =connect-midi.sh= (reads =rigs/$RIG_NAME.toml=) to try =.org= too.
+- Update =rig_path='s not-found default + the mock rigs in =code/rust/mocks/=.
