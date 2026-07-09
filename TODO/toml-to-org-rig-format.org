@@ -1,0 +1,158 @@
+#+title: Rig files: .toml -> .org (design + migration plan)
+#+author: Claude, for Jeff (TODO.org "change .toml to .org")
+#+date: 2026-07-08
+
+* Goal
+Replace the TOML rig files with an org-mode format that carries the same data but
+lets each parameter's documentation live *with* it, in the headline tree. The
+current rigs are already heavily commented; org is a better home for that prose.
+
+Non-goal: changing the runtime's typed model. The org loader produces the very
+same =Config= (post-rename: =Rig=) struct, through the existing serde derives and
+validation, so no consumer downstream of loading changes.
+
+* What TOML gives us that we must mirror
+| TOML                         | meaning                        | org keyword           |
+|------------------------------+--------------------------------+-----------------------|
+| =k = v=                      | a scalar key                   | =PARAM k = v=         |
+| =[a]=, =[a.b]= (nests)       | a (nested) table               | =TABLE a= (nests)     |
+| =[[a]]= (repeatable)         | one element of array-of-tables | =ELEM a= (repeat)     |
+| =k = [1, 2]=, =k = {x=1}=    | inline array / inline table    | stays inline in =v=   |
+
+So, answering the TODO question: yes -- TOML tables nest, and it also has
+arrays-of-tables. One keyword (=TABLE=) can't tell "a table" from "one element of
+an array of tables," so we use two: =TABLE= and =ELEM=.
+
+* Syntax
+Headlines form a tree (org =*=, =**=, ...). A headline's *title* is one of:
+
+- =PARAM <key> = <value>= -- a scalar leaf. =<key>= may be dotted (=select.size=).
+  =<value>= is *ordinary TOML value syntax* -- so numbers, strings, booleans,
+  inline arrays and inline tables all just work with no new grammar:
+  : PARAM rect = [0, 0, 15, 15]
+  : PARAM group_intervals = [[0, 2, 5, 7], [1, 3, 8, 10], [4, 6, 9, 11]]
+  : PARAM pads = [ { pedal = 1, sample = "kick.wav" }, { pedal = 2, sample = "snare.wav" } ]
+- =TABLE <key>= -- a (sub)table. Its descendant PARAM/TABLE/ELEM headlines are its
+  contents. A =TABLE= inside a =TABLE= is a nested table (=[a.b]=).
+- =ELEM <key>= -- ONE element of the array-of-tables =<key>= (one =[[key]]=).
+  Repeat sibling =ELEM <key>= headlines to grow the array, in file order.
+- *Any other title* is a pure *grouping* headline: transparent to the data. Its
+  descendants attach to the nearest enclosing =TABLE=/=ELEM= (or the rig root).
+  It exists only to organize and to document (its body explains what its contents
+  are for). A parameter's body may refer to such an ancestor freely.
+
+A headline's *body* (the lines under it) is documentation. The parser ignores it.
+
+** Worked example
+The head of =2-monomes_58-8-1_kmss-drums= in both notations:
+
+TOML:
+#+begin_src toml
+version = 1
+id = "2-monomes_58-8-1_kmss-drums"
+
+[surfaces]
+trail_clobber_radius = 27      # a divisor of the octave...
+trails_max = 9
+
+[[tunings]]
+id = "main"
+edo = 46
+
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/surface-a"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+#+end_src
+
+org:
+#+begin_src org
+,* 2-monomes_58-8-1_kmss-drums
+,** PARAM version = 1
+,** PARAM id = "2-monomes_58-8-1_kmss-drums"
+,** TABLE surfaces
+Shared recent-note trail (the dim backdrop of the last few played classes).
+,*** PARAM trail_clobber_radius = 27
+A divisor of the octave: a played note clears any trailed class within
+edo/trail_clobber_radius steps of it. 27 -> ~44 cents.
+,*** PARAM trails_max = 9
+,** ELEM tunings
+,*** PARAM id = "main"
+,*** PARAM edo = 46
+,** ELEM monomes
+,*** PARAM id = "a"
+,*** PARAM listen_port = 9000
+,*** PARAM prefix = "/surface-a"
+,*** PARAM select.size = [16, 16]
+,** the two play grids
+This grouping headline is transparent -- it just documents + organizes.
+,*** ELEM monome_windows
+,**** PARAM id = "grid-a"
+,**** PARAM monome = "a"
+,**** PARAM kind = "edo_note_grid"
+,**** PARAM rect = [0, 0, 15, 15]
+#+end_src
+
+(The =,*= are org's escape for a literal =*= inside a src block; real files use =*=.)
+
+* The shared library (implementation sketch)
+One new module (post-rename: =rig_org.rs=, or fold into =rig.rs=). Pipeline:
+
+1. *Lex headlines*: split on lines matching =^\*+\s=; capture (depth, title, body).
+   Everything else is body text for the current headline.
+2. *Classify each title* by its first whitespace-delimited word: =PARAM= /
+   =TABLE= / =ELEM= / else grouping.
+3. *Build a =toml::Value=* by walking the headline tree with a stack of "current
+   table" contexts:
+   - grouping headline: push the SAME context (transparent).
+   - =TABLE k=: get-or-insert table =k= in the current context; push it.
+   - =ELEM k=: get-or-insert array =k= in the current context; push a fresh table
+     onto it; that new table is the pushed context.
+   - =PARAM k = v=: parse =v= as a TOML value (trick: parse =format!("x = {v}")=
+     as a one-line TOML doc and take =x=), then set (dotted) key =k= in the
+     current context.
+4. *Deserialize*: =Rig::deserialize(value)= reuses every existing serde derive +
+   =validate_config=. Unknown keys still error (=deny_unknown_fields=).
+
+Parsing the value RHS through the =toml= crate means we inherit TOML's exact
+number/string/array/inline-table grammar for free -- no bespoke value parser, and
+inline arrays (rects, group_intervals) and inline tables (drum pads) need no org
+structure. (An alternative, fully-structured form -- =ELEM pads= with PARAM
+children instead of one inline =PARAM pads = [...]= -- is also expressible; the
+migration can choose per-field. I'd keep small fixed arrays inline and structure
+only the long, per-item-documented ones.)
+
+Errors report the headline line number + the offending title/value.
+
+* Migration plan
+1. Land the org loader + unit tests (round-trip each real rig: load .org, compare
+   the resulting =Rig= to loading the equivalent .toml).
+2. =rig_path=/=load_config_file= dispatch on extension: prefer =<name>.org=, fall
+   back to =<name>.toml= during transition (so nothing breaks mid-migration).
+3. Convert the rigs in =code/rust/rigs/= (was =configs/=) and the mock rigs in
+   =code/rust/mocks/= from .toml to .org, folding each file's comments into
+   headline bodies. Keep =softstep.toml= shape (shared params) on the same path.
+4. Update =connect-midi.sh= / =connect-midi-lib.sh= (they read =virtual_name= out
+   of the file) to read .org, or keep reading whichever exists.
+5. Update the docs (README, per-rig .org references) to describe the org syntax.
+6. Remove .toml once every rig is .org and green (or keep the toml parser as a
+   library entry point -- cheap, and handy for tests / external tooling).
+
+* Open decisions (easily reversed -- flag any you dislike)
+- Keyword names: =PARAM= / =TABLE= / =ELEM=. =ELEM= (array element) is the only
+  non-obvious one; alternatives: =ITEM=, =EACH=, =-=. Easy to rename.
+- Inline vs structured for arrays: keep short fixed-width arrays (=rect=,
+  =group_intervals=) inline in the =PARAM= value; only long per-item lists could
+  gain from =ELEM=. Proposed: leave =pads= inline too (they're short), structure
+  nothing that TOML kept inline. Reversible per file.
+- Whether to drop .toml support entirely or keep it as a second front-end. Lean:
+  keep the toml parser (it's the round-trip test oracle) but ship .org rigs.
+- Case sensitivity of keywords: require upper-case =PARAM/TABLE/ELEM= (greppable,
+  matches your =PARAM= example).
