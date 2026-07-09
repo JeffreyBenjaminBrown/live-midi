@@ -405,3 +405,28 @@ Making the surfaces runtime load around absent devices instead of erroring
   last before "surfaces running" so it sits at the bottom.
 - *No-gear guard:* if neither a grid nor the SoftStep is present, the run errors
   ("no gear present") instead of idling silently.
+
+* config -> rig rename: scope decision (2026-07-09, pending execution)
+Deferred until the Rust-meter agent finishes (it's editing Cargo.toml + drumkit
+files; a full-tree sweep now would collide). The plan, so it survives a cutoff:
+
+- *Directory* =code/rust/configs/= -> =code/rust/rigs/= (git mv), and every path
+  reference ("code/rust/configs", =configs/= in docs/scripts) -> rigs.
+- *Full identifier sweep*, code + docs + comments + rig-file comments: whole-word
+  =config=->=rig=, =Config=->=Rig=, =configs=->=rigs=; AND our compound tokens
+  (=config_dir=->=rig_dir=, =load_named_config=->=load_named_rig=, =parse_config=,
+  =run_from_config=, =is_*_config=, =runtime_config=, and ALL our =*Config= structs
+  -> =*Rig=: =SinkConfig=->=SinkRig=, =MonomeWindowConfig=->=MonomeWindowRig=, etc.).
+- *DECISION -- I am renaming the sub-structs too* (=SinkRig=, =MonomeWindowRig=,
+  ...), not just the top-level =Config=->=Rig=. Rationale: you said "any mention of
+  the word config", and a uniform sweep avoids the half-renamed state you worried
+  would get "messy / contradict earlier code". The one wart: =SinkRig= reads a bit
+  oddly (a sink isn't a rig; the =Config= suffix was a serde-DTO convention). If you
+  prefer keeping the =*Config= suffix on the *sub*-structs and only renaming the
+  top-level =Config=->=Rig=, it's a one-line revert of that part -- say so.
+- *MUST NOT touch* (verified): cpal's =StreamConfig=, =default_output_config=,
+  =supported_output_configs=, local =stream_config=; the verb "configured"
+  (=discover_configured_device= stays); Rust =#[cfg]=/=cfg!=; and
+  =code/python/softstep/meter/config.toml= + the whole Python meter (that's the
+  meter agent's turf, and its config.toml is unrelated to rigs).
+- Verify with =cargo test= (must stay 88 lib + 324 bin green) after the sweep.
