@@ -27,6 +27,10 @@ name = "mock_monome"
 path = "code/rust/midi_pulse/mock_monome_bin.rs"
 
 [[bin]]
+name = "softstep_meter"
+path = "code/rust/midi_pulse/softstep_meter.rs"
+
+[[bin]]
 name = "triangle_chord"
 path = "code/rust/synth/triangle_chord.rs"
 

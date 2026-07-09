@@ -448,7 +448,29 @@ def handle_key(ch):
     return True
 
 
+def announce_rust_reference():
+    """Startup banner: the Rust meter (code/rust/midi_pulse/softstep_meter.rs) now
+    drives the SAME decode.rs the drumkit runtime uses -- exactly its onset/release
+    thresholds, attack window, debounce, de-stick, and velocity mapping (including
+    the ditto pad) -- so it is the more accurate reference for calibration. This
+    Python meter is kept for comparison and its .org event-group logger (which the
+    Rust meter does not have)."""
+    print("=" * 78)
+    print("  NOTE: code/rust/midi_pulse/softstep_meter.rs is now the reference")
+    print("  implementation -- it drives the exact same decoder (decode.rs) the")
+    print("  drumkit runtime plays through, so its detection/velocity/ditto reading")
+    print("  is more likely to match what you'll actually hear. Run it (from the repo")
+    print("  root, where Cargo.toml lives) with:")
+    print("      cargo run --bin softstep_meter")
+    print("  (add `pw-jack` in front if you turn on its optional audio audition,")
+    print("  SOFTSTEP_METER_AUDIO=1 -- see its --help/source for details.)")
+    print("  This Python meter still works and remains here for comparison (and for")
+    print("  its per-pad .org event-group logger, which the Rust meter lacks).")
+    print("=" * 78)
+
+
 def main():
+    announce_rust_reference()
     load_config()  # also warns (in the message panel) if the audition sample is missing
     limit = float(sys.argv[1]) if len(sys.argv) > 1 else None
 
