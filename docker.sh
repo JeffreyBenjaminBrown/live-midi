@@ -56,7 +56,8 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   -w "$ROOT/$REL"                                        \
   -e CLAUDE_CONFIG_DIR="$ROOT/$REL/my-dot-claude"        \
   --group-add "$(getent group audio | cut -d: -f3)"      \
-  --device /dev/snd                                      \
+  -v /dev/snd:/dev/snd                                   \
+  --device-cgroup-rule 'c 116:* rmw'                     \
   --cap-add=SYS_NICE                                     \
   --ulimit rtprio=99                                     \
   --ulimit memlock=-1                                    \
@@ -82,6 +83,17 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   #   local-bin path leaves /bin/claude a dangling symlink, i.e.
   #   "claude: command not found". See research_no-claude-in-midi.org.
   # The --group-add line dynamically gets the host audio group GID.
+  # SOUND / MIDI DEVICES: we bind-mount /dev/snd LIVE (-v) instead of snapshotting
+  #   it with `--device /dev/snd`. `--device` copies in only the nodes that exist at
+  #   container-create time, so a device plugged in later -- or absent at start -- is
+  #   invisible forever (its /dev/snd/*C<N>* nodes never appear), even though the
+  #   kernel sequencer still sees it. That is exactly what breaks the SoftStep tether:
+  #   the mode-switch SysEx needs rawmidi (`amidi -p hw:N,0,0`, i.e. /dev/snd/midiCND0),
+  #   which a stale snapshot lacks. A bind mount of /dev/snd reflects hotplug live, and
+  #   --device-cgroup-rule 'c 116:* rmw' lets the cgroup open any sound device (major
+  #   116 = ALSA) including ones enumerated after start -- so plugging the SoftStep in
+  #   at any time Just Works, with no container recreate. (See
+  #   learnings/keith-mcmillen-softstep.org: send=rawmidi, read=sequencer.)
   # --network host binds each container port to the host port of the same
   #   number; the --dns lines let Claude Code work through a phone hotspot.
   # The /tmp/.X11-unix mount + DISPLAY let minifb/X11 GUI windows open on the
