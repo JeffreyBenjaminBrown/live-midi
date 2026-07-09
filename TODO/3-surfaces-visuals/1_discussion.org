@@ -3,7 +3,7 @@
 
 This plans the visual/behaviour changes you asked for
 in =TODO/3-surfaces/0_vision.org=
-for =code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=
+for =code/rust/rigs/2-monomes_58-8-1_kmss-drums.toml=
 (the surfaces runtime).
 
 How to use this doc: read the *Plan* first, then *Problems*. In *Problems* I've
@@ -121,7 +121,7 @@ the varibright grid; on the monobright grid, render dim cells by pulsing them on
 - Effect: scales the synth's output gain. The synth's =amplitude= is currently baked
   in at stream-build; I'll make it a live value the audio callback reads, and the
   strip writes it. (No flashing needed -- the strip is lit/off, not dim.)
-- Default level = the config's current amplitude (0.15) at column 10; steps left get
+- Default level = the rig's current amplitude (0.15) at column 10; steps left get
   quieter, steps right louder, 30 dB total end-to-end.
 - (Per-grid vs global, and cross-control -- see Problems.)
 
@@ -174,7 +174,7 @@ update those docs/comments. Flagging only so you know the reversal is intentiona
 
 To flash the dim on *only* the monobright grid (the efficient option that also keeps
 the varibright grid's tests/behaviour untouched), the runtime has to know which
-physical grid is which. Right now it can't: the config binds the two grids by *size
+physical grid is which. Right now it can't: the rig binds the two grids by *size
 only* (both are 16x16) and hands them out in discovery order, so "grid a" / "grid b"
 in the TOML is *not* pinned to a specific physical unit. Two ways forward:
 
@@ -192,10 +192,10 @@ in the TOML is *not* pinned to a specific physical unit. Two ways forward:
 I lean toward *(a)* if you can grab the device strings; otherwise *(b)* is safe.
 *** DONE Can you not get those strings yourself?
 Let's only flash where necessary. You can query the two grids. They're already connected.
-(I am using them for one of the configs, in another workspace; let me know if I need
+(I am using them for one of the rigs, in another workspace; let me know if I need
 to stop doing that so they're available to you.)
 **** DONE (Claude) Done -- I queried serialoscd read-only (enumerate only; no =/sys/*=
-register and no LED, so your running config was untouched). Two grids, and the *type
+register and no LED, so your running rig was untouched). Two grids, and the *type
 string does not tell them apart*:
 - id =m0000102=  type "monome 256"  -> new-style serial => *varibright* (the one that dims)
 - id =m256-282=  type "monome 256"  -> classic Series-256 serial => *monobright* (the "off" one)

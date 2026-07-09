@@ -1,5 +1,5 @@
 //! The surfaces runtime: two independent EDO play grids (each with a scroll pad and a
-//! waveform selector + volume strip -- wired per config via `controls`, which the
+//! waveform selector + volume strip -- wired per rig via `controls`, which the
 //! current rigs point at the strip's own grid) plus the KMSS pedalboard as a drumkit
 //! -- three surfaces at once, in one process.
 //!
@@ -39,9 +39,9 @@ use std::time::{Duration, Instant};
 
 use rosc::{decoder, OscPacket, OscType};
 
-use midi_pulse::config::{
-  load_named_config, AccreteControlKind, AmShapeFamilyConfig, Config, MonomeWindowConfig,
-  SinkConfig, WaveformChoice,
+use midi_pulse::rig::{
+  load_named_rig, AccreteControlKind, AmShapeFamilyRig, Rig, MonomeWindowRig,
+  SinkRig, WaveformChoice,
 };
 use midi_pulse::device_assign::assign_available_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
@@ -76,7 +76,7 @@ const DIM_PULSE: PulseBrightness = PulseBrightness::one_thirty_second(15_000);
 /// The sentinel rect (never matches a cell) for an absent scroll pad / selector.
 const NO_RECT: [i32; 4] = [-1, -1, -1, -1];
 
-/// One selectable timbre behind a selector cell: the resolved form of a config
+/// One selectable timbre behind a selector cell: the resolved form of a rig
 /// `[[timbres]]` entry (or a plain-waveform default). `amplitude` multiplies below
 /// the grid's volume fader at note-on.
 #[derive(Clone, Copy)]
@@ -90,7 +90,7 @@ pub(crate) struct TimbreSlot {
 /// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
 /// instrument can adopt without rebinding grids, sockets, or streams: the synth
 /// master amplitude, the distortion curve, the four timbres, the tuning, the pluck
-/// envelope, and the slide/trail knobs. See TODO/misc.org "config reload".
+/// envelope, and the slide/trail knobs. See TODO/misc.org "rig reload".
 pub(crate) struct Live {
   /// Bumped on every successful reload; grid threads refresh their copies when it
   /// moves (the audio callback reads the params fresh every callback).
@@ -136,11 +136,11 @@ fn live_params(s: &Settings) -> LiveParams {
   }
 }
 
-/// Re-read `name`'s config and adopt its live parameters (everything else -- window
+/// Re-read `name`'s rig and adopt its live parameters (everything else -- window
 /// layout, ports, sinks' sample rates -- needs a restart and is silently kept as
-/// is). A config that fails to load or resolve leaves the old parameters running.
+/// is). A rig that fails to load or resolve leaves the old parameters running.
 fn reload_live(name: &str, live: &Live) {
-  match load_named_config(name).and_then(|config| adopt_config(&config, live)) {
+  match load_named_rig(name).and_then(|rig| adopt_rig(&rig, live)) {
     Ok(()) => println!(
       "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / slide / trail applied (layout + ports need a restart)",
     ),
@@ -148,10 +148,10 @@ fn reload_live(name: &str, live: &Live) {
   }
 }
 
-/// Adopt `config`'s live parameters into `live` and bump the generation. Everything
+/// Adopt `rig`'s live parameters into `live` and bump the generation. Everything
 /// non-live (window layout, ports, sinks' sample rates) is silently kept as-is.
-fn adopt_config(config: &Config, live: &Live) -> Result<(), String> {
-  let s = resolve_settings(config).map_err(|e| e.to_string())?;
+fn adopt_rig(rig: &Rig, live: &Live) -> Result<(), String> {
+  let s = resolve_settings(rig).map_err(|e| e.to_string())?;
   *live.params.lock().unwrap_or_else(|e| e.into_inner()) = live_params(&s);
   live.generation.fetch_add(1, Ordering::SeqCst);
   Ok(())
@@ -189,11 +189,11 @@ impl Drop for StopOnExit {
   }
 }
 
-pub fn run_from_config(
-  config: &Config,
+pub fn run_from_rig(
+  rig: &Rig,
   reload_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-  print_inventory(config);
+  print_inventory(rig);
   // Block SIGINT/SIGTERM and start the STOP-setting waiter BEFORE any audio/MIDI/grid
   // thread spawns, so the block is inherited by all of them (a stray default SIGINT
   // would otherwise kill the process, leaving the KMSS stuck in tether mode).
@@ -201,25 +201,25 @@ pub fn run_from_config(
   // Headless / mock runs set MIDI_PULSE_NO_AUDIO to skip the cpal stream.
   let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
   STOP.store(false, Ordering::SeqCst);
-  run(config, monome::detector_port(), no_audio, reload_name)
+  run(rig, monome::detector_port(), no_audio, reload_name)
 }
 
-fn print_inventory(config: &Config) {
+fn print_inventory(rig: &Rig) {
   println!(
     "surfaces: {} monome windows across {} monomes; {} softstep windows",
-    config.monome_windows.len(),
-    config.monomes.len(),
-    config.softstep_windows.len(),
+    rig.monome_windows.len(),
+    rig.monomes.len(),
+    rig.softstep_windows.len(),
   );
-  for monome in &config.monomes {
+  for monome in &rig.monomes {
     println!("  monome {:?} (port {}, prefix {:?}):", monome.id, monome.listen_port, monome.prefix);
-    for window in config.monome_windows.iter().filter(|w| w.monome() == monome.id) {
+    for window in rig.monome_windows.iter().filter(|w| w.monome() == monome.id) {
       println!("    {:<18} rect {:?}", window.kind_name(), window.rect());
     }
   }
 }
 
-/// One play grid's resolved config: its monome binding + its overlay rects + which
+/// One play grid's resolved rig: its monome binding + its overlay rects + which
 /// grid its selector re-timbres.
 struct GridSettings {
   monome_id: String,
@@ -272,9 +272,9 @@ struct Settings {
   /// peak, then decay toward the sustain so they ring out over held notes.
   sustain_level: f32,
   decay_secs: f32,
-  /// The four selectable timbres (config `[[timbres]]`, or the plain waveforms).
+  /// The four selectable timbres (rig `[[timbres]]`, or the plain waveforms).
   timbres: [TimbreSlot; SELECTOR_CELLS],
-  /// The instrument-wide AM LFO morph family (config `[am]`).
+  /// The instrument-wide AM LFO morph family (rig `[am]`).
   am_shape_family: AmShapeFamily,
   /// The global distortion's curve (scale + shape from the cpal_synth sink); the
   /// on/off lives in a shared AtomicBool flipped by the distortion_toggle windows.
@@ -297,44 +297,44 @@ struct Settings {
   echo_input: bool,
 }
 
-fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
-  // The play grids: every declared monome that carries an edo_note_grid, in config
+fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
+  // The play grids: every declared monome that carries an edo_note_grid, in rig
   // order (grid index = position here).
-  let grid_monomes: Vec<&str> = config
+  let grid_monomes: Vec<&str> = rig
     .monomes
     .iter()
     .map(|m| m.id.as_str())
     .filter(|id| {
-      config.monome_windows.iter().any(|w| {
-        matches!(w, MonomeWindowConfig::EdoNoteGrid { monome, .. } if monome == id)
+      rig.monome_windows.iter().any(|w| {
+        matches!(w, MonomeWindowRig::EdoNoteGrid { monome, .. } if monome == id)
       })
     })
     .collect();
   if grid_monomes.is_empty() {
-    return Err("a surfaces config needs at least one edo_note_grid".into());
+    return Err("a surfaces rig needs at least one edo_note_grid".into());
   }
   let index_of = |monome_id: &str| grid_monomes.iter().position(|m| *m == monome_id);
 
   // The tuning + sink come from the first edo grid (all grids share them here).
-  let (tuning_id, sink_id) = config
+  let (tuning_id, sink_id) = rig
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowConfig::EdoNoteGrid { tuning, sink, .. } => Some((tuning.clone(), sink.clone())),
+      MonomeWindowRig::EdoNoteGrid { tuning, sink, .. } => Some((tuning.clone(), sink.clone())),
       _ => None,
     })
-    .ok_or("a surfaces config needs an edo_note_grid")?;
-  let tuning = config
+    .ok_or("a surfaces rig needs an edo_note_grid")?;
+  let tuning = rig
     .tunings
     .iter()
     .find(|t| t.id == tuning_id)
     .ok_or("edo_note_grid references an unknown tuning")?;
-  let sink = config
+  let sink = rig
     .sinks
     .iter()
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSynth {
+  let SinkRig::CpalSynth {
     sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
     distortion_scale, distortion_shape, sustain_level, decay_secs, ..
   } = sink
@@ -342,8 +342,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
   };
 
-  let rect_on = |monome_id: &str, pred: fn(&MonomeWindowConfig) -> bool| {
-    config
+  let rect_on = |monome_id: &str, pred: fn(&MonomeWindowRig) -> bool| {
+    rig
       .monome_windows
       .iter()
       .find(|w| w.monome() == monome_id && pred(w))
@@ -352,18 +352,18 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
 
   let mut grids = Vec::new();
   for monome_id in &grid_monomes {
-    let monome_cfg = config
+    let monome_cfg = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome_id)
       .ok_or("a play-grid monome is not declared")?;
-    let edo_rect = rect_on(monome_id, |w| matches!(w, MonomeWindowConfig::EdoNoteGrid { .. }))
+    let edo_rect = rect_on(monome_id, |w| matches!(w, MonomeWindowRig::EdoNoteGrid { .. }))
       .ok_or("a play grid lost its edo_note_grid")?;
     let scroll_rect =
-      rect_on(monome_id, |w| matches!(w, MonomeWindowConfig::EdoShiftPad { .. })).unwrap_or(NO_RECT);
+      rect_on(monome_id, |w| matches!(w, MonomeWindowRig::EdoShiftPad { .. })).unwrap_or(NO_RECT);
     // The selector rect + which grid it controls.
-    let selector = config.monome_windows.iter().find_map(|w| match w {
-      MonomeWindowConfig::WaveformSelector { monome, rect, controls, .. } if monome == monome_id => {
+    let selector = rig.monome_windows.iter().find_map(|w| match w {
+      MonomeWindowRig::WaveformSelector { monome, rect, controls, .. } if monome == monome_id => {
         Some((*rect, controls.clone()))
       }
       _ => None,
@@ -377,8 +377,8 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
       None => (NO_RECT, index_of(monome_id).unwrap()),
     };
     // The volume strip rect + which grid it sets the loudness of (like the selector).
-    let volume = config.monome_windows.iter().find_map(|w| match w {
-      MonomeWindowConfig::VolumeStrip { monome, rect, controls, .. } if monome == monome_id => {
+    let volume = rig.monome_windows.iter().find_map(|w| match w {
+      MonomeWindowRig::VolumeStrip { monome, rect, controls, .. } if monome == monome_id => {
         Some((*rect, controls.clone()))
       }
       _ => None,
@@ -394,11 +394,11 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     // The accrete (sustain) buttons, one rect per control kind (validation already
     // guarantees a monome has either the whole trio or none of it).
     let accrete_rect_on = |kind: AccreteControlKind| {
-      config
+      rig
         .monome_windows
         .iter()
         .find_map(|w| match w {
-          MonomeWindowConfig::AccreteControl { monome, rect, control, .. }
+          MonomeWindowRig::AccreteControl { monome, rect, control, .. }
             if monome == monome_id && *control == kind =>
           {
             Some(*rect)
@@ -407,47 +407,47 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
         })
         .unwrap_or(NO_RECT)
     };
-    let distortion_rect = config
+    let distortion_rect = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowConfig::DistortionToggle { monome, rect, .. } if monome == monome_id => {
+        MonomeWindowRig::DistortionToggle { monome, rect, .. } if monome == monome_id => {
           Some(*rect)
         }
         _ => None,
       })
       .unwrap_or(NO_RECT);
-    let slide_rect = config
+    let slide_rect = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowConfig::SlideToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
+        MonomeWindowRig::SlideToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
         _ => None,
       })
       .unwrap_or(NO_RECT);
-    let mono_rect = config
+    let mono_rect = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowConfig::MonoToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
+        MonomeWindowRig::MonoToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
         _ => None,
       })
       .unwrap_or(NO_RECT);
-    let feet_accrete_rect = config
+    let feet_accrete_rect = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowConfig::SoftstepAccretesToggle { monome, rect, .. } if monome == monome_id => {
+        MonomeWindowRig::SoftstepAccretesToggle { monome, rect, .. } if monome == monome_id => {
           Some(*rect)
         }
         _ => None,
       })
       .unwrap_or(NO_RECT);
-    let poly_rect = config
+    let poly_rect = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowConfig::TapTempoPad { monome, rect, .. } if monome == monome_id => Some(*rect),
+        MonomeWindowRig::TapTempoPad { monome, rect, .. } if monome == monome_id => Some(*rect),
         _ => None,
       })
       .unwrap_or(NO_RECT);
@@ -473,7 +473,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     });
   }
 
-  let size = config
+  let size = rig
     .monomes
     .iter()
     .find(|m| m.id == grids[0].monome_id)
@@ -481,7 +481,7 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     .unwrap_or([16, 16]);
 
   // The `[surfaces]` table (trail knobs); absent -> defaults, so unchanged behaviour.
-  let surfaces = config.surfaces.unwrap_or_default();
+  let surfaces = rig.surfaces.unwrap_or_default();
 
   Ok(Settings {
     grids,
@@ -500,30 +500,30 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
     release: *release_secs,
     sustain_level: *sustain_level,
     decay_secs: *decay_secs,
-    timbres: resolve_timbre_slots(config),
-    am_shape_family: match config.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
-      AmShapeFamilyConfig::SinToSquare => AmShapeFamily::SinToSquare,
-      AmShapeFamilyConfig::TriToSquare => AmShapeFamily::TriToSquare,
+    timbres: resolve_timbre_slots(rig),
+    am_shape_family: match rig.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
+      AmShapeFamilyRig::SinToSquare => AmShapeFamily::SinToSquare,
+      AmShapeFamilyRig::TriToSquare => AmShapeFamily::TriToSquare,
     },
     distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
-    has_drums: !config.softstep_windows.is_empty(),
+    has_drums: !rig.softstep_windows.is_empty(),
     trail_clobber_radius: surfaces.trail_clobber_radius,
     trails_max: surfaces.trails_max,
     slide_window: Duration::from_millis(surfaces.slide_candidate_window_ms),
     slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
     tap_window: Duration::from_millis(surfaces.tap_tempo_window_ms),
-    echo_input: config.echo_input,
+    echo_input: rig.echo_input,
   })
 }
 
-/// The config's `[[timbres]]` mapped onto the four selector slots (validation
+/// The rig's `[[timbres]]` mapped onto the four selector slots (validation
 /// guarantees exactly four when present); absent = the plain waveforms.
-fn resolve_timbre_slots(config: &Config) -> [TimbreSlot; SELECTOR_CELLS] {
-  if config.timbres.is_empty() {
+fn resolve_timbre_slots(rig: &Rig) -> [TimbreSlot; SELECTOR_CELLS] {
+  if rig.timbres.is_empty() {
     return default_timbre_slots();
   }
   let mut slots = default_timbre_slots();
-  for (slot, t) in slots.iter_mut().zip(&config.timbres) {
+  for (slot, t) in slots.iter_mut().zip(&rig.timbres) {
     *slot = TimbreSlot {
       waveform: match t.waveform {
         WaveformChoice::Sine => Waveform::Sine,
@@ -647,17 +647,17 @@ fn print_missing_report(report: &[String]) {
 
 /// The I/O shell. `detector_port` is the serialosc(-mock) port to discover grids on;
 /// `no_audio` skips the cpal stream (headless / mock). Loops until STOP. Signal
-/// handling is installed by `run_from_config`, not here, so tests can call this
+/// handling is installed by `run_from_rig`, not here, so tests can call this
 /// directly and stop it by setting STOP.
 fn run(
-  config: &Config,
+  rig: &Rig,
   detector_port: u16,
   no_audio: bool,
   reload_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-  let s = resolve_settings(config)?;
+  let s = resolve_settings(rig)?;
   let num_grids = s.grids.len();
-  // The hot-reloadable parameters ('r' + Enter re-reads the config; see `Live`).
+  // The hot-reloadable parameters ('r' + Enter re-reads the rig; see `Live`).
   let live = Arc::new(Live {
     generation: AtomicU64::new(0),
     params: Mutex::new(live_params(&s)),
@@ -678,7 +678,7 @@ fn run(
         }
       }
     });
-    println!("press 'r' + Enter to hot-reload the config (amplitude / timbres / tuning / pluck / slide / trail / distortion curve).");
+    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve).");
   }
 
   // Discover whatever grids are actually connected and assign each configured grid a
@@ -706,7 +706,7 @@ fn run(
   // surface -- it loads whenever its SoftStep is present, even with no grids connected
   // (TODO.org: "the softstep ... should load ... even if there are no monomes
   // present"). The probe opens nothing.
-  let softstep_present = s.has_drums && drumkit_runtime::any_softstep_present(config);
+  let softstep_present = s.has_drums && drumkit_runtime::any_softstep_present(rig);
 
   // Decide what loads and what is skipped for a missing dependency (reported in red).
   let plan = plan_bringup(&s.grids, &present, s.has_drums, softstep_present);
@@ -810,7 +810,7 @@ fn run(
     Arc::new(Mutex::new((0..num_grids).map(|_| AccreteState::new()).collect()));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
 
-  // Bring up the drumkit alongside the grids, if the config declares one. Consumed
+  // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
   // mode on drop. We own the signal handling, so the tether session is unarmed. The
   // pedal hook is the feet-accrete mirror: pedals 1/2/3 drive the older (monobright)
@@ -835,7 +835,7 @@ fn run(
       audio.sample_rate,
     );
     Some(drumkit_runtime::start_with_hook(
-      config,
+      rig,
       drumkit_runtime::tether::session(),
       Some(hook),
     )?)
@@ -1879,9 +1879,9 @@ fn install_signals() {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::config::load_named_config;
+  use midi_pulse::rig::load_named_rig;
 
-  /// Serialises the mock-rig tests: they share the global `STOP` and the mock config's
+  /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1889,7 +1889,7 @@ mod tests {
   fn selector_writes_the_controlled_grids_timbre_slot() {
     // A grid's selector re-timbres the grid at `controls_index`, leaving every other
     // entry untouched. Wire grid 0's strip to grid 1 (cross-control is still legal
-    // config even though the current rigs self-control): a press on grid 0's cell 3
+    // rig even though the current rigs self-control): a press on grid 0's cell 3
     // must select slot 3 for grid 1 only.
     let selected = Arc::new(Mutex::new(vec![DEFAULT_SLOT; 2]));
     set_slot(&selected, 1, 3); // grid 0's selector -> grid 1
@@ -1936,8 +1936,8 @@ mod tests {
 
   #[test]
   fn resolves_two_grids_with_self_control() {
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums").expect("config loads");
-    let s = resolve_settings(&config).expect("resolves without hardware");
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    let s = resolve_settings(&rig).expect("resolves without hardware");
     assert_eq!(s.grids.len(), 2, "two play grids");
     assert!(s.has_drums, "the KMSS drumkit is present");
     // Each grid's selector controls its OWN grid (per TODO/misc.org, 2026-07; the
@@ -1968,18 +1968,18 @@ mod tests {
     assert!((s.slide_duration_secs - 0.1).abs() < 1e-6);
     // The sink's distortion curve flows into the settings.
     assert_eq!(s.distortion, Distortion { scale: 1.0, shape: 2.0 });
-    // The `[surfaces]` table flows into the settings (this config asks for 9 trails).
+    // The `[surfaces]` table flows into the settings (this rig asks for 9 trails).
     assert_eq!(s.trail_clobber_radius, 27, "trail_clobber_radius from [surfaces]");
     assert_eq!(s.trails_max, 9, "trails_max from [surfaces]");
   }
 
   #[test]
   fn surfaces_defaults_when_table_absent() {
-    // A config that declares no `[surfaces]` table falls back to the built-in defaults
+    // A rig that declares no `[surfaces]` table falls back to the built-in defaults
     // (1/27 octave, 7 trails), so omitting it changes nothing.
-    let config = load_named_config("monome-edo-sawwave").expect("config loads");
-    assert!(config.surfaces.is_none(), "no [surfaces] table declared");
-    let s = config.surfaces.unwrap_or_default();
+    let rig = load_named_rig("monome-edo-sawwave").expect("rig loads");
+    assert!(rig.surfaces.is_none(), "no [surfaces] table declared");
+    let s = rig.surfaces.unwrap_or_default();
     assert_eq!(s.trail_clobber_radius, 27, "default radius is 1/27 octave");
     assert_eq!(s.trails_max, 7, "default trail length is 7");
   }
@@ -2079,23 +2079,23 @@ mod tests {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+    let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true, None) {
+        if let Err(e) = run(&rig, detector_port, true, None) {
           eprintln!("mock surfaces run error: {e}");
         }
       })
     };
 
-    let a = rig.grid(0);
-    let b = rig.grid(1);
+    let a = mock.grid(0);
+    let b = mock.grid(1);
     let secs = Duration::from_secs;
     // Both grids register and get a first repaint.
     assert!(
@@ -2151,22 +2151,22 @@ mod tests {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Only grid "a" exists; the 2-monome mock rig config wants two.
-    let rig = MockRig::start(0, &[GridSpec::grid_256("a")]).expect("start one mock grid");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+    // Only grid "a" exists; the 2-monome mock rig rig wants two.
+    let mock = MockRig::start(0, &[GridSpec::grid_256("a")]).expect("start one mock grid");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true, None) {
+        if let Err(e) = run(&rig, detector_port, true, None) {
           eprintln!("mock one-grid run error: {e}");
         }
       })
     };
 
-    let a = rig.grid(0);
+    let a = mock.grid(0);
     let secs = Duration::from_secs;
     // The present grid registers and repaints even though its sibling is absent.
     assert!(wait_until(secs(5), || a.registered()), "the present grid registers");
@@ -2185,16 +2185,16 @@ mod tests {
   }
 
   #[test]
-  fn adopt_config_swaps_the_live_parameters_and_bumps_the_generation() {
-    // Start from the mock config, then "edit" it (amplitude, tuning, a timbre, the
+  fn adopt_rig_swaps_the_live_parameters_and_bumps_the_generation() {
+    // Start from the mock rig, then "edit" it (amplitude, tuning, a timbre, the
     // slide knobs) and reload: the live params reflect every change and the
     // generation moves, so grid threads and the audio callback pick them up.
-    let base = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("config loads");
+    let base = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("rig loads");
     let s = resolve_settings(&base).expect("resolves");
     let live = Live { generation: AtomicU64::new(0), params: Mutex::new(live_params(&s)) };
 
     let source = std::fs::read_to_string(
-      midi_pulse::config::mock_config_dir().join("2-monomes_58-8-1_kmss-drums-mock.toml"),
+      midi_pulse::rig::mock_rig_dir().join("2-monomes_58-8-1_kmss-drums-mock.toml"),
     )
     .expect("read mock toml");
     let edited = source
@@ -2203,8 +2203,8 @@ mod tests {
       .replace("x_step = 8", "x_step = 7")
       .replace(WAVE_SQUARE, "waveform = \"square\"\nfm_depth_cents = 25.0")
       .replace("slide_duration_ms = 100", "slide_duration_ms = 250");
-    let config = midi_pulse::config::parse_config(&edited).expect("edited config parses");
-    adopt_config(&config, &live).expect("adopts");
+    let rig = midi_pulse::rig::parse_rig(&edited).expect("edited rig parses");
+    adopt_rig(&rig, &live).expect("adopts");
 
     assert_eq!(live.generation.load(Ordering::SeqCst), 1, "generation bumped");
     let p = live.params.lock().unwrap();
@@ -2310,23 +2310,23 @@ mod tests {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+    let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true, None) {
+        if let Err(e) = run(&rig, detector_port, true, None) {
           eprintln!("mock polyrhythm run error: {e}");
         }
       })
     };
 
-    let a = rig.grid(0);
-    let b = rig.grid(1);
+    let a = mock.grid(0);
+    let b = mock.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
     // At rest: tap (15,0) and the factor cells glow dim; no blink yet.
@@ -2383,23 +2383,23 @@ mod tests {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+    let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true, None) {
+        if let Err(e) = run(&rig, detector_port, true, None) {
           eprintln!("mock accrete run error: {e}");
         }
       })
     };
 
-    let a = rig.grid(0);
-    let b = rig.grid(1);
+    let a = mock.grid(0);
+    let b = mock.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
 
@@ -2470,23 +2470,23 @@ mod tests {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let rig = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
+    let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true, None) {
+        if let Err(e) = run(&rig, detector_port, true, None) {
           eprintln!("mock distortion run error: {e}");
         }
       })
     };
 
-    let a = rig.grid(0);
-    let b = rig.grid(1);
+    let a = mock.grid(0);
+    let b = mock.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
     // Distortion (0,1), slide (1,1), mono (1,2), and feet-accrete (0,14) are all
@@ -2530,23 +2530,23 @@ mod tests {
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Grid 0's id is the classic Series-256 format -> detected monobright; grid 1's is the
     // newer format -> varibright. (Both report type "monome 256"; only the id differs.)
-    let rig = MockRig::start(0, &[GridSpec::grid_256("m256-9"), GridSpec::grid_256("m0000777")])
+    let mock = MockRig::start(0, &[GridSpec::grid_256("m256-9"), GridSpec::grid_256("m0000777")])
       .expect("start mock rig");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("2-monomes_58-8-1_kmss-drums-mock").expect("mock config loads");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true, None) {
+        if let Err(e) = run(&rig, detector_port, true, None) {
           eprintln!("mock monobright run error: {e}");
         }
       })
     };
 
-    let mono = rig.grid(0); // Series-256 serial -> fake-dim by flashing.
-    let vari = rig.grid(1); // newer serial -> native levels.
+    let mono = mock.grid(0); // Series-256 serial -> fake-dim by flashing.
+    let vari = mock.grid(1); // newer serial -> native levels.
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || mono.registered() && vari.registered()), "both grids register");
 

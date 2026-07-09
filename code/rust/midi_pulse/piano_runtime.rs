@@ -1,4 +1,4 @@
-use crate::config::{PianoRegionActionConfig, PianoRegionConfig};
+use crate::rig::{PianoRegionActionRig, PianoRegionRig};
 use crate::mapping::PianoMapper;
 use crate::{midi, piano_transform};
 use std::collections::HashMap;
@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug)]
 pub struct PianoRuntime {
   mapper: PianoMapper,
-  regions: Vec<PianoRegionConfig>,
+  regions: Vec<PianoRegionRig>,
   held_offsets: HashMap<u8, i16>,
   ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>>,
 }
 
 impl PianoRuntime {
-  pub fn new(mapper: PianoMapper, regions: Vec<PianoRegionConfig>) -> Self {
+  pub fn new(mapper: PianoMapper, regions: Vec<PianoRegionRig>) -> Self {
     PianoRuntime {
       mapper,
       regions,
@@ -33,7 +33,7 @@ impl PianoRuntime {
     };
 
     match region.action {
-      PianoRegionActionConfig::EmitNotes => {
+      PianoRegionActionRig::EmitNotes => {
         if midi::is_note_on(message) {
           self.apply_held_offsets_to_mapper(note);
         }
@@ -41,14 +41,14 @@ impl PianoRuntime {
           self.mapper.instruction(original_note)
         })
       }
-      PianoRegionActionConfig::HeldOffsetControl => {
+      PianoRegionActionRig::HeldOffsetControl => {
         self.handle_held_offset_control(message, region.zero_note.expect("validated zero_note"));
         vec![]
       }
     }
   }
 
-  fn region_for_note(&self, note: u8) -> Option<PianoRegionConfig> {
+  fn region_for_note(&self, note: u8) -> Option<PianoRegionRig> {
     self
       .regions
       .iter()
@@ -86,14 +86,14 @@ mod tests {
     PianoRuntime::new(
       PianoMapper::TwelveN(TwelveNMapping::new(21, -5, 1, 28, 6)),
       vec![
-        PianoRegionConfig {
+        PianoRegionRig {
           range: [0, 96],
-          action: PianoRegionActionConfig::EmitNotes,
+          action: PianoRegionActionRig::EmitNotes,
           zero_note: None,
         },
-        PianoRegionConfig {
+        PianoRegionRig {
           range: [97, 108],
-          action: PianoRegionActionConfig::HeldOffsetControl,
+          action: PianoRegionActionRig::HeldOffsetControl,
           zero_note: Some(102),
         },
       ],

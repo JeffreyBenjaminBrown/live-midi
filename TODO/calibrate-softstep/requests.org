@@ -4,8 +4,8 @@ that seems to show pad presses even when no sound would happen.
 I want to beef up that program.
 
 Let's move it into code/python/softstep/meter/main.py.
-Let's also give it a config.toml file, in the same folder.
-While the program runs, pressing 'r' should 'r'eload the config.
+Let's also give it a rig.toml file, in the same folder.
+While the program runs, pressing 'r' should 'r'eload the rig.
 
 The meter should create a single .csv file in meter/logs/
 for each 'event group'.

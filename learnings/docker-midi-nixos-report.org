@@ -40,7 +40,7 @@ docker run --name "$CONTAINER_NAME" -it -d \
 - Container applications using JACK will inherit these settings through the shared Pipewire runtime
 
 ** Note on ALSA sequencer:
-Your config has ~alsaSeq.enable = false~, which disables the ALSA sequencer. This means:
+Your rig has ~alsaSeq.enable = false~, which disables the ALSA sequencer. This means:
 - ALSA MIDI applications won't have access to the sequencer API
 - You'll need to use JACK MIDI applications in the container, or applications that can read/write raw ALSA MIDI devices
-- If you need ALSA sequencer support, consider enabling it in your NixOS config, or run ~a2jmidid~ on the host to bridge ALSA MIDI to JACK
+- If you need ALSA sequencer support, consider enabling it in your NixOS rig, or run ~a2jmidid~ on the host to bridge ALSA MIDI to JACK

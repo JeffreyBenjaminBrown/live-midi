@@ -88,12 +88,12 @@ This file documents the *layout* -- where every window sits and how the two grid
 look folded and unfolded. For the meaning of the timbre parameters, the looper's
 own mechanics, and the design rationale, follow the authoritative documents listed
 at the end (=6_plan.org=, =7_layout.org=, =monome-looper-58-8-1.org=). A future
-writer wanting to build a config like this one should read those first, then use
+writer wanting to build a rig like this one should read those first, then use
 this file as a worked example of the result.
 
 ** what's new versus the plain looper
 
-This config is the plain looper (=monome-looper-58-8-1.toml=, documented in
+This rig is the plain looper (=monome-looper-58-8-1.toml=, documented in
 =monome-looper-58-8-1.org=) with two =timbre_editor= windows added. Everything the
 sibling doc says about *recording*, *remap*, *copy*, *slots*, and the *loop
 display* still holds -- read it for those. Here we add only:
@@ -189,7 +189,7 @@ cells are inert -- shown blank above. Its *arm* (x5) and slot cells (x8..15) wor
 ** details
 
 The detail tree below goes: shared resources first, then each grid's windows in
-config order (which is paint order -- later windows occlude earlier ones).
+rig order (which is paint order -- later windows occlude earlier ones).
 
 *** shared resources
 
@@ -218,7 +218,7 @@ would reach only 0.0225.)
 
 =family = "sin_to_square"=. The AM-shape row sweeps the per-note morph *position*
 within this family (sine at one end, square at the other). The family is chosen
-once here, config-wide (6_plan 2.5); =tri_to_square= is the other option.
+once here, rig-wide (6_plan 2.5); =tri_to_square= is the other option.
 
 **** =[looper]= -- the looper scalars
 
@@ -248,8 +248,8 @@ from program start. It drives three things on the loops grid:
 **** =[[monomes]]= -- the two grids
 
 =edo= (port 9000, prefix =/looper-edo=) and =loops= (port 9001, prefix
-=/looper-loops=), both =select.size = [16,16]=. The runtime hands each config
-monome a distinct unclaimed physical grid in config order; which physical grid is
+=/looper-loops=), both =select.size = [16,16]=. The runtime hands each rig
+monome a distinct unclaimed physical grid in rig order; which physical grid is
 which doesn't matter.
 
 *** grid 1 -- edo
@@ -269,7 +269,7 @@ a parameter stamps it onto every selected note (works on a stopped loop); with n
 selection on a *playing* loop, a held parameter rewrites each note-on as the
 playhead reaches it. The per-row range mappings are spelled out explicitly in the
 =.toml= (see [[* the timbre editor in detail]]); they are the 6_plan 5 defaults,
-written out to exercise the explicit-range config path rather than relying on
+written out to exercise the explicit-range rig path rather than relying on
 defaults.
 
 **** =edo-shift-pad= (=edo_shift_pad=, rect ~[13,14,15,15]~)
@@ -291,7 +291,7 @@ at the grid bottom, so it is always reachable.
 
 *** grid 2 -- loops
 
-Config order is: live editor, then the looper stack (slots, transport, copy/undo/
+Rig order is: live editor, then the looper stack (slots, transport, copy/undo/
 remap, display). The =.toml= rects for the stack are the *unfolded* positions; the
 runtime reflows them up by 6 when the editor folds (7_layout, =state.rs::reflow_loops=).
 
@@ -307,7 +307,7 @@ the *anchor* the looper stack reflows beneath.
 
 These windows are unchanged from =monome-looper-58-8-1.toml= except that they sit
 *lower* (to clear the editor) and *move together* on fold/unfold. Rects below are
-the *unfolded* (config) positions; folded, subtract 6 from every ~y~ (the display's
+the *unfolded* (rig) positions; folded, subtract 6 from every ~y~ (the display's
 bottom stays at 15).
 
 ***** =loop-slots= (=loop_slots=, rect ~[0,7,15,8]~)
@@ -357,7 +357,7 @@ sustain(6) | save-undo(7) | timbre slots (8..15)=. On a 16-wide editor that is 8
 fixed cells + 8 slots. =sustain= and =save-undo= are active only on the *loop*
 target (the edo editor); they are inert on the *live* target (the loops editor).
 
-*** the value rows (unfolded, local rows 1-6) and their config ranges
+*** the value rows (unfolded, local rows 1-6) and their rig ranges
 
 Each row's mapping is *tagged* in the =.toml=. =log_range= fixes the endpoints and
 scales the steps to the width; =log_factor= fixes the *bottom* and lets the *top*
@@ -404,7 +404,7 @@ grids and stops audio. If a grid floods events, see =RUNTIME-NOTES.org=.
 ** authoritative documents
 
 This =.org= describes *layout*. The decisions behind it -- semantics, mappings, the
-crowding problem -- live elsewhere. To build something like this config, read these,
+crowding problem -- live elsewhere. To build something like this rig, read these,
 in this order:
 
 - =TODO/DONE/timbre-manip/6_plan.org= -- *the definitive timbre plan.* Authoritative
@@ -412,20 +412,20 @@ in this order:
   loop editing (2.3/2.4), the synth/voice model and the AM/FM/shape DSP (2.5), the
   parameter-row idiom and the tagged range mappings (2.6), fold/unfold and the
   occlusion-vs-reflow choice (2.7), the save-undo button (2.8), the LED scheme
-  (2.9), and a config sketch (section 5). It supersedes =3_plan.org= / =5_plan.org=
+  (2.9), and a rig sketch (section 5). It supersedes =3_plan.org= / =5_plan.org=
   in the same directory; if a *decision* changes, change it there and re-distil.
 - =TODO/DONE/timbre-manip/7_layout.org= -- *the layout decision.* Why the edo grid
   can occlude but the loops grid must reflow, the window inventories for both grids,
-  and the folded/unfolded loops layout this config implements. Start here to
+  and the folded/unfolded loops layout this rig implements. Start here to
   understand the loops-monome reflow.
-- =configs/monome-looper-58-8-1.org= -- *the plain looper, documented.* Authoritative
-  for the looper mechanics this config inherits unchanged: recording, remap (fine /
+- =rigs/monome-looper-58-8-1.org= -- *the plain looper, documented.* Authoritative
+  for the looper mechanics this rig inherits unchanged: recording, remap (fine /
   group transpose), copy, slots, the loop display and its pickers, the shift pad.
 - =TODO/DONE/monome-looper/6_plan.org= -- the looper's own build plan (the surface
   the timbre feature extends).
 - Runtime source, =code/rust/midi_pulse/looper_runtime/=: =timbre_editor.rs= (the
   editor layout + radio mapping), =state.rs= (=reflow_loops= -- the 6-row stack
   shift, and how presses/LEDs route), =relayout.rs= (the relative-coordinate
-  resolver, 6_plan 4.2), =config.rs= for the exact =.toml= field names.
-- =configs/README.org= and =configs/RUNTIME-NOTES.org= -- running the binary and
+  resolver, 6_plan 4.2), =rig.rs= for the exact =.toml= field names.
+- =rigs/README.org= and =rigs/RUNTIME-NOTES.org= -- running the binary and
   recovering a misbehaving monome.

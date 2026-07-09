@@ -8,7 +8,7 @@ use crate::voices::BlockRenderer;
 use crate::windows::{set_led, window_for_cell};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use midi_pulse::config::{Config, MonomeWindowConfig, SinkConfig};
+use midi_pulse::rig::{Rig, MonomeWindowRig, SinkRig};
 use midi_pulse::monome;
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
@@ -17,12 +17,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  let edo_window = config
+pub fn run_from_rig(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
+  let edo_window = rig
     .monome_windows
     .iter()
     .find_map(|window| {
-      if let MonomeWindowConfig::EdoNoteGrid {
+      if let MonomeWindowRig::EdoNoteGrid {
         monome,
         tuning,
         sink,
@@ -34,23 +34,23 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
         None
       }
     })
-    .ok_or("sawwave config requires an edo_note_grid window")?;
-  let monome_config = config
+    .ok_or("sawwave rig requires an edo_note_grid window")?;
+  let monome_rig = rig
     .monomes
     .iter()
     .find(|monome| monome.id == *edo_window.0)
     .ok_or("edo_note_grid references an unknown monome")?;
-  let tuning = config
+  let tuning = rig
     .tunings
     .iter()
     .find(|tuning| tuning.id == *edo_window.1)
     .ok_or("edo_note_grid references an unknown tuning")?;
-  let sink = config
+  let sink = rig
     .sinks
     .iter()
     .find(|sink| sink.id() == edo_window.2.as_str())
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSynth {
+  let SinkRig::CpalSynth {
     sample_rate,
     buffer_frames,
     amplitude,
@@ -65,10 +65,10 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
   else {
     return Err("sawwave runtime requires a cpal_synth sink".into());
   };
-  let grid_size = monome_config.select.size.unwrap_or([16, 16]);
+  let grid_size = monome_rig.select.size.unwrap_or([16, 16]);
   run(RuntimeSettings {
-    prefix: monome_config.prefix.clone(),
-    listen_port: monome_config.listen_port,
+    prefix: monome_rig.prefix.clone(),
+    listen_port: monome_rig.listen_port,
     grid_w: grid_size[0],
     grid_h: grid_size[1],
     fund: tuning.fundamental_hz,
@@ -84,8 +84,8 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
     accretion_level: *accretion_level,
     sustain_level: *sustain_level,
     decay_secs: *decay_secs,
-    windows: config_windows(&config.monome_windows),
-    echo_input: config.echo_input,
+    windows: rig_windows(&rig.monome_windows),
+    echo_input: rig.echo_input,
   })
 }
 
@@ -109,7 +109,7 @@ struct RuntimeSettings {
   decay_secs: f32,
   windows: Vec<Window>,
   /// Echo each fingered note to stderr (`[surfaces].echo_input` / top-level
-  /// `echo_input`). Off by default; see the config field's doc.
+  /// `echo_input`). Off by default; see the rig field's doc.
   echo_input: bool,
 }
 
@@ -336,13 +336,13 @@ fn start_audio_stream(
   let default_channels = default_cfg.channels();
   let supported = device
     .supported_output_configs()?
-    .filter(|config| {
-      config.sample_format() == SampleFormat::F32
-        && config.min_sample_rate().0 <= requested_sample_rate
-        && config.max_sample_rate().0 >= requested_sample_rate
+    .filter(|rig| {
+      rig.sample_format() == SampleFormat::F32
+        && rig.min_sample_rate().0 <= requested_sample_rate
+        && rig.max_sample_rate().0 >= requested_sample_rate
     })
-    .max_by_key(|config| (config.channels() == default_channels, config.channels()))
-    .map(|config| config.with_sample_rate(cpal::SampleRate(requested_sample_rate)))
+    .max_by_key(|rig| (rig.channels() == default_channels, rig.channels()))
+    .map(|rig| rig.with_sample_rate(cpal::SampleRate(requested_sample_rate)))
     .unwrap_or(default_cfg);
   let sample_format = supported.sample_format();
   if sample_format != SampleFormat::F32 {
@@ -363,7 +363,7 @@ fn start_audio_stream(
   let cb_count_audio = Arc::clone(&cb_count);
   let sample_count_audio = Arc::clone(&sample_count);
   let peak_bits_audio = Arc::clone(&peak_bits);
-  // Honors the config `oversample` (default 1 = no change). This runtime has no AM/FM
+  // Honors the rig `oversample` (default 1 = no change). This runtime has no AM/FM
   // and its oscillators are PolyBLEP-band-limited, so 1 is the right default; the knob
   // exists for parity and future modulation.
   let mut renderer = BlockRenderer::new(oversample);
@@ -400,30 +400,30 @@ fn start_audio_stream(
   })
 }
 
-fn config_windows(config_windows: &[MonomeWindowConfig]) -> Vec<Window> {
+fn rig_windows(rig_windows: &[MonomeWindowRig]) -> Vec<Window> {
   let mut edo = None;
   let mut controls_top = None;
   let mut controls_bottom = None;
 
-  for window in config_windows {
+  for window in rig_windows {
     match window {
-      MonomeWindowConfig::EdoNoteGrid { .. } => {
+      MonomeWindowRig::EdoNoteGrid { .. } => {
         edo = Some(rect_to_window(WindowId::Edo, window.rect()));
       }
-      MonomeWindowConfig::ChordWipeButton { .. }
-      | MonomeWindowConfig::ChordAccreteToggle { .. }
-      | MonomeWindowConfig::ChordEmitModeToggle { .. }
-      | MonomeWindowConfig::ChordTargetButton { .. } => {
+      MonomeWindowRig::ChordWipeButton { .. }
+      | MonomeWindowRig::ChordAccreteToggle { .. }
+      | MonomeWindowRig::ChordEmitModeToggle { .. }
+      | MonomeWindowRig::ChordTargetButton { .. } => {
         merge_window_rect(&mut controls_top, WindowId::ControlsTop, window.rect());
       }
-      MonomeWindowConfig::ChordSlotButtons { .. } => {
+      MonomeWindowRig::ChordSlotButtons { .. } => {
         controls_bottom = Some(rect_to_window(WindowId::ControlsBottom, window.rect()));
       }
       _ => {}
     }
   }
 
-  // The imported sawwave compositor is front-to-back. Config files are
+  // The imported sawwave compositor is front-to-back. Rig files are
   // back-to-front, and the unbundled chord controls are composed into
   // the legacy coarse windows here.
   let mut windows = vec![];

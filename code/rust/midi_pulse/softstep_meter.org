@@ -26,13 +26,13 @@ its 4 sensors, 0..508, same de-stick as the decoder) with a peak-hold marker, th
 last fired velocity, and the resolved gain. A detected hit also appends a line to
 a small recent-events log at the bottom (e.g. =pad 1: vel 100 (gain 0.891)=).
 
-*Pad 3 is wired as DITTO*, mirroring =configs/kmss-drumkit.toml=\='s pedal 3 ("the
+*Pad 3 is wired as DITTO*, mirroring =rigs/kmss-drumkit.toml=\='s pedal 3 ("the
 gap between the feet"): struck, it repeats the last REAL pad's hit at the ditto
 press's OWN velocity, and a ditto press never itself becomes "the last hit" (so
 pad, ditto, ditto repeats the ORIGINAL, not the ditto). See =resolve_fire= in
 =softstep_meter.rs=, which mirrors =drumkit_runtime::mod::resolve_fire= /
 =PadKind::Ditto= / =LastHit= -- replicated rather than imported, since the real
-=mod.rs= is tightly coupled to a full =Config= + sample bank this meter doesn't
+=mod.rs= is tightly coupled to a full =Rig= + sample bank this meter doesn't
 have.
 
 * what it does NOT do
@@ -69,5 +69,5 @@ resolution always go through the real =TetherDecoder=, never this shadow.
 - =code/python/softstep/meter/main.py= -- the original Python meter (still
   maintained, now with a startup banner pointing here).
 - =learnings/keith-mcmillen-softstep.org= -- the device protocol.
-- =code/rust/configs/kmss-drumkit.org= -- the drumkit config this meter mirrors
+- =code/rust/rigs/kmss-drumkit.org= -- the drumkit rig this meter mirrors
   (pedal 3 = ditto).

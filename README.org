@@ -1,4 +1,4 @@
-* using this [[./code/rust/configs/README.org][README]] lately
+* using this [[./code/rust/rigs/README.org][README]] lately
 * if my sound dies
 systemctl --user restart serialoscd
 

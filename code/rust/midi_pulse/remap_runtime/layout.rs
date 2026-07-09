@@ -1,4 +1,4 @@
-use super::config::RemapConfig;
+use super::rig::RemapRig;
 use super::record::RecordControl;
 use super::scale::ScaleControl;
 use super::{MAP_W, PREIMAGE_ROW_Y};
@@ -21,23 +21,23 @@ pub(crate) struct GridRect {
   pub(crate) y1: i32,
 }
 
-pub(crate) fn grid_step(config: &RemapConfig, x: i32, y: i32) -> i16 {
-  ((config.x_step as i32 * x + config.y_step as i32 * y).rem_euclid(config.edo as i32)) as i16
+pub(crate) fn grid_step(rig: &RemapRig, x: i32, y: i32) -> i16 {
+  ((rig.x_step as i32 * x + rig.y_step as i32 * y).rem_euclid(rig.edo as i32)) as i16
 }
 
-pub(crate) fn map_rect(config: &RemapConfig) -> GridRect {
-  let w = MAP_W.min(config.grid_w).max(0);
+pub(crate) fn map_rect(rig: &RemapRig) -> GridRect {
+  let w = MAP_W.min(rig.grid_w).max(0);
   let y0 = PREIMAGE_ROW_Y + 1;
   GridRect {
     x0: 0,
     y0,
     x1: w,
-    y1: config.grid_h.max(y0),
+    y1: rig.grid_h.max(y0),
   }
 }
 
-pub(crate) fn edo_local_cell(config: &RemapConfig, x: i32, y: i32) -> Option<(i32, i32)> {
-  let rect = map_rect(config);
+pub(crate) fn edo_local_cell(rig: &RemapRig, x: i32, y: i32) -> Option<(i32, i32)> {
+  let rect = map_rect(rig);
   if x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1 {
     Some((x - rect.x0, y - rect.y0))
   } else {
@@ -45,31 +45,31 @@ pub(crate) fn edo_local_cell(config: &RemapConfig, x: i32, y: i32) -> Option<(i3
   }
 }
 
-pub(crate) fn undo_cell(config: &RemapConfig) -> Option<(i32, i32)> {
-  if config.grid_w <= 0 || config.grid_h <= 0 {
+pub(crate) fn undo_cell(rig: &RemapRig) -> Option<(i32, i32)> {
+  if rig.grid_w <= 0 || rig.grid_h <= 0 {
     None
   } else {
-    Some((config.grid_w - 1, config.grid_h - 1))
+    Some((rig.grid_w - 1, rig.grid_h - 1))
   }
 }
 
-// Cells come from the TOML config (see `[[monome_windows]] kind =
+// Cells come from the TOML rig (see `[[monome_windows]] kind =
 // "record_control"`) and are clamped to the discovered device size at use
 // time.
-pub(crate) fn record_control_cells(config: &RemapConfig) -> Vec<((i32, i32), RecordControl)> {
-  config
+pub(crate) fn record_control_cells(rig: &RemapRig) -> Vec<((i32, i32), RecordControl)> {
+  rig
     .record_controls
     .iter()
-    .filter(|(_, (x, y))| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
+    .filter(|(_, (x, y))| *x >= 0 && *x < rig.grid_w && *y >= 0 && *y < rig.grid_h)
     .map(|(control, cell)| (*cell, *control))
     .collect()
 }
 
-// The scale-slot cells in config (row-major) order. Returned in full so a
+// The scale-slot cells in rig (row-major) order. Returned in full so a
 // slot's index is stable regardless of device size; callers guard the device
 // bounds when rendering and dispatching.
-pub(crate) fn scale_slot_cells(config: &RemapConfig) -> Vec<(i32, i32)> {
-  let Some([x0, y0, x1, y1]) = config.scale_slots else {
+pub(crate) fn scale_slot_cells(rig: &RemapRig) -> Vec<(i32, i32)> {
+  let Some([x0, y0, x1, y1]) = rig.scale_slots else {
     return vec![];
   };
   let mut cells = Vec::new();
@@ -82,16 +82,16 @@ pub(crate) fn scale_slot_cells(config: &RemapConfig) -> Vec<(i32, i32)> {
 }
 
 // The store/empty arm-button cells from the TOML, clamped to the device size.
-pub(crate) fn scale_control_cells(config: &RemapConfig) -> Vec<((i32, i32), ScaleControl)> {
-  config
+pub(crate) fn scale_control_cells(rig: &RemapRig) -> Vec<((i32, i32), ScaleControl)> {
+  rig
     .scale_controls
     .iter()
-    .filter(|(_, (x, y))| *x >= 0 && *x < config.grid_w && *y >= 0 && *y < config.grid_h)
+    .filter(|(_, (x, y))| *x >= 0 && *x < rig.grid_w && *y >= 0 && *y < rig.grid_h)
     .map(|(control, cell)| (*cell, *control))
     .collect()
 }
 
 // The bounding rect of the scale-slot grid, if any, as ((x0, y0), (x1, y1)).
-pub(crate) fn scale_slots_rect(config: &RemapConfig) -> Option<((i32, i32), (i32, i32))> {
-  config.scale_slots.map(|[x0, y0, x1, y1]| ((x0, y0), (x1, y1)))
+pub(crate) fn scale_slots_rect(rig: &RemapRig) -> Option<((i32, i32), (i32, i32))> {
+  rig.scale_slots.map(|[x0, y0, x1, y1]| ((x0, y0), (x1, y1)))
 }

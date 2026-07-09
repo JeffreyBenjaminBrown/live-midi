@@ -1,9 +1,9 @@
 #+title: Two monomes (58-8-1) + KMSS drums -- reference
 #+date: 2026-07-01
 
-The =2-monomes_58-8-1_kmss-drums= config drives *three surfaces at once*: two
+The =2-monomes_58-8-1_kmss-drums= rig drives *three surfaces at once*: two
 16x16 monome grids as independent 58-EDO play surfaces, and the Keith McMillen
-SoftStep (KMSS) pedalboard as a velocity-sensitive drumkit. It is the first config
+SoftStep (KMSS) pedalboard as a velocity-sensitive drumkit. It is the first rig
 that *composes* what used to be three mutually-exclusive runtimes (the sawwave EDO
 grid, the looper's scroll pad, the drumkit) into one -- see the "surfaces runtime"
 in =code/rust/midi_pulse/surfaces_runtime/=.
@@ -13,7 +13,7 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
 
 * glossary
 
-- *surface* -- one of the three playable devices this config brings up at once: grid
+- *surface* -- one of the three playable devices this rig brings up at once: grid
   A, grid B, or the KMSS.
 - *play grid* -- a 16x16 monome, the whole grid a 58-EDO note surface (=x_step 8=,
   =y_step 1=, =fundamental_hz 80=). Each grid has its *own* voices and its *own*
@@ -27,7 +27,7 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   point strips across grids, but this rig no longer does). No AM/FM.
 - *(volume strip -- removed 2026-07.)* The old 12-cell fader right of the waveform
   strip is gone (misc.org "drop the amplitude row"); per-waveform loudness now lives
-  in the config's =[[timbres]] amplitude= (hot-reloadable with 'r'), and the master
+  in the rig's =[[timbres]] amplitude= (hot-reloadable with 'r'), and the master
   is the synth sink's =amplitude=. Cells 4..12 of the top row are play cells again;
   13..15 belong to the polyrhythm pad.
 - *trail* -- up to ~trails_max~ recently played *pitch classes* (octave-independent; 9
@@ -88,8 +88,8 @@ PipeWire (two JACK nodes in one process):
 pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
 #+end_src
 
-Needs *both* 16x16 grids connected (the runtime hands each config monome a distinct
-live grid in config order; it does not matter which physical grid is which) and the
+Needs *both* 16x16 grids connected (the runtime hands each rig monome a distinct
+live grid in rig order; it does not matter which physical grid is which) and the
 KMSS. On the host, connect audio with =./code/rust/connect-midi.sh= if needed. The
 drum WAVs resolve under the top-level =drum-samples/= folder (same as
 =kmss-drumkit=); that folder must be present in this worktree.
@@ -99,7 +99,7 @@ mode.
 
 A headless device-layer smoke (two virtual grids, no sound, no KMSS) runs as a unit
 test (=surfaces_runtime::tests::two_grids_run_against_mock_grids=) against the
-=2-monomes_58-8-1_kmss-drums-mock= rig config; see [[../../../MOCK-MONOME.org]].
+=2-monomes_58-8-1_kmss-drums-mock= rig rig; see [[../../../MOCK-MONOME.org]].
 
 * per-grid layout
 
@@ -167,7 +167,7 @@ With many dim cells lit at once the flash slows into mild flicker on the monobri
 
 * the waveform control (how to read it)
 
-Each grid's strip re-timbres its *own* grid. In the config this is the =controls=
+Each grid's strip re-timbres its *own* grid. In the rig this is the =controls=
 field of the =waveform_selector= window:
 
 #+begin_src toml
@@ -187,7 +187,7 @@ already held keep their waveform.
 Historical note: this rig originally *cross-controlled* (each strip set the OTHER
 grid, 6_plan-style "edit X on the not-X surface"); per =TODO/misc.org= (2026-07)
 the two-edo-grid rigs now self-control. The =controls= field still accepts any
-play grid, so cross-wiring remains a config choice, not a code change.
+play grid, so cross-wiring remains a rig choice, not a code change.
 
 * sustain ("accrete")
 

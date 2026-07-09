@@ -1,8 +1,8 @@
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiOutput};
-use midi_pulse::config::{
-  Config, InitialMapConfig, MonomeConfig, MonomeWindowConfig, PianoMappingConfig,
-  RecordControlKind, RemapIdiomConfig, ScaleControlKind,
+use midi_pulse::rig::{
+  Rig, InitialMapRig, MonomeRig, MonomeWindowRig, PianoMappingRig,
+  RecordControlKind, RemapIdiomRig, ScaleControlKind,
 };
 use midi_pulse::{midi, piano_transform};
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use std::{io, thread};
 
-mod config;
+mod rig;
 mod layout;
 mod midi_runtime;
 mod monome_runtime;
@@ -60,23 +60,23 @@ const WHITE_KEYS: [bool; 12] = [
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  if config.monome_windows.is_empty() {
+pub fn run_from_rig(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
+  if rig.monome_windows.is_empty() {
     return Err("remap runtime requires at least one [[monome_windows]]".into());
   }
-  let runtime_config = runtime_config(config)?;
-  let monome = remap_monome(config)?;
+  let runtime_rig = runtime_rig(rig)?;
+  let monome = remap_monome(rig)?;
   let listen_port = monome.map(|monome| monome.listen_port).unwrap_or(LISTEN_PORT);
   let prefix = monome
     .map(|monome| monome.prefix.clone())
     .unwrap_or_else(|| "/256-1-cable".to_string());
   let select_size = monome.and_then(|monome| monome.select.size);
-  run(runtime_config, listen_port, prefix, select_size)
+  run(runtime_rig, listen_port, prefix, select_size)
 }
 
-fn remap_monome(config: &Config) -> Result<Option<&MonomeConfig>, Box<dyn std::error::Error>> {
-  let Some(monome_id) = config.monome_windows.iter().find_map(|window| {
-    if let MonomeWindowConfig::RemappableUn12Grid { monome, .. } = window {
+fn remap_monome(rig: &Rig) -> Result<Option<&MonomeRig>, Box<dyn std::error::Error>> {
+  let Some(monome_id) = rig.monome_windows.iter().find_map(|window| {
+    if let MonomeWindowRig::RemappableUn12Grid { monome, .. } = window {
       Some(monome)
     } else {
       None
@@ -85,7 +85,7 @@ fn remap_monome(config: &Config) -> Result<Option<&MonomeConfig>, Box<dyn std::e
     return Ok(None);
   };
   Ok(Some(
-    config
+    rig
       .monomes
       .iter()
       .find(|monome| monome.id == *monome_id)
@@ -93,11 +93,11 @@ fn remap_monome(config: &Config) -> Result<Option<&MonomeConfig>, Box<dyn std::e
   ))
 }
 
-fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::error::Error>> {
-  let Some(piano) = &config.piano else {
+fn runtime_rig(rig: &Rig) -> Result<rig::RemapRig, Box<dyn std::error::Error>> {
+  let Some(piano) = &rig.piano else {
     return Err("remappable_un12 runtime requires [piano.mapping]".into());
   };
-  let PianoMappingConfig::RemappableUn12 {
+  let PianoMappingRig::RemappableUn12 {
     lowest_note,
     tuning,
     remap_idiom,
@@ -112,19 +112,19 @@ fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::e
     )
     .into());
   }
-  if *initial_map != InitialMapConfig::Even {
+  if *initial_map != InitialMapRig::Even {
     return Err("remap runtime currently supports initial_map = \"even\"".into());
   }
-  let tuning = config
+  let tuning = rig
     .tunings
     .iter()
     .find(|candidate| candidate.id == *tuning)
     .ok_or("remappable_un12 references an unknown tuning")?;
   let remap_idiom = match remap_idiom {
-    RemapIdiomConfig::Loose => config::RemapIdiom::Loose,
-    RemapIdiomConfig::Snap => config::RemapIdiom::Snap,
+    RemapIdiomRig::Loose => rig::RemapIdiom::Loose,
+    RemapIdiomRig::Snap => rig::RemapIdiom::Snap,
   };
-  let mut result = config::RemapConfig::new(
+  let mut result = rig::RemapRig::new(
     tuning.fundamental_hz,
     tuning.edo,
     tuning.x_step,
@@ -133,8 +133,8 @@ fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::e
     DEFAULT_GRID_W,
     DEFAULT_GRID_H,
   );
-  if let Some(grid_rect) = config.monome_windows.iter().find_map(|window| {
-    if let MonomeWindowConfig::RemappableUn12Grid { rect, .. } = window {
+  if let Some(grid_rect) = rig.monome_windows.iter().find_map(|window| {
+    if let MonomeWindowRig::RemappableUn12Grid { rect, .. } = window {
       Some(rect)
     } else {
       None
@@ -142,20 +142,20 @@ fn runtime_config(config: &Config) -> Result<config::RemapConfig, Box<dyn std::e
   }) {
     result = result.with_grid_size(grid_rect[2] - grid_rect[0] + 1, grid_rect[3] + 1);
   }
-  result = result.with_record_controls(record_control_cells_from_config(config));
-  result = result.with_scale_slots(scale_slots_rect_from_config(config));
-  result = result.with_scale_controls(scale_controls_from_config(config));
+  result = result.with_record_controls(record_control_cells_from_rig(rig));
+  result = result.with_scale_slots(scale_slots_rect_from_rig(rig));
+  result = result.with_scale_controls(scale_controls_from_rig(rig));
   Ok(result)
 }
 
-fn record_control_cells_from_config(
-  config: &Config,
+fn record_control_cells_from_rig(
+  rig: &Rig,
 ) -> Vec<(record::RecordControl, (i32, i32))> {
-  config
+  rig
     .monome_windows
     .iter()
     .filter_map(|window| match window {
-      MonomeWindowConfig::RecordControl { rect, control, .. } => {
+      MonomeWindowRig::RecordControl { rect, control, .. } => {
         Some((to_record_control(*control), (rect[0], rect[1])))
       }
       _ => None,
@@ -163,21 +163,21 @@ fn record_control_cells_from_config(
     .collect()
 }
 
-fn scale_slots_rect_from_config(config: &Config) -> Option<[i32; 4]> {
-  config.monome_windows.iter().find_map(|window| match window {
-    MonomeWindowConfig::ScaleSlots { rect, .. } => Some(*rect),
+fn scale_slots_rect_from_rig(rig: &Rig) -> Option<[i32; 4]> {
+  rig.monome_windows.iter().find_map(|window| match window {
+    MonomeWindowRig::ScaleSlots { rect, .. } => Some(*rect),
     _ => None,
   })
 }
 
-fn scale_controls_from_config(
-  config: &Config,
+fn scale_controls_from_rig(
+  rig: &Rig,
 ) -> Vec<(scale::ScaleControl, (i32, i32))> {
-  config
+  rig
     .monome_windows
     .iter()
     .filter_map(|window| match window {
-      MonomeWindowConfig::ScaleControl { rect, control, .. } => {
+      MonomeWindowRig::ScaleControl { rect, control, .. } => {
         Some((to_scale_control(*control), (rect[0], rect[1])))
       }
       _ => None,
@@ -205,16 +205,16 @@ fn to_record_control(kind: RecordControlKind) -> record::RecordControl {
 }
 
 fn run(
-  runtime_config: config::RemapConfig,
+  runtime_rig: rig::RemapRig,
   listen_port: u16,
   prefix: String,
   select_size: Option<[i32; 2]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   STOP_REQUESTED.store(false, Ordering::Relaxed);
   let state: Arc<Mutex<state::RemappableEdoState>> =
-    Arc::new(Mutex::new(state::RemappableEdoState::new(runtime_config.clone())));
+    Arc::new(Mutex::new(state::RemappableEdoState::new(runtime_rig.clone())));
   let sounding: Arc<Mutex<state::SoundingPitchCounts>> =
-    Arc::new(Mutex::new(state::SoundingPitchCounts::new(runtime_config.edo)));
+    Arc::new(Mutex::new(state::SoundingPitchCounts::new(runtime_rig.edo)));
   let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
     Arc::new(Mutex::new(HashMap::new()));
   let recorder: Arc<Mutex<record::RecordRuntime>> =
@@ -300,7 +300,7 @@ fn run(
   });
 
   install_sigint_handler();
-  print_startup_message(&runtime_config);
+  print_startup_message(&runtime_rig);
   let (quit_tx, quit_rx): (mpsc::Sender<()>, mpsc::Receiver<()>) = mpsc::channel();
   thread::spawn(move || {
     let mut input = String::new();
@@ -328,7 +328,7 @@ fn install_sigint_handler() {
   }
 }
 
-fn print_startup_message(config: &config::RemapConfig) {
-  println!("{}-EDO remappable un-12 runtime started", config.edo);
+fn print_startup_message(rig: &rig::RemapRig) {
+  println!("{}-EDO remappable un-12 runtime started", rig.edo);
   println!("Press Enter to exit...");
 }

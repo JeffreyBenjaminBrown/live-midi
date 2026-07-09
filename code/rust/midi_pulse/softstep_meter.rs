@@ -10,7 +10,7 @@
 //!
 //! Displays a live pressure bar per pad (sum of its 4 sensors, 0..508) with a
 //! peak-hold marker, and on every detected hit shows the pad, resolved velocity and
-//! gain. Pad 3 ("the gap between the feet", mirroring configs/kmss-drumkit.toml) is
+//! gain. Pad 3 ("the gap between the feet", mirroring rigs/kmss-drumkit.toml) is
 //! wired as DITTO: struck, it repeats the last REAL pad's hit at the ditto press's
 //! OWN velocity (pad, ditto, ditto repeats the ORIGINAL, not the ditto -- see
 //! `resolve_fire`, which mirrors `drumkit_runtime::mod::resolve_fire`).
@@ -28,7 +28,7 @@
 mod decode;
 // `tether::session()` (an alternate constructor for a host runtime that owns its own
 // signal handling) is unused here -- this meter is standalone, so it uses `arm()`
-// instead, like the drumkit runtime's own standalone path (`run_from_config`).
+// instead, like the drumkit runtime's own standalone path (`run_from_rig`).
 #[path = "drumkit_runtime/tether.rs"]
 #[allow(dead_code)]
 mod tether;
@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputPort};
 
-use midi_pulse::config::{drum_samples_dir, load_softstep_params, SoftstepParams};
+use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
 use decode::{collect_control_changes, gain_from_velocity, DrumEvent, TetherDecoder, NUM_PADS};
 
@@ -57,7 +57,7 @@ use decode::{collect_control_changes, gain_from_velocity, DrumEvent, TetherDecod
 const LABEL_BASE: [(u8, u8); NUM_PADS] =
   [(1, 44), (2, 52), (3, 60), (4, 68), (5, 76), (6, 40), (7, 48), (8, 56), (9, 64), (0, 72)];
 
-/// The pad wired as ditto, mirroring configs/kmss-drumkit.toml's pedal 3 ("the gap
+/// The pad wired as ditto, mirroring rigs/kmss-drumkit.toml's pedal 3 ("the gap
 /// between the feet"): struck, it repeats the last REAL pad's hit at ITS OWN
 /// velocity.
 const DITTO_LABEL: u8 = 3;
@@ -90,7 +90,7 @@ fn pad_kind(label: u8) -> PadKind {
 }
 
 /// The most recently played REAL pad's label + its static gain trim. The meter
-/// carries no per-pad config, so every real pad's trim is `REAL_GAIN`. Mirrors
+/// carries no per-pad rig, so every real pad's trim is `REAL_GAIN`. Mirrors
 /// `drumkit_runtime::mod::LastHit` (minus the sample payload).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LastHit {
@@ -98,7 +98,7 @@ struct LastHit {
   gain: f32,
 }
 
-/// The meter's flat per-pad gain trim (no config.toml equivalent here, unlike the
+/// The meter's flat per-pad gain trim (no rig.toml equivalent here, unlike the
 /// drumkit's per-pad `gain`).
 const REAL_GAIN: f32 = 1.0;
 
@@ -252,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     params.velocity_db_range,
     params.silence_to_zero_ms,
   );
-  println!("  pad {DITTO_LABEL} is DITTO (mirrors configs/kmss-drumkit.toml pedal 3, \"the gap between the feet\")");
+  println!("  pad {DITTO_LABEL} is DITTO (mirrors rigs/kmss-drumkit.toml pedal 3, \"the gap between the feet\")");
   if audio_on {
     println!("  audio audition ON (SOFTSTEP_METER_AUDIO set): plays drum-samples/{AUDITION_SAMPLE} via `pw-play` at the resolved gain");
   } else {
@@ -484,7 +484,7 @@ fn play_audition(gain: f32) {
 /// Choose the KMSS input port: any whose name contains `substring`, preferring the
 /// performance port ("MIDI 1") -- the one that carries the tether sensor stream.
 /// A small standalone re-statement of `drumkit_runtime::select_input_port` (private
-/// there, and pulled in a `Config`-shaped device list this meter has no config for).
+/// there, and pulled in a `Rig`-shaped device list this meter has no rig for).
 fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPort, String> {
   let mut matches: Vec<(MidiInputPort, String)> = midi_in
     .ports()

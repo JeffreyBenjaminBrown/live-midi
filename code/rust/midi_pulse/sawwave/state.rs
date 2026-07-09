@@ -38,7 +38,7 @@ impl AppState {
         release_secs: RELEASE_SECS,
         accretion_level: ACCRETION_TARGET,
         // The bare-consts constructor keeps the flat envelope; the runtime passes
-        // the config's pluck through new_with_audio_params.
+        // the rig's pluck through new_with_audio_params.
         sustain_level: 1.0,
         decay_secs: 0.0,
       },

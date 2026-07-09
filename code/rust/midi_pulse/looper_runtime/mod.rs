@@ -13,8 +13,8 @@
 //! compute an LED vector (no I/O), then drops it before UDP sends. The audio
 //! thread locks only `voices`. control -> voices is the single, brief nesting.
 
-use midi_pulse::config::{
-  AmShapeFamilyConfig, Config, LoopControlKind, MonomeWindowConfig, RowRangeConfig, SinkConfig,
+use midi_pulse::rig::{
+  AmShapeFamilyRig, Rig, LoopControlKind, MonomeWindowRig, RowRangeRig, SinkRig,
   TimbreTarget,
 };
 use crate::types::AmShapeFamily;
@@ -74,28 +74,28 @@ fn blank_grid(device_port: u16, prefix: &str) {
   }
 }
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  print_inventory(config);
+pub fn run_from_rig(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
+  print_inventory(rig);
   install_sigint();
   // Headless / mock runs set MIDI_PULSE_NO_AUDIO to skip the cpal stream (no sound
   // card needed; the grids and LEDs still work). See MOCK-MONOME.org.
   let no_audio = std::env::var("MIDI_PULSE_NO_AUDIO").is_ok();
-  run(config, monome::detector_port(), no_audio)
+  run(rig, monome::detector_port(), no_audio)
 }
 
-fn print_inventory(config: &Config) {
+fn print_inventory(rig: &Rig) {
   println!(
     "looper: {} windows across {} monomes",
-    config.monome_windows.len(),
-    config.monomes.len(),
+    rig.monome_windows.len(),
+    rig.monomes.len(),
   );
-  for monome in &config.monomes {
+  for monome in &rig.monomes {
     println!("  monome {:?} (port {}, prefix {:?}):", monome.id, monome.listen_port, monome.prefix);
-    for window in config.monome_windows.iter().filter(|w| w.monome() == monome.id) {
+    for window in rig.monome_windows.iter().filter(|w| w.monome() == monome.id) {
       println!("    {:<22} id {:?} rect {:?}", window.kind_name(), window.id(), window.rect());
     }
   }
-  if let Some(looper) = &config.looper {
+  if let Some(looper) = &rig.looper {
     println!(
       "  [looper] clock_bpm={} clock_duty={} cluster_display_ms={} flash_ms={} remap_center={:?}",
       looper.clock_bpm, looper.clock_duty, looper.cluster_display_ms, looper.flash_ms, looper.remap_center,
@@ -151,25 +151,25 @@ struct Settings {
   save_undo_window: Duration,
 }
 
-fn to_row_range(c: RowRangeConfig) -> RowRange {
+fn to_row_range(c: RowRangeRig) -> RowRange {
   match c {
-    RowRangeConfig::Linear { min, max } => RowRange::Linear { min, max },
-    RowRangeConfig::LogFactor { least, multiplier } => RowRange::LogFactor { least, multiplier },
-    RowRangeConfig::LogRange { least, greatest } => RowRange::LogRange { least, greatest },
+    RowRangeRig::Linear { min, max } => RowRange::Linear { min, max },
+    RowRangeRig::LogFactor { least, multiplier } => RowRange::LogFactor { least, multiplier },
+    RowRangeRig::LogRange { least, greatest } => RowRange::LogRange { least, greatest },
   }
 }
 
-fn to_am_shape_family(c: AmShapeFamilyConfig) -> AmShapeFamily {
+fn to_am_shape_family(c: AmShapeFamilyRig) -> AmShapeFamily {
   match c {
-    AmShapeFamilyConfig::SinToSquare => AmShapeFamily::SinToSquare,
-    AmShapeFamilyConfig::TriToSquare => AmShapeFamily::TriToSquare,
+    AmShapeFamilyRig::SinToSquare => AmShapeFamily::SinToSquare,
+    AmShapeFamilyRig::TriToSquare => AmShapeFamily::TriToSquare,
   }
 }
 
-/// Build the timbre editor on the given monome from its window config, converting
+/// Build the timbre editor on the given monome from its window rig, converting
 /// the lib-side row specs into runtime `RowRange`s.
-fn resolve_timbre_editor(config: &Config, monome: &str) -> Option<TimbreEditor> {
-  config.monome_windows.iter().find_map(|w| {
+fn resolve_timbre_editor(rig: &Rig, monome: &str) -> Option<TimbreEditor> {
+  rig.monome_windows.iter().find_map(|w| {
     if w.monome() != monome {
       return None;
     }
@@ -188,44 +188,44 @@ fn resolve_timbre_editor(config: &Config, monome: &str) -> Option<TimbreEditor> 
   })
 }
 
-fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Error>> {
-  let (edo_monome, tuning_id, sink_id, edo_rect) = config
+fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
+  let (edo_monome, tuning_id, sink_id, edo_rect) = rig
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowConfig::EdoNoteGrid { monome, tuning, sink, rect, .. } => {
+      MonomeWindowRig::EdoNoteGrid { monome, tuning, sink, rect, .. } => {
         Some((monome.clone(), tuning.clone(), sink.clone(), *rect))
       }
       _ => None,
     })
     .ok_or("looper needs an edo_note_grid window")?;
-  let shift_rect = config
+  let shift_rect = rig
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowConfig::EdoShiftPad { monome, rect, .. } if *monome == edo_monome => Some(*rect),
+      MonomeWindowRig::EdoShiftPad { monome, rect, .. } if *monome == edo_monome => Some(*rect),
       _ => None,
     })
     .unwrap_or([-1, -1, -1, -1]);
-  let (loops_monome, loop_display_rect) = config
+  let (loops_monome, loop_display_rect) = rig
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowConfig::LoopDisplay { monome, rect, .. } => Some((monome.clone(), *rect)),
+      MonomeWindowRig::LoopDisplay { monome, rect, .. } => Some((monome.clone(), *rect)),
       _ => None,
     })
     .ok_or("looper needs a loop_display window")?;
-  let loop_slots_rect = config
+  let loop_slots_rect = rig
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowConfig::LoopSlots { rect, .. } => Some(*rect),
+      MonomeWindowRig::LoopSlots { rect, .. } => Some(*rect),
       _ => None,
     })
     .ok_or("looper needs a loop_slots window")?;
   let control_cell = |kind: LoopControlKind| {
-    config.monome_windows.iter().find_map(|w| match w {
-      MonomeWindowConfig::LoopControl { control, rect, .. } if *control == kind => {
+    rig.monome_windows.iter().find_map(|w| match w {
+      MonomeWindowRig::LoopControl { control, rect, .. } if *control == kind => {
         Some((rect[0], rect[1]))
       }
       _ => None,
@@ -235,49 +235,49 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
   let loop_stop = control_cell(LoopControlKind::Stop).ok_or("looper needs loop_control stop")?;
   let loop_play = control_cell(LoopControlKind::Play).ok_or("looper needs loop_control play")?;
   // Optional single-cell controls; an impossible cell means "not configured".
-  let kind_cell = |pred: fn(&MonomeWindowConfig) -> bool| {
-    config
+  let kind_cell = |pred: fn(&MonomeWindowRig) -> bool| {
+    rig
       .monome_windows
       .iter()
       .find_map(|w| if pred(w) { let r = w.rect(); Some((r[0], r[1])) } else { None })
       .unwrap_or((-1, -1))
   };
-  let loop_toggle = kind_cell(|w| matches!(w, MonomeWindowConfig::LoopRemapModeToggle { .. }));
-  let loop_copy = kind_cell(|w| matches!(w, MonomeWindowConfig::LoopCopyButton { .. }));
-  let loop_undo = kind_cell(|w| matches!(w, MonomeWindowConfig::LoopRemapUndo { .. }));
+  let loop_toggle = kind_cell(|w| matches!(w, MonomeWindowRig::LoopRemapModeToggle { .. }));
+  let loop_copy = kind_cell(|w| matches!(w, MonomeWindowRig::LoopCopyButton { .. }));
+  let loop_undo = kind_cell(|w| matches!(w, MonomeWindowRig::LoopRemapUndo { .. }));
 
-  let tuning = config
+  let tuning = rig
     .tunings
     .iter()
     .find(|t| t.id == tuning_id)
     .ok_or("edo_note_grid references an unknown tuning")?;
-  let sink = config
+  let sink = rig
     .sinks
     .iter()
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkConfig::CpalSynth {
+  let SinkRig::CpalSynth {
     sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
     sustain_level, decay_secs, ..
   } = sink
   else {
     return Err("looper requires a cpal_synth sink".into());
   };
-  let looper = config.looper.as_ref().ok_or("looper config needs a [looper] table")?;
-  let edo_cfg = config.monomes.iter().find(|m| m.id == edo_monome).ok_or("the edo monome is not declared")?;
-  let loops_cfg = config.monomes.iter().find(|m| m.id == loops_monome).ok_or("the loops monome is not declared")?;
+  let looper = rig.looper.as_ref().ok_or("looper rig needs a [looper] table")?;
+  let edo_cfg = rig.monomes.iter().find(|m| m.id == edo_monome).ok_or("the edo monome is not declared")?;
+  let loops_cfg = rig.monomes.iter().find(|m| m.id == loops_monome).ok_or("the loops monome is not declared")?;
   let size = edo_cfg.select.size.unwrap_or([16, 16]);
   // Resolve the editor + shape family before moving `edo_monome` into Settings.
   let am_shape_family =
-    to_am_shape_family(config.am.as_ref().map(|a| a.shape.family).unwrap_or_default());
-  let timbre_editor = resolve_timbre_editor(config, &edo_monome);
-  let loops_timbre_editor = resolve_timbre_editor(config, &loops_monome);
+    to_am_shape_family(rig.am.as_ref().map(|a| a.shape.family).unwrap_or_default());
+  let timbre_editor = resolve_timbre_editor(rig, &edo_monome);
+  let loops_timbre_editor = resolve_timbre_editor(rig, &loops_monome);
   // save-undo is loop-editor only; take its window (default 200 ms).
   let save_undo_window = Duration::from_millis(
-    config
+    rig
       .monome_windows
       .iter()
-      .filter_map(MonomeWindowConfig::timbre_editor_save_undo_ms)
+      .filter_map(MonomeWindowRig::timbre_editor_save_undo_ms)
       .find_map(|(target, ms)| (target == TimbreTarget::Loop).then_some(ms))
       .unwrap_or(200),
   );
@@ -328,19 +328,19 @@ fn resolve_settings(config: &Config) -> Result<Settings, Box<dyn std::error::Err
 
 /// The I/O shell. `detector_port` is the serialosc(-mock) port to discover grids on;
 /// `no_audio` skips the cpal stream (headless / mock). Loops until the global `STOP`
-/// (SIGINT, or a test setting it). Signal handling is installed by `run_from_config`,
+/// (SIGINT, or a test setting it). Signal handling is installed by `run_from_rig`,
 /// not here, so tests can call this directly.
-fn run(config: &Config, detector_port: u16, no_audio: bool) -> Result<(), Box<dyn std::error::Error>> {
-  let s = resolve_settings(config)?;
+fn run(rig: &Rig, detector_port: u16, no_audio: bool) -> Result<(), Box<dyn std::error::Error>> {
+  let s = resolve_settings(rig)?;
 
   let edo_sock = UdpSocket::bind(("0.0.0.0", s.edo_listen_port))
     .map_err(|e| format!("bind UDP :{}: {e}", s.edo_listen_port))?;
   edo_sock.set_read_timeout(Some(Duration::from_millis(50)))?;
   let devices = monome::discover_devices_via(&edo_sock, s.edo_listen_port, detector_port);
-  let assigned = device::assign_distinct_devices(&devices, s.size, config.monomes.len())?;
+  let assigned = device::assign_distinct_devices(&devices, s.size, rig.monomes.len())?;
 
   let pairs: Vec<(&str, &monome::DeviceInfo)> =
-    config.monomes.iter().map(|m| m.id.as_str()).zip(assigned.iter()).collect();
+    rig.monomes.iter().map(|m| m.id.as_str()).zip(assigned.iter()).collect();
   let find = |id: &str| pairs.iter().find(|(mid, _)| *mid == id).map(|(_, d)| *d);
   let edo_dev = find(&s.edo_monome).ok_or("edo monome was not assigned a grid")?;
   let loops_dev = find(&s.loops_monome).ok_or("loops monome was not assigned a grid")?;
@@ -604,19 +604,19 @@ fn send_diffs(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::config::load_named_config;
+  use midi_pulse::rig::load_named_rig;
 
   #[test]
-  fn timbre_config_resolves_both_editors() {
-    // The full instrument config resolves a loop-timbre editor on edo and a
+  fn timbre_rig_resolves_both_editors() {
+    // The full instrument rig resolves a loop-timbre editor on edo and a
     // live-timbre editor on loops (7_layout.org), and threads the AM shape family.
-    let config = load_named_config("monome-looper-58-8-1-timbre").expect("config loads");
-    let s = resolve_settings(&config).expect("resolves without hardware");
+    let rig = load_named_rig("monome-looper-58-8-1-timbre").expect("rig loads");
+    let s = resolve_settings(&rig).expect("resolves without hardware");
     assert!(s.timbre_editor.is_some(), "edo loop-timbre editor resolved");
     assert!(s.loops_timbre_editor.is_some(), "loops live-timbre editor resolved");
     // The loop-display rect is the unfolded position; the runtime reflows it.
     assert_eq!(s.loop_display_rect, [0, 9, 15, 15]);
-    // save_undo_double_ms is omitted in the config, so it defaults to 200 ms.
+    // save_undo_double_ms is omitted in the rig, so it defaults to 200 ms.
     assert_eq!(s.save_undo_window, Duration::from_millis(200));
   }
 
@@ -628,23 +628,23 @@ mod tests {
   fn full_timbre_instrument_runs_against_mock_grids() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
-    let rig = MockRig::start(0, &[GridSpec::grid_256("edo"), GridSpec::grid_256("loops")])
+    let mock = MockRig::start(0, &[GridSpec::grid_256("edo"), GridSpec::grid_256("loops")])
       .expect("start mock rig");
-    let detector_port = rig.detector_port();
-    let config = load_named_config("monome-looper-58-8-1-timbre-mock").expect("mock config loads");
+    let detector_port = mock.detector_port();
+    let rig = load_named_rig("monome-looper-58-8-1-timbre-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
-      let config = config.clone();
+      let rig = rig.clone();
       thread::spawn(move || {
-        if let Err(e) = run(&config, detector_port, true) {
+        if let Err(e) = run(&rig, detector_port, true) {
           eprintln!("mock looper run error: {e}");
         }
       })
     };
 
-    let edo = rig.grid(0);
-    let loops = rig.grid(1);
+    let edo = mock.grid(0);
+    let loops = mock.grid(1);
     let secs = Duration::from_secs;
     // Both grids register (the looper sent /sys/port to each) and get a first repaint.
     assert!(

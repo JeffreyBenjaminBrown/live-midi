@@ -40,7 +40,7 @@ Two terminals (or two worktrees -- see =how-to-parallelize-dev.org=):
 # terminal A: the virtual grids
 cargo run --bin mock_monome -- --detector-port 17002
 
-# terminal B: the REAL looper, aimed at the mock, on the mock config
+# terminal B: the REAL looper, aimed at the mock, on the mock rig
 MIDI_PULSE_DETECTOR_PORT=17002 cargo run --bin midi_pulse -- monome-looper-58-8-1-mock
 #+end_src
 Terminal A prints each grid as ASCII whenever its LEDs change, and reads key
@@ -61,7 +61,7 @@ record/play. It behaves like the real instrument because it *is* the real runtim
 -- only the grids are fake.
 
 * Why this is safe to run beside your real session
-- The mock config (=monome-looper-58-8-1-mock.toml=) uses listen ports *9100/9101*
+- The mock rig (=monome-looper-58-8-1-mock.toml=) uses listen ports *9100/9101*
   and prefixes =/mock-edo=, =/mock-loops= -- not your live *9000/9001*. Two loopers
   can run at once.
 - =MIDI_PULSE_DETECTOR_PORT=17002= means the mock looper talks to the *mock*
@@ -99,4 +99,4 @@ reflows the looper stack. Runs in =cargo test= (~2s), no hardware, no sound.
   interactive rig above).
 - =code/rust/midi_pulse/monome.rs= -- the =MIDI_PULSE_DETECTOR_PORT= seam
   (=detector_port()=, =discover_devices_via=).
-- =code/rust/configs/monome-looper-58-8-1-mock.toml= -- the non-colliding config.
+- =code/rust/rigs/monome-looper-58-8-1-mock.toml= -- the non-colliding rig.

@@ -11,7 +11,7 @@
 //!                                          (the amplitude row, which is full-width
 //!                                          unfolded and narrower folded)
 //!
-//! This module is intentionally free of config/runtime coupling so it can be
+//! This module is intentionally free of rig/runtime coupling so it can be
 //! tested in isolation and reused by whatever editor wiring lands next.
 
 #[derive(Clone, Copy, Debug, PartialEq)]

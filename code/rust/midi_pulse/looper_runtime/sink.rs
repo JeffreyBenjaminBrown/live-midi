@@ -45,7 +45,7 @@ pub struct SawNoteSink {
 
 impl SawNoteSink {
   /// Test convenience: `with_pluck` minus the pluck (the flat envelope). The
-  /// runtime itself always calls `with_pluck` with the config's values.
+  /// runtime itself always calls `with_pluck` with the rig's values.
   #[cfg(test)]
   pub fn new(
     voices: Arc<Mutex<VoiceMap>>,

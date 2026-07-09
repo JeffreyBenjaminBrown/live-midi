@@ -79,7 +79,7 @@ Each session sees only its directory's branch. Open magit on a *worktree*
 
 ** Caveats specific to this repo
 - *Build dir:* there is no longer a shared absolute =target-dir= (the old
-  =.cargo/config.toml= that forced =/home/ubuntu/target= was removed), so each
+  =.cargo/rig.toml= that forced =/home/ubuntu/target= was removed), so each
   worktree builds into its *own* =target/= (e.g. =worktrees/dev/target/=). That's
   the isolation you want -- two branches never clobber each other's binary. Cost:
   the first build in a fresh worktree is full (it recompiles dependencies too --
@@ -87,8 +87,8 @@ Each session sees only its directory's branch. Open magit on a *worktree*
   the main cache for that shell with =export CARGO_TARGET_DIR=/home/ubuntu/target=
   -- but then expect rebuild churn when you alternate worktrees, since they'd again
   share one =target/debug= binary.
-- *Config path:* =config_dir()= bakes =CARGO_MANIFEST_DIR= in at *compile* time, so
-  a built binary looks for =configs/= under the worktree it was built in. With
+- *Rig path:* =rig_dir()= bakes =CARGO_MANIFEST_DIR= in at *compile* time, so
+  a built binary looks for =rigs/= under the worktree it was built in. With
   per-worktree targets (the default now) that's automatic. The one gotcha: if you
   *move* a checkout, cargo won't rebuild on a path-only change, so =touch= a =.rs=
   to force the embedded path to update (this is exactly what bit the =prod/= move).

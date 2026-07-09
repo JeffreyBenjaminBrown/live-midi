@@ -4,7 +4,7 @@ id = "2-monomes_58-8-1_kmss-drums"
 title = "Two monomes (58-8-1) + KMSS drums"
 
 # ===========================================================================
-# THREE SURFACES AT ONCE (see configs/2-monomes_58-8-1_kmss-drums.org):
+# THREE SURFACES AT ONCE (see rigs/2-monomes_58-8-1_kmss-drums.org):
 #   - two 16x16 monome grids, each a full 58-EDO play surface with its own
 #     independent scroll register and its own voices;
 #   - the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.

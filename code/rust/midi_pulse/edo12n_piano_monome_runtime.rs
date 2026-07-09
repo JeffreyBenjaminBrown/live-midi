@@ -2,7 +2,7 @@ use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midi_pulse::monome;
 use midi_pulse::monome_brightness::PulseBrightness;
-use midi_pulse::config::Config;
+use midi_pulse::rig::Rig;
 use midi_pulse::{midi, piano_transform};
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
@@ -74,7 +74,7 @@ impl MonomeLedState {
   }
 }
 
-pub fn run_from_config(_config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_rig(_rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
   run()
 }
 

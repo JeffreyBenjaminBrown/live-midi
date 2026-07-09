@@ -8,9 +8,9 @@ records, plays back, and edits loops. No piano. Defined by
 
 - *edo grid* :: The first 16x16 monome -- the play surface. Each cell sounds a
   note; it also reflects the active loop and doubles as the pitch-picker during
-  remap. (Config monome ~edo~, prefix ~/looper-edo~.)
+  remap. (Rig monome ~edo~, prefix ~/looper-edo~.)
 - *loops grid* :: The second 16x16 monome -- the loops. Slots, transport, the
-  loop display, and the remap controls live here. (Config monome ~loops~, prefix
+  loop display, and the remap controls live here. (Rig monome ~loops~, prefix
   ~/looper-loops~.) The runtime decides which physical grid is which; it doesn't
   matter.
 - *58-EDO* :: The tuning: the octave split into 58 equal steps. A cell ~(x, y)~
@@ -19,7 +19,7 @@ records, plays back, and edits loops. No piano. Defined by
 - *register* :: A transpose offset added to every edo cell, moved by the shift
   pad. There is one stored register for play; remap computes its own and restores
   the play register when it ends.
-- *slot* :: One loop's worth of storage. This config has a 4x4 grid = 16 slots.
+- *slot* :: One loop's worth of storage. This rig has a 4x4 grid = 16 slots.
 - *active slot* :: The slot the controls, the display, and remap point at. Lit
   solid on the loops grid. *Active is not the same as sounding* -- you can edit one
   slot while another plays.

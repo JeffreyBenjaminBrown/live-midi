@@ -189,7 +189,7 @@ generally don't import each other, except where natural (e.g.
     // is uniform.
     pub control_buttons:  HashMap<MonomeKey, Button>,
 
-    // Immutable config:
+    // Immutable rig:
     pub pitch_class:      PitchClass,
     pub fund:             f64,
     pub edo:              i32,

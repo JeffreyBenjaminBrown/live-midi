@@ -12,7 +12,7 @@ title = "Two monomes (58-8-1) + KMSS drums (mock grids)"
 # is still selected as "surfaces" (two edo grids on distinct monomes).
 # ---------------------------------------------------------------------------
 
-# Shared recent-note trail -- mirror the real config so mock play matches it.
+# Shared recent-note trail -- mirror the real rig so mock play matches it.
 [surfaces]
 trail_clobber_radius = 27  # 1/27 of an octave (~44 cents); bigger = tighter
 trails_max = 9

@@ -67,7 +67,7 @@ pub enum VoiceSource {
 // The tone-colour of a voice: waveform + per-voice gain + slow AM + slow FM.
 // Captured per note (the live timbre at note-on; a per-note snapshot for loop
 // notes). `Default` is the pre-timbre instrument -- a triangle at unity gain with
-// no modulation -- so existing configs sound identical until a timbre is set.
+// no modulation -- so existing rigs sound identical until a timbre is set.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waveform { Sine, Triangle, Square, Saw }
@@ -79,7 +79,7 @@ impl Default for Waveform {
 // Slow amplitude modulation (tremolo). `depth` in [0,1] is the modulation depth:
 // the carrier is multiplied by a unipolar wave in [1-depth, 1], so depth 0 = no
 // AM and depth 1 = dips to silence. `freq` is the LFO rate (Hz). `shape` in [0,1]
-// morphs the LFO wave within the config-level `AmShapeFamily`.
+// morphs the LFO wave within the rig-level `AmShapeFamily`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Am { pub depth: f32, pub freq: f32, pub shape: f32 }
 
@@ -96,7 +96,7 @@ impl Default for Fm {
   fn default() -> Self { Fm { depth_cents: 0.0, freq: 1.0 } }
 }
 
-// The instrument-wide choice of AM-shape morph family ([D 3c]: config-level, one
+// The instrument-wide choice of AM-shape morph family ([D 3c]: rig-level, one
 // per instrument). The `shape` value (0..1) sweeps within the chosen family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmShapeFamily { SinToSquare, TriToSquare }
@@ -286,7 +286,7 @@ pub struct AppState {
   // state to store (emitting_chord and pressed_chords cover it).
   pub control_buttons:  HashMap<MonomeKey, Button>,
 
-  // Immutable config:
+  // Immutable rig:
   pub pitch_class:      PitchClass,
   pub fund:             f64,
   pub edo:              i32,

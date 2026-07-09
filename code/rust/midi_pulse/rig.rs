@@ -4,48 +4,48 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+pub struct Rig {
   pub version: u8,
   pub id: String,
   pub title: String,
   #[serde(default)]
-  pub tunings: Vec<TuningConfig>,
+  pub tunings: Vec<TuningRig>,
   #[serde(default)]
-  pub monomes: Vec<MonomeConfig>,
+  pub monomes: Vec<MonomeRig>,
   #[serde(default)]
-  pub midi: Option<MidiConfig>,
+  pub midi: Option<MidiRig>,
   #[serde(default)]
-  pub piano: Option<PianoConfig>,
+  pub piano: Option<PianoRig>,
   #[serde(default)]
-  pub sinks: Vec<SinkConfig>,
+  pub sinks: Vec<SinkRig>,
   #[serde(default)]
-  pub monome_windows: Vec<MonomeWindowConfig>,
+  pub monome_windows: Vec<MonomeWindowRig>,
   /// Keith McMillen SoftStep (KMSS) foot-controller devices, declared once and
   /// referenced by id from `softstep_windows` -- the same idiom as `monomes`.
   #[serde(default)]
-  pub softsteps: Vec<SoftstepConfig>,
+  pub softsteps: Vec<SoftstepRig>,
   /// Windows over a SoftStep: a region of pedals plus a `kind` behavior. The same
   /// windowing idiom as `monome_windows`, adapted to the KMSS's 10 labeled pedals.
   #[serde(default)]
-  pub softstep_windows: Vec<SoftstepWindowConfig>,
+  pub softstep_windows: Vec<SoftstepWindowRig>,
   #[serde(default)]
-  pub display: Option<DisplayConfig>,
+  pub display: Option<DisplayRig>,
   #[serde(default)]
-  pub looper: Option<LooperConfig>,
+  pub looper: Option<LooperRig>,
   /// Instrument-wide AM settings (6_plan 5). Today only the shape family lives here;
-  /// it is the config-level morph family the per-note `am.shape` value sweeps within.
+  /// it is the rig-level morph family the per-note `am.shape` value sweeps within.
   #[serde(default)]
-  pub am: Option<AmConfig>,
+  pub am: Option<AmRig>,
   /// Surfaces-runtime settings (the shared recent-note trail). Absent for non-surfaces
-  /// configs; the surfaces runtime falls back to `SurfacesConfig::default`.
+  /// rigs; the surfaces runtime falls back to `SurfacesRig::default`.
   #[serde(default)]
-  pub surfaces: Option<SurfacesConfig>,
+  pub surfaces: Option<SurfacesRig>,
   /// The four selectable timbres behind a `waveform_selector` strip, left to right
   /// (surfaces runtime). Absent = the plain four waveforms (sine / triangle /
   /// square / saw, everything else off) -- exactly the pre-timbres behavior. When
   /// present there must be exactly four entries.
   #[serde(default)]
-  pub timbres: Vec<TimbreConfig>,
+  pub timbres: Vec<TimbreRig>,
   /// Echo each fingered note to the terminal (`press grid=.. x=.. y=.. f=.. Hz`).
   /// Off by default so a startup warning -- e.g. the surfaces runtime's red report of
   /// components that could not load for missing gear -- stays on screen instead of
@@ -60,7 +60,7 @@ pub struct Config {
 /// (no AM, no FM) at full amplitude.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct TimbreConfig {
+pub struct TimbreRig {
   /// One of "sin"/"sine", "tri"/"triangle", "square", "saw".
   pub waveform: WaveformChoice,
   /// Per-timbre linear gain, multiplied below the volume fader. 0..1 typical
@@ -73,7 +73,7 @@ pub struct TimbreConfig {
   /// Tremolo rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
   #[serde(default = "default_timbre_freq")]
   pub am_freq: f32,
-  /// Tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the config's
+  /// Tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the rig's
   /// `[am]` family), 1 = near-square chop. Default 0.
   #[serde(default)]
   pub am_shape: f32,
@@ -93,7 +93,7 @@ fn default_timbre_freq() -> f32 {
   1.0
 }
 
-/// A waveform name in a config file. Accepts Jeff's short spellings.
+/// A waveform name in a rig file. Accepts Jeff's short spellings.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum WaveformChoice {
@@ -106,27 +106,27 @@ pub enum WaveformChoice {
 }
 
 /// `[am]` table: instrument-wide amplitude-modulation settings. The shape *family*
-/// is config-level (one per instrument, 6_plan 2.5 / D 3c); the per-note `am.shape`
+/// is rig-level (one per instrument, 6_plan 2.5 / D 3c); the per-note `am.shape`
 /// value (set by the editor's shape row) is the morph position within it.
 #[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct AmConfig {
+pub struct AmRig {
   #[serde(default)]
-  pub shape: AmShapeConfig,
+  pub shape: AmShapeRig,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct AmShapeConfig {
+pub struct AmShapeRig {
   #[serde(default)]
-  pub family: AmShapeFamilyConfig,
+  pub family: AmShapeFamilyRig,
 }
 
 /// Mirrors the runtime `sawwave::types::AmShapeFamily` (which the lib cannot see);
 /// `resolve_settings` converts. Default = `sin_to_square`, matching the runtime.
 #[derive(Clone, Copy, Debug, Deserialize, Default, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum AmShapeFamilyConfig {
+pub enum AmShapeFamilyRig {
   #[default]
   SinToSquare,
   TriToSquare,
@@ -146,7 +146,7 @@ pub enum TimbreTarget {
 /// `resolve_settings` converts. Holds f32s, so it is `PartialEq` but not `Eq`.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RowRangeConfig {
+pub enum RowRangeRig {
   /// value = lerp(min, max) across the row.
   Linear { min: f32, max: f32 },
   /// value(k) = least * multiplier^k -- the top grows with the row width.
@@ -183,26 +183,26 @@ pub enum ResolvedEdge {
   Ref(EdgeRef),
 }
 
-/// One edge in config: an integer (absolute) or a `"id.edge +/- n"` string.
+/// One edge in rig: an integer (absolute) or a `"id.edge +/- n"` string.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub enum EdgeSpecConfig {
+pub enum EdgeSpecRig {
   Absolute(i32),
   Expr(String),
 }
 
 /// A window rect (6_plan 4.1): the legacy whole-rect array `[x0,y0,x1,y1]` (all
 /// absolute), or a per-edge table whose edges may be absolute or relative. Both
-/// forms parse, so absolute configs are unchanged.
+/// forms parse, so absolute rigs are unchanged.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub enum RectSpecConfig {
+pub enum RectSpecRig {
   Absolute([i32; 4]),
   PerEdge {
-    top: EdgeSpecConfig,
-    bottom: EdgeSpecConfig,
-    left: EdgeSpecConfig,
-    right: EdgeSpecConfig,
+    top: EdgeSpecRig,
+    bottom: EdgeSpecRig,
+    left: EdgeSpecRig,
+    right: EdgeSpecRig,
   },
 }
 
@@ -238,18 +238,18 @@ pub fn parse_edge_expr(s: &str) -> Result<EdgeRef, String> {
   Ok(EdgeRef { target: target.to_string(), edge, offset })
 }
 
-impl RectSpecConfig {
+impl RectSpecRig {
   /// The given edge as Absolute(int) or Ref(other window's edge). The array form
   /// maps `[x0,y0,x1,y1]` to left/top/right/bottom.
   pub fn resolved_edge(&self, which: EdgeName) -> Result<ResolvedEdge, String> {
     match self {
-      RectSpecConfig::Absolute(a) => Ok(ResolvedEdge::Absolute(match which {
+      RectSpecRig::Absolute(a) => Ok(ResolvedEdge::Absolute(match which {
         EdgeName::Left => a[0],
         EdgeName::Top => a[1],
         EdgeName::Right => a[2],
         EdgeName::Bottom => a[3],
       })),
-      RectSpecConfig::PerEdge { top, bottom, left, right } => {
+      RectSpecRig::PerEdge { top, bottom, left, right } => {
         let e = match which {
           EdgeName::Top => top,
           EdgeName::Bottom => bottom,
@@ -257,8 +257,8 @@ impl RectSpecConfig {
           EdgeName::Right => right,
         };
         match e {
-          EdgeSpecConfig::Absolute(v) => Ok(ResolvedEdge::Absolute(*v)),
-          EdgeSpecConfig::Expr(s) => Ok(ResolvedEdge::Ref(parse_edge_expr(s)?)),
+          EdgeSpecRig::Absolute(v) => Ok(ResolvedEdge::Absolute(*v)),
+          EdgeSpecRig::Expr(s) => Ok(ResolvedEdge::Ref(parse_edge_expr(s)?)),
         }
       }
     }
@@ -283,10 +283,10 @@ fn default_clock_duty() -> f64 {
 }
 
 /// Looper-wide scalars (see the loop windows below). All durations in
-/// milliseconds. Present iff the config declares the looper windows.
+/// milliseconds. Present iff the rig declares the looper windows.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct LooperConfig {
+pub struct LooperRig {
   /// The metronome clock, in beats per minute (one beat = one cycle). The transport
   /// snaps presses to the nearest cycle boundary, recorded note-ons within a fixed
   /// 50 ms of a boundary snap onto it, and one transport button flashes at this rate.
@@ -316,10 +316,10 @@ fn default_trails_max() -> usize {
 /// `[surfaces]` table: instrument-wide settings for the surfaces runtime's shared
 /// recent-note trail (the dim backdrop of the last few played pitch classes). A missing
 /// table -- or any missing field -- uses these defaults, so behaviour is unchanged for
-/// configs that don't declare it.
+/// rigs that don't declare it.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
-pub struct SurfacesConfig {
+pub struct SurfacesRig {
   /// Trail clobber radius, as a *divisor of the octave*: playing a note clears any
   /// trailed pitch-class within `edo / trail_clobber_radius` steps of it, so close
   /// pitches never crowd the backdrop. Bigger value = tighter radius (clears fewer);
@@ -338,7 +338,7 @@ pub struct SurfacesConfig {
   pub slide_duration_ms: u64,
 }
 
-impl Default for SurfacesConfig {
+impl Default for SurfacesRig {
   fn default() -> Self {
     Self {
       trail_clobber_radius: default_trail_clobber_radius(),
@@ -364,7 +364,7 @@ fn default_slide_duration_ms() -> u64 {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct TuningConfig {
+pub struct TuningRig {
   pub id: String,
   pub edo: i16,
   pub x_step: i16,
@@ -374,7 +374,7 @@ pub struct TuningConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct MonomeConfig {
+pub struct MonomeRig {
   pub id: String,
   pub listen_port: u16,
   pub prefix: String,
@@ -395,7 +395,7 @@ pub struct MonomeSelect {
 /// client named "SSCOM"; the runtime opens the input port matching `select`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct SoftstepConfig {
+pub struct SoftstepRig {
   pub id: String,
   #[serde(default)]
   pub select: SoftstepSelect,
@@ -419,20 +419,20 @@ impl SoftstepSelect {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct MidiConfig {
-  pub input: Option<MidiInputConfig>,
-  pub output: MidiOutputConfig,
+pub struct MidiRig {
+  pub input: Option<MidiInputRig>,
+  pub output: MidiOutputRig,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct MidiInputConfig {
+pub struct MidiInputRig {
   pub virtual_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct MidiOutputConfig {
+pub struct MidiOutputRig {
   pub virtual_name: String,
   pub min_channel: u8,
   pub min_note: u8,
@@ -440,15 +440,15 @@ pub struct MidiOutputConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PianoConfig {
-  pub mapping: PianoMappingConfig,
+pub struct PianoRig {
+  pub mapping: PianoMappingRig,
   #[serde(default)]
-  pub regions: Vec<PianoRegionConfig>,
+  pub regions: Vec<PianoRegionRig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum PianoMappingConfig {
+pub enum PianoMappingRig {
   TwelveN {
     lowest_note: u8,
     shift_before_mapping: i16,
@@ -457,42 +457,42 @@ pub enum PianoMappingConfig {
   RemappableUn12 {
     lowest_note: u8,
     tuning: String,
-    remap_idiom: RemapIdiomConfig,
-    initial_map: InitialMapConfig,
+    remap_idiom: RemapIdiomRig,
+    initial_map: InitialMapRig,
   },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum RemapIdiomConfig {
+pub enum RemapIdiomRig {
   Loose,
   Snap,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum InitialMapConfig {
+pub enum InitialMapRig {
   Even,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PianoRegionConfig {
+pub struct PianoRegionRig {
   pub range: [u8; 2],
-  pub action: PianoRegionActionConfig,
+  pub action: PianoRegionActionRig,
   pub zero_note: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum PianoRegionActionConfig {
+pub enum PianoRegionActionRig {
   EmitNotes,
   HeldOffsetControl,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SinkConfig {
+pub enum SinkRig {
   Midi {
     id: String,
   },
@@ -506,7 +506,7 @@ pub enum SinkConfig {
     accretion_level: f32,
     /// Internal oversampling factor for the synth render (1 = off). >1 runs the
     /// nonlinear/multiplicative mix at N x the rate and decimates, so audio-rate
-    /// AM/FM/waveshaping doesn't alias. Defaults to 1 so existing configs are
+    /// AM/FM/waveshaping doesn't alias. Defaults to 1 so existing rigs are
     /// unchanged.
     #[serde(default = "default_oversample")]
     oversample: u32,
@@ -564,12 +564,12 @@ fn default_decay_secs() -> f32 {
   0.5 // a guitar-ish decay time constant
 }
 
-impl SinkConfig {
+impl SinkRig {
   pub fn id(&self) -> &str {
     match self {
-      SinkConfig::Midi { id }
-      | SinkConfig::CpalSynth { id, .. }
-      | SinkConfig::CpalSampler { id, .. } => id,
+      SinkRig::Midi { id }
+      | SinkRig::CpalSynth { id, .. }
+      | SinkRig::CpalSampler { id, .. } => id,
     }
   }
 }
@@ -578,7 +578,7 @@ impl SinkConfig {
 // dropped `Eq` for its f32 timbre in C6).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MonomeWindowConfig {
+pub enum MonomeWindowRig {
   EdoNoteGrid {
     id: String,
     monome: String,
@@ -647,7 +647,7 @@ pub enum MonomeWindowConfig {
     control: RecordControlKind,
   },
   // A flexible grid of scale slots. The number of slots is whatever the rect
-  // covers, so the config alone decides how many scales can be saved.
+  // covers, so the rig alone decides how many scales can be saved.
   ScaleSlots {
     id: String,
     monome: String,
@@ -797,17 +797,17 @@ pub enum MonomeWindowConfig {
     rect: [i32; 4],
     target: TimbreTarget,
     #[serde(default = "default_amplitude_row")]
-    amplitude: RowRangeConfig,
+    amplitude: RowRangeRig,
     #[serde(default = "default_am_amplitude_row")]
-    am_amplitude: RowRangeConfig,
+    am_amplitude: RowRangeRig,
     #[serde(default = "default_am_frequency_row")]
-    am_frequency: RowRangeConfig,
+    am_frequency: RowRangeRig,
     #[serde(default = "default_am_shape_row")]
-    am_shape: RowRangeConfig,
+    am_shape: RowRangeRig,
     #[serde(default = "default_fm_amplitude_row")]
-    fm_amplitude: RowRangeConfig,
+    fm_amplitude: RowRangeRig,
     #[serde(default = "default_fm_frequency_row")]
-    fm_frequency: RowRangeConfig,
+    fm_frequency: RowRangeRig,
     // The save-undo double-press window in ms (6_plan 2.8/5). Loop-editor only.
     #[serde(default = "default_save_undo_ms")]
     save_undo_double_ms: u64,
@@ -815,23 +815,23 @@ pub enum MonomeWindowConfig {
 }
 
 // Per-row default ranges (6_plan 5). Used when a `timbre_editor` omits a row.
-fn default_amplitude_row() -> RowRangeConfig {
-  RowRangeConfig::LogRange { least: 0.0009, greatest: 0.15 }
+fn default_amplitude_row() -> RowRangeRig {
+  RowRangeRig::LogRange { least: 0.0009, greatest: 0.15 }
 }
-fn default_am_amplitude_row() -> RowRangeConfig {
-  RowRangeConfig::Linear { min: 0.0, max: 1.0 }
+fn default_am_amplitude_row() -> RowRangeRig {
+  RowRangeRig::Linear { min: 0.0, max: 1.0 }
 }
-fn default_am_frequency_row() -> RowRangeConfig {
-  RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }
+fn default_am_frequency_row() -> RowRangeRig {
+  RowRangeRig::LogFactor { least: 0.25, multiplier: 2.0 }
 }
-fn default_am_shape_row() -> RowRangeConfig {
-  RowRangeConfig::Linear { min: 0.0, max: 1.0 }
+fn default_am_shape_row() -> RowRangeRig {
+  RowRangeRig::Linear { min: 0.0, max: 1.0 }
 }
-fn default_fm_amplitude_row() -> RowRangeConfig {
-  RowRangeConfig::LogFactor { least: 5.0, multiplier: 2.0 }
+fn default_fm_amplitude_row() -> RowRangeRig {
+  RowRangeRig::LogFactor { least: 5.0, multiplier: 2.0 }
 }
-fn default_fm_frequency_row() -> RowRangeConfig {
-  RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }
+fn default_fm_frequency_row() -> RowRangeRig {
+  RowRangeRig::LogFactor { least: 0.25, multiplier: 2.0 }
 }
 fn default_save_undo_ms() -> u64 {
   200
@@ -886,141 +886,141 @@ pub enum LoopControlKind {
   Play,
 }
 
-impl MonomeWindowConfig {
+impl MonomeWindowRig {
   pub fn id(&self) -> &str {
     match self {
-      MonomeWindowConfig::EdoNoteGrid { id, .. }
-      | MonomeWindowConfig::ChordWipeButton { id, .. }
-      | MonomeWindowConfig::ChordAccreteToggle { id, .. }
-      | MonomeWindowConfig::ChordEmitModeToggle { id, .. }
-      | MonomeWindowConfig::ChordTargetButton { id, .. }
-      | MonomeWindowConfig::ChordSlotButtons { id, .. }
-      | MonomeWindowConfig::TwelveEdoOffsetBoard { id, .. }
-      | MonomeWindowConfig::PreimageRow { id, .. }
-      | MonomeWindowConfig::RemappableUn12Grid { id, .. }
-      | MonomeWindowConfig::RemapUndoButton { id, .. }
-      | MonomeWindowConfig::RecordControl { id, .. }
-      | MonomeWindowConfig::ScaleSlots { id, .. }
-      | MonomeWindowConfig::ScaleControl { id, .. }
-      | MonomeWindowConfig::WaveformSelector { id, .. }
-      | MonomeWindowConfig::VolumeStrip { id, .. }
-      | MonomeWindowConfig::DistortionToggle { id, .. }
-      | MonomeWindowConfig::SlideToggle { id, .. }
-      | MonomeWindowConfig::MonoToggle { id, .. }
-      | MonomeWindowConfig::SoftstepAccretesToggle { id, .. }
-      | MonomeWindowConfig::TapTempoPad { id, .. }
-      | MonomeWindowConfig::AccreteControl { id, .. }
-      | MonomeWindowConfig::EdoShiftPad { id, .. }
-      | MonomeWindowConfig::LoopSlots { id, .. }
-      | MonomeWindowConfig::LoopControl { id, .. }
-      | MonomeWindowConfig::LoopRemapModeToggle { id, .. }
-      | MonomeWindowConfig::LoopCopyButton { id, .. }
-      | MonomeWindowConfig::LoopRemapUndo { id, .. }
-      | MonomeWindowConfig::LoopDisplay { id, .. }
-      | MonomeWindowConfig::TimbreEditor { id, .. } => id,
+      MonomeWindowRig::EdoNoteGrid { id, .. }
+      | MonomeWindowRig::ChordWipeButton { id, .. }
+      | MonomeWindowRig::ChordAccreteToggle { id, .. }
+      | MonomeWindowRig::ChordEmitModeToggle { id, .. }
+      | MonomeWindowRig::ChordTargetButton { id, .. }
+      | MonomeWindowRig::ChordSlotButtons { id, .. }
+      | MonomeWindowRig::TwelveEdoOffsetBoard { id, .. }
+      | MonomeWindowRig::PreimageRow { id, .. }
+      | MonomeWindowRig::RemappableUn12Grid { id, .. }
+      | MonomeWindowRig::RemapUndoButton { id, .. }
+      | MonomeWindowRig::RecordControl { id, .. }
+      | MonomeWindowRig::ScaleSlots { id, .. }
+      | MonomeWindowRig::ScaleControl { id, .. }
+      | MonomeWindowRig::WaveformSelector { id, .. }
+      | MonomeWindowRig::VolumeStrip { id, .. }
+      | MonomeWindowRig::DistortionToggle { id, .. }
+      | MonomeWindowRig::SlideToggle { id, .. }
+      | MonomeWindowRig::MonoToggle { id, .. }
+      | MonomeWindowRig::SoftstepAccretesToggle { id, .. }
+      | MonomeWindowRig::TapTempoPad { id, .. }
+      | MonomeWindowRig::AccreteControl { id, .. }
+      | MonomeWindowRig::EdoShiftPad { id, .. }
+      | MonomeWindowRig::LoopSlots { id, .. }
+      | MonomeWindowRig::LoopControl { id, .. }
+      | MonomeWindowRig::LoopRemapModeToggle { id, .. }
+      | MonomeWindowRig::LoopCopyButton { id, .. }
+      | MonomeWindowRig::LoopRemapUndo { id, .. }
+      | MonomeWindowRig::LoopDisplay { id, .. }
+      | MonomeWindowRig::TimbreEditor { id, .. } => id,
     }
   }
 
   pub fn monome(&self) -> &str {
     match self {
-      MonomeWindowConfig::EdoNoteGrid { monome, .. }
-      | MonomeWindowConfig::ChordWipeButton { monome, .. }
-      | MonomeWindowConfig::ChordAccreteToggle { monome, .. }
-      | MonomeWindowConfig::ChordEmitModeToggle { monome, .. }
-      | MonomeWindowConfig::ChordTargetButton { monome, .. }
-      | MonomeWindowConfig::ChordSlotButtons { monome, .. }
-      | MonomeWindowConfig::TwelveEdoOffsetBoard { monome, .. }
-      | MonomeWindowConfig::PreimageRow { monome, .. }
-      | MonomeWindowConfig::RemappableUn12Grid { monome, .. }
-      | MonomeWindowConfig::RemapUndoButton { monome, .. }
-      | MonomeWindowConfig::RecordControl { monome, .. }
-      | MonomeWindowConfig::ScaleSlots { monome, .. }
-      | MonomeWindowConfig::ScaleControl { monome, .. }
-      | MonomeWindowConfig::WaveformSelector { monome, .. }
-      | MonomeWindowConfig::VolumeStrip { monome, .. }
-      | MonomeWindowConfig::DistortionToggle { monome, .. }
-      | MonomeWindowConfig::SlideToggle { monome, .. }
-      | MonomeWindowConfig::MonoToggle { monome, .. }
-      | MonomeWindowConfig::SoftstepAccretesToggle { monome, .. }
-      | MonomeWindowConfig::TapTempoPad { monome, .. }
-      | MonomeWindowConfig::AccreteControl { monome, .. }
-      | MonomeWindowConfig::EdoShiftPad { monome, .. }
-      | MonomeWindowConfig::LoopSlots { monome, .. }
-      | MonomeWindowConfig::LoopControl { monome, .. }
-      | MonomeWindowConfig::LoopRemapModeToggle { monome, .. }
-      | MonomeWindowConfig::LoopCopyButton { monome, .. }
-      | MonomeWindowConfig::LoopRemapUndo { monome, .. }
-      | MonomeWindowConfig::LoopDisplay { monome, .. }
-      | MonomeWindowConfig::TimbreEditor { monome, .. } => monome,
+      MonomeWindowRig::EdoNoteGrid { monome, .. }
+      | MonomeWindowRig::ChordWipeButton { monome, .. }
+      | MonomeWindowRig::ChordAccreteToggle { monome, .. }
+      | MonomeWindowRig::ChordEmitModeToggle { monome, .. }
+      | MonomeWindowRig::ChordTargetButton { monome, .. }
+      | MonomeWindowRig::ChordSlotButtons { monome, .. }
+      | MonomeWindowRig::TwelveEdoOffsetBoard { monome, .. }
+      | MonomeWindowRig::PreimageRow { monome, .. }
+      | MonomeWindowRig::RemappableUn12Grid { monome, .. }
+      | MonomeWindowRig::RemapUndoButton { monome, .. }
+      | MonomeWindowRig::RecordControl { monome, .. }
+      | MonomeWindowRig::ScaleSlots { monome, .. }
+      | MonomeWindowRig::ScaleControl { monome, .. }
+      | MonomeWindowRig::WaveformSelector { monome, .. }
+      | MonomeWindowRig::VolumeStrip { monome, .. }
+      | MonomeWindowRig::DistortionToggle { monome, .. }
+      | MonomeWindowRig::SlideToggle { monome, .. }
+      | MonomeWindowRig::MonoToggle { monome, .. }
+      | MonomeWindowRig::SoftstepAccretesToggle { monome, .. }
+      | MonomeWindowRig::TapTempoPad { monome, .. }
+      | MonomeWindowRig::AccreteControl { monome, .. }
+      | MonomeWindowRig::EdoShiftPad { monome, .. }
+      | MonomeWindowRig::LoopSlots { monome, .. }
+      | MonomeWindowRig::LoopControl { monome, .. }
+      | MonomeWindowRig::LoopRemapModeToggle { monome, .. }
+      | MonomeWindowRig::LoopCopyButton { monome, .. }
+      | MonomeWindowRig::LoopRemapUndo { monome, .. }
+      | MonomeWindowRig::LoopDisplay { monome, .. }
+      | MonomeWindowRig::TimbreEditor { monome, .. } => monome,
     }
   }
 
   pub fn rect(&self) -> [i32; 4] {
     match self {
-      MonomeWindowConfig::EdoNoteGrid { rect, .. }
-      | MonomeWindowConfig::ChordWipeButton { rect, .. }
-      | MonomeWindowConfig::ChordAccreteToggle { rect, .. }
-      | MonomeWindowConfig::ChordEmitModeToggle { rect, .. }
-      | MonomeWindowConfig::ChordTargetButton { rect, .. }
-      | MonomeWindowConfig::ChordSlotButtons { rect, .. }
-      | MonomeWindowConfig::TwelveEdoOffsetBoard { rect, .. }
-      | MonomeWindowConfig::PreimageRow { rect, .. }
-      | MonomeWindowConfig::RemappableUn12Grid { rect, .. }
-      | MonomeWindowConfig::RemapUndoButton { rect, .. }
-      | MonomeWindowConfig::RecordControl { rect, .. }
-      | MonomeWindowConfig::ScaleSlots { rect, .. }
-      | MonomeWindowConfig::ScaleControl { rect, .. }
-      | MonomeWindowConfig::WaveformSelector { rect, .. }
-      | MonomeWindowConfig::VolumeStrip { rect, .. }
-      | MonomeWindowConfig::DistortionToggle { rect, .. }
-      | MonomeWindowConfig::SlideToggle { rect, .. }
-      | MonomeWindowConfig::MonoToggle { rect, .. }
-      | MonomeWindowConfig::SoftstepAccretesToggle { rect, .. }
-      | MonomeWindowConfig::TapTempoPad { rect, .. }
-      | MonomeWindowConfig::AccreteControl { rect, .. }
-      | MonomeWindowConfig::EdoShiftPad { rect, .. }
-      | MonomeWindowConfig::LoopSlots { rect, .. }
-      | MonomeWindowConfig::LoopControl { rect, .. }
-      | MonomeWindowConfig::LoopRemapModeToggle { rect, .. }
-      | MonomeWindowConfig::LoopCopyButton { rect, .. }
-      | MonomeWindowConfig::LoopRemapUndo { rect, .. }
-      | MonomeWindowConfig::LoopDisplay { rect, .. }
-      | MonomeWindowConfig::TimbreEditor { rect, .. } => *rect,
+      MonomeWindowRig::EdoNoteGrid { rect, .. }
+      | MonomeWindowRig::ChordWipeButton { rect, .. }
+      | MonomeWindowRig::ChordAccreteToggle { rect, .. }
+      | MonomeWindowRig::ChordEmitModeToggle { rect, .. }
+      | MonomeWindowRig::ChordTargetButton { rect, .. }
+      | MonomeWindowRig::ChordSlotButtons { rect, .. }
+      | MonomeWindowRig::TwelveEdoOffsetBoard { rect, .. }
+      | MonomeWindowRig::PreimageRow { rect, .. }
+      | MonomeWindowRig::RemappableUn12Grid { rect, .. }
+      | MonomeWindowRig::RemapUndoButton { rect, .. }
+      | MonomeWindowRig::RecordControl { rect, .. }
+      | MonomeWindowRig::ScaleSlots { rect, .. }
+      | MonomeWindowRig::ScaleControl { rect, .. }
+      | MonomeWindowRig::WaveformSelector { rect, .. }
+      | MonomeWindowRig::VolumeStrip { rect, .. }
+      | MonomeWindowRig::DistortionToggle { rect, .. }
+      | MonomeWindowRig::SlideToggle { rect, .. }
+      | MonomeWindowRig::MonoToggle { rect, .. }
+      | MonomeWindowRig::SoftstepAccretesToggle { rect, .. }
+      | MonomeWindowRig::TapTempoPad { rect, .. }
+      | MonomeWindowRig::AccreteControl { rect, .. }
+      | MonomeWindowRig::EdoShiftPad { rect, .. }
+      | MonomeWindowRig::LoopSlots { rect, .. }
+      | MonomeWindowRig::LoopControl { rect, .. }
+      | MonomeWindowRig::LoopRemapModeToggle { rect, .. }
+      | MonomeWindowRig::LoopCopyButton { rect, .. }
+      | MonomeWindowRig::LoopRemapUndo { rect, .. }
+      | MonomeWindowRig::LoopDisplay { rect, .. }
+      | MonomeWindowRig::TimbreEditor { rect, .. } => *rect,
     }
   }
 
-  /// A human-readable kind label (matches the config `kind = "..."` tag).
+  /// A human-readable kind label (matches the rig `kind = "..."` tag).
   pub fn kind_name(&self) -> &'static str {
     match self {
-      MonomeWindowConfig::EdoNoteGrid { .. } => "edo_note_grid",
-      MonomeWindowConfig::ChordWipeButton { .. } => "chord_wipe_button",
-      MonomeWindowConfig::ChordAccreteToggle { .. } => "chord_accrete_toggle",
-      MonomeWindowConfig::ChordEmitModeToggle { .. } => "chord_emit_mode_toggle",
-      MonomeWindowConfig::ChordTargetButton { .. } => "chord_target_button",
-      MonomeWindowConfig::ChordSlotButtons { .. } => "chord_slot_buttons",
-      MonomeWindowConfig::TwelveEdoOffsetBoard { .. } => "twelve_edo_offset_board",
-      MonomeWindowConfig::PreimageRow { .. } => "preimage_row",
-      MonomeWindowConfig::RemappableUn12Grid { .. } => "remappable_un12_grid",
-      MonomeWindowConfig::RemapUndoButton { .. } => "remap_undo_button",
-      MonomeWindowConfig::RecordControl { .. } => "record_control",
-      MonomeWindowConfig::ScaleSlots { .. } => "scale_slots",
-      MonomeWindowConfig::ScaleControl { .. } => "scale_control",
-      MonomeWindowConfig::WaveformSelector { .. } => "waveform_selector",
-      MonomeWindowConfig::VolumeStrip { .. } => "volume_strip",
-      MonomeWindowConfig::DistortionToggle { .. } => "distortion_toggle",
-      MonomeWindowConfig::SlideToggle { .. } => "slide_toggle",
-      MonomeWindowConfig::MonoToggle { .. } => "mono_toggle",
-      MonomeWindowConfig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
-      MonomeWindowConfig::TapTempoPad { .. } => "tap_tempo_pad",
-      MonomeWindowConfig::AccreteControl { .. } => "accrete_control",
-      MonomeWindowConfig::EdoShiftPad { .. } => "edo_shift_pad",
-      MonomeWindowConfig::LoopSlots { .. } => "loop_slots",
-      MonomeWindowConfig::LoopControl { .. } => "loop_control",
-      MonomeWindowConfig::LoopRemapModeToggle { .. } => "loop_remap_mode_toggle",
-      MonomeWindowConfig::LoopCopyButton { .. } => "loop_copy_button",
-      MonomeWindowConfig::LoopRemapUndo { .. } => "loop_remap_undo",
-      MonomeWindowConfig::LoopDisplay { .. } => "loop_display",
-      MonomeWindowConfig::TimbreEditor { .. } => "timbre_editor",
+      MonomeWindowRig::EdoNoteGrid { .. } => "edo_note_grid",
+      MonomeWindowRig::ChordWipeButton { .. } => "chord_wipe_button",
+      MonomeWindowRig::ChordAccreteToggle { .. } => "chord_accrete_toggle",
+      MonomeWindowRig::ChordEmitModeToggle { .. } => "chord_emit_mode_toggle",
+      MonomeWindowRig::ChordTargetButton { .. } => "chord_target_button",
+      MonomeWindowRig::ChordSlotButtons { .. } => "chord_slot_buttons",
+      MonomeWindowRig::TwelveEdoOffsetBoard { .. } => "twelve_edo_offset_board",
+      MonomeWindowRig::PreimageRow { .. } => "preimage_row",
+      MonomeWindowRig::RemappableUn12Grid { .. } => "remappable_un12_grid",
+      MonomeWindowRig::RemapUndoButton { .. } => "remap_undo_button",
+      MonomeWindowRig::RecordControl { .. } => "record_control",
+      MonomeWindowRig::ScaleSlots { .. } => "scale_slots",
+      MonomeWindowRig::ScaleControl { .. } => "scale_control",
+      MonomeWindowRig::WaveformSelector { .. } => "waveform_selector",
+      MonomeWindowRig::VolumeStrip { .. } => "volume_strip",
+      MonomeWindowRig::DistortionToggle { .. } => "distortion_toggle",
+      MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
+      MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
+      MonomeWindowRig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
+      MonomeWindowRig::TapTempoPad { .. } => "tap_tempo_pad",
+      MonomeWindowRig::AccreteControl { .. } => "accrete_control",
+      MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
+      MonomeWindowRig::LoopSlots { .. } => "loop_slots",
+      MonomeWindowRig::LoopControl { .. } => "loop_control",
+      MonomeWindowRig::LoopRemapModeToggle { .. } => "loop_remap_mode_toggle",
+      MonomeWindowRig::LoopCopyButton { .. } => "loop_copy_button",
+      MonomeWindowRig::LoopRemapUndo { .. } => "loop_remap_undo",
+      MonomeWindowRig::LoopDisplay { .. } => "loop_display",
+      MonomeWindowRig::TimbreEditor { .. } => "timbre_editor",
     }
   }
 
@@ -1029,9 +1029,9 @@ impl MonomeWindowConfig {
   #[allow(clippy::type_complexity)]
   pub fn timbre_editor_rows(
     &self,
-  ) -> Option<(TimbreTarget, [RowRangeConfig; 6])> {
+  ) -> Option<(TimbreTarget, [RowRangeRig; 6])> {
     match self {
-      MonomeWindowConfig::TimbreEditor {
+      MonomeWindowRig::TimbreEditor {
         target,
         amplitude,
         am_amplitude,
@@ -1052,7 +1052,7 @@ impl MonomeWindowConfig {
   /// other window kinds. Used by `resolve_settings` (save-undo is loop-editor only).
   pub fn timbre_editor_save_undo_ms(&self) -> Option<(TimbreTarget, u64)> {
     match self {
-      MonomeWindowConfig::TimbreEditor { target, save_undo_double_ms, .. } => {
+      MonomeWindowRig::TimbreEditor { target, save_undo_double_ms, .. } => {
         Some((*target, *save_undo_double_ms))
       }
       _ => None,
@@ -1070,7 +1070,7 @@ impl MonomeWindowConfig {
 /// `sample` / `ditto = true` per pad, and at most one ditto pad per window.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct DrumPadConfig {
+pub struct DrumPadRig {
   pub pedal: u8,
   #[serde(default)]
   pub sample: Option<String>,
@@ -1084,9 +1084,9 @@ fn default_pad_gain() -> f32 {
   1.0
 }
 
-// --- Shared SoftStep detection & velocity parameters (configs/softstep.toml) ------------
-// These drive the drumkit decoder. There is no reason for them to vary per config, so they
-// live in one shared file loaded by `load_softstep_params`, not in each config's window.
+// --- Shared SoftStep detection & velocity parameters (rigs/softstep.toml) ------------
+// These drive the drumkit decoder. There is no reason for them to vary per rig, so they
+// live in one shared file loaded by `load_softstep_params`, not in each rig's window.
 fn default_on_sum() -> u16 {
   20
 }
@@ -1109,8 +1109,8 @@ fn default_silence_to_zero_ms() -> u64 {
   25
 }
 
-/// Hit-detection & velocity parameters for the SoftStep, shared by every config that uses
-/// it. Loaded once from `configs/softstep.toml` (not from any per-config window), so one
+/// Hit-detection & velocity parameters for the SoftStep, shared by every rig that uses
+/// it. Loaded once from `rigs/softstep.toml` (not from any per-rig window), so one
 /// set of numbers drives the drumkit. Every field is optional; a missing file or key uses
 /// the default. The Python meter (`code/python/softstep/meter/`) mirrors these.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -1153,10 +1153,10 @@ impl Default for SoftstepParams {
   }
 }
 
-/// Load the shared SoftStep parameters from `configs/softstep.toml`. A missing file uses
+/// Load the shared SoftStep parameters from `rigs/softstep.toml`. A missing file uses
 /// the defaults; a present file with a parse error or unknown key is a hard error.
 pub fn load_softstep_params() -> Result<SoftstepParams, String> {
-  let path = config_dir().join("softstep.toml");
+  let path = rig_dir().join("softstep.toml");
   match std::fs::read_to_string(&path) {
     Ok(text) => toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SoftstepParams::default()),
@@ -1166,10 +1166,10 @@ pub fn load_softstep_params() -> Result<SoftstepParams, String> {
 
 /// A window over a SoftStep: a `kind` behavior bound to a declared `softstep`
 /// device. The same windowing idiom as `monome_windows`; new arrangements are new
-/// kinds (or new configs). Today the only kind is `drumkit`.
+/// kinds (or new rigs). Today the only kind is `drumkit`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SoftstepWindowConfig {
+pub enum SoftstepWindowRig {
   /// Maps pedals to one-shot drum samples played through a `cpal_sampler` sink.
   /// Each pad's `sample` resolves under the top-level `drum-samples/` folder
   /// (`drum_samples_dir`); a `sample` may name a subpath for multi-kit layouts.
@@ -1178,35 +1178,35 @@ pub enum SoftstepWindowConfig {
     softstep: String,
     sink: String,
     // Detection/velocity knobs (debounce, de-stick, thresholds) are NOT here -- they are
-    // shared across configs and live in configs/softstep.toml (see `SoftstepParams`).
-    pads: Vec<DrumPadConfig>,
+    // shared across rigs and live in rigs/softstep.toml (see `SoftstepParams`).
+    pads: Vec<DrumPadRig>,
   },
 }
 
-impl SoftstepWindowConfig {
+impl SoftstepWindowRig {
   pub fn id(&self) -> &str {
     match self {
-      SoftstepWindowConfig::Drumkit { id, .. } => id,
+      SoftstepWindowRig::Drumkit { id, .. } => id,
     }
   }
 
   pub fn softstep(&self) -> &str {
     match self {
-      SoftstepWindowConfig::Drumkit { softstep, .. } => softstep,
+      SoftstepWindowRig::Drumkit { softstep, .. } => softstep,
     }
   }
 
-  /// A human-readable kind label (matches the config `kind = "..."` tag).
+  /// A human-readable kind label (matches the rig `kind = "..."` tag).
   pub fn kind_name(&self) -> &'static str {
     match self {
-      SoftstepWindowConfig::Drumkit { .. } => "drumkit",
+      SoftstepWindowRig::Drumkit { .. } => "drumkit",
     }
   }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DisplayConfig {
+pub enum DisplayRig {
   PitchClassGrid {
     enabled: bool,
     rows: usize,
@@ -1218,8 +1218,8 @@ pub enum DisplayConfig {
   },
 }
 
-pub fn config_dir() -> PathBuf {
-  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("code/rust/configs")
+pub fn rig_dir() -> PathBuf {
+  PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("code/rust/rigs")
 }
 
 /// Top-level folder holding drum-sample WAVs. A `drumkit` window's pads resolve
@@ -1228,23 +1228,23 @@ pub fn drum_samples_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("drum-samples")
 }
 
-/// Mock-rig configs (mock ports/prefixes) live here, separate from `config_dir` so
-/// the real-config sweep (`loads_default_configs`) doesn't pick them up. Resolved by
-/// name as a fallback (see `config_path`), so `<name>-mock` loads by name too.
-pub fn mock_config_dir() -> PathBuf {
+/// Mock-rig rigs (mock ports/prefixes) live here, separate from `rig_dir` so
+/// the real-rig sweep (`loads_default_rigs`) doesn't pick them up. Resolved by
+/// name as a fallback (see `rig_path`), so `<name>-mock` loads by name too.
+pub fn mock_rig_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("code/rust/mocks")
 }
 
-pub fn config_path(name: &str) -> Result<PathBuf, String> {
+pub fn rig_path(name: &str) -> Result<PathBuf, String> {
   if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
-    return Err(format!("config name must not be a path, got {name:?}"));
+    return Err(format!("rig name must not be a path, got {name:?}"));
   }
-  // Prefer a real config; fall back to the mock dir so a mock-rig config resolves by
+  // Prefer a real rig; fall back to the mock dir so a mock-rig rig resolves by
   // name (the integration tests and `cargo run -- <name>-mock`). If neither exists,
-  // return the configs/ path so the not-found error names the expected location.
-  let primary = config_dir().join(name).with_extension("toml");
+  // return the rigs/ path so the not-found error names the expected location.
+  let primary = rig_dir().join(name).with_extension("toml");
   if !primary.exists() {
-    let mock = mock_config_dir().join(name).with_extension("toml");
+    let mock = mock_rig_dir().join(name).with_extension("toml");
     if mock.exists() {
       return Ok(mock);
     }
@@ -1252,46 +1252,46 @@ pub fn config_path(name: &str) -> Result<PathBuf, String> {
   Ok(primary)
 }
 
-pub fn load_named_config(name: &str) -> Result<Config, String> {
-  let path = config_path(name)?;
-  load_config_file(&path)
+pub fn load_named_rig(name: &str) -> Result<Rig, String> {
+  let path = rig_path(name)?;
+  load_rig_file(&path)
 }
 
-pub fn load_config_file(path: &Path) -> Result<Config, String> {
+pub fn load_rig_file(path: &Path) -> Result<Rig, String> {
   let source = std::fs::read_to_string(path)
-    .map_err(|e| format!("read config {}: {e}", path.display()))?;
-  parse_config(&source).map_err(|e| format!("parse config {}: {e}", path.display()))
+    .map_err(|e| format!("read rig {}: {e}", path.display()))?;
+  parse_rig(&source).map_err(|e| format!("parse rig {}: {e}", path.display()))
 }
 
-pub fn parse_config(source: &str) -> Result<Config, String> {
-  let config: Config = toml::from_str(source).map_err(|e| e.to_string())?;
-  validate_config(&config)?;
-  Ok(config)
+pub fn parse_rig(source: &str) -> Result<Rig, String> {
+  let rig: Rig = toml::from_str(source).map_err(|e| e.to_string())?;
+  validate_rig(&rig)?;
+  Ok(rig)
 }
 
-pub fn validate_config(config: &Config) -> Result<(), String> {
-  if config.version != 1 {
-    return Err(format!("version must be 1, got {}", config.version));
+pub fn validate_rig(rig: &Rig) -> Result<(), String> {
+  if rig.version != 1 {
+    return Err(format!("version must be 1, got {}", rig.version));
   }
-  require_unique("tuning", config.tunings.iter().map(|t| t.id.as_str()))?;
-  require_unique("monome", config.monomes.iter().map(|m| m.id.as_str()))?;
-  require_unique("sink", config.sinks.iter().map(SinkConfig::id))?;
-  require_unique("monome window", config.monome_windows.iter().map(MonomeWindowConfig::id))?;
-  require_unique("softstep", config.softsteps.iter().map(|s| s.id.as_str()))?;
+  require_unique("tuning", rig.tunings.iter().map(|t| t.id.as_str()))?;
+  require_unique("monome", rig.monomes.iter().map(|m| m.id.as_str()))?;
+  require_unique("sink", rig.sinks.iter().map(SinkRig::id))?;
+  require_unique("monome window", rig.monome_windows.iter().map(MonomeWindowRig::id))?;
+  require_unique("softstep", rig.softsteps.iter().map(|s| s.id.as_str()))?;
   require_unique(
     "softstep window",
-    config.softstep_windows.iter().map(SoftstepWindowConfig::id),
+    rig.softstep_windows.iter().map(SoftstepWindowRig::id),
   )?;
   require_unique(
     "monome listen_port",
-    config.monomes.iter().map(|m| m.listen_port.to_string()),
+    rig.monomes.iter().map(|m| m.listen_port.to_string()),
   )?;
 
-  let tuning_ids: HashSet<&str> = config.tunings.iter().map(|t| t.id.as_str()).collect();
-  let monome_ids: HashSet<&str> = config.monomes.iter().map(|m| m.id.as_str()).collect();
-  let sink_ids: HashSet<&str> = config.sinks.iter().map(SinkConfig::id).collect();
+  let tuning_ids: HashSet<&str> = rig.tunings.iter().map(|t| t.id.as_str()).collect();
+  let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
+  let sink_ids: HashSet<&str> = rig.sinks.iter().map(SinkRig::id).collect();
 
-  for tuning in &config.tunings {
+  for tuning in &rig.tunings {
     if tuning.edo <= 0 {
       return Err(format!("tuning {:?} edo must be positive", tuning.id));
     }
@@ -1300,8 +1300,8 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
     }
   }
 
-  if let Some(piano) = &config.piano {
-    if let PianoMappingConfig::RemappableUn12 { tuning, .. } = &piano.mapping {
+  if let Some(piano) = &rig.piano {
+    if let PianoMappingRig::RemappableUn12 { tuning, .. } = &piano.mapping {
       require_ref("piano.mapping.tuning", tuning, &tuning_ids)?;
     }
     for region in &piano.regions {
@@ -1309,12 +1309,12 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
         return Err(format!("piano region range must be ascending: {:?}", region.range));
       }
       match region.action {
-        PianoRegionActionConfig::EmitNotes => {
+        PianoRegionActionRig::EmitNotes => {
           if region.zero_note.is_some() {
             return Err("emit_notes piano region cannot set zero_note".to_string());
           }
         }
-        PianoRegionActionConfig::HeldOffsetControl => {
+        PianoRegionActionRig::HeldOffsetControl => {
           let Some(zero_note) = region.zero_note else {
             return Err("held_offset_control piano region requires zero_note".to_string());
           };
@@ -1329,8 +1329,8 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
     }
   }
 
-  for sink in &config.sinks {
-    if let SinkConfig::CpalSynth {
+  for sink in &rig.sinks {
+    if let SinkRig::CpalSynth {
       sample_rate,
       buffer_frames,
       amplitude,
@@ -1357,7 +1357,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
         }
       }
     }
-    if let SinkConfig::CpalSampler { sample_rate, buffer_frames, amplitude, .. } = sink {
+    if let SinkRig::CpalSampler { sample_rate, buffer_frames, amplitude, .. } = sink {
       if *sample_rate == 0 || *buffer_frames == 0 {
         return Err(format!("sink {:?} sample_rate and buffer_frames must be positive", sink.id()));
       }
@@ -1370,21 +1370,21 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
   let mut record_control_kinds: HashSet<RecordControlKind> = HashSet::new();
   let mut scale_control_kinds: HashSet<ScaleControlKind> = HashSet::new();
   let mut loop_control_kinds: HashSet<LoopControlKind> = HashSet::new();
-  for window in &config.monome_windows {
+  for window in &rig.monome_windows {
     require_ref("monome_window.monome", window.monome(), &monome_ids)?;
     let [x0, y0, x1, y1] = window.rect();
     if x0 > x1 || y0 > y1 {
       return Err(format!("monome window {:?} rect must be ascending", window.id()));
     }
     match window {
-      MonomeWindowConfig::EdoNoteGrid { tuning, sink, .. } => {
+      MonomeWindowRig::EdoNoteGrid { tuning, sink, .. } => {
         require_ref("monome_window.tuning", tuning, &tuning_ids)?;
         require_ref("monome_window.sink", sink, &sink_ids)?;
       }
-      MonomeWindowConfig::RemappableUn12Grid { tuning, .. } => {
+      MonomeWindowRig::RemappableUn12Grid { tuning, .. } => {
         require_ref("monome_window.tuning", tuning, &tuning_ids)?;
       }
-      MonomeWindowConfig::RecordControl { id, rect, control, .. } => {
+      MonomeWindowRig::RecordControl { id, rect, control, .. } => {
         if rect[0] != rect[2] || rect[1] != rect[3] {
           return Err(format!(
             "record_control window {:?} rect must cover exactly one cell",
@@ -1398,7 +1398,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
           ));
         }
       }
-      MonomeWindowConfig::ScaleControl { id, rect, control, .. } => {
+      MonomeWindowRig::ScaleControl { id, rect, control, .. } => {
         if rect[0] != rect[2] || rect[1] != rect[3] {
           return Err(format!(
             "scale_control window {:?} rect must cover exactly one cell",
@@ -1412,7 +1412,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
           ));
         }
       }
-      MonomeWindowConfig::LoopControl { id, rect, control, .. } => {
+      MonomeWindowRig::LoopControl { id, rect, control, .. } => {
         if rect[0] != rect[2] || rect[1] != rect[3] {
           return Err(format!(
             "loop_control window {:?} rect must cover exactly one cell",
@@ -1426,7 +1426,7 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
           ));
         }
       }
-      MonomeWindowConfig::TimbreEditor { id, .. } => {
+      MonomeWindowRig::TimbreEditor { id, .. } => {
         // Unfolded the editor is 7 rows (control + amplitude + 5 FX rows) and needs
         // the control row's fold + 4 waveform cells (>=5 wide). 6_plan 2.7.
         if x1 - x0 + 1 < 5 {
@@ -1449,33 +1449,33 @@ pub fn validate_config(config: &Config) -> Result<(), String> {
     }
   }
 
-  validate_window_groups(config)?;
-  validate_shift_pads(config)?;
-  validate_waveform_selectors(config)?;
-  validate_volume_strips(config)?;
-  validate_accrete_controls(config)?;
-  validate_single_cell_toggles(config)?;
-  validate_tap_tempo_pads(config)?;
-  validate_timbres(config)?;
-  validate_looper(config)?;
-  validate_softsteps(config)?;
+  validate_window_groups(rig)?;
+  validate_shift_pads(rig)?;
+  validate_waveform_selectors(rig)?;
+  validate_volume_strips(rig)?;
+  validate_accrete_controls(rig)?;
+  validate_single_cell_toggles(rig)?;
+  validate_tap_tempo_pads(rig)?;
+  validate_timbres(rig)?;
+  validate_looper(rig)?;
+  validate_softsteps(rig)?;
 
   Ok(())
 }
 
 /// The `[[timbres]]` table: when present it must have exactly four entries (the
 /// waveform strip has four cells), and every numeric parameter must be in range.
-fn validate_timbres(config: &Config) -> Result<(), String> {
-  if config.timbres.is_empty() {
+fn validate_timbres(rig: &Rig) -> Result<(), String> {
+  if rig.timbres.is_empty() {
     return Ok(());
   }
-  if config.timbres.len() != 4 {
+  if rig.timbres.len() != 4 {
     return Err(format!(
       "[[timbres]] must have exactly 4 entries (the waveform strip's four cells), got {}",
-      config.timbres.len(),
+      rig.timbres.len(),
     ));
   }
-  for (i, t) in config.timbres.iter().enumerate() {
+  for (i, t) in rig.timbres.iter().enumerate() {
     if t.amplitude < 0.0 {
       return Err(format!("timbre {i}: amplitude must be >= 0, got {}", t.amplitude));
     }
@@ -1498,10 +1498,10 @@ fn validate_timbres(config: &Config) -> Result<(), String> {
 /// A `tap_tempo_pad` is exactly 3x2 cells on a monome that has an `edo_note_grid`,
 /// at most one per monome (its six sub-cells are the fixed x3/x2/tap and /3/2/=1
 /// layout).
-fn validate_tap_tempo_pads(config: &Config) -> Result<(), String> {
+fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
   let mut seen: HashSet<&str> = HashSet::new();
-  for window in &config.monome_windows {
-    let MonomeWindowConfig::TapTempoPad { id, monome, rect } = window else {
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::TapTempoPad { id, monome, rect } = window else {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
@@ -1510,15 +1510,15 @@ fn validate_tap_tempo_pads(config: &Config) -> Result<(), String> {
         "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
       ));
     }
-    let has_edo_grid = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    let has_edo_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
     });
     if !has_edo_grid {
       return Err(format!(
         "tap_tempo_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
-    let [gw, gh] = config
+    let [gw, gh] = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome)
@@ -1540,19 +1540,19 @@ fn validate_tap_tempo_pads(config: &Config) -> Result<(), String> {
 /// `mono_toggle`): each is one cell on a monome that has an `edo_note_grid`, at most
 /// one of each kind per monome (a second would be a redundant twin of the same
 /// global switch).
-fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
+fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
   // (kind label, id, monome, rect) for every toggle window.
-  let toggles = config.monome_windows.iter().filter_map(|w| match w {
-    MonomeWindowConfig::DistortionToggle { id, monome, rect } => {
+  let toggles = rig.monome_windows.iter().filter_map(|w| match w {
+    MonomeWindowRig::DistortionToggle { id, monome, rect } => {
       Some(("distortion_toggle", id, monome, *rect))
     }
-    MonomeWindowConfig::SlideToggle { id, monome, rect } => {
+    MonomeWindowRig::SlideToggle { id, monome, rect } => {
       Some(("slide_toggle", id, monome, *rect))
     }
-    MonomeWindowConfig::MonoToggle { id, monome, rect } => {
+    MonomeWindowRig::MonoToggle { id, monome, rect } => {
       Some(("mono_toggle", id, monome, *rect))
     }
-    MonomeWindowConfig::SoftstepAccretesToggle { id, monome, rect } => {
+    MonomeWindowRig::SoftstepAccretesToggle { id, monome, rect } => {
       Some(("softstep_accretes_toggle", id, monome, *rect))
     }
     _ => None,
@@ -1565,15 +1565,15 @@ fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
         "{kind} window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
       ));
     }
-    let has_edo_grid = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    let has_edo_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
     });
     if !has_edo_grid {
       return Err(format!(
         "{kind} window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
-    let [gw, gh] = config
+    let [gw, gh] = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome)
@@ -1597,10 +1597,10 @@ fn validate_single_cell_toggles(config: &Config) -> Result<(), String> {
 /// clear / needs_holding / accrete, each at most once -- since the trio only makes
 /// sense together (accrete with no clear would be an un-silenceable drone). The
 /// `erase` kind is optional on top of the trio (misc.org "erase button").
-fn validate_accrete_controls(config: &Config) -> Result<(), String> {
+fn validate_accrete_controls(rig: &Rig) -> Result<(), String> {
   let mut per_monome: HashMap<&str, Vec<AccreteControlKind>> = HashMap::new();
-  for window in &config.monome_windows {
-    let MonomeWindowConfig::AccreteControl { id, monome, rect, control } = window else {
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::AccreteControl { id, monome, rect, control } = window else {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
@@ -1609,15 +1609,15 @@ fn validate_accrete_controls(config: &Config) -> Result<(), String> {
         "accrete_control window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must cover exactly one cell",
       ));
     }
-    let has_edo_grid = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    let has_edo_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
     });
     if !has_edo_grid {
       return Err(format!(
         "accrete_control window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
-    let [gw, gh] = config
+    let [gw, gh] = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome)
@@ -1655,10 +1655,10 @@ fn validate_accrete_controls(config: &Config) -> Result<(), String> {
 /// single row at least two cells wide, and `controls` must name a declared monome that
 /// has an `edo_note_grid` (the grid whose voices it sets the volume of) -- the same
 /// cross-grid wiring as `waveform_selector`.
-fn validate_volume_strips(config: &Config) -> Result<(), String> {
-  let monome_ids: HashSet<&str> = config.monomes.iter().map(|m| m.id.as_str()).collect();
-  for window in &config.monome_windows {
-    let MonomeWindowConfig::VolumeStrip { id, monome, rect, controls } = window else {
+fn validate_volume_strips(rig: &Rig) -> Result<(), String> {
+  let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::VolumeStrip { id, monome, rect, controls } = window else {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
@@ -1668,15 +1668,15 @@ fn validate_volume_strips(config: &Config) -> Result<(), String> {
       ));
     }
     require_ref("volume_strip.controls", controls, &monome_ids)?;
-    let controlled_has_grid = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == controls)
+    let controlled_has_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == controls)
     });
     if !controlled_has_grid {
       return Err(format!(
         "volume_strip window {id:?} controls monome {controls:?}, which has no edo_note_grid",
       ));
     }
-    let [gw, gh] = config
+    let [gw, gh] = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome)
@@ -1695,11 +1695,11 @@ fn validate_volume_strips(config: &Config) -> Result<(), String> {
 /// must cover exactly the four waveform cells (one row, four wide), and `controls`
 /// must name a declared monome that has an `edo_note_grid` (the grid whose voices
 /// it re-timbres). `controls` may differ from the selector's own `monome` -- that
-/// cross-grid wiring is exactly what the surfaces config uses.
-fn validate_waveform_selectors(config: &Config) -> Result<(), String> {
-  let monome_ids: HashSet<&str> = config.monomes.iter().map(|m| m.id.as_str()).collect();
-  for window in &config.monome_windows {
-    let MonomeWindowConfig::WaveformSelector { id, monome, rect, controls } = window else {
+/// cross-grid wiring is exactly what the surfaces rig uses.
+fn validate_waveform_selectors(rig: &Rig) -> Result<(), String> {
+  let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::WaveformSelector { id, monome, rect, controls } = window else {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
@@ -1709,8 +1709,8 @@ fn validate_waveform_selectors(config: &Config) -> Result<(), String> {
       ));
     }
     require_ref("waveform_selector.controls", controls, &monome_ids)?;
-    let controlled_has_grid = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == controls)
+    let controlled_has_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == controls)
     });
     if !controlled_has_grid {
       return Err(format!(
@@ -1718,7 +1718,7 @@ fn validate_waveform_selectors(config: &Config) -> Result<(), String> {
       ));
     }
     // The strip is drawn on its own grid, so its rect must fit that monome.
-    let [gw, gh] = config
+    let [gw, gh] = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome)
@@ -1735,23 +1735,23 @@ fn validate_waveform_selectors(config: &Config) -> Result<(), String> {
 
 /// An `edo_shift_pad` is a generally-valid window (not tied to the looper stack):
 /// it needs an `edo_note_grid` on the *same* monome to scroll, and its rect must
-/// fit that monome's grid. This runs for every config, so a plain sawwave grid,
+/// fit that monome's grid. This runs for every rig, so a plain sawwave grid,
 /// the surfaces runtime's grids, and the looper all validate a shift pad the same
 /// way. (The looper's own `validate_looper` separately checks the edo grid fits.)
-fn validate_shift_pads(config: &Config) -> Result<(), String> {
-  for window in &config.monome_windows {
-    let MonomeWindowConfig::EdoShiftPad { id, monome, rect } = window else {
+fn validate_shift_pads(rig: &Rig) -> Result<(), String> {
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::EdoShiftPad { id, monome, rect } = window else {
       continue;
     };
-    let has_edo_grid = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::EdoNoteGrid { monome: m, .. } if m == monome)
+    let has_edo_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
     });
     if !has_edo_grid {
       return Err(format!(
         "edo_shift_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
-    let [gw, gh] = config
+    let [gw, gh] = rig
       .monomes
       .iter()
       .find(|m| m.id == *monome)
@@ -1771,23 +1771,23 @@ fn validate_shift_pads(config: &Config) -> Result<(), String> {
 /// `cpal_sampler` sink; pedals are the 10 printed labels 0..9, claimed by at most
 /// one window per device; sample filenames must be safe and present. Validation is
 /// filesystem-free (sample *existence* is checked at load time, with a clear error)
-/// so configs stay unit-testable without fixture WAVs.
-fn validate_softsteps(config: &Config) -> Result<(), String> {
-  let softstep_ids: HashSet<&str> = config.softsteps.iter().map(|s| s.id.as_str()).collect();
-  let sampler_sink_ids: HashSet<&str> = config
+/// so rigs stay unit-testable without fixture WAVs.
+fn validate_softsteps(rig: &Rig) -> Result<(), String> {
+  let softstep_ids: HashSet<&str> = rig.softsteps.iter().map(|s| s.id.as_str()).collect();
+  let sampler_sink_ids: HashSet<&str> = rig
     .sinks
     .iter()
-    .filter(|s| matches!(s, SinkConfig::CpalSampler { .. }))
-    .map(SinkConfig::id)
+    .filter(|s| matches!(s, SinkRig::CpalSampler { .. }))
+    .map(SinkRig::id)
     .collect();
 
   // pedals already claimed on a given device, so windows partition (never overlap).
   let mut claimed: std::collections::HashMap<&str, HashSet<u8>> = std::collections::HashMap::new();
 
-  for window in &config.softstep_windows {
+  for window in &rig.softstep_windows {
     require_ref("softstep_window.softstep", window.softstep(), &softstep_ids)?;
     match window {
-      SoftstepWindowConfig::Drumkit { id, sink, pads, .. } => {
+      SoftstepWindowRig::Drumkit { id, sink, pads, .. } => {
         if !sampler_sink_ids.contains(sink.as_str()) {
           return Err(format!(
             "drumkit window {id:?} sink {sink:?} must be a declared cpal_sampler sink",
@@ -1848,11 +1848,11 @@ fn validate_softsteps(config: &Config) -> Result<(), String> {
   }
 
   // No orphan devices: every declared softstep must be used by some window.
-  for softstep in &config.softsteps {
-    let used = config.softstep_windows.iter().any(|w| w.softstep() == softstep.id);
+  for softstep in &rig.softsteps {
+    let used = rig.softstep_windows.iter().any(|w| w.softstep() == softstep.id);
     if !used {
       return Err(format!(
-        "config declares softstep {:?} but no window uses it",
+        "rig declares softstep {:?} but no window uses it",
         softstep.id,
       ));
     }
@@ -1881,61 +1881,61 @@ fn validate_asset_subpath(label: &str, id: &str, value: &str) -> Result<(), Stri
 /// than the generic window-group mechanism can express (exact counts, a minimum
 /// display size, the remap-center bounds). It deliberately does NOT touch the
 /// existing "remap"/"record"/"scale" groups: the looper has its own
-/// `loop_remap_undo` kind, so no existing config's validation changes.
-fn validate_looper(config: &Config) -> Result<(), String> {
-  let count = |pred: fn(&MonomeWindowConfig) -> bool| {
-    config.monome_windows.iter().filter(|w| pred(w)).count()
+/// `loop_remap_undo` kind, so no existing rig's validation changes.
+fn validate_looper(rig: &Rig) -> Result<(), String> {
+  let count = |pred: fn(&MonomeWindowRig) -> bool| {
+    rig.monome_windows.iter().filter(|w| pred(w)).count()
   };
-  let loop_slots = count(|w| matches!(w, MonomeWindowConfig::LoopSlots { .. }));
-  let loop_displays = count(|w| matches!(w, MonomeWindowConfig::LoopDisplay { .. }));
+  let loop_slots = count(|w| matches!(w, MonomeWindowRig::LoopSlots { .. }));
+  let loop_displays = count(|w| matches!(w, MonomeWindowRig::LoopDisplay { .. }));
   // NB: edo_shift_pad is deliberately NOT in this set. It is a generally-valid
   // window (validated by `validate_shift_pads`), so a plain edo grid -- or the
   // surfaces runtime's two grids -- can carry a scroll pad without pulling in the
-  // whole looper stack. Looper configs still trip this via their loop_display etc.
-  let any_loop_window = config.monome_windows.iter().any(|w| {
+  // whole looper stack. Looper rigs still trip this via their loop_display etc.
+  let any_loop_window = rig.monome_windows.iter().any(|w| {
     matches!(
       w,
-      MonomeWindowConfig::LoopSlots { .. }
-        | MonomeWindowConfig::LoopControl { .. }
-        | MonomeWindowConfig::LoopRemapModeToggle { .. }
-        | MonomeWindowConfig::LoopCopyButton { .. }
-        | MonomeWindowConfig::LoopRemapUndo { .. }
-        | MonomeWindowConfig::LoopDisplay { .. }
+      MonomeWindowRig::LoopSlots { .. }
+        | MonomeWindowRig::LoopControl { .. }
+        | MonomeWindowRig::LoopRemapModeToggle { .. }
+        | MonomeWindowRig::LoopCopyButton { .. }
+        | MonomeWindowRig::LoopRemapUndo { .. }
+        | MonomeWindowRig::LoopDisplay { .. }
     )
   });
 
   // The [looper] table and the looper windows imply each other.
-  if any_loop_window && config.looper.is_none() {
+  if any_loop_window && rig.looper.is_none() {
     return Err("looper windows require a [looper] table".to_string());
   }
-  if config.looper.is_some() && !any_loop_window {
+  if rig.looper.is_some() && !any_loop_window {
     return Err("a [looper] table requires the looper windows".to_string());
   }
-  let Some(looper) = &config.looper else {
+  let Some(looper) = &rig.looper else {
     return Ok(());
   };
 
   // Core windows: a slot grid, a display, and the three transport controls. The
   // shift pad, mode toggle, copy and undo are optional add-ons.
   if loop_slots != 1 {
-    return Err(format!("a looper config needs exactly one loop_slots window, found {loop_slots}"));
+    return Err(format!("a looper rig needs exactly one loop_slots window, found {loop_slots}"));
   }
   if loop_displays != 1 {
-    return Err(format!("a looper config needs exactly one loop_display window, found {loop_displays}"));
+    return Err(format!("a looper rig needs exactly one loop_display window, found {loop_displays}"));
   }
   for control in [LoopControlKind::Start, LoopControlKind::Stop, LoopControlKind::Play] {
-    let present = config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::LoopControl { control: c, .. } if *c == control)
+    let present = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::LoopControl { control: c, .. } if *c == control)
     });
     if !present {
-      return Err(format!("a looper config needs a loop_control with control = {control:?}"));
+      return Err(format!("a looper rig needs a loop_control with control = {control:?}"));
     }
   }
 
   // The display rect must be at least 2x2 so the row-picker column, the
   // column-picker row, and a main area can be derived from it.
-  for window in &config.monome_windows {
-    if let MonomeWindowConfig::LoopDisplay { id, rect, .. } = window {
+  for window in &rig.monome_windows {
+    if let MonomeWindowRig::LoopDisplay { id, rect, .. } = window {
       let [x0, y0, x1, y1] = *rect;
       if x1 - x0 < 1 || y1 - y0 < 1 {
         return Err(format!(
@@ -1948,14 +1948,14 @@ fn validate_looper(config: &Config) -> Result<(), String> {
   // The edo_note_grid rect must fit its monome's grid (an oversized rect would let
   // a press land on a cell the LED render never iterates -- an invisible, stuck
   // voice), and the group-transpose "unison" key (remap_center) must lie inside it.
-  let edo = config.monome_windows.iter().find_map(|w| match w {
-    MonomeWindowConfig::EdoNoteGrid { monome, rect, .. } => Some((monome.clone(), *rect)),
+  let edo = rig.monome_windows.iter().find_map(|w| match w {
+    MonomeWindowRig::EdoNoteGrid { monome, rect, .. } => Some((monome.clone(), *rect)),
     _ => None,
   });
   let Some((edo_monome_id, [ex0, ey0, ex1, ey1])) = edo else {
-    return Err("a looper config needs an edo_note_grid window".to_string());
+    return Err("a looper rig needs an edo_note_grid window".to_string());
   };
-  let [gw, gh] = config
+  let [gw, gh] = rig
     .monomes
     .iter()
     .find(|m| m.id == edo_monome_id)
@@ -1992,10 +1992,10 @@ fn validate_looper(config: &Config) -> Result<(), String> {
   }
 
   // No orphan monomes: every declared monome must be used by some window.
-  for monome in &config.monomes {
-    let used = config.monome_windows.iter().any(|w| w.monome() == monome.id);
+  for monome in &rig.monomes {
+    let used = rig.monome_windows.iter().any(|w| w.monome() == monome.id);
     if !used {
-      return Err(format!("looper config declares monome {:?} but no window uses it", monome.id));
+      return Err(format!("looper rig declares monome {:?} but no window uses it", monome.id));
     }
   }
 
@@ -2004,22 +2004,22 @@ fn validate_looper(config: &Config) -> Result<(), String> {
 
 /// A timbre-editor parameter row must be finite and monotonic. Log rows need a
 /// positive base; a growth factor must exceed 1 or the row collapses.
-fn validate_row_range(id: &str, row: &RowRangeConfig) -> Result<(), String> {
+fn validate_row_range(id: &str, row: &RowRangeRig) -> Result<(), String> {
   let finite = |v: f32| v.is_finite();
   match *row {
-    RowRangeConfig::Linear { min, max } => {
+    RowRangeRig::Linear { min, max } => {
       if !finite(min) || !finite(max) || max < min {
         return Err(format!("timbre_editor window {id:?} linear row needs finite min <= max"));
       }
     }
-    RowRangeConfig::LogFactor { least, multiplier } => {
+    RowRangeRig::LogFactor { least, multiplier } => {
       if !finite(least) || least <= 0.0 || !finite(multiplier) || multiplier <= 1.0 {
         return Err(format!(
           "timbre_editor window {id:?} log_factor row needs least > 0 and multiplier > 1",
         ));
       }
     }
-    RowRangeConfig::LogRange { least, greatest } => {
+    RowRangeRig::LogRange { least, greatest } => {
       if !finite(least) || least <= 0.0 || !finite(greatest) || greatest < least {
         return Err(format!(
           "timbre_editor window {id:?} log_range row needs 0 < least <= greatest",
@@ -2031,12 +2031,12 @@ fn validate_row_range(id: &str, row: &RowRangeConfig) -> Result<(), String> {
 }
 
 /// Windows come in all-or-nothing groups, and a group may depend on another
-/// group. A config is modular -- it may omit a whole group -- but any group it
+/// group. A rig is modular -- it may omit a whole group -- but any group it
 /// declares must appear in its entirety, and a group's dependencies must also be
-/// present. (A config with no recording buttons is valid; it just launches a
+/// present. (A rig with no recording buttons is valid; it just launches a
 /// program with no recording abilities.)
-fn validate_window_groups(config: &Config) -> Result<(), String> {
-  let groups = window_groups(config);
+fn validate_window_groups(rig: &Rig) -> Result<(), String> {
+  let groups = window_groups(rig);
   // Each group is all-or-nothing: declaring any member requires all of them.
   for group in &groups {
     if group.active() {
@@ -2058,7 +2058,7 @@ fn validate_window_groups(config: &Config) -> Result<(), String> {
       let dep_active = groups.iter().any(|g| g.label == *dep && g.active());
       if !dep_active {
         return Err(format!(
-          "the {:?} window group requires the {:?} window group, which the config does not declare",
+          "the {:?} window group requires the {:?} window group, which the rig does not declare",
           group.label, dep,
         ));
       }
@@ -2091,17 +2091,17 @@ impl WindowGroup {
   }
 }
 
-fn window_groups(config: &Config) -> Vec<WindowGroup> {
+fn window_groups(rig: &Rig) -> Vec<WindowGroup> {
   let has_kind =
-    |pred: fn(&MonomeWindowConfig) -> bool| config.monome_windows.iter().any(pred);
+    |pred: fn(&MonomeWindowRig) -> bool| rig.monome_windows.iter().any(pred);
   let has_control = |control: RecordControlKind| {
-    config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::RecordControl { control: c, .. } if *c == control)
+    rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::RecordControl { control: c, .. } if *c == control)
     })
   };
   let has_scale_control = |control: ScaleControlKind| {
-    config.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowConfig::ScaleControl { control: c, .. } if *c == control)
+    rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::ScaleControl { control: c, .. } if *c == control)
     })
   };
   vec![
@@ -2112,15 +2112,15 @@ fn window_groups(config: &Config) -> Vec<WindowGroup> {
       members: vec![
         (
           "remappable_un12_grid",
-          has_kind(|w| matches!(w, MonomeWindowConfig::RemappableUn12Grid { .. })),
+          has_kind(|w| matches!(w, MonomeWindowRig::RemappableUn12Grid { .. })),
         ),
         (
           "preimage_row",
-          has_kind(|w| matches!(w, MonomeWindowConfig::PreimageRow { .. })),
+          has_kind(|w| matches!(w, MonomeWindowRig::PreimageRow { .. })),
         ),
         (
           "remap_undo_button",
-          has_kind(|w| matches!(w, MonomeWindowConfig::RemapUndoButton { .. })),
+          has_kind(|w| matches!(w, MonomeWindowRig::RemapUndoButton { .. })),
         ),
       ],
       depends_on: vec![],
@@ -2147,7 +2147,7 @@ fn window_groups(config: &Config) -> Vec<WindowGroup> {
       members: vec![
         (
           "scale_slots",
-          has_kind(|w| matches!(w, MonomeWindowConfig::ScaleSlots { .. })),
+          has_kind(|w| matches!(w, MonomeWindowRig::ScaleSlots { .. })),
         ),
         ("scale_control(store)", has_scale_control(ScaleControlKind::Store)),
         ("scale_control(empty)", has_scale_control(ScaleControlKind::Empty)),
@@ -2188,16 +2188,16 @@ mod tests {
   use super::*;
 
   #[test]
-  fn loads_default_configs() {
-    for entry in std::fs::read_dir(config_dir()).expect("read configs dir") {
-      let entry = entry.expect("config dir entry");
+  fn loads_default_rigs() {
+    for entry in std::fs::read_dir(rig_dir()).expect("read rigs dir") {
+      let entry = entry.expect("rig dir entry");
       let path = entry.path();
-      // softstep.toml is a shared SoftstepParams file, not a full runnable Config.
+      // softstep.toml is a shared SoftstepParams file, not a full runnable Rig.
       if path.file_name().and_then(|s| s.to_str()) == Some("softstep.toml") {
         continue;
       }
       if path.extension().and_then(|s| s.to_str()) == Some("toml") {
-        load_config_file(&path)
+        load_rig_file(&path)
           .unwrap_or_else(|e| panic!("{} should parse: {e}", path.display()));
       }
     }
@@ -2209,7 +2209,7 @@ mod tests {
     assert_eq!(SoftstepParams::default().debounce_ms, 100, "default debounce");
     assert_eq!(SoftstepParams::default().on_sum, 20);
     // The shipped softstep.toml parses and every field is present.
-    let params = load_softstep_params().expect("configs/softstep.toml parses");
+    let params = load_softstep_params().expect("rigs/softstep.toml parses");
     assert!(params.velocity_full_scale > 0 && params.attack_ms > 0);
     // Partial files fill in defaults; unknown keys are rejected.
     let partial: SoftstepParams = toml::from_str("on_sum = 7").unwrap();
@@ -2219,20 +2219,20 @@ mod tests {
   }
 
   #[test]
-  fn resolves_and_loads_mock_configs_by_name() {
-    // Mock-rig configs live in mocks/, not configs/, but must resolve by name so the
+  fn resolves_and_loads_mock_rigs_by_name() {
+    // Mock-rig rigs live in mocks/, not rigs/, but must resolve by name so the
     // mock-grid tests and `cargo run -- <name>-mock` find them.
     let name = "monome-looper-58-8-1-timbre-mock";
-    let path = config_path(name).expect("mock name resolves");
-    assert!(path.starts_with(mock_config_dir()), "should resolve into mocks/, got {}", path.display());
-    load_named_config(name).expect("mock config loads from the mock dir");
-    // A genuinely missing name still points at configs/ (the not-found error location).
-    assert!(config_path("definitely-not-a-real-config").unwrap().starts_with(config_dir()));
+    let path = rig_path(name).expect("mock name resolves");
+    assert!(path.starts_with(mock_rig_dir()), "should resolve into mocks/, got {}", path.display());
+    load_named_rig(name).expect("mock rig loads from the mock dir");
+    // A genuinely missing name still points at rigs/ (the not-found error location).
+    assert!(rig_path("definitely-not-a-real-rig").unwrap().starts_with(rig_dir()));
   }
 
   #[test]
   fn rejects_mixed_piano_mapping_variants() {
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "bad"
 title = "Bad"
@@ -2255,7 +2255,7 @@ remap_idiom = "snap"
 
   #[test]
   fn record_control_rect_must_be_single_cell() {
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "bad-rect"
 title = "Bad Rect"
@@ -2278,7 +2278,7 @@ rect = [13, 0, 14, 0]
 
   #[test]
   fn duplicate_record_control_kinds_are_rejected() {
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "dup-kind"
 title = "Dup Kind"
@@ -2307,10 +2307,10 @@ rect = [14, 0, 14, 0]
   }
 
   #[test]
-  fn config_without_recording_buttons_is_valid() {
-    // A modular config that omits the recording feature entirely must parse:
+  fn rig_without_recording_buttons_is_valid() {
+    // A modular rig that omits the recording feature entirely must parse:
     // it just launches a program with no recording abilities.
-    parse_config(r#"
+    parse_rig(r#"
 version = 1
 id = "no-record"
 title = "No Record"
@@ -2345,14 +2345,14 @@ id = "undo"
 monome = "big"
 kind = "remap_undo_button"
 rect = [15, 15, 15, 15]
-"#).expect("a config without recording buttons should be valid");
+"#).expect("a rig without recording buttons should be valid");
   }
 
   #[test]
   fn partial_remap_group_is_rejected() {
     // The remap group is all-or-nothing: a grid without its 12-edo row and undo
     // button is invalid.
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "lonely-grid"
 title = "Lonely Grid"
@@ -2385,7 +2385,7 @@ tuning = "main"
   fn partial_record_group_is_rejected() {
     // The record group is all-or-nothing: declaring some recording buttons but
     // not all of them is invalid, even with the remap group fully present.
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "partial-record"
 title = "Partial Record"
@@ -2443,8 +2443,8 @@ rect = [14, 0, 14, 0]
   #[test]
   fn record_group_requires_remap_group() {
     // The full record group is present, but it depends on the remap group,
-    // which this config omits entirely.
-    let err = parse_config(r#"
+    // which this rig omits entirely.
+    let err = parse_rig(r#"
 version = 1
 id = "record-no-remap"
 title = "Record No Remap"
@@ -2508,9 +2508,9 @@ rect = [15, 2, 15, 2]
   }
 
   #[test]
-  fn scale_slots_config_is_valid() {
+  fn scale_slots_rig_is_valid() {
     // The remap group plus a complete scale group (slot grid + store + empty).
-    parse_config(r#"
+    parse_rig(r#"
 version = 1
 id = "save-scales"
 title = "Save Scales"
@@ -2565,13 +2565,13 @@ monome = "big"
 kind = "scale_control"
 control = "empty"
 rect = [14, 4, 14, 4]
-"#).expect("a remap + complete scale config should be valid");
+"#).expect("a remap + complete scale rig should be valid");
   }
 
   #[test]
   fn partial_scale_group_is_rejected() {
     // Slot grid present, but the store/empty arm buttons are missing.
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "partial-scale"
 title = "Partial Scale"
@@ -2621,7 +2621,7 @@ rect = [12, 0, 15, 3]
   #[test]
   fn scale_group_requires_remap_group() {
     // A complete scale group, but no remap group to make scales with.
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "scale-no-remap"
 title = "Scale No Remap"
@@ -2657,7 +2657,7 @@ rect = [14, 4, 14, 4]
 
   #[test]
   fn tuning_main_is_a_reference_to_a_tuning_id() {
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "bad-ref"
 title = "Bad Ref"
@@ -2678,7 +2678,7 @@ initial_map = "even"
     assert!(err.contains("unknown id \"main\""), "{err}");
   }
 
-  // ---- Looper config validation. ----
+  // ---- Looper rig validation. ----
 
   const LOOPER_HEADER: &str = r#"version = 1
 id = "looper"
@@ -2774,20 +2774,20 @@ rect = [0, 5, 15, 15]
   }
 
   #[test]
-  fn looper_config_is_valid() {
-    parse_config(&valid_looper_toml()).expect("a complete looper config should be valid");
+  fn looper_rig_is_valid() {
+    parse_rig(&valid_looper_toml()).expect("a complete looper rig should be valid");
   }
 
   #[test]
   fn clock_duty_must_be_in_range() {
-    let err = parse_config(&valid_looper_toml().replace("clock_bpm = 300", "clock_bpm = 300\nclock_duty = 1.5"))
+    let err = parse_rig(&valid_looper_toml().replace("clock_bpm = 300", "clock_bpm = 300\nclock_duty = 1.5"))
       .expect_err("a clock_duty above 1 should fail");
     assert!(err.contains("clock_duty"), "{err}");
   }
 
   #[test]
   fn looper_windows_require_looper_table() {
-    let err = parse_config(&valid_looper_toml().replace(LOOPER_TABLE, ""))
+    let err = parse_rig(&valid_looper_toml().replace(LOOPER_TABLE, ""))
       .expect_err("looper windows without a [looper] table should fail");
     assert!(err.contains("[looper] table"), "{err}");
   }
@@ -2796,27 +2796,27 @@ rect = [0, 5, 15, 15]
   fn looper_table_requires_looper_windows() {
     // A [looper] table atop a plain sawwave grid (no loop_* windows) is invalid.
     let toml = format!("{LOOPER_HEADER}{LOOPER_TABLE}{LOOPER_MONOMES}{LOOPER_EDO_GRID}");
-    let err = parse_config(&toml).expect_err("a [looper] table without looper windows should fail");
+    let err = parse_rig(&toml).expect_err("a [looper] table without looper windows should fail");
     assert!(err.contains("requires the looper windows"), "{err}");
   }
 
   #[test]
   fn loop_display_must_be_at_least_2x2() {
-    let err = parse_config(&valid_looper_toml().replace("rect = [0, 5, 15, 15]", "rect = [0, 5, 0, 5]"))
+    let err = parse_rig(&valid_looper_toml().replace("rect = [0, 5, 15, 15]", "rect = [0, 5, 0, 5]"))
       .expect_err("a 1x1 loop_display should fail");
     assert!(err.contains("at least 2x2"), "{err}");
   }
 
   #[test]
   fn remap_center_must_be_inside_edo_grid() {
-    let err = parse_config(&valid_looper_toml().replace("remap_center = [7, 7]", "remap_center = [20, 20]"))
+    let err = parse_rig(&valid_looper_toml().replace("remap_center = [7, 7]", "remap_center = [20, 20]"))
       .expect_err("an out-of-bounds remap_center should fail");
     assert!(err.contains("must lie inside"), "{err}");
   }
 
   #[test]
   fn looper_requires_all_three_transport_controls() {
-    let err = parse_config(&valid_looper_toml().replace(LOOPER_PLAY, ""))
+    let err = parse_rig(&valid_looper_toml().replace(LOOPER_PLAY, ""))
       .expect_err("a looper missing the play control should fail");
     assert!(err.contains("control = Play"), "{err}");
   }
@@ -2827,13 +2827,13 @@ rect = [0, 5, 15, 15]
       "control = \"play\"\nrect = [2, 3, 2, 3]",
       "control = \"start\"\nrect = [2, 3, 2, 3]",
     );
-    let err = parse_config(&dup).expect_err("duplicate loop_control kind should fail");
+    let err = parse_rig(&dup).expect_err("duplicate loop_control kind should fail");
     assert!(err.contains("duplicate loop_control kind"), "{err}");
   }
 
   #[test]
   fn loop_control_rect_must_be_single_cell() {
-    let err = parse_config(&valid_looper_toml().replace("rect = [0, 3, 0, 3]", "rect = [0, 3, 1, 3]"))
+    let err = parse_rig(&valid_looper_toml().replace("rect = [0, 3, 0, 3]", "rect = [0, 3, 1, 3]"))
       .expect_err("a multi-cell loop_control rect should fail");
     assert!(err.contains("exactly one cell"), "{err}");
   }
@@ -2855,18 +2855,18 @@ rect = [0, 0, 15, 6]
 
   #[test]
   fn timbre_editor_parses_with_default_rows() {
-    let config = parse_config(&looper_with_editor(TIMBRE_EDITOR_MIN))
+    let rig = parse_rig(&looper_with_editor(TIMBRE_EDITOR_MIN))
       .expect("a timbre_editor with omitted rows should use 6_plan 5 defaults");
-    let ed = config
+    let ed = rig
       .monome_windows
       .iter()
-      .find_map(MonomeWindowConfig::timbre_editor_rows)
+      .find_map(MonomeWindowRig::timbre_editor_rows)
       .expect("the editor is present");
     assert_eq!(ed.0, TimbreTarget::Loop);
-    assert_eq!(ed.1[0], RowRangeConfig::LogRange { least: 0.0009, greatest: 0.15 }, "amplitude default");
-    assert_eq!(ed.1[1], RowRangeConfig::Linear { min: 0.0, max: 1.0 }, "am depth default");
-    assert_eq!(ed.1[2], RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 }, "am freq default");
-    assert_eq!(ed.1[4], RowRangeConfig::LogFactor { least: 5.0, multiplier: 2.0 }, "fm cents default");
+    assert_eq!(ed.1[0], RowRangeRig::LogRange { least: 0.0009, greatest: 0.15 }, "amplitude default");
+    assert_eq!(ed.1[1], RowRangeRig::Linear { min: 0.0, max: 1.0 }, "am depth default");
+    assert_eq!(ed.1[2], RowRangeRig::LogFactor { least: 0.25, multiplier: 2.0 }, "am freq default");
+    assert_eq!(ed.1[4], RowRangeRig::LogFactor { least: 5.0, multiplier: 2.0 }, "fm cents default");
   }
 
   #[test]
@@ -2881,37 +2881,37 @@ rect = [0, 0, 15, 6]
 amplitude    = { kind = "log_range",  least = 0.001, greatest = 0.2 }
 am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
 "#;
-    let config = parse_config(&looper_with_editor(editor)).expect("explicit rows should parse");
-    let ed = config.monome_windows.iter().find_map(MonomeWindowConfig::timbre_editor_rows).unwrap();
+    let rig = parse_rig(&looper_with_editor(editor)).expect("explicit rows should parse");
+    let ed = rig.monome_windows.iter().find_map(MonomeWindowRig::timbre_editor_rows).unwrap();
     assert_eq!(ed.0, TimbreTarget::Live);
-    assert_eq!(ed.1[0], RowRangeConfig::LogRange { least: 0.001, greatest: 0.2 });
-    assert_eq!(ed.1[1], RowRangeConfig::Linear { min: 0.0, max: 0.5 });
+    assert_eq!(ed.1[0], RowRangeRig::LogRange { least: 0.001, greatest: 0.2 });
+    assert_eq!(ed.1[1], RowRangeRig::Linear { min: 0.0, max: 0.5 });
     // An omitted row still falls back to its default.
-    assert_eq!(ed.1[2], RowRangeConfig::LogFactor { least: 0.25, multiplier: 2.0 });
+    assert_eq!(ed.1[2], RowRangeRig::LogFactor { least: 0.25, multiplier: 2.0 });
   }
 
   #[test]
   fn am_shape_family_parses_and_defaults() {
     // Absent [am.shape] -> no am table (the runtime defaults to sin_to_square).
-    let none = parse_config(&looper_with_editor(TIMBRE_EDITOR_MIN)).unwrap();
+    let none = parse_rig(&looper_with_editor(TIMBRE_EDITOR_MIN)).unwrap();
     assert!(none.am.is_none(), "no [am] table when omitted");
     // Explicit family parses.
-    let with = parse_config(&format!(
+    let with = parse_rig(&format!(
       "{}\n[am.shape]\nfamily = \"tri_to_square\"\n",
       looper_with_editor(TIMBRE_EDITOR_MIN)
     ))
     .expect("am.shape should parse");
-    assert_eq!(with.am.unwrap().shape.family, AmShapeFamilyConfig::TriToSquare);
+    assert_eq!(with.am.unwrap().shape.family, AmShapeFamilyRig::TriToSquare);
   }
 
   #[test]
   fn save_undo_double_ms_parses_and_defaults() {
     let su = |toml: &str| {
-      parse_config(toml)
+      parse_rig(toml)
         .unwrap()
         .monome_windows
         .iter()
-        .find_map(MonomeWindowConfig::timbre_editor_save_undo_ms)
+        .find_map(MonomeWindowRig::timbre_editor_save_undo_ms)
     };
     // Omitted -> default 200 ms.
     assert_eq!(su(&looper_with_editor(TIMBRE_EDITOR_MIN)), Some((TimbreTarget::Loop, 200)));
@@ -2923,14 +2923,14 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
   #[test]
   fn timbre_editor_rect_must_be_tall_enough() {
     let short = TIMBRE_EDITOR_MIN.replace("rect = [0, 0, 15, 6]", "rect = [0, 0, 15, 2]");
-    let err = parse_config(&looper_with_editor(&short)).expect_err("a 3-row editor should fail");
+    let err = parse_rig(&looper_with_editor(&short)).expect_err("a 3-row editor should fail");
     assert!(err.contains("at least 7 rows"), "{err}");
   }
 
   #[test]
   fn timbre_editor_rect_must_be_wide_enough() {
     let narrow = TIMBRE_EDITOR_MIN.replace("rect = [0, 0, 15, 6]", "rect = [0, 0, 3, 6]");
-    let err = parse_config(&looper_with_editor(&narrow)).expect_err("a 4-wide editor should fail");
+    let err = parse_rig(&looper_with_editor(&narrow)).expect_err("a 4-wide editor should fail");
     assert!(err.contains("at least 5 cells wide"), "{err}");
   }
 
@@ -2940,7 +2940,7 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
       "{}am_frequency = {{ kind = \"log_factor\", least = 0.25, multiplier = 1.0 }}\n",
       TIMBRE_EDITOR_MIN
     );
-    let err = parse_config(&looper_with_editor(&bad)).expect_err("multiplier 1.0 collapses the row");
+    let err = parse_rig(&looper_with_editor(&bad)).expect_err("multiplier 1.0 collapses the row");
     assert!(err.contains("multiplier > 1"), "{err}");
   }
 
@@ -2964,7 +2964,7 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
   fn rect_spec_parses_array_and_per_edge() {
     #[derive(serde::Deserialize)]
     struct W {
-      rect: RectSpecConfig,
+      rect: RectSpecRig,
     }
     let arr: W = toml::from_str("rect = [0, 0, 15, 6]").unwrap();
     assert_eq!(arr.rect.resolved_edge(EdgeName::Left).unwrap(), ResolvedEdge::Absolute(0));
@@ -2984,11 +2984,11 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
   }
 
   #[test]
-  fn timbre_looper_config_has_both_editors() {
+  fn timbre_looper_rig_has_both_editors() {
     // The full instrument (7_layout.org): a loop-timbre editor on edo + a live-timbre
     // editor on loops, with the looper stack at its unfolded positions.
-    let config = load_named_config("monome-looper-58-8-1-timbre").expect("timbre config loads");
-    let editors: Vec<(String, TimbreTarget)> = config
+    let rig = load_named_rig("monome-looper-58-8-1-timbre").expect("timbre rig loads");
+    let editors: Vec<(String, TimbreTarget)> = rig
       .monome_windows
       .iter()
       .filter_map(|w| w.timbre_editor_rows().map(|(t, _)| (w.monome().to_string(), t)))
@@ -2997,7 +2997,7 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
     assert!(editors.iter().any(|(m, t)| m == "edo" && *t == TimbreTarget::Loop), "edo loop editor");
     assert!(editors.iter().any(|(m, t)| m == "loops" && *t == TimbreTarget::Live), "loops live editor");
     // The loop display is at its unfolded position (reflowed up at runtime).
-    let display = config.monome_windows.iter().find(|w| w.kind_name() == "loop_display").unwrap();
+    let display = rig.monome_windows.iter().find(|w| w.kind_name() == "loop_display").unwrap();
     assert_eq!(display.rect(), [0, 9, 15, 15], "loop display sits below the unfolded editor");
   }
 
@@ -3005,7 +3005,7 @@ am_amplitude = { kind = "linear",     min = 0.0, max = 0.5 }
   fn rect_spec_rejects_a_bad_edge_expr() {
     #[derive(serde::Deserialize)]
     struct W {
-      rect: RectSpecConfig,
+      rect: RectSpecRig,
     }
     let w: W = toml::from_str(
       "[rect]\ntop = \"x.sideways\"\nbottom = 0\nleft = 0\nright = 0\n",
@@ -3043,32 +3043,32 @@ pads = [
 "#;
 
   #[test]
-  fn drumkit_config_is_valid_with_defaults() {
-    let config = parse_config(DRUMKIT_TOML).expect("a complete drumkit config should be valid");
-    assert_eq!(config.softsteps.len(), 1);
-    assert_eq!(config.softsteps[0].select.name_substring(), "SSCOM", "default select substring");
-    let SoftstepWindowConfig::Drumkit { pads, .. } = &config.softstep_windows[0];
+  fn drumkit_rig_is_valid_with_defaults() {
+    let rig = parse_rig(DRUMKIT_TOML).expect("a complete drumkit rig should be valid");
+    assert_eq!(rig.softsteps.len(), 1);
+    assert_eq!(rig.softsteps[0].select.name_substring(), "SSCOM", "default select substring");
+    let SoftstepWindowRig::Drumkit { pads, .. } = &rig.softstep_windows[0];
     assert_eq!(pads[0].gain, 1.0, "default pad gain");
     assert_eq!(pads.len(), 3);
   }
 
   #[test]
   fn drumkit_pedal_out_of_range_is_rejected() {
-    let err = parse_config(&DRUMKIT_TOML.replace("pedal = 1,", "pedal = 10,"))
+    let err = parse_rig(&DRUMKIT_TOML.replace("pedal = 1,", "pedal = 10,"))
       .expect_err("pedal 10 is out of the 0..9 label range");
     assert!(err.contains("out of range"), "{err}");
   }
 
   #[test]
   fn drumkit_duplicate_pedal_in_one_window_is_rejected() {
-    let err = parse_config(&DRUMKIT_TOML.replace("pedal = 2,", "pedal = 1,"))
+    let err = parse_rig(&DRUMKIT_TOML.replace("pedal = 2,", "pedal = 1,"))
       .expect_err("the same pedal assigned twice should fail");
     assert!(err.contains("more than once"), "{err}");
   }
 
   #[test]
   fn drumkit_sink_must_be_a_cpal_sampler() {
-    let err = parse_config(&DRUMKIT_TOML.replace("kind = \"cpal_sampler\"", "kind = \"midi\"")
+    let err = parse_rig(&DRUMKIT_TOML.replace("kind = \"cpal_sampler\"", "kind = \"midi\"")
       // a midi sink has no sample_rate/buffer_frames/amplitude fields
       .replace("sample_rate = 48000\nbuffer_frames = 128\namplitude = 0.8\n", ""))
       .expect_err("a non-sampler sink should be rejected for a drumkit");
@@ -3077,7 +3077,7 @@ pads = [
 
   #[test]
   fn drumkit_unknown_softstep_ref_is_rejected() {
-    let err = parse_config(&DRUMKIT_TOML.replace("softstep = \"feet\"", "softstep = \"nope\""))
+    let err = parse_rig(&DRUMKIT_TOML.replace("softstep = \"feet\"", "softstep = \"nope\""))
       .expect_err("an unknown softstep reference should fail");
     assert!(err.contains("unknown id \"nope\""), "{err}");
   }
@@ -3085,13 +3085,13 @@ pads = [
   #[test]
   fn drumkit_orphan_softstep_is_rejected() {
     let toml = format!("{DRUMKIT_TOML}\n[[softsteps]]\nid = \"unused\"\n");
-    let err = parse_config(&toml).expect_err("a softstep no window uses should fail");
+    let err = parse_rig(&toml).expect_err("a softstep no window uses should fail");
     assert!(err.contains("no window uses it"), "{err}");
   }
 
   #[test]
   fn drumkit_sample_path_must_not_escape_assets() {
-    let err = parse_config(&DRUMKIT_TOML.replace("\"kick.wav\"", "\"../secrets/kick.wav\""))
+    let err = parse_rig(&DRUMKIT_TOML.replace("\"kick.wav\"", "\"../secrets/kick.wav\""))
       .expect_err("a sample path with .. should fail");
     assert!(err.contains("'..'"), "{err}");
   }
@@ -3101,7 +3101,7 @@ pads = [
     let toml = format!(
       "{DRUMKIT_TOML}\n[[softstep_windows]]\nid = \"kit2\"\nsoftstep = \"feet\"\nkind = \"drumkit\"\nsink = \"drums\"\npads = [{{ pedal = 1, sample = \"other.wav\" }}]\n",
     );
-    let err = parse_config(&toml).expect_err("two windows claiming pedal 1 should fail");
+    let err = parse_rig(&toml).expect_err("two windows claiming pedal 1 should fail");
     assert!(err.contains("more than one window"), "{err}");
   }
 
@@ -3110,8 +3110,8 @@ pads = [
   #[test]
   fn ditto_pad_is_valid_with_no_sample() {
     let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },");
-    let config = parse_config(&toml).expect("a ditto pad with no sample should be valid");
-    let SoftstepWindowConfig::Drumkit { pads, .. } = &config.softstep_windows[0];
+    let rig = parse_rig(&toml).expect("a ditto pad with no sample should be valid");
+    let SoftstepWindowRig::Drumkit { pads, .. } = &rig.softstep_windows[0];
     let ditto = pads.iter().find(|p| p.pedal == 0).expect("pedal 0");
     assert!(ditto.ditto, "ditto flag set");
     assert_eq!(ditto.sample, None, "a ditto pad names no sample");
@@ -3120,7 +3120,7 @@ pads = [
   #[test]
   fn pad_with_neither_sample_nor_ditto_is_rejected() {
     let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0 },");
-    let err = parse_config(&toml).expect_err("a pad with neither sample nor ditto should fail");
+    let err = parse_rig(&toml).expect_err("a pad with neither sample nor ditto should fail");
     assert!(err.contains("exactly one of `sample` or `ditto = true`"), "{err}");
   }
 
@@ -3130,7 +3130,7 @@ pads = [
       "{ pedal = 0, sample = \"wood_block.wav\" },",
       "{ pedal = 0, sample = \"wood_block.wav\", ditto = true },",
     );
-    let err = parse_config(&toml).expect_err("a pad with both sample and ditto should fail");
+    let err = parse_rig(&toml).expect_err("a pad with both sample and ditto should fail");
     assert!(err.contains("exactly one of `sample` or `ditto = true`"), "{err}");
   }
 
@@ -3142,7 +3142,7 @@ pads = [
         .replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },")
         .replace("{ pedal = 2, sample = \"snare.wav\" },", "{ pedal = 2, ditto = true },"),
     );
-    let err = parse_config(&toml).expect_err("two ditto pads in one window should fail");
+    let err = parse_rig(&toml).expect_err("two ditto pads in one window should fail");
     assert!(err.contains("two ditto pads"), "{err}");
   }
 
@@ -3152,7 +3152,7 @@ pads = [
   fn shift_pad_on_a_plain_grid_is_valid() {
     // A plain sawwave grid + a scroll pad, with NO looper stack, must parse:
     // the shift pad is no longer trapped in the looper's all-or-nothing set.
-    parse_config(r#"
+    parse_rig(r#"
 version = 1
 id = "grid-plus-scroll"
 title = "Grid plus scroll"
@@ -3198,7 +3198,7 @@ rect = [13, 14, 15, 15]
 
   #[test]
   fn shift_pad_without_an_edo_grid_is_rejected() {
-    let err = parse_config(r#"
+    let err = parse_rig(r#"
 version = 1
 id = "orphan-scroll"
 title = "Orphan scroll"
@@ -3285,12 +3285,12 @@ controls = "a"
 
   #[test]
   fn waveform_selector_cross_control_is_valid() {
-    let config = parse_config(SURFACES_MIN).expect("two grids that cross-control timbre should be valid");
-    let selectors: Vec<(&str, &str)> = config
+    let rig = parse_rig(SURFACES_MIN).expect("two grids that cross-control timbre should be valid");
+    let selectors: Vec<(&str, &str)> = rig
       .monome_windows
       .iter()
       .filter_map(|w| match w {
-        MonomeWindowConfig::WaveformSelector { monome, controls, .. } => Some((monome.as_str(), controls.as_str())),
+        MonomeWindowRig::WaveformSelector { monome, controls, .. } => Some((monome.as_str(), controls.as_str())),
         _ => None,
       })
       .collect();
@@ -3300,14 +3300,14 @@ controls = "a"
 
   #[test]
   fn waveform_selector_must_cover_four_cells() {
-    let err = parse_config(&SURFACES_MIN.replace("rect = [0, 0, 3, 0]\ncontrols = \"b\"", "rect = [0, 0, 2, 0]\ncontrols = \"b\""))
+    let err = parse_rig(&SURFACES_MIN.replace("rect = [0, 0, 3, 0]\ncontrols = \"b\"", "rect = [0, 0, 2, 0]\ncontrols = \"b\""))
       .expect_err("a 3-wide selector should fail");
     assert!(err.contains("exactly 4 cells"), "{err}");
   }
 
   #[test]
   fn waveform_selector_controls_must_be_a_declared_monome() {
-    let err = parse_config(&SURFACES_MIN.replace("controls = \"b\"", "controls = \"nope\""))
+    let err = parse_rig(&SURFACES_MIN.replace("controls = \"b\"", "controls = \"nope\""))
       .expect_err("an unknown controls target should fail");
     assert!(err.contains("unknown id \"nope\""), "{err}");
   }
@@ -3323,7 +3323,7 @@ controls = "a"
       )
       // c must be used by *some* window or an orphan check could fire elsewhere; give it a lone strip.
       + "\n[[monome_windows]]\nid = \"wave-c\"\nmonome = \"c\"\nkind = \"waveform_selector\"\nrect = [0, 0, 3, 0]\ncontrols = \"a\"\n";
-    let err = parse_config(&toml).expect_err("controlling a gridless monome should fail");
+    let err = parse_rig(&toml).expect_err("controlling a gridless monome should fail");
     assert!(err.contains("no edo_note_grid"), "{err}");
   }
 
@@ -3356,12 +3356,12 @@ control = "accrete"
   #[test]
   fn accrete_control_trio_is_valid() {
     let toml = format!("{SURFACES_MIN}{ACCRETE_TRIO}");
-    let config = parse_config(&toml).expect("a full accrete trio should validate");
-    let kinds: Vec<AccreteControlKind> = config
+    let rig = parse_rig(&toml).expect("a full accrete trio should validate");
+    let kinds: Vec<AccreteControlKind> = rig
       .monome_windows
       .iter()
       .filter_map(|w| match w {
-        MonomeWindowConfig::AccreteControl { control, .. } => Some(*control),
+        MonomeWindowRig::AccreteControl { control, .. } => Some(*control),
         _ => None,
       })
       .collect();
@@ -3373,10 +3373,10 @@ control = "accrete"
 
   #[test]
   fn accrete_control_trio_is_all_or_nothing_per_monome() {
-    // Drop the accrete button: the trio is incomplete, so the config must fail.
+    // Drop the accrete button: the trio is incomplete, so the rig must fail.
     let cut = ACCRETE_TRIO.find("\n[[monome_windows]]\nid = \"acc-accrete\"").unwrap();
     let toml = format!("{SURFACES_MIN}{}", &ACCRETE_TRIO[..cut]);
-    let err = parse_config(&toml).expect_err("a partial trio should fail");
+    let err = parse_rig(&toml).expect_err("a partial trio should fail");
     assert!(err.contains("missing kind Accrete"), "{err}");
   }
 
@@ -3384,7 +3384,7 @@ control = "accrete"
   fn accrete_control_must_be_a_single_cell() {
     let toml =
       format!("{SURFACES_MIN}{}", ACCRETE_TRIO.replace("rect = [0, 15, 0, 15]", "rect = [0, 15, 1, 15]"));
-    let err = parse_config(&toml).expect_err("a 2-cell accrete button should fail");
+    let err = parse_rig(&toml).expect_err("a 2-cell accrete button should fail");
     assert!(err.contains("exactly one cell"), "{err}");
   }
 
@@ -3394,7 +3394,7 @@ control = "accrete"
       "{SURFACES_MIN}{}",
       ACCRETE_TRIO.replace("control = \"needs_holding\"", "control = \"clear\""),
     );
-    let err = parse_config(&toml).expect_err("two clear buttons on one monome should fail");
+    let err = parse_rig(&toml).expect_err("two clear buttons on one monome should fail");
     assert!(err.contains("duplicate accrete_control kind"), "{err}");
   }
 
@@ -3405,7 +3405,7 @@ control = "accrete"
       "{SURFACES_MIN}\n[[monomes]]\nid = \"c\"\nlisten_port = 9002\nprefix = \"/c\"\n{}",
       ACCRETE_TRIO.replace("monome = \"a\"", "monome = \"c\""),
     );
-    let err = parse_config(&toml).expect_err("accrete buttons on a gridless monome should fail");
+    let err = parse_rig(&toml).expect_err("accrete buttons on a gridless monome should fail");
     assert!(err.contains("needs an edo_note_grid"), "{err}");
   }
 
@@ -3422,13 +3422,13 @@ rect = [0, 1, 0, 1]
   #[test]
   fn distortion_toggle_is_valid_and_sink_defaults_apply() {
     let toml = format!("{SURFACES_MIN}{DISTORTION_TOGGLE}");
-    let config = parse_config(&toml).expect("a single-cell distortion toggle validates");
-    assert!(config
+    let rig = parse_rig(&toml).expect("a single-cell distortion toggle validates");
+    assert!(rig
       .monome_windows
       .iter()
-      .any(|w| matches!(w, MonomeWindowConfig::DistortionToggle { .. })));
+      .any(|w| matches!(w, MonomeWindowRig::DistortionToggle { .. })));
     // The sink's distortion curve defaults (scale 1.0, shape 2.0) fill in when absent.
-    let SinkConfig::CpalSynth { distortion_scale, distortion_shape, .. } = &config.sinks[0] else {
+    let SinkRig::CpalSynth { distortion_scale, distortion_shape, .. } = &rig.sinks[0] else {
       panic!("first sink is the synth");
     };
     assert_eq!(*distortion_scale, 1.0);
@@ -3441,7 +3441,7 @@ rect = [0, 1, 0, 1]
       "{SURFACES_MIN}{}",
       DISTORTION_TOGGLE.replace("rect = [0, 1, 0, 1]", "rect = [0, 1, 1, 1]"),
     );
-    let err = parse_config(&toml).expect_err("a 2-cell toggle should fail");
+    let err = parse_rig(&toml).expect_err("a 2-cell toggle should fail");
     assert!(err.contains("exactly one cell"), "{err}");
   }
 
@@ -3467,31 +3467,31 @@ fm_freq = 6.0
   #[test]
   fn timbres_parse_with_short_names_and_off_defaults() {
     let toml = format!("{SURFACES_MIN}{TIMBRES_FOUR}");
-    let config = parse_config(&toml).expect("a 4-entry [[timbres]] table validates");
-    assert_eq!(config.timbres.len(), 4);
-    assert_eq!(config.timbres[0].waveform, WaveformChoice::Sine, "'sin' alias");
-    assert_eq!(config.timbres[1].waveform, WaveformChoice::Triangle, "'tri' alias");
+    let rig = parse_rig(&toml).expect("a 4-entry [[timbres]] table validates");
+    assert_eq!(rig.timbres.len(), 4);
+    assert_eq!(rig.timbres[0].waveform, WaveformChoice::Sine, "'sin' alias");
+    assert_eq!(rig.timbres[1].waveform, WaveformChoice::Triangle, "'tri' alias");
     // Defaults: full amplitude, modulation off.
-    assert_eq!(config.timbres[0].amplitude, 1.0);
-    assert_eq!(config.timbres[0].am_depth, 0.0);
-    assert_eq!(config.timbres[0].fm_depth_cents, 0.0);
+    assert_eq!(rig.timbres[0].amplitude, 1.0);
+    assert_eq!(rig.timbres[0].am_depth, 0.0);
+    assert_eq!(rig.timbres[0].fm_depth_cents, 0.0);
     // Explicit values land.
-    assert_eq!(config.timbres[1].am_depth, 0.5);
-    assert_eq!(config.timbres[2].amplitude, 0.6);
-    assert_eq!(config.timbres[3].fm_freq, 6.0);
+    assert_eq!(rig.timbres[1].am_depth, 0.5);
+    assert_eq!(rig.timbres[2].amplitude, 0.6);
+    assert_eq!(rig.timbres[3].fm_freq, 6.0);
   }
 
   #[test]
   fn timbres_must_have_exactly_four_entries() {
     let three = TIMBRES_FOUR.rsplit_once("[[timbres]]").unwrap().0;
-    let err = parse_config(&format!("{SURFACES_MIN}{three}")).expect_err("3 entries fail");
+    let err = parse_rig(&format!("{SURFACES_MIN}{three}")).expect_err("3 entries fail");
     assert!(err.contains("exactly 4"), "{err}");
   }
 
   #[test]
   fn timbres_reject_out_of_range_parameters() {
     let toml = format!("{SURFACES_MIN}{}", TIMBRES_FOUR.replace("am_depth = 0.5", "am_depth = 1.5"));
-    let err = parse_config(&toml).expect_err("am_depth > 1 fails");
+    let err = parse_rig(&toml).expect_err("am_depth > 1 fails");
     assert!(err.contains("am_depth"), "{err}");
   }
 
@@ -3510,15 +3510,15 @@ monome = "a"
 kind = "mono_toggle"
 rect = [1, 2, 1, 2]
 "#;
-    let config = parse_config(&format!("{SURFACES_MIN}{toggles}")).expect("both toggles validate");
-    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::SlideToggle { .. })));
-    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::MonoToggle { .. })));
+    let rig = parse_rig(&format!("{SURFACES_MIN}{toggles}")).expect("both toggles validate");
+    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::SlideToggle { .. })));
+    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::MonoToggle { .. })));
     // The [surfaces] slide knobs default sensibly.
-    let surfaces = config.surfaces.unwrap_or_default();
+    let surfaces = rig.surfaces.unwrap_or_default();
     assert_eq!(surfaces.slide_candidate_window_ms, 1000);
     assert_eq!(surfaces.slide_duration_ms, 100);
     // A 2-cell slide toggle fails like any single-cell toggle.
-    let err = parse_config(&format!(
+    let err = parse_rig(&format!(
       "{SURFACES_MIN}{}",
       toggles.replace("rect = [1, 1, 1, 1]", "rect = [1, 1, 2, 1]"),
     ))
@@ -3535,10 +3535,10 @@ monome = "a"
 kind = "tap_tempo_pad"
 rect = [13, 0, 15, 1]
 "#;
-    let config = parse_config(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
-    assert!(config.monome_windows.iter().any(|w| matches!(w, MonomeWindowConfig::TapTempoPad { .. })));
-    assert_eq!(config.surfaces.unwrap_or_default().tap_tempo_window_ms, 2000, "default window");
-    let err = parse_config(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
+    let rig = parse_rig(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
+    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. })));
+    assert_eq!(rig.surfaces.unwrap_or_default().tap_tempo_window_ms, 2000, "default window");
+    let err = parse_rig(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
       .expect_err("a 3x3 pad should fail");
     assert!(err.contains("exactly 3x2"), "{err}");
   }
@@ -3549,7 +3549,7 @@ rect = [13, 0, 15, 1]
       .replace("dist-a", "dist-a2")
       .replace("rect = [0, 1, 0, 1]", "rect = [1, 1, 1, 1]");
     let toml = format!("{SURFACES_MIN}{DISTORTION_TOGGLE}{twin}");
-    let err = parse_config(&toml).expect_err("two toggles on one monome should fail");
+    let err = parse_rig(&toml).expect_err("two toggles on one monome should fail");
     assert!(err.contains("more than one distortion_toggle"), "{err}");
   }
 }

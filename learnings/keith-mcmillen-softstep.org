@@ -193,9 +193,9 @@ Ctrl-C.
     logs to =captures/session-*.log=.
   - =meter/main.py= -- live per-pad pressure meter + velocity audition + per-group logger:
     strike a pad and it prints the velocity, plays the configured audition sample (default
-    snare, =audition-sample= in =config.toml=) at that velocity, and writes
+    snare, =audition-sample= in =rig.toml=) at that velocity, and writes
     each pad-event group to =meter/logs/pad-<label>/<N>.org= (raw sum trace + a re-derived
-    interpretation of the hits it renders); tunables in =meter/config.toml= (reload with
+    interpretation of the hits it renders); tunables in =meter/rig.toml= (reload with
     =r=). For calibrating touch and diagnosing missed/double hits.
 - *Older, sequencer-based (echo still handy; the senders used the dead seq path):*
   =echo.py= (human-readable =aseqdump= monitor -- still useful), =backlight_blink.py=
@@ -232,10 +232,10 @@ Consequences:
   surface slows and scatters it. Re-check =ATTACK= if you change playing surface.
 
 ** The knobs
-The detection & velocity knobs are all *config* now: they live in the shared
-=code/rust/configs/softstep.toml= (loaded by =drumkit_runtime=), not as =decode.rs=
+The detection & velocity knobs are all *rig* now: they live in the shared
+=code/rust/rigs/softstep.toml= (loaded by =drumkit_runtime=), not as =decode.rs=
 consts. The poll interval is the one exception (=drumkit_runtime/mod.rs=). The Python
-meter =code/python/softstep/meter/= mirrors them in its own =config.toml= (=on-sum=,
+meter =code/python/softstep/meter/= mirrors them in its own =rig.toml= (=on-sum=,
 =attack-ms=, =debounce-ms=, ...) so what you audition matches the kit. Symptom -> fix:
 
 | knob                | default | what it does                                                        | symptom -> fix                                                                                          |
@@ -347,4 +347,4 @@ undoing the 8->7-byte SysEx packing): packet type 5 = FW_HEADER whose =buildnum=
 - Our tools: =code/python/softstep/{ss,probe,capture}.py= + =meter/main.py= (rawmidi) and
   the older =echo.py= (=aseqdump= monitor)
 - Related repo docs: =TODO/concurrent-drums.org= (the concurrency problem, now explained),
-  =code/rust/configs/kmss-drumkit.org= (the drumkit config reference)
+  =code/rust/rigs/kmss-drumkit.org= (the drumkit rig reference)

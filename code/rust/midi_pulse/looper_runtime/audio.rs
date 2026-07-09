@@ -55,13 +55,13 @@ pub fn start(
   let default_channels = default_cfg.channels();
   let supported = device
     .supported_output_configs()?
-    .filter(|config| {
-      config.sample_format() == SampleFormat::F32
-        && config.min_sample_rate().0 <= requested_sample_rate
-        && config.max_sample_rate().0 >= requested_sample_rate
+    .filter(|rig| {
+      rig.sample_format() == SampleFormat::F32
+        && rig.min_sample_rate().0 <= requested_sample_rate
+        && rig.max_sample_rate().0 >= requested_sample_rate
     })
-    .max_by_key(|config| (config.channels() == default_channels, config.channels()))
-    .map(|config| config.with_sample_rate(cpal::SampleRate(requested_sample_rate)))
+    .max_by_key(|rig| (rig.channels() == default_channels, rig.channels()))
+    .map(|rig| rig.with_sample_rate(cpal::SampleRate(requested_sample_rate)))
     .unwrap_or(default_cfg);
   let sample_format = supported.sample_format();
   if sample_format != SampleFormat::F32 {
@@ -83,7 +83,7 @@ pub fn start(
       // Recover from poisoning so a panicked grid thread can't permanently kill
       // audio output.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-      // The AM shape family is config-level (6_plan 2.5); resolve_settings sources it.
+      // The AM shape family is rig-level (6_plan 2.5); resolve_settings sources it.
       renderer.render(&mut voices, data, channels, sample_rate, amplitude, am_shape_family);
     },
     |error| eprintln!("looper audio stream error: {error:?}"),

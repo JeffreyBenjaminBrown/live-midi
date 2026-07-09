@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use midi_pulse::config::SoftstepParams;
+use midi_pulse::rig::SoftstepParams;
 
 pub const NUM_PADS: usize = 10;
 
@@ -24,7 +24,7 @@ const SLOT_LABEL: [u8; NUM_PADS] = [6, 1, 7, 2, 8, 3, 9, 4, 0, 5];
 
 // The detection & velocity knobs -- onset/release thresholds, the attack WATCH window, the
 // velocity full-scale, and the dB spread -- are NOT constants here. They live in the shared
-// configs/softstep.toml (`SoftstepParams`) and are handed to `TetherDecoder::new`. A hit
+// rigs/softstep.toml (`SoftstepParams`) and are handed to `TetherDecoder::new`. A hit
 // fires the instant the sum crosses `on_sum` (even a one-sample tap); for `attack_ms` after
 // that we keep watching, and a higher peak ramps the playing voice up to the louder velocity
 // (see `audio`). So the attack window is *watch-and-adjust*, not "signal must persist this
@@ -73,7 +73,7 @@ enum PadState {
 }
 
 /// Per-pad onset / attack-peak / velocity state machine over the hosted CC stream.
-/// Its thresholds come from the shared [`SoftstepParams`] (configs/softstep.toml).
+/// Its thresholds come from the shared [`SoftstepParams`] (rigs/softstep.toml).
 pub struct TetherDecoder {
   sensors: [u8; 40], // CC 40..79, index = cc - 40
   pads: [PadState; NUM_PADS],
@@ -94,7 +94,7 @@ pub struct TetherDecoder {
 }
 
 impl TetherDecoder {
-  /// Build a decoder from the shared [`SoftstepParams`] (configs/softstep.toml).
+  /// Build a decoder from the shared [`SoftstepParams`] (rigs/softstep.toml).
   pub fn new(params: SoftstepParams) -> Self {
     TetherDecoder {
       sensors: [0; 40],
@@ -253,7 +253,7 @@ pub fn collect_control_changes(message: &[u8], out: &mut Vec<(u8, u8)>) {
 mod tests {
   use super::*;
 
-  // Defaults match configs/softstep.toml (on/off 20, full-scale 460); the tests build
+  // Defaults match rigs/softstep.toml (on/off 20, full-scale 460); the tests build
   // decoders with a chosen debounce/silence and otherwise the defaults.
   const ATTACK: Duration = Duration::from_millis(14);
 

@@ -19,9 +19,9 @@ Use the corresponding filename from in docker:
 
 ./code/rust/connect-midi.sh \
   edo-un12_58-8-1_snap_save-scales.toml
-* how to read a config
+* how to read a rig
 ** read the window arrangements
-The most informative, least obvious aspect of these configs is the
+The most informative, least obvious aspect of these rigs is the
 ~[[monome_windows]]~ array. In TOML, double-bracket tables are arrays of
 tables, so each ~[[monome_windows]]~ block adds one element to the
 ~monome_windows~ list.
@@ -39,25 +39,25 @@ Both endpoints are included. For example, ~rect = [0, 1, 9, 15]~ covers
 columns 0 through 9 and rows 1 through 15.
 ** jump to program definitions
 Each element has an ~id~ and a ~kind~. The ~id~ is the local name of that
-specific window inside this config. The ~kind~ is the program/window type:
+specific window inside this rig. The ~kind~ is the program/window type:
 ~preimage_row~, ~remappable_un12_grid~, ~remap_undo_button~, and so on.
 After running ~rebuild-etags~, the Rust behavior definition for a ~kind~
 value can be jumped to in Emacs with ~M-.~.
 
-* midi_pulse config syntax
+* midi_pulse rig syntax
 
-Configs live in ~code/rust/configs/~ and are loaded by name:
+Rigs live in ~code/rust/rigs/~ and are loaded by name:
 
 #+begin_src sh
-cargo run --bin midi_pulse -- CONFIG_NAME
+cargo run --bin midi_pulse -- RIG_NAME
 #+end_src
 
-~CONFIG_NAME~ resolves to ~code/rust/configs/CONFIG_NAME.toml~.
+~RIG_NAME~ resolves to ~code/rust/rigs/RIG_NAME.toml~.
 
-On the host, MIDI routing can use the same config name:
+On the host, MIDI routing can use the same rig name:
 
 #+begin_src sh
-./code/rust/connect-midi.sh CONFIG_NAME
+./code/rust/connect-midi.sh RIG_NAME
 #+end_src
 
 That script reads ~[midi.input].virtual_name~ and
@@ -65,10 +65,10 @@ That script reads ~[midi.input].virtual_name~ and
 and Reaper MIDI ports accordingly. It also connects Reaper audio to the
 best available built-in output, preferring ~Headphones~ when present and
 falling back to ~Speaker~. Rerun it after plugging or unplugging the
-1/8" audio jack. Configs without MIDI input or output simply skip that
+1/8" audio jack. Rigs without MIDI input or output simply skip that
 side.
 
-Every config is TOML and starts with:
+Every rig is TOML and starts with:
 
 #+begin_src toml
 version = 1
@@ -119,12 +119,12 @@ y_step = 1
 fundamental_hz = 220
 #+end_src
 
-The ~id~ is a local name inside the same config file. References such as
+The ~id~ is a local name inside the same rig file. References such as
 ~tuning = "main"~ mean "use the ~[[tunings]]~ block whose ~id~ is
 ~"main"~." The word ~main~ is not special; any ID may be used as long as
 the reference matches an existing tuning ID.
 
-This lets multiple parts of a config share one tuning, or lets one config
+This lets multiple parts of a rig share one tuning, or lets one rig
 define several tunings and explicitly choose between them.
 
 * Monomes
@@ -389,7 +389,7 @@ no attack re-trigger).
 Softstep-accretes: while grid g's toggle is on, the
 KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
 for the other) mirrors g's accrete trio instead of playing samples -- one
-monome, both, or neither (see the config's .org).
+monome, both, or neither (see the rig's .org).
 
 A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
 per monome, on a monome with an ~edo_note_grid~): tap twice within
@@ -493,7 +493,7 @@ Built-in softstep window kinds:
 
 Pedals are addressed by their printed label (1..9, then 0). The KMSS sends only
 Program Changes today (no velocity), so hits play at a fixed per-pad ~gain~; the
-pedal is decoded as ~program % 10~, so a config is independent of which on-device
+pedal is decoded as ~program % 10~, so a rig is independent of which on-device
 preset is selected. See [[../../../learnings/keith-mcmillen-softstep.org]] for the
 device protocol.
 
@@ -517,7 +517,7 @@ Use ~anchor_12edo_values~ for lists of 12-EDO anchor values:
 anchor_12edo_values = [0, 5, 7]
 #+end_src
 
-* Default config families
+* Default rig families
 
 Piano-only 12n:
 
@@ -597,11 +597,11 @@ trails_max = 9             # keep at most this many distinct classes (newest fir
 - ~trails_max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
 
 The whole table (and each field) is optional; omitting it uses the defaults, so behaviour
-is unchanged for configs that don't declare it. Only the surfaces runtime consults it.
+is unchanged for rigs that don't declare it. Only the surfaces runtime consults it.
 
 ** Robustness to missing gear
 
-The surfaces runtime no longer requires every device the config declares to be
+The surfaces runtime no longer requires every device the rig declares to be
 connected. It brings up whatever is present and skips only the components that
 *functionally depend* on something missing, reporting each skipped component to
 the player in *red* on startup -- then plays on. The rule is simple: a component
@@ -627,16 +627,16 @@ screen by note echoes while you play.
 * Looper
 
 The looper is a two-monome instrument (no piano): one grid is the EDO play
-surface, the other holds loops. Run it like any other config:
+surface, the other holds loops. Run it like any other rig:
 
 #+begin_src sh
 cargo run --bin midi_pulse -- monome-looper-58-8-1
 #+end_src
 
-It is selected when the config declares a ~loop_display~ window (the dispatch
-checks this *before* the sawwave path, since a looper config is a superset of
+It is selected when the rig declares a ~loop_display~ window (the dispatch
+checks this *before* the sawwave path, since a looper rig is a superset of
 the sawwave one). It needs *two* ~[[monomes]]~ of the same ~select.size~; the
-runtime hands each a distinct grid in config order (it does not matter which
+runtime hands each a distinct grid in rig order (it does not matter which
 physical grid is which).
 
 ** Looper window kinds

@@ -2,7 +2,7 @@ use super::record::RecordControl;
 use super::scale::ScaleControl;
 
 #[derive(Clone)]
-pub(crate) struct RemapConfig {
+pub(crate) struct RemapRig {
   pub(crate) lowest_hz: f64,
   pub(crate) edo: i16,
   pub(crate) x_step: i16,
@@ -12,11 +12,11 @@ pub(crate) struct RemapConfig {
   pub(crate) grid_h: i32,
   pub(crate) initial_map: [i16; 12],
   // Cells for the seven record-control buttons, sourced from the TOML so the
-  // config is the single source of truth for which monome cells the runtime
+  // rig is the single source of truth for which monome cells the runtime
   // owns. Tests use `default_record_controls()` to seed the canonical layout.
   pub(crate) record_controls: Vec<(RecordControl, (i32, i32))>,
   // The scale-slot grid rect [x0, y0, x1, y1] (inclusive), and the store/empty
-  // arm-button cells, all sourced from the TOML. `None`/empty means the config
+  // arm-button cells, all sourced from the TOML. `None`/empty means the rig
   // has no scale-saving feature.
   pub(crate) scale_slots: Option<[i32; 4]>,
   pub(crate) scale_controls: Vec<(ScaleControl, (i32, i32))>,
@@ -28,7 +28,7 @@ pub(crate) enum RemapIdiom {
   Snap,
 }
 
-impl RemapConfig {
+impl RemapRig {
   pub(crate) fn new(
     lowest_hz: f64,
     edo: i16,
@@ -38,7 +38,7 @@ impl RemapConfig {
     grid_w: i32,
     grid_h: i32,
   ) -> Self {
-    RemapConfig {
+    RemapRig {
       lowest_hz,
       edo,
       x_step,
@@ -54,7 +54,7 @@ impl RemapConfig {
   }
 
   pub(crate) fn with_grid_size(&self, grid_w: i32, grid_h: i32) -> Self {
-    RemapConfig {
+    RemapRig {
       lowest_hz: self.lowest_hz,
       edo: self.edo,
       x_step: self.x_step,

@@ -1,10 +1,10 @@
 * midi_pulse runtime notes
 
 These notes preserve the useful operating details from the old
-per-runtime directories that were folded into the config-driven
+per-runtime directories that were folded into the rig-driven
 ~midi_pulse~ binary.
 
-Run configs from the repository root. Launch under ~pw-jack~ so audio output
+Run rigs from the repository root. Launch under ~pw-jack~ so audio output
 goes through PipeWire's JACK server: the synth then appears as an ordinary
 JACK node (visible in QJackCtl / ~pw-link~, routable to Reaper) and *shares*
 the sound card. Running a cpal-audio binary WITHOUT ~pw-jack~ either errors
@@ -13,7 +13,7 @@ back to ALSA -- which grabs the card exclusively and silences everything else
 on the host (e.g. the Claude stop-hook beep). So always use ~pw-jack~.
 
 #+begin_src sh
-pw-jack cargo run --bin midi_pulse -- CONFIG_NAME
+pw-jack cargo run --bin midi_pulse -- RIG_NAME
 #+end_src
 
 For example:
@@ -39,12 +39,12 @@ For piano notes 21-96:
 - multiply the remainder by the configured EDO-per-12 value and add
   it to the output note base
 
-The top offset-control range in the default config is notes 97-108.
+The top offset-control range in the default rig is notes 97-108.
 With ~zero_note = 102~, F#7 means no offset, G7 means +1, F7 means -1,
 and so on. Held offset notes change the stored shift for any pitch
 class played while they are held.
 
-The optional display config opens an X11/minifb pitch-class grid.
+The optional display rig opens an X11/minifb pitch-class grid.
 Inside the Docker container, the host must allow X11 access, for
 example:
 
@@ -56,7 +56,7 @@ The container also needs the X11 socket mounted and ~DISPLAY~ set.
 
 * 12n monome offset board
 
-The default ~edo12n-piano-monome~ config uses a 16x8 monome.
+The default ~edo12n-piano-monome~ rig uses a 16x8 monome.
 Coordinates use ~y=0~ at the top.
 
 - Columns ~x=0..11~ correspond to pitch classes C through B.
@@ -82,7 +82,7 @@ brightness for about 30 ms.
 
 * Remappable un-12 monome
 
-The ~edo-un12-*~ configs map the twelve piano pitch classes into an
+The ~edo-un12-*~ rigs map the twelve piano pitch classes into an
 arbitrary EDO. The monome grid size is inferred from serialosc's device
 type when possible. Known sizes include 16x8 for monome 128 and 16x16
 for monome 256.
@@ -134,7 +134,7 @@ The runtime tracks signed lift for each pitch class. For example, in
 MIDI moves down by one EDO step rather than jumping around the octave
 ring.
 
-Recording controls for the ~edo-un12-*~ configs live at:
+Recording controls for the ~edo-un12-*~ rigs live at:
 
 | (13,0) start | (14,0) stop      | (15,0) loop    |
 | (13,1) arm   | (14,1) erase ons | (15,1) end all |
@@ -302,10 +302,10 @@ bash code/rust/demos-and-explorations/monome/12-brightness-test.sh 8
 
 * MIDI connection recipes
 
-Use the config-aware host script:
+Use the rig-aware host script:
 
 #+begin_src sh
-./code/rust/connect-midi.sh CONFIG_NAME
+./code/rust/connect-midi.sh RIG_NAME
 #+end_src
 
 For example:
@@ -314,10 +314,10 @@ For example:
 ./code/rust/connect-midi.sh edo-un12-58-8-1-snap
 #+end_src
 
-The script reads the config's MIDI virtual port names and uses
+The script reads the rig's MIDI virtual port names and uses
 ~code/rust/connect-midi-lib.sh~. Equivalent manual operations:
 
-For piano input configs:
+For piano input rigs:
 
 #+begin_src sh
 connect_keyboard_to_alsa_client "edo12n_piano" "edo12n_piano-in"
@@ -386,7 +386,7 @@ unit-tested; the rest is the I/O shell.
   several sources is one voice.
 - *Devices.* Discovery dedupes serialosc replies by id (keeping the newest port),
   requires two distinct live ids of the configured size, and assigns them in
-  config order. Key events are debounced (one press / one release per cell), so a
+  rig order. Key events are debounced (one press / one release per cell), so a
   stuck or echoing grid can't corrupt state.
 
 ** When a grid floods

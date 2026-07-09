@@ -10,9 +10,9 @@ lines they live at. The =kick= pedal is used as the running example, but the log
 is identical for all ten pads.
 
 Source of truth: the tether-mode decoder =code/rust/midi_pulse/drumkit_runtime/decode.rs=
-and its driver =drumkit_runtime/mod.rs= + =audio.rs=; the active config
-=code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=. Protocol background:
-[[../../learnings/keith-mcmillen-softstep.org]] and [[../../code/rust/configs/kmss-drumkit.org]].
+and its driver =drumkit_runtime/mod.rs= + =audio.rs=; the active rig
+=code/rust/rigs/2-monomes_58-8-1_kmss-drums.toml=. Protocol background:
+[[../../learnings/keith-mcmillen-softstep.org]] and [[../../code/rust/rigs/kmss-drumkit.org]].
 
 * TL;DR
 
@@ -53,9 +53,9 @@ Velocity is derived entirely from pressure; the KMSS itself has no velocity.
 | =ATTACK=              | 14 ms  | decode.rs:45              | how long after onset the peak is captured before firing           |
 | =VELOCITY_FULL_SCALE= | 460    | decode.rs:31              | pad sum (0..508) that maps to velocity 127                        |
 | =VELOCITY_DB_RANGE=   | 20 dB  | decode.rs:27              | loudness spread from vel 1 to vel 127                             |
-| =debounce_ms=         | 50 ms  | config:148 (window field) | min gap between two fires on the *same* pad                       |
+| =debounce_ms=         | 50 ms  | rig:148 (window field) | min gap between two fires on the *same* pad                       |
 | poll interval         | 1 ms   | mod.rs:256                | how often matured hits are checked (device scan ~10 ms dominates) |
-| sink =amplitude=      | 1.6    | config:52                 | drum master gain, applied at mix, clamped [-1,1]                  |
+| sink =amplitude=      | 1.6    | rig:52                 | drum master gain, applied at mix, clamped [-1,1]                  |
 | device scan           | ~10 ms | firmware (fixed)          | sensors only refresh ~100 Hz -- the latency/aliasing floor        |
 
 *Note the missing hysteresis gap:* =ON_SUM= and =OFF_SUM= are *both 20*. There is no
@@ -137,7 +137,7 @@ Loudness is ~logarithmic, so velocity is spread over a fixed *=VELOCITY_DB_RANGE
 ** 3. the full gain chain for a kick
 : fired gain  = pad.gain × gain_from_velocity(velocity)      (mod.rs:264)
 :             = 1.0      × gain_from_velocity(velocity)      # kick has no `gain=`, defaults to 1.0
-: heard level = clamp( Σ voices(sample × gain) × amplitude , -1, 1 )   amplitude = 1.6  (audio.rs:87, config:52)
+: heard level = clamp( Σ voices(sample × gain) × amplitude , -1, 1 )   amplitude = 1.6  (audio.rs:87, rig:52)
 
 Worked examples for the kick (=pedal 1=, base CC 44, =gain= default 1.0):
 
@@ -225,7 +225,7 @@ step of the measurement task in =requests.org=.
 - Driver (timer, MIDI callback, gain chain): =drumkit_runtime/mod.rs=
 - Sampler / mix / master amplitude: =drumkit_runtime/audio.rs=
 - Tether mode switch + restore: =drumkit_runtime/tether.rs=
-- Active config (pads, =debounce_ms=, sink amplitude): =code/rust/configs/2-monomes_58-8-1_kmss-drums.toml=
+- Active rig (pads, =debounce_ms=, sink amplitude): =code/rust/rigs/2-monomes_58-8-1_kmss-drums.toml=
 - Protocol, CC map, why tether: [[../../learnings/keith-mcmillen-softstep.org]]
-- Config-level drumkit reference: [[../../code/rust/configs/kmss-drumkit.org]]
+- Rig-level drumkit reference: [[../../code/rust/rigs/kmss-drumkit.org]]
 - Pure-decoder unit tests (behaviour lock): =cargo test --bin midi_pulse drumkit=

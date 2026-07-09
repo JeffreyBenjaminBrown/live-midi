@@ -1,5 +1,5 @@
 * DONE Don't cross the waveform, amplitude controls.
-In a few of the configs at code/rust/configs/,
+In a few of the rigs at code/rust/rigs/,
 the waveform and amplitude for one monome
 are controlled by the other monome.
 In the case of the complex looper-plus-edo rig,
@@ -32,7 +32,7 @@ Unit tests pin both behaviors. If we ever add *linear* FM (or any modulator
 that can push frequency negative), through-zero comes for free.
 
 If what you actually want is audible through-zero *linear* FM as a playable
-timbre dimension, that's a new timbre parameter + config surface -- happy to
+timbre dimension, that's a new timbre parameter + rig surface -- happy to
 build it, but since nothing existing would change sound, I stopped here.
 (Also noted in jeff-maybe-review-this.org.)
 * DONE sustain ("accrete")
@@ -46,7 +46,7 @@ New =accrete_control= window kind (clear / needs_holding / accrete), wired into
 =2-monomes_58-8-1_kmss-drums= (+ its mock) on both grids. (Originally one shared
 instrument-wide state; superseded by the per-monome banks item below.) Full
 behavior + layout:
-=code/rust/configs/2-monomes_58-8-1_kmss-drums.org=, "sustain (accrete)".
+=code/rust/rigs/2-monomes_58-8-1_kmss-drums.org=, "sustain (accrete)".
 Choices you might revisit (details in jeff-maybe-review-this.org):
 - needs-holding starts OFF (accrete is a toggle until you say otherwise);
 - idle buttons glow *dim* (findable, like the scroll arrows), bright when active;
@@ -72,7 +72,7 @@ feet-accrete mapping, now meaningful), and the =(0,14)= toggle is per-grid --
 "the softstep accretes for THIS monome" -- so each triple mirrors only while its
 grid's toggle is on (the un-mirrored triple keeps drumming). Sustained notes
 still paint bright on BOTH grids (they're sounding; same rule as the cross-grid
-note reflection) even though control is split. Docs updated (config .org
+note reflection) even though control is split. Docs updated (rig .org
 "sustain (accrete)" + "feet accrete", README.org); more in
 jeff-maybe-review-this.org, "two monome-specific accrete banks".
 ** DONE retriggering a sustaining note cuts and replaces it [chat request, 2026-07-08]
@@ -97,7 +97,7 @@ a *global* distortion, applied to the sum of all the voices.
 Somewhere in this codebase already, I think,
 is a distortion algorithm that's nice and simple,
 with a scale parameter and a shape parameter.
-Let's make those two parameters configurable in the config.
+Let's make those two parameters configurable in the rig.
 The live distortion control is just on/off.
 ** [Claude] done -- =distortion_toggle= at (0,1) on both grids, one global switch
 The algorithm you remembered is the algebraic soft-clipper worked out in
@@ -120,8 +120,8 @@ follow the grid they came from. One judgment call: with BOTH toggles on, the
 two grids share one clipper (they intermodulate, exactly like the old global
 mode) rather than getting separate clippers -- see jeff-maybe-review-this.org,
 "per-monome distortion + slide", if you'd rather they distort independently.
-* DONE config reload
-If I adjust parameters in the config,
+* DONE rig reload
+If I adjust parameters in the rig,
 pressing 'r' should cause the new ones to be read and applied.
 For some kinds of parameters that would probably be hard;
 don't worry about those.
@@ -129,7 +129,7 @@ I'm just thinking about amplitude, timbre and pitch changes,
 all of which I think should be easy to hot-reload.
 ** [Claude] done -- 'r' + Enter hot-reloads the surfaces rig's live parameters
 Implemented for the *surfaces* runtime (the rig you're playing): type =r= and
-press Enter in the terminal it runs in, and the config file is re-read. What
+press Enter in the terminal it runs in, and the rig file is re-read. What
 applies live: the synth master =amplitude=, the =distortion_scale/shape=
 curve, all four =[[timbres]]= (waveform, amplitude, AM/FM), the *tuning*
 (=edo=, =x_step=, =y_step=, =fundamental_hz= -- new notes; sounding ones keep
@@ -164,7 +164,7 @@ Two new optional =cpal_synth= fields (defaults apply to EVERY synth rig --
 sawwave, looper, surfaces -- since you said "the synths"):
 - =sustain_level= (default 0.35; >= 1.0 disables, restoring the old flat envelope)
 - =decay_secs= (default 0.5; the exponential time constant; <= 0 disables)
-Both commented in the surfaces toml and configs/README.org. Loop playback
+Both commented in the surfaces toml and rigs/README.org. Loop playback
 notes get the same curve (they go through the same sink); chord-accretion
 voices stay flat drones. If the looper rigs shouldn't have changed, set
 =sustain_level = 1.0= in their tomls (also flagged in
@@ -190,7 +190,7 @@ surfaces toml ships with the four plain waveforms and a comment block giving
 each parameter's reasonable range, so nothing sounds different until you
 edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a
 timbre's amplitude survives fader changes. The tremolo LFO's wave family is
-the existing instrument-wide =[am]= table. Docs: configs/README.org
+the existing instrument-wide =[am]= table. Docs: rigs/README.org
 "Timbres".
 * DONE slide
 Let's introduce a janky slide algorithm.
@@ -218,7 +218,7 @@ became an accrete drone still rings, so it is never a slide source); nearest
 pitch wins, ties to the more recent release; a used source is consumed. The two
 knobs are =[surfaces] slide_candidate_window_ms= (default 1000) and
 =slide_duration_ms= (default 100). (Originally a global switch mirrored on both
-grids; superseded by the per-monome item below.) Docs: the config .org, "slide
+grids; superseded by the per-monome item below.) Docs: the rig .org, "slide
 and mono".
 ** DONE This should be per-monome rather than global, too.
 *** [Claude] done -- each grid's (1,1) now switches slide for that grid only
@@ -302,8 +302,8 @@ old occupant) drops out of the kit entirely, per your table. Pedal 0 now plays =
 which drops out too) -- that's what =2-monomes_58-8-1_kmss-drums.toml='s
 pedal 8 was already using ("was at 8" in your table); its 0.5 gain trim and
 comment moved with it. =kmss-drumkit.toml= had =crash.wav= (plain) at pedal 8
-instead -- it now matches the other config and uses the electronic crash too,
-so both drumkit configs share one pad list.
+instead -- it now matches the other rig and uses the electronic crash too,
+so both drumkit rigs share one pad list.
 
 Open hat: downloaded =oh8/OH50.WAV= (medium decay, ~0.5s) from
 =github.com/tidalcycles/sounds-tr808-fischer= -- CC0 1.0, the same source as
@@ -312,7 +312,7 @@ the rest of the kit -- as =drum-samples/open_hat.wav=; verified it loads
 in =drum-samples/CREDITS.org= and committed inside the =drum-samples=
 submodule (not pushed).
 
-Ditto: extended the pad schema (=DrumPadConfig=) so a pad is =pedal = 3, ditto
+Ditto: extended the pad schema (=DrumPadRig=) so a pad is =pedal = 3, ditto
 = true= instead of naming a =sample= -- exactly one of =sample=/=ditto = true=
 per pad, at most one ditto pad per drumkit window (both validated at load).
 It retriggers whatever sample most recently played on ANY pedal in the SAME
@@ -320,7 +320,7 @@ window, at THAT hit's already velocity-resolved gain -- not its own press's
 velocity. A ditto press does NOT update "last played" (so pad, ditto, ditto
 repeats the original hit rather than the ditto echoing itself), and it's a
 no-op if nothing has played yet. See =drumkit_runtime/mod.rs= (=PadKind=,
-=LastHit=) and =config.rs= for the implementation + unit tests.
+=LastHit=) and =rig.rs= for the implementation + unit tests.
 
 Details / choices you didn't specify: see =jeff-maybe-review-this.org=,
 "drum pads / ditto -- choices where the spec was silent".
@@ -338,22 +338,22 @@ softly then ditto hard and asserting the ditto plays louder from its own
 velocity. See =jeff-maybe-review-this.org= for the gain-component breakdown.
 ** DONE Where I wrote cowbell I meant wood block.
 *** [Claude] done -- pedal 8 is wood_block.wav again, pedal 9 is cowbell.wav
-Swapped both drumkit configs (=2-monomes_58-8-1_kmss-drums.toml= and
+Swapped both drumkit rigs (=2-monomes_58-8-1_kmss-drums.toml= and
 =kmss-drumkit.toml=, which share one pad list): pedal 8 -> =wood_block.wav=,
 pedal 9 -> =cowbell.wav= (its original occupant, restored). =ride.wav= drops
 back out of the kit -- it was only there to avoid cowbell landing at both 8
 and 9, which no longer applies. Updated the pad-list comments and the mapping
 tables in =kmss-drumkit.org= and =2-monomes_58-8-1_kmss-drums.org= to match;
-no mock config needed changes (the KMSS drumkit is deliberately omitted from
+no mock rig needed changes (the KMSS drumkit is deliberately omitted from
 the mock rig).
 * DONE drop the amplitude row
-Instead I'll use the config to tune each waveform's amplitude.
+Instead I'll use the rig to tune each waveform's amplitude.
 ** [Claude] done -- volume strips removed from the surfaces rig
-The =vol-a=/=vol-b= windows are gone from the config (+ mock); top-row cells
+The =vol-a=/=vol-b= windows are gone from the rig (+ mock); top-row cells
 4..12 play notes again and 13..15 host the polyrhythm pad. Loudness now:
 =[[timbres]] amplitude= per waveform (hot-reloadable with 'r') under the synth
 sink's master =amplitude=. The =volume_strip= window *kind* still exists for
-other configs; only this rig dropped it. One behavior note: the live per-grid
+other rigs; only this rig dropped it. One behavior note: the live per-grid
 fader (and its live rescale of sounding voices, incl. accrete drones) has no
 replacement -- 'r'-reloading a timbre amplitude affects only future notes.
 * DONE polyrhythm interface
@@ -392,7 +392,7 @@ that note's AM frequency does not change.
 
 This AM should be separate from any AM
 that is part of the note's "timbre"
-(which after these changes will be settable via the config toml).
+(which after these changes will be settable via the rig toml).
 ** [Claude] done -- =tap_tempo_pad= at [13,0]..[15,1] on both grids
 Exactly your layout and semantics: rolling-window pairwise taps (3rd tap inert
 until its 4th, which overrides), 10%-duty blink phase-anchored to your taps,
@@ -434,7 +434,7 @@ pulse-off button"). Readings you might revisit (details in
 jeff-maybe-review-this.org, "per-monome polyrhythm + the =1 pulse switch"):
 - a =1 tap still resets the factor to unity, so with cycling off, resetting
   the factor also switches cycling on;
-- "fast" is a fixed 400 ms window (a const, not a config knob -- say the word);
+- "fast" is a fixed 400 ms window (a const, not a rig knob -- say the word);
 - the =1 LED now shows the switch (bright while cycling on);
 - the blink still follows the (now per-grid) applied tempo, not the tapped one.
 * DONE erase button [chat request, 2026-07-08]
@@ -457,5 +457,5 @@ seamless); erase beats accrete when both are live. Readings you might revisit
 - with both conditions on, BOTH LEDs light (the override is behavioral);
 - entering needs-holding cancels a toggled erase mode, like accrete's;
 - no pedal mirror (the softstep triples stay clear / needs-holding / accrete);
-- in the config schema the trio stays all-or-nothing and =erase= is optional on
+- in the rig schema the trio stays all-or-nothing and =erase= is optional on
   top, so the older rigs need no edits.

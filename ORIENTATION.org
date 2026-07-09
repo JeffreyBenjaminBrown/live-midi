@@ -22,9 +22,9 @@ live only in Claude's memory. Follow the links for depth.
 A two-grid looping instrument in 58-EDO; no piano. One grid plays notes, the
 other records / plays back / edits loops.
 - *Canonical reference (read this first):*
-  [[./code/rust/configs/monome-looper-58-8-1.org]] -- glossary, usage, layout,
+  [[./code/rust/rigs/monome-looper-58-8-1.org]] -- glossary, usage, layout,
   settings. It is the source of truth for how the instrument behaves.
-- Config: =code/rust/configs/monome-looper-58-8-1.toml=.
+- Rig: =code/rust/rigs/monome-looper-58-8-1.toml=.
 - Runtime: =code/rust/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
   unit-tested key/LED/playback logic -- change behavior here). =sink.rs= = audio
   voices; =loop_store.rs= = slots + playback; =remap.rs= = pitch edits;
@@ -64,10 +64,10 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
 - Commit in natural, bite-sized chunks.
 
 * deeper pointers
-- [[./code/rust/configs/README.org]] -- the config system (windows, kinds, the
+- [[./code/rust/rigs/README.org]] -- the rig system (windows, kinds, the
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
 - Claude's persistent memory index: =~/.claude/projects/-home-ubuntu/memory/MEMORY.md=.
 * also possibly relevant files
 - README.org
-- code/rust/configs/README.org
+- code/rust/rigs/README.org

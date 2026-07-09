@@ -1,4 +1,4 @@
-//! The relayout pass (6_plan 4.2): resolve every window's per-edge `RectSpecConfig`
+//! The relayout pass (6_plan 4.2): resolve every window's per-edge `RectSpecRig`
 //! into an absolute `[x0, y0, x1, y1]`, following relative references
 //! (`other.edge + offset`) in dependency order. Re-run whenever a window's height
 //! changes (a fold/unfold), so anchored windows reflow. Pure; no I/O.
@@ -8,17 +8,17 @@
 
 use std::collections::HashMap;
 
-use midi_pulse::config::{EdgeName, EdgeRef, RectSpecConfig, ResolvedEdge};
+use midi_pulse::rig::{EdgeName, EdgeRef, RectSpecRig, ResolvedEdge};
 
 /// Resolve all windows' rects to absolute corners `[left, top, right, bottom]`.
 /// `specs` is `(id, rect)` in any order; references may point forward or backward.
 /// Errors on an unknown reference target or a reference cycle.
 pub fn resolve_layout(
-  specs: &[(String, RectSpecConfig)],
+  specs: &[(String, RectSpecRig)],
   grid_w: i32,
   grid_h: i32,
 ) -> Result<HashMap<String, [i32; 4]>, String> {
-  let index: HashMap<&str, &RectSpecConfig> = specs.iter().map(|(id, s)| (id.as_str(), s)).collect();
+  let index: HashMap<&str, &RectSpecRig> = specs.iter().map(|(id, s)| (id.as_str(), s)).collect();
   let mut memo: HashMap<(String, EdgeName), i32> = HashMap::new();
   let mut out = HashMap::new();
   for (id, _) in specs {
@@ -51,7 +51,7 @@ fn absolute(v: i32, edge: EdgeName, grid_w: i32, grid_h: i32) -> i32 {
 fn resolve_edge(
   id: &str,
   edge: EdgeName,
-  index: &HashMap<&str, &RectSpecConfig>,
+  index: &HashMap<&str, &RectSpecRig>,
   grid_w: i32,
   grid_h: i32,
   memo: &mut HashMap<(String, EdgeName), i32>,
@@ -82,19 +82,19 @@ fn resolve_edge(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::config::EdgeSpecConfig;
+  use midi_pulse::rig::EdgeSpecRig;
 
-  fn abs(rect: [i32; 4]) -> RectSpecConfig {
-    RectSpecConfig::Absolute(rect)
+  fn abs(rect: [i32; 4]) -> RectSpecRig {
+    RectSpecRig::Absolute(rect)
   }
 
   /// A rect whose top is `top_expr` and whose other edges are absolute.
-  fn anchored(top_expr: &str, bottom: i32, left: i32, right: i32) -> RectSpecConfig {
-    RectSpecConfig::PerEdge {
-      top: EdgeSpecConfig::Expr(top_expr.to_string()),
-      bottom: EdgeSpecConfig::Absolute(bottom),
-      left: EdgeSpecConfig::Absolute(left),
-      right: EdgeSpecConfig::Absolute(right),
+  fn anchored(top_expr: &str, bottom: i32, left: i32, right: i32) -> RectSpecRig {
+    RectSpecRig::PerEdge {
+      top: EdgeSpecRig::Expr(top_expr.to_string()),
+      bottom: EdgeSpecRig::Absolute(bottom),
+      left: EdgeSpecRig::Absolute(left),
+      right: EdgeSpecRig::Absolute(right),
     }
   }
 

@@ -12,7 +12,7 @@ title = "Monome Looper 58 8 1 (mock grids)"
 #   MIDI_PULSE_DETECTOR_PORT=17002 cargo run --bin midi_pulse -- monome-looper-58-8-1-mock
 #
 # The mock reports two 16x16 "monome 256" grids, so select.size = [16,16] still
-# assigns them in config order (first -> edo, second -> loops). See MOCK-MONOME.org.
+# assigns them in rig order (first -> edo, second -> loops). See MOCK-MONOME.org.
 # ---------------------------------------------------------------------------
 
 [[tunings]]

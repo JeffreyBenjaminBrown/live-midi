@@ -9,7 +9,7 @@ pub(crate) fn edo_un12_instruction(
   state: &Arc<Mutex<RemappableEdoState>>,
 ) -> (i16, i16) {
   let absolute_step = edo_un12_absolute_step(original_note, state);
-  let edo = state.lock().unwrap().config.edo;
+  let edo = state.lock().unwrap().rig.edo;
   let channel = MIN_CHANNEL_OUT as i16 + absolute_step.div_euclid(edo);
   let note = MIN_NOTE_OUT as i16 + absolute_step.rem_euclid(edo);
   (channel, note)
@@ -21,7 +21,7 @@ fn edo_un12_absolute_step(original_note: u8, state: &Arc<Mutex<RemappableEdoStat
   let pitch_class = original_note % 12;
   let state = state.lock().unwrap();
   let pc = pitch_class as usize;
-  channel_offset * state.config.edo + state.config.initial_map[pc] + state.deltas[pc]
+  channel_offset * state.rig.edo + state.rig.initial_map[pc] + state.deltas[pc]
 }
 
 pub(crate) fn print_note_on_trace(input: &[u8], output: &[u8]) {
@@ -93,10 +93,10 @@ fn remove_held_note(sounding: &mut SoundingPitchCounts, original_note: u8) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use super::super::config::{RemapConfig, RemapIdiom};
+  use super::super::rig::{RemapRig, RemapIdiom};
 
   fn test_state() -> Arc<Mutex<RemappableEdoState>> {
-    Arc::new(Mutex::new(RemappableEdoState::new(RemapConfig::new(
+    Arc::new(Mutex::new(RemappableEdoState::new(RemapRig::new(
       80.0,
       12,
       1,

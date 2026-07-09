@@ -1,6 +1,6 @@
 use midir::os::unix::VirtualOutput;
 use midir::MidiOutput;
-use midi_pulse::config::{Config, MonomeWindowConfig};
+use midi_pulse::rig::{Rig, MonomeWindowRig};
 use midi_pulse::{midi, monome};
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
@@ -129,31 +129,31 @@ struct AppState {
   min_note: i32,
 }
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-  let edo_window = config.monome_windows.iter().find_map(|window| {
-    if let MonomeWindowConfig::EdoNoteGrid { monome, tuning, sink, .. } = window {
+pub fn run_from_rig(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
+  let edo_window = rig.monome_windows.iter().find_map(|window| {
+    if let MonomeWindowRig::EdoNoteGrid { monome, tuning, sink, .. } = window {
       Some((monome, tuning, sink))
     } else {
       None
     }
-  }).ok_or("monome MIDI config requires an edo_note_grid window")?;
-  let monome_config = config.monomes.iter()
+  }).ok_or("monome MIDI rig requires an edo_note_grid window")?;
+  let monome_rig = rig.monomes.iter()
     .find(|monome| monome.id == *edo_window.0)
     .ok_or("edo_note_grid references an unknown monome")?;
-  let tuning = config.tunings.iter()
+  let tuning = rig.tunings.iter()
     .find(|tuning| tuning.id == *edo_window.1)
     .ok_or("edo_note_grid references an unknown tuning")?;
-  if !config.sinks.iter().any(|sink| sink.id() == edo_window.2.as_str()) {
+  if !rig.sinks.iter().any(|sink| sink.id() == edo_window.2.as_str()) {
     return Err("edo_note_grid references an unknown sink".into());
   }
-  let midi_output = config.midi.as_ref()
-    .ok_or("monome MIDI config requires [midi.output]")?
+  let midi_output = rig.midi.as_ref()
+    .ok_or("monome MIDI rig requires [midi.output]")?
     .output
     .clone();
-  let grid_size = monome_config.select.size.unwrap_or([GRID_W, GRID_H]);
+  let grid_size = monome_rig.select.size.unwrap_or([GRID_W, GRID_H]);
   run(RuntimeSettings {
-    prefix: monome_config.prefix.clone(),
-    listen_port: monome_config.listen_port,
+    prefix: monome_rig.prefix.clone(),
+    listen_port: monome_rig.listen_port,
     grid_w: grid_size[0],
     grid_h: grid_size[1],
     edo: tuning.edo as i32,

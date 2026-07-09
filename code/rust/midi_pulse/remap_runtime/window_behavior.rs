@@ -1,7 +1,7 @@
 use midi_pulse::monome_window;
 use std::time::Instant;
 
-use super::config::RemapConfig;
+use super::rig::RemapRig;
 use super::layout::{
   edo_local_cell, grid_step, map_rect, record_control_cells, scale_control_cells,
   scale_slot_cells, scale_slots_rect, undo_cell, WindowId,
@@ -35,7 +35,7 @@ pub(crate) struct RenderContext<'a> {
 
 pub(crate) trait WindowBehavior {
   fn kind_name(&self) -> &'static str;
-  fn window(&self, config: &RemapConfig) -> Option<monome_window::Window<WindowId>>;
+  fn window(&self, rig: &RemapRig) -> Option<monome_window::Window<WindowId>>;
   fn key_down(&self, _ctx: &mut KeyContext<'_>, _x: i32, _y: i32) -> bool {
     false
   }
@@ -57,15 +57,15 @@ impl WindowBehavior for PreimageRowBehavior {
   }
 
   // Owns the top pitch-class row, limited to the first twelve columns.
-  fn window(&self, config: &RemapConfig
+  fn window(&self, rig: &RemapRig
   ) -> Option<monome_window::Window<WindowId>> {
     if PREIMAGE_ROW_Y < 0
-      || PREIMAGE_ROW_Y >= config.grid_h
-      || config.grid_w <= 0 { return None; }
+      || PREIMAGE_ROW_Y >= rig.grid_h
+      || rig.grid_w <= 0 { return None; }
     Some(monome_window::Window {
       id: WindowId::PreimageRow,
       rect: ( (0, PREIMAGE_ROW_Y),
-               ((12.min(config.grid_w)) - 1,
+               ((12.min(rig.grid_w)) - 1,
                 PREIMAGE_ROW_Y), ), } ) }
 
   // Draws pitch-class hints and transient flashes caused by grid presses.
@@ -87,9 +87,9 @@ impl WindowBehavior for RemappableUn12GridBehavior {
   }
 
   // In the first 12 columns, owns all rows below the 12-edo preimage row.
-  fn window(&self, config: &RemapConfig
+  fn window(&self, rig: &RemapRig
   ) -> Option<monome_window::Window<WindowId>> {
-    let rect = map_rect(config);
+    let rect = map_rect(rig);
     if rect.x0 >= rect.x1
       || rect.y0 >= rect.y1
       { return None; }
@@ -99,9 +99,9 @@ impl WindowBehavior for RemappableUn12GridBehavior {
 
   // Moves or loosens the pitch preimage for the pressed EDO step.
   fn key_down(&self, ctx: &mut KeyContext<'_>, x: i32, y: i32) -> bool {
-    let Some((local_x, local_y)) = edo_local_cell(&ctx.state.config, x, y) else {
+    let Some((local_x, local_y)) = edo_local_cell(&ctx.state.rig, x, y) else {
       return false; };
-    let step = grid_step(&ctx.state.config, local_x, local_y);
+    let step = grid_step(&ctx.state.rig, local_x, local_y);
     let preimage_before = preimage_for_step(ctx.state, step);
     let changed = apply_grid_press(ctx.state, x, y);
     let preimage_row_preimage =
@@ -130,9 +130,9 @@ impl WindowBehavior for RemapUndoButtonBehavior {
     "remap_undo_button" }
 
   // Owns the single undo cell in the lower-right corner.
-  fn window(&self, config: &RemapConfig
+  fn window(&self, rig: &RemapRig
   ) -> Option<monome_window::Window<WindowId>> {
-    undo_cell(config).map(|cell| monome_window::Window {
+    undo_cell(rig).map(|cell| monome_window::Window {
       id: WindowId::Undo,
       rect: (cell, cell), } ) }
 
@@ -166,9 +166,9 @@ impl WindowBehavior for RecordControlBehavior {
   }
 
   // Owns the one configured cell for this particular recording control.
-  fn window(&self, config: &RemapConfig
+  fn window(&self, rig: &RemapRig
   ) -> Option<monome_window::Window<WindowId>> {
-    record_control_cells(config)
+    record_control_cells(rig)
       .into_iter()
       .find(|(_, control)| *control == self.control)
       .map(|(cell, control)| monome_window::Window {
@@ -219,16 +219,16 @@ impl WindowBehavior for ScaleSlotsBehavior {
     "scale_slots"
   }
 
-  // Owns the flexible config-defined slot rect.
-  fn window(&self, config: &RemapConfig
+  // Owns the flexible rig-defined slot rect.
+  fn window(&self, rig: &RemapRig
   ) -> Option<monome_window::Window<WindowId>> {
-    scale_slots_rect(config).map(|rect| monome_window::Window {
+    scale_slots_rect(rig).map(|rect| monome_window::Window {
       id: WindowId::ScaleSlots,
       rect, } ) }
 
   // Stores, empties, or recalls the pressed slot depending on the armed button.
   fn key_down(&self, ctx: &mut KeyContext<'_>, x: i32, y: i32) -> bool {
-    let Some(index) = scale_slot_cells(&ctx.state.config)
+    let Some(index) = scale_slot_cells(&ctx.state.rig)
       .into_iter()
       .position(|cell| cell == (x, y))
     else {
@@ -256,9 +256,9 @@ impl WindowBehavior for ScaleControlBehavior {
   }
 
   // Owns the one configured cell for this particular scale arm button.
-  fn window(&self, config: &RemapConfig
+  fn window(&self, rig: &RemapRig
   ) -> Option<monome_window::Window<WindowId>> {
-    scale_control_cells(config)
+    scale_control_cells(rig)
       .into_iter()
       .find(|(_, control)| *control == self.control)
       .map(|(cell, control)| monome_window::Window {
@@ -284,7 +284,7 @@ pub(crate) enum RemapWindowBehavior {
 }
 
 impl WindowBehavior for RemapWindowBehavior {
-  // Delegates the config/etags name to the wrapped behavior.
+  // Delegates the rig/etags name to the wrapped behavior.
   fn kind_name(&self) -> &'static str {
     match self {
       RemapWindowBehavior::PreimageRow(behavior) => behavior.kind_name(),
@@ -297,14 +297,14 @@ impl WindowBehavior for RemapWindowBehavior {
   }
 
   // Delegates cell ownership to the wrapped behavior.
-  fn window(&self, config: &RemapConfig) -> Option<monome_window::Window<WindowId>> {
+  fn window(&self, rig: &RemapRig) -> Option<monome_window::Window<WindowId>> {
     match self {
-      RemapWindowBehavior::PreimageRow(behavior) => behavior.window(config),
-      RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.window(config),
-      RemapWindowBehavior::RemapUndoButton(behavior) => behavior.window(config),
-      RemapWindowBehavior::RecordControl(behavior) => behavior.window(config),
-      RemapWindowBehavior::ScaleSlots(behavior) => behavior.window(config),
-      RemapWindowBehavior::ScaleControl(behavior) => behavior.window(config),
+      RemapWindowBehavior::PreimageRow(behavior) => behavior.window(rig),
+      RemapWindowBehavior::RemappableUn12Grid(behavior) => behavior.window(rig),
+      RemapWindowBehavior::RemapUndoButton(behavior) => behavior.window(rig),
+      RemapWindowBehavior::RecordControl(behavior) => behavior.window(rig),
+      RemapWindowBehavior::ScaleSlots(behavior) => behavior.window(rig),
+      RemapWindowBehavior::ScaleControl(behavior) => behavior.window(rig),
     }
   }
 
@@ -345,24 +345,24 @@ impl WindowBehavior for RemapWindowBehavior {
   }
 }
 
-pub(crate) fn behaviors(config: &RemapConfig) -> Vec<RemapWindowBehavior> {
+pub(crate) fn behaviors(rig: &RemapRig) -> Vec<RemapWindowBehavior> {
   let mut behaviors = vec![
     RemapWindowBehavior::PreimageRow(PreimageRowBehavior),
     RemapWindowBehavior::RemapUndoButton(RemapUndoButtonBehavior),
     RemapWindowBehavior::RemappableUn12Grid(RemappableUn12GridBehavior),
   ];
   behaviors.extend(
-    record_control_cells(config)
+    record_control_cells(rig)
       .into_iter()
       .map(|(_, control)| {
         RemapWindowBehavior::RecordControl(RecordControlBehavior::new(control))
       }),
   );
-  if scale_slots_rect(config).is_some() {
+  if scale_slots_rect(rig).is_some() {
     behaviors.push(RemapWindowBehavior::ScaleSlots(ScaleSlotsBehavior));
   }
   behaviors.extend(
-    scale_control_cells(config)
+    scale_control_cells(rig)
       .into_iter()
       .map(|(_, control)| {
         RemapWindowBehavior::ScaleControl(ScaleControlBehavior::new(control))
@@ -371,27 +371,27 @@ pub(crate) fn behaviors(config: &RemapConfig) -> Vec<RemapWindowBehavior> {
   behaviors
 }
 
-pub(crate) fn windows(config: &RemapConfig) -> Vec<monome_window::Window<WindowId>> {
-  behaviors(config)
+pub(crate) fn windows(rig: &RemapRig) -> Vec<monome_window::Window<WindowId>> {
+  behaviors(rig)
     .into_iter()
-    .filter_map(|behavior| behavior.window(config))
+    .filter_map(|behavior| behavior.window(rig))
     .collect()
 }
 
 pub(crate) fn behavior_for_cell(
-  config: &RemapConfig,
+  rig: &RemapRig,
   x: i32,
   y: i32,
 ) -> Option<RemapWindowBehavior> {
-  let windows = windows(config);
+  let windows = windows(rig);
   let id = monome_window::window_for_cell(&windows, (x, y))?;
-  behaviors(config)
+  behaviors(rig)
     .into_iter()
-    .find(|behavior| behavior.window(config).is_some_and(|window| window.id == id))
+    .find(|behavior| behavior.window(rig).is_some_and(|window| window.id == id))
 }
 
 pub(crate) fn render_all(ctx: &mut RenderContext<'_>) {
-  for behavior in behaviors(&ctx.state.config) {
+  for behavior in behaviors(&ctx.state.rig) {
     behavior.render(ctx);
   }
 }

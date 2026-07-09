@@ -4,22 +4,22 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CONFIG_NAME="${1:-}"
+RIG_NAME="${1:-}"
 
-if [[ -z "$CONFIG_NAME" ]]; then
-  echo "usage: $0 CONFIG_NAME" >&2
+if [[ -z "$RIG_NAME" ]]; then
+  echo "usage: $0 RIG_NAME" >&2
   echo "example: $0 edo-un12_58-8-1_snap_recording" >&2
   exit 2
 fi
 
 source "$HERE/connect-midi-lib.sh"
 
-config_path="$ROOT/code/rust/configs/$CONFIG_NAME"
-if [[ "$config_path" != *.toml ]]; then
-  config_path="$config_path.toml"
+rig_path="$ROOT/code/rust/rigs/$RIG_NAME"
+if [[ "$rig_path" != *.toml ]]; then
+  rig_path="$rig_path.toml"
 fi
-if [[ ! -f "$config_path" ]]; then
-  echo "config not found: $config_path" >&2
+if [[ ! -f "$rig_path" ]]; then
+  echo "rig not found: $rig_path" >&2
   exit 1
 fi
 
@@ -36,18 +36,18 @@ table_string() {
       print value
       exit
     }
-  ' "$config_path"
+  ' "$rig_path"
 }
 
 midi_input="$(table_string "midi.input" "virtual_name")"
 midi_output="$(table_string "midi.output" "virtual_name")"
 
-echo "=== midi_pulse config: $CONFIG_NAME ==="
+echo "=== midi_pulse rig: $RIG_NAME ==="
 
 if [[ -n "$midi_input" ]]; then
-  connect_keyboard_to_alsa_client "$CONFIG_NAME" "$midi_input"
+  connect_keyboard_to_alsa_client "$RIG_NAME" "$midi_input"
 else
-  echo "No [midi.input] virtual_name in config; skipping keyboard input."
+  echo "No [midi.input] virtual_name in rig; skipping keyboard input."
 fi
 
 if [[ -n "$midi_output" ]]; then
@@ -58,7 +58,7 @@ if [[ -n "$midi_output" ]]; then
     "REAPER:MIDI Input 1" \
     "$midi_output -> REAPER MIDI Input 1"
 else
-  echo "No [midi.output] virtual_name in config; skipping MIDI output."
+  echo "No [midi.output] virtual_name in rig; skipping MIDI output."
 fi
 
 echo ""

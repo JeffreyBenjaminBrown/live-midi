@@ -10,7 +10,7 @@ Otherwise, please write a new document, sibling to this one,
 called 'plan.org', where you plan the code.
 * the idea in brief
 I would like to implement some new features
-for the edo-un12*.toml family of configs at code/rust/configs/.
+for the edo-un12*.toml family of rigs at code/rust/rigs/.
 (Each of those represents a slight variation on, essentially, the same program.)
 
 I would like some controls on the monome for recording from the piano.
@@ -65,7 +65,7 @@ the new one clobbers the old one -- the old one is removed.
 * feedback, round 1
 ** Control placement and naming
 The "top-right, in a 2x3 grid" placement is probably enough for the
-current 16x16 edo-un12 configs, where the existing preimage row uses
+current 16x16 edo-un12 rigs, where the existing preimage row uses
 x=0..11 at y=0, the remap grid uses x=0..9 at y=1..15, and undo uses
 x=15,y=15. Still, it would help to spell out exact coordinates and
 orientation.

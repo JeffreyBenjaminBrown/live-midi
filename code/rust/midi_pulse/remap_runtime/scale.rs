@@ -12,10 +12,10 @@ pub(crate) enum ScaleControl {
 
 /// Runtime state for the scale-saving feature: the saved scales and which arm
 /// button (if any) is currently armed. The number of slots is fixed by the
-/// config's `scale_slots` window.
+/// rig's `scale_slots` window.
 #[derive(Clone, Default)]
 pub(crate) struct ScaleSlotsRuntime {
-  /// One entry per slot cell, in the config's row-major order; `None` is empty.
+  /// One entry per slot cell, in the rig's row-major order; `None` is empty.
   pub(crate) slots: Vec<Option<RemapSnapshot>>,
   /// The armed arm button, if any.
   pub(crate) armed: Option<ScaleControl>,
@@ -102,18 +102,18 @@ pub(crate) fn slot_is_active(state: &RemappableEdoState, index: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use super::super::config::{RemapConfig, RemapIdiom};
+  use super::super::rig::{RemapRig, RemapIdiom};
   use super::super::remap::undo_remap;
 
   // A 16x16 state whose scale_slots window covers a 4x4 grid (16 slots).
   fn state_with_slots() -> RemappableEdoState {
-    let config = RemapConfig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 16)
+    let rig = RemapRig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 16)
       .with_scale_slots(Some([12, 0, 15, 3]))
       .with_scale_controls(vec![
         (ScaleControl::Store, (15, 4)),
         (ScaleControl::Empty, (14, 4)),
       ]);
-    RemappableEdoState::new(config)
+    RemappableEdoState::new(rig)
   }
 
   #[test]

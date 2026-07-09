@@ -19,7 +19,7 @@
 //! `paint` overwrites every covered cell and `state.rs` consumes every press inside
 //! the rect (an inert cell eats the press rather than playing a note).
 
-use midi_pulse::config::TimbreTarget;
+use midi_pulse::rig::TimbreTarget;
 
 use super::state::{LEVEL_DIM, LEVEL_FULL, LEVEL_MID, LEVEL_OFF};
 use super::timbre_rows::RowRange;

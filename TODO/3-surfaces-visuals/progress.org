@@ -18,7 +18,7 @@ Not committed (leaving the working tree for your review, as with the prior phase
     classes, each under its own register (so the same note shows on both grids wherever
     each currently places it);
   - *(4)* trails: a shared ring of up to =[surfaces].trails_max= recent *pitch classes*
-    (default 7; 9 in the 2-monomes config) paints DIM, a currently-sounding class paints
+    (default 7; 9 in the 2-monomes rig) paints DIM, a currently-sounding class paints
     BRIGHT (full clobbers dim). Repeating a note keeps a single entry (octaves collapse to
     one class, so hammering a note can't flood/erase the trail), and each press clears
     trailed neighbours within =1/[surfaces].trail_clobber_radius= of an octave (1/27 =
@@ -31,20 +31,20 @@ Not committed (leaving the working tree for your review, as with the prior phase
   8x8 quad frames (=/grid/led/map=) at ~1/32 duty, ~67 Hz (reusing =PulseBrightness=);
   a varibright grid keeps native level 4. New =monome::send_led_map= keeps a whole-grid
   flash to <=4 messages/frame instead of ~30 per-cell writes (the bottleneck we discussed).
-- *(2) Per-grid, cross-controlled, live volume.* New =volume_strip= config window (12
+- *(2) Per-grid, cross-controlled, live volume.* New =volume_strip= rig window (12
   cells right of the waveform strip). Log-spaced over 30 dB, top cell = unity, starts at
   column 10. Each grid's strip sets the *other* grid's loudness (like the waveform strip),
   and it is *live*: moving it rescales that grid's already-sounding voices (=set_grid_gain=)
   as well as future notes. So each grid's top row is now the *other* grid's channel strip.
-- *Detection resolved without config changes.* Each grid thread decides monobright-ness
+- *Detection resolved without rig changes.* Each grid thread decides monobright-ness
   from its own device's serial id, so it needs no per-slot pinning and doesn't care which
-  physical grid lands in which config slot.
+  physical grid lands in which rig slot.
 - *Tests.* Pure unit tests for the painter (selector, volume, arrows, reflection,
   register-shift-moves-lights, trail-clobber, occlusion) and the volume-gain curve; the
   mock end-to-end test now asserts cross-reflection, trail-lingers-dim, and the volume
   strip; a new mock test drives one monobright + one varibright grid and checks the
   flash-vs-steady-dim contrast (added =/grid/led/map= to the mock, and a test serial-lock
-  since the surfaces mock tests share the global =STOP= and the config ports).
+  since the surfaces mock tests share the global =STOP= and the rig ports).
 
 * Changes to the plan's envisioned order
 
@@ -52,7 +52,7 @@ Not committed (leaving the working tree for your review, as with the prior phase
   one pure painter + the same shared state, I implemented them together as a single unit
   rather than in four steps, then did 1 (flash) and 2 (volume). Same net order, fewer
   seams.
-- Landed the shared infrastructure first (config =volume_strip=, =monome::send_led_map=,
+- Landed the shared infrastructure first (rig =volume_strip=, =monome::send_led_map=,
   =synth::set_grid_gain=, mock =/grid/led/map=) before the surfaces wiring, so each layer
   compiled on its own.
 

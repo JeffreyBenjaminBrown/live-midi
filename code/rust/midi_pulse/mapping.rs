@@ -1,4 +1,4 @@
-use crate::config::{InitialMapConfig, PianoMappingConfig, RemapIdiomConfig, TuningConfig};
+use crate::rig::{InitialMapRig, PianoMappingRig, RemapIdiomRig, TuningRig};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PianoMapper {
@@ -7,14 +7,14 @@ pub enum PianoMapper {
 }
 
 impl PianoMapper {
-  pub fn from_config(
-    mapping: &PianoMappingConfig,
-    tunings: &[TuningConfig],
+  pub fn from_rig(
+    mapping: &PianoMappingRig,
+    tunings: &[TuningRig],
     min_channel: u8,
     min_note: u8,
   ) -> Result<Self, String> {
     match mapping {
-      PianoMappingConfig::TwelveN {
+      PianoMappingRig::TwelveN {
         lowest_note,
         shift_before_mapping,
         edo_per_12,
@@ -25,7 +25,7 @@ impl PianoMapper {
         min_note,
         *edo_per_12,
       ))),
-      PianoMappingConfig::RemappableUn12 {
+      PianoMappingRig::RemappableUn12 {
         lowest_note,
         tuning,
         remap_idiom,
@@ -107,7 +107,7 @@ pub struct RemappableUn12Mapping {
   min_channel: u8,
   min_note: u8,
   edo: i16,
-  remap_idiom: RemapIdiomConfig,
+  remap_idiom: RemapIdiomRig,
   map: [i16; 12],
 }
 
@@ -117,11 +117,11 @@ impl RemappableUn12Mapping {
     min_channel: u8,
     min_note: u8,
     edo: i16,
-    remap_idiom: RemapIdiomConfig,
-    initial_map: InitialMapConfig,
+    remap_idiom: RemapIdiomRig,
+    initial_map: InitialMapRig,
   ) -> Self {
     let map = match initial_map {
-      InitialMapConfig::Even => evenly_spaced_map(edo),
+      InitialMapRig::Even => evenly_spaced_map(edo),
     };
     RemappableUn12Mapping {
       lowest_note,
@@ -137,7 +137,7 @@ impl RemappableUn12Mapping {
     self.map
   }
 
-  pub fn remap_idiom(&self) -> RemapIdiomConfig {
+  pub fn remap_idiom(&self) -> RemapIdiomRig {
     self.remap_idiom
   }
 
@@ -196,8 +196,8 @@ mod tests {
       1,
       28,
       31,
-      RemapIdiomConfig::Snap,
-      InitialMapConfig::Even,
+      RemapIdiomRig::Snap,
+      InitialMapRig::Even,
     );
 
     assert_eq!(mapping.map(), [0, 3, 5, 8, 10, 13, 16, 18, 21, 23, 26, 28]);

@@ -19,7 +19,7 @@ use super::timbre_editor::{
   EditorAction, EditorView, ParamKind, TimbreEditor, TimbreParam, EDITOR_ROWS,
 };
 use crate::types::Timbre;
-use midi_pulse::config::TimbreTarget;
+use midi_pulse::rig::TimbreTarget;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
@@ -156,15 +156,15 @@ pub struct LooperState {
   /// The live-timbre editor on the loops monome (C5c, 6_plan 2.2 / 7_layout), with
   /// its own fold state. The whole looper stack (slots, transport, copy/undo/remap,
   /// and the loop display) sits BELOW it and reflows down together when it unfolds:
-  /// `loops_reflow` holds the unfolded (config) positions, and `reflow_loops` shifts
+  /// `loops_reflow` holds the unfolded (rig) positions, and `reflow_loops` shifts
   /// them by the editor's fold-height delta. `None` = no loops editor (every existing
-  /// config), so the looper layout is fixed.
+  /// rig), so the looper layout is fixed.
   loops_timbre_editor: Option<TimbreEditor>,
   loops_timbre_folded: bool,
   loops_reflow: Option<LoopsReflow>,
 }
 
-/// The unfolded (config) positions of every loops-monome window that reflows under the
+/// The unfolded (rig) positions of every loops-monome window that reflows under the
 /// live editor. `reflow_loops` shifts them up when the editor folds (7_layout.org).
 #[derive(Clone, Copy)]
 struct LoopsReflow {
@@ -219,7 +219,7 @@ impl LooperState {
       gain: editor.map_or(Timbre::default().gain, TimbreEditor::amplitude_unity),
       ..Timbre::default()
     };
-    // Capture the unfolded looper-stack positions (config) so the loops editor can
+    // Capture the unfolded looper-stack positions (rig) so the loops editor can
     // reflow them under itself. Only when a loops editor is present.
     let loops_reflow = p.loops_timbre_editor.as_ref().map(|_| LoopsReflow {
       slots: p.loop_slots_rect,
@@ -425,7 +425,7 @@ impl LooperState {
   /// sits just under the loops-monome live editor (C5c reflow, 7_layout.org). The
   /// editor is 7 rows unfolded / 1 folded, so folding moves the whole stack up by
   /// `EDITOR_ROWS - 1`; the display's top moves with it but its bottom stays at the
-  /// grid edge (it grows). A no-op without a loops editor -- every existing config.
+  /// grid edge (it grows). A no-op without a loops editor -- every existing rig.
   fn reflow_loops(&mut self) {
     let Some(base) = self.loops_reflow else {
       return;

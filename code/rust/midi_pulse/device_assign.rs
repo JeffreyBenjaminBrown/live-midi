@@ -4,7 +4,7 @@
 //! `monome::discover_devices` dedupes only by *port*, and serialosc can report one
 //! device id on several ports where only the newest is live (RUNTIME-NOTES.org,
 //! "Ghost tty devices"). So we group by id, keep the newest (last-replied) port
-//! per id, and hand each config monome a distinct live id in config order. We
+//! per id, and hand each rig monome a distinct live id in rig order. We
 //! never hand two ports of the same id to two grids. This is additive: the
 //! existing single-grid `discover_device`/`discover_configured_device` are
 //! untouched.

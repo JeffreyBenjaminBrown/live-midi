@@ -3,7 +3,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use super::config::RemapConfig;
+use super::rig::RemapRig;
 use super::layout::{
   grid_step, map_rect, record_control_cells, scale_control_cells, scale_slot_cells, undo_cell,
   WindowId,
@@ -169,13 +169,13 @@ pub(crate) struct LedPhases {
   pub(crate) preimage_row_flash_on: bool,
 }
 
-pub(crate) fn blank_rendered_cols(config: &RemapConfig) -> Vec<u8> {
-  vec![0; (config.grid_w * config.grid_h) as usize]
+pub(crate) fn blank_rendered_cols(rig: &RemapRig) -> Vec<u8> {
+  vec![0; (rig.grid_w * rig.grid_h) as usize]
 }
 
 #[cfg(test)]
-pub(crate) fn col_bank_count(config: &RemapConfig) -> usize {
-  ((config.grid_h + 7) / 8) as usize
+pub(crate) fn col_bank_count(rig: &RemapRig) -> usize {
+  ((rig.grid_h + 7) / 8) as usize
 }
 
 pub(crate) fn led_phases(
@@ -248,8 +248,8 @@ pub(crate) fn render_to_monome(
   }
   for (i, level) in levels.iter().enumerate() {
     if rendered_cols[i] != *level {
-      let x = i as i32 % state.config.grid_w;
-      let y = i as i32 / state.config.grid_w;
+      let x = i as i32 % state.rig.grid_w;
+      let y = i as i32 / state.rig.grid_w;
       if trace_leds {
         let trace_started = LED_TRACE_STARTED.get_or_init(Instant::now);
         eprintln!(
@@ -275,12 +275,12 @@ pub(crate) fn render_led_cols(
   recorder: &RecordRuntime,
   phases: LedPhases,
 ) -> Vec<u8> {
-  let banks = col_bank_count(&state.config);
-  let mut cols = vec![0u8; state.config.grid_w as usize * banks];
+  let banks = col_bank_count(&state.rig);
+  let mut cols = vec![0u8; state.rig.grid_w as usize * banks];
   let levels = render_led_levels(state, sounding, recorder, phases);
-  for y in 0..state.config.grid_h {
-    for x in 0..state.config.grid_w {
-      if levels[(y * state.config.grid_w + x) as usize] > 0 {
+  for y in 0..state.rig.grid_h {
+    for x in 0..state.rig.grid_w {
+      if levels[(y * state.rig.grid_w + x) as usize] > 0 {
         let i = x as usize * banks + (y as usize / 8);
         cols[i] |= 1u8 << (y % 8);
       }
@@ -315,8 +315,8 @@ pub(crate) fn render_led_levels_with_preimage_row(
   now: Instant,
   phases: LedPhases,
 ) -> Vec<u8> {
-  let mut levels = vec![LED_LEVEL_OFF; (state.config.grid_w * state.config.grid_h) as usize];
-  let windows = window_behavior::windows(&state.config);
+  let mut levels = vec![LED_LEVEL_OFF; (state.rig.grid_w * state.rig.grid_h) as usize];
+  let windows = window_behavior::windows(&state.rig);
   let mut ctx = RenderContext {
     state,
     sounding,
@@ -333,23 +333,23 @@ pub(crate) fn render_led_levels_with_preimage_row(
 }
 
 pub(crate) fn render_remappable_un12_grid(ctx: &mut RenderContext<'_>) {
-  let rect = map_rect(&ctx.state.config);
+  let rect = map_rect(&ctx.state.rig);
   for y in rect.y0..rect.y1 {
     for x in rect.x0..rect.x1 {
       if !monome_window::visible(ctx.windows, WindowId::Edo, (x, y)) {
         continue;
       }
-      let step = grid_step(&ctx.state.config, x - rect.x0, y - rect.y0);
-      ctx.levels[(y * ctx.state.config.grid_w + x) as usize] =
+      let step = grid_step(&ctx.state.rig, x - rect.x0, y - rect.y0);
+      ctx.levels[(y * ctx.state.rig.grid_w + x) as usize] =
         rendered_level(ctx.state, ctx.sounding, step, ctx.phases);
     }
   }
 }
 
 pub(crate) fn render_remap_undo_button(ctx: &mut RenderContext<'_>) {
-  if let Some((x, y)) = undo_cell(&ctx.state.config) {
+  if let Some((x, y)) = undo_cell(&ctx.state.rig) {
     if monome_window::visible(ctx.windows, WindowId::Undo, (x, y)) {
-      ctx.levels[(y * ctx.state.config.grid_w + x) as usize] =
+      ctx.levels[(y * ctx.state.rig.grid_w + x) as usize] =
         if ctx.state.history.is_empty() {
           LED_LEVEL_OFF
         } else {
@@ -360,7 +360,7 @@ pub(crate) fn render_remap_undo_button(ctx: &mut RenderContext<'_>) {
 }
 
 pub(crate) fn render_record_control(ctx: &mut RenderContext<'_>, control: RecordControl) {
-  let Some(((x, y), _)) = record_control_cells(&ctx.state.config)
+  let Some(((x, y), _)) = record_control_cells(&ctx.state.rig)
     .into_iter()
     .find(|(_, candidate)| *candidate == control)
   else {
@@ -396,13 +396,13 @@ pub(crate) fn render_record_control(ctx: &mut RenderContext<'_>, control: Record
     }
     RecordControl::Loop | RecordControl::EndAll => LED_LEVEL_OFF,
   };
-  ctx.levels[(y * ctx.state.config.grid_w + x) as usize] = level;
+  ctx.levels[(y * ctx.state.rig.grid_w + x) as usize] = level;
 }
 
 pub(crate) fn render_scale_slots(ctx: &mut RenderContext<'_>) {
-  let grid_w = ctx.state.config.grid_w;
-  let grid_h = ctx.state.config.grid_h;
-  for (index, (x, y)) in scale_slot_cells(&ctx.state.config).into_iter().enumerate() {
+  let grid_w = ctx.state.rig.grid_w;
+  let grid_h = ctx.state.rig.grid_h;
+  for (index, (x, y)) in scale_slot_cells(&ctx.state.rig).into_iter().enumerate() {
     if x < 0 || x >= grid_w || y < 0 || y >= grid_h {
       continue;
     }
@@ -428,7 +428,7 @@ pub(crate) fn render_scale_slots(ctx: &mut RenderContext<'_>) {
 }
 
 pub(crate) fn render_scale_control(ctx: &mut RenderContext<'_>, control: ScaleControl) {
-  let Some(((x, y), _)) = scale_control_cells(&ctx.state.config)
+  let Some(((x, y), _)) = scale_control_cells(&ctx.state.rig)
     .into_iter()
     .find(|(_, candidate)| *candidate == control)
   else {
@@ -444,7 +444,7 @@ pub(crate) fn render_scale_control(ctx: &mut RenderContext<'_>, control: ScaleCo
   } else {
     LED_LEVEL_IMAGE
   };
-  ctx.levels[(y * ctx.state.config.grid_w + x) as usize] = level;
+  ctx.levels[(y * ctx.state.rig.grid_w + x) as usize] = level;
 }
 
 pub(crate) fn render_preimage_row(
@@ -455,10 +455,10 @@ pub(crate) fn render_preimage_row(
   phases: LedPhases,
   levels: &mut [u8],
 ) {
-  if PREIMAGE_ROW_Y < 0 || PREIMAGE_ROW_Y >= state.config.grid_h {
+  if PREIMAGE_ROW_Y < 0 || PREIMAGE_ROW_Y >= state.rig.grid_h {
     return;
   }
-  for pitch_class in 0..12.min(state.config.grid_w as usize) {
+  for pitch_class in 0..12.min(state.rig.grid_w as usize) {
     let flashing = preimage_row_flash_until[pitch_class].is_some_and(|deadline| now < deadline);
     let level = if flashing {
       if phases.preimage_row_flash_on {
@@ -473,7 +473,7 @@ pub(crate) fn render_preimage_row(
     } else {
       LED_LEVEL_OFF
     };
-    levels[(PREIMAGE_ROW_Y * state.config.grid_w + pitch_class as i32) as usize] = level;
+    levels[(PREIMAGE_ROW_Y * state.rig.grid_w + pitch_class as i32) as usize] = level;
   }
 }
 
@@ -514,10 +514,10 @@ fn is_anchor_pitch_class(preimage: usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use super::super::config::RemapIdiom;
+  use super::super::rig::RemapIdiom;
 
   fn test_state() -> RemappableEdoState {
-    RemappableEdoState::new(RemapConfig::new(
+    RemappableEdoState::new(RemapRig::new(
       80.0,
       12,
       1,
@@ -538,7 +538,7 @@ mod tests {
   }
 
   fn level_at_grid_step(state: &RemappableEdoState, levels: &[u8], step: usize) -> u8 {
-    levels[state.config.grid_w as usize + step]
+    levels[state.rig.grid_w as usize + step]
   }
 
   #[test]
@@ -599,8 +599,8 @@ mod tests {
 
     assert_eq!(levels[13], LED_LEVEL_FULL);
     assert_eq!(levels[14], LED_LEVEL_FULL);
-    assert_eq!(levels[13 + state.config.grid_w as usize], LED_LEVEL_FULL);
-    assert_eq!(levels[14 + state.config.grid_w as usize], LED_LEVEL_FULL);
-    assert_eq!(levels[15 + 2 * state.config.grid_w as usize], LED_LEVEL_FULL);
+    assert_eq!(levels[13 + state.rig.grid_w as usize], LED_LEVEL_FULL);
+    assert_eq!(levels[14 + state.rig.grid_w as usize], LED_LEVEL_FULL);
+    assert_eq!(levels[15 + 2 * state.rig.grid_w as usize], LED_LEVEL_FULL);
   }
 }

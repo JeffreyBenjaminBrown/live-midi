@@ -14,7 +14,7 @@ title = "KMSS Drumkit"
 #
 #   pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 #
-# See configs/kmss-drumkit.org for the full reference.
+# See rigs/kmss-drumkit.org for the full reference.
 
 # The foot controller. Matched by input-port-name substring (default "SSCOM",
 # the KMSS's ALSA client name) -- never a hardcoded client number.

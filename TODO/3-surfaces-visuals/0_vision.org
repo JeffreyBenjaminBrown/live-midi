@@ -39,7 +39,7 @@ I will respond inline. (I want to avoid the in-CLI question interface.)
 If I am holding a pitch, and I shift the window,
 I should see the lit keys corresponding to the held pitch move.
 This is already implemented (I'm pretty sure)
-for some other config, probably monome-looper-58-8-1-timbre.toml.
+for some other rig, probably monome-looper-58-8-1-timbre.toml.
 * (added later) the window shift buttons should be lit
 The up, down, left, right buttons should be dimly lit.
 The two octave shift buttons should not be.

@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
-use midi_pulse::config::{
-  drum_samples_dir, load_softstep_params, Config, SinkConfig, SoftstepParams, SoftstepWindowConfig,
+use midi_pulse::rig::{
+  drum_samples_dir, load_softstep_params, Rig, SinkRig, SoftstepParams, SoftstepWindowRig,
 };
 
 use audio::{Sampler, Trigger, VoiceId};
@@ -105,11 +105,11 @@ impl Drop for DrumSession {
   }
 }
 
-pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_rig(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
   // Arm Ctrl-C / SIGTERM restoration FIRST, before any audio or MIDI thread spawns,
   // so the signal block is inherited by all of them and a stray signal can't leave
   // the device stuck in tether mode. `start` enters tether mode once setup succeeds.
-  let session = start(config, tether::arm())?;
+  let session = start(rig, tether::arm())?;
 
   println!("\nDrumkit ready (tether mode, velocity-sensitive). Step on the pedals. Press Enter to exit...");
   let mut line = String::new();
@@ -128,35 +128,35 @@ pub fn run_from_config(config: &Config) -> Result<(), Box<dyn std::error::Error>
 /// `MIDI_PULSE_NO_AUDIO` / `MIDI_PULSE_TRACE` from the environment, like the
 /// standalone path.
 pub fn start(
-  config: &Config,
+  rig: &Rig,
   tether_session: tether::TetherSession,
 ) -> Result<DrumSession, Box<dyn std::error::Error>> {
-  start_with_hook(config, tether_session, None)
+  start_with_hook(rig, tether_session, None)
 }
 
 /// `start`, with an optional [`PedalHook`] tapping the pedal stream (see the type's
 /// doc). `start` itself passes `None`.
 pub fn start_with_hook(
-  config: &Config,
+  rig: &Rig,
   tether_session: tether::TetherSession,
   hook: Option<PedalHook>,
 ) -> Result<DrumSession, Box<dyn std::error::Error>> {
   let no_audio = std::env::var_os("MIDI_PULSE_NO_AUDIO").is_some();
   let trace = std::env::var_os("MIDI_PULSE_TRACE").is_some();
-  // Shared SoftStep detection/velocity parameters (configs/softstep.toml), not per-config.
+  // Shared SoftStep detection/velocity parameters (rigs/softstep.toml), not per-rig.
   let params = load_softstep_params()?;
 
   // 1. Start a sampler per cpal_sampler sink referenced by some drumkit window.
-  let referenced: HashSet<&str> = config
+  let referenced: HashSet<&str> = rig
     .softstep_windows
     .iter()
     .map(|w| match w {
-      SoftstepWindowConfig::Drumkit { sink, .. } => sink.as_str(),
+      SoftstepWindowRig::Drumkit { sink, .. } => sink.as_str(),
     })
     .collect();
   let mut samplers: HashMap<String, Sampler> = HashMap::new();
-  for sink in &config.sinks {
-    if let SinkConfig::CpalSampler { id, sample_rate, buffer_frames, amplitude } = sink {
+  for sink in &rig.sinks {
+    if let SinkRig::CpalSampler { id, sample_rate, buffer_frames, amplitude } = sink {
       if !referenced.contains(id.as_str()) {
         continue;
       }
@@ -177,7 +177,7 @@ pub fn start_with_hook(
 
   // 2. Build each device's pedal table from its windows (which partition pedals).
   let mut devices: HashMap<String, DeviceBuild> = HashMap::new();
-  for softstep in &config.softsteps {
+  for softstep in &rig.softsteps {
     devices.insert(
       softstep.id.clone(),
       DeviceBuild {
@@ -186,8 +186,8 @@ pub fn start_with_hook(
       },
     );
   }
-  for window in &config.softstep_windows {
-    let SoftstepWindowConfig::Drumkit { softstep, sink, pads, .. } = window;
+  for window in &rig.softstep_windows {
+    let SoftstepWindowRig::Drumkit { softstep, sink, pads, .. } = window;
     let sampler = samplers
       .get(sink)
       .ok_or_else(|| format!("drumkit window references unbuilt sink {sink:?}"))?;
@@ -276,7 +276,7 @@ pub fn start_with_hook(
   }
 
   if connections.is_empty() {
-    return Err("drumkit config declares no softstep devices to bind".into());
+    return Err("drumkit rig declares no softstep devices to bind".into());
   }
 
   Ok(DrumSession {
@@ -421,15 +421,15 @@ fn run_voice_timer(
 
 /// Choose the KMSS input port: any whose name contains `substring`, preferring the
 /// performance port ("MIDI 1") -- the one that carries the tether sensor stream.
-/// A side-effect-free probe: is at least one of the config's SoftStep devices plugged
+/// A side-effect-free probe: is at least one of the rig's SoftStep devices plugged
 /// in right now? Enumerates MIDI input ports and matches each `[[softsteps]]`
 /// `select` substring the same way [`select_input_port`] binds it -- but opens no
 /// device and enters no tether mode. The surfaces runtime uses this to decide whether
 /// to bring up the drumkit at all (a missing SoftStep should skip the drums, not sink
-/// the whole run). Returns false when the config declares no softsteps, or when the
+/// the whole run). Returns false when the rig declares no softsteps, or when the
 /// MIDI subsystem can't even be opened.
-pub fn any_softstep_present(config: &Config) -> bool {
-  if config.softsteps.is_empty() {
+pub fn any_softstep_present(rig: &Rig) -> bool {
+  if rig.softsteps.is_empty() {
     return false;
   }
   let Ok(midi_in) = MidiInput::new("kmss-probe") else {
@@ -437,7 +437,7 @@ pub fn any_softstep_present(config: &Config) -> bool {
   };
   let names: Vec<String> =
     midi_in.ports().iter().filter_map(|p| midi_in.port_name(p).ok()).collect();
-  config
+  rig
     .softsteps
     .iter()
     .any(|s| names.iter().any(|n| n.contains(s.select.name_substring())))

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use super::config::RemapConfig;
+use super::rig::RemapRig;
 use super::scale::ScaleSlotsRuntime;
 
 #[derive(Clone)]
 pub(crate) struct RemappableEdoState {
-  pub(crate) config: RemapConfig,
+  pub(crate) rig: RemapRig,
   pub(crate) map: [i16; 12],
   pub(crate) deltas: [i16; 12],
   pub(crate) loose: [LooseState; 12],
@@ -66,11 +66,11 @@ fn decrement_count(count: &mut u16) {
 }
 
 impl RemappableEdoState {
-  pub(crate) fn new(config: RemapConfig) -> Self {
-    let scale = ScaleSlotsRuntime::new(config.scale_slot_count());
+  pub(crate) fn new(rig: RemapRig) -> Self {
+    let scale = ScaleSlotsRuntime::new(rig.scale_slot_count());
     RemappableEdoState {
-      map: config.initial_map,
-      config,
+      map: rig.initial_map,
+      rig,
       deltas: [0; 12],
       loose: [LooseState::Fixed; 12],
       history: vec![],

@@ -38,7 +38,7 @@ fn in_rect(rect: [i32; 4], x: i32, y: i32) -> bool {
 }
 
 /// Which timbre slot (0..4, left to right) a press on a selector cell selects, if
-/// any. The slots are the config's `[[timbres]]` (or the plain sine / triangle /
+/// any. The slots are the rig's `[[timbres]]` (or the plain sine / triangle /
 /// square / saw when absent).
 pub fn slot_for_selector_cell(rect: [i32; 4], cell: MonomeKey) -> Option<usize> {
   if !in_rect(rect, cell.0, cell.1) {
@@ -175,7 +175,7 @@ mod tests {
   const SCROLL: OverlayRect = [13, 14, 15, 15];
   const FULL: [i32; 4] = [0, 0, 15, 15];
 
-  // 58-8-1 tuning (the config's), for register-aware class math.
+  // 58-8-1 tuning (the rig's), for register-aware class math.
   const XS: i32 = 8;
   const YS: i32 = 1;
   const EDO: i32 = 58;

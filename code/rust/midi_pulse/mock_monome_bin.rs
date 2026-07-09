@@ -5,7 +5,7 @@
 //!
 //!     # terminal A:
 //!     cargo run --bin mock_monome -- --detector-port 17002
-//!     # terminal B (a config whose listen ports/prefixes don't collide -- e.g.
+//!     # terminal B (a rig whose listen ports/prefixes don't collide -- e.g.
 //!     # monome-looper-58-8-1-mock):
 //!     MIDI_PULSE_DETECTOR_PORT=17002 cargo run --bin midi_pulse -- monome-looper-58-8-1-mock
 //!
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
   println!();
   println!("point the looper at it with:");
-  println!("  MIDI_PULSE_DETECTOR_PORT={detector_port} cargo run --bin midi_pulse -- <mock-config>");
+  println!("  MIDI_PULSE_DETECTOR_PORT={detector_port} cargo run --bin midi_pulse -- <mock-rig>");
   println!();
   print_help();
 

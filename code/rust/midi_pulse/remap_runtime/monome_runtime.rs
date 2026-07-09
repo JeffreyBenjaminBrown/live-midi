@@ -30,8 +30,8 @@ pub(crate) fn run_monome_thread(
     .expect("no monome found; is serialoscd running?");
   {
     let mut state = state.lock().unwrap();
-    state.config = state
-      .config
+    state.rig = state
+      .rig
       .with_grid_size(device_info.grid_w, device_info.grid_h);
   }
   eprintln!(
@@ -40,7 +40,7 @@ pub(crate) fn run_monome_thread(
   );
   let mut device: SocketAddr = format!("127.0.0.1:{}", device_info.port).parse().unwrap();
   monome::register(&sock, device, &prefix, listen_port);
-  let mut rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
+  let mut rendered_cols = blank_rendered_cols(&state.lock().unwrap().rig);
   let mut sounding_clock = ColorClock::new(SOUNDING_COLOR, Instant::now());
   let mut anchor_clock = ColorClock::new(ANCHOR_COLOR, Instant::now());
   let mut image_clock = ColorClock::new(IMAGE_COLOR, Instant::now());
@@ -150,7 +150,7 @@ pub(crate) fn run_monome_thread(
           device_info.port = p;
           device = format!("127.0.0.1:{p}").parse().unwrap();
           monome::register(&sock, device, &prefix, listen_port);
-          rendered_cols = blank_rendered_cols(&state.lock().unwrap().config);
+          rendered_cols = blank_rendered_cols(&state.lock().unwrap().rig);
           let now = Instant::now();
           let state_guard = state.lock().unwrap();
           let sounding_guard = sounding.lock().unwrap();
@@ -276,7 +276,7 @@ pub(crate) fn apply_monome_key(
   s: i32,
   now: Instant,
 ) -> bool {
-  let Some(behavior) = behavior_for_cell(&state.config, x, y) else {
+  let Some(behavior) = behavior_for_cell(&state.rig, x, y) else {
     return if s == 0 {
       preimage_row.release((x, y))
     } else {
@@ -302,11 +302,11 @@ pub(crate) fn apply_monome_key(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use super::super::config::{RemapConfig, RemapIdiom};
+  use super::super::rig::{RemapRig, RemapIdiom};
   use std::sync::mpsc;
 
   fn test_state() -> RemappableEdoState {
-    RemappableEdoState::new(RemapConfig::new(
+    RemappableEdoState::new(RemapRig::new(
       80.0,
       12,
       1,
@@ -344,13 +344,13 @@ mod tests {
     use super::super::scale::ScaleControl;
     let (tx, _rx) = mpsc::channel();
     let gate = SharedOutputGate::new(tx);
-    let config = RemapConfig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 8)
+    let rig = RemapRig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 8)
       .with_scale_slots(Some([12, 0, 15, 3]))
       .with_scale_controls(vec![
         (ScaleControl::Store, (15, 4)),
         (ScaleControl::Empty, (14, 4)),
       ]);
-    let mut state = RemappableEdoState::new(config);
+    let mut state = RemappableEdoState::new(rig);
     let mut recorder = RecordRuntime::new();
     let mut preimage_row = PreimageRowState::new();
 

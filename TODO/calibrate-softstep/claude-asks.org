@@ -2,10 +2,10 @@
 #+date: 2026-07-05
 
 I read =requests.org= and started building. The *scaffolding* is unambiguous and is
-coded (move to =meter/main.py=, =config.toml= + live =r=eload, =logs/= + per-group
+coded (move to =meter/main.py=, =rig.toml= + live =r=eload, =logs/= + per-group
 CSV, group counter + the two status messages). But several details of the *grouping*
 are genuinely under-specified or look slightly off, so I made explicit default
-choices and coded against them. Each is isolated behind a named config key / a single
+choices and coded against them. Each is isolated behind a named rig key / a single
 function, so flipping any decision is a one-line change once you weigh in.
 
 Nothing below is blocking -- the program runs today under these defaults. These are
@@ -144,7 +144,7 @@ so we still never clobber).
   cbreak mode on the TTY; it only works when you run the meter *interactively* (not
   with stdout piped to a file). =Ctrl-C= still exits cleanly and restores standalone
   either way.
-- *Config key style.* TOML bare keys allow hyphens, so I kept your exact name
+- *Rig key style.* TOML bare keys allow hyphens, so I kept your exact name
   =event-group-separation-threshold= and made the *other* keys hyphenated too for
   consistency (=on-sum=, =off-sum=, =attack-ms=, ...). Say the word if you'd rather
   have =snake_case=.
@@ -156,10 +156,10 @@ so we still never clobber).
 * What I built (so you know the state)
 
 - =code/python/softstep/meter/main.py= -- moved from =meter.py= (=git mv=, history
-  kept), rewritten: config-driven, =r=eload / =q=uit keys, board-wide group state
+  kept), rewritten: rig-driven, =r=eload / =q=uit keys, board-wide group state
   machine, per-group CSV, the two status messages, still draws the live bars + plays
   the audition.
-- =code/python/softstep/meter/config.toml= -- all tunables, commented.
+- =code/python/softstep/meter/rig.toml= -- all tunables, commented.
 - =code/python/softstep/meter/logs/.gitignore= -- keeps the dir, ignores =*.csv=.
 
 Once you answer 1-5 I'll adjust; none of it is deep surgery.

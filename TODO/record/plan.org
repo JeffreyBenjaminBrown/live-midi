@@ -1,7 +1,7 @@
 * scope
 Implement the recording controls for the ~edo-un12*.toml~ runtime path,
 which is the ~remap_runtime~ module family used by
-~kind = "remappable_un12"~ configs.
+~kind = "remappable_un12"~ rigs.
 
 Do not add persistence yet. There is one in-memory recording slot per
 runtime process.
@@ -280,5 +280,5 @@ cargo test
 4. Add monome control layout/dispatch without playback scheduling yet.
 5. Add playback scheduler and stop/clear note release behavior.
 6. Add LED rendering for controls.
-7. Update ~configs/RUNTIME-NOTES.org~ with the final user-facing
+7. Update ~rigs/RUNTIME-NOTES.org~ with the final user-facing
    recording-control summary.

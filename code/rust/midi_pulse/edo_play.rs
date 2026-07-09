@@ -69,7 +69,7 @@ pub fn register_delta(shift: Shift, x_step: i32, y_step: i32, edo: i32) -> i32 {
 mod tests {
   use super::*;
 
-  const PAD: [i32; 4] = [13, 14, 15, 15]; // the 58-8-1 config's shift pad.
+  const PAD: [i32; 4] = [13, 14, 15, 15]; // the 58-8-1 rig's shift pad.
 
   #[test]
   fn step_applies_tuning_and_register() {

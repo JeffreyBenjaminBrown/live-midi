@@ -45,7 +45,7 @@ Single Rust program:
 - Registers UDP :9000 as the receiver, sets prefix to /256-1-cable,
   clears all LEDs.
 - Uses =cpal= for real-time audio output (PipeWire, f32 samples).
-- Uses the =monome-edo-sawwave= config for tuning, audio envelope,
+- Uses the =monome-edo-sawwave= rig for tuning, audio envelope,
   monome selection, and chord/accretion windows.
 
 Run:

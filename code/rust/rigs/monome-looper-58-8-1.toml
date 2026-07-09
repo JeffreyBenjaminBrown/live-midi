@@ -5,7 +5,7 @@ title = "Monome Looper 58 8 1"
 # ---------------------------------------------------------------------------
 # Two 16x16 grids, no piano. One is the EDO play/remap surface ("edo"), the
 # other is the LOOPS surface ("loops"). Both match select.size = [16,16]; the
-# runtime hands each config monome a DISTINCT unclaimed grid in config order
+# runtime hands each rig monome a DISTINCT unclaimed grid in rig order
 # (so the first-discovered grid is "edo", the second "loops"). We don't care
 # which physical grid is which. See 6_plan.org.
 # ---------------------------------------------------------------------------

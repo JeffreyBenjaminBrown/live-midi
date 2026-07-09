@@ -89,7 +89,7 @@ fn poly_blep(t: f32, dt: f32) -> f32 {
 /// Target = the *quietest* shape's RMS (1/sqrt(3), triangle/saw), so every gain is
 /// <= 1 and no waveform's peak grows past +-1.0 -- this only ever attenuates, never
 /// adds clipping. Triangle (the default timbre) is left at unity, so existing
-/// configs sound identical on the default and only the other shapes move to match.
+/// rigs sound identical on the default and only the other shapes move to match.
 pub fn waveform_norm(waveform: Waveform) -> f32 {
   match waveform {
     Waveform::Sine => 0.816_496_6,    // sqrt(2/3): RMS 1/sqrt(2) -> 1/sqrt(3)

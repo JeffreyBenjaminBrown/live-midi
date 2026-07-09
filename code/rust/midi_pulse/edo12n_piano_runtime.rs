@@ -6,7 +6,7 @@ mod gui;
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
-use midi_pulse::config::Config;
+use midi_pulse::rig::Rig;
 use midi_pulse::midi;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -70,7 +70,7 @@ fn current_total_shift() -> Option<i16> {
                    |s: &ShiftPress| s . shift_value as i16)
                  . sum( )) }}
 
-pub fn run_from_config(_config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_from_rig(_rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
   run()
 }
 
@@ -117,7 +117,7 @@ fn print_startup_message() {
   println!("  - 'edo12n_piano-in:in' (input)");
   println!("  - 'edo12n_piano-out:out' (output)");
   println!();
-  println!("Config:");
+  println!("Rig:");
   println!("  - min_channel: {}", MIN_CHANNEL_OUT);
   println!("  - min_midi_note: {}", MIN_NOTE_OUT);
   println!("  - offset control: notes {}-108 (F#7=0)",

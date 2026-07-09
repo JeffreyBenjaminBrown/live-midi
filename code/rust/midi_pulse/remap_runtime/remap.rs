@@ -1,14 +1,14 @@
-use super::config::RemapIdiom;
+use super::rig::RemapIdiom;
 use super::layout::{edo_local_cell, grid_step};
 use super::state::{LooseState, RemapSnapshot, RemappableEdoState};
 
 pub(crate) fn apply_grid_press(state: &mut RemappableEdoState, x: i32, y: i32) -> bool {
-  let Some((local_x, local_y)) = edo_local_cell(&state.config, x, y) else {
+  let Some((local_x, local_y)) = edo_local_cell(&state.rig, x, y) else {
     return false;
   };
-  let step = grid_step(&state.config, local_x, local_y);
+  let step = grid_step(&state.rig, local_x, local_y);
   let before = state.snapshot();
-  let changed = match state.config.remap_idiom {
+  let changed = match state.rig.remap_idiom {
     RemapIdiom::Loose => apply_loose_grid_press(state, step),
     RemapIdiom::Snap => apply_snap_grid_press(state, step),
   };
@@ -34,7 +34,7 @@ fn apply_snap_grid_press(state: &mut RemappableEdoState, step: i16) -> bool {
   if preimage_for_step(state, step).is_some() {
     return false;
   }
-  let (lower, higher) = nearest_light_neighbors(step, &state.map, state.config.edo);
+  let (lower, higher) = nearest_light_neighbors(step, &state.map, state.rig.edo);
   let preimage = if lower.distance < higher.distance {
     lower.preimage
   } else {
@@ -45,7 +45,7 @@ fn apply_snap_grid_press(state: &mut RemappableEdoState, step: i16) -> bool {
 
 fn move_preimage_to_step(state: &mut RemappableEdoState, preimage: usize, step: i16) -> bool {
   let current = state.map[preimage];
-  let Some(delta) = move_delta(current, step, &state.map, state.config.edo) else {
+  let Some(delta) = move_delta(current, step, &state.map, state.rig.edo) else {
     return false;
   };
   state.map[preimage] = step;
@@ -77,7 +77,7 @@ pub(crate) fn preimage_for_step(state: &RemappableEdoState, step: i16) -> Option
 }
 
 fn loose_neighbor_for_dark_step(step: i16, state: &RemappableEdoState) -> Option<usize> {
-  let (lower, higher) = nearest_light_neighbors(step, &state.map, state.config.edo);
+  let (lower, higher) = nearest_light_neighbors(step, &state.map, state.rig.edo);
   match (
     state.loose[lower.preimage] == LooseState::Loose,
     state.loose[higher.preimage] == LooseState::Loose,
