@@ -2203,10 +2203,13 @@ mod tests {
       let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
       // Skip non-rigs: the shared SoftstepParams file, and the docs -- a rig's own
       // reference doc ends in `_readme.org`; README.org / RUNTIME-NOTES.org are general.
+      // Dotfiles too: an open+modified Emacs buffer leaves a `.#<rig>.org` lock, which
+      // is a DANGLING symlink ending in `.org` -- reading it fails with ENOENT.
       if name == "softstep.toml"
         || name == "README.org"
         || name == "RUNTIME-NOTES.org"
         || name.ends_with("_readme.org")
+        || name.starts_with('.')
       {
         continue;
       }
