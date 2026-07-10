@@ -1879,7 +1879,7 @@ fn install_signals() {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::rig::load_named_rig;
+  use midi_pulse::rig::{load_named_rig, SurfacesRig};
 
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
@@ -1962,26 +1962,58 @@ mod tests {
       assert_eq!(g.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
       assert_eq!(g.poly_rect, [13, 0, 15, 1], "grid {:?} polyrhythm pad", g.monome_id);
     }
-    assert_eq!(s.tap_window, Duration::from_millis(2000), "tap window from [surfaces]");
-    // The [surfaces] slide knobs flow into the settings.
-    assert_eq!(s.slide_window, Duration::from_millis(1000));
-    assert!((s.slide_duration_secs - 0.1).abs() < 1e-6);
-    // The sink's distortion curve flows into the settings.
-    assert_eq!(s.distortion, Distortion { scale: 1.0, shape: 2.0 });
-    // The `[surfaces]` table flows into the settings (this rig asks for 9 trails).
-    assert_eq!(s.trail_clobber_radius, 27, "trail_clobber_radius from [surfaces]");
-    assert_eq!(s.trails_max, 9, "trails_max from [surfaces]");
+    // Deliberately NO assertions on tunables here (the distortion curve, the trail,
+    // the slide/tap windows). This test pins the rig's *architecture* -- which windows
+    // exist and where -- so that retuning the instrument by ear never reddens it. The
+    // rig -> Settings wiring for those knobs is tested with sentinels, just below.
+  }
+
+  /// Plumbing, not policy. Every knob a player retunes by ear -- the distortion curve,
+  /// the trail, the slide and tap windows -- must travel from the rig into `Settings`,
+  /// whatever the rig happens to say today. So overwrite them with sentinels (all
+  /// distinct, none equal to a default) and check each lands in its own field. That
+  /// catches a dropped wire, a swapped pair, and a ms->seconds slip, while staying
+  /// immune to edits of the shipped rig.
+  #[test]
+  fn surfaces_tunables_travel_from_the_rig_into_the_settings() {
+    let mut rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    for sink in &mut rig.sinks {
+      if let SinkRig::CpalSynth { distortion_scale, distortion_shape, .. } = sink {
+        *distortion_scale = 0.37;
+        *distortion_shape = 4.25;
+      }
+    }
+    rig.surfaces = Some(SurfacesRig {
+      trail_clobber_radius: 13,
+      trails_max: 3,
+      slide_candidate_window_ms: 777,
+      tap_tempo_window_ms: 1234,
+      slide_duration_ms: 55,
+    });
+
+    let s = resolve_settings(&rig).expect("resolves without hardware");
+    assert_eq!(s.distortion, Distortion { scale: 0.37, shape: 4.25 });
+    assert_eq!(s.trail_clobber_radius, 13);
+    assert_eq!(s.trails_max, 3);
+    assert_eq!(s.slide_window, Duration::from_millis(777), "slide candidate window");
+    assert_eq!(s.tap_window, Duration::from_millis(1234), "tap-tempo window");
+    assert!((s.slide_duration_secs - 0.055).abs() < 1e-6, "slide duration, ms -> secs");
   }
 
   #[test]
   fn surfaces_defaults_when_table_absent() {
-    // A rig that declares no `[surfaces]` table falls back to the built-in defaults
-    // (1/27 octave, 7 trails), so omitting it changes nothing.
-    let rig = load_named_rig("monome-edo-sawwave").expect("rig loads");
-    assert!(rig.surfaces.is_none(), "no [surfaces] table declared");
-    let s = rig.surfaces.unwrap_or_default();
-    assert_eq!(s.trail_clobber_radius, 27, "default radius is 1/27 octave");
-    assert_eq!(s.trails_max, 7, "default trail length is 7");
+    // Omitting `[surfaces]` changes nothing: the built-in defaults reach `Settings`.
+    // Built by REMOVING the table from a real surfaces rig, rather than leaning on
+    // some other rig happening not to declare one (which a rig edit could undo).
+    let mut rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    rig.surfaces = None;
+    let s = resolve_settings(&rig).expect("resolves without hardware");
+    let d = SurfacesRig::default();
+    assert_eq!((d.trail_clobber_radius, d.trails_max), (27, 7), "the code's own defaults");
+    assert_eq!(s.trail_clobber_radius, d.trail_clobber_radius);
+    assert_eq!(s.trails_max, d.trails_max);
+    assert_eq!(s.slide_window, Duration::from_millis(d.slide_candidate_window_ms));
+    assert_eq!(s.tap_window, Duration::from_millis(d.tap_tempo_window_ms));
   }
 
   /// A minimal self-controlling grid for the `plan_bringup` tests: `id`'s selector
@@ -2200,12 +2232,21 @@ mod tests {
     // The rig is `.org` now: PARAM values still contain the `key = value` text these
     // replaces target, but an INJECTED field must be its own PARAM headline at the
     // timbre's depth (slot 2 = square, so its fm_depth_cents lands in timbres[2]).
-    let edited = source
-      .replace("amplitude = 0.15", "amplitude = 0.25")
-      .replace("edo = 58", "edo = 41")
-      .replace("x_step = 8", "x_step = 7")
-      .replace(WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0")
-      .replace("slide_duration_ms = 100", "slide_duration_ms = 250");
+    //
+    // Each replacement must actually apply. A bare `str::replace` no-ops silently when
+    // the mock rig's value drifts, leaving the test asserting a value that nothing set
+    // -- it would then fail far from its cause. Fail here instead, naming the culprit.
+    fn must_replace(s: &str, from: &str, to: &str) -> String {
+      assert!(s.contains(from), "reload fixture is stale: {from:?} is no longer in the mock rig");
+      s.replace(from, to)
+    }
+    let edited = must_replace(&source, "amplitude = 0.15", "amplitude = 0.25");
+    let edited = must_replace(&edited, "edo = 58", "edo = 41");
+    let edited = must_replace(&edited, "x_step = 8", "x_step = 7");
+    let edited = must_replace(
+      &edited, WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0",
+    );
+    let edited = must_replace(&edited, "slide_duration_ms = 100", "slide_duration_ms = 250");
     let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
     adopt_rig(&rig, &live).expect("adopts");
 
