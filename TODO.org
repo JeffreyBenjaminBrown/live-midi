@@ -1,3 +1,4 @@
+* triangle wave, not saw, for tap tempo AM
 * DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
