@@ -175,7 +175,7 @@ above the on-grid trio.
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
 duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
-while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+while a tempo is applied pulse with a unipolar triangle at that tempo (fixed
 per note, separate from any [[timbres]] AM).
 *** PARAM id = "poly-a"
 *** PARAM monome = "a"
@@ -269,7 +269,7 @@ above the on-grid trio.
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
 duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
-while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+while a tempo is applied pulse with a unipolar triangle at that tempo (fixed
 per note, separate from any [[timbres]] AM).
 *** PARAM id = "poly-b"
 *** PARAM monome = "b"

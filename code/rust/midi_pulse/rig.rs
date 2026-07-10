@@ -715,7 +715,7 @@ pub enum MonomeWindowRig {
   //   | /3 | /2 | =1  |
   // Tap twice within [surfaces].tap_tempo_window_ms to set the tapped tempo; the
   // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
-  // applied pulse with a descending sawtooth at that tempo. See TODO/misc.org
+  // applied pulse with a unipolar triangle at that tempo. See TODO/misc.org
   // "polyrhythm interface".
   TapTempoPad {
     id: String,

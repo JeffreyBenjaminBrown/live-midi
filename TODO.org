@@ -1,3 +1,37 @@
+* TODO double-tapping "=1" : fix and change
+That button, when tapped once, should reset the tap factor to unity.
+When tapped twice in under 400 ms (I think that's the value currently coded),
+it should turn off the AM that the tap tempo controls.
+That's not been working for me.
+
+Wait I think it works. The monome is just sticky.
+But please verify that it ought to work.
+
+Also, let's have the tap tempo display always show the unfactored tempo,
+as if the factor was unity.
+
+If the tapped tempo AM is currently off, pressing =1 should turn it on,
+*without* setting the factor to unity.
+Tapping it a second time should set it to unity.
+That should work even if it is tapped within 400 ms --
+the 400 ms test should only be applied when the AM is on.
+* DONE tap-tempo AM should be a triangle, not a saw
+Use a triangle wave, not saw, for the tap tempo AM. It should still start at the
+peak. It should of course be a triangle in [0,1] rather than [-1,1].
+** [Claude] done -- the polyrhythm pulse is now |2*phase - 1|
+One line in =sawwave/voices.rs=: the per-voice pulse was =1 - phase= (a descending
+saw), and is now =(2*phase - 1).abs()= -- 1 at the cycle start, 0 at the
+half-cycle, back to 1 at the wrap. Unipolar, and it still peaks at onset.
+A side benefit: the saw's =0 -> 1= wrap was a step discontinuity in amplitude
+(a click waiting to happen at high tempos); the triangle returns to the peak on a
+ramp, so the cycle boundary is now continuous. The trough *is* a corner, but at
+zero amplitude, where it is inaudible.
+Nothing else changes: rate, per-note onset latching, and independence from the
+=[[timbres]]= AM are all untouched.
+Mutation-checked the rewritten test against three wrong shapes -- the old saw, an
+ascending triangle (starts at 0), and a bipolar one in [-1,1] -- each of which it
+catches. Symmetry about the trough is the assertion that pins "triangle".
+*Unheard on the grid* (no hardware here); the shape is asserted numerically.
 * DONE accretion_level is mostly dead.
 Give it a default value so it stops being required,
 then remove it from all rigs that don't use it.
