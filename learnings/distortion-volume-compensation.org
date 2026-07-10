@@ -321,11 +321,33 @@ than approximating it, and =sigma= is derived from the same per-voice amplitudes
 renderer already multiplies in. The only approximation left is the Gaussian one, and its
 error is bounded and measured above.
 
-** a warning about small k, because you are using it
+** where the rig actually ended up
 
-While this was being written you moved the rig to =scale = 0.5, shape = 0.3=. Worth
-knowing what that curve is, because it is nothing like the =k= table in
-[[./distortion.org]] suggests by the word "gentlest":
+You swept =shape= from 2.0 to 0.5 to 0.3, and then jumped the other way, landing on
+=scale = 0.01, shape = 8= -- a near-square fuzz, the mix driven far past a hard elbow
+rather than gently bent by a soft one. What that costs, and what the makeup gives back:
+
+| notes | loss before makeup | makeup needed | 1st cut's 8x cap |
+|-------+--------------------+---------------+------------------|
+|     1 |          -19.05 dB |         8.96x | *binds*          |
+|     2 |          -21.97 dB |        12.54x | *binds*          |
+|     4 |          -24.92 dB |        17.62x | *binds*          |
+|     8 |          -27.88 dB |        24.78x | *binds*          |
+|    16 |          -30.84 dB |        34.84x | *binds*          |
+
+*The 8x cap would have bound on a single note.* The sound you just approved does not
+exist without the robustness pass; capped, it would have been 19-31 dB down and falling
+away with every note added. That is how the "is it robust to whatever values I choose?"
+question earned its keep -- you found the corner by playing, not by arguing.
+
+Note also that =scale = 0.01= is 20 dB *below* one voice's peak, which is exactly the
+regime =learnings/distortion.org= calls "heavy" and then some. With the makeup on, that
+is now a legitimate, playable setting rather than a volume cliff.
+
+** a warning about small k
+
+The sweep through =shape = 0.3= is worth recording, because a soft elbow is nothing like
+what the =k= table in [[./distortion.org]] suggests by the word "gentlest":
 
 | notes | loss before makeup | makeup needed |
 |-------+--------------------+---------------|
@@ -334,9 +356,6 @@ knowing what that curve is, because it is nothing like the =k= table in
 |     4 |          -16.86 dB |         6.97x |
 |     8 |          -18.20 dB |         8.13x |
 |    16 |          -19.61 dB |         9.56x |
-
-*The first cut's 8x cap would have bound at eight notes*, on the rig you are playing
-right now. That is how the robustness question earned its keep.
 
 The reason is that "unity slope at the origin" is a *limit*, not a neighbourhood.
 Expanding the curve for small =y=:
