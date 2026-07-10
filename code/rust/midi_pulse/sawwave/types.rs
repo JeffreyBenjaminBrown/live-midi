@@ -144,10 +144,10 @@ pub struct VoiceState {
   // freq_target is IGNORED (so plain voices need not keep it in sync with freq).
   pub freq_target:     f32,
   pub glide_per_sample: f32,
-  // The polyrhythm pulse: a descending-sawtooth amplitude multiplier (1 at each
-  // cycle start, falling to 0) at tempo_am_freq Hz -- the tempo applied at the
-  // note's onset, fixed for its life. 0.0 = no pulse. Deliberately separate from
-  // the note's timbre AM.
+  // The polyrhythm pulse: a unipolar-triangle amplitude multiplier in [0,1] (1 at
+  // each cycle start, 0 at the half-cycle, back to 1) at tempo_am_freq Hz -- the
+  // tempo applied at the note's onset, fixed for its life. 0.0 = no pulse.
+  // Deliberately separate from the note's timbre AM.
   pub tempo_am_freq:   f32,
   pub tempo_am_phase:  f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
@@ -247,9 +247,8 @@ pub struct AudioParams {
   pub amplitude: f32,
   pub attack_secs: f32,
   pub release_secs: f32,
-  pub accretion_level: f32,
-  // The pluck envelope (cpal_synth `sustain_level` / `decay_secs`): fingered notes
-  // strike to a peak, then decay toward the sustain. Accretion voices stay flat.
+  // The pluck envelope (cpal_synth `sustain_level` / `decay_secs`): every voice --
+  // fingered or accreted -- strikes to a peak, then decays toward the sustain.
   pub sustain_level: f32,
   pub decay_secs: f32,
 }

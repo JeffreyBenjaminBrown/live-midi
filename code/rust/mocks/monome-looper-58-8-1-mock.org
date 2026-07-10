@@ -32,7 +32,6 @@ assigns them in rig order (first -> edo, second -> loops). See MOCK-MONOME.org.
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 ** TABLE looper
 *** PARAM clock_bpm = 300
 *** PARAM cluster_display_ms = 100

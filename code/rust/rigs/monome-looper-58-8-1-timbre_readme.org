@@ -203,7 +203,7 @@ octave is 58 steps. (Same as the plain looper.)
 
 =[[sinks]] kind="cpal_synth"= (NOT "sawwave" -- the kind was renamed in 6_plan C0;
 it can render any of the four waveforms). =sample_rate=48000=, =buffer_frames=128=,
-=amplitude=1.0=, =attack_secs=0.003=, =release_secs=0.050=, =accretion_level=0.5=.
+=amplitude=1.0=, =attack_secs=0.003=, =release_secs=0.050=.
 Both live play and loop playback emit note events -- each carrying its own timbre --
 into this one synth.
 

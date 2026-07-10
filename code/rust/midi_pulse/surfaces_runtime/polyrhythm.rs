@@ -21,8 +21,8 @@
 //! the switch: bright while this grid's cycling is on.
 //!
 //! *Effect.* Each note struck while its grid's cycling is on (and a tempo
-//! exists) gets a descending-sawtooth amplitude pulse at that grid's applied
-//! tempo *at its onset* (fixed for the note's life; the engine's
+//! exists) gets a unipolar-triangle amplitude pulse in [0,1] at that grid's
+//! applied tempo *at its onset* (fixed for the note's life; the engine's
 //! `tempo_am_freq`/`tempo_am_phase`).
 
 use std::time::{Duration, Instant};

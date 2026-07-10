@@ -67,7 +67,11 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
 - [[./code/rust/rigs/README.org]] -- the rig system (windows, kinds, the
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
-- Claude's persistent memory index: =~/.claude/projects/-home-ubuntu/memory/MEMORY.md=.
+- Claude's persistent memory index: =my-dot-claude/projects/<cwd-slug>/memory/MEMORY.md=
+  -- gitignored, and the slug is this checkout's path, so in *this* worktree it is
+  =my-dot-claude/projects/-home-ubuntu-host-worktrees-main/memory/MEMORY.md=. (There
+  is no =~/.claude=; the pointer here used to claim otherwise.)
 * also possibly relevant files
 - README.org
-- code/rust/rigs/README.org
+- code/rust/rigs/README.org (NOT =code/rust/configs/README.org= -- that directory was
+  renamed to =rigs/=; the old name survives only inside finished TODO entries.)

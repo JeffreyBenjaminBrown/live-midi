@@ -68,7 +68,7 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   nothing). Each grid then has its own *applied* tempo -- tapped x its own 2^a x
   3^b factor -- and its own amplitude-cycling switch on =1 (tap on, fast
   double-tap off; starts off). While a grid's cycling is on, its notes pulse with
-  a *descending sawtooth* at its applied tempo at their onset. See *polyrhythm*
+  a *unipolar triangle* at its applied tempo at their onset. See *polyrhythm*
   below.
 - *accrete buttons / sustained set* -- four single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete, =(1,14)=
@@ -314,10 +314,13 @@ factor buttons and the =1 pulse switch belong to the grid you press them on:
   presses within 400 ms) turns it off. The =1 LED shows the switch: bright while
   this grid's cycling is on.
 - *The pulse.* Every note struck while its grid's cycling is on (and a tempo
-  exists) gets a descending sawtooth amplitude pulse -- full at onset, fading to
-  silence, restarting each cycle -- at that grid's applied tempo *at its onset*
-  (later tempo/switch changes leave sounding notes alone; notes are deliberately
-  NOT phase-synced to each other). This is a separate mechanism from any
+  exists) gets a *unipolar triangle* amplitude pulse in [0,1] -- full at onset,
+  fading to silence at the half-cycle, swelling back to full by the next cycle
+  start -- at that grid's applied tempo *at its onset* (later tempo/switch changes
+  leave sounding notes alone; notes are deliberately NOT phase-synced to each
+  other). It peaks exactly where the old descending sawtooth did, but returns to
+  the peak by a ramp rather than a jump, so the cycle boundary has no step in
+  amplitude. This is a separate mechanism from any
   ~[[timbres]]~ AM. One grid can pulse at 3/2 the rate of the other, or alone
   (see jeff-maybe-review-this.org).
 

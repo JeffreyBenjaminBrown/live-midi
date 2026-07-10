@@ -11,8 +11,6 @@ pub const LISTEN_PORT:   u16  = 9000;
 pub const AMPLITUDE:        f32 = 0.15;
 pub const ATTACK_SECS:      f32 = 0.003;
 pub const RELEASE_SECS:     f32 = 0.050;
-// Accretion-born voices play at this fraction of full volume.
-pub const ACCRETION_TARGET: f32 = 0.5;
 
 // === Grid geometry =====================================================
 

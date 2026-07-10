@@ -63,7 +63,6 @@ fm_freq        vibrato rate in Hz; ~0.1..10 musical (default 1.0)
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 *** PARAM sustain_level = 0.35
 Pluck envelope: a fresh strike peaks, then decays exponentially toward
 sustain_level x peak (time constant decay_secs), so new notes ring out over held
@@ -176,7 +175,7 @@ above the on-grid trio.
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
 duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
-while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+while a tempo is applied pulse with a unipolar triangle at that tempo (fixed
 per note, separate from any [[timbres]] AM).
 *** PARAM id = "poly-a"
 *** PARAM monome = "a"
@@ -270,7 +269,7 @@ above the on-grid trio.
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
 duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
-while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
+while a tempo is applied pulse with a unipolar triangle at that tempo (fixed
 per note, separate from any [[timbres]] AM).
 *** PARAM id = "poly-b"
 *** PARAM monome = "b"

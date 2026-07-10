@@ -239,9 +239,10 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
-accretion_level = 0.5
 # Optional (defaults shown). Pluck envelope: a strike peaks, then decays toward
-# sustain_level x peak with time constant decay_secs (>= 1.0 / <= 0 disable):
+# sustain_level x peak with time constant decay_secs (>= 1.0 / <= 0 disable).
+# EVERY voice takes this curve -- fingered, looped, and accreted alike, so a
+# sustained note sounds exactly like the same note held under a finger:
 sustain_level = 0.35
 decay_secs = 0.5
 # Optional. Global distortion curve, heard only under a distortion_toggle window:
@@ -423,8 +424,9 @@ tempo (defining it starts nothing). Each monome then scales it into its own
 applied tempo with its own exact 2^a x 3^b factor buttons, and switches its own
 amplitude cycling with =1 -- tap on (also resets the factor), fast double-tap
 (400 ms) off; it starts off, and its LED shows the switch. While a grid's cycling
-is on, every note struck on it pulses with a descending sawtooth at that grid's
-applied tempo (fixed at onset). The tap cell displays the tempo whether or not
+is on, every note struck on it pulses with a unipolar triangle (1 at the cycle
+start, 0 at the half-cycle, back to 1) at that grid's applied tempo (fixed at
+onset). The tap cell displays the tempo whether or not
 cycling is on: it blinks at 10% duty at its grid's applied tempo -- fully lit
 against black (it rests dim only before a tempo exists).
 
