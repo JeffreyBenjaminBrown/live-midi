@@ -17,7 +17,8 @@ the same note held under a finger:
 *Audible change, sawwave rigs only* (=monome-edo-sawwave=): emitted chord tones
 now have an attack and settle at =sustain_level= (0.35) instead of ringing flat
 at 0.5 -- i.e. quieter, and no longer louder than the notes you played to build
-the chord. Surfaces + looper rigs are bit-for-bit unchanged.
+the chord. Surfaces + looper rigs are bit-for-bit unchanged. Never listened to on
+the grid: Jeff no longer plays that rig and accepted the change unheard.
 * DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
