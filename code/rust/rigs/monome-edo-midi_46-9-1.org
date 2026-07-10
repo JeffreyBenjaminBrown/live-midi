@@ -1,0 +1,64 @@
+This rig is written in our TOML-in-org format. The data lives in headlines titled
+"PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
+headlines nest tables and array-of-table elements; any other headline just groups and
+documents; and every body (like this one) is a human note the loader ignores. It loads
+into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
+[[file:README.org]]
+* monome-edo-midi
+** PARAM version = 1
+** PARAM id = "monome-edo-midi"
+** PARAM title = "Monome EDO MIDI"
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 46
+*** PARAM x_step = 9
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 220
+** TABLE midi
+*** TABLE output
+**** PARAM virtual_name = "monome_edo_midi-out"
+**** PARAM min_channel = 1
+**** PARAM min_note = 28
+** ELEM monomes
+*** PARAM id = "big"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/256-1-cable"
+*** PARAM select.size = [16, 16]
+*** PARAM select.type_contains = "256"
+** ELEM sinks
+*** PARAM id = "midi"
+*** PARAM kind = "midi"
+** ELEM monome_windows
+*** PARAM id = "edo-grid"
+*** PARAM monome = "big"
+*** PARAM kind = "edo_note_grid"
+*** PARAM rect = [0, 0, 15, 13]
+*** PARAM tuning = "main"
+*** PARAM sink = "midi"
+** ELEM monome_windows
+*** PARAM id = "wipe"
+*** PARAM monome = "big"
+*** PARAM kind = "chord_wipe_button"
+*** PARAM rect = [0, 14, 0, 14]
+** ELEM monome_windows
+*** PARAM id = "accrete"
+*** PARAM monome = "big"
+*** PARAM kind = "chord_accrete_toggle"
+*** PARAM rect = [1, 14, 1, 14]
+** ELEM monome_windows
+*** PARAM id = "emit-mode"
+*** PARAM monome = "big"
+*** PARAM kind = "chord_emit_mode_toggle"
+*** PARAM rect = [2, 14, 2, 14]
+*** PARAM emit_is_toggle_initially = true
+** ELEM monome_windows
+*** PARAM id = "target"
+*** PARAM monome = "big"
+*** PARAM kind = "chord_target_button"
+*** PARAM rect = [3, 14, 3, 14]
+** ELEM monome_windows
+*** PARAM id = "chords"
+*** PARAM monome = "big"
+*** PARAM kind = "chord_slot_buttons"
+*** PARAM rect = [0, 15, 15, 15]
+*** PARAM initial_accretion_target = 1

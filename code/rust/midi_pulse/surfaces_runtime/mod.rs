@@ -2194,16 +2194,19 @@ mod tests {
     let live = Live { generation: AtomicU64::new(0), params: Mutex::new(live_params(&s)) };
 
     let source = std::fs::read_to_string(
-      midi_pulse::rig::mock_rig_dir().join("2-monomes_58-8-1_kmss-drums-mock.toml"),
+      midi_pulse::rig::mock_rig_dir().join("2-monomes_58-8-1_kmss-drums-mock.org"),
     )
-    .expect("read mock toml");
+    .expect("read mock org");
+    // The rig is `.org` now: PARAM values still contain the `key = value` text these
+    // replaces target, but an INJECTED field must be its own PARAM headline at the
+    // timbre's depth (slot 2 = square, so its fm_depth_cents lands in timbres[2]).
     let edited = source
       .replace("amplitude = 0.15", "amplitude = 0.25")
       .replace("edo = 58", "edo = 41")
       .replace("x_step = 8", "x_step = 7")
-      .replace(WAVE_SQUARE, "waveform = \"square\"\nfm_depth_cents = 25.0")
+      .replace(WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0")
       .replace("slide_duration_ms = 100", "slide_duration_ms = 250");
-    let rig = midi_pulse::rig::parse_rig(&edited).expect("edited rig parses");
+    let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
     adopt_rig(&rig, &live).expect("adopts");
 
     assert_eq!(live.generation.load(Ordering::SeqCst), 1, "generation bumped");

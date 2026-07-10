@@ -4,32 +4,24 @@ headlines nest tables and array-of-table elements; any other headline just group
 documents; and every body (like this one) is a human note the loader ignores. It loads
 into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 [[file:README.org]]
-* 2-monomes_58-8-1_kmss-drums
+* 2-monomes_58-8-1_kmss-drums-mock
 ** PARAM version = 1
-See also softstep.toml (the shared SoftStep detection & velocity parameters).
-** PARAM id = "2-monomes_58-8-1_kmss-drums"
-** PARAM title = "Two monomes (58-8-1) + KMSS drums"
+** PARAM id = "2-monomes_58-8-1_kmss-drums-mock"
+** PARAM title = "Two monomes (58-8-1) + KMSS drums (mock grids)"
 ** TABLE surfaces
-===========================================================================
-THREE SURFACES AT ONCE (see rigs/2-monomes_58-8-1_kmss-drums.org):
-- two 16x16 monome grids, each a full 58-EDO play surface with its own
-independent scroll register and its own voices;
-- the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.
-Each grid also carries a 4-cell waveform strip on its top row that sets its
-OWN timbre, a volume fader that sets its OWN loudness, and a 3x2 scroll pad
-in the bottom-right that moves *that* grid's pitch window. The same pitch
-fingered on both grids is two independent voices (releasing one never cuts
-the other), each in its grid's currently-selected waveform.
-Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
-pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
-===========================================================================
-Shared recent-note trail (the dim backdrop of the last few played pitch classes).
+---------------------------------------------------------------------------
+Headless mock of the surfaces runtime: two mock 16x16 grids with the scroll
+pads, self-control waveform strips, and the accrete (sustain) button trios, driven with MIDI_PULSE_NO_AUDIO (no
+sound card). The KMSS drumkit is deliberately OMITTED here: entering tether
+mode shells out to `amidi` against a real device, which a headless test has
+no way to satisfy. This still exercises the two-grid discovery/bind, LED
+output, and press routing -- the device layer the pure tests can't. The runtime
+is still selected as "surfaces" (two edo grids on distinct monomes).
+---------------------------------------------------------------------------
+Shared recent-note trail -- mirror the real rig so mock play matches it.
 *** PARAM trail_clobber_radius = 27
-Clobber radius as a divisor of the octave: a played note clears any trailed class
-within edo/trail_clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents);
-bigger = tighter = fewer potential neighbors to clobber.
+1/27 of an octave (~44 cents); bigger = tighter
 *** PARAM trails_max = 9
-How many distinct pitch classes the trail keeps at once (newest first).
 *** PARAM slide_candidate_window_ms = 1000
 Slide (the slide_toggle windows): a new note may glide from a note released
 within this many ms...
@@ -39,8 +31,8 @@ within this many ms...
 Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
 ** ELEM tunings
 *** PARAM id = "main"
-*** PARAM edo = 46
-*** PARAM x_step = 9
+*** PARAM edo = 58
+*** PARAM x_step = 8
 *** PARAM y_step = 1
 *** PARAM fundamental_hz = 80
 ** ELEM timbres
@@ -64,16 +56,11 @@ fm_freq        vibrato rate in Hz; ~0.1..10 musical (default 1.0)
 ** ELEM timbres
 *** PARAM waveform = "saw"
 ** ELEM sinks
-The play-grid synth (both grids' voices go here; each voice carries its grid's
-waveform). Waveform-only timbre -- gain/AM/FM stay at their inert defaults.
 *** PARAM id = "synth"
 *** PARAM kind = "cpal_synth"
 *** PARAM sample_rate = 48000
 *** PARAM buffer_frames = 128
 *** PARAM amplitude = 0.15
-The single master synth volume for BOTH grids (linear; 1.0 = full scale). Pull the
-synth down here if it clips. The on-grid volume faders are live per-grid trims that
-multiply *below* this.
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
 *** PARAM accretion_level = 0.5
@@ -91,29 +78,17 @@ soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the switched-on grids' summed mix
 scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.
 *** PARAM distortion_shape = 2.0
 shape k: elbow harshness; 1 gentlest, 2 smooth sweet spot, 4-8 hard-ish edge.
-** ELEM sinks
-The drum sampler (one-shot WAVs). Same cpal/JACK path as the synth.
-*** PARAM id = "drums"
-*** PARAM kind = "cpal_sampler"
-*** PARAM sample_rate = 48000
-*** PARAM buffer_frames = 128
-*** PARAM amplitude = 1.6
-The single drum-kit volume knob (linear; per-pad `gain` trims individual pads below it).
-1.6 = the old sink 0.8 x drum_sample_amplitude 2.0, now folded into one knob.
 ** ELEM monomes
 *** PARAM id = "a"
-*** PARAM listen_port = 9000
-*** PARAM prefix = "/surface-a"
+*** PARAM listen_port = 9102
+*** PARAM prefix = "/mock-surface-a"
 *** PARAM select.size = [16, 16]
 ** ELEM monomes
 *** PARAM id = "b"
-*** PARAM listen_port = 9001
-*** PARAM prefix = "/surface-b"
+*** PARAM listen_port = 9103
+*** PARAM prefix = "/mock-surface-b"
 *** PARAM select.size = [16, 16]
 ** ELEM monome_windows
----------------------------------------------------------------------------
-GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
----------------------------------------------------------------------------
 *** PARAM id = "grid-a"
 *** PARAM monome = "a"
 *** PARAM kind = "edo_note_grid"
@@ -121,15 +96,12 @@ GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 *** PARAM tuning = "main"
 *** PARAM sink = "synth"
 ** ELEM monome_windows
-4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID A.
 *** PARAM id = "wave-a"
 *** PARAM monome = "a"
 *** PARAM kind = "waveform_selector"
 *** PARAM rect = [0, 0, 3, 0]
 *** PARAM controls = "a"
 ** ELEM monome_windows
-3x2 scroll pad, bottom-right: arrows shift grid A's pitch window by one cell,
-the two top corners by an octave.
 *** PARAM id = "scroll-a"
 *** PARAM monome = "a"
 *** PARAM kind = "edo_shift_pad"
@@ -211,9 +183,6 @@ per note, separate from any [[timbres]] AM).
 *** PARAM kind = "tap_tempo_pad"
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM monome_windows
----------------------------------------------------------------------------
-GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
----------------------------------------------------------------------------
 *** PARAM id = "grid-b"
 *** PARAM monome = "b"
 *** PARAM kind = "edo_note_grid"
@@ -307,24 +276,3 @@ per note, separate from any [[timbres]] AM).
 *** PARAM monome = "b"
 *** PARAM kind = "tap_tempo_pad"
 *** PARAM rect = [13, 0, 15, 1]
-** ELEM softsteps
----------------------------------------------------------------------------
-KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit layout.
----------------------------------------------------------------------------
-*** PARAM id = "feet"
-*** PARAM select.name_contains = "SSCOM"
-** ELEM softstep_windows
-*** PARAM id = "kit"
-*** PARAM softstep = "feet"
-*** PARAM kind = "drumkit"
-*** PARAM sink = "drums"
-*** PARAM pads = [ { pedal = 1, sample = "snare.wav" }, { pedal = 2, sample = "kick.wav" }, { pedal = 3, ditto = true }, { pedal = 4, sample = "hat.wav" }, { pedal = 5, sample = "open_hat.wav" }, { pedal = 6, sample = "high_tom.wav" }, { pedal = 7, sample = "low_tom.wav" }, { pedal = 8, sample = "wood_block.wav" }, { pedal = 9, sample = "cowbell.wav" }, { pedal = 0, sample = "crash_electronic.wav", gain = 0.5 }, ]
-Detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml.
-Pedal 3 sits in the gap between the feet -- either foot can reach it. It
-retriggers the most recently played sample on ANY pedal in this window, using
-THIS press's own velocity against that sample's own pad's static gain trim
-("a generalized double-bass pedal"); a ditto press does not itself become "the
-last hit" (pad, ditto, ditto repeats the same sample, it does not echo the
-ditto). Does nothing if nothing has played yet. See drumkit_runtime/mod.rs
-(`PadKind::Ditto`).
-real crash (synth, CC0), not the 808 CY; fuller than the kit -> trimmed a bit
