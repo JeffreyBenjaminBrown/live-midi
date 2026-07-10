@@ -1,0 +1,94 @@
+This rig is written in our TOML-in-org format. The data lives in headlines titled
+"PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
+headlines nest tables and array-of-table elements; any other headline just groups and
+documents; and every body (like this one) is a human note the loader ignores. It loads
+into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
+[[file:README.org]]
+* edo-un12_31_loose_recording
+** PARAM version = 1
+** PARAM id = "edo-un12_31_loose_recording"
+** PARAM title = "EDO un-12 31 Loose Recording"
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 31
+*** PARAM x_step = 6
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 80
+** TABLE midi
+*** TABLE input
+**** PARAM virtual_name = "edo_un12_piano_monome-in"
+*** TABLE output
+**** PARAM virtual_name = "edo_un12_piano_monome-out"
+**** PARAM min_channel = 1
+**** PARAM min_note = 28
+** TABLE piano
+*** TABLE mapping
+**** PARAM kind = "remappable_un12"
+**** PARAM lowest_note = 24
+**** PARAM tuning = "main"
+**** PARAM remap_idiom = "loose"
+**** PARAM initial_map = "even"
+** ELEM monomes
+*** PARAM id = "big"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/256-1-cable"
+*** PARAM select.size = [16, 16]
+*** PARAM select.type_contains = "256"
+** ELEM monome_windows
+*** PARAM id = "preimage-row"
+*** PARAM monome = "big"
+*** PARAM kind = "preimage_row"
+*** PARAM rect = [0, 0, 11, 0]
+** ELEM monome_windows
+*** PARAM id = "remap-grid"
+*** PARAM monome = "big"
+*** PARAM kind = "remappable_un12_grid"
+*** PARAM rect = [0, 1, 9, 15]
+*** PARAM tuning = "main"
+** ELEM monome_windows
+*** PARAM id = "undo"
+*** PARAM monome = "big"
+*** PARAM kind = "remap_undo_button"
+*** PARAM rect = [15, 15, 15, 15]
+** ELEM monome_windows
+*** PARAM id = "record-start"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "start"
+*** PARAM rect = [13, 0, 13, 0]
+** ELEM monome_windows
+*** PARAM id = "record-stop"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "stop"
+*** PARAM rect = [14, 0, 14, 0]
+** ELEM monome_windows
+*** PARAM id = "record-loop"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "loop"
+*** PARAM rect = [15, 0, 15, 0]
+** ELEM monome_windows
+*** PARAM id = "record-arm"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "arm"
+*** PARAM rect = [13, 1, 13, 1]
+** ELEM monome_windows
+*** PARAM id = "record-erase-ons"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "erase_ons"
+*** PARAM rect = [14, 1, 14, 1]
+** ELEM monome_windows
+*** PARAM id = "record-end-all"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "end_all"
+*** PARAM rect = [15, 1, 15, 1]
+** ELEM monome_windows
+*** PARAM id = "record-rscm"
+*** PARAM monome = "big"
+*** PARAM kind = "record_control"
+*** PARAM control = "rscm"
+*** PARAM rect = [15, 2, 15, 2]

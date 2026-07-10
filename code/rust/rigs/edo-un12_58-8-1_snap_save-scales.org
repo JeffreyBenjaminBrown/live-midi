@@ -1,0 +1,74 @@
+This rig is written in our TOML-in-org format. The data lives in headlines titled
+"PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
+headlines nest tables and array-of-table elements; any other headline just groups and
+documents; and every body (like this one) is a human note the loader ignores. It loads
+into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
+[[file:README.org]]
+* edo-un12_58-8-1_snap_save-scales
+** PARAM version = 1
+** PARAM id = "edo-un12_58-8-1_snap_save-scales"
+** PARAM title = "EDO un-12 58 8 1 Snap Save Scales"
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 58
+*** PARAM x_step = 8
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 80
+** TABLE midi
+*** TABLE input
+**** PARAM virtual_name = "edo_un12_piano_monome-in"
+*** TABLE output
+**** PARAM virtual_name = "edo_un12_piano_monome-out"
+**** PARAM min_channel = 1
+**** PARAM min_note = 28
+** TABLE piano
+*** TABLE mapping
+**** PARAM kind = "remappable_un12"
+**** PARAM lowest_note = 24
+**** PARAM tuning = "main"
+**** PARAM remap_idiom = "snap"
+**** PARAM initial_map = "even"
+** ELEM monomes
+*** PARAM id = "big"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/256-1-cable"
+*** PARAM select.size = [16, 16]
+*** PARAM select.type_contains = "256"
+** ELEM monome_windows
+*** PARAM id = "preimage-row"
+*** PARAM monome = "big"
+*** PARAM kind = "preimage_row"
+*** PARAM rect = [0, 0, 11, 0]
+** ELEM monome_windows
+*** PARAM id = "remap-grid"
+*** PARAM monome = "big"
+*** PARAM kind = "remappable_un12_grid"
+*** PARAM rect = [0, 1, 9, 15]
+*** PARAM tuning = "main"
+** ELEM monome_windows
+*** PARAM id = "undo"
+*** PARAM monome = "big"
+*** PARAM kind = "remap_undo_button"
+*** PARAM rect = [15, 15, 15, 15]
+** ELEM monome_windows
+A 4x4 grid of scale slots in the top-right corner. The number of slots is
+whatever this rect covers, so widen/narrow it to taste.
+*** PARAM id = "scale-slots"
+*** PARAM monome = "big"
+*** PARAM kind = "scale_slots"
+*** PARAM rect = [12, 0, 15, 3]
+** ELEM monome_windows
+"Store current scale into the next slot pressed", just below the slots on the
+right edge.
+*** PARAM id = "scale-store"
+*** PARAM monome = "big"
+*** PARAM kind = "scale_control"
+*** PARAM control = "store"
+*** PARAM rect = [15, 4, 15, 4]
+** ELEM monome_windows
+"Empty the next slot pressed", right next to the store button.
+*** PARAM id = "scale-empty"
+*** PARAM monome = "big"
+*** PARAM kind = "scale_control"
+*** PARAM control = "empty"
+*** PARAM rect = [14, 4, 14, 4]

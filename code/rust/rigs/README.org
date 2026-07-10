@@ -1,3 +1,25 @@
+* The .org rig format (TOML-in-org)
+Rigs are ~.org~ files in our *TOML-in-org* format: the org outline carries the data,
+and every parameter's documentation lives beside it in the headline tree. Each rig file
+opens with a short note pointing back here (Emacs ~C-c C-o~ follows the link).
+
+- ~PARAM <key> = <value>~ -- a scalar. ~<key>~ may be dotted (~select.size~); ~<value>~
+  is ordinary TOML value syntax, so inline arrays/tables just work
+  (~PARAM rect = [0, 0, 15, 13]~).
+- ~TABLE <name>~ -- a (sub)table; its descendants are its contents. ~TABLE~ nests
+  (~[a.b]~ = ~TABLE a~ > ~TABLE b~).
+- ~ELEM <name>~ -- ONE element of the array-of-tables ~<name>~ (one ~[[name]]~).
+  Repeat sibling ~ELEM <name>~ headlines to grow the array, in order.
+- Any *other* headline is pure grouping: transparent to the data, there only to
+  organize and document. Every *body* (the lines under a headline) is a human note the
+  loader ignores.
+
+It loads into the exact same typed rig as the old TOML did (same fields, same
+validation, unknown keys still rejected). Full spec + migration notes:
+[[file:../../../TODO/toml-to-org-rig-format.org]]. A rig's own reference doc, when it has
+one, is the sibling ~<name>_readme.org~. (~softstep.toml~ stays TOML -- it is the shared
+SoftStep-params file, not a rig.)
+
 * to run something
 ** about the file argument
 The file argument (to both commands) must exist in this folder.
@@ -52,7 +74,7 @@ Rigs live in ~code/rust/rigs/~ and are loaded by name:
 cargo run --bin midi_pulse -- RIG_NAME
 #+end_src
 
-~RIG_NAME~ resolves to ~code/rust/rigs/RIG_NAME.toml~.
+~RIG_NAME~ resolves to ~code/rust/rigs/RIG_NAME.org~ (our TOML-in-org format; see above).
 
 On the host, MIDI routing can use the same rig name:
 
@@ -61,14 +83,17 @@ On the host, MIDI routing can use the same rig name:
 #+end_src
 
 That script reads ~[midi.input].virtual_name~ and
-~[midi.output].virtual_name~ from the TOML and connects the keyboard
+~[midi.output].virtual_name~ from the rig and connects the keyboard
 and Reaper MIDI ports accordingly. It also connects Reaper audio to the
 best available built-in output, preferring ~Headphones~ when present and
 falling back to ~Speaker~. Rerun it after plugging or unplugging the
 1/8" audio jack. Rigs without MIDI input or output simply skip that
 side.
 
-Every rig is TOML and starts with:
+Every rig starts with the fields below. The examples in this section are written in
+the underlying TOML to show the *data model*; in an actual ~.org~ rig each becomes a
+~PARAM~ / ~TABLE~ / ~ELEM~ headline (see *The .org rig format* at the top), e.g.
+~version = 1~ is ~** PARAM version = 1~.
 
 #+begin_src toml
 version = 1
@@ -291,7 +316,7 @@ A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, l
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
 the window's own ~monome~, though a different play grid is legal (cross-control).
 The surfaces runtime uses it to give each play grid its own timbre control (see
-[[./2-monomes_58-8-1_kmss-drums.org]]). Its rect must cover exactly the four cells
+[[./2-monomes_58-8-1_kmss-drums_readme.org]]). Its rect must cover exactly the four cells
 (one row, four wide).
 
 A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
@@ -447,7 +472,7 @@ rect = [15, 15, 15, 15]
 The Keith McMillen SoftStep foot controller uses the *same windowing idiom* as the
 monomes, adapted to its 10 labeled pedals (printed ~6 7 8 9 0~ on top, ~1 2 3 4 5~
 on the bottom). A device is declared once and referenced by ~id~; windows carry a
-~kind~. Full reference: [[./kmss-drumkit.org]].
+~kind~. Full reference: [[./kmss-drumkit_readme.org]].
 
 The device, matched by input-port-name substring (default ~"SSCOM"~, the KMSS's
 ALSA client name -- never a hardcoded client number):
@@ -581,7 +606,7 @@ sink = "midi"
 * Surfaces
 
 The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
-[[./2-monomes_58-8-1_kmss-drums.org]]) reads one optional table of instrument-wide
+[[./2-monomes_58-8-1_kmss-drums_readme.org]]) reads one optional table of instrument-wide
 scalars for the shared *recent-note trail* -- the dim backdrop of the last few played
 pitch classes:
 

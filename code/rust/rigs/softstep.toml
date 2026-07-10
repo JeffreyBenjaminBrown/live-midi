@@ -3,7 +3,7 @@
 # There is no reason for these to vary from one rig to the next, so they live here once
 # rather than being duplicated in each rig's [[softstep_windows]]. Every rig that uses
 # the SoftStep carries a "see also softstep.toml" note at the top. The Python meter
-# (code/python/softstep/meter/rig.toml) mirrors these same numbers.
+# (code/python/softstep/meter/config.toml) mirrors these same numbers.
 #
 # All keys are optional; a missing key uses the default shown. Reject-on-typo is on.
 

@@ -2200,11 +2200,18 @@ mod tests {
     for entry in std::fs::read_dir(rig_dir()).expect("read rigs dir") {
       let entry = entry.expect("rig dir entry");
       let path = entry.path();
-      // softstep.toml is a shared SoftstepParams file, not a full runnable Rig.
-      if path.file_name().and_then(|s| s.to_str()) == Some("softstep.toml") {
+      let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+      // Skip non-rigs: the shared SoftstepParams file, and the docs -- a rig's own
+      // reference doc ends in `_readme.org`; README.org / RUNTIME-NOTES.org are general.
+      if name == "softstep.toml"
+        || name == "README.org"
+        || name == "RUNTIME-NOTES.org"
+        || name.ends_with("_readme.org")
+      {
         continue;
       }
-      if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+      // Rigs are `.org` now (`.toml` still parses during/after the migration).
+      if matches!(path.extension().and_then(|s| s.to_str()), Some("org") | Some("toml")) {
         load_rig_file(&path)
           .unwrap_or_else(|e| panic!("{} should parse: {e}", path.display()));
       }

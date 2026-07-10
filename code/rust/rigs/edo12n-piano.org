@@ -1,0 +1,39 @@
+This rig is written in our TOML-in-org format. The data lives in headlines titled
+"PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
+headlines nest tables and array-of-table elements; any other headline just groups and
+documents; and every body (like this one) is a human note the loader ignores. It loads
+into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
+[[file:README.org]]
+* edo12n-piano
+** PARAM version = 1
+** PARAM id = "edo12n-piano"
+** PARAM title = "EDO 12n Piano"
+** TABLE midi
+*** TABLE input
+**** PARAM virtual_name = "edo12n_piano-in"
+*** TABLE output
+**** PARAM virtual_name = "edo12n_piano-out"
+**** PARAM min_channel = 1
+**** PARAM min_note = 28
+** TABLE piano
+*** TABLE mapping
+**** PARAM kind = "twelve_n"
+**** PARAM lowest_note = 21
+**** PARAM shift_before_mapping = -5
+**** PARAM edo_per_12 = 6
+*** ELEM regions
+**** PARAM range = [0, 96]
+**** PARAM action = "emit_notes"
+*** ELEM regions
+**** PARAM range = [97, 108]
+**** PARAM action = "held_offset_control"
+**** PARAM zero_note = 102
+** TABLE display
+*** PARAM kind = "pitch_class_grid"
+*** PARAM enabled = true
+*** PARAM rows = 6
+*** PARAM cols = 7
+*** PARAM anchor_12edo_value = 4
+*** PARAM row_step = 5
+*** PARAM flash_millis = 500
+*** PARAM tick_millis = 50

@@ -4,17 +4,20 @@ headlines nest tables and array-of-table elements; any other headline just group
 documents; and every body (like this one) is a human note the loader ignores. It loads
 into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 [[file:README.org]]
-* monome-looper-58-8-1
+* monome-looper-58-8-1-mock
 ** PARAM version = 1
-** PARAM id = "monome-looper-58-8-1"
-** PARAM title = "Monome Looper 58 8 1"
+** PARAM id = "monome-looper-58-8-1-mock"
+** PARAM title = "Monome Looper 58 8 1 (mock grids)"
 ** ELEM tunings
 ---------------------------------------------------------------------------
-Two 16x16 grids, no piano. One is the EDO play/remap surface ("edo"), the
-other is the LOOPS surface ("loops"). Both match select.size = [16,16]; the
-runtime hands each rig monome a DISTINCT unclaimed grid in rig order
-(so the first-discovered grid is "edo", the second "loops"). We don't care
-which physical grid is which. See 6_plan.org.
+Identical to monome-looper-58-8-1.toml EXCEPT the two monomes use non-colliding
+listen ports (9100/9101 instead of 9000/9001) and distinct prefixes. That lets
+this looper run AT THE SAME TIME as a real session against the `mock_monome`
+virtual rig:
+cargo run --bin mock_monome -- --detector-port 17002
+MIDI_PULSE_DETECTOR_PORT=17002 cargo run --bin midi_pulse -- monome-looper-58-8-1-mock
+The mock reports two 16x16 "monome 256" grids, so select.size = [16,16] still
+assigns them in rig order (first -> edo, second -> loops). See MOCK-MONOME.org.
 ---------------------------------------------------------------------------
 *** PARAM id = "main"
 *** PARAM edo = 58
@@ -22,8 +25,6 @@ which physical grid is which. See 6_plan.org.
 *** PARAM y_step = 1
 *** PARAM fundamental_hz = 80
 ** ELEM sinks
-cpal sawwave sink, same params as monome-edo-sawwave. BOTH live play and loop
-playback emit note events into this synth.
 *** PARAM id = "saw"
 *** PARAM kind = "cpal_synth"
 *** PARAM sample_rate = 48000
@@ -33,26 +34,21 @@ playback emit note events into this synth.
 *** PARAM release_secs = 0.050
 *** PARAM accretion_level = 0.5
 ** TABLE looper
-Looper-wide scalars (all ms unless noted).
 *** PARAM clock_bpm = 300
-metronome (4*75): transport snaps to the 200ms cycle; note-ons within a fixed 50ms snap
-*** PARAM clock_duty = 0.1
-fraction of each cycle the flashing transport button stays lit (a brief strobe)
 *** PARAM cluster_display_ms = 100
-notes within this of each other = one display column
 *** PARAM flash_ms = 50
-reflection / equivalent flash half-period (50 on / 50 off)
 *** PARAM remap_center = [7, 7]
-edo-grid cell meaning "unison" in group-transpose remap
 ** ELEM monomes
 *** PARAM id = "edo"
-*** PARAM listen_port = 9000
-*** PARAM prefix = "/looper-edo"
+*** PARAM listen_port = 9100
+mock: 9100 instead of 9000
+*** PARAM prefix = "/mock-edo"
 *** PARAM select.size = [16, 16]
 ** ELEM monomes
 *** PARAM id = "loops"
-*** PARAM listen_port = 9001
-*** PARAM prefix = "/looper-loops"
+*** PARAM listen_port = 9101
+mock: 9101 instead of 9001
+*** PARAM prefix = "/mock-loops"
 *** PARAM select.size = [16, 16]
 ** ELEM monome_windows
 ===========================================================================
@@ -65,11 +61,6 @@ GRID 1 -- "edo": play surface, loop reflection, remap pitch-picker.
 *** PARAM tuning = "main"
 *** PARAM sink = "saw"
 ** ELEM monome_windows
-3x2 shift pad overlaid on the lower-right (listed AFTER edo-grid so it sits on
-top). Arrows shift the pitch image by one CELL; the two top corners by an octave.
-x=13         x=14        x=15
-y=14  octave-down  shift-up    octave-up
-y=15  shift-left   shift-down  shift-right
 *** PARAM id = "edo-shift-pad"
 *** PARAM monome = "edo"
 *** PARAM kind = "edo_shift_pad"
@@ -78,58 +69,44 @@ y=15  shift-left   shift-down  shift-right
 ===========================================================================
 GRID 2 -- "loops": slots, transport, loop display, remap controls.
 ===========================================================================
-4x4 slot grid (16 slots). One is ACTIVE. The transport windows below overlay
-its bottom row, so those three slots are unreachable ("no harm").
 *** PARAM id = "loop-slots"
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_slots"
 *** PARAM rect = [0, 0, 3, 3]
 ** ELEM monome_windows
 *** PARAM id = "loop-start"
-begin recording into the active slot (overwrites it)
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_control"
 *** PARAM control = "start"
 *** PARAM rect = [0, 3, 0, 3]
 ** ELEM monome_windows
 *** PARAM id = "loop-stop"
-stop the active slot's current activity -- record OR play
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_control"
 *** PARAM control = "stop"
 *** PARAM rect = [1, 3, 1, 3]
 ** ELEM monome_windows
 *** PARAM id = "loop-play"
-stop recording (if any) and loop the active slot
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_control"
 *** PARAM control = "play"
 *** PARAM rect = [2, 3, 2, 3]
 ** ELEM monome_windows
-Remap-mode toggle: fine vs group transpose. Both are destructive; toggling back
-to fine also ENDS a group-transpose session. Lit solid in fine (the default),
-dim in group transpose.
 *** PARAM id = "loop-remap-mode"
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_remap_mode_toggle"
 *** PARAM rect = [14, 3, 14, 3]
 ** ELEM monome_windows
-Copy a slot to another: press this, then 'from' slot, then 'to' slot. Lit solid
-while armed; pressing it again mid-gesture cancels (forgetting any picked slot).
 *** PARAM id = "loop-copy"
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_copy_button"
 *** PARAM rect = [15, 2, 15, 2]
 ** ELEM monome_windows
-One-press undo of the last loop remap (fine or group transpose). Its own looper kind --
-shares the undo mechanism in code, not the entangled remap_undo_button kind.
 *** PARAM id = "loop-remap-undo"
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_remap_undo"
 *** PARAM rect = [15, 3, 15, 3]
 ** ELEM monome_windows
-The loop display compound: one rect derives a left row-picker column, a top
-column-picker row, a reserved corner (0,5), and the main time x pitch area.
 *** PARAM id = "loop-display"
 *** PARAM monome = "loops"
 *** PARAM kind = "loop_display"

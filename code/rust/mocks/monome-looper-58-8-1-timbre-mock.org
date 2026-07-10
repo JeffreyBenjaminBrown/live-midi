@@ -4,10 +4,10 @@ headlines nest tables and array-of-table elements; any other headline just group
 documents; and every body (like this one) is a human note the loader ignores. It loads
 into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 [[file:README.org]]
-* monome-looper-58-8-1-timbre
+* monome-looper-58-8-1-timbre-mock
 ** PARAM version = 1
-** PARAM id = "monome-looper-58-8-1-timbre"
-** PARAM title = "Monome Looper 58 8 1 (timbre)"
+** PARAM id = "monome-looper-58-8-1-timbre-mock"
+** PARAM title = "Monome Looper 58 8 1 (timbre, mock grids)"
 ** ELEM tunings
 ---------------------------------------------------------------------------
 The full timbre instrument (6_plan + 7_layout.org). Two timbre editors:
@@ -32,39 +32,33 @@ Loops rects below are the UNFOLDED positions; the runtime starts folded.
 *** PARAM sample_rate = 48000
 *** PARAM buffer_frames = 128
 *** PARAM amplitude = 1.0
-Unity pass-through: the per-note GAIN row is the volume control here (6_plan 2.5,
-§5 -- the sink sketch carries no amplitude). The amplitude row's top cell = unity
-= 0.15 output (the pre-timbre instrument's level); leaving the sink at 0.15 too
-would double-attenuate it (top would reach only 0.0225). The live timbre boots at
-that row's top, so the instrument starts at the loudest value the row can dial.
+Unity pass-through: the per-note GAIN row is the volume control (6_plan 2.5). The
+amplitude row's top cell = unity = 0.15 output; the live timbre boots there, so the
+instrument starts at the loudest value the row can dial. (See the rigs/ twin.)
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
 *** PARAM accretion_level = 0.5
 *** PARAM oversample = 4
-4x oversample + decimate the synth render so the AM/FM shaping stays clean when
-pushed to audio rate (the point-sampled near-square would otherwise alias). The
-edge-limited AM square keeps the harmonic count low, so 4x is plenty; raise for
-more headroom at proportional CPU cost, or drop to 1 to disable.
+4x oversample + decimate so audio-rate AM/FM shaping doesn't alias. (rigs/ twin.)
 ** TABLE am
 *** TABLE shape
 Instrument-wide AM shape morph family (6_plan 2.5). The editor's shape row sweeps
 the per-note morph position within this family.
 **** PARAM family = "sin_to_square"
 ** TABLE looper
-*** PARAM clock_bpm = 120
-*** PARAM clock_duty = 0.1
+*** PARAM clock_bpm = 300
 *** PARAM cluster_display_ms = 100
 *** PARAM flash_ms = 50
 *** PARAM remap_center = [7, 7]
 ** ELEM monomes
 *** PARAM id = "edo"
-*** PARAM listen_port = 9000
-*** PARAM prefix = "/looper-edo"
+*** PARAM listen_port = 9100
+*** PARAM prefix = "/mock-edo"
 *** PARAM select.size = [16, 16]
 ** ELEM monomes
 *** PARAM id = "loops"
-*** PARAM listen_port = 9001
-*** PARAM prefix = "/looper-loops"
+*** PARAM listen_port = 9101
+*** PARAM prefix = "/mock-loops"
 *** PARAM select.size = [16, 16]
 ** ELEM monome_windows
 ===========================================================================

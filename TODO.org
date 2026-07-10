@@ -49,7 +49,7 @@ I trust you more than that (and I don't have a huge token budget).
   =host-nix-config-copy=, the Python meter, and the TODO/DONE/ archive. Scope +
   the sub-struct decision are in jeff-maybe-review-this.org "config -> rig rename".
 - 88 lib + 324 bin + 29 meter tests green; 0 warnings. No adversarial agents used.
-* TODO change .toml to .org
+* DONE change .toml to .org
 Top-level headlines, and their descendents down to some level,
 are just for grouping, otherwise ignored by the code.
 Each parameter, which can be at any depth in the tree,
@@ -98,15 +98,22 @@ consumer keeps using the same typed structs and validation; only the front-end
 (=load_config_file=) changes from =toml::from_str= to the org loader. I'll queue
 implementation after the rename lands. Keyword names (=ELEM= etc.) are easy to
 change -- say the word.
-** [Claude] MECHANISM DONE (2026-07-09); file migration gated on one decision.
-Committed the =rig_org= parser + loader seam (=code/rust/midi_pulse/rig_org.rs=;
-=load_rig_file= dispatches on extension). An =.org= rig deserializes + validates
-through the SAME typed model as =.toml= (reuses =parse_rig=). 94 lib + 324 bin
-green, incl. a round-trip proving a hand-converted =monome-edo-sawwave.org= ==
-its =.toml=. NOT done: converting the rig files -- blocked on a naming decision
-(rig =.org= vs the existing doc =.org= that shares 4 rigs' basenames). Options
-A/B/C + the migration mechanics are in [[file:TODO/toml-to-org-rig-format.org]]
-under "STATUS"; pick one and I'll finish the conversion. Left this item TODO.
+** [Claude] DONE (2026-07-10). All rigs are now =.org= (TOML-in-org).
+Parser + loader seam: =code/rust/midi_pulse/rig_org.rs= (=PARAM=/=TABLE=/=ELEM=
+headlines; grouping headlines transparent; bodies are docs). An =.org= rig loads
+through the SAME typed model + validation as =.toml= did (reuses =parse_rig=).
+
+Per your decision: the 13 rigs + 3 mock rigs are =.org=, each headed with a note
+linking to the format ([[file:code/rust/rigs/README.org]], C-c C-o-followable);
+=softstep.toml= stays TOML (shared params, not a rig). The 4 same-basename
+reference docs are renamed =<name>_readme.org=. Converted by a comment-preserving
+toml->org script; EVERY file verified to parse to the identical =Rig= as its
+=.toml= before the =.toml= was deleted. =loads_default_rigs=, =connect-midi.sh=,
+=README.org=, and =ORIENTATION.org= updated. 94 lib + 324 bin + 29 meter green.
+
+Syntax decisions (all reversible) in [[file:TODO/toml-to-org-rig-format.org]]; the
+=[surfaces]=-style file-intro comments landed as the first following headline's
+body (a minor placement quirk of the auto-conversion -- shuffle freely).
 * DONE rewrite sofstep pressure meter in Rust
 It should do everything the actual softstep drum code does,
 including the 'ditto' pad (but not the monome-interaction code).

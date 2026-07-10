@@ -1,0 +1,40 @@
+This rig is written in our TOML-in-org format. The data lives in headlines titled
+"PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
+headlines nest tables and array-of-table elements; any other headline just groups and
+documents; and every body (like this one) is a human note the loader ignores. It loads
+into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
+[[file:README.org]]
+* edo12n-piano-monome
+** PARAM version = 1
+** PARAM id = "edo12n-piano-monome"
+** PARAM title = "EDO 12n Piano Monome"
+** TABLE midi
+*** TABLE input
+**** PARAM virtual_name = "edo12n_piano_monome-in"
+*** TABLE output
+**** PARAM virtual_name = "edo12n_piano_monome-out"
+**** PARAM min_channel = 1
+**** PARAM min_note = 28
+** TABLE piano
+*** TABLE mapping
+**** PARAM kind = "twelve_n"
+**** PARAM lowest_note = 21
+**** PARAM shift_before_mapping = -5
+**** PARAM edo_per_12 = 6
+** ELEM monomes
+*** PARAM id = "little"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/128-1-cable"
+*** PARAM select.size = [16, 8]
+*** PARAM select.type_contains = "128"
+** ELEM monome_windows
+*** PARAM id = "offset-board"
+*** PARAM monome = "little"
+*** PARAM kind = "twelve_edo_offset_board"
+*** PARAM rect = [0, 0, 15, 7]
+*** PARAM offset_columns = [0, 11]
+*** PARAM offset_rows = [1, 7]
+*** PARAM zero_row = 4
+*** PARAM root_row = 0
+*** PARAM group_columns = [13, 14, 15]
+*** PARAM group_intervals = [[0, 2, 5, 7], [1, 3, 8, 10], [4, 6, 9, 11]]

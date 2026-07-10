@@ -15,21 +15,32 @@ fi
 source "$HERE/connect-midi-lib.sh"
 
 rig_path="$ROOT/code/rust/rigs/$RIG_NAME"
-if [[ "$rig_path" != *.toml ]]; then
-  rig_path="$rig_path.toml"
+if [[ "$rig_path" != *.org && "$rig_path" != *.toml ]]; then
+  # Rigs are .org now (TOML-in-org); fall back to .toml for anything not yet migrated.
+  if [[ -f "$rig_path.org" ]]; then
+    rig_path="$rig_path.org"
+  else
+    rig_path="$rig_path.toml"
+  fi
 fi
 if [[ ! -f "$rig_path" ]]; then
   echo "rig not found: $rig_path" >&2
   exit 1
 fi
 
+# Read e.g. [midi.input].virtual_name from either a .toml rig or our .org rig
+# (`*** TABLE input` / `**** PARAM virtual_name = "..."`), matching the table's LEAF
+# segment (input/output). Both forms carry the value as `virtual_name = "..."`.
 table_string() {
-  local table="$1"
-  local key="$2"
-  awk -v table="$table" -v key="$key" '
-    $0 == "[" table "]" { in_table = 1; next }
-    /^\[/ { in_table = 0 }
-    in_table && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+  local table="$1"   # e.g. midi.input
+  local key="$2"     # e.g. virtual_name
+  local leaf="${table##*.}"
+  awk -v table="$table" -v leaf="$leaf" -v key="$key" '
+    $0 == "[" table "]"        { in_table = 1; next }   # .toml form
+    $0 ~ "^\\*+ TABLE " leaf "$" { in_table = 1; next }  # .org form
+    /^\[/                       { in_table = 0 }
+    /^\*+ (TABLE|ELEM) /        { if ($0 !~ "^\\*+ TABLE " leaf "$") in_table = 0 }
+    in_table && $0 ~ ("(^[[:space:]]*|PARAM[[:space:]]+)" key "[[:space:]]*=") {
       value = $0
       sub(/^[^=]*=[[:space:]]*"/, "", value)
       sub(/"[[:space:]]*$/, "", value)
