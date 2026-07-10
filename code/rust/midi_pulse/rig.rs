@@ -503,7 +503,6 @@ pub enum SinkRig {
     amplitude: f32,
     attack_secs: f32,
     release_secs: f32,
-    accretion_level: f32,
     /// Internal oversampling factor for the synth render (1 = off). >1 runs the
     /// nonlinear/multiplicative mix at N x the rate and decimates, so audio-rate
     /// AM/FM/waveshaping doesn't alias. Defaults to 1 so existing rigs are
@@ -1344,7 +1343,6 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       amplitude,
       attack_secs,
       release_secs,
-      accretion_level,
       oversample,
       ..
     } = sink {
@@ -1358,7 +1356,6 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
         ("amplitude", *amplitude),
         ("attack_secs", *attack_secs),
         ("release_secs", *release_secs),
-        ("accretion_level", *accretion_level),
       ] {
         if !value.is_finite() || value < 0.0 {
           return Err(format!("sink {:?} {name} must be nonnegative", sink.id()));
@@ -2717,7 +2714,6 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.05
-accretion_level = 0.5
 
 "#;
   const LOOPER_TABLE: &str = r#"[looper]
@@ -3190,7 +3186,6 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.05
-accretion_level = 0.5
 
 [[monomes]]
 id = "big"
@@ -3256,7 +3251,6 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.05
-accretion_level = 0.5
 
 [[monomes]]
 id = "a"

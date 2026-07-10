@@ -77,7 +77,9 @@ reverse it cheaply if you disagree.
   said "the synths", so the serde defaults enable it everywhere without touching
   each toml. Any rig can opt out with =sustain_level = 1.0=. If you'd rather the
   default were off-except-surfaces, that's a two-line default change.
-- *Loop playback notes pluck too* (same sink); chord-accretion voices stay flat.
+- *Every voice plucks* -- loop playback (same sink) and, since the
+  =accretion_level= collapse, chord-accretion voices too: an accreted note now
+  sounds exactly like the same note held under a finger.
 - The peak level is unchanged (attack still hits the old full amplitude); it is
   the *ringing* notes that got quieter, which reads as "attacks louder" without
   risking new clipping.

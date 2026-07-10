@@ -209,7 +209,6 @@ A grouping headline; its ELEM child attaches to the root.
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.05
-*** PARAM accretion_level = 0.5
 ** ELEM monomes
 *** PARAM id = "big"
 *** PARAM listen_port = 9000
@@ -339,7 +338,6 @@ A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 ** the play grid
 *** ELEM monome_windows
 **** PARAM id = "edo-grid"

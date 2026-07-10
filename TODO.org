@@ -1,3 +1,23 @@
+* DONE accretion_level is mostly dead.
+Give it a default value so it stops being required,
+then remove it from all rigs that don't use it.
+** [Claude] done -- removed outright, not defaulted
+It was dead in six of the seven rigs: only the *sawwave* runtime ever read it,
+for its chord-slot "emit" voices (a different feature that happens to share the
+word). Rather than default it, we folded it into the pluck envelope, so there is
+now ONE parameter -- =sustain_level= -- and an accreted note sounds exactly like
+the same note held under a finger:
+- =sawwave/state.rs= edo_release: a held voice that becomes a drone is now
+  *re-keyed in place*, envelope untouched (it used to jump to 0.5 and go flat).
+  This is what =surfaces_runtime::synth::sustain_note= already did.
+- =sawwave/voices.rs= spawn_accretion_voice: an emitted chord tone is struck like
+  any note (peak 1.0, then the pluck decay), instead of a flat drone at 0.5.
+- =accretion_level= and =ACCRETION_TARGET= are gone from the rig schema, the
+  validator, all 7 rigs/mocks, and the docs.
+*Audible change, sawwave rigs only* (=monome-edo-sawwave=): emitted chord tones
+now have an attack and settle at =sustain_level= (0.35) instead of ringing flat
+at 0.5 -- i.e. quieter, and no longer louder than the notes you played to build
+the chord. Surfaces + looper rigs are bit-for-bit unchanged.
 * DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
@@ -199,7 +219,7 @@ so (e.g.) if the destination is tapped again ... uh ...
 ** remember this program
 *** the softstep meter
 python3 code/python/softstep/meter/main.py
-** lately using [[./code/rust/configs/README.org]]
+** lately using [[./code/rust/rigs/README.org]]
 ** remember to run the synth 'under pw-jack'
 Just prefix 'pw-jack' to the command:
 

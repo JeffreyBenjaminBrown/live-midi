@@ -39,7 +39,6 @@ would double-attenuate it (top would reach only 0.0225). The live timbre boots a
 that row's top, so the instrument starts at the loudest value the row can dial.
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 *** PARAM oversample = 4
 4x oversample + decimate the synth render so the AM/FM shaping stays clean when
 pushed to audio rate (the point-sampled near-square would otherwise alias). The

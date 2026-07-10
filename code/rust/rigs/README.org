@@ -239,9 +239,10 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.050
-accretion_level = 0.5
 # Optional (defaults shown). Pluck envelope: a strike peaks, then decays toward
-# sustain_level x peak with time constant decay_secs (>= 1.0 / <= 0 disable):
+# sustain_level x peak with time constant decay_secs (>= 1.0 / <= 0 disable).
+# EVERY voice takes this curve -- fingered, looped, and accreted alike, so a
+# sustained note sounds exactly like the same note held under a finger:
 sustain_level = 0.35
 decay_secs = 0.5
 # Optional. Global distortion curve, heard only under a distortion_toggle window:

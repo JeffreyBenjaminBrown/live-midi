@@ -247,9 +247,8 @@ pub struct AudioParams {
   pub amplitude: f32,
   pub attack_secs: f32,
   pub release_secs: f32,
-  pub accretion_level: f32,
-  // The pluck envelope (cpal_synth `sustain_level` / `decay_secs`): fingered notes
-  // strike to a peak, then decay toward the sustain. Accretion voices stay flat.
+  // The pluck envelope (cpal_synth `sustain_level` / `decay_secs`): every voice --
+  // fingered or accreted -- strikes to a peak, then decays toward the sustain.
   pub sustain_level: f32,
   pub decay_secs: f32,
 }

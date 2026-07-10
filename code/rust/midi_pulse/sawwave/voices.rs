@@ -497,16 +497,20 @@ pub fn voice_alive_with_id(voices: &VoiceMap, id: VoiceId) -> bool {
   voices.values().any(|v| v.id == id && v.target_env > 0.0)
 }
 
-// Spawn a fresh accretion voice for chord/pitch at env=0 ramping to
-// ACCRETION_TARGET over ATTACK_SECS. Overwrites any existing entry
-// at Accreted{chord, pitch}.
+// Spawn a fresh accretion voice for chord/pitch. It is struck exactly like a
+// fingered note -- env=0 rising to the peak over `attack_secs`, then the pluck
+// decay toward `sustain_level` x peak -- so an emitted chord tone sounds no
+// different from the same pitch held under a finger. Overwrites any existing
+// entry at Accreted{chord, pitch}.
 pub fn spawn_accretion_voice(
   voices: &mut VoiceMap, chord: ChordId, pitch: i32,
   fund: f64, edo: i32, next_voice_id: &mut VoiceId, sample_rate: f32,
-  accretion_level: f32, attack_secs: f32,
+  attack_secs: f32, sustain_level: f32, decay_secs: f32,
 ) {
   let id = *next_voice_id;
   *next_voice_id += 1;
+  let (sustain_env, decay_per_sample) =
+    pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
   voices.insert(VoiceSource::Accreted { chord, pitch }, VoiceState {
     id,
     freq: freq_for_pitch(pitch, fund, edo),
@@ -515,11 +519,10 @@ pub fn spawn_accretion_voice(
     tempo_am_freq: 0.0, tempo_am_phase: 0.0,
     phase: 0.0,
     env: 0.0,
-    target_env: accretion_level,
-    ramp_per_sample: accretion_level / (attack_secs * sample_rate),
-    // Accretion voices are steady drones: no pluck decay.
-    sustain_env: accretion_level,
-    decay_per_sample: 1.0,
+    target_env: 1.0,
+    ramp_per_sample: 1.0 / (attack_secs * sample_rate),
+    sustain_env,
+    decay_per_sample,
     timbre: Timbre::default(),
     am_phase: 0.0,
     fm_phase: 0.0,

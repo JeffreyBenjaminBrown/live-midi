@@ -31,7 +31,6 @@ playback emit note events into this synth.
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 ** TABLE looper
 Looper-wide scalars (all ms unless noted).
 *** PARAM clock_bpm = 300
