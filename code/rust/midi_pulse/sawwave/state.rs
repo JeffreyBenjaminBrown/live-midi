@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::consts::{
-  ACCRETION_TARGET, AMPLITUDE, ATTACK_SECS, CELL_ACCRETE_ON, CELL_EMIT_IS_TOGGLE,
+  AMPLITUDE, ATTACK_SECS, CELL_ACCRETE_ON, CELL_EMIT_IS_TOGGLE,
   CELL_SET_ACCRETION_TARGET, CELL_WIPE, INITIALLY_ACCRETING_CHORD,
   N_CHORDS, RELEASE_SECS, SILENCE_CHORD,
 };
@@ -36,7 +36,6 @@ impl AppState {
         amplitude: AMPLITUDE,
         attack_secs: ATTACK_SECS,
         release_secs: RELEASE_SECS,
-        accretion_level: ACCRETION_TARGET,
         // The bare-consts constructor keeps the flat envelope; the runtime passes
         // the rig's pluck through new_with_audio_params.
         sustain_level: 1.0,
@@ -186,17 +185,11 @@ pub fn edo_release(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
                         && is_originvoice && last_alive_originvoice;
     if should_transform {
       let chord = em.unwrap();
+      // The drone IS the held voice, re-keyed -- same envelope, same phase, so
+      // lifting the finger changes nothing audible. (surfaces_runtime's
+      // `sustain_note` does exactly this for its accrete banks.)
       let v = vs.remove(&VoiceSource::Fingered { xy: cell }).unwrap();
-      vs.insert(VoiceSource::Accreted { chord, pitch: abs_pitch }, VoiceState {
-        id: v.id, freq: v.freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: v.phase, env: v.env,
-        target_env: state.audio.accretion_level,
-        ramp_per_sample:
-          (v.env - state.audio.accretion_level).abs()
-            / (state.audio.release_secs * state.sample_rate),
-        // Accretion voices are steady drones: no pluck decay.
-        sustain_env: state.audio.accretion_level, decay_per_sample: 1.0,
-        timbre: v.timbre, am_phase: v.am_phase, fm_phase: v.fm_phase,
-      });
+      vs.insert(VoiceSource::Accreted { chord, pitch: abs_pitch }, v);
     } else if let Some(v) = vs.get_mut(&VoiceSource::Fingered { xy: cell }) {
       v.target_env = 0.0;
       v.ramp_per_sample = v.env / (state.audio.release_secs * state.sample_rate);
@@ -374,8 +367,9 @@ pub fn switch_emitter_to(state: &mut AppState, new: Option<ChordId>) -> Vec<LedC
             state.edo,
             &mut state.next_voice_id,
             state.sample_rate,
-            state.audio.accretion_level,
             state.audio.attack_secs,
+            state.audio.sustain_level,
+            state.audio.decay_secs,
           );
         }
       }
@@ -534,11 +528,28 @@ mod tests {
     state.voices.lock().unwrap().keys().copied().collect()
   }
 
+  // A state whose pluck envelope is actually engaged (the bare-consts `fresh_state`
+  // is deliberately flat), so the accretion tests below can see it survive.
+  fn plucked_state() -> AppState {
+    let voices = Arc::new(Mutex::new(HashMap::new()));
+    let pc = build_pitch_class(9, 1, 46, 16, 16);
+    AppState::new_with_audio_params(
+      voices, pc, 220.0, 46, 48000.0,
+      AudioParams {
+        amplitude: AMPLITUDE,
+        attack_secs: ATTACK_SECS,
+        release_secs: RELEASE_SECS,
+        sustain_level: 0.35,
+        decay_secs: 0.5,
+      },
+    )
+  }
+
   // === EDO + accrete + emit interaction (preserved from commit 4) =======
 
   #[test]
   fn press_then_release_with_accrete_on_emit_on_transforms_to_accretion() {
-    let mut s = fresh_state();
+    let mut s = plucked_state();
     do_action(&mut s, ButtonAction::AccreteOn);
     chord_press(&mut s, INITIALLY_ACCRETING_CHORD); // start emit
     let cell = (0, 0);  // pitch 0
@@ -549,11 +560,91 @@ mod tests {
       chord: INITIALLY_ACCRETING_CHORD, pitch: 0,
     };
     assert!(!voice_keys(&s).contains(&target_pitch));
+    let held = s.voices.lock().unwrap()[&VoiceSource::Fingered { xy: cell }];
     edo_release(&mut s, cell);
     assert!(!voice_keys(&s).contains(&VoiceSource::Fingered { xy: cell }));
     assert!(voice_keys(&s).contains(&target_pitch));
+    // The drone must BE the held voice, envelope untouched: lifting the finger
+    // changes nothing audible.
     let v = s.voices.lock().unwrap()[&target_pitch];
-    assert_eq!(v.target_env, ACCRETION_TARGET);
+    assert_eq!(v.id, held.id);
+    assert_eq!(v.env, held.env);
+    assert_eq!(v.phase, held.phase);
+    assert_eq!(v.freq, held.freq);
+    assert_eq!(v.target_env, held.target_env);
+    assert_eq!(v.sustain_env, held.sustain_env);
+    assert_eq!(v.decay_per_sample, held.decay_per_sample);
+    assert!(
+      v.sustain_env < 1.0 && v.decay_per_sample < 1.0,
+      "the pluck must survive the transform, not flatten into a drone",
+    );
+  }
+
+  #[test]
+  fn a_spawned_accretion_voice_strikes_exactly_like_a_fingered_note() {
+    let mut s = plucked_state();
+    edo_press(&mut s, (0, 0)); // pitch 0, for reference
+    let struck = s.voices.lock().unwrap()[&VoiceSource::Fingered { xy: (0, 0) }];
+
+    let mut next_id = 99;
+    let mut vs = s.voices.lock().unwrap();
+    spawn_accretion_voice(
+      &mut vs, 1, 0, s.fund, s.edo, &mut next_id, s.sample_rate,
+      s.audio.attack_secs, s.audio.sustain_level, s.audio.decay_secs,
+    );
+    let drone = vs[&VoiceSource::Accreted { chord: 1, pitch: 0 }];
+    drop(vs);
+
+    assert_eq!(drone.freq, struck.freq);
+    assert_eq!(drone.env, struck.env);
+    assert_eq!(drone.target_env, struck.target_env);
+    assert_eq!(drone.ramp_per_sample, struck.ramp_per_sample);
+    assert_eq!(drone.sustain_env, struck.sustain_env);
+    assert_eq!(drone.decay_per_sample, struck.decay_per_sample);
+  }
+
+  // The whole point of folding `accretion_level` away: drive the real renderer and
+  // check a drone and a still-held note ring at the SAME level. Under the old code
+  // the drone settled at accretion_level (0.5) while the held note plucked down to
+  // sustain_level (0.35) -- the accreted note was audibly louder.
+  #[test]
+  fn an_accreted_note_settles_at_the_same_level_as_a_held_one() {
+    let mut s = plucked_state();
+    do_action(&mut s, ButtonAction::AccreteOn);
+    chord_press(&mut s, INITIALLY_ACCRETING_CHORD); // start emit
+
+    let accreted_cell = (0, 0); // pitch 0
+    edo_press(&mut s, accreted_cell);
+    edo_release(&mut s, accreted_cell); // -> a drone, finger lifted
+    let drone_key = VoiceSource::Accreted { chord: INITIALLY_ACCRETING_CHORD, pitch: 0 };
+
+    let held_cell = (1, 0); // pitch 9, stays under the finger
+    edo_press(&mut s, held_cell);
+    let held_key = VoiceSource::Fingered { xy: held_cell };
+
+    // Render ~5 s: ten decay time constants, so both envelopes have settled.
+    let sr = s.sample_rate;
+    let mut buf = vec![0.0f32; 512 * 2];
+    let mut vs = s.voices.lock().unwrap();
+    for _ in 0..(5.0 * sr / 512.0) as usize {
+      buf.iter_mut().for_each(|x| *x = 0.0);
+      render_block(&mut vs, &mut buf, 2, sr);
+    }
+
+    let drone = vs[&drone_key];
+    let held = vs[&held_key];
+    assert_eq!(
+      drone.env, held.env,
+      "an accreted note must ring at exactly the level it would if still held",
+    );
+    // The exponential stalls a few 1e-4 above the plateau: near 0.35 the f32
+    // per-sample decrement falls under an ulp. Inaudible (~ -69 dB), so a loose
+    // bound. What matters is that it is the SUSTAIN, not the old 0.5 drone level.
+    assert!(
+      (drone.env - 0.35).abs() < 1e-3,
+      "both should settle at sustain_level 0.35, got {}",
+      drone.env,
+    );
   }
 
   #[test]

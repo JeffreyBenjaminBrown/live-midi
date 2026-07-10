@@ -446,14 +446,17 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
         v.glide_per_sample = 1.0;
       }
     }
-    // The polyrhythm pulse: a descending saw (1 at cycle start, falling to 0) at
-    // the tempo applied at this note's onset. Separate from the timbre AM below.
+    // The polyrhythm pulse: a unipolar triangle in [0,1] -- 1 at the cycle start,
+    // falling to 0 at the half-cycle, rising back to 1 -- at the tempo applied at
+    // this note's onset. Separate from the timbre AM below. Unlike the descending
+    // saw it replaces, it returns to the peak *continuously*, so the cycle boundary
+    // is not a step in amplitude (a saw's 0 -> 1 wrap is a click waiting to happen).
     let pulse = if v.tempo_am_freq > 0.0 {
       v.tempo_am_phase += v.tempo_am_freq * frac / sample_rate;
       if v.tempo_am_phase >= 1.0 {
         v.tempo_am_phase -= 1.0;
       }
-      1.0 - v.tempo_am_phase
+      (2.0 * v.tempo_am_phase - 1.0).abs()
     } else {
       1.0
     };
@@ -694,16 +697,20 @@ pub fn voice_alive_with_id(voices: &VoiceMap, id: VoiceId) -> bool {
   voices.values().any(|v| v.id == id && v.target_env > 0.0)
 }
 
-// Spawn a fresh accretion voice for chord/pitch at env=0 ramping to
-// ACCRETION_TARGET over ATTACK_SECS. Overwrites any existing entry
-// at Accreted{chord, pitch}.
+// Spawn a fresh accretion voice for chord/pitch. It is struck exactly like a
+// fingered note -- env=0 rising to the peak over `attack_secs`, then the pluck
+// decay toward `sustain_level` x peak -- so an emitted chord tone sounds no
+// different from the same pitch held under a finger. Overwrites any existing
+// entry at Accreted{chord, pitch}.
 pub fn spawn_accretion_voice(
   voices: &mut VoiceMap, chord: ChordId, pitch: i32,
   fund: f64, edo: i32, next_voice_id: &mut VoiceId, sample_rate: f32,
-  accretion_level: f32, attack_secs: f32,
+  attack_secs: f32, sustain_level: f32, decay_secs: f32,
 ) {
   let id = *next_voice_id;
   *next_voice_id += 1;
+  let (sustain_env, decay_per_sample) =
+    pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
   voices.insert(VoiceSource::Accreted { chord, pitch }, VoiceState {
     id,
     freq: freq_for_pitch(pitch, fund, edo),
@@ -712,11 +719,10 @@ pub fn spawn_accretion_voice(
     tempo_am_freq: 0.0, tempo_am_phase: 0.0,
     phase: 0.0,
     env: 0.0,
-    target_env: accretion_level,
-    ramp_per_sample: accretion_level / (attack_secs * sample_rate),
-    // Accretion voices are steady drones: no pluck decay.
-    sustain_env: accretion_level,
-    decay_per_sample: 1.0,
+    target_env: 1.0,
+    ramp_per_sample: 1.0 / (attack_secs * sample_rate),
+    sustain_env,
+    decay_per_sample,
     timbre: Timbre::default(),
     am_phase: 0.0,
     fm_phase: 0.0,
@@ -1095,10 +1101,11 @@ mod tests {
   }
 
   #[test]
-  fn the_tempo_pulse_is_a_descending_saw_that_restarts_each_cycle() {
-    // A 10 Hz pulse at 48 kHz: within one 4800-sample cycle the peak amplitude
-    // decays monotonically, then jumps back up at the cycle boundary. Compare the
-    // loudest sample of the first vs last tenth of a cycle, and across the wrap.
+  fn the_tempo_pulse_is_a_unipolar_triangle_peaking_at_each_cycle_start() {
+    // A 10 Hz pulse at 48 kHz -> a 4800-sample cycle. The pulse is |2*phase - 1|:
+    // 1 at the cycle start, 0 at the half-cycle (sample 2400), back to 1 at the
+    // wrap. Probe the carrier's peak in a two-cycle window (96 samples of a 1 kHz
+    // sine) around each phase of interest.
     let sr = 48000.0;
     let v = VoiceState {
       id: 0, freq: 1000.0, freq_target: 0.0, glide_per_sample: 1.0,
@@ -1115,20 +1122,36 @@ mod tests {
     let peak = |range: std::ops::Range<usize>| {
       data[range].iter().fold(0.0_f32, |a, &x| a.max(x.abs()))
     };
-    let start = peak(0..480);
-    let end = peak(4320..4800);
-    let restart = peak(4800..5280);
-    assert!(start > 0.9 * AMPLITUDE * waveform_norm(Waveform::Sine), "starts at the peak: {start}");
-    assert!(end < 0.2 * start, "decays toward silence by cycle end: {end} vs {start}");
-    assert!(restart > 0.8 * start, "the saw restarts at the next cycle: {restart}");
+    let full = AMPLITUDE * waveform_norm(Waveform::Sine);
+    let start = peak(0..96); // phase ~0
+    let quarter = peak(1152..1248); // phase ~1/4, rising edge of |2p-1| going down
+    let trough = peak(2352..2448); // phase ~1/2
+    let three_quarter = peak(3552..3648); // phase ~3/4
+    let restart = peak(4752..4848); // across the wrap, phase ~1
+
+    assert!(start > 0.95 * full, "starts at the peak: {start} vs {full}");
+    assert!(trough < 0.05 * start, "reaches zero at the half-cycle: {trough}");
+    assert!(restart > 0.95 * start, "returns to the peak at the wrap: {restart}");
+
+    // The half-way points sit at half amplitude -- and, crucially, at the SAME
+    // amplitude as each other. That symmetry is what makes it a triangle: a
+    // descending saw would read 0.75 here and 0.25 there.
+    for (name, p) in [("quarter", quarter), ("three_quarter", three_quarter)] {
+      assert!((p - 0.5 * start).abs() < 0.06 * start, "{name} sits at half: {p}");
+    }
+    assert!(
+      (quarter - three_quarter).abs() < 0.03 * start,
+      "the triangle is symmetric about the trough: {quarter} vs {three_quarter}",
+    );
+
     // tempo_am_freq = 0 leaves the note un-pulsed (the plain render).
     let flat = VoiceState { tempo_am_freq: 0.0, ..v };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, flat);
     let mut plain = vec![0.0_f32; 4800];
     render_block(&mut voices, &mut plain, 1, sr);
-    let late = plain[4320..4800].iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
-    assert!(late > 0.9 * start, "no pulse: the tail is as loud as the start");
+    let late = plain[2352..2448].iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+    assert!(late > 0.9 * start, "no pulse: the mid-cycle is as loud as the start");
   }
 
   #[test]

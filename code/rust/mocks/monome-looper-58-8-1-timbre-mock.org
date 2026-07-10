@@ -37,7 +37,6 @@ amplitude row's top cell = unity = 0.15 output; the live timbre boots there, so 
 instrument starts at the loudest value the row can dial. (See the rigs/ twin.)
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 *** PARAM oversample = 4
 4x oversample + decimate so audio-rate AM/FM shaping doesn't alias. (rigs/ twin.)
 ** TABLE am

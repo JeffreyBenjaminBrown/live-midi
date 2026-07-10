@@ -63,7 +63,6 @@ fm_freq        vibrato rate in Hz; ~0.1..10 musical (default 1.0)
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 *** PARAM sustain_level = 0.35
 Pluck envelope: a fresh strike peaks, then decays exponentially toward
 sustain_level x peak (time constant decay_secs), so new notes ring out over held
@@ -174,10 +173,12 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
-duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
-while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
-per note, separate from any [[timbres]] AM).
+[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
+=1 starts this grid's cycling (keeping the factor), snaps to unity on a second
+press, and stops on a fast double-tap. Notes struck while a tempo is applied and
+cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
+separate from any [[timbres]] AM).
 *** PARAM id = "poly-a"
 *** PARAM monome = "a"
 *** PARAM kind = "tap_tempo_pad"
@@ -268,10 +269,12 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10%
-duty); the factor buttons scale it exactly (2^a * 3^b, =1 resets). Notes struck
-while a tempo is applied pulse with a descending sawtooth at that tempo (fixed
-per note, separate from any [[timbres]] AM).
+[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
+=1 starts this grid's cycling (keeping the factor), snaps to unity on a second
+press, and stops on a fast double-tap. Notes struck while a tempo is applied and
+cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
+separate from any [[timbres]] AM).
 *** PARAM id = "poly-b"
 *** PARAM monome = "b"
 *** PARAM kind = "tap_tempo_pad"

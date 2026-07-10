@@ -1165,14 +1165,16 @@ fn grid_thread(mut rt: GridThread) {
       // The pad's six cells, all per-THIS-grid state: the factor cells show which
       // way this grid's factor leans; =1 shows this grid's pulse switch (bright
       // while its amplitude cycling is on). The tap cell blinks BLACK <-> FULLY
-      // LIT (10% duty at this grid's applied tempo; misc.org "tap blink between
-      // black and fully lit") whether or not cycling is on -- it is the tempo
-      // display -- and only rests dim before any tempo exists, to stay findable.
+      // LIT (10% duty at the TAPPED tempo, unfactored -- so both grids' tap cells
+      // blink together, showing the metronome you tapped rather than what this grid
+      // made of it; misc.org "tap blink between black and fully lit") whether or not
+      // cycling is on -- it is the tempo display -- and only rests dim before any
+      // tempo exists, to stay findable.
       let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
-      let tap_level = if p.applied_hz(rt.grid_index).is_none() {
+      let tap_level = if p.tapped_hz().is_none() {
         DIM
-      } else if p.tap_blink(rt.grid_index, now) {
+      } else if p.tap_blink(now) {
         BRIGHT
       } else {
         OFF
@@ -1910,7 +1912,7 @@ fn install_signals() {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::rig::load_named_rig;
+  use midi_pulse::rig::{load_named_rig, SurfacesRig};
 
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
@@ -1993,26 +1995,69 @@ mod tests {
       assert_eq!(g.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
       assert_eq!(g.poly_rect, [13, 0, 15, 1], "grid {:?} polyrhythm pad", g.monome_id);
     }
-    assert_eq!(s.tap_window, Duration::from_millis(2000), "tap window from [surfaces]");
-    // The [surfaces] slide knobs flow into the settings.
-    assert_eq!(s.slide_window, Duration::from_millis(1000));
-    assert!((s.slide_duration_secs - 0.1).abs() < 1e-6);
-    // The sink's distortion curve flows into the settings. Compare against the rig's own
-    // values rather than literals: `distortion_scale` / `distortion_shape` are knobs Jeff
-    // turns while playing, and a test that pins them is a test that breaks on a tuning
-    // change without saying anything true.
-    let SinkRig::CpalSynth { distortion_scale, distortion_shape, .. } = &rig.sinks[0] else {
-      panic!("the first sink is the cpal_synth");
-    };
-    assert_eq!(s.distortion, Distortion { scale: *distortion_scale, shape: *distortion_shape });
-    // ...as does its loudness compensation, and it reaches a usable `Makeup` table.
-    assert_eq!(s.distortion_makeup, 1.0, "makeup trim defaults to exact restoration");
-    assert!(s.distortion_auto_makeup, "auto makeup is on by default");
-    assert_eq!(s.distortion_makeup_slew_secs, 0.0, "the makeup is exact by default");
+    // Deliberately NO assertions on tunables here (the distortion curve, the trail,
+    // the slide/tap windows). This test pins the rig's *architecture* -- which windows
+    // exist and where -- so that retuning the instrument by ear never reddens it. The
+    // rig -> Settings wiring for those knobs is tested with sentinels, just below.
+  }
+
+  /// Plumbing, not policy. Every knob a player retunes by ear -- the distortion curve
+  /// and its makeup, the trail, the slide and tap windows -- must travel from the rig
+  /// into `Settings`, whatever the rig happens to say today. So overwrite them with
+  /// sentinels (all distinct, none equal to a default) and check each lands in its own
+  /// field. That catches a dropped wire, a swapped pair, and a ms->seconds slip, while
+  /// staying immune to edits of the shipped rig.
+  #[test]
+  fn surfaces_tunables_travel_from_the_rig_into_the_settings() {
+    let mut rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    for sink in &mut rig.sinks {
+      if let SinkRig::CpalSynth {
+        distortion_scale,
+        distortion_shape,
+        distortion_makeup,
+        distortion_auto_makeup,
+        distortion_makeup_slew_ms,
+        ..
+      } = sink
+      {
+        *distortion_scale = 0.37;
+        *distortion_shape = 4.25;
+        *distortion_makeup = 0.83;
+        *distortion_auto_makeup = false; // inverted from its default, so a dropped wire shows
+        *distortion_makeup_slew_ms = 42.0;
+      }
+    }
+    rig.surfaces = Some(SurfacesRig {
+      trail_clobber_radius: 13,
+      trails_max: 3,
+      slide_candidate_window_ms: 777,
+      tap_tempo_window_ms: 1234,
+      slide_duration_ms: 55,
+    });
+
+    let s = resolve_settings(&rig).expect("resolves without hardware");
+    assert_eq!(s.distortion, Distortion { scale: 0.37, shape: 4.25 });
+    assert_eq!(s.distortion_makeup, 0.83, "the makeup trim");
+    assert!(!s.distortion_auto_makeup, "the auto-makeup flag");
+    assert!((s.distortion_makeup_slew_secs - 0.042).abs() < 1e-9, "makeup slew, ms -> secs");
+    assert_eq!(s.trail_clobber_radius, 13);
+    assert_eq!(s.trails_max, 3);
+    assert_eq!(s.slide_window, Duration::from_millis(777), "slide candidate window");
+    assert_eq!(s.tap_window, Duration::from_millis(1234), "tap-tempo window");
+    assert!((s.slide_duration_secs - 0.055).abs() < 1e-6, "slide duration, ms -> secs");
+  }
+
+  /// The distortion's makeup table must be usable for whatever curve the rig names --
+  /// including the sub-1 shapes that bend from the origin. Properties, not numbers, so
+  /// retuning by ear never reddens this either.
+  #[test]
+  fn the_rigs_makeup_table_is_usable_whatever_curve_it_names() {
+    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    let s = resolve_settings(&rig).expect("resolves without hardware");
     let makeup = live_makeup(&s);
-    // Whatever curve the rig currently names, these hold for every shape:
-    //   silence needs no makeup; the makeup never attenuates; it rises with the bus; and
-    //   driving to the elbow needs real makeup.
+    // Silence needs no makeup; the makeup never attenuates; it rises with the bus; and
+    // driving to the elbow needs real makeup.
+    //
     // Note what is deliberately NOT asserted: that a *quiet* bus needs ~no makeup. That
     // is a `k >= 1` intuition. Since `f(y)/y ~ 1 - |y/s|^k / k`, a soft elbow bends at
     // every amplitude -- at k = 0.3 the makeup is still 1.26x at sigma = s/10000.
@@ -2027,20 +2072,22 @@ mod tests {
       prev = g;
     }
     assert!(prev > at_elbow, "and it keeps rising past the elbow");
-    // The `[surfaces]` table flows into the settings (this rig asks for 9 trails).
-    assert_eq!(s.trail_clobber_radius, 27, "trail_clobber_radius from [surfaces]");
-    assert_eq!(s.trails_max, 9, "trails_max from [surfaces]");
   }
 
   #[test]
   fn surfaces_defaults_when_table_absent() {
-    // A rig that declares no `[surfaces]` table falls back to the built-in defaults
-    // (1/27 octave, 7 trails), so omitting it changes nothing.
-    let rig = load_named_rig("monome-edo-sawwave").expect("rig loads");
-    assert!(rig.surfaces.is_none(), "no [surfaces] table declared");
-    let s = rig.surfaces.unwrap_or_default();
-    assert_eq!(s.trail_clobber_radius, 27, "default radius is 1/27 octave");
-    assert_eq!(s.trails_max, 7, "default trail length is 7");
+    // Omitting `[surfaces]` changes nothing: the built-in defaults reach `Settings`.
+    // Built by REMOVING the table from a real surfaces rig, rather than leaning on
+    // some other rig happening not to declare one (which a rig edit could undo).
+    let mut rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    rig.surfaces = None;
+    let s = resolve_settings(&rig).expect("resolves without hardware");
+    let d = SurfacesRig::default();
+    assert_eq!((d.trail_clobber_radius, d.trails_max), (27, 7), "the code's own defaults");
+    assert_eq!(s.trail_clobber_radius, d.trail_clobber_radius);
+    assert_eq!(s.trails_max, d.trails_max);
+    assert_eq!(s.slide_window, Duration::from_millis(d.slide_candidate_window_ms));
+    assert_eq!(s.tap_window, Duration::from_millis(d.tap_tempo_window_ms));
   }
 
   /// A minimal self-controlling grid for the `plan_bringup` tests: `id`'s selector
@@ -2263,12 +2310,21 @@ mod tests {
     // The rig is `.org` now: PARAM values still contain the `key = value` text these
     // replaces target, but an INJECTED field must be its own PARAM headline at the
     // timbre's depth (slot 2 = square, so its fm_depth_cents lands in timbres[2]).
-    let edited = source
-      .replace("amplitude = 0.15", "amplitude = 0.25")
-      .replace("edo = 58", "edo = 41")
-      .replace("x_step = 8", "x_step = 7")
-      .replace(WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0")
-      .replace("slide_duration_ms = 100", "slide_duration_ms = 250");
+    //
+    // Each replacement must actually apply. A bare `str::replace` no-ops silently when
+    // the mock rig's value drifts, leaving the test asserting a value that nothing set
+    // -- it would then fail far from its cause. Fail here instead, naming the culprit.
+    fn must_replace(s: &str, from: &str, to: &str) -> String {
+      assert!(s.contains(from), "reload fixture is stale: {from:?} is no longer in the mock rig");
+      s.replace(from, to)
+    }
+    let edited = must_replace(&source, "amplitude = 0.15", "amplitude = 0.25");
+    let edited = must_replace(&edited, "edo = 58", "edo = 41");
+    let edited = must_replace(&edited, "x_step = 8", "x_step = 7");
+    let edited = must_replace(
+      &edited, WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0",
+    );
+    let edited = must_replace(&edited, "slide_duration_ms = 100", "slide_duration_ms = 250");
     let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
     adopt_rig(&rig, &live).expect("adopts");
 
@@ -2415,24 +2471,29 @@ mod tests {
     assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its factor leans up)");
     assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (factors are per-grid)");
 
-    // A lone =1 tap on grid b: b's cycling turns ON (=1 lit) and its factor resets
-    // (x2 back to dim). Grid a's switch is untouched.
+    // The FIRST =1 press on grid b, with cycling off: it turns cycling ON (=1 lit)
+    // and LEAVES the factor alone -- x2 stays lit. Grid a's switch is untouched.
     b.press(15, 1);
     b.release(15, 1);
     assert!(wait_until(secs(3), || b.level_at(15, 1) == 15), "grid b's =1 lit: cycling on");
-    assert!(wait_until(secs(3), || b.level_at(14, 0) == 4), "=1 reset grid b's factor");
+    assert_eq!(b.level_at(14, 0), 15, "the switch-on press KEEPS grid b's x2 factor");
     assert_eq!(a.level_at(15, 1), 4, "grid a's =1 stays dim (the switch is per-grid)");
 
-    // A fast =1 double-tap on grid b: cycling back OFF (the tempo display -- the
-    // tap-cell blink -- survives). The four presses land well inside the 400 ms
-    // double-tap window; the >400 ms sleep first makes tap one a LONE tap.
+    // Two more =1 presses, back to back after a >400 ms gap. The first of the pair is
+    // a lone press on an already-cycling grid, so it zeroes the factor (x2 -> dim) and
+    // leaves cycling on; the second lands inside 400 ms of IT, so cycling goes OFF.
+    // (The switch-on press above cannot be half of that pair -- it never armed the
+    // detector -- which is why the >400 ms sleep is what separates the two phases.)
     thread::sleep(Duration::from_millis(500));
     b.press(15, 1);
     b.release(15, 1);
     b.press(15, 1);
     b.release(15, 1);
-    assert!(wait_until(secs(3), || b.level_at(15, 1) == 4), "a fast double-tap: cycling off");
+    assert!(wait_until(secs(3), || b.level_at(15, 1) == 4), "the fast second press: cycling off");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 4), "and the pair's first press zeroed x2");
+    // The tempo DISPLAY survives, and blinks the unfactored tapped tempo on both grids.
     assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "the tap cell still blinks the tempo");
+    assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "and grid a blinks it too");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();

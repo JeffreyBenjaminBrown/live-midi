@@ -28,7 +28,6 @@ into the exact same rig as the old .toml did. Format reference (C-c C-o to follo
 *** PARAM amplitude = 0.15
 *** PARAM attack_secs = 0.003
 *** PARAM release_secs = 0.050
-*** PARAM accretion_level = 0.5
 ** ELEM monome_windows
 *** PARAM id = "edo-grid"
 *** PARAM monome = "big"

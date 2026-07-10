@@ -503,7 +503,6 @@ pub enum SinkRig {
     amplitude: f32,
     attack_secs: f32,
     release_secs: f32,
-    accretion_level: f32,
     /// Internal oversampling factor for the synth render (1 = off). >1 runs the
     /// nonlinear/multiplicative mix at N x the rate and decimates, so audio-rate
     /// AM/FM/waveshaping doesn't alias. Defaults to 1 so existing rigs are
@@ -753,7 +752,7 @@ pub enum MonomeWindowRig {
   //   | /3 | /2 | =1  |
   // Tap twice within [surfaces].tap_tempo_window_ms to set the tapped tempo; the
   // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
-  // applied pulse with a descending sawtooth at that tempo. See TODO/misc.org
+  // applied pulse with a unipolar triangle at that tempo. See TODO/misc.org
   // "polyrhythm interface".
   TapTempoPad {
     id: String,
@@ -1381,7 +1380,6 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       amplitude,
       attack_secs,
       release_secs,
-      accretion_level,
       oversample,
       distortion_makeup,
       distortion_makeup_slew_ms,
@@ -1397,7 +1395,6 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
         ("amplitude", *amplitude),
         ("attack_secs", *attack_secs),
         ("release_secs", *release_secs),
-        ("accretion_level", *accretion_level),
       ] {
         if !value.is_finite() || value < 0.0 {
           return Err(format!("sink {:?} {name} must be nonnegative", sink.id()));
@@ -2249,10 +2246,13 @@ mod tests {
       let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
       // Skip non-rigs: the shared SoftstepParams file, and the docs -- a rig's own
       // reference doc ends in `_readme.org`; README.org / RUNTIME-NOTES.org are general.
+      // Dotfiles too: an open+modified Emacs buffer leaves a `.#<rig>.org` lock, which
+      // is a DANGLING symlink ending in `.org` -- reading it fails with ENOENT.
       if name == "softstep.toml"
         || name == "README.org"
         || name == "RUNTIME-NOTES.org"
         || name.ends_with("_readme.org")
+        || name.starts_with('.')
       {
         continue;
       }
@@ -2760,7 +2760,6 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.05
-accretion_level = 0.5
 
 "#;
   const LOOPER_TABLE: &str = r#"[looper]
@@ -3233,7 +3232,6 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.05
-accretion_level = 0.5
 
 [[monomes]]
 id = "big"
@@ -3299,7 +3297,6 @@ buffer_frames = 128
 amplitude = 0.15
 attack_secs = 0.003
 release_secs = 0.05
-accretion_level = 0.5
 
 [[monomes]]
 id = "a"

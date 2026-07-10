@@ -64,12 +64,12 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   holding that bank's accrete button (the tether decoder reports foot lifts).
 - *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
   over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to define the ONE
-  global tapped tempo (displayed by the blinking tap cell; defining it starts
-  nothing). Each grid then has its own *applied* tempo -- tapped x its own 2^a x
-  3^b factor -- and its own amplitude-cycling switch on =1 (tap on, fast
-  double-tap off; starts off). While a grid's cycling is on, its notes pulse with
-  a *descending sawtooth* at its applied tempo at their onset. See *polyrhythm*
-  below.
+  global tapped tempo (displayed by the blinking tap cell, unfactored; defining it
+  starts nothing). Each grid then has its own *applied* tempo -- tapped x its own
+  2^a x 3^b factor -- and its own amplitude-cycling switch on =1 (press to start,
+  keeping the factor; press again to snap to unity; fast double-tap to stop;
+  starts off). While a grid's cycling is on, its notes pulse with a *unipolar
+  triangle* at its applied tempo at their onset. See *polyrhythm* below.
 - *accrete buttons / sustained set* -- four single-cell buttons at the bottom-left
   of each grid (=(0,15)= clear, =(1,15)= needs-holding, =(2,15)= accrete, =(1,14)=
   erase). Notes added to the *sustained set* keep ringing after their fingers lift,
@@ -321,21 +321,36 @@ factor buttons and the =1 pulse switch belong to the grid you press them on:
   window does nothing until its fourth arrives, and that pair overrides the
   first. Tapping only DEFINES the tempo; no cycling starts. The tap cell is the
   tempo *display*: it *blinks* between black and fully lit -- full-on for the
-  first 10% of each cycle of THIS grid's applied tempo, dark between flashes,
+  first 10% of each cycle of the *tapped* tempo, dark between flashes,
   phase-anchored to your taps, whether or not this grid's cycling is on -- and
-  rests dim before any tempo exists.
+  rests dim before any tempo exists. The blink is *unfactored*: it shows the
+  metronome you tapped, as if every grid were at unity, so both grids' tap cells
+  blink in step and no factor button ever moves them. (What a grid's factor
+  changes is the rate its *notes* pulse at, not the display.)
 - *Factor (per grid).* A grid's applied tempo = tapped x 2^a x 3^b, nudged by its
   own x2 / /2 / x3 / /3 (exponents, so x3 then /3 is *exactly* unity); =1 zeroes
-  them. Each direction's LED lights while that grid's factor leans its way.
-- *The =1 pulse switch (per grid).* A grid's amplitude cycling starts OFF. A tap
-  of =1 turns it on (and resets the factor, as always); a fast double-tap (two
-  presses within 400 ms) turns it off. The =1 LED shows the switch: bright while
-  this grid's cycling is on.
+  them, once cycling is on. Each direction's LED lights while that grid's factor
+  leans its way.
+- *The =1 pulse switch (per grid).* A grid's amplitude cycling starts OFF, and
+  what =1 does depends on the switch:
+  - *cycling off* -- the press turns cycling ON and leaves the factor alone, so a
+    grid can start cycling at whatever rate you had dialled in.
+  - *cycling on* -- a lone press zeroes the exponents (back to the tapped tempo);
+    a second press within 400 ms of that one turns cycling OFF instead.
+  The 400 ms test is applied only between two presses made while cycling was
+  already on. The press that switches cycling on cannot be half of the double-tap
+  (or it would immediately switch itself back off), and neither can the press
+  right after a switch-off. So from cold: tap to start, tap again to snap to unity
+  -- however fast -- and a third fast tap to stop. The =1 LED shows the switch:
+  bright while this grid's cycling is on.
 - *The pulse.* Every note struck while its grid's cycling is on (and a tempo
-  exists) gets a descending sawtooth amplitude pulse -- full at onset, fading to
-  silence, restarting each cycle -- at that grid's applied tempo *at its onset*
-  (later tempo/switch changes leave sounding notes alone; notes are deliberately
-  NOT phase-synced to each other). This is a separate mechanism from any
+  exists) gets a *unipolar triangle* amplitude pulse in [0,1] -- full at onset,
+  fading to silence at the half-cycle, swelling back to full by the next cycle
+  start -- at that grid's applied tempo *at its onset* (later tempo/switch changes
+  leave sounding notes alone; notes are deliberately NOT phase-synced to each
+  other). It peaks exactly where the old descending sawtooth did, but returns to
+  the peak by a ramp rather than a jump, so the cycle boundary has no step in
+  amplitude. This is a separate mechanism from any
   ~[[timbres]]~ AM. One grid can pulse at 3/2 the rate of the other, or alone
   (see jeff-maybe-review-this.org).
 

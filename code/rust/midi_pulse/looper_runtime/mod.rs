@@ -616,8 +616,27 @@ mod tests {
     assert!(s.loops_timbre_editor.is_some(), "loops live-timbre editor resolved");
     // The loop-display rect is the unfolded position; the runtime reflows it.
     assert_eq!(s.loop_display_rect, [0, 9, 15, 15]);
-    // save_undo_double_ms is omitted in the rig, so it defaults to 200 ms.
-    assert_eq!(s.save_undo_window, Duration::from_millis(200));
+    // No assertion on save_undo_window: that is a tunable, not architecture. Its
+    // rig -> Settings wiring is tested with a sentinel just below.
+  }
+
+  /// Plumbing, not policy: the LOOP editor's `save_undo_double_ms` becomes
+  /// `save_undo_window`, and the LIVE editor's is ignored (save-undo is loop-only).
+  /// Sentinels, so that retuning the window in the rig cannot redden this test.
+  #[test]
+  fn the_loop_editors_save_undo_window_travels_from_the_rig() {
+    let mut rig = load_named_rig("monome-looper-58-8-1-timbre").expect("rig loads");
+    for w in &mut rig.monome_windows {
+      if let MonomeWindowRig::TimbreEditor { target, save_undo_double_ms, .. } = w {
+        *save_undo_double_ms = if *target == TimbreTarget::Loop { 777 } else { 999 };
+      }
+    }
+    let s = resolve_settings(&rig).expect("resolves without hardware");
+    assert_eq!(
+      s.save_undo_window,
+      Duration::from_millis(777),
+      "the LOOP editor's window, never the live editor's",
+    );
   }
 
   /// End-to-end: run the REAL looper runtime against two virtual grids (the monome

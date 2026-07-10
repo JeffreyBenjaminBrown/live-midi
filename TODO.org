@@ -1,4 +1,78 @@
-* triangle wave, not saw, for tap tempo AM
+* DONE double-tapping "=1" : fix and change
+That button, when tapped once, should reset the tap factor to unity.
+When tapped twice in under 400 ms (I think that's the value currently coded),
+it should turn off the AM that the tap tempo controls.
+I now think that's coded properly.
+
+But: let's have the tap tempo display always show the unfactored tempo,
+as if the factor was unity.
+
+If the tapped tempo AM is currently off, pressing =1 should turn it on,
+*without* setting the factor to unity.
+Tapping it a second time should set it to unity.
+That should work even if it is tapped within 400 ms --
+the 400 ms test should only be applied when the AM is on.
+** [Claude] done -- both, in =surfaces_runtime/polyrhythm.rs=
+Nothing was wrong with the double-tap code, as you suspected; only the two
+requested changes were made.
+- *The display.* New =tapped_hz()=. =tap_blink()= reads it instead of
+  =applied_hz(grid)=, and lost its =grid= parameter altogether -- the blink is now
+  global, so both tap cells blink in step and no factor button moves either. The
+  painter's "no tempo -> dim" test moved to =tapped_hz()= too. =applied_hz()=
+  survives, but only to set the rate at which notes *pulse*.
+- *=1.* The press now branches on the switch. Cycling *off*: turn it on, leave the
+  exponents alone, and *clear* the double-tap timestamp. Cycling *on*: a lone
+  press zeroes the exponents; a press within 400 ms of *that* one stops cycling.
+  Clearing the timestamp on switch-on is exactly what makes "the 400 ms test only
+  applies when the AM is on" true -- the press that starts cycling can never pair
+  with the next one, and neither can the press right after a stop.
+  So from cold: press to start (factor kept), press to snap to unity (however
+  fast), fast third press to stop.
+The old tests encoded the old spec and were rewritten -- including the mock-grid
+integration test, which asserted through the LEDs that the first =1 press dimmed
+the x2 cell. Mutation-checked the new ones against three plausible wrong
+implementations: the blink following the applied tempo (caught), switch-on also
+zeroing the factor (caught), and switch-on arming the double-tap detector
+(caught -- the subtle one).
+*Unseen on the grids*; asserted in the pure state tests and the mock-grid test.
+* DONE tap-tempo AM should be a triangle, not a saw
+Use a triangle wave, not saw, for the tap tempo AM. It should still start at the
+peak. It should of course be a triangle in [0,1] rather than [-1,1].
+** [Claude] done -- the polyrhythm pulse is now |2*phase - 1|
+One line in =sawwave/voices.rs=: the per-voice pulse was =1 - phase= (a descending
+saw), and is now =(2*phase - 1).abs()= -- 1 at the cycle start, 0 at the
+half-cycle, back to 1 at the wrap. Unipolar, and it still peaks at onset.
+A side benefit: the saw's =0 -> 1= wrap was a step discontinuity in amplitude
+(a click waiting to happen at high tempos); the triangle returns to the peak on a
+ramp, so the cycle boundary is now continuous. The trough *is* a corner, but at
+zero amplitude, where it is inaudible.
+Nothing else changes: rate, per-note onset latching, and independence from the
+=[[timbres]]= AM are all untouched.
+Mutation-checked the rewritten test against three wrong shapes -- the old saw, an
+ascending triangle (starts at 0), and a bipolar one in [-1,1] -- each of which it
+catches. Symmetry about the trough is the assertion that pins "triangle".
+*Unheard on the grid* (no hardware here); the shape is asserted numerically.
+* DONE accretion_level is mostly dead.
+Give it a default value so it stops being required,
+then remove it from all rigs that don't use it.
+** [Claude] done -- removed outright, not defaulted
+It was dead in six of the seven rigs: only the *sawwave* runtime ever read it,
+for its chord-slot "emit" voices (a different feature that happens to share the
+word). Rather than default it, we folded it into the pluck envelope, so there is
+now ONE parameter -- =sustain_level= -- and an accreted note sounds exactly like
+the same note held under a finger:
+- =sawwave/state.rs= edo_release: a held voice that becomes a drone is now
+  *re-keyed in place*, envelope untouched (it used to jump to 0.5 and go flat).
+  This is what =surfaces_runtime::synth::sustain_note= already did.
+- =sawwave/voices.rs= spawn_accretion_voice: an emitted chord tone is struck like
+  any note (peak 1.0, then the pluck decay), instead of a flat drone at 0.5.
+- =accretion_level= and =ACCRETION_TARGET= are gone from the rig schema, the
+  validator, all 7 rigs/mocks, and the docs.
+*Audible change, sawwave rigs only* (=monome-edo-sawwave=): emitted chord tones
+now have an attack and settle at =sustain_level= (0.35) instead of ringing flat
+at 0.5 -- i.e. quieter, and no longer louder than the notes you played to build
+the chord. Surfaces + looper rigs are bit-for-bit unchanged. Never listened to on
+the grid: Jeff no longer plays that rig and accepted the change unheard.
 * DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
@@ -196,11 +270,14 @@ Time to transition is calculated as the time
 between the last two touches. That time is updated continuously,
 so (e.g.) if the destination is tapped again ... uh ...
 ** mono
+* TODO accretion_level is mostly dead.
+Give it a default value so it stops being required,
+then remove it from all rigs that don't use it.
 * internalize | move to README
 ** remember this program
 *** the softstep meter
 python3 code/python/softstep/meter/main.py
-** lately using [[./code/rust/configs/README.org]]
+** lately using [[./code/rust/rigs/README.org]]
 ** remember to run the synth 'under pw-jack'
 Just prefix 'pw-jack' to the command:
 
