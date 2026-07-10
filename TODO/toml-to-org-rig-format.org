@@ -201,3 +201,11 @@ docs unprompted, so I stopped here.
   =RUNTIME-NOTES.org=, and -- under option B -- =*-reference.org=).
 - Update =connect-midi.sh= (reads =rigs/$RIG_NAME.toml=) to try =.org= too.
 - Update =rig_path='s not-found default + the mock rigs in =code/rust/mocks/=.
+
+* DONE (2026-07-10): migration complete
+Jeff chose: rigs -> =<name>.org=, each headed with a link to this format
+([[file:../code/rust/rigs/README.org]]); reference docs renamed =<name>_readme.org=;
+=softstep.toml= stays TOML. All 13 rigs + 3 mock rigs converted (comment-preserving
+=toml->org= script), each verified to parse to the identical =Rig= as its =.toml=
+before deletion. Loader/dir-scan/connect-midi.sh/README/ORIENTATION updated. Commit
+"rigs: migrate .toml -> .org". 94 lib + 324 bin + 29 meter green.
