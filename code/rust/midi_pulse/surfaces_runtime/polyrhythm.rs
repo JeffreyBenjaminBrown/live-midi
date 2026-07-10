@@ -15,10 +15,21 @@
 //! own x2 / /2 / x3 / /3 buttons. Exponents (not a float factor) keep
 //! x3-then-/3 exactly unity.
 //!
-//! *The =1 button* (per grid): a single tap zeroes this grid's exponents and
-//! turns its amplitude cycling ON; a fast second tap (within
-//! `UNITY_DOUBLE_TAP`) turns the cycling OFF. Cycling starts off. Its LED shows
-//! the switch: bright while this grid's cycling is on.
+//! *The =1 button* (per grid). What it does depends on whether this grid's
+//! amplitude cycling is already on:
+//!
+//! - Cycling OFF: the press only turns cycling ON. The factor is left alone, so
+//!   you can start a grid cycling at whatever rate you had dialled in. This press
+//!   does NOT arm the double-tap detector -- otherwise the very tap that switched
+//!   cycling on could pair with the next one and switch it straight back off.
+//! - Cycling ON: a lone press zeroes this grid's exponents (back to the tapped
+//!   tempo); a second press within `UNITY_DOUBLE_TAP` of that one turns cycling
+//!   OFF instead.
+//!
+//! So from cold: tap once to start cycling (factor kept), again to snap to unity
+//! -- however fast, since the first press did not arm the detector -- and a third,
+//! fast, to stop. Cycling starts off. The LED shows the switch: bright while this
+//! grid's cycling is on.
 //!
 //! *Effect.* Each note struck while its grid's cycling is on (and a tempo
 //! exists) gets a unipolar-triangle amplitude pulse in [0,1] at that grid's
@@ -27,7 +38,7 @@
 
 use std::time::{Duration, Instant};
 
-/// The tap-tempo blink's on fraction of each applied-tempo cycle.
+/// The tap-tempo blink's on fraction of each TAPPED-tempo cycle.
 const BLINK_DUTY: f32 = 0.1;
 
 /// Two =1 presses within this window count as the pulse-off double-tap.
@@ -39,6 +50,9 @@ struct GridPulse {
   two_exp: i32,
   three_exp: i32,
   pulse_on: bool,
+  /// The last =1 press made *while cycling was already on* -- the only kind that
+  /// can be the first half of the turn-off double-tap. `None` right after cycling
+  /// is switched on or off, so the next press is always a lone tap.
   last_unity: Option<Instant>,
 }
 
@@ -96,8 +110,8 @@ impl PolyrhythmState {
   }
 
   /// A factor-button press on `grid`'s pad at `now`. The four direction buttons
-  /// nudge that grid's exponents; `=1` zeroes them AND drives the grid's pulse
-  /// switch -- on for a lone tap, off for a fast double-tap.
+  /// nudge that grid's exponents; `=1` drives the grid's pulse switch and, once
+  /// cycling is on, zeroes the exponents. See the module docs.
   pub fn press(&mut self, grid: usize, button: FactorButton, now: Instant) {
     let Some(g) = self.grids.get_mut(grid) else {
       return;
@@ -107,31 +121,50 @@ impl PolyrhythmState {
       FactorButton::Div2 => g.two_exp -= 1,
       FactorButton::Times3 => g.three_exp += 1,
       FactorButton::Div3 => g.three_exp -= 1,
+      FactorButton::Unity if !g.pulse_on => {
+        // Cycling was off: this press ONLY switches it on, keeping the factor you
+        // dialled in. `last_unity = None` so the next press -- however soon -- is a
+        // lone tap (which snaps to unity) rather than the double-tap that would
+        // switch cycling straight back off.
+        g.pulse_on = true;
+        g.last_unity = None;
+      }
       FactorButton::Unity => {
-        g.two_exp = 0;
-        g.three_exp = 0;
         let doubled = g
           .last_unity
           .is_some_and(|prev| now.duration_since(prev) <= UNITY_DOUBLE_TAP);
-        // A lone tap turns cycling on; the fast second tap of an on-grid turns it
-        // off (and a fast third tap turns it back on -- "tapping once" always
-        // means on when it is off).
-        g.pulse_on = !(doubled && g.pulse_on);
-        g.last_unity = Some(now);
+        if doubled {
+          // The fast second tap of an already-cycling grid: stop. The factor keeps
+          // whatever the first tap set (unity), and the next press just starts again.
+          g.pulse_on = false;
+          g.last_unity = None;
+        } else {
+          g.two_exp = 0;
+          g.three_exp = 0;
+          g.last_unity = Some(now);
+        }
       }
     }
   }
 
-  /// `grid`'s applied tempo in Hz (the global tapped tempo times this grid's
-  /// factor), or None before any tempo has been tapped. This is what the tap
-  /// cell DISPLAYS, whether or not the grid's cycling is on.
-  pub fn applied_hz(&self, grid: usize) -> Option<f32> {
+  /// The global tapped tempo in Hz, before any grid's factor -- None before a pair
+  /// of taps has set one. This is what the tap cell DISPLAYS, on both grids alike:
+  /// the blink is the metronome you tapped, not what either grid made of it.
+  pub fn tapped_hz(&self) -> Option<f32> {
     let period = self.tapped_period?.as_secs_f32();
     if period <= 0.0 {
       return None; // two taps in the same instant: not a tempo
     }
+    Some(1.0 / period)
+  }
+
+  /// `grid`'s applied tempo in Hz (the global tapped tempo times this grid's
+  /// factor), or None before any tempo has been tapped. This is the rate notes
+  /// PULSE at; it is deliberately not what the tap cell displays.
+  pub fn applied_hz(&self, grid: usize) -> Option<f32> {
+    let hz = self.tapped_hz()?;
     let g = self.grids.get(grid)?;
-    Some((1.0 / period) * 2f32.powi(g.two_exp) * 3f32.powi(g.three_exp))
+    Some(hz * 2f32.powi(g.two_exp) * 3f32.powi(g.three_exp))
   }
 
   /// The pulse rate a note struck on `grid` right now should carry: its applied
@@ -144,13 +177,14 @@ impl PolyrhythmState {
     }
   }
 
-  /// Is `grid`'s tap-cell blink ON at `now`? Lit for the first `BLINK_DUTY` of
-  /// each of that grid's applied-tempo cycles, phase-anchored to the tap that set
-  /// the tempo -- the tempo DISPLAY, so it blinks whether or not the grid's
-  /// cycling is on (the painter renders ON as fully lit, OFF as black). Always
-  /// off before a tempo exists (the button rests dim instead).
-  pub fn tap_blink(&self, grid: usize, now: Instant) -> bool {
-    let (Some(hz), Some(anchor)) = (self.applied_hz(grid), self.anchor) else {
+  /// Is the tap-cell blink ON at `now`? Lit for the first `BLINK_DUTY` of each
+  /// TAPPED-tempo cycle, phase-anchored to the tap that set the tempo -- so it
+  /// shows the tempo you tapped, unfactored, as if every grid were at unity. It is
+  /// therefore the same on both grids, and neither grid's factor buttons move it.
+  /// It blinks whether or not cycling is on (the painter renders ON as fully lit,
+  /// OFF as black), and is always off before a tempo exists (the button rests dim).
+  pub fn tap_blink(&self, now: Instant) -> bool {
+    let (Some(hz), Some(anchor)) = (self.tapped_hz(), self.anchor) else {
       return false;
     };
     let period = 1.0 / hz;
@@ -255,65 +289,108 @@ mod tests {
     assert!(p.applied_hz(0).is_some(), "the tempo is defined...");
     assert_eq!(p.pulse_hz(0), None, "...but cycling starts OFF: notes are un-pulsed");
     assert_eq!(p.pulse_hz(1), None);
-    assert!(p.tap_blink(0, t0 + MS(520)), "the blink still displays the tempo");
+    assert!(p.tap_blink(t0 + MS(520)), "the blink still displays the tempo");
   }
 
+  /// The =1 button's three-press story from cold: on (factor kept) -> unity -> off.
   #[test]
-  fn a_unity_tap_turns_cycling_on_and_a_fast_double_tap_off() {
+  fn unity_starts_cycling_then_snaps_to_unity_then_stops() {
     let t0 = Instant::now();
     let mut p = two_grids();
     p.tap(t0, WINDOW);
-    p.tap(t0 + MS(500), WINDOW); // 2 Hz
+    p.tap(t0 + MS(500), WINDOW); // 2 Hz tapped
+    p.press(0, FactorButton::Times3, t0 + MS(600)); // grid 0 applies 6 Hz
+    assert_eq!(p.pulse_hz(0), None, "cycling starts off");
+
+    // Press 1: switch cycling on, WITHOUT snapping the factor to unity.
     p.press(0, FactorButton::Unity, t0 + MS(1000));
-    let hz = p.pulse_hz(0).expect("a lone =1 tap turns grid 0's cycling on");
-    assert!((hz - 2.0).abs() < 1e-4);
+    let hz = p.pulse_hz(0).expect("the first press turns cycling on");
+    assert!((hz - 6.0).abs() < 1e-4, "the x3 factor survives the switch-on: {hz}");
     assert!(p.factor_lit(0, FactorButton::Unity), "=1 lights while cycling is on");
+    assert!(p.factor_lit(0, FactorButton::Times3), "and x3 still leans");
     assert_eq!(p.pulse_hz(1), None, "grid 1's switch is its own");
-    // The fast second tap: off.
-    p.press(0, FactorButton::Unity, t0 + MS(1300));
-    assert_eq!(p.pulse_hz(0), None, "a fast double-tap turns cycling off");
+
+    // Press 2, only 100 ms later: snaps to unity and KEEPS cycling. The switch-on
+    // press must not have armed the double-tap detector.
+    p.press(0, FactorButton::Unity, t0 + MS(1100));
+    let hz = p.pulse_hz(0).expect("still cycling after the second press");
+    assert!((hz - 2.0).abs() < 1e-4, "the second press snaps to unity: {hz}");
+    assert!(!p.factor_lit(0, FactorButton::Times3), "exponents zeroed");
+
+    // Press 3, 100 ms after THAT: now both presses were made while cycling, so the
+    // 400 ms double-tap applies and cycling stops.
+    p.press(0, FactorButton::Unity, t0 + MS(1200));
+    assert_eq!(p.pulse_hz(0), None, "a fast press after a unity press stops cycling");
     assert!(!p.factor_lit(0, FactorButton::Unity));
     assert!(p.applied_hz(0).is_some(), "the tempo itself survives (still displayed)");
-    // A fast THIRD tap: back on ("tapping it once turns it back on", however fast).
-    p.press(0, FactorButton::Unity, t0 + MS(1500));
-    assert!(p.pulse_hz(0).is_some(), "a tap with cycling off always turns it on");
-    // A slow pair: on stays on (each lone tap re-asserts on), no accidental off.
+  }
+
+  /// The 400 ms test is applied only between two presses made while cycling was ON.
+  /// A press that switches cycling on -- or one that follows a switch-off -- can
+  /// never be half of the turn-off double-tap, however fast it lands.
+  #[test]
+  fn the_double_tap_window_applies_only_while_cycling_is_on() {
+    let t0 = Instant::now();
+    let mut p = two_grids();
+    p.tap(t0, WINDOW);
+    p.tap(t0 + MS(500), WINDOW);
+
+    // From cold, two presses 10 ms apart: on, then unity. NOT off.
+    p.press(0, FactorButton::Unity, t0 + MS(1000));
+    p.press(0, FactorButton::Unity, t0 + MS(1010));
+    assert!(p.pulse_hz(0).is_some(), "a fast pair from cold leaves cycling ON");
+
+    // A third, also 10 ms on: now its partner was an on-grid press, so it stops.
+    p.press(0, FactorButton::Unity, t0 + MS(1020));
+    assert_eq!(p.pulse_hz(0), None, "two on-grid presses inside 400 ms stop cycling");
+
+    // A press right after the stop restarts it -- it cannot pair with the stop.
+    p.press(0, FactorButton::Unity, t0 + MS(1030));
+    assert!(p.pulse_hz(0).is_some(), "a press while off always turns cycling on");
+
+    // Slow presses while cycling never stop it; each is a lone tap.
     p.press(0, FactorButton::Unity, t0 + MS(3000));
-    assert!(p.pulse_hz(0).is_some(), "a SLOW second tap is a lone tap: still on");
+    p.press(0, FactorButton::Unity, t0 + MS(5000));
+    assert!(p.pulse_hz(0).is_some(), "SLOW presses are lone taps: still cycling");
   }
 
   #[test]
-  fn a_unity_tap_still_resets_the_factor() {
+  fn a_unity_press_while_cycling_zeroes_the_exponents() {
     let t0 = Instant::now();
     let mut p = two_grids();
     p.tap(t0, WINDOW);
     p.tap(t0 + MS(1000), WINDOW); // 1 Hz
-    p.press(0, FactorButton::Times3, t0);
-    p.press(0, FactorButton::Unity, t0 + MS(1500));
+    p.press(0, FactorButton::Unity, t0 + MS(1100)); // cycling on, factor untouched (unity)
+    p.press(0, FactorButton::Times3, t0 + MS(1200));
+    p.press(0, FactorButton::Times2, t0 + MS(1300));
+    assert!((p.applied_hz(0).unwrap() - 6.0).abs() < 1e-5, "x3 then x2");
+    // A lone (slow) press while cycling: back to the tapped tempo, still cycling.
+    p.press(0, FactorButton::Unity, t0 + MS(3000));
     assert!((p.applied_hz(0).unwrap() - 1.0).abs() < 1e-6, "=1 zeroes the exponents");
-    assert!(p.pulse_hz(0).is_some(), "and turns cycling on");
-    // The off double-tap resets too (its first tap already did).
-    p.press(0, FactorButton::Times2, t0 + MS(2000));
-    p.press(0, FactorButton::Unity, t0 + MS(2100));
-    p.press(0, FactorButton::Unity, t0 + MS(2200));
-    assert_eq!(p.pulse_hz(0), None, "double-tap: off");
-    assert!((p.applied_hz(0).unwrap() - 1.0).abs() < 1e-6, "factor is unity after =1");
+    assert!(p.pulse_hz(0).is_some(), "and leaves cycling on");
   }
 
   #[test]
-  fn the_tap_blink_pulses_at_ten_percent_duty_from_the_set_anchor() {
+  fn the_tap_blink_shows_the_unfactored_tempo_and_ignores_every_factor() {
     let t0 = Instant::now();
     let mut p = two_grids();
-    assert!(!p.tap_blink(0, t0), "no tempo, no blink");
+    assert!(!p.tap_blink(t0), "no tempo, no blink");
     p.tap(t0, WINDOW);
     p.tap(t0 + MS(1000), WINDOW); // 1 Hz, anchored at t0+1s
     let anchor = t0 + MS(1000);
-    assert!(p.tap_blink(0, anchor + MS(50)), "on during the first 10% of the cycle");
-    assert!(!p.tap_blink(0, anchor + MS(500)), "off mid-cycle");
-    assert!(p.tap_blink(0, anchor + MS(2050)), "on again two cycles later");
-    // The display follows each grid's own applied tempo.
-    p.press(1, FactorButton::Times2, anchor); // grid 1 blinks at 2 Hz
-    assert!(p.tap_blink(1, anchor + MS(510)), "grid 1's second (half-second) cycle starts");
-    assert!(!p.tap_blink(0, anchor + MS(510)), "grid 0 still mid-cycle at 1 Hz");
+    assert!(p.tap_blink(anchor + MS(50)), "on during the first 10% of the cycle");
+    assert!(!p.tap_blink(anchor + MS(500)), "off mid-cycle");
+    assert!(p.tap_blink(anchor + MS(2050)), "on again two cycles later");
+
+    // A grid's factor moves what its NOTES do, and never the display: the blink is
+    // the metronome you tapped, as if every grid were at unity.
+    p.press(1, FactorButton::Times2, anchor);
+    assert!((p.applied_hz(1).unwrap() - 2.0).abs() < 1e-5, "grid 1 now pulses at 2 Hz");
+    assert!(
+      !p.tap_blink(anchor + MS(510)),
+      "the blink still runs at the tapped 1 Hz (a 2 Hz blink would be lit here)",
+    );
+    assert!(p.tap_blink(anchor + MS(1050)), "on at the next TAPPED-tempo cycle");
+    assert!((p.tapped_hz().unwrap() - 1.0).abs() < 1e-6, "the display's rate is the tapped one");
   }
 }

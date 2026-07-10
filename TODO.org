@@ -1,13 +1,10 @@
-* TODO double-tapping "=1" : fix and change
+* DONE double-tapping "=1" : fix and change
 That button, when tapped once, should reset the tap factor to unity.
 When tapped twice in under 400 ms (I think that's the value currently coded),
 it should turn off the AM that the tap tempo controls.
-That's not been working for me.
+I now think that's coded properly.
 
-Wait I think it works. The monome is just sticky.
-But please verify that it ought to work.
-
-Also, let's have the tap tempo display always show the unfactored tempo,
+But: let's have the tap tempo display always show the unfactored tempo,
 as if the factor was unity.
 
 If the tapped tempo AM is currently off, pressing =1 should turn it on,
@@ -15,6 +12,29 @@ If the tapped tempo AM is currently off, pressing =1 should turn it on,
 Tapping it a second time should set it to unity.
 That should work even if it is tapped within 400 ms --
 the 400 ms test should only be applied when the AM is on.
+** [Claude] done -- both, in =surfaces_runtime/polyrhythm.rs=
+Nothing was wrong with the double-tap code, as you suspected; only the two
+requested changes were made.
+- *The display.* New =tapped_hz()=. =tap_blink()= reads it instead of
+  =applied_hz(grid)=, and lost its =grid= parameter altogether -- the blink is now
+  global, so both tap cells blink in step and no factor button moves either. The
+  painter's "no tempo -> dim" test moved to =tapped_hz()= too. =applied_hz()=
+  survives, but only to set the rate at which notes *pulse*.
+- *=1.* The press now branches on the switch. Cycling *off*: turn it on, leave the
+  exponents alone, and *clear* the double-tap timestamp. Cycling *on*: a lone
+  press zeroes the exponents; a press within 400 ms of *that* one stops cycling.
+  Clearing the timestamp on switch-on is exactly what makes "the 400 ms test only
+  applies when the AM is on" true -- the press that starts cycling can never pair
+  with the next one, and neither can the press right after a stop.
+  So from cold: press to start (factor kept), press to snap to unity (however
+  fast), fast third press to stop.
+The old tests encoded the old spec and were rewritten -- including the mock-grid
+integration test, which asserted through the LEDs that the first =1 press dimmed
+the x2 cell. Mutation-checked the new ones against three plausible wrong
+implementations: the blink following the applied tempo (caught), switch-on also
+zeroing the factor (caught), and switch-on arming the double-tap detector
+(caught -- the subtle one).
+*Unseen on the grids*; asserted in the pure state tests and the mock-grid test.
 * DONE tap-tempo AM should be a triangle, not a saw
 Use a triangle wave, not saw, for the tap tempo AM. It should still start at the
 peak. It should of course be a triangle in [0,1] rather than [-1,1].

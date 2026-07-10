@@ -422,13 +422,19 @@ per monome, on a monome with an ~edo_note_grid~): tap twice within
 ~[surfaces].tap_tempo_window_ms~ (default 2000) to define the ONE global tapped
 tempo (defining it starts nothing). Each monome then scales it into its own
 applied tempo with its own exact 2^a x 3^b factor buttons, and switches its own
-amplitude cycling with =1 -- tap on (also resets the factor), fast double-tap
-(400 ms) off; it starts off, and its LED shows the switch. While a grid's cycling
-is on, every note struck on it pulses with a unipolar triangle (1 at the cycle
-start, 0 at the half-cycle, back to 1) at that grid's applied tempo (fixed at
-onset). The tap cell displays the tempo whether or not
-cycling is on: it blinks at 10% duty at its grid's applied tempo -- fully lit
-against black (it rests dim only before a tempo exists).
+amplitude cycling with =1. Cycling starts off; the =1 LED shows the switch. What
+=1 does depends on the switch: while cycling is *off*, a press turns it *on* and
+leaves the factor alone (so a grid can start cycling at the rate you dialled in);
+while cycling is *on*, a lone press zeroes the factor, and a second press within
+400 ms of that one turns cycling off. The press that switches cycling on never
+counts as half of that double-tap, so from cold you can tap on, tap to unity
+(however fast), then double-tap off. While a grid's cycling is on, every note
+struck on it pulses with a unipolar triangle (1 at the cycle start, 0 at the
+half-cycle, back to 1) at that grid's applied tempo (fixed at onset). The tap cell
+displays the tempo whether or not cycling is on: it blinks at 10% duty at the
+*tapped* tempo -- unfactored, so both grids' tap cells blink together and no
+factor button moves them -- fully lit against black (it rests dim only before a
+tempo exists).
 
 The bundled 12-EDO offset/root board is:
 

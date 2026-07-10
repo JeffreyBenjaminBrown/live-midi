@@ -1134,14 +1134,16 @@ fn grid_thread(mut rt: GridThread) {
       // The pad's six cells, all per-THIS-grid state: the factor cells show which
       // way this grid's factor leans; =1 shows this grid's pulse switch (bright
       // while its amplitude cycling is on). The tap cell blinks BLACK <-> FULLY
-      // LIT (10% duty at this grid's applied tempo; misc.org "tap blink between
-      // black and fully lit") whether or not cycling is on -- it is the tempo
-      // display -- and only rests dim before any tempo exists, to stay findable.
+      // LIT (10% duty at the TAPPED tempo, unfactored -- so both grids' tap cells
+      // blink together, showing the metronome you tapped rather than what this grid
+      // made of it; misc.org "tap blink between black and fully lit") whether or not
+      // cycling is on -- it is the tempo display -- and only rests dim before any
+      // tempo exists, to stay findable.
       let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
-      let tap_level = if p.applied_hz(rt.grid_index).is_none() {
+      let tap_level = if p.tapped_hz().is_none() {
         DIM
-      } else if p.tap_blink(rt.grid_index, now) {
+      } else if p.tap_blink(now) {
         BRIGHT
       } else {
         OFF
@@ -2393,24 +2395,29 @@ mod tests {
     assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its factor leans up)");
     assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (factors are per-grid)");
 
-    // A lone =1 tap on grid b: b's cycling turns ON (=1 lit) and its factor resets
-    // (x2 back to dim). Grid a's switch is untouched.
+    // The FIRST =1 press on grid b, with cycling off: it turns cycling ON (=1 lit)
+    // and LEAVES the factor alone -- x2 stays lit. Grid a's switch is untouched.
     b.press(15, 1);
     b.release(15, 1);
     assert!(wait_until(secs(3), || b.level_at(15, 1) == 15), "grid b's =1 lit: cycling on");
-    assert!(wait_until(secs(3), || b.level_at(14, 0) == 4), "=1 reset grid b's factor");
+    assert_eq!(b.level_at(14, 0), 15, "the switch-on press KEEPS grid b's x2 factor");
     assert_eq!(a.level_at(15, 1), 4, "grid a's =1 stays dim (the switch is per-grid)");
 
-    // A fast =1 double-tap on grid b: cycling back OFF (the tempo display -- the
-    // tap-cell blink -- survives). The four presses land well inside the 400 ms
-    // double-tap window; the >400 ms sleep first makes tap one a LONE tap.
+    // Two more =1 presses, back to back after a >400 ms gap. The first of the pair is
+    // a lone press on an already-cycling grid, so it zeroes the factor (x2 -> dim) and
+    // leaves cycling on; the second lands inside 400 ms of IT, so cycling goes OFF.
+    // (The switch-on press above cannot be half of that pair -- it never armed the
+    // detector -- which is why the >400 ms sleep is what separates the two phases.)
     thread::sleep(Duration::from_millis(500));
     b.press(15, 1);
     b.release(15, 1);
     b.press(15, 1);
     b.release(15, 1);
-    assert!(wait_until(secs(3), || b.level_at(15, 1) == 4), "a fast double-tap: cycling off");
+    assert!(wait_until(secs(3), || b.level_at(15, 1) == 4), "the fast second press: cycling off");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 4), "and the pair's first press zeroed x2");
+    // The tempo DISPLAY survives, and blinks the unfactored tapped tempo on both grids.
     assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "the tap cell still blinks the tempo");
+    assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "and grid a blinks it too");
 
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();
