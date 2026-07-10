@@ -1,0 +1,872 @@
+#+title: Distortion volume compensation: why it falls, and what to do
+#+author: notes for Jeff, written by Claude
+#+date: 2026-07-10
+
+Companion to [[./distortion.org]] (the curve family). That doc says, in passing, that a
+makeup gain is "optional"; =jeff-maybe-review-this.org= records the as-built decision
+as *"No makeup gain is applied."* This doc is about filling that hole.
+
+Your instinct is right on both counts: a *constant* makeup gain cannot work, and the
+correction genuinely has to depend on how many notes are sounding. But you are *not*
+asking for something impossible. There is an exact answer, it is cheap, and this
+codebase happens to already compute the one quantity it needs.
+
+* the short answer
+
+The soft-clipper's loudness loss depends on one number -- the *RMS level of the summed
+dirty bus*, call it =sigma= -- and on nothing else. Not on the note count directly, not
+on which pitches: just =sigma=. So the compensation is not "divide by N" or anything
+fragile; it is a single function of =sigma=.
+
+And =sigma= does not have to be measured with an envelope follower (which would pump and
+lag). The renderer already walks every voice every sample and knows each voice's exact
+instantaneous amplitude. Summing their squares gives =sigma= *exactly*, for free, one
+sample ahead of the distortion that needs it.
+
+Feed that =sigma= through the clipper's known RMS gain =g(sigma/s)= and multiply the
+distorted bus by =1/g=. The result: *the distorted bus has precisely the RMS the clean
+bus would have had, at every instant.* Distortion becomes a purely timbral effect --
+turning it on changes the harmonics and not the level, and playing more notes changes
+the level exactly as much as it does with distortion off, which is what you are already
+used to.
+
+That is option *E* below, and it is what is now built (see *as built*): ~120 lines, on by
+default, hot-reloadable, and unit-tested without a sound card.
+
+* first: what is actually happening in your rig
+
+*Found it: you are running =distortion_shape = 0.5=.* Not the committed =2.0=. (In
+=worktrees/main='s working tree; the rig is =.org= now, not =.toml= -- that migration
+landed in =6a6f315=. The two rigs otherwise agree: =amplitude = 0.15=,
+=distortion_scale = 1=.) That one number explains the whole complaint, and it is worth
+seeing why, because it also explains why the *committed* rig sounds like nothing at all.
+
+=k= is usually described as "elbow harshness", which makes =k = 0.5= sound gentle. It is,
+in the sense of having no elbow. But =k < 1= means the curve leaves the origin and bends
+*immediately* -- =f''(0) = -inf= -- so it starts eating level at signal amplitudes where
+=k = 2= is still perfectly straight. The instantaneous curve gain =f(y)/y=, at =s = 1=:
+
+| abs(y) | k = 0.5 | k = 1 | k = 2 |
+|--------+---------+-------+-------|
+|   0.02 |   0.768 | 0.980 | 1.000 |
+|   0.12 |   0.552 | 0.893 | 0.993 |
+|   0.50 |   0.343 | 0.667 | 0.894 |
+|   1.00 |   0.250 | 0.500 | 0.707 |
+
+One sine voice at full envelope peaks at =0.15 x 0.8165 = 0.12=. Read the =0.12= row: at
+=k = 2= that voice passes through essentially untouched; at =k = 0.5= it has already lost
+*45% of its amplitude at the peak*. So:
+
+| notes | committed (k = 2.0) | yours (k = 0.5) | makeup you'd need |
+|-------+---------------------+-----------------+-------------------|
+|     1 |            -0.05 dB |        -4.79 dB |             x1.74 |
+|     2 |            -0.14 dB |        -5.91 dB |             x1.97 |
+|     4 |            -0.33 dB |        -6.77 dB |             x2.18 |
+|     8 |            -0.64 dB |        -8.11 dB |             x2.54 |
+|    16 |            -1.06 dB |        -8.99 dB |             x2.82 |
+
+That is your sharp fall: *nearly 5 dB on a single note*, before you have played a chord
+at all. And it is ~9x what the committed shape would cost.
+
+Two things follow, and they are the reason this is worth writing down rather than just
+patching:
+
+1. *Most of the loss is a constant.* The spread from one note to sixteen is only 4.2 dB;
+   the other ~4.8 dB is there at =N = 1=. Your instinct that a constant makeup "can't
+   work" is right about the *residual*, but a constant would have fixed most of it. The
+   note-count dependence is the smaller half of your problem.
+
+2. *=s= is calibrated for a signal you are not sending it.* =learnings/distortion.org=
+   sizes its tables assuming "the signal sits around unit full-scale (our mix amplitude
+   is ~1)". Your mix amplitude is =0.15=. So =s = 1.0= is ~16 dB above where the mix
+   lives, and at =k = 2= the clipper is nearly inaudible -- which is presumably why you
+   reached for =k= to get an audible effect, and got a volume drop as the price. *The
+   master volume and the drive knob are the same knob.* See *reparametrizing the knob*.
+
+* the math
+
+** why the loudness falls
+
+The dirty bus is a sum of =N= voices at mutually incommensurate frequencies (58-EDO
+clusters are about as incommensurate as it gets). Their relative phases drift, so they
+sum *incoherently*: powers add, not amplitudes. If each voice has RMS =a/sqrt(3)=
+(more on the =sqrt(3)= below), the sum has
+
+: sigma = sqrt( sum_i a_i^2 / 3 )
+
+which grows like =sqrt(N)=, not =N=. Meanwhile the clipper is bounded: as its input
+grows, the output tends to a square wave of amplitude =s=, whose RMS is just =s=. So:
+
+- *clean* output RMS grows without limit, as =sqrt(N)=;
+- *distorted* output RMS *saturates at =s=*, whatever =N= is.
+
+Hence the loss grows with =N=, and hence no single constant can undo it. That is the
+precise form of the thing you guessed.
+
+(A pleasant corollary, worth naming because it is counterintuitive: with distortion on,
+the level is *already* far more stable against =N= than the clean path is -- it is
+pinned near =s=. Your "volume fluctuates wildly with note count" fear is a property of
+the *clean* signal. The distorted signal's problem is only that it is pinned *too low*.)
+
+** the exact loss, in closed form
+
+For =N= of any size the sum of incoherent voices is Gaussian (central limit), std
+=sigma=. Define the drive ratio =r = sigma / s=. We want the clipper's RMS gain
+
+: g(r) = RMS[ f(y) ] / RMS[ y ]        for y ~ Normal(0, sigma^2)
+
+For the default shape *k = 2* -- =f(y) = y / sqrt(1 + (y/s)^2)= -- this integrates in
+closed form. Substituting =y = sigma*z=:
+
+: E[f^2] = sigma^2 / r^2 * ( 1 - Q(r) )
+: Q(r)   = sqrt(pi/2) / r * exp( 1 / (2 r^2) ) * erfc( 1 / (r sqrt(2)) )
+
+so
+
+: g(r) = sqrt( (1 - Q(r)) / r^2 )
+
+I checked this against a 400k-sample Monte Carlo at nine values of =r=; it agrees to
+four decimal places. Sanity: =g -> 1= as =r -> 0= (unity slope at the origin), and
+=g -> 1/r= as =r -> inf= (output RMS -> =s=, the square wave). Both hold.
+
+| r = sigma/s | gain g(r) | loss    | makeup 1/g |
+|-------------+-----------+---------+------------|
+|        0.05 |    0.9963 | -0.03 dB |       1.00 |
+|        0.10 |    0.9856 | -0.13 dB |       1.01 |
+|        0.20 |    0.9481 | -0.46 dB |       1.05 |
+|        0.30 |    0.8986 | -0.93 dB |       1.11 |
+|        0.50 |    0.7931 | -2.01 dB |       1.26 |
+|        0.70 |    0.6989 | -3.11 dB |       1.43 |
+|        1.00 |    0.5868 | -4.63 dB |       1.70 |
+|        1.50 |    0.4585 | -6.77 dB |       2.18 |
+|        2.00 |    0.3748 | -8.52 dB |       2.67 |
+|        3.00 |    0.2736 | -11.26 dB |      3.66 |
+|        4.00 |    0.2151 | -13.35 dB |      4.65 |
+|        6.00 |    0.1506 | -16.44 dB |      6.64 |
+|        8.00 |    0.1158 | -18.73 dB |      8.64 |
+
+For =k != 2= there is no closed form, but the integral is one-dimensional and smooth --
+64-node Gauss-Hermite nails it. Compute a table once at load (see *implementation*).
+
+** how badly a constant makeup fails
+
+The makeup you need is =1/g(r)=, and =r= moves with =sqrt(N)=. Simulated on real
+58-EDO note sums at =env = 1.0=, here is the makeup required at each =N=, and the
+*spread* -- how far the right answer moves between one note and sixteen:
+
+| s    | N=1   | N=2   | N=4   | N=8   | N=16  | spread |
+|------+-------+-------+-------+-------+-------+--------|
+| 1.00 | x1.01 | x1.02 | x1.04 | x1.08 | x1.14 | 1.1 dB |
+| 0.50 | x1.02 | x1.06 | x1.15 | x1.24 | x1.41 | 2.8 dB |
+| 0.30 | x1.06 | x1.16 | x1.31 | x1.65 | x1.84 | 4.8 dB |
+| 0.20 | x1.13 | x1.32 | x1.56 | x1.92 | x2.42 | 6.6 dB |
+| 0.10 | x1.43 | x1.89 | x2.38 | x3.09 | x3.97 | 8.9 dB |
+| 0.05 | x2.20 | x3.09 | x4.08 | x5.36 | x7.45 | 10.6 dB |
+
+Read this as the *cost of choosing option B*: pick one constant, split the spread, and
+you are wrong by half of it at the extremes. So:
+
+- =s >= 0.5= (gentle): a constant makeup is off by at most ~1.4 dB. *Genuinely fine.*
+- =s ~ 0.3=: off by ~2.4 dB. Audible, tolerable.
+- =s <= 0.1= (the heavy sound): off by 4-5 dB. *Unusable* -- exactly the wild
+  fluctuation you don't want.
+
+** the quantity the renderer already has
+
+Here is the piece that makes the good option cheap. In =accumulate_voices=
+(=sawwave/voices.rs:314=) each voice's sample is
+
+: s_i = osc(waveform, phase, dt) * wf_norm * env * gain * amm * pulse * amplitude
+
+=waveform_norm= exists precisely so that =osc * wf_norm= has RMS =1/sqrt(3)= for *every*
+waveform (that is what the =waveform_norm_equalizes_rms_across_shapes= test asserts). So
+if we name the rest of that product
+
+: b_i = env * gain * amm * pulse * amplitude
+
+then voice =i= has RMS exactly =b_i / sqrt(3)=, and the bus has
+
+: sigma = sqrt( sum over dirty voices of b_i^2 / 3 )
+
+*No detector, no smoothing, no lag.* It is one extra multiply-add inside a loop we are
+already running, evaluated at the same (possibly oversampled) rate as the distortion
+that consumes it. Because =env= ramps from zero on note-on and voices are dropped only
+at =env == 0=, =sigma= is continuous: notes fade in and out of it with their own
+envelopes. No zipper, no click, nothing to smooth.
+
+I verified the prediction against the time-domain sum (=s = 0.2=, sine voices):
+
+| N | sigma predicted | sigma measured | model gain | true gain | error |
+|---+-----------------+----------------+------------+-----------+-------|
+| 1 |          0.0866 |         0.0866 |     0.8278 |    0.8860 | -0.59 dB |
+| 2 |          0.1225 |         0.1218 |     0.7383 |    0.7580 | -0.23 dB |
+| 4 |          0.1732 |         0.1727 |     0.6328 |    0.6415 | -0.12 dB |
+| 8 |          0.2449 |         0.2416 |     0.5218 |    0.5322 | -0.17 dB |
+| 16 |         0.3464 |         0.3436 |     0.4156 |    0.4202 | -0.10 dB |
+
+Better than 0.2 dB for =N >= 2=. The =N = 1= row is the only real error, and its cause
+is understood: *a lone sinusoid is not Gaussian.* It is arcsine-distributed -- it dwells
+near its peaks -- so the true clipper gain is higher than the Gaussian model predicts.
+The model therefore over-corrects a single note by up to ~0.9 dB (worst case, at
+=s = 0.1=). Three ways to handle that, in *implementation* below; the cheapest is to
+shrug, since 0.9 dB on a lone note is under the just-noticeable difference for a
+timbral change of this size.
+
+** two things that make this safe
+
+*Peaks do not come back.* The obvious worry with any makeup gain is that you restore the
+level and re-hit the =+-0.95= clamp, trading a smooth clipper for a hard one. It does
+not happen, and there is a reason: makeup restores *RMS*, and the distorted waveform is
+*squarer* than the clean one -- lower crest factor. Restoring its RMS to the clean RMS
+therefore leaves its peak *below* the clean peak. Measured:
+
+| s    | N  | clean peak | distorted peak after makeup | ratio |
+|------+----+------------+-----------------------------+-------|
+| 0.30 |  4 |      0.457 |                       0.333 | 0.73  |
+| 0.30 |  8 |      0.767 |                       0.422 | 0.55  |
+| 0.30 | 16 |      1.163 |                       0.530 | 0.46  |
+| 0.10 |  8 |      0.707 |                       0.310 | 0.44  |
+| 0.10 | 16 |      1.252 |                       0.405 | 0.32  |
+
+Always below 1.0. Since the clean path already lives with the clamp, the compensated
+dirty path is strictly safer than what you ship today. (Look at the =N = 16= rows: clean
+peaks at 1.16 and 1.25 -- *the clean bus is already hard-clipping on big chords*. With
+distortion + makeup it is not. That is a bonus, not a design goal.)
+
+*The pluck decay survives.* Because =sigma(t)= tracks the envelope exactly and the
+makeup is recomputed every sample, the compensated bus's RMS equals =sigma(t)= as
+=sigma= moves: the strike, the exponential decay toward =sustain_level=, and the release
+all keep their shape. An audio-domain envelope follower (option D) could not manage
+this -- it would lag the 3 ms attack and flatten the decay into a compressor.
+
+* is it robust to any parameters I choose?
+
+Jeff: "I'll keep playing with the parameter values ... I would like your fix to be robust
+to whatever values I choose. Is that possible?"
+
+Yes -- and asking cost the first cut two bugs. Both were invisible at the shipped
+defaults and appeared only in the corner where the distortion works hardest: heavy
+=distortion_scale=, low =distortion_shape=. Exactly where you were headed.
+
+** the two bugs
+
+*1. The makeup was capped at 8x, and the cap bound on a playable rig.* Once it binds, the
+correction stops correcting and the volume drop comes straight back. Error against the
+true makeup, in dB (negative = under-boosted = still too quiet):
+
+| r = sigma/s | k = 0.5 | k = 1.0 | k = 2.0 |
+|-------------+---------+---------+---------|
+|           4 |   -2.22 |    0.00 |    0.00 |
+|           8 |   -6.38 |   -1.98 |   -0.67 |
+|          16 |  -10.90 |   -7.23 |   -6.36 |
+|          32 |  -15.74 |  -12.76 |  -12.21 |
+
+And =r= is easy to reach: =r = sigma / s=, and =sigma = amplitude * sqrt(N/3)=. At the
+current =amplitude = 0.15=, sixteen notes give =sigma = 0.35=, so =s = 0.1= is already
+=r = 3.5= (past the cap), and =s = 0.02= is =r = 17=. Raise =amplitude= and it moves
+further. The cap now sits at 1024x -- 60 dB, high enough that it cannot bind anywhere in
+the table. It is an infinity guard, not a limiter.
+
+*2. Above the table the makeup used =m = r=, which is wrong for =k < 2.=* The reasoning
+was: the clipper's output RMS plateaus at =s=, so restoring the input RMS =sigma = r*s=
+needs a gain of =r=. The plateau is real. But it is approached *extraordinarily slowly*
+for a soft elbow. Writing =h(r) = g(r)*r= for the output RMS in units of =s=:
+
+| r    | k = 0.5 | k = 1.0 | k = 2.0 | k = 4.0 |
+|------+---------+---------+---------+---------|
+| 4    |  0.3873 |  0.6952 |  0.8605 |  0.9134 |
+| 16   |  0.5700 |  0.8701 |  0.9620 |  0.9787 |
+| 100  |  0.7674 |  0.9662 |  0.9941 |  0.9973 |
+| 1000 |  0.9090 |  0.9940 |  0.9979 |  0.9979 |
+
+At =k = 0.5= and =r = 16= the output has reached only *57%* of its asymptote, so =m = r=
+under-boosts by 4.9 dB there and 11 dB by =r = 32=. The table now runs to =r = 256=, and
+beyond it continues *linearly from its last entry* (=m = m_last * r/R_MAX=), which assumes
+nothing about the asymptote, is continuous, and errs by at most +0.7 dB out at =r = 1000=
+-- on the *loud* side, which is the safe direction here.
+
+** the robustness surface, axis by axis
+
+| you change            | is the makeup right?                                                    |
+|-----------------------+-------------------------------------------------------------------------|
+| =distortion_scale= (s) | *Exact.* =s= only enters as =r = sigma/s=, and the table spans =r= to 256. |
+| =distortion_shape= (k) | *Exact.* The table is rebuilt per =k= on load / ='r'=. Verified 0.25..8.  |
+| =amplitude=            | *Exact.* It is inside =sigma=, so =r= tracks it.                          |
+| =[[timbres]] amplitude=, AM depth, polyrhythm pulse | *Exact.* All are factors of =b=, so they are inside =sigma=. |
+| note count =N=         | *Exact for N >= 2* (0.35 dB). At =N = 1=, over-corrects by <= 0.73 dB.   |
+| waveform               | *<= 1.3 dB*, worst case only. See below.                                |
+| unisons / octaves      | Under-corrects by <= 3 dB on an exact unison. Errs quiet. Rare, brief.  |
+| =oversample=           | *Exact.* The makeup is recomputed per sub-sample.                        |
+| both grids distorting  | *Exact.* =sigma= sums both grids' dirty voices.                          |
+
+The two soft spots share one cause: *the model assumes the dirty bus is Gaussian*, which
+a sum of many incoherent voices is, and a single voice is not. A lone sinusoid dwells near
+its peaks; a lone square wave never leaves them. So the model mis-predicts the clipper's
+gain most for one loud note, and the error depends on which waveform:
+
+| curve         | notes | sine | triangle | saw  | square |
+|---------------+-------+------+----------+------+--------|
+| s=1.0, k=0.5  |     1 | 0.43 |     0.31 | 0.31 |   0.74 |
+| s=1.0, k=0.5  |     2 | 0.14 |     0.14 | 0.12 |  -0.01 |
+| s=0.1, k=1.0  |     1 | 0.73 |     0.50 | 0.50 |   1.32 |
+| s=0.1, k=1.0  |     2 | 0.14 |     0.19 | 0.15 |  -0.40 |
+| s=0.1, k=1.0  |     4 | 0.18 |     0.12 | 0.16 |  -0.06 |
+
+(dB; positive = the makeup over-boosts.) Worst case is *1.3 dB, on a single square wave
+into a heavy clipper*, and it collapses below 0.25 dB by two notes. You said roughly is
+fine; this is roughly. If it ever isn't, option E's sine-blend fixes it for ~6 lines.
+
+*So: yes, robust.* Not by luck -- because the correction inverts the actual curve rather
+than approximating it, and =sigma= is derived from the same per-voice amplitudes the
+renderer already multiplies in. The only approximation left is the Gaussian one, and its
+error is bounded and measured above.
+
+** a warning about small k, because you are using it
+
+While this was being written you moved the rig to =scale = 0.5, shape = 0.3=. Worth
+knowing what that curve is, because it is nothing like the =k= table in
+[[./distortion.org]] suggests by the word "gentlest":
+
+| notes | loss before makeup | makeup needed |
+|-------+--------------------+---------------|
+|     1 |          -14.41 dB |         5.26x |
+|     2 |          -15.60 dB |         6.03x |
+|     4 |          -16.86 dB |         6.97x |
+|     8 |          -18.20 dB |         8.13x |
+|    16 |          -19.61 dB |         9.56x |
+
+*The first cut's 8x cap would have bound at eight notes*, on the rig you are playing
+right now. That is how the robustness question earned its keep.
+
+The reason is that "unity slope at the origin" is a *limit*, not a neighbourhood.
+Expanding the curve for small =y=:
+
+: f(y)/y  ~  1 - |y/s|^k / k
+
+For =k = 2= the correction is quadratic and dies fast -- a quiet signal really is clean.
+For =k = 0.3= it dies like =y^0.3=, which is barely dying at all: at =sigma = s/10000=
+the makeup is *still 1.26x*. A soft elbow does not mean a late one; it means the curve
+bends everywhere. =k < 1= is a *saturation that is always on*, and that is presumably why
+you like it. Just do not read the =k= column of =distortion.org= as "how loud before it
+bites" -- =s= sets that, and for =k < 1= barely even =s= does.
+
+* is a per-sample correction dangerous?
+
+Jeff's question, and it deserves a precise answer rather than a reassurance. Three
+separate claims, of which the third is the one worth internalizing.
+
+*It cannot click, because a voice enters and leaves the sum at exactly zero power.* A
+voice is born with =env = 0= (the attack ramps it up) and is dropped only once =env=
+reaches 0 again, so its =b^2= contribution to =sigma= fades in and out continuously.
+There is no moment at which the makeup steps. Unit-tested
+(=makeup_is_continuous_through_note_birth_and_death=).
+
+*It is not a waveshaper.* =sigma= is computed from *envelopes*, never from the waveform,
+so the makeup is constant across each cycle of every note. It changes only as fast as
+your envelopes change -- 3 ms at the very fastest, and 0.5 s through the pluck decay. It
+adds no sidebands the envelopes did not already have. The danger you are imagining is
+real, but it belongs to the *opposite* implementation: updating the gain once per cpal
+callback (128 frames, a 375 Hz staircase) is what produces zipper noise. Per-sample is
+what avoids it.
+
+*The one genuinely sharp thing, and why it is harmless.* At =k < 1= -- your setting --
+=1/g= has a =sqrt(sigma)= cusp at silence: strike a note into an empty bank and the
+makeup swings from 1.0 to ~1.5 within a handful of samples. That looks alarming. It is
+inaudible, and the cancellation is exact rather than approximate: the makeup is *only
+ever multiplied by a signal whose own RMS is =g * sigma=*, so the compensated envelope is
+
+: m(sigma) * g(sigma) * sigma  ==  sigma        (identically, by construction)
+
+The clipper's cusp and the makeup's cusp are the same cusp, and they cancel. What
+reaches your ears is =sigma=, the clean envelope. Both halves of that -- the cusp being
+real at =k < 1=, and the product being flat anyway -- are asserted in the same test, so
+nobody "fixes" the cusp later and breaks the reason it was safe.
+
+*What the makeup does not do* -- and this is the honest limit. It restores mean-square
+level; it does not restore the moment-to-moment envelope *within* a chord. A clipper
+compresses the beating between close pitches, so on a 12 ms window the distorted bus can
+sit several dB above where the clean bus would have dipped into a beat null. That is the
+sound of bus distortion levelling a chord, it is what makes a fuzz a fuzz, and it is
+already there today -- the makeup scales it, it does not create it. If you ever hear
+something "weird but maybe cool", that is what you are hearing, and turning
+=distortion_auto_makeup= off will not remove it (only option G would, at the cost of all
+intermodulation).
+
+* should the correction be slow, so attacks stay loud?
+
+Jeff: "whatever is boosting or squashing the signal should change slowly over time ...
+maybe the correction should take a while to kick in, so that attacks still come through
+as louder."
+
+This is the standard compressor intuition, and it is *exactly inverted here*. The reason
+is one line of monotonicity, and it is worth pinning down because it decides the knob.
+
+** why lag hurts attacks
+
+=m(sigma) = 1/g(sigma/s)= is *increasing* in =sigma=: a louder bus is driven further past
+the elbow, so the clipper eats more of it, so more must be given back. The makeup's target
+is therefore at its *highest* during a strike.
+
+A lagged makeup is one that has not got there yet. So at the strike it under-compensates,
+precisely at the moment the clipper is biting hardest. The attack comes out *squashed*,
+and then *swells* as the makeup catches up. Simulated on a plucked note (=k = 0.5=,
+=s = 1=, 3 ms attack, 0.5 s decay to =sustain_level = 0.35=):
+
+| slew   | attack/sustain contrast | vs clean | swell after the strike |
+|--------+-------------------------+----------+------------------------|
+| 0 ms   |                 4.92 dB |  0.00 dB |               -0.03 dB |
+| 20 ms  |                 4.07 dB | -0.85 dB |               +3.51 dB |
+| 50 ms  |                 2.78 dB | -2.14 dB |               +3.15 dB |
+| 200 ms |                 0.66 dB | -4.26 dB |               -0.01 dB |
+
+The clean note's own attack/sustain contrast is *4.92 dB* (that is the pluck envelope,
+1 -> 0.35). *The exact, zero-slew makeup reproduces it precisely.* Every millisecond of
+lag takes contrast away and, in the middle of the range, adds an audible +3.5 dB bloom
+after each strike.
+
+So: *the punchiest possible level-restoring makeup is the instantaneous one.* It is what
+is built. If you want attacks louder than that, you want a transient shaper, not a slower
+makeup -- nothing in the makeup's design can exceed the clean envelope, because the clean
+envelope is exactly what it targets.
+
+** the compressor's time constants exist for a reason we don't have
+
+A compressor needs an attack and a release because it must *estimate* the signal's level
+from the waveform, and any estimator over a waveform is a filter: too fast and it ripples
+at the fundamental, too slow and it lags. All of a compressor's characteristic artifacts
+-- pumping, breathing, transient smear -- are the sound of that filter.
+
+We do not estimate. We *know*: the renderer multiplies the per-voice envelopes in, and
+=sigma= is read straight out of them, before the waveform is even summed. There is no
+detector, so there is no filter, so there is no time constant to tune and no artifact
+class that tuning one would fix. Your worry -- "changing fast will introduce artifacts" --
+is a worry about a detector we don't have.
+
+What the makeup *does* inherit is the envelopes' own rate of change: 3 ms at the very
+fastest (the attack), 0.5 s through the decay. That is precisely as slow as your request
+asked for, without anyone choosing a constant.
+
+** the knob, and what it actually means
+
+Built anyway, because it is worth being able to hear: =distortion_makeup_slew_ms= on the
+=cpal_synth= sink, default =0.0= (exact, and bit-identical to having no slew at all).
+
+Its real meaning is not "how fast does the correction react". It is *how much of the
+clipper's own dynamic compression do you keep?*
+
+- =0 ms=: none. The distorted bus carries the clean bus's envelope. Option *E*.
+- large: the makeup freezes at one value and can no longer track anything. That *is* a
+  plain constant makeup gain -- option *B*.
+
+The knob slides continuously between the two options in this document, and nothing else is
+reachable. A fuzz pedal's compression of dynamics is part of why it sounds like a pedal;
+if the exact version sounds too composed, too *un*-squashed, this is the dial, and 20-50 ms
+is where the character lives. But it is a character choice, not a fix, and it costs attack.
+
+** candidates I considered and rejected
+
+- *Asymmetric slew (fast up, slow down).* Fixes the swell -- the makeup reaches the strike
+  in time -- and keeps a slow tail. But "fast up" is just "exact" at the only moment that
+  matters, so it buys nothing the zero-slew version doesn't already have, while adding a
+  time constant and a state variable to reason about.
+- *Drive the makeup from a slow average of =sigma= (the "program level").* Tracks note
+  count over ~200 ms and ignores per-note envelopes. Same defect as the plain slew: within
+  a strike the makeup is frozen, so the attack keeps the clipper's squash. It also cannot
+  distinguish "a chord arrived" from "one note got louder", which is the whole quantity
+  we already have exactly.
+- *Slew =sigma= rather than =m=.* Identical dynamics -- =m= is a monotone function of
+  =sigma=, so lagging either lags the other. No.
+- *A transient shaper on top* (boost =m= for the first few ms of each strike). The only
+  design here that could make attacks louder than clean. It needs per-voice state and it
+  is a different effect wearing the makeup's clothes. If you want it, ask for it by name.
+
+** and the thing you don't need to worry about
+
+"If it took a few periods to adjust when the number of notes changes, that's fine." It
+takes *zero*, and that is not a hazard: when a note joins, its envelope ramps its power
+into =sigma= from zero over the 3 ms attack, so the makeup slides to its new value across
+those same 3 ms. Nothing steps. There is no adjustment period to smooth because there is
+no discontinuity to smooth over.
+
+* three different things "compensation" could mean
+
+Worth separating before choosing, because they are not the same request and only you
+know which you want.
+
+1. *Level-transparent.* Turning distortion on changes timbre and not loudness. Note
+   count then affects level exactly as it does clean. -> option E.
+2. *Level-flat.* Loudness is constant regardless of note count -- more notes do not get
+   louder at all. This is what the *uncompensated* clipper already approximates (it
+   pins near =s=). Probably not what you want; it makes the instrument unresponsive.
+3. *Character-flat.* The *grit* stays the same regardless of note count -- one note is
+   as dirty as a twelve-note chord. -> option F.
+
+You asked for (1). It is also the one that behaves like a real overdrive: play harder or
+play more notes, get dirtier, and the loudness tracks what you played.
+
+* the options
+
+| # | option                          | fixes the fall | fixes N-dependence | cost      | keeps intermodulation |
+|---+---------------------------------+----------------+--------------------+-----------+-----------------------|
+| A | raise sink =amplitude=          | no             | no                 | 0         | yes                   |
+| B | constant =distortion_makeup=    | on average     | no (see spread)    | ~3 lines  | yes                   |
+| C | drive + =1/drive= makeup        | same as B      | no                 | ~5 lines  | yes                   |
+| D | envelope-follower auto-makeup   | yes            | yes, with pumping  | ~40 lines | yes                   |
+| E | *envelope-predicted makeup*     | *yes, exactly* | *yes, exactly*     | ~20 lines | yes                   |
+| F | input-normalize the bus         | yes            | yes (character too)| ~15 lines | yes                   |
+| G | distort each voice separately   | yes            | yes                | ~5 lines  | *no*                  |
+
+** A -- turn the master up when distortion is on
+
+Non-starter, listed to dismiss. =amplitude= is on the sink, shared by *both* grids and by
+the clean bus. Grid A's toggle would change grid B's loudness. It also cannot track =N=.
+
+** B -- a constant =distortion_makeup= on the sink
+
+: out = clean + makeup * distort(dirt)
+
+One float in the rig, hot-reloadable with ='r'= like =amplitude= already is. Three lines
+in =post()=.
+
+This is *the right answer if you keep =s >= 0.5==, per the spread table: worst error
+~1.4 dB. It is the wrong answer for the heavy sounds. Its honest description is "fixes
+the average level, leaves the note-count dependence exactly as it is."
+
+If you want something in your hands this afternoon, take B, set =makeup = 1.26= for
+=s = 0.5=, and see whether you still care. It is also a strict subset of E (E's trim
+knob *is* B), so it is not wasted work.
+
+** C -- a drive knob with =1/drive= makeup
+
+The idiom [[./distortion.org]] proposes at "Relation to an amount / drive knob":
+
+: out = distort(drive * y, s, k) / drive
+
+Worth noting that *this is algebraically option B*: pushing =drive*y= into a curve with
+asymptote =s= is identical to pushing =y= into a curve with asymptote =s/drive=, and the
+=1/drive= is then just a constant makeup. So C = B with the makeup constant welded to
+the scale. It is a nicer *control surface* (one knob, and small signals stay put), but it
+buys no new N-invariance. Don't implement it thinking it solves the problem.
+
+Its real merit is elsewhere and is worth stealing: expressing drive *relative to the mix*
+decouples the distortion character from the master volume, which is the calibration bug
+diagnosed at the top. See *reparametrizing the knob* below.
+
+** D -- audio-domain auto-makeup (envelope follower)
+
+Measure the dirty bus's RMS before and after the clipper with one-pole followers, and
+apply =makeup = rms_pre / rms_post=, smoothed over ~30 ms.
+
+This is the textbook "auto makeup gain" and it does adapt to =N=. But:
+
+- *It lags.* The attack is precisely where the clipper bites hardest, and a 30 ms
+  follower is still climbing when the strike is over.
+- *It ripples.* At =fundamental_hz = 80= one cycle is 12.5 ms. A window short enough not
+  to lag is short enough to ripple at the note frequency -- that is intermodulation
+  distortion you did not ask for.
+- *It fights the envelope.* As the pluck decays, =rms_pre= falls, the makeup rises, and
+  the decay flattens. You have accidentally built a compressor.
+- *It is stateful and hard to test.* Two more filters whose time constants need tuning
+  by ear, in a codebase whose distortion is currently a pure function with a unit test.
+
+Every one of these problems exists *only because the follower is guessing at a number
+the renderer already knows exactly.* Which is option E.
+
+** E -- envelope-predicted makeup  [recommended]
+
+Compute =sigma= from the voice envelopes as shown above, look up =m = 1/g(sigma/s)=, and
+apply it to the distorted bus:
+
+: sigma = sqrt( sum of b_i^2 over dirty voices / 3 )
+: m     = min( 1 / g(sigma / s), CAP ) * trim
+: out   = clean + m * distort(dirt, s, k)
+
+*What it gives you.* The distorted bus carries the clean bus's RMS at every instant.
+Turning the toggle on is a pure timbre change. Note count changes the level exactly as
+much as it does with the toggle off -- which is to say, the way you are used to, the way
+the clean instrument already behaves. Adding a note gets louder; it does not lurch.
+
+*What it costs.* One multiply-add per dirty voice per sub-sample, one =sqrt=, one table
+lookup + lerp. Nothing transcendental in the audio path (=erfc= runs once at load). No
+new state, so =oversample= and the decimator are untouched.
+
+*What it does not do.* The grit still grows with =N= -- twelve notes are dirtier than
+one, at the same loudness. That is (1) not (3), and I believe it is what you want: it is
+how an overdriven amp behaves.
+
+*The caveats, all of them:*
+
+- *Coherent voices.* =sigma= assumes voices are mutually incoherent. Unisons and octaves
+  are not. The same pitch fingered on *both* grids is two voices (by design, per the
+  rig readme) and sums coherently: true RMS is =2a=, predicted is =a*sqrt(2)=, so the
+  makeup runs up to 3 dB low on an exact unison. Rare, brief, and it errs on the *quiet*
+  side. Ignore it.
+- *A lone note.* Gaussian is wrong at =N = 1=; over-corrects by up to 0.9 dB. Options:
+  accept it; or blend toward the exact sinusoid gain when one voice dominates (compute
+  =max_i b_i^2 / sum_i b_i^2= -- it is 1 for a single voice, =1/N= for equals -- and
+  lerp between the sine and Gaussian tables on it). The blend is ~6 lines and removes
+  the last audible artifact. I'd ship without it and add it if you hear it.
+- *Equal RMS is not equal loudness.* A distorted signal at the same RMS *sounds louder*:
+  it is brighter, and the ear is more sensitive where the new harmonics land. So expect
+  the mathematically-exact makeup to feel slightly hot. That is what the =trim=
+  multiplier is for. Start it at ~0.8 (-2 dB) and tune by ear.
+- *Cap the makeup.* =m -> r= without bound as the drive grows. Clamp at ~8x so a
+  pathological =sigma= cannot run away.
+
+** F -- input-normalize the bus (constant character)
+
+: out = clean + sigma * distort(dirt / sigma * drive, 1.0, k)
+
+Normalize the bus to unit RMS, clip, scale back. Level-transparent *and* character-flat:
+a chord is exactly as gritty as a single note.
+
+Rejected, but for an interesting reason rather than cost. Normalizing by the *instant-
+aneous* =sigma= means that as a note decays, the drive stays constant -- the note stays
+maximally gritty all the way down into silence. Notes would not clean up as they fade,
+which is the opposite of every physical instrument. Fixing that means floor-ing or
+slewing the normalizer, at which point you have rebuilt option D's tuning problems.
+
+Reach for F only if you decide you want (3), character-flat, and are willing to lose the
+"quiet = clean" dynamic.
+
+** G -- distort each voice, then sum
+
+Move =distort()= inside =accumulate_voices=, per voice.
+
+Loudness then grows exactly linearly in =N=, with no compensation at all, because each
+voice is clipped at its own level and the sum is linear. Simplest possible fix.
+
+The reason not to: *it destroys the intermodulation*, which is the whole character of
+this effect and an explicit design intent -- the rig readme says the switched-on grids'
+voices "are summed and distorted together ... so two switched-on grids intermodulate, as
+the old global mode did", and =misc.org= specified distortion on "the sum of all the
+voices". Per-voice distortion is a chorus of independently fuzzed sines; bus distortion
+is a fuzz pedal. They do not sound alike.
+
+Note that *E gives you G's loudness stability while keeping the intermodulation.* That
+is the argument for E in one sentence.
+
+* recommendation
+
+Take *E*, with *B* as its trim knob. *This is what is now built* -- see *as built* below.
+
+1. =distortion_makeup= on the =cpal_synth= sink -- a *trim*, default =1.0=, applied on
+   top of the automatic correction. This is B, and it is your by-ear control.
+2. =distortion_auto_makeup= (bool, default =true=). With it =false=, =distortion_makeup=
+   acts alone as a plain constant -- so B is reachable, and E is falsifiable by A/B test
+   from the rig file without a rebuild. Both are ='r'=-reloadable, like =amplitude=.
+3. The =sigma= accumulation and the makeup table.
+
+* as built (2026-07-10)
+
+Option E, defaulted on. Four files, ~120 lines including the table:
+
+- =sawwave/voices.rs= -- =Makeup= (the =1/g(r)= table + trim + auto), =DistortionStage=
+  (curve + makeup), =gaussian_rms_gain= (the Simpson integral), and the =dirt_pow=
+  accumulation. =accumulate_voices= now splits the amplitude coefficient =b= out of the
+  per-voice product so its square can be summed: one extra multiply-add per dirty voice.
+- =rig.rs= -- the two sink fields, their defaults, and a =distortion_makeup > 0= check.
+- =surfaces_runtime/mod.rs= -- the fields into =Settings=; the table into =Live= behind
+  its own =Arc= (it is an allocation, so it cannot ride in the =Copy= =LiveParams=), built
+  by =live_makeup= on the load / hot-reload thread, *never* on the audio thread.
+- =surfaces_runtime/audio.rs= -- the callback clones the =Arc= (one atomic increment) and
+  hands the renderer a =DistortionStage=.
+
+Plus =distortion_makeup_slew_ms= (default 0), the character knob argued above.
+
+Three implementation notes that were not obvious up front:
+
+- *The table is sampled in =sqrt(r)=, not =r=.* At =k < 1= the makeup has a =sqrt=
+  cusp at the origin (see *is a per-sample correction dangerous?*), and a uniform
+  table is off by *0.64 dB* near zero. Warped, it is off by *0.0001 dB*. Since =k = 0.5=
+  is the shape you actually play, this mattered.
+- *The table must run far past where you think.* 1024 entries to =r = 256=, then a linear
+  continuation. See *is it robust to any parameters I choose?* -- stopping at =r = 16=
+  and assuming the asymptote cost 11 dB at =k = 0.5=.
+- *The Simpson integral is exact enough to be boring.* 256 nodes over =z in [0, 8]= sit
+  within 1e-4 dB of a 2048-node reference, and match the closed form at =k = 2=. It runs
+  1024 times per rig load, off the audio thread.
+
+Tests (all in =voices.rs=, no cpal, no sound card):
+
+| test                                              | asserts                                             |
+|---------------------------------------------------+-----------------------------------------------------|
+| =gaussian_rms_gain_matches_the_closed_form_at_k2= | the integral vs =erfc=; the =r -> 0= and =r -> inf= limits; monotonicity at k = 0.5, 1, 2, 4 |
+| =makeup_table_inverts_the_gain_and_off_is_unity=  | table + lerp within 0.02 dB over the whole domain, k = 0.25..8; the cap never binds in-domain; the continuation errs loud; NaN/inf inputs stay finite |
+| =makeup_is_robust_across_the_settings_a_player_can_dial= | the regression for both bugs: every =(k, scale, N)= a player can dial is within 0.05 dB and uncapped |
+| =makeup_restores_the_clean_rms_across_note_counts= | the whole point: within 0.5 dB of clean for N = 2..16, over six curves including yours |
+| =makeup_never_raises_the_peak_above_the_clean_peak= | the crest-factor argument -- no new hard clipping   |
+| =makeup_is_continuous_through_note_birth_and_death= | dead voices contribute zero; =m * g * sigma == sigma=; the k < 1 cusp is real and harmless |
+| =slewing_the_makeup_costs_attack_punch_rather_than_protecting_it= | zero slew reproduces the clean attack contrast; every slew erodes it, monotonically |
+| =zero_slew_is_the_exact_makeup_and_a_huge_slew_is_a_constant= | the knob really does interpolate E <-> B, and nothing else |
+| =render_distortion_compresses_...= (rewritten)     | the *uncompensated* clipper still compresses, under =Makeup::off()= |
+
+That last row is the one to notice: its old assertion, =rms(heavy) < rms(clean) * 0.7=,
+was the bug written down as a guarantee. It now runs against =Makeup::off()=, which is
+exactly what that assertion was always describing.
+
+The two slew tests exist to stop the tempting-but-backwards intuition from being
+re-introduced by a later reader (or a later me).
+
+*Measured accuracy*, from the passing tests and the Python replica behind them: within
+*0.35 dB* of the clean bus for =N >= 2= across six =(s, k)= pairs from gentle to heavy,
+and *0.73 dB* at =N = 1= (the Gaussian-vs-sinusoid bias -- 1.3 dB for a lone square wave;
+below the JND for a timbre change this size, and fixable with the sine-gain blend
+described under option E).
+
+*What to try first.* Play it at your =k = 0.5=. If it reads hot -- it may, since equal
+RMS is not equal loudness -- set =distortion_makeup = 0.8= and press ='r'=. If you want
+to hear what you have been living with, set =distortion_auto_makeup = false= and press
+='r'= again; the fall comes back.
+
+** reparametrizing the knob (optional, separable)
+
+Independent of all the above, and worth doing whenever you next touch this: =s= in
+absolute units means *the master volume is a drive knob*. Pull =amplitude= down for
+headroom and the distortion quietly vanishes -- which is, I suspect, how you got here.
+
+Fix by referencing the drive to *one voice at full envelope*, =sigma_1 = amplitude/sqrt(3)=:
+
+: s = sigma_1 / drive          # so r = sqrt(N) * drive
+
+Now =drive= is dimensionless and means something: =drive = 1= puts a single struck note
+exactly on the elbow. Master volume no longer changes the character; note count still
+does. Pre-makeup loss, by =drive=, at =k = 2= (your =k = 0.5= is far steeper -- that is
+the point of question 3 at the bottom):
+
+| drive | N=1     | N=2     | N=4     | N=8     | N=16    |
+|-------+---------+---------+---------+---------+---------|
+|  0.25 |  -0.7 dB |  -1.2 dB |  -2.0 dB |  -3.1 dB |  -4.6 dB |
+|  0.50 |  -2.0 dB |  -3.1 dB |  -4.6 dB |  -6.4 dB |  -8.5 dB |
+|  1.00 |  -4.6 dB |  -6.4 dB |  -8.5 dB | -10.8 dB | -13.3 dB |
+|  2.00 |  -8.5 dB | -10.8 dB | -13.3 dB | -16.0 dB | -18.7 dB |
+|  4.00 | -13.3 dB | -16.0 dB | -18.7 dB | -21.5 dB | -24.4 dB |
+
+With E applied, every cell of that table becomes 0.0 dB. The table then describes only
+how much *harmonic* content you are manufacturing -- which is what a drive knob should
+mean.
+
+Your current =s = 1.0=, =amplitude = 0.15= corresponds to =drive = 0.087=: off the top of
+the table, in the "nearly clean" corner. That is the diagnosis in one number.
+
+* implementation sketch
+
+Three files.
+
+** =sawwave/voices.rs= -- the accumulation
+
+Split =b_i= out of the existing product and accumulate its square. In =accumulate_voices=:
+
+#+begin_src rust
+  let b = v.env * v.timbre.gain * amm * pulse * amplitude;
+  let s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * b;
+  if dirty(src) {
+    dirt += s;
+    dirt_pow += b * b;        // <- the only new work
+  } else {
+    clean += s;
+  }
+#+end_src
+
+Return =(clean, dirt, dirt_pow)=. Then =sigma = (dirt_pow / 3.0).sqrt()=.
+
+** =sawwave/voices.rs= -- the makeup table
+
+=g(r)= depends only on =k=, so build the table when the sink loads and when ='r'=
+hot-reloads. 512 entries of =1/g= over =r= in =[0, 16]=, linear interpolation; above 16
+use =m = r= (the asymptote, accurate to well under a percent by then). For =k = 2= fill
+it from the =erfc= closed form; for other =k=, 64-node Gauss-Hermite on
+=E[f(sigma z)^2]=. Both run once, at load, off the audio thread.
+
+Then =post()= becomes:
+
+#+begin_src rust
+  let post = |clean: f32, dirt: f32, dirt_pow: f32| match distortion {
+    Some(d) => {
+      let sigma = (dirt_pow / 3.0).sqrt();
+      let m = makeup.lookup(sigma / d.scale) * d.trim;   // table is capped
+      (clean + m * distort(dirt, d)).clamp(-0.95, 0.95)
+    }
+    None => (clean + dirt).clamp(-0.95, 0.95),
+  };
+#+end_src
+
+The =None= arm stays bit-identical, so =distortion None is bit-identical to render()=
+keeps passing.
+
+** =rig.rs= + the rig =.org=
+
+Two new optional sink fields with defaults (=distortion_makeup = 1.0=,
+=distortion_auto_makeup = true=), threaded through =Live.params.distortion= exactly as
+=distortion_scale= already is -- it is already read fresh in the audio callback, so
+hot-reload comes free.
+
+* testing
+
+The pure-function shape of =distort= is preserved, so all of this is testable without
+cpal, in the style of the existing tests at =voices.rs:974..1060=.
+
+- =makeup_table_matches_closed_form_at_k2= -- table vs the =erfc= expression, =r= in
+  =[0.01, 16]=. Tolerance 1e-3.
+- =makeup_restores_the_clean_rms= -- render =N= incoherent voices for =N= in =1..=16= and
+  =s= in ={1.0, 0.3, 0.1}=; assert =rms(dirty_with_makeup) / rms(clean)= is within
+  *0.5 dB of unity* for =N >= 2=, and within *1.0 dB* at =N = 1= (the Gaussian bias --
+  encode the known error rather than pretending it is absent).
+- =makeup_never_raises_the_peak_above_clean= -- the crest-factor argument, asserted.
+- =distortion_none_is_bit_identical= -- unchanged, must still pass.
+
+*One existing test will need rewriting*, and it is worth knowing before you start:
+=render_distortion_compresses_the_summed_mix_and_off_is_identical= (=voices.rs:1002=)
+asserts =rms(heavy) < rms(clean) * 0.7=. That assertion *is the bug*, restated as a
+guarantee. Under E it must become "RMS is preserved; the *waveform* differs" -- e.g.
+compare RMS for equality and assert a nonzero third-harmonic content, or keep the
+compression assertion but with =auto_makeup = false=.
+
+* honesty about these numbers
+
+The model (the Gaussian RMS gain, the closed form, the tables above) was derived and
+cross-checked in Python: the =erfc= form against a 400k-sample Monte Carlo, the
+envelope-predicted =sigma= against a time-domain sum of real 58-EDO voices. The *shipped*
+numbers -- the 0.35 dB / 0.73 dB accuracy, the peak bound, the continuity -- come from
+the Rust unit tests listed under *as built*, which render the actual =BlockRenderer= path.
+
+What has *not* happened: nobody has heard it. I have no grids and no sound card in this
+container, so the audio callback, the =Arc= handoff, and the hot-reload of the table are
+exercised only by construction and by the type system. The DSP under them is tested. The
+first real test is you pressing the toggle.
+
+Two things I would listen for specifically:
+
+1. *Does it read hot?* The compensation is exact in RMS, and RMS is not loudness. If so,
+   =distortion_makeup = 0.8= and ='r'=.
+2. *Does a lone note struck into silence sound right?* That is the one place the model is
+   weakest (0.73 dB over-correction, plus the =k < 1= cusp in the makeup). Both are
+   argued harmless above; a note struck alone, loud, at =k = 0.5= is where the argument
+   would fail if it is going to.
+
+*Revisit if:* you find you want (3) character-flat rather than (1) level-transparent --
+then F, and the "notes stay gritty as they decay" problem needs a decision. Or if you
+add a per-grid distortion *amount* control on the grid (there is a free cell next to the
+toggle), in which case the drive reparametrization above stops being optional. Or if the
+compensated sound is too *composed* -- then =distortion_makeup_slew_ms=, and you have
+traded attack for a fuzz's own compression, knowingly.
+
+* open questions for you
+
+1. ~What is =distortion_scale= in the rig you actually play?~ Answered: =scale = 1=,
+   =shape = 0.5=, in =worktrees/main='s working tree. The shape was the culprit.
+2. ~Can it be robust to whatever values I choose?~ Answered: yes, and asking found two
+   bugs. See *is it robust to any parameters I choose?* -- the surface is now exact in
+   =s=, =k=, =amplitude=, timbre and =N >= 2=, and bounded (<= 1.3 dB) elsewhere.
+3. ~Should the correction be slow, so attacks stay loud?~ Answered: no -- slow makes
+   attacks *quieter*. The exact makeup already reproduces the clean attack. The knob
+   exists anyway, as a character control. See *should the correction be slow...*.
+4. Do you want more notes to sound *dirtier* (E, what is built, and what an amp does) or
+   *equally dirty* (F)? E is the default now; F is a rig-level choice we have not built.
+5. Now that the level is held, is =k = 0.5= still the shape you want? You may have been
+   choosing it partly *for* the level drop, or partly to get audibility out of an =s= that
+   was 16 dB too high. With the drive reparametrization you could have the same grit at
+   =k = 2= and a sane =s=. Worth a listen before this calcifies.
+6. Should =distortion_shape= be the knob at all, given (5)? The alternative is to expose
+   =drive= and leave =k= at 2 -- one knob that means "how much", instead of two that
+   interact through the master volume.

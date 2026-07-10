@@ -66,8 +66,59 @@ reverse it cheaply if you disagree.
 - *Placement in the chain*: after the per-voice gains and the master =amplitude=,
   before the output clamp -- so the sink =amplitude= acts as the drive into the
   clipper (turn it up for more grind, per the "drive" section of
-  learnings/distortion.org). No makeup gain is applied.
+  learnings/distortion.org). ~No makeup gain is applied.~ *[SUPERSEDED 2026-07-10:
+  see below.]*
 - The toggle rests *dim* (findable), like the accrete buttons.
+
+* distortion makeup gain (2026-07-10) -- choices where the spec was silent
+Jeff: "when I turn on distortion, the volume falls sharply ... surely there's some
+approximation better than the consistent fall." Full options writeup and the math:
+[[./learnings/distortion-volume-compensation.org]]. What I built, and the calls I made:
+
+- *Automatic, and ON by default* (=distortion_auto_makeup = true=). This changes the
+  sound of every rig using a =distortion_toggle=: the toggle is now a timbre change,
+  not a volume drop. Set it =false= for the old uncompensated clipper.
+  *Revisit if:* you wanted the level drop as part of the effect.
+- *Restores RMS, not loudness.* The compensated bus carries the RMS the clean bus
+  would have had. But equal RMS is not equal *loudness* -- distortion adds harmonics
+  where the ear is more sensitive -- so it may read slightly hot. =distortion_makeup=
+  (default =1.0=) is the by-ear trim; ~0.8 is the obvious first thing to try.
+  *Revisit if:* it feels loud. I did not pre-trim it, because guessing a perceptual
+  constant without ears on the grids seemed worse than starting from the exact value.
+- *Predicted from the envelopes, not measured from the audio.* The renderer already
+  knows every voice's instantaneous amplitude, so the dirty bus's RMS is exact and
+  free. An envelope follower would have lagged the 3 ms attack, rippled at the 80 Hz
+  fundamental, and flattened the pluck decay into a compressor.
+- *Grit still grows with note count*, loudness does not. Twelve notes are dirtier
+  than one, at the same level -- amp-like. The alternative (normalize the bus *into*
+  the clipper, so a chord is exactly as gritty as a single note) is written up as
+  option F in the doc; it makes notes stay gritty as they decay, so I did not.
+- *Not applied to the looper or sawwave runtimes* -- they never distorted.
+
+** robustness pass (same day), after Jeff asked "is it robust to whatever values I choose?"
+Two bugs found, both invisible at the defaults and both biting only at heavy =scale= /
+low =shape= -- i.e. exactly where he was headed. Fixed, with regression tests.
+
+- The makeup was capped at *8x*, and the cap *bound on a playable rig* (=scale = 0.1=
+  with a full chord needs 10x): the correction quietly stopped correcting and the volume
+  drop came back, by up to 16 dB. The cap is now 1024x -- an infinity guard, not a limiter.
+  *Lesson worth keeping:* a cap on a corrective gain is a silent failure mode.
+- Above the table the makeup used =m = r=, on the reasoning that the clipper's output RMS
+  plateaus at =scale=. It does, but so slowly for a soft elbow that at =k = 0.5, r = 16=
+  it has reached only 57% of the plateau -- an 11 dB under-boost. The table now runs to
+  =r = 256= and continues linearly from its last entry, assuming nothing.
+
+- *=distortion_makeup_slew_ms= (default 0)*, added because Jeff asked for the correction
+  to ease in "so that attacks still come through as louder". *It does the opposite*, and
+  the doc and two tests now say so: the makeup must RISE at a strike, so lagging it
+  under-corrects exactly where the clipper bites hardest (200 ms costs 4.3 dB of attack
+  contrast and adds a +3.5 dB swell). Zero slew reproduces the clean attack exactly.
+  I shipped the knob anyway because it is a real *character* control -- it slides
+  continuously from auto-makeup (0 ms) to a plain constant makeup (large) -- but the
+  default is 0 and the docs steer away from it.
+  *Revisit if:* you actually like the fuzz-pedal compression it restores. 20-50 ms.
+
+* pluck envelope -- choices where the spec was silent
 
 * pluck envelope -- choices where the spec was silent
 - *It decays to a sustain plateau, not to silence.* A literal guitar curve dies

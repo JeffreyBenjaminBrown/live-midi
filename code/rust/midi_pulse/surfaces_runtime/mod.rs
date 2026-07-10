@@ -50,7 +50,7 @@ use midi_pulse::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
 use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
-use crate::voices::Distortion;
+use crate::voices::{Distortion, Makeup};
 
 use accrete::AccreteState;
 use polyrhythm::{FactorButton, PolyrhythmState};
@@ -96,6 +96,11 @@ pub(crate) struct Live {
   /// moves (the audio callback reads the params fresh every callback).
   generation: AtomicU64,
   params: Mutex<LiveParams>,
+  /// The distortion's makeup table. Separate from `LiveParams` (which is `Copy`, so
+  /// every grid thread can snapshot it) because the table is an allocation, and built
+  /// here -- off the audio thread -- because building it integrates the clipper's gain
+  /// 512 times. The audio callback only clones the `Arc`.
+  makeup: Mutex<Arc<Makeup>>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +141,17 @@ fn live_params(s: &Settings) -> LiveParams {
   }
 }
 
+/// The distortion's makeup table for these settings. Integrates the clipper's Gaussian
+/// RMS gain, so it is rebuilt only on load / hot-reload, never in the audio callback.
+fn live_makeup(s: &Settings) -> Arc<Makeup> {
+  Arc::new(Makeup::new(
+    s.distortion.shape,
+    s.distortion_makeup,
+    s.distortion_auto_makeup,
+    s.distortion_makeup_slew_secs,
+  ))
+}
+
 /// Re-read `name`'s rig and adopt its live parameters (everything else -- window
 /// layout, ports, sinks' sample rates -- needs a restart and is silently kept as
 /// is). A rig that fails to load or resolve leaves the old parameters running.
@@ -152,7 +168,11 @@ fn reload_live(name: &str, live: &Live) {
 /// non-live (window layout, ports, sinks' sample rates) is silently kept as-is.
 fn adopt_rig(rig: &Rig, live: &Live) -> Result<(), String> {
   let s = resolve_settings(rig).map_err(|e| e.to_string())?;
+  // Build the makeup table before taking either lock: the integration is the slow part,
+  // and the audio callback holds `makeup` briefly on every callback.
+  let makeup = live_makeup(&s);
   *live.params.lock().unwrap_or_else(|e| e.into_inner()) = live_params(&s);
+  *live.makeup.lock().unwrap_or_else(|e| e.into_inner()) = makeup;
   live.generation.fetch_add(1, Ordering::SeqCst);
   Ok(())
 }
@@ -279,6 +299,12 @@ struct Settings {
   /// The global distortion's curve (scale + shape from the cpal_synth sink); the
   /// on/off lives in a shared AtomicBool flipped by the distortion_toggle windows.
   distortion: Distortion,
+  /// The distortion's loudness compensation (cpal_synth `distortion_makeup` /
+  /// `distortion_auto_makeup`): the trim, and whether to restore the clean bus's RMS.
+  distortion_makeup: f32,
+  distortion_auto_makeup: bool,
+  /// Lag on the applied makeup (cpal_synth `distortion_makeup_slew_ms`). 0 = exact.
+  distortion_makeup_slew_secs: f32,
   has_drums: bool,
   /// Trail clobber radius as a divisor of the octave (`[surfaces].trail_clobber_radius`):
   /// a played note clears trailed classes within `edo / this` steps of it.
@@ -336,7 +362,8 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
     .ok_or("edo_note_grid references an unknown sink")?;
   let SinkRig::CpalSynth {
     sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
-    distortion_scale, distortion_shape, sustain_level, decay_secs, ..
+    distortion_scale, distortion_shape, distortion_makeup, distortion_auto_makeup,
+    distortion_makeup_slew_ms, sustain_level, decay_secs, ..
   } = sink
   else {
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
@@ -506,6 +533,9 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
       AmShapeFamilyRig::TriToSquare => AmShapeFamily::TriToSquare,
     },
     distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
+    distortion_makeup: *distortion_makeup,
+    distortion_auto_makeup: *distortion_auto_makeup,
+    distortion_makeup_slew_secs: *distortion_makeup_slew_ms / 1000.0,
     has_drums: !rig.softstep_windows.is_empty(),
     trail_clobber_radius: surfaces.trail_clobber_radius,
     trails_max: surfaces.trails_max,
@@ -661,6 +691,7 @@ fn run(
   let live = Arc::new(Live {
     generation: AtomicU64::new(0),
     params: Mutex::new(live_params(&s)),
+    makeup: Mutex::new(live_makeup(&s)),
   });
   if let Some(name) = reload_name {
     let live_for_stdin = Arc::clone(&live);
@@ -678,7 +709,7 @@ fn run(
         }
       }
     });
-    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve).");
+    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup).");
   }
 
   // Discover whatever grids are actually connected and assign each configured grid a
@@ -1966,8 +1997,36 @@ mod tests {
     // The [surfaces] slide knobs flow into the settings.
     assert_eq!(s.slide_window, Duration::from_millis(1000));
     assert!((s.slide_duration_secs - 0.1).abs() < 1e-6);
-    // The sink's distortion curve flows into the settings.
-    assert_eq!(s.distortion, Distortion { scale: 1.0, shape: 2.0 });
+    // The sink's distortion curve flows into the settings. Compare against the rig's own
+    // values rather than literals: `distortion_scale` / `distortion_shape` are knobs Jeff
+    // turns while playing, and a test that pins them is a test that breaks on a tuning
+    // change without saying anything true.
+    let SinkRig::CpalSynth { distortion_scale, distortion_shape, .. } = &rig.sinks[0] else {
+      panic!("the first sink is the cpal_synth");
+    };
+    assert_eq!(s.distortion, Distortion { scale: *distortion_scale, shape: *distortion_shape });
+    // ...as does its loudness compensation, and it reaches a usable `Makeup` table.
+    assert_eq!(s.distortion_makeup, 1.0, "makeup trim defaults to exact restoration");
+    assert!(s.distortion_auto_makeup, "auto makeup is on by default");
+    assert_eq!(s.distortion_makeup_slew_secs, 0.0, "the makeup is exact by default");
+    let makeup = live_makeup(&s);
+    // Whatever curve the rig currently names, these hold for every shape:
+    //   silence needs no makeup; the makeup never attenuates; it rises with the bus; and
+    //   driving to the elbow needs real makeup.
+    // Note what is deliberately NOT asserted: that a *quiet* bus needs ~no makeup. That
+    // is a `k >= 1` intuition. Since `f(y)/y ~ 1 - |y/s|^k / k`, a soft elbow bends at
+    // every amplitude -- at k = 0.3 the makeup is still 1.26x at sigma = s/10000.
+    assert_eq!(makeup.gain(0.0, s.distortion.scale), 1.0, "silence needs no makeup");
+    let at_elbow = makeup.gain(s.distortion.scale, s.distortion.scale);
+    assert!(at_elbow > 1.05, "at sigma = scale the clipper is biting: makeup {at_elbow}");
+    let mut prev = 1.0;
+    for i in 1..=40 {
+      let g = makeup.gain(i as f32 * 0.05 * s.distortion.scale, s.distortion.scale);
+      assert!(g >= prev - 1e-6, "makeup is monotone in sigma");
+      assert!(g >= 1.0, "makeup never attenuates the distorted bus");
+      prev = g;
+    }
+    assert!(prev > at_elbow, "and it keeps rising past the elbow");
     // The `[surfaces]` table flows into the settings (this rig asks for 9 trails).
     assert_eq!(s.trail_clobber_radius, 27, "trail_clobber_radius from [surfaces]");
     assert_eq!(s.trails_max, 9, "trails_max from [surfaces]");
@@ -2191,7 +2250,11 @@ mod tests {
     // generation moves, so grid threads and the audio callback pick them up.
     let base = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("rig loads");
     let s = resolve_settings(&base).expect("resolves");
-    let live = Live { generation: AtomicU64::new(0), params: Mutex::new(live_params(&s)) };
+    let live = Live {
+      generation: AtomicU64::new(0),
+      params: Mutex::new(live_params(&s)),
+      makeup: Mutex::new(live_makeup(&s)),
+    };
 
     let source = std::fs::read_to_string(
       midi_pulse::rig::mock_rig_dir().join("2-monomes_58-8-1_kmss-drums-mock.org"),

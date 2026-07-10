@@ -249,6 +249,24 @@ soft-clipper =f(y) = y / (1 + |y/s|^k)^(1/k)=
 =distortion_scale= / =distortion_shape= (defaults 1.0 / 2.0 -- a clearly-audible,
 smooth saturation).
 
+*The toggle changes timbre, not volume* (since 2026-07-10). A soft-clipper loses
+level, and loses more of it the more notes you sum into it -- so switching it on used
+to drop the volume, by an amount that moved with the chord. The sink's
+=distortion_auto_makeup= (default on) restores the dirty bus to the RMS the clean bus
+would have had, so the toggle is now purely a timbre change and note count affects
+loudness exactly as much as it does undistorted. The grit still grows with the chord,
+like an overdriven amp; only the level is held. =distortion_makeup= (default 1.0)
+trims it by ear -- equal RMS is not equal *loudness*, since the distorted signal is
+brighter, so ~0.8 may sit better. Set =distortion_auto_makeup = false= for the old
+uncompensated clipper.
+
+The correction is computed from the *voice envelopes*, not from an audio detector:
+the renderer already knows each voice's instantaneous amplitude, so the dirty bus's
+RMS is exact and free, recomputed every sample. It therefore never lags the 3 ms
+attack, never ripples at the 80 Hz fundamental, and never flattens the pluck decay
+into a compressor. Derivation, options and measured error bounds:
+[[../../../learnings/distortion-volume-compensation.org]].
+
 * slide and mono
 
 *Slide* (=(1,1)=; key-down toggles; PER-GRID -- each grid's toggle governs its

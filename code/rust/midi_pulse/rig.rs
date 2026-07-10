@@ -517,9 +517,34 @@ pub enum SinkRig {
     #[serde(default = "default_distortion_scale")]
     distortion_scale: f32,
     /// The global distortion's shape `k` (elbow harshness): 1 = gentlest,
-    /// 2 = the smooth sweet spot, ~4+ = hard-ish, very large = hard clip.
+    /// 2 = the smooth sweet spot, ~4+ = hard-ish, very large = hard clip. Below 1
+    /// the curve bends from the origin and eats level fast (k = 0.5 costs ~5 dB on
+    /// a single note) -- legal, but see `distortion_auto_makeup`.
     #[serde(default = "default_distortion_shape")]
     distortion_shape: f32,
+    /// A trim on the distortion's loudness compensation. With `distortion_auto_makeup`
+    /// on this multiplies the automatic gain: equal RMS is not equal *loudness* (the
+    /// distorted signal is brighter, so it reads louder), so pull this to ~0.8 if the
+    /// compensated sound feels hot. With auto off it *is* the makeup -- a plain
+    /// constant gain on the distorted bus. Must be > 0. Default 1.0.
+    #[serde(default = "default_distortion_makeup")]
+    distortion_makeup: f32,
+    /// Restore the distorted bus to the RMS the clean bus would have had, so a
+    /// `distortion_toggle` changes timbre and not volume, and note count affects
+    /// loudness exactly as it does undistorted. Computed from the voice envelopes,
+    /// not an audio detector, so it neither lags nor pumps. Set false for the old
+    /// uncompensated clipper. See `learnings/distortion-volume-compensation.org`.
+    #[serde(default = "default_distortion_auto_makeup")]
+    distortion_auto_makeup: bool,
+    /// Lag the applied makeup behind its target, in milliseconds. `0` (the default) is
+    /// the exact correction, which reproduces the clean bus's envelope and so preserves
+    /// attacks exactly. Nonzero does NOT protect attacks -- it does the opposite, since
+    /// the makeup must *rise* at a strike and lagging it under-compensates precisely
+    /// there (200 ms costs ~4 dB of attack contrast and adds a swell). What it does buy
+    /// is the clipper's own dynamic compression: as this grows the makeup approaches a
+    /// plain constant, i.e. `distortion_auto_makeup = false`. A character knob.
+    #[serde(default = "default_distortion_makeup_slew_ms")]
+    distortion_makeup_slew_ms: f32,
     /// Pluck envelope (see TODO/misc.org "synth attacks should be louder"): after the
     /// attack peaks, the envelope decays exponentially toward `sustain_level` x the
     /// peak, so fresh strikes ring out over held notes -- a rough plucked-string
@@ -554,6 +579,18 @@ fn default_distortion_scale() -> f32 {
 
 fn default_distortion_shape() -> f32 {
   2.0 // the smooth sweet spot (y / sqrt(1 + (y/s)^2))
+}
+
+fn default_distortion_makeup() -> f32 {
+  1.0 // exact RMS restoration; trim by ear from there
+}
+
+fn default_distortion_auto_makeup() -> bool {
+  true // a distortion toggle should change the timbre, not the volume
+}
+
+fn default_distortion_makeup_slew_ms() -> f32 {
+  0.0 // exact: no lag, no swell, attacks preserved
 }
 
 fn default_sustain_level() -> f32 {
@@ -1346,6 +1383,8 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       release_secs,
       accretion_level,
       oversample,
+      distortion_makeup,
+      distortion_makeup_slew_ms,
       ..
     } = sink {
       if *sample_rate == 0 || *buffer_frames == 0 {
@@ -1363,6 +1402,13 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
         if !value.is_finite() || value < 0.0 {
           return Err(format!("sink {:?} {name} must be nonnegative", sink.id()));
         }
+      }
+      // A zero or negative makeup would silence (or invert) the distorted bus.
+      if !distortion_makeup.is_finite() || *distortion_makeup <= 0.0 {
+        return Err(format!("sink {:?} distortion_makeup must be positive", sink.id()));
+      }
+      if !distortion_makeup_slew_ms.is_finite() || *distortion_makeup_slew_ms < 0.0 {
+        return Err(format!("sink {:?} distortion_makeup_slew_ms must be nonnegative", sink.id()));
       }
     }
     if let SinkRig::CpalSampler { sample_rate, buffer_frames, amplitude, .. } = sink {

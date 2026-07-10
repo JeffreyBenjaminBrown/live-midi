@@ -139,6 +139,18 @@ Payoff: drive =s= through this and the 5% onset stays *fixed* while you sweep
 signal must get before it bites -- usually what a player expects from two
 independent controls.
 
+* Loudness: the makeup gain
+
+A saturating curve *loses level*, and loses more of it the more voices are summed into
+it. Restoring that -- so a distortion toggle changes timbre and not volume -- has its own
+writeup, including the closed form for this family's RMS gain on a Gaussian input, the
+option space, and what was built: [[./distortion-volume-compensation.org]].
+
+Note in particular that =k < 1= (legal, and monotone: =f'(y) = (1 + u^k)^(-(k+1)/k) > 0=
+for every =k > 0=) bends from the origin with =f''(0) = -inf=, so it eats level at
+amplitudes where =k = 2= is still straight -- ~5 dB on a *single* note at =k = 0.5=. The
+"gentlest" in the =k= table below means "softest elbow", not "quietest cost".
+
 * Relation to an "amount" / drive knob
 
 The TODO distortion is "just an amount knob." Amount is the inverse of =s=. The

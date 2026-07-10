@@ -85,12 +85,35 @@ and accrete drones keep ringing at the sustain).
 sustain_level: fraction of the strike peak; 0.2..0.5 natural, >= 1.0 disables.
 *** PARAM decay_secs = 0.5
 decay_secs: the decay time constant; ~0.3 snappy, ~1.5 slow ring, <= 0 disables.
-*** PARAM distortion_scale = 1.0
+*** PARAM distortion_scale = 0.01
 Distortion (per-monome; heard only while a grid's distortion_toggle is on): the
 soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the switched-on grids' summed mix.
 scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.
-*** PARAM distortion_shape = 2.0
+*** PARAM distortion_shape = 8
 shape k: elbow harshness; 1 gentlest, 2 smooth sweet spot, 4-8 hard-ish edge.
+Below 1 the curve bends straight from the origin and eats level fast -- k = 0.5
+costs ~5 dB on a single note and ~9 dB on sixteen, before compensation.
+*** PARAM distortion_makeup = 1.0
+Loudness compensation, so the toggle changes timbre and not volume. 1.0 restores
+the clean bus's RMS exactly. Equal RMS is not equal *loudness* (the distorted
+signal is brighter, so it reads louder), so pull this toward ~0.8 if the
+compensated sound feels hot. With distortion_auto_makeup off, this IS the makeup:
+a plain constant gain on the distorted bus. Must be > 0.
+*** PARAM distortion_auto_makeup = true
+Track the makeup to the summed dirty bus's level, so note count changes loudness
+exactly as much as it does with distortion off. Computed from the voice envelopes
+(not an audio detector), so it neither lags nor pumps. Correct for every scale and
+shape you can dial, not just the defaults. Set false for the old uncompensated
+clipper. See learnings/distortion-volume-compensation.org.
+*** PARAM distortion_makeup_slew_ms = 0.0
+Lag the applied makeup behind its target, in ms. 0 (default) is exact, and preserves
+attacks exactly -- it reproduces the clean bus's own envelope. Nonzero does NOT
+protect attacks; it does the opposite. The makeup must RISE at a strike (a louder bus
+loses more to the clipper), so lagging it under-corrects precisely where the clipper
+bites hardest: 200 ms costs ~4 dB of attack contrast and adds a swell after the
+strike. What nonzero buys is the clipper's own dynamic compression -- as this grows
+the makeup freezes toward a constant, i.e. distortion_auto_makeup = false. A
+character knob, not a fix. Try 0 first.
 ** ELEM sinks
 The drum sampler (one-shot WAVs). Same cpal/JACK path as the synth.
 *** PARAM id = "drums"

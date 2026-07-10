@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use super::synth::SUSTAIN_BASE;
 use super::Live;
 use crate::types::{AmShapeFamily, VoiceMap, VoiceSource};
-use crate::voices::BlockRenderer;
+use crate::voices::{BlockRenderer, DistortionStage};
 
 pub struct Audio {
   /// Kept alive for the run; dropping it stops the stream. `None` in the null path
@@ -85,14 +85,20 @@ pub fn start(
     move |data: &mut [f32], _| {
       // The master amplitude + distortion curve are hot-reloadable ('r'), and the
       // per-grid distortion toggles are live -- read everything fresh each callback.
-      let (amplitude, distortion_params) = {
+      let (amplitude, curve) = {
         let p = live.params.lock().unwrap_or_else(|e| e.into_inner());
         (p.amplitude, p.distortion)
       };
+      // The makeup table matches that curve; cloning the Arc is one atomic increment.
+      // Its cost was paid on the reload thread (see `live_makeup`).
+      let makeup = Arc::clone(&live.makeup.lock().unwrap_or_else(|e| e.into_inner()));
       for (f, b) in flags.iter_mut().zip(distortion_on.iter()) {
         *f = b.load(Ordering::Relaxed);
       }
-      let distortion = flags.iter().any(|f| *f).then_some(distortion_params);
+      let distortion = flags
+        .iter()
+        .any(|f| *f)
+        .then(|| DistortionStage { curve, makeup: &makeup });
       // Recover from poisoning so a panicked grid thread can't permanently kill audio.
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
       // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.

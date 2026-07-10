@@ -13,13 +13,6 @@ opens with a short note pointing back here (Emacs ~C-c C-o~ follows the link).
 - Any *other* headline is pure grouping: transparent to the data, there only to
   organize and document. Every *body* (the lines under a headline) is a human note the
   loader ignores.
-
-It loads into the exact same typed rig as the old TOML did (same fields, same
-validation, unknown keys still rejected). Full spec + migration notes:
-[[file:../../../TODO/toml-to-org-rig-format.org]]. A rig's own reference doc, when it has
-one, is the sibling ~<name>_readme.org~. (~softstep.toml~ stays TOML -- it is the shared
-SoftStep-params file, not a rig.)
-
 * to run something
 ** about the file argument
 The file argument (to both commands) must exist in this folder.
@@ -401,6 +394,40 @@ rect = [0, 1, 0, 1]       # exactly one cell
 
 The button is dim at rest, bright while on; key-down toggles, key-up does nothing.
 See =learnings/distortion.org= for the curve family.
+
+A soft-clipper *loses level*, and loses more of it the more notes are summed into it
+(the loss depends only on the dirty bus's RMS, which grows like =sqrt(N)=). Two more
+sink fields undo that, so the toggle changes timbre and not volume:
+
+#+begin_src toml
+[[sinks]]
+kind = "cpal_synth"
+# ...
+distortion_auto_makeup = true   # restore the RMS the clean bus would have had
+distortion_makeup = 1.0         # trim on top of it (~0.8 if it reads hot); must be > 0
+distortion_makeup_slew_ms = 0.0 # 0 = exact. A character knob; see below.
+#+end_src
+
+With =distortion_auto_makeup= on, note count affects loudness exactly as much as it
+does with distortion *off*, while the grit still grows with the chord -- the makeup is
+computed from the voice envelopes each sample, not from an audio detector, so it
+neither lags the attack nor pumps the decay. It is correct for *every* =distortion_scale=
+and =distortion_shape= you can dial, not just the defaults. Turn it off and
+=distortion_makeup= acts alone, as a plain constant gain (which cannot track =N=; fine
+when =distortion_scale >= 0.5=, poor below). All three are hot-reloadable with ='r'=. The
+derivation, the option space, and the measured error bounds:
+[[../../../learnings/distortion-volume-compensation.org]].
+
+=distortion_makeup_slew_ms= lags the applied makeup. *It does not protect attacks -- it
+erodes them.* The makeup must *rise* at a strike (a louder bus loses more to the
+clipper), so lagging it under-corrects exactly where the clipper bites hardest: 200 ms
+costs ~4 dB of attack contrast and adds a swell. What it buys is the clipper's own
+dynamic compression, and as it grows the makeup freezes toward a constant -- so the knob
+slides continuously from =auto_makeup = true= (0 ms) to =auto_makeup = false= (very
+large). Leave it at 0 unless you want that compression as an effect.
+
+Note that =distortion_shape= below 1 bends the curve straight from the origin and eats
+level fast (=k = 0.5= costs ~5 dB on a *single* note), which the compensation now hides.
 
 A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
 (single cell, at most one of each per monome, dim/bright LED). All are

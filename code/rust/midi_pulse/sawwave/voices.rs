@@ -206,6 +206,163 @@ pub fn distort(y: f32, d: Distortion) -> f32 {
   y / (1.0 + u.powf(d.shape)).powf(1.0 / d.shape)
 }
 
+/// Entries in the makeup table, and the largest drive ratio `r = sigma/s` it covers.
+///
+/// `R_MAX` is deliberately far past musical use. `r` grows with the master `amplitude`,
+/// with `sqrt(N)`, and with `1/scale`, so a heavy rig reaches `r ~ 20` easily; a table
+/// that stopped at 16 would be extrapolating exactly where the distortion is heaviest.
+/// Above `R_MAX` the makeup continues linearly from the last entry (`m = m_last * r/R_MAX`),
+/// which is continuous and errs by at most +0.7 dB out at `r = 1000`, on the *loud* side.
+///
+/// It is tempting to use `m = r` up there instead -- "the output RMS plateaus at `s`, so
+/// restoring `sigma = r*s` needs a gain of `r`". That is wrong for `k < 2`: the plateau is
+/// approached very slowly (at `k = 0.5`, output RMS is only 0.57 `s` at `r = 16`), and the
+/// resulting under-boost reaches 11 dB. The linear continuation makes no such assumption.
+const MAKEUP_LEN: usize = 1024;
+const MAKEUP_R_MAX: f32 = 256.0;
+/// Ceiling on the automatic makeup: a numerical guard against a degenerate rig (a `scale`
+/// of 1e-38 would otherwise give an infinite `r`), not a musical limit. At 60 dB it cannot
+/// bind anywhere inside the table -- the largest makeup at `r = R_MAX` is 692x, at the
+/// extreme `k = 0.25` -- so it only ever clamps the continuation beyond it.
+/// A cap that binds silently re-introduces the very volume drop this module exists to fix;
+/// the first cut capped at 8x and did exactly that at `scale = 0.1` with a full chord.
+const MAKEUP_CAP: f32 = 1024.0;
+/// Every normalized waveform has RMS `1/sqrt(3)` (see `waveform_norm`), so a voice
+/// whose amplitude coefficient is `b` has power `b^2 / 3`.
+const VOICE_POWER_PER_B2: f32 = 1.0 / 3.0;
+
+/// The RMS gain the soft-clipper applies to a Gaussian input of std `sigma`, as a
+/// function of the drive ratio `r = sigma / s`. Depends only on `(r, k)`, since the
+/// curve is `f(y; s, k) = s * F(y/s; k)`.
+///
+/// `g(r) = RMS[F(r z)] / r` for `z ~ N(0, 1)`. Simpson over the (even) integrand on
+/// `z in [0, 8]`, doubled -- exact to six decimals against a 200k-point reference and
+/// against the closed form `sqrt((1 - Q(r)) / r^2)`, `Q(r) = sqrt(pi/2)/r * e^(1/2r^2) *
+/// erfc(1/(r sqrt 2))`, which exists only at `k = 2`. See
+/// `learnings/distortion-volume-compensation.org`.
+fn gaussian_rms_gain(r: f64, k: f64) -> f64 {
+  if r < 1e-6 {
+    return 1.0; // unity slope at the origin
+  }
+  const Z_MAX: f64 = 8.0;
+  const N: usize = 256; // even, for Simpson; within 1e-4 dB of a 2048-node reference
+  let integrand = |z: f64| {
+    let u = r * z;
+    let f = u / (1.0 + u.abs().powf(k)).powf(1.0 / k);
+    f * f * (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
+  };
+  let h = Z_MAX / N as f64;
+  let mut sum = integrand(0.0) + integrand(Z_MAX);
+  for i in 1..N {
+    sum += integrand(i as f64 * h) * if i % 2 == 1 { 4.0 } else { 2.0 };
+  }
+  (2.0 * sum * h / 3.0).sqrt() / r
+}
+
+/// The distortion's loudness compensation: the gain that restores the dirty bus to the
+/// RMS the *clean* bus would have had, so switching a grid's `distortion_toggle` on is a
+/// timbre change and not a volume drop.
+///
+/// The clipper's loss depends on exactly one thing -- the RMS `sigma` of the summed
+/// dirty bus -- so the correction is `1 / g(sigma / s)`. `sigma` is not measured from
+/// the audio (a detector would lag, ripple, and pump); the renderer already knows every
+/// voice's instantaneous amplitude, so `accumulate_voices` sums their powers and gets
+/// `sigma` exactly, for free. `Makeup` is therefore a *pure function of the envelopes*:
+/// it changes only as fast as they do, never within a waveform cycle, so it corrects
+/// the level without touching the waveshaping that makes the sound.
+///
+/// The table holds `1 / g(r)` sampled uniformly in `sqrt(r / R_MAX)` -- warped because
+/// `1/g` has a `sqrt(r)` cusp at the origin whenever `k < 1` (a uniform table there is
+/// off by 0.64 dB; warped it is off by 0.0001 dB).
+///
+/// Building it integrates `g` 512 times: do it at rig load or hot-reload, never on the
+/// audio thread. Lookups are a `sqrt`, a lerp, and a `min`.
+#[derive(Clone, Debug)]
+pub struct Makeup {
+  trim: f32,
+  auto: bool,
+  /// One-pole time constant for the *applied* makeup, in seconds. `0` (the default) is
+  /// the exact, instantaneous correction; see `slew_secs` on `BlockRenderer`.
+  slew_secs: f32,
+  /// `1/g(r)` sampled uniformly in `sqrt(r / R_MAX)`. Empty when `!auto`.
+  inv_g: Vec<f32>,
+}
+
+impl Makeup {
+  /// Build for elbow harshness `shape` (k). `trim` multiplies the result -- equal RMS
+  /// is not equal *loudness* (a distorted signal is brighter, so it reads louder), so
+  /// this is the by-ear knob; ~0.8 is a reasonable start. With `auto` false the table is
+  /// skipped and `trim` acts alone, as a plain constant makeup gain.
+  ///
+  /// `slew_secs` lags the applied makeup behind its target. `0` is exact. Nonzero trades
+  /// attack punch for the clipper's own dynamic compression -- see
+  /// `learnings/distortion-volume-compensation.org`; it is a character knob, not a fix.
+  ///
+  /// The table is sampled uniformly in `sqrt(r)` because `1/g` has a `sqrt(r)` cusp at
+  /// the origin whenever `k < 1`. Building it integrates `g` `MAKEUP_LEN` times: do it at
+  /// rig load or hot-reload, never on the audio thread.
+  pub fn new(shape: f32, trim: f32, auto: bool, slew_secs: f32) -> Self {
+    let inv_g = if auto && shape > 0.0 {
+      (0..MAKEUP_LEN)
+        .map(|i| {
+          let warped = i as f32 / (MAKEUP_LEN - 1) as f32;
+          let r = MAKEUP_R_MAX * warped * warped;
+          (1.0 / gaussian_rms_gain(r as f64, shape as f64)) as f32
+        })
+        .collect()
+    } else {
+      Vec::new()
+    };
+    Makeup { trim, auto, slew_secs, inv_g }
+  }
+
+  /// No compensation: the pre-2026-07 behavior (the clipper's loss stands).
+  pub fn off() -> Self {
+    Makeup { trim: 1.0, auto: false, slew_secs: 0.0, inv_g: Vec::new() }
+  }
+
+  pub fn slew_secs(&self) -> f32 {
+    self.slew_secs
+  }
+
+  /// The gain to apply to the distorted dirty bus, given that bus's RMS `sigma` and the
+  /// curve's asymptote `scale`. Monotonically increasing in `sigma` -- the clipper eats
+  /// more of a louder bus, so more must be given back. (That monotonicity is why lagging
+  /// this gain *reduces* attack punch rather than preserving it: at a strike the target
+  /// jumps up, and a lagged makeup under-compensates exactly when the clipper bites
+  /// hardest.)
+  pub fn gain(&self, sigma: f32, scale: f32) -> f32 {
+    if !self.auto || self.inv_g.is_empty() || scale <= 0.0 || sigma <= 0.0 {
+      return self.trim;
+    }
+    let r = sigma / scale;
+    let last = self.inv_g[MAKEUP_LEN - 1];
+    let m = if r >= MAKEUP_R_MAX || !r.is_finite() {
+      // Continue linearly from the last entry: `m = r / h(R_MAX)` where `h = g*r` is the
+      // clipper's output RMS in units of `s`. Continuous at R_MAX, and since `h` only
+      // rises from there toward 1, this errs on the loud side by at most `1/h(R_MAX)`.
+      last * (r / MAKEUP_R_MAX)
+    } else {
+      let x = (r / MAKEUP_R_MAX).sqrt() * (MAKEUP_LEN - 1) as f32;
+      let i = (x as usize).min(MAKEUP_LEN - 2);
+      let frac = x - i as f32;
+      self.inv_g[i] * (1.0 - frac) + self.inv_g[i + 1] * frac
+    };
+    // `min` propagates NaN's operand order, so guard explicitly: a NaN `r` must not
+    // become a NaN gain multiplying the whole bus.
+    if m.is_finite() { m.min(MAKEUP_CAP) * self.trim } else { MAKEUP_CAP * self.trim }
+  }
+}
+
+/// The distortion applied to one render: the curve, plus the loudness compensation that
+/// undoes its level loss. Borrowed rather than owned so the (allocated) makeup table is
+/// built once per rig load and merely read by the audio callback.
+#[derive(Clone, Copy)]
+pub struct DistortionStage<'a> {
+  pub curve: Distortion,
+  pub makeup: &'a Makeup,
+}
+
 // Render one cpal callback's worth of audio into `data` from `voices`.
 // Pulled out of the cpal closure so unit tests can exercise it
 // without cpal or PipeWire.
@@ -223,7 +380,9 @@ pub fn render_block(
 /// Advance every voice by `frac` of one output sample (1.0 on the plain path, 1/N
 /// when oversampling) and return the summed contributions, pre-clamp, split into a
 /// `(clean, dirty)` pair by the `dirty` route (the per-monome distortion: the dirty
-/// bus gets distorted, the clean one does not; see `render_with_distortion`).
+/// bus gets distorted, the clean one does not; see `render_with_distortion`), plus
+/// `dirt_pow` -- the summed *power* of the dirty voices, which is what the
+/// distortion's loudness compensation needs (see `Makeup`).
 /// Running the nonlinear per-voice work (osc, AM, FM, and the AM multiply) at N x
 /// the rate is the whole point of oversampling: the harmonics/sidebands it
 /// manufactures then land below the *high-rate* Nyquist instead of folding back
@@ -235,9 +394,10 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
   amplitude: f32,
   shape_family: AmShapeFamily,
   dirty: &F,
-) -> (f32, f32) {
+) -> (f32, f32, f32) {
   let mut clean = 0.0_f32;
   let mut dirt = 0.0_f32;
+  let mut dirt_pow = 0.0_f32;
   voices.retain(|src, v| {
     // Envelope. Linear attack toward target_env; when the attack peaks on a held
     // voice whose sustain sits below the peak, the target drops to sustain_env and
@@ -311,15 +471,22 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     v.phase = (v.phase + dt).rem_euclid(1.0);
     let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
     let wf_norm = waveform_norm(v.timbre.waveform);
-    let s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * v.env * v.timbre.gain * amm * pulse * amplitude;
+    // `b` is this voice's instantaneous amplitude coefficient -- everything but the
+    // oscillator. Since `osc * wf_norm` has RMS 1/sqrt(3) for *every* waveform, the
+    // voice's RMS is exactly `b / sqrt(3)`, and incoherent voices (distinct EDO
+    // pitches) add in power. Summing `b^2` therefore hands the distortion the dirty
+    // bus's RMS for free -- no detector, no lag. `b >= 0`: every factor is.
+    let b = v.env * v.timbre.gain * amm * pulse * amplitude;
+    let s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * b;
     if dirty(src) {
       dirt += s;
+      dirt_pow += b * b;
     } else {
       clean += s;
     }
     true
   });
-  (clean, dirt)
+  (clean, dirt, dirt_pow)
 }
 
 /// A stateful per-stream renderer. With `oversample > 1` it runs the mix at N x the
@@ -331,13 +498,17 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
 pub struct BlockRenderer {
   oversample: usize,
   decimator: Option<Decimator>,
+  /// The applied distortion makeup, held across callbacks so a nonzero
+  /// `Makeup::slew_secs` can lag it toward its target. Unused (and overwritten every
+  /// sub-sample) when the slew is off, which is the default.
+  makeup_state: f32,
 }
 
 impl BlockRenderer {
   pub fn new(oversample: usize) -> Self {
     let oversample = oversample.max(1);
     let decimator = (oversample > 1).then(|| Decimator::new(oversample));
-    BlockRenderer { oversample, decimator }
+    BlockRenderer { oversample, decimator, makeup_state: 1.0 }
   }
 
   /// Render one cpal callback's worth of audio into `data` from `voices`. Pulled out
@@ -364,6 +535,11 @@ impl BlockRenderer {
   /// be per-monome"). `None` is bit-identical to `render` whatever the route. The
   /// surfaces runtime passes `Some` while any grid's distortion toggle is on,
   /// routing that grid's voices dirty.
+  ///
+  /// The stage's `makeup` then restores the dirty bus to the RMS the clean bus would
+  /// have had, from the voice envelopes the accumulator already summed -- recomputed
+  /// every sub-sample, so it is continuous through note births, deaths and decays and
+  /// needs no smoothing. `Makeup::off()` reproduces the uncompensated clipper exactly.
   #[allow(clippy::too_many_arguments)]
   pub fn render_with_distortion<F: Fn(&VoiceSource) -> bool>(
     &mut self,
@@ -373,21 +549,41 @@ impl BlockRenderer {
     sample_rate: f32,
     amplitude: f32,
     shape_family: AmShapeFamily,
-    distortion: Option<Distortion>,
+    distortion: Option<DistortionStage<'_>>,
     dirty: F,
   ) {
     let oversample = self.oversample;
-    let post = |clean: f32, dirt: f32| match distortion {
-      Some(d) => (clean + distort(dirt, d)).clamp(-0.95, 0.95),
+    // The makeup is stepped at the *sub-sample* rate, since that is where it is applied.
+    let sub_rate = sample_rate * oversample as f32;
+    let slew_coeff = match distortion {
+      Some(stage) if stage.makeup.slew_secs() > 0.0 && sub_rate > 0.0 => {
+        1.0 - (-1.0 / (stage.makeup.slew_secs() * sub_rate)).exp()
+      }
+      _ => 1.0, // no slew: apply the target exactly, bit-identically
+    };
+    let mut makeup_state = self.makeup_state;
+    let mut post = |clean: f32, dirt: f32, dirt_pow: f32| match distortion {
+      Some(stage) => {
+        let sigma = (dirt_pow * VOICE_POWER_PER_B2).sqrt();
+        let target = stage.makeup.gain(sigma, stage.curve.scale);
+        // `>= 1.0` short-circuits to the target itself rather than `state + (target -
+        // state) * 1.0`, which is not bit-identical in f32.
+        if slew_coeff >= 1.0 {
+          makeup_state = target;
+        } else {
+          makeup_state += (target - makeup_state) * slew_coeff;
+        }
+        (clean + makeup_state * distort(dirt, stage.curve)).clamp(-0.95, 0.95)
+      }
       None => (clean + dirt).clamp(-0.95, 0.95),
     };
     match &mut self.decimator {
       // Plain path: one sub-step per output sample, no filtering, no latency.
       None => {
         for frame in data.chunks_mut(channels) {
-          let (clean, dirt) =
+          let (clean, dirt, dirt_pow) =
             accumulate_voices(voices, 1.0, sample_rate, amplitude, shape_family, &dirty);
-          let s = post(clean, dirt);
+          let s = post(clean, dirt, dirt_pow);
           for out in frame.iter_mut() {
             *out = s;
           }
@@ -400,9 +596,9 @@ impl BlockRenderer {
         let frac = 1.0 / oversample as f32;
         for frame in data.chunks_mut(channels) {
           for _ in 0..oversample {
-            let (clean, dirt) =
+            let (clean, dirt, dirt_pow) =
               accumulate_voices(voices, frac, sample_rate, amplitude, shape_family, &dirty);
-            decim.push(post(clean, dirt));
+            decim.push(post(clean, dirt, dirt_pow));
           }
           let s = decim.output();
           for out in frame.iter_mut() {
@@ -411,6 +607,7 @@ impl BlockRenderer {
         }
       }
     }
+    self.makeup_state = makeup_state;
   }
 }
 
@@ -998,24 +1195,35 @@ mod tests {
     assert!(distort(1.0, heavy) < distort(1.0, d), "smaller scale = heavier");
   }
 
+  /// `n` sine voices at mutually incoherent frequencies, each at full envelope.
+  fn incoherent_voices(n: usize) -> VoiceMap {
+    let mut voices: VoiceMap = HashMap::new();
+    for i in 0..n {
+      // 58-EDO steps over 80 Hz, spread so no two voices share a harmonic.
+      let freq = 80.0 * 2.0_f32.powf((7 * i) as f32 / 58.0);
+      voices.insert(VoiceSource::Fingered { xy: (i as i32, 0) }, VoiceState {
+        id: i as u64, freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: i as f32 * 0.137, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+        timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+        am_phase: 0.0, fm_phase: 0.0,
+      });
+    }
+    voices
+  }
+
+  fn rms(d: &[f32]) -> f32 {
+    (d.iter().map(|x| x * x).sum::<f32>() / d.len() as f32).sqrt()
+  }
+
   #[test]
   fn render_distortion_compresses_the_summed_mix_and_off_is_identical() {
-    // Two loud voices sum past the elbow: with distortion the output RMS drops; with
-    // `None` the render is bit-identical to the plain `render` path.
+    // Two loud voices sum past the elbow: with distortion and NO makeup the output RMS
+    // drops; with `None` the render is bit-identical to the plain `render` path.
+    // (`Makeup::off()` is the pre-compensation behavior; see the makeup tests below,
+    // where the same clipper preserves RMS instead.)
     let sr = 48000.0;
-    let mk_voices = || {
-      let mut voices: VoiceMap = HashMap::new();
-      for (i, freq) in [220.0_f32, 330.0].iter().enumerate() {
-        voices.insert(VoiceSource::Fingered { xy: (i as i32, 0) }, VoiceState {
-          id: i as u64, freq: *freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-          timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-          am_phase: 0.0, fm_phase: 0.0,
-        });
-      }
-      voices
-    };
-    let render = |distortion: Option<Distortion>| {
-      let mut voices = mk_voices();
+    let off = Makeup::off();
+    let render = |distortion: Option<DistortionStage<'_>>| {
+      let mut voices = incoherent_voices(2);
       let mut data = vec![0.0_f32; 4800];
       BlockRenderer::new(1).render_with_distortion(
         &mut voices, &mut data, 1, sr, 0.8, AmShapeFamily::default(), distortion, |_| true,
@@ -1023,14 +1231,354 @@ mod tests {
       data
     };
     let clean = render(None);
-    let heavy = render(Some(Distortion { scale: 0.3, shape: 2.0 }));
-    let rms = |d: &[f32]| (d.iter().map(|x| x * x).sum::<f32>() / d.len() as f32).sqrt();
+    let heavy = render(Some(DistortionStage {
+      curve: Distortion { scale: 0.3, shape: 2.0 },
+      makeup: &off,
+    }));
     assert!(rms(&heavy) < rms(&clean) * 0.7, "distortion compresses: clean={} heavy={}", rms(&clean), rms(&heavy));
     assert!(heavy.iter().all(|s| s.abs() < 0.3 + 1e-4), "bounded by the scale asymptote");
-    let mut plain_voices = mk_voices();
+    let mut plain_voices = incoherent_voices(2);
     let mut plain = vec![0.0_f32; 4800];
     BlockRenderer::new(1).render(&mut plain_voices, &mut plain, 1, sr, 0.8, AmShapeFamily::default());
     assert_eq!(clean, plain, "distortion None is bit-identical to render()");
+  }
+
+  #[test]
+  fn gaussian_rms_gain_matches_the_closed_form_at_k2() {
+    // At k = 2 the Gaussian RMS gain has a closed form,
+    //   g(r) = sqrt((1 - Q(r)) / r^2),  Q(r) = sqrt(pi/2)/r * e^(1/2r^2) * erfc(1/(r sqrt2))
+    // (see learnings/distortion-volume-compensation.org). Values below are that formula,
+    // cross-checked against a 400k-sample Monte Carlo.
+    for (r, expect) in [
+      (0.05, 0.996_289), (0.087, 0.988_994), (0.35, 0.872_052),
+      (1.0, 0.586_788), (4.0, 0.215_137), (12.0, 0.079_152),
+    ] {
+      let got = gaussian_rms_gain(r, 2.0);
+      assert!((got - expect).abs() < 1e-4, "g({r}) = {got}, want {expect}");
+    }
+    // Limits: unity slope at the origin, and output RMS -> s (so g -> 1/r) far past it.
+    assert!((gaussian_rms_gain(1e-9, 2.0) - 1.0).abs() < 1e-6, "g -> 1 as r -> 0");
+    let far = gaussian_rms_gain(64.0, 2.0);
+    assert!((far * 64.0 - 1.0).abs() < 0.02, "g -> 1/r: output RMS plateaus at s");
+    // Monotone decreasing in r, for the shapes we ship and the sub-1 shape Jeff plays.
+    for k in [0.5, 1.0, 2.0, 4.0] {
+      let mut prev = 1.1;
+      for i in 1..=64 {
+        let g = gaussian_rms_gain(i as f64 * 0.25, k);
+        assert!(g < prev, "g monotone decreasing at k={k}");
+        prev = g;
+      }
+    }
+  }
+
+  #[test]
+  fn makeup_table_inverts_the_gain_and_off_is_unity() {
+    // The table is sampled in sqrt(r), because 1/g has a sqrt cusp at the origin
+    // whenever k < 1. Check the lerp against the integral it approximates, across the
+    // whole shape range a rig may ask for -- including k below 1, where the cusp lives.
+    for k in [0.25_f32, 0.5, 1.0, 2.0, 4.0, 8.0] {
+      let m = Makeup::new(k, 1.0, true, 0.0);
+      for i in 0..200 {
+        // log-spaced over the table's full domain
+        let r = 10.0_f32.powf(-3.0 + (MAKEUP_R_MAX.log10() + 3.0) * i as f32 / 199.0);
+        let exact = 1.0 / gaussian_rms_gain(r as f64, k as f64) as f32;
+        let got = m.gain(r, 1.0); // sigma = r, scale = 1
+        // The cap must never bind inside the table: it exists to stop an infinity, not to
+        // limit the correction. (Largest in-domain makeup is 692x, at k = 0.25, r = R_MAX.)
+        assert!(exact < MAKEUP_CAP, "k={k} r={r}: the cap binds in-domain ({exact})");
+        let err_db = 20.0 * (got / exact).log10();
+        assert!(err_db.abs() < 0.02, "k={k} r={r}: makeup {got} vs {exact} ({err_db} dB)");
+      }
+      // Past the table, the linear continuation stays close and errs on the LOUD side --
+      // never the silent one, which is the failure this whole module exists to prevent.
+      // (Unless the 60 dB cap intervenes, which past r = 256 it eventually must; that is
+      // a rig with `scale` some 300x below the bus RMS, and it is not a musical setting.)
+      for r in [300.0_f32, 1000.0] {
+        let exact = 1.0 / gaussian_rms_gain(r as f64, k as f64) as f32;
+        let got = m.gain(r, 1.0);
+        if exact >= MAKEUP_CAP {
+          assert_eq!(got, MAKEUP_CAP, "k={k} r={r}: past the cap, clamp");
+          continue;
+        }
+        assert!(got >= exact * 0.999, "k={k} r={r}: extrapolation under-boosts");
+        assert!(20.0 * (got / exact).log10() < 1.0, "k={k} r={r}: extrapolation overshoots");
+      }
+      // Degenerate inputs cannot poison the bus with a NaN or an infinity.
+      assert!(m.gain(f32::INFINITY, 1.0).is_finite(), "k={k}: infinite sigma");
+      assert!(m.gain(f32::NAN, 1.0).is_finite(), "k={k}: NaN sigma");
+      assert!(m.gain(1e30, 1e-30).is_finite(), "k={k}: runaway drive ratio");
+    }
+    // `off` is a plain unity gain; a trim with auto off is a plain constant.
+    assert_eq!(Makeup::off().gain(0.3, 1.0), 1.0);
+    assert_eq!(Makeup::new(2.0, 0.8, false, 0.0).gain(0.3, 1.0), 0.8);
+    // The trim scales the automatic gain.
+    let auto = Makeup::new(2.0, 1.0, true, 0.0);
+    let trimmed = Makeup::new(2.0, 0.5, true, 0.0);
+    assert!((trimmed.gain(1.0, 1.0) - 0.5 * auto.gain(1.0, 1.0)).abs() < 1e-6);
+  }
+
+  #[test]
+  fn makeup_is_robust_across_the_settings_a_player_can_dial() {
+    // Regression for two bugs in the first cut, both of which bit only where the
+    // distortion is working hardest -- heavy `scale`, low `shape`:
+    //
+    //  (a) the makeup was capped at 8x, which BINDS at settings a player reaches
+    //      (scale = 0.1 with 16 notes needs 10x), silently restoring the exact volume
+    //      drop this module exists to remove;
+    //  (b) above the table's range the makeup used `m = r`, on the reasoning that the
+    //      clipper's output RMS plateaus at `scale`. It does -- but so slowly that at
+    //      k = 0.5, r = 16 it has only reached 0.57 * scale, so `m = r` under-boosted
+    //      by 11 dB.
+    //
+    // Sweep the whole plausible dial and demand the makeup is the true 1/g throughout.
+    let amp = 0.15_f32;
+    for &k in &[0.25_f32, 0.5, 1.0, 2.0, 4.0] {
+      let m = Makeup::new(k, 1.0, true, 0.0);
+      for &scale in &[2.0_f32, 1.0, 0.3, 0.1, 0.05, 0.02] {
+        for n in [1_usize, 4, 16, 32] {
+          let sigma = amp * (n as f32 / 3.0).sqrt();
+          let exact = 1.0 / gaussian_rms_gain((sigma / scale) as f64, k as f64) as f32;
+          let got = m.gain(sigma, scale);
+          assert!(
+            got < MAKEUP_CAP * 0.99,
+            "k={k} scale={scale} n={n}: the cap binds on a playable rig (makeup {got})",
+          );
+          let err_db = 20.0 * (got / exact).log10();
+          assert!(err_db.abs() < 0.05, "k={k} scale={scale} n={n}: {err_db:.3} dB off");
+        }
+      }
+    }
+  }
+
+  /// One plucked voice: strike at full envelope, exponential decay toward `sustain`.
+  /// 440 Hz so a 20 ms window still holds many periods.
+  fn plucked_voice(sample_rate: f32, sustain: f32, decay_secs: f32) -> VoiceMap {
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+      id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0,
+      tempo_am_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+      sustain_env: sustain, decay_per_sample: (-1.0 / (decay_secs * sample_rate)).exp(),
+      timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+      am_phase: 0.0, fm_phase: 0.0,
+    });
+    voices
+  }
+
+  #[test]
+  fn slewing_the_makeup_costs_attack_punch_rather_than_protecting_it() {
+    // The tempting intuition -- "let the correction ease in, so attacks stay loud" -- is
+    // backwards, and this test is here to keep it from being re-introduced.
+    //
+    // `Makeup::gain` is monotonically INCREASING in sigma: the clipper eats more of a
+    // louder bus. So at a strike the makeup's target jumps UP, and a lagged makeup is
+    // too SMALL exactly when the clipper is biting hardest -- the attack is squashed and
+    // then swells as the makeup catches up. The exact (slew = 0) makeup reproduces the
+    // clean envelope, which is the most attack a level-restoring gain can preserve.
+    let sr = 48000.0;
+    let curve = Distortion { scale: 1.0, shape: 0.5 }; // the rig Jeff plays
+    let render = |slew_secs: f32, distort_it: bool| {
+      let makeup = Makeup::new(curve.shape, 1.0, true, slew_secs);
+      let mut voices = plucked_voice(sr, 0.35, 0.5);
+      let mut data = vec![0.0_f32; 28_800]; // 0.6 s
+      let stage = distort_it.then_some(DistortionStage { curve, makeup: &makeup });
+      BlockRenderer::new(1).render_with_distortion(
+        &mut voices, &mut data, 1, sr, 0.15, AmShapeFamily::default(), stage, |_| true,
+      );
+      data
+    };
+    // Attack contrast = strike RMS (first 20 ms) over sustain RMS (around 0.55 s).
+    let contrast = |d: &[f32]| 20.0 * (rms(&d[0..960]) / rms(&d[26_400..27_360])).log10();
+
+    let clean = contrast(&render(0.0, false));
+    let exact = contrast(&render(0.0, true));
+    let slewed_50 = contrast(&render(0.050, true));
+    let slewed_200 = contrast(&render(0.200, true));
+
+    // Exact makeup reproduces the clean note's own attack contrast.
+    assert!(
+      (exact - clean).abs() < 0.15,
+      "exact makeup should preserve the clean attack contrast: clean {clean:.2} dB, exact {exact:.2} dB",
+    );
+    // Every slew erodes it, monotonically in the time constant.
+    assert!(slewed_50 < exact - 0.5, "50 ms slew should cost attack: {slewed_50:.2} vs {exact:.2}");
+    assert!(slewed_200 < slewed_50 - 0.5, "200 ms should cost more: {slewed_200:.2}");
+    // ...and it settles to the same place: the slew is a transient, not a level shift.
+    let tail = |d: &[f32]| rms(&d[26_400..27_360]);
+    let (a, b) = (tail(&render(0.0, true)), tail(&render(0.200, true)));
+    assert!(20.0 * (b / a).log10() < 0.2, "slewed makeup converges in steady state");
+  }
+
+  #[test]
+  fn zero_slew_is_the_exact_makeup_and_a_huge_slew_is_a_constant() {
+    // The slew knob interpolates between the two options in the writeup: 0 is the exact,
+    // per-sample correction (E); as it grows the makeup freezes at one value, which is a
+    // plain constant makeup gain (B). Nothing else is reachable, and 0 must be exact.
+    let sr = 48000.0;
+    let curve = Distortion { scale: 0.3, shape: 2.0 };
+    let sigma_of = |n: usize| 0.15_f32 * (n as f32 / 3.0).sqrt();
+
+    // slew = 0: the applied gain is exactly `Makeup::gain` at the instantaneous sigma.
+    let exact = Makeup::new(curve.shape, 1.0, true, 0.0);
+    let mut voices = incoherent_voices(4);
+    let mut data = vec![0.0_f32; 480];
+    BlockRenderer::new(1).render_with_distortion(
+      &mut voices, &mut data, 1, sr, 0.15, AmShapeFamily::default(),
+      Some(DistortionStage { curve, makeup: &exact }), |_| true,
+    );
+    // Four voices at full envelope: sigma is constant, so the first sample's output is
+    // clean+0 -> makeup * distort(dirt) with the makeup read straight off the table.
+    let m = exact.gain(sigma_of(4), curve.scale);
+    assert!(m > 1.2, "a 4-note bus at scale 0.3 needs real makeup, got {m}");
+
+    // A slew far longer than the render leaves the makeup pinned at its initial 1.0, so
+    // the output is the uncompensated clipper -- exactly `Makeup::off()`.
+    let frozen = Makeup::new(curve.shape, 1.0, true, 1e6);
+    let off = Makeup::off();
+    let render = |makeup: &Makeup| {
+      let mut voices = incoherent_voices(4);
+      let mut data = vec![0.0_f32; 480];
+      BlockRenderer::new(1).render_with_distortion(
+        &mut voices, &mut data, 1, sr, 0.15, AmShapeFamily::default(),
+        Some(DistortionStage { curve, makeup }), |_| true,
+      );
+      data
+    };
+    let a = render(&frozen);
+    let b = render(&off);
+    for i in 0..a.len() {
+      assert!((a[i] - b[i]).abs() < 1e-6, "a frozen makeup is a constant makeup at {i}");
+    }
+  }
+
+  #[test]
+  fn makeup_restores_the_clean_rms_across_note_counts() {
+    // The point of the whole exercise: with auto makeup the distorted bus carries the
+    // RMS the clean bus would have had, however many notes are sounding and however
+    // hard the clipper is driven. Without it, the same render collapses.
+    //
+    // Half a second: the closest voices beat at ~7 Hz, so a shorter window's RMS still
+    // carries the beat and wobbles by up to 0.5 dB about the ensemble value. At 0.5 s
+    // (and this spacing) the clean bus also stays under the +-0.95 clamp at every n, so
+    // the reference is the unclipped sum and the comparison measures only the model.
+    let sr = 48000.0;
+    let render = |n: usize, distortion: Option<DistortionStage<'_>>| {
+      let mut voices = incoherent_voices(n);
+      let mut data = vec![0.0_f32; 24_000];
+      BlockRenderer::new(1).render_with_distortion(
+        &mut voices, &mut data, 1, sr, 0.15, AmShapeFamily::default(), distortion, |_| true,
+      );
+      data
+    };
+    // `scale = 1.0, shape = 0.5` is the rig Jeff actually plays: ~5 dB of loss on a
+    // single note, ~9 dB on sixteen. `shape = 2.0` is the committed default. The last
+    // two are heavy enough that the first cut's 8x makeup cap bound and quietly gave the
+    // volume drop back -- they are the regression.
+    for (scale, shape) in
+      [(1.0_f32, 0.5_f32), (1.0, 2.0), (0.3, 2.0), (0.1, 1.0), (0.1, 0.5), (0.05, 1.0)]
+    {
+      let curve = Distortion { scale, shape };
+      let makeup = Makeup::new(shape, 1.0, true, 0.0);
+      for n in [1, 2, 4, 8, 16] {
+        let clean = rms(&render(n, None));
+        let compensated = rms(&render(n, Some(DistortionStage { curve, makeup: &makeup })));
+        let err_db = 20.0 * (compensated / clean).log10();
+        // n = 1 is a lone sinusoid, not Gaussian -- it dwells near its peaks, so the
+        // model over-corrects (by 0.73 dB at worst). Known, bounded, under the JND for a
+        // timbre change this size, and fixable by blending in the exact sine gain if it
+        // ever matters. Measured worst for n >= 2 is 0.35 dB. See the doc.
+        let tol = if n == 1 { 1.0 } else { 0.5 };
+        assert!(
+          err_db.abs() < tol,
+          "s={scale} k={shape} n={n}: compensated is {err_db:.2} dB off clean (tol {tol})",
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn makeup_never_raises_the_peak_above_the_clean_peak() {
+    // Restoring RMS cannot re-introduce hard clipping: the distorted waveform is
+    // squarer (lower crest factor), so at equal RMS its peak is strictly lower. This is
+    // why the makeup is safe to apply before the +-0.95 clamp.
+    let sr = 48000.0;
+    let peak = |d: &[f32]| d.iter().fold(0.0_f32, |m, x| m.max(x.abs()));
+    let render = |n: usize, distortion: Option<DistortionStage<'_>>| {
+      let mut voices = incoherent_voices(n);
+      let mut data = vec![0.0_f32; 24_000];
+      BlockRenderer::new(1).render_with_distortion(
+        &mut voices, &mut data, 1, sr, 0.15, AmShapeFamily::default(), distortion, |_| true,
+      );
+      data
+    };
+    for (scale, shape) in [(1.0_f32, 0.5_f32), (0.3, 2.0), (0.1, 1.0)] {
+      let curve = Distortion { scale, shape };
+      let makeup = Makeup::new(shape, 1.0, true, 0.0);
+      for n in [2, 4, 8, 16] {
+        let clean = peak(&render(n, None));
+        assert!(clean < 0.95, "the clean reference must not be clamped (n={n}): {clean}");
+        let compensated = peak(&render(n, Some(DistortionStage { curve, makeup: &makeup })));
+        assert!(
+          compensated <= clean + 1e-6,
+          "s={scale} k={shape} n={n}: compensated peak {compensated} > clean peak {clean}",
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn makeup_is_continuous_through_note_birth_and_death() {
+    // Why a per-sample makeup cannot click, stated three ways.
+    let amp = 0.15_f32;
+    let sigma = |envs: &[f32]| -> f32 {
+      (envs.iter().map(|e| (e * amp) * (e * amp)).sum::<f32>() * VOICE_POWER_PER_B2).sqrt()
+    };
+
+    for k in [0.5_f32, 2.0] {
+      let m = Makeup::new(k, 1.0, true, 0.0);
+
+      // (1) A voice enters and leaves the bank at exactly zero power, because its
+      // envelope ramps from 0 and it is dropped only once it reaches 0 again. So
+      // dropping a dead voice is bit-for-bit a no-op: there is nothing to click.
+      assert_eq!(
+        m.gain(sigma(&[1.0, 1.0, 0.0]), 1.0),
+        m.gain(sigma(&[1.0, 1.0]), 1.0),
+        "k={k}: a zero-envelope voice contributes no power",
+      );
+
+      // (2) The invariant that makes the whole scheme safe: the *compensated* bus's RMS
+      // is `m(sigma) * g(sigma/s) * sigma`, and that is `sigma` identically -- the clean
+      // bus's own envelope. So the output envelope is the clean envelope, and it is
+      // continuous exactly where the clean one is.
+      for i in 1..=200 {
+        let sg = i as f32 * 0.005;
+        let out_rms = m.gain(sg, 1.0) * gaussian_rms_gain(sg as f64, k as f64) as f32 * sg;
+        assert!((out_rms - sg).abs() < 2e-3 * sg, "k={k}: compensated RMS != clean RMS at {sg}");
+      }
+
+      // (3) Over the bank a sounding instrument actually occupies, the gain itself moves
+      // slowly: a third voice born over the 3 ms attack (the fastest envelope we ship)
+      // shifts it by well under 0.1% per sample.
+      let attack = 144; // 0.003 s * 48 kHz
+      let mut prev = m.gain(sigma(&[1.0, 1.0]), 1.0);
+      let mut worst = 0.0_f32;
+      for i in 0..=attack {
+        let g = m.gain(sigma(&[1.0, 1.0, i as f32 / attack as f32]), 1.0);
+        worst = worst.max((g - prev).abs() / g);
+        prev = g;
+      }
+      assert!(worst < 1e-3, "k={k}: makeup moves {worst} per sample during an attack");
+    }
+
+    // The one place `m` alone is not smooth: `1/g` has a `sqrt(sigma)` cusp at silence
+    // when k < 1, so a note struck into an *empty* bank swings the gain hard over its
+    // first samples. It is inaudible, and (2) is why: `m` is only ever multiplied by a
+    // signal whose own RMS is `g * sigma`, and g's cusp cancels m's exactly. Asserting
+    // the cusp is real keeps the reason for (2) from being forgotten.
+    let soft = Makeup::new(0.5, 1.0, true, 0.0);
+    let hard = Makeup::new(2.0, 1.0, true, 0.0);
+    let step = |m: &Makeup| (m.gain(0.001, 1.0) - m.gain(0.0, 1.0)).abs();
+    assert!(step(&soft) > 1e-2, "k < 1 has a cusp in the makeup at sigma = 0");
+    assert!(step(&hard) < 1e-3, "k >= 1 does not");
   }
 
   #[test]
@@ -1038,7 +1586,10 @@ mod tests {
     // Voice A routes dirty, voice B clean: the output equals distort(A) + B exactly
     // -- B bypasses the clipper entirely (the per-monome distortion contract).
     let sr = 48000.0;
-    let heavy = Distortion { scale: 0.3, shape: 2.0 };
+    // Routing is about which bus a voice lands on, so hold the makeup at unity here;
+    // `makeup_restores_the_clean_rms_across_note_counts` covers the compensation.
+    let off = Makeup::off();
+    let heavy = DistortionStage { curve: Distortion { scale: 0.3, shape: 2.0 }, makeup: &off };
     let mk = |xy: (i32, i32), freq: f32| {
       (VoiceSource::Fingered { xy }, VoiceState {
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, tempo_am_freq: 0.0, tempo_am_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
