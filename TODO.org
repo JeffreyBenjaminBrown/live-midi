@@ -1,3 +1,5 @@
+* distortion should compensate for volume loss
+in the summed signal
 * DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
@@ -195,6 +197,9 @@ Time to transition is calculated as the time
 between the last two touches. That time is updated continuously,
 so (e.g.) if the destination is tapped again ... uh ...
 ** mono
+* TODO accretion_level is mostly dead.
+Give it a default value so it stops being required,
+then remove it from all rigs that don't use it.
 * internalize | move to README
 ** remember this program
 *** the softstep meter

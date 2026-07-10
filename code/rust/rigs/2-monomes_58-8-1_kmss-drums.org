@@ -1,4 +1,5 @@
-This rig is written in our TOML-in-org format. The data lives in headlines titled
+This rig is written in a TOML-in-org format unique (so far) to this repo.
+The data lives in headlines titled
 "PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
 headlines nest tables and array-of-table elements; any other headline just groups and
 documents; and every body (like this one) is a human note the loader ignores. It loads
@@ -43,7 +44,8 @@ Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
 *** PARAM x_step = 9
 *** PARAM y_step = 1
 *** PARAM fundamental_hz = 80
-** ELEM timbres
+** timbres
+*** ELEM timbres
 ---------------------------------------------------------------------------
 The four selectable timbres behind each grid's waveform strip, left to right.
 Each has a base waveform ("sin"/"sine", "tri"/"triangle", "square", "saw") and
@@ -56,13 +58,18 @@ am_shape       tremolo LFO morph 0..1 (0 smooth .. 1 near-square chop)
 fm_depth_cents vibrato depth in cents; ~5..50 subtle, 100+ seasick (0 = off)
 fm_freq        vibrato rate in Hz; ~0.1..10 musical (default 1.0)
 ---------------------------------------------------------------------------
-*** PARAM waveform = "sin"
-** ELEM timbres
-*** PARAM waveform = "tri"
-** ELEM timbres
-*** PARAM waveform = "square"
-** ELEM timbres
-*** PARAM waveform = "saw"
+**** PARAM waveform = "sin"
+**** PARAM am_depth = 0.2
+**** PARAM am_freq = 4
+**** PARAM am_shape = 0
+**** PARAM fm_depth_cents = 10
+**** PARAM fm_freq = 2
+*** ELEM timbres
+**** PARAM waveform = "tri"
+*** ELEM timbres
+**** PARAM waveform = "square"
+*** ELEM timbres
+**** PARAM waveform = "saw"
 ** ELEM sinks
 The play-grid synth (both grids' voices go here; each voice carries its grid's
 waveform). Waveform-only timbre -- gain/AM/FM stay at their inert defaults.
@@ -85,11 +92,11 @@ and accrete drones keep ringing at the sustain).
 sustain_level: fraction of the strike peak; 0.2..0.5 natural, >= 1.0 disables.
 *** PARAM decay_secs = 0.5
 decay_secs: the decay time constant; ~0.3 snappy, ~1.5 slow ring, <= 0 disables.
-*** PARAM distortion_scale = 1.0
+*** PARAM distortion_scale = 1
 Distortion (per-monome; heard only while a grid's distortion_toggle is on): the
 soft-clipper f(y) = y / (1 + |y/s|^k)^(1/k) on the switched-on grids' summed mix.
 scale s: the asymptote; ~0.3 heavy, ~1.0 strong, 2-3 gentle, >=5 nearly clean.
-*** PARAM distortion_shape = 2.0
+*** PARAM distortion_shape = 0.5
 shape k: elbow harshness; 1 gentlest, 2 smooth sweet spot, 4-8 hard-ish edge.
 ** ELEM sinks
 The drum sampler (one-shot WAVs). Same cpal/JACK path as the synth.
