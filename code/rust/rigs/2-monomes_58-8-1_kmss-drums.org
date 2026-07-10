@@ -1,8 +1,9 @@
 This rig is written in our TOML-in-org format. The data lives in headlines titled
 "PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
 headlines nest tables and array-of-table elements; any other headline just groups and
-documents; and every body (like this one) is a human note the loader ignores. It loads
-into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
+documents; and every body (like this one) is a human note the loader ignores. A "#" on
+a headline starts a comment, TOML-style, even on a load-bearing one. It loads into the
+exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 [[file:README.org]]
 * 2-monomes_58-8-1_kmss-drums
 ** PARAM version = 1
@@ -124,13 +125,15 @@ The drum sampler (one-shot WAVs). Same cpal/JACK path as the synth.
 The single drum-kit volume knob (linear; per-pad `gain` trims individual pads below it).
 1.6 = the old sink 0.8 x drum_sample_amplitude 2.0, now folded into one knob.
 ** ELEM monomes
+The runtime hands each rig monome a distinct live grid in rig order; which physical
+grid lands on which is not something this file decides.
 *** PARAM id = "a"
-*** PARAM listen_port = 9000
-*** PARAM prefix = "/surface-a"
-*** PARAM select.size = [16, 16]
+*** PARAM listen_port = 9000        # must be unique across monomes
+*** PARAM prefix = "/surface-a"     # this monome's OSC address prefix
+*** PARAM select.size = [16, 16]    # only match a 16x16
 ** ELEM monomes
 *** PARAM id = "b"
-*** PARAM listen_port = 9001
+*** PARAM listen_port = 9001        # ...so grid b listens one port up
 *** PARAM prefix = "/surface-b"
 *** PARAM select.size = [16, 16]
 ** ELEM monome_windows
@@ -171,21 +174,21 @@ own finger lifts; when both are live, erase wins
 *** PARAM id = "acc-clear-a"
 *** PARAM monome = "a"
 *** PARAM kind = "accrete_control"
-*** PARAM rect = [0, 15, 0, 15]
+*** PARAM rect = [0, 15, 0, 15]     # exactly one cell
 *** PARAM control = "clear"
-** ELEM monome_windows
+** ELEM monome_windows              # grid A accrete: needs-holding
 *** PARAM id = "acc-hold-a"
 *** PARAM monome = "a"
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [1, 15, 1, 15]
 *** PARAM control = "needs_holding"
-** ELEM monome_windows
+** ELEM monome_windows              # grid A accrete: accrete
 *** PARAM id = "acc-accrete-a"
 *** PARAM monome = "a"
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [2, 15, 2, 15]
 *** PARAM control = "accrete"
-** ELEM monome_windows
+** ELEM monome_windows              # grid A accrete: erase
 *** PARAM id = "acc-erase-a"
 *** PARAM monome = "a"
 *** PARAM kind = "accrete_control"

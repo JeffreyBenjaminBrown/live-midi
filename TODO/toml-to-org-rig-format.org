@@ -43,6 +43,30 @@ Headlines form a tree (org =*=, =**=, ...). A headline's *title* is one of:
 
 A headline's *body* (the lines under it) is documentation. The parser ignores it.
 
+** Comments (added 2026-07-10)
+=#= starts a comment on *any* headline, including the load-bearing ones. It is TOML's
+own comment rule, so it runs to end of line, and a =#= inside a quoted string is data:
+
+: *** PARAM rect = [0, 15, 0, 15]     # exactly one cell
+: ** ELEM monome_windows              # grid A accrete: erase
+: *** PARAM prefix = "/256#1-cable"   # the hash inside the string survives
+
+Bodies were always free-form prose; this is for the short note that belongs *on* the
+line -- most usefully labelling repeated =ELEM= headlines, which are otherwise
+anonymous.
+
+Implementation is nearly free, and the asymmetry is the interesting part. A =PARAM='s
+right-hand side is already handed to =toml::from_str= as a one-line document, and TOML
+*already* strips its comments -- correctly, including the string case. So =PARAM=
+needed *no code at all*. Only the =TABLE=/=ELEM= key, which the loader reads verbatim,
+needed a scanner (=rig_org::strip_comment=), and it implements the same rule so the two
+paths agree.
+
+Starting a title with =#= comments the whole headline out. A =PARAM= then goes missing
+(its default applies, or serde reports a missing field); a =TABLE=/=ELEM= orphans its
+children onto the enclosing table, where =deny_unknown_fields= rejects them. Both are
+loud, neither silent.
+
 ** Worked example
 The head of =2-monomes_58-8-1_kmss-drums= in both notations:
 

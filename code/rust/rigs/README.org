@@ -13,6 +13,27 @@ opens with a short note pointing back here (Emacs ~C-c C-o~ follows the link).
 - Any *other* headline is pure grouping: transparent to the data, there only to
   organize and document. Every *body* (the lines under a headline) is a human note the
   loader ignores.
+- ~#~ starts a *comment* on any headline, load-bearing or not -- TOML's own rule, so it
+  runs to end of line and a ~#~ inside a quoted string is data, not a comment:
+
+  #+begin_src org
+  ,*** PARAM rect = [0, 15, 0, 15]     # exactly one cell
+  ,** ELEM monome_windows              # grid A accrete: erase
+  ,*** PARAM prefix = "/256#1-cable"   # the hash in the string survives
+  #+end_src
+
+  Bodies were always free-form prose; this is for the short note that belongs *on* the
+  line. Starting a title with ~#~ comments the whole headline out -- a ~PARAM~ then just
+  goes missing (falling back to its default, or erroring as a missing field), while a
+  commented-out ~TABLE~/~ELEM~ orphans its children onto the enclosing table, where the
+  unknown-key check rejects them. Loud either way, never silent.
+
+It loads into the exact same typed rig as the old TOML did (same fields, same
+validation, unknown keys still rejected). Full spec + migration notes:
+[[file:../../../TODO/toml-to-org-rig-format.org]]. A rig's own reference doc, when it has
+one, is the sibling ~<name>_readme.org~. (~softstep.toml~ stays TOML -- it is the shared
+SoftStep-params file, not a rig.)
+
 * to run something
 ** about the file argument
 The file argument (to both commands) must exist in this folder.

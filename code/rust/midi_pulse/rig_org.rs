@@ -15,10 +15,17 @@
 //!   and document.
 //! - headline bodies (lines under a headline) are documentation; the parser ignores
 //!   them.
+//! - `#` starts a *comment* on any of those headlines, exactly as it does in TOML: it
+//!   runs to end of line, and a `#` inside a quoted string is not a comment.
+//!   `PARAM rect = [0, 1, 0, 1]  # exactly one cell` is a rect and a note. Starting a
+//!   title with `#` comments the whole headline out (it becomes a grouping headline --
+//!   which for a `PARAM` means the key simply goes missing, and for a `TABLE`/`ELEM`
+//!   means its children reattach to the enclosing table, and will be rejected there).
 //!
 //! Implementation: the outline builds a `toml::Table`, which is re-emitted as TOML and
 //! fed to [`crate::rig::parse_rig`]. That reuses TOML's exact value grammar (for the
-//! `PARAM` right-hand sides and dotted keys) and the whole typed/validated path.
+//! `PARAM` right-hand sides and dotted keys) and the whole typed/validated path -- and,
+//! for free, TOML's own comment rule on every `PARAM` line.
 
 use crate::rig::{parse_rig, Rig};
 
@@ -121,20 +128,62 @@ enum Line {
   Grouping,
 }
 
+/// TOML's comment rule: everything from the first `#` that is not inside a quoted string
+/// runs to end of line. Applied only to the parts of a headline we do *not* hand to the
+/// TOML parser -- the `TABLE`/`ELEM` key. A `PARAM`'s right-hand side needs no help: it
+/// is parsed as a one-line TOML document, which strips its comment itself and correctly
+/// leaves a `#` inside a string (`prefix = "/256#1"`) alone.
+///
+/// Byte indexing is safe: `#`, `"`, `'` and `\` are ASCII, so no multi-byte character can
+/// match one, and the split point is always a character boundary.
+fn strip_comment(s: &str) -> &str {
+  let mut quote: Option<u8> = None;
+  let mut escaped = false;
+  for (i, &b) in s.as_bytes().iter().enumerate() {
+    match quote {
+      // Inside a string. Only a basic string ("..."), not a literal one ('...'), escapes.
+      Some(q) => {
+        if escaped {
+          escaped = false;
+        } else if q == b'"' && b == b'\\' {
+          escaped = true;
+        } else if b == q {
+          quote = None;
+        }
+      }
+      None => match b {
+        b'"' | b'\'' => quote = Some(b),
+        b'#' => return &s[..i],
+        _ => {}
+      },
+    }
+  }
+  s
+}
+
 /// Classify a headline title by its first word.
 fn classify(title: &str) -> Line {
   let mut it = title.splitn(2, char::is_whitespace);
   let head = it.next().unwrap_or("");
   let rest = it.next().unwrap_or("").trim();
   match head {
+    // The value keeps any trailing `# comment`: `toml::from_str` consumes it below, and
+    // it knows a `#` inside a string is not one. Splitting on the *first* `=` also means
+    // an `=` inside the comment ("# 1.0 = full scale") stays in the comment.
     "PARAM" => match rest.split_once('=') {
       Some((k, v)) => Line::Param { key: k.trim().to_string(), value: v.trim().to_string() },
       // A PARAM with no '=' is malformed; treat it as grouping so parse_rig's
       // "missing field" error points at the real problem rather than us panicking.
       None => Line::Grouping,
     },
-    "TABLE" if !rest.is_empty() => Line::Table(rest.to_string()),
-    "ELEM" if !rest.is_empty() => Line::Elem(rest.to_string()),
+    "TABLE" | "ELEM" => {
+      let key = strip_comment(rest).trim();
+      match (head, key.is_empty()) {
+        (_, true) => Line::Grouping, // `TABLE  # note` names nothing
+        ("TABLE", _) => Line::Table(key.to_string()),
+        _ => Line::Elem(key.to_string()),
+      }
+    }
     _ => Line::Grouping,
   }
 }
@@ -386,6 +435,131 @@ A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
     let from_toml = load_named_rig("monome-edo-sawwave").expect("the shipped .toml loads");
     let from_org = parse_org_rig(SAWWAVE_REAL_ORG).expect("the org conversion loads");
     assert_eq!(from_org, from_toml, "the .org conversion == the .toml rig");
+  }
+
+  #[test]
+  fn hash_comments_on_load_bearing_headlines() {
+    // A `#` comment may ride on any data headline -- PARAM, TABLE and ELEM alike -- and
+    // the rig it produces is exactly the rig without them.
+    let commented = r#"
+* rig                              # even a grouping headline
+** PARAM version = 1               # the only version there is
+** PARAM id = "r"                  # short name
+** PARAM title = "R"
+** ELEM monomes                    # the one grid
+*** PARAM id = "big"
+*** PARAM listen_port = 9000       # must be unique across monomes
+*** PARAM prefix = "/256-1-cable"
+*** PARAM select.size = [16, 16]   # a dotted key, an inline array, and a note
+** TABLE surfaces                  # the shared trail knobs
+*** PARAM trails_max = 5           # 1.0 = full scale (an '=' inside the comment)
+*** PARAM trail_clobber_radius = 20#no space before the hash
+"#;
+    let plain = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** ELEM monomes
+*** PARAM id = "big"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/256-1-cable"
+*** PARAM select.size = [16, 16]
+** TABLE surfaces
+*** PARAM trails_max = 5
+*** PARAM trail_clobber_radius = 20
+"#;
+    let a = parse_org_rig(commented).expect("comments parse");
+    let b = parse_org_rig(plain).expect("the uncommented twin parses");
+    assert_eq!(a, b, "a `#` comment cannot change the rig it annotates");
+    assert_eq!(a.monomes[0].prefix, "/256-1-cable");
+    let s = a.surfaces.expect("TABLE surfaces survived its comment");
+    assert_eq!((s.trails_max, s.trail_clobber_radius), (5, 20));
+  }
+
+  #[test]
+  fn a_hash_inside_a_string_is_not_a_comment() {
+    // TOML's rule, and the reason PARAM values are never comment-stripped by hand: the
+    // `#` here is data. (`strip_comment` honors the same rule for TABLE/ELEM keys.)
+    let org = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** ELEM monomes
+*** PARAM id = "big"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/256#1-cable"   # the real prefix has a hash in it
+*** PARAM select.size = [16, 16]
+"#;
+    let rig = parse_org_rig(org).expect("parses");
+    assert_eq!(rig.monomes[0].prefix, "/256#1-cable", "the hash inside the string is data");
+
+    // And directly, on the helper that guards TABLE/ELEM keys.
+    assert_eq!(strip_comment("surfaces  # a note"), "surfaces  ");
+    assert_eq!(strip_comment("\"a#b\" # note"), "\"a#b\" ");
+    assert_eq!(strip_comment("'a#b'"), "'a#b'");
+    assert_eq!(strip_comment("\"a\\\"#b\""), "\"a\\\"#b\"", "escaped quote keeps the string open");
+    assert_eq!(strip_comment("no comment here"), "no comment here");
+    assert_eq!(strip_comment("#leading"), "");
+  }
+
+  #[test]
+  fn a_leading_hash_comments_the_whole_headline_out() {
+    // `#` first makes the headline a grouping headline, so a PARAM simply goes missing.
+    // For a TABLE/ELEM it would orphan the children onto the enclosing table, where
+    // `deny_unknown_fields` rejects them -- loud, not silent. Both are asserted here.
+    let missing_param = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** TABLE surfaces
+*** PARAM trails_max = 5
+*** # PARAM trail_clobber_radius = 20
+"#;
+    let rig = parse_org_rig(missing_param).expect("parses; the commented PARAM is absent");
+    let s = rig.surfaces.expect("surfaces present");
+    assert_eq!(s.trails_max, 5);
+    assert_eq!(s.trail_clobber_radius, 27, "the commented-out key fell back to its default");
+
+    let orphaned = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** # TABLE surfaces
+*** PARAM trails_max = 5
+"#;
+    let err = parse_org_rig(orphaned).expect_err("orphaned children are rejected, not ignored");
+    assert!(err.contains("trails_max"), "the error names the orphan: {err}");
+  }
+
+  #[test]
+  fn the_shipped_rig_is_unchanged_by_its_comments() {
+    use crate::rig::rig_path;
+    // The real file now carries inline `#` comments on load-bearing headlines (PARAM,
+    // ELEM). Strip them back out of the *source* and the rig must be identical -- the
+    // strongest statement of "a comment cannot change what loads".
+    let path = rig_path("2-monomes_58-8-1_kmss-drums").expect("the rig exists");
+    let source = std::fs::read_to_string(&path).expect("read the rig");
+    let is_commented = |l: &str| headline(l).is_some() && strip_comment(l) != l;
+    // Count the comments rather than comparing the stripped text to the original: the
+    // line-by-line rebuild below loses the trailing newline, so `stripped != source`
+    // would hold whether or not the rig had a single comment in it.
+    let commented = source.lines().filter(|l| is_commented(l)).count();
+    assert!(commented >= 4, "the shipped rig should exercise the syntax, found {commented}");
+
+    let stripped: String = source
+      .lines()
+      .map(|l| if headline(l).is_some() { strip_comment(l).trim_end() } else { l })
+      .collect::<Vec<_>>()
+      .join("\n");
+    let with = parse_org_rig(&source).expect("the shipped rig loads");
+    let without = parse_org_rig(&stripped).expect("its comment-stripped twin loads");
+    assert_eq!(with, without, "a `#` comment cannot change the rig it annotates");
+    assert_eq!(with.monomes[0].listen_port, 9000);
+    assert_eq!(with.monomes[1].listen_port, 9001);
   }
 
   #[test]
