@@ -60,8 +60,9 @@ Two ways forward:
   nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
     --run 'sudo python3 code/python/pedals/bridge.py'
   #+end_src
-  Verify from the container: =aseqdump -p 'MPC-20 pedals'= while moving a pedal. See
-  =bridge-plan.org= for the full design + the remaining Rust-synth wiring.
+  Verify from the container: =aseqdump -p 'MPC-20 pedals'= while moving a pedal. The
+  container-side reader is =midi_pulse::expression_pedals= (the =pedal_monitor= bin proves
+  it live: =cargo run --bin pedal_monitor=).
 - *Or a real ALSA device the plain way:* a host-side kernel fix (make the CH345 quirk apply
   to this composite device), OR route the MPC-20's *5-pin DIN* MIDI out (its TRS adapter)
   into any class-compliant USB-MIDI interface, which Linux reads cleanly.

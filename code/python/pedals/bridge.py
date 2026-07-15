@@ -3,14 +3,14 @@
 synth can read them.
 
 WHY: the MPC-20's WCH CH345 chip makes no ALSA MIDI device on Linux (composite-device
-quirk gap -- see README.org / bridge-plan.org). This reads the chip's raw USB endpoint
+quirk gap -- see README.org). This reads the chip's raw USB endpoint
 directly (the same path pedals_usb.py proved works) and re-emits every MIDI message on a
 virtual ALSA *sequencer* port named "MPC-20 pedals". The container shares the host ALSA
 sequencer (/dev/snd/seq), so that port appears in the container's `aconnect -l` and the
 synth (midir) -- or `aseqdump` -- can read the pedals like any MIDI input.
 
 It forwards RAW MIDI (no rescaling). Normalizing each pedal's raw ~1..120 to a continuous
-0.0..1.0 float belongs in the synth reader (PEDAL_RAW_BOTTOM/TOP consts; bridge-plan.org).
+0.0..1.0 float happens in the synth reader (midi_pulse::expression_pedals, PEDAL_RAW_BOTTOM/TOP).
 
   *** RUN ON THE HOST *** (the container has no /dev/bus/usb), as root (to take the USB
   interface from snd-usb-audio):
