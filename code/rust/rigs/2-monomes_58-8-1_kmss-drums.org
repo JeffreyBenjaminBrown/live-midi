@@ -146,7 +146,7 @@ grid lands on which is not something this file decides.
 *** PARAM listen_port = 9001        # ...so grid b listens one port up
 *** PARAM prefix = "/surface-b"
 *** PARAM select.size = [16, 16]
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: 58-EDO play surface
 ---------------------------------------------------------------------------
 GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 ---------------------------------------------------------------------------
@@ -156,21 +156,21 @@ GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 *** PARAM rect = [0, 0, 15, 15]
 *** PARAM tuning = "main"
 *** PARAM sink = "synth"
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: waveform strip
 4-cell waveform strip (sine / triangle / square / saw), top-left, sets GRID A.
 *** PARAM id = "wave-a"
 *** PARAM monome = "a"
 *** PARAM kind = "waveform_selector"
 *** PARAM rect = [0, 0, 3, 0]
 *** PARAM controls = "a"
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: scroll pad
 3x2 scroll pad, bottom-right: arrows shift grid A's pitch window by one cell,
 the two top corners by an octave.
 *** PARAM id = "scroll-a"
 *** PARAM monome = "a"
 *** PARAM kind = "edo_shift_pad"
 *** PARAM rect = [13, 14, 15, 15]
-** ELEM monome_windows
+** ELEM monome_windows              # grid A accrete: clear
 The sustain ("accrete") buttons, bottom row left. One accrete BANK per monome:
 this trio drives only this grid's bank, and only notes fingered on this grid can
 join it (see TODO/misc.org "sustain (accrete)"):
@@ -204,7 +204,7 @@ own finger lifts; when both are live, erase wins
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [1, 14, 1, 14]
 *** PARAM control = "erase"
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: distortion toggle
 The distortion toggle (key-down flips; see learnings/distortion.org for the
 curve). PER-GRID: this grid's button routes this grid's voices through the
 distorted bus; a grid left off bypasses the clipper.
@@ -212,21 +212,21 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM monome = "a"
 *** PARAM kind = "distortion_toggle"
 *** PARAM rect = [0, 1, 0, 1]
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: slide toggle
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
 nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
 *** PARAM id = "slide-a"
 *** PARAM monome = "a"
 *** PARAM kind = "slide_toggle"
 *** PARAM rect = [1, 1, 1, 1]
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: mono toggle
 Mono toggle (key-down flips; PER-GRID): each new note cuts this grid's other
 fingered notes (with slide on, the new note steals the cut voice -- legato).
 *** PARAM id = "mono-a"
 *** PARAM monome = "a"
 *** PARAM kind = "mono_toggle"
 *** PARAM rect = [1, 2, 1, 2]
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: feet-accrete toggle
 Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
 to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
 mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
@@ -236,7 +236,7 @@ above the on-grid trio.
 *** PARAM monome = "a"
 *** PARAM kind = "softstep_accretes_toggle"
 *** PARAM rect = [0, 14, 0, 14]
-** ELEM monome_windows
+** ELEM monome_windows              # grid A: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
@@ -248,7 +248,7 @@ separate from any [[timbres]] AM).
 *** PARAM monome = "a"
 *** PARAM kind = "tap_tempo_pad"
 *** PARAM rect = [13, 0, 15, 1]
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: 58-EDO play surface
 ---------------------------------------------------------------------------
 GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 ---------------------------------------------------------------------------
@@ -258,18 +258,18 @@ GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
 *** PARAM rect = [0, 0, 15, 15]
 *** PARAM tuning = "main"
 *** PARAM sink = "synth"
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: waveform strip
 *** PARAM id = "wave-b"
 *** PARAM monome = "b"
 *** PARAM kind = "waveform_selector"
 *** PARAM rect = [0, 0, 3, 0]
 *** PARAM controls = "b"
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: scroll pad
 *** PARAM id = "scroll-b"
 *** PARAM monome = "b"
 *** PARAM kind = "edo_shift_pad"
 *** PARAM rect = [13, 14, 15, 15]
-** ELEM monome_windows
+** ELEM monome_windows              # grid B accrete: clear
 The sustain ("accrete") buttons, bottom row left. One accrete BANK per monome:
 this trio drives only this grid's bank, and only notes fingered on this grid can
 join it (see TODO/misc.org "sustain (accrete)"):
@@ -285,25 +285,25 @@ own finger lifts; when both are live, erase wins
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [0, 15, 0, 15]
 *** PARAM control = "clear"
-** ELEM monome_windows
+** ELEM monome_windows              # grid B accrete: needs-holding
 *** PARAM id = "acc-hold-b"
 *** PARAM monome = "b"
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [1, 15, 1, 15]
 *** PARAM control = "needs_holding"
-** ELEM monome_windows
+** ELEM monome_windows              # grid B accrete: accrete
 *** PARAM id = "acc-accrete-b"
 *** PARAM monome = "b"
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [2, 15, 2, 15]
 *** PARAM control = "accrete"
-** ELEM monome_windows
+** ELEM monome_windows              # grid B accrete: erase
 *** PARAM id = "acc-erase-b"
 *** PARAM monome = "b"
 *** PARAM kind = "accrete_control"
 *** PARAM rect = [1, 14, 1, 14]
 *** PARAM control = "erase"
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: distortion toggle
 The distortion toggle (key-down flips; see learnings/distortion.org for the
 curve). PER-GRID: this grid's button routes this grid's voices through the
 distorted bus; a grid left off bypasses the clipper.
@@ -311,21 +311,21 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM monome = "b"
 *** PARAM kind = "distortion_toggle"
 *** PARAM rect = [0, 1, 0, 1]
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: slide toggle
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
 nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
 *** PARAM id = "slide-b"
 *** PARAM monome = "b"
 *** PARAM kind = "slide_toggle"
 *** PARAM rect = [1, 1, 1, 1]
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: mono toggle
 Mono toggle (key-down flips; PER-GRID): each new note cuts this grid's other
 fingered notes (with slide on, the new note steals the cut voice -- legato).
 *** PARAM id = "mono-b"
 *** PARAM monome = "b"
 *** PARAM kind = "mono_toggle"
 *** PARAM rect = [1, 2, 1, 2]
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: feet-accrete toggle
 Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
 to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
 mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
@@ -335,7 +335,7 @@ above the on-grid trio.
 *** PARAM monome = "b"
 *** PARAM kind = "softstep_accretes_toggle"
 *** PARAM rect = [0, 14, 0, 14]
-** ELEM monome_windows
+** ELEM monome_windows              # grid B: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
