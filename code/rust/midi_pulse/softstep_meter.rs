@@ -44,7 +44,7 @@ use midir::{MidiInput, MidiInputPort};
 
 use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
-use decode::{collect_control_changes, gain_from_velocity, DrumEvent, TetherDecoder, NUM_PADS};
+use decode::{collect_control_changes, gain_from_intensity, DrumEvent, TetherDecoder, NUM_PADS};
 
 /// Printed label -> base CC of that pad's 4 sensors, in printed-board order (1..9,
 /// then 0). Mirrors decode.rs's private `SLOT_LABEL` / the Python meter's
@@ -104,8 +104,8 @@ const REAL_GAIN: f32 = 1.0;
 
 /// Mirrors `drumkit_runtime::mod::resolve_fire`'s ditto semantics exactly, minus the
 /// sample payload: a REAL press records itself into `last` and resolves to its own
-/// label at its own velocity; a DITTO press resolves to the last REAL press's label,
-/// gain-scaled by the DITTO press's OWN velocity (not the original hit's) -- and,
+/// label at its own intensity; a DITTO press resolves to the last REAL press's label,
+/// gain-scaled by the DITTO press's OWN intensity (not the original hit's) -- and,
 /// deliberately, a Ditto fire never writes `last`, so pad-ditto-ditto repeats the
 /// ORIGINAL, not the ditto. Returns `None` only for a ditto struck before anything
 /// real has played. Pure -- the unit-testable core of the ditto behavior.
@@ -113,18 +113,18 @@ fn resolve_fire(
   kind: PadKind,
   own_label: u8,
   last: &mut Option<LastHit>,
-  velocity: u8,
+  intensity: f32,
   db_range: f32,
 ) -> Option<(u8, f32)> {
   match kind {
     PadKind::Real => {
-      let resolved = REAL_GAIN * gain_from_velocity(velocity, db_range);
+      let resolved = REAL_GAIN * gain_from_intensity(intensity, db_range);
       *last = Some(LastHit { label: own_label, gain: REAL_GAIN });
       Some((own_label, resolved))
     }
     PadKind::Ditto => {
       let hit = last.as_ref()?;
-      Some((hit.label, hit.gain * gain_from_velocity(velocity, db_range)))
+      Some((hit.label, hit.gain * gain_from_intensity(intensity, db_range)))
     }
   }
 }
@@ -132,10 +132,10 @@ fn resolve_fire(
 /// Mirrors `drumkit_runtime::mod::resolve_revise`: what a mid-attack-window Revise
 /// on this pad should update its displayed gain to (`None` only if a ditto revises
 /// before anything real has played, which a Revise implies shouldn't happen).
-fn resolve_revise(kind: PadKind, last: &Option<LastHit>, velocity: u8, db_range: f32) -> Option<f32> {
+fn resolve_revise(kind: PadKind, last: &Option<LastHit>, intensity: f32, db_range: f32) -> Option<f32> {
   match kind {
-    PadKind::Real => Some(REAL_GAIN * gain_from_velocity(velocity, db_range)),
-    PadKind::Ditto => last.as_ref().map(|hit| hit.gain * gain_from_velocity(velocity, db_range)),
+    PadKind::Real => Some(REAL_GAIN * gain_from_intensity(intensity, db_range)),
+    PadKind::Ditto => last.as_ref().map(|hit| hit.gain * gain_from_intensity(intensity, db_range)),
   }
 }
 
@@ -196,13 +196,13 @@ fn interp_shadow(sensors: &[u8; 40], last_seen: &[Option<Instant>; 40], idx: usi
 struct PadDisplay {
   peak_val: u16,
   peak_t: f64,
-  last_vel: u8,
+  last_intensity: f32,
   last_gain: f32,
 }
 
 impl Default for PadDisplay {
   fn default() -> Self {
-    PadDisplay { peak_val: 0, peak_t: 0.0, last_vel: 0, last_gain: 0.0 }
+    PadDisplay { peak_val: 0, peak_t: 0.0, last_intensity: 0.0, last_gain: 0.0 }
   }
 }
 
@@ -380,16 +380,16 @@ fn run_poll_loop(
     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
     for event in &events {
       match *event {
-        DrumEvent::Fire { label, velocity } => {
+        DrumEvent::Fire { label, intensity } => {
           let kind = pad_kind(label);
-          match resolve_fire(kind, label, &mut st.last_hit, velocity, db_range) {
+          match resolve_fire(kind, label, &mut st.last_hit, intensity, db_range) {
             Some((src, gain)) => {
-              st.pads[label as usize].last_vel = velocity;
+              st.pads[label as usize].last_intensity = intensity;
               st.pads[label as usize].last_gain = gain;
               let msg = if kind == PadKind::Ditto {
-                format!("pad {label} (ditto): repeats pad {src}'s hit, vel {velocity} (gain {gain:.3})")
+                format!("pad {label} (ditto): repeats pad {src}'s hit, intensity {intensity:.3} (gain {gain:.3})")
               } else {
-                format!("pad {label}: vel {velocity} (gain {gain:.3})")
+                format!("pad {label}: intensity {intensity:.3} (gain {gain:.3})")
               };
               st.recent = msg.clone();
               st.push_message(msg);
@@ -404,11 +404,11 @@ fn run_poll_loop(
             }
           }
         }
-        DrumEvent::Revise { label, velocity } => {
+        DrumEvent::Revise { label, intensity } => {
           let kind = pad_kind(label);
           let last_hit = st.last_hit;
-          if let Some(gain) = resolve_revise(kind, &last_hit, velocity, db_range) {
-            st.pads[label as usize].last_vel = velocity;
+          if let Some(gain) = resolve_revise(kind, &last_hit, intensity, db_range) {
+            st.pads[label as usize].last_intensity = intensity;
             st.pads[label as usize].last_gain = gain;
           }
         }
@@ -440,9 +440,9 @@ fn draw(state: &Mutex<MeterState>, start: Instant, params: SoftstepParams) {
     pad.peak_val = pv;
     pad.peak_t = pt;
     let bar = render_bar(sum, pv);
-    let vel_s = if pad.last_vel > 0 { format!("vel{:3}", pad.last_vel) } else { "      ".to_string() };
+    let int_s = if pad.last_intensity > 0.0 { format!("i={:.2}", pad.last_intensity) } else { "      ".to_string() };
     let ditto = if label == DITTO_LABEL { "*" } else { " " };
-    lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {vel_s}  gain {:.2}", pad.last_gain));
+    lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {int_s}  gain {:.2}", pad.last_gain));
   }
   lines.push(String::new());
   lines.push(format!("  last hit: {}", st.recent));
@@ -519,34 +519,34 @@ mod tests {
   #[test]
   fn a_real_fire_resolves_its_own_label_and_records_itself_as_last() {
     let mut last: Option<LastHit> = None;
-    let (label, gain) = resolve_fire(PadKind::Real, 1, &mut last, 64, DB_RANGE).expect("a real pad always fires");
+    let (label, gain) = resolve_fire(PadKind::Real, 1, &mut last, 0.5, DB_RANGE).expect("a real pad always fires");
     assert_eq!(label, 1);
-    assert!(gain > 0.0 && gain <= REAL_GAIN, "sub-max velocity resolves within (0, REAL_GAIN]: {gain}");
+    assert!(gain > 0.0 && gain <= REAL_GAIN, "sub-max intensity resolves within (0, REAL_GAIN]: {gain}");
     assert_eq!(last, Some(LastHit { label: 1, gain: REAL_GAIN }), "records itself as the last real hit");
   }
 
   #[test]
   fn ditto_before_anything_played_is_a_silent_no_op() {
     let mut last: Option<LastHit> = None;
-    assert_eq!(resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 100, DB_RANGE), None);
+    assert_eq!(resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 0.8, DB_RANGE), None);
   }
 
   #[test]
-  fn ditto_repeats_the_last_real_pads_label_at_the_dittos_own_velocity() {
+  fn ditto_repeats_the_last_real_pads_label_at_the_dittos_own_intensity() {
     let mut last: Option<LastHit> = None;
-    resolve_fire(PadKind::Real, 6, &mut last, 60, DB_RANGE).unwrap(); // pad 6 struck soft-ish
+    resolve_fire(PadKind::Real, 6, &mut last, 0.5, DB_RANGE).unwrap(); // pad 6 struck soft-ish
     let (echoed_label, echoed_gain) =
-      resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 127, DB_RANGE).expect("a hit has played");
+      resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 1.0, DB_RANGE).expect("a hit has played");
     assert_eq!(echoed_label, 6, "ditto echoes pad 6, not itself");
-    assert!((echoed_gain - REAL_GAIN).abs() < 1e-6, "vel 127 against REAL_GAIN trim = unity: {echoed_gain}");
+    assert!((echoed_gain - REAL_GAIN).abs() < 1e-6, "intensity 1.0 against REAL_GAIN trim = unity: {echoed_gain}");
   }
 
   #[test]
   fn a_hard_ditto_press_plays_louder_than_the_soft_hit_it_echoes() {
     let mut last: Option<LastHit> = None;
-    let (_, soft_gain) = resolve_fire(PadKind::Real, 9, &mut last, 20, DB_RANGE).unwrap();
+    let (_, soft_gain) = resolve_fire(PadKind::Real, 9, &mut last, 0.15, DB_RANGE).unwrap();
     let (echoed_label, hard_ditto_gain) =
-      resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 127, DB_RANGE).expect("a hit has played");
+      resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 1.0, DB_RANGE).expect("a hit has played");
     assert_eq!(echoed_label, 9);
     assert!(hard_ditto_gain > soft_gain, "hard ditto ({hard_ditto_gain}) > soft original ({soft_gain})");
   }
@@ -554,23 +554,23 @@ mod tests {
   #[test]
   fn pad_ditto_ditto_repeats_the_original_not_the_ditto() {
     let mut last: Option<LastHit> = None;
-    resolve_fire(PadKind::Real, 4, &mut last, 100, DB_RANGE).unwrap();
-    resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 20, DB_RANGE).expect("first ditto");
-    resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 5, DB_RANGE).expect("second ditto");
+    resolve_fire(PadKind::Real, 4, &mut last, 0.8, DB_RANGE).unwrap();
+    resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 0.15, DB_RANGE).expect("first ditto");
+    resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 0.05, DB_RANGE).expect("second ditto");
     assert_eq!(last, Some(LastHit { label: 4, gain: REAL_GAIN }), "still pad 4 -- a ditto never becomes `last`");
   }
 
   #[test]
   fn revise_scales_a_real_pad_and_a_ditto_pad_once_something_has_played() {
     let mut last: Option<LastHit> = None;
-    let scaled = resolve_revise(PadKind::Real, &last, 64, DB_RANGE).expect("a real pad always revises");
-    assert!(scaled > 0.0 && scaled < REAL_GAIN, "sub-max velocity revises below unity: {scaled}");
+    let scaled = resolve_revise(PadKind::Real, &last, 0.5, DB_RANGE).expect("a real pad always revises");
+    assert!(scaled > 0.0 && scaled < REAL_GAIN, "sub-max intensity revises below unity: {scaled}");
 
-    assert_eq!(resolve_revise(PadKind::Ditto, &last, 127, DB_RANGE), None, "nothing to revise against yet");
+    assert_eq!(resolve_revise(PadKind::Ditto, &last, 1.0, DB_RANGE), None, "nothing to revise against yet");
 
-    resolve_fire(PadKind::Real, 2, &mut last, 60, DB_RANGE).unwrap();
-    let ditto_scaled = resolve_revise(PadKind::Ditto, &last, 127, DB_RANGE).expect("a hit has played");
-    assert!((ditto_scaled - REAL_GAIN).abs() < 1e-6, "vel 127 against REAL_GAIN trim = unity: {ditto_scaled}");
+    resolve_fire(PadKind::Real, 2, &mut last, 0.5, DB_RANGE).unwrap();
+    let ditto_scaled = resolve_revise(PadKind::Ditto, &last, 1.0, DB_RANGE).expect("a hit has played");
+    assert!((ditto_scaled - REAL_GAIN).abs() < 1e-6, "intensity 1.0 against REAL_GAIN trim = unity: {ditto_scaled}");
   }
 
   #[test]

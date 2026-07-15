@@ -1158,13 +1158,14 @@ pub struct SoftstepParams {
   /// The pad re-arms once its sum-of-4 falls below this.
   #[serde(default = "default_off_sum")]
   pub off_sum: u16,
-  /// After firing on onset, keep watching this long to raise velocity to a later peak.
+  /// After firing on onset, keep watching this long to raise intensity to a later peak.
   #[serde(default = "default_attack_ms")]
   pub attack_ms: u64,
-  /// Pad sum-of-4 (0..508) that maps to velocity 127.
+  /// Pad sum-of-4 (0..508) that maps to full intensity (1.0). (Field name is historical;
+  /// the decoder emits a continuous 0.0..1.0 intensity now, not a 0..127 velocity.)
   #[serde(default = "default_velocity_full_scale")]
   pub velocity_full_scale: u16,
-  /// dB between the softest (vel 1) and hardest (vel 127) hit.
+  /// dB between the softest (intensity 0.0) and hardest (intensity 1.0) hit.
   #[serde(default = "default_velocity_db_range")]
   pub velocity_db_range: f32,
   /// Minimum gap between two hits on the SAME pad (contact-bounce guard); 0 = off.
