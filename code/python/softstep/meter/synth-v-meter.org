@@ -1,37 +1,37 @@
-#+title: Synth (Rust drumkit) vs. meter -- how their hit detection & velocity differ
+#+title: Synth (Rust drumkit) vs. meter -- how their hit detection & pressure differ
 #+date: 2026-07-05
 
 * Overview | purpose
-Two programs decode the SoftStep's tether stream into hits with velocity:
+Two programs decode the SoftStep's tether stream into hits with a strike pressure:
 
 - *the kit* -- =code/rust/midi_pulse/drumkit_runtime/= (=decode.rs= is the state machine,
   =audio.rs= plays the samples). This is the instrument that actually makes drum sound.
 - *the meter* -- =code/python/softstep/meter/main.py=. A diagnostic tool: live pressure
-  bars, a velocity audition, and per-pad =.org= logs. It is *meant* to mirror the kit so
+  bars, a pressure-scaled audition, and per-pad =.org= logs. It is *meant* to mirror the kit so
   what you calibrate here matches what you'll hear there.
 
 They share the same *shape* of algorithm (fire on onset, watch for a higher peak over an
 attack window, re-arm on release, de-stick a silent sensor), and -- since the
 =softstep.toml= change -- the same *knobs*: the kit reads them from the shared
-=configs/softstep.toml=, the meter from its own =config.toml=, with matching defaults. The
+=rigs/softstep.toml=, the meter from its own =config.toml=, with matching defaults. The
 meter now also has the *debounce* it used to lack. What still differs is below.
 
 * The parameters, side by side
 
 Both sides are config now, with matching defaults:
 
-| knob                     | kit (configs/softstep.toml)  | meter (meter/config.toml) |
+| knob                     | kit (rigs/softstep.toml)  | meter (meter/config.toml) |
 |--------------------------+------------------------------+---------------------------|
 | onset threshold          | =on_sum= 20                  | =on-sum= 20               |
 | release threshold        | =off_sum= 20                 | =off-sum= 20              |
 | attack watch window      | =attack_ms= 14               | =attack-ms= 14            |
 | retrigger debounce       | =debounce_ms= 100            | =debounce-ms= 100         |
-| sum-of-4 -> velocity 127 | =velocity_full_scale= 460    | =vel-full-scale= 460      |
-| velocity loudness spread | =velocity_db_range= 20 dB    | =vel-db-range= 20         |
+| sum-of-4 -> full pressure 1.0 | =pressure_full_scale= 460    | =pressure-full-scale= 460      |
+| pressure loudness spread | =gain_db_range= 20 dB    | =gain-db-range= 20         |
 | sensor de-stick          | =silence_to_zero_ms= 25 ms   | =silence-to-zero-ms= 25   |
 
 *The remaining gotcha:* they are still *two files*, not one source. The kit reads
-=configs/softstep.toml=; the meter reads =code/python/softstep/meter/config.toml=. Edit one
+=rigs/softstep.toml=; the meter reads =code/python/softstep/meter/config.toml=. Edit one
 and not the other and they drift -- so the meter can be tuned lighter than the kit (or vice
 versa), and the meter's numbers only predict the kit if you keep the two files in step. The
 final unification would be to have the meter read =softstep.toml= directly for the shared
@@ -52,17 +52,17 @@ knobs (see [[* If you want them fully unified]]).
 
 * 2. Fire timing and the loudness envelope
 
-Both now *fire on onset* (even a one-sample tap counts) and take the *velocity from the
+Both now *fire on onset* (even a one-sample tap counts) and take the *pressure from the
 peak* over the attack window. What differs is what happens between onset and peak:
 
-- *Kit:* fires a voice *immediately* at the onset velocity, then sends =Revise= events as
+- *Kit:* fires a voice *immediately* at the onset pressure, then sends =Revise= events as
   a higher peak arrives, *ramping the voice's gain up* to the peak (one-pole de-zipper,
   ~5 ms, in =audio.rs=). The sound *swells* from onset loudness to peak loudness.
 - *Meter (live audition):* can't ramp a =pw-play= one-shot, so it fires *once, at window
-  close* (on release, or when =attack-ms= elapses), at the *peak* velocity, at a fixed
+  close* (on release, or when =attack-ms= elapses), at the *peak* pressure, at a fixed
   volume. You hear the final (peak) loudness, a few ms later than the kit's onset.
 - *Meter (=.org= interpretation):* =interpret_hits= reports each hit's time as the *onset*
-  and its velocity as the *peak* -- so the *log* matches the kit's fire time and final
+  and its pressure as the *peak* -- so the *log* matches the kit's fire time and final
   loudness, even though the live audition's timing does not.
 
 * 3. Poll cadence
@@ -76,10 +76,10 @@ peak* over the attack window. What differs is what happens between onset and pea
 * 4. What is actually the same
 
 - *Onset test:* strict =sum > on-sum= (not >=).
-- *Velocity:* =velocity = clamp(peak * 127 / full_scale, 1, 127)= (kit =velocity_from_peak=,
-  meter =_vel=). Identical formula and, at the shared defaults, the same =full_scale= (460).
-- *Loudness curve:* velocity spread over =db-range= dB (vel 127 -> unity, vel 1 ->
-  -db-range). Identical.
+- *Pressure:* =pressure = clamp(peak / full_scale, 0, 1)= (kit =pressure_from_peak=,
+  meter =_pressure=). Identical formula and, at the shared defaults, the same =full_scale= (460).
+- *Loudness curve:* pressure spread over =gain-db-range= dB (pressure 1 -> unity gain, 0 ->
+  -range). Identical.
 - *De-stick:* per-sensor; a sensor silent longer than =silence-to-zero-ms= reads 0, which
   trips the release path and re-arms the pad. Same mechanism, same default (25 ms).
 - *State-machine shape:* idle -> watching (fired) -> held -> idle; re-arm on release.
@@ -91,27 +91,27 @@ peak* over the attack window. What differs is what happens between onset and pea
   interpretation). The kit just plays; it never groups or logs.
 - *=f= flush* (and flush-on-kill).
 - *One reference sample:* the meter auditions a single =audition-sample= (snare) for
-  *every* pad -- it's a touch/velocity meter, not the kit. The kit plays each pad's own
+  *every* pad -- it's a touch/pressure meter, not the kit. The kit plays each pad's own
   mapped sample (kick, snare, ...), through a 64-voice polyphonic pool with voice stealing;
   the meter spawns an independent =pw-play= per hit.
 
 * 6. Final gain staging (minor)
 
-- *Kit:* voice gain = =pad.gain= (per-pad config) x =gain_from_velocity(vel)=, summed
+- *Kit:* voice gain = =pad.gain= (per-pad config) x =gain_from_pressure(pressure)=, summed
   across voices x sink =amplitude=, clamped to [-1, 1].
-- *Meter:* =pw-play --volume= = =master-volume= x =gain_from_velocity(vel)=, clamped to
+- *Meter:* =pw-play --volume= = =master-volume= x =gain_from_pressure(pressure)=, clamped to
   [0, 1], one process per hit.
 
 * If you want them fully unified
 
 Both earlier gaps are closed: the meter now has debounce, and the kit's thresholds are no
-longer hard-coded consts -- they live in =configs/softstep.toml=. So "calibrate, then hear
+longer hard-coded consts -- they live in =rigs/softstep.toml=. So "calibrate, then hear
 it in the kit" works, as long as you keep the meter's =config.toml= in step with
 =softstep.toml=.
 
 The one remaining seam is that they are *two files*. The final step -- if the manual sync
-ever bites -- would be to have the Python meter read =configs/softstep.toml= directly for
-the shared knobs (=on_sum=, =off_sum=, =attack_ms=, =debounce_ms=, =velocity_full_scale=,
-=velocity_db_range=, =silence_to_zero_ms=), keeping its own =config.toml= only for
+ever bites -- would be to have the Python meter read =rigs/softstep.toml= directly for
+the shared knobs (=on_sum=, =off_sum=, =attack_ms=, =debounce_ms=, =pressure_full_scale=,
+=gain_db_range=, =silence_to_zero_ms=), keeping its own =config.toml= only for
 meter-only settings (grouping, audition, master volume). Then there is a single source of
 truth for the SoftStep and nothing to transcribe.
