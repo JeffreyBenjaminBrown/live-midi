@@ -303,17 +303,18 @@ meter =code/python/softstep/meter/= mirrors them in its own =rig.toml= (=on-sum=
 | knob                | default | what it does                                                        | symptom -> fix                                                                                          |
 |---------------------+---------+---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------|
 | =ATTACK=            | 14 ms   | after firing on onset, how long we keep watching to ramp the voice up to a later, higher peak | hard hit stays *weak* (its peak lands past the window) -> raise 1-2 ms; fire is immediate now, so it adds no latency |
-| =VELOCITY_DB_RANGE= | 20 dB   | loudness spread from softest (vel 1) to hardest (vel 127) hit        | dynamics feel *flat* -> raise (e.g. 30); soft hits *vanish* / too extreme -> lower (e.g. 12)              |
-| =VELOCITY_FULL_SCALE= | 460   | pad pressure (sum of its 4 sensors, 0..508) that maps to velocity 127 | *everything maxes out*, no headroom -> raise toward 508; *can't reach full* even hitting hard -> lower    |
+| =gain_db_range= (softstep.toml) | 20 dB | loudness spread from softest (pressure 0) to hardest (pressure 1) hit | dynamics feel *flat* -> raise (e.g. 30); soft hits *vanish* / too extreme -> lower (e.g. 12)              |
+| =pressure_full_scale= (softstep.toml) | 460 | pad pressure (sum of its 4 sensors, 0..508) that maps to full pressure 1.0 | *everything maxes out*, no headroom -> raise toward 508; *can't reach full* even hitting hard -> lower    |
 | =on_sum= / =off_sum= | 20 / 20 | onset / release thresholds on the pad's sum-of-4 (hysteresis)      | *double/false* triggers -> raise =on_sum=; a pad *won't retrigger (stuck)* -> lower =off_sum=             |
 | poll interval       | 1 ms    | how often the fire-timer checks for matured hits                     | rarely needs changing; the ~10 ms device scan dominates                                                |
 | =debounce_ms= (softstep.toml) | 100 ms | min gap between two hits on the SAME pad, *in addition to* a release below =off_sum= | *machine-gunning / bounce on one pad* -> raise; *fast rolls cut off* -> lower (0 = release-only)         |
 | =silence_to_zero_ms= (softstep.toml) | 25 ms | a sensor with no CC for this long reads 0 (de-stick) -- the on-change stream leaves a physically stuck sensor's last value lingering, pinning a pad Held | *a pad won't retrigger after a stuck sensor* -> lower; *held/sustained presses cut out* -> raise (0 = off) |
 
-Velocity = the *peak of sum-of-4* over the =ATTACK= window, scaled by =VELOCITY_FULL_SCALE=
-to 1..127, then converted to a gain spread over =VELOCITY_DB_RANGE=. (Loudness is
-~logarithmic, so velocity is spread across dB rather than scaling amplitude linearly --
-linear would put vel 127 ~42 dB above vel 1, far too much.) After changing any knob,
+Pressure = the *peak of sum-of-4* over the =ATTACK= window, over =pressure_full_scale= (a
+continuous 0.0..1.0 -- no 0..127 quantization step), then converted to a gain spread over
+=gain_db_range=. (Loudness is ~logarithmic, so pressure is spread across dB rather than
+scaling amplitude linearly -- linear would put full pressure ~42 dB above a light press,
+far too much.) After changing any knob,
 rebuild: =pw-jack cargo run --bin midi_pulse -- kmss-drumkit=. The pure decoder has unit
 tests (=cargo test --bin midi_pulse drumkit=).
 
