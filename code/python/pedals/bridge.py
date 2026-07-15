@@ -41,11 +41,14 @@ PORT_NAME = "MPC-20 pedals"
 
 
 def make_output():
-    """A MidiOut on the ALSA-seq backend (what the container shares), if available."""
+    """A MidiOut on the ALSA-seq backend (what the container shares), if available. The
+    ALSA *client* is named PORT_NAME too (not the rtmidi default "RtMidiOut Client"), so the
+    port is addressable by name -- `aseqdump -p 'MPC-20 pedals'` and midir's name match both
+    resolve it."""
     apis = rtmidi.get_compiled_api()
     if hasattr(rtmidi, "API_LINUX_ALSA") and rtmidi.API_LINUX_ALSA in apis:
-        return rtmidi.MidiOut(rtmidi.API_LINUX_ALSA)
-    return rtmidi.MidiOut()
+        return rtmidi.MidiOut(rtmidi.API_LINUX_ALSA, name=PORT_NAME)
+    return rtmidi.MidiOut(name=PORT_NAME)
 
 
 def pump(dev, reattach, midiout):
