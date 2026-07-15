@@ -1,4 +1,7 @@
-# SoftStep velocity-meter config.
+# SoftStep DUAL-meter config.
+#
+# The meter reads EVERY connected SoftStep (both units) and shows the last two pads
+# pressed, each as its 4 individual sensors + their sum. These knobs apply to both.
 #
 # Press `r` to reload while the meter runs.
 # All data here is optional; default values are in main.py.
@@ -32,3 +35,8 @@ group-end-hold-ms = 45 # A group ends when a pad is quiet for this long. Can be 
 # A sensor that has sent no CC for this long is interpreted as at 0.
 # 0 => This feature is off.
 silence-to-zero-ms = 25
+
+# --- deep-dive CSV log ---
+# Write logs/csv/session-<stamp>.csv: one row per sensor frame and per fired hit, across
+# BOTH boards (t_iso,t_ms,device,kind,pad,s0,s1,s2,s3,sum,event,velocity). false = off.
+csv = true

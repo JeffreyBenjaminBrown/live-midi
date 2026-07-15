@@ -1,45 +1,51 @@
 #!/usr/bin/env python3
-"""Live per-pad pressure meter + velocity audition + per-group .org logger.
+"""Live DUAL-SoftStep sensor meter + per-hit velocity + CSV / .org logging.
 
-Puts the SoftStep in tether mode and, for each of the 10 pads (labeled as printed
-on the board), draws a live pressure bar (sum of the pad's 4 sensors, 0..508) with a
-peak-hold. When you strike a pad it DETECTS the hit, prints its velocity, optionally
-PLAYS the configured audition sample (default snare) at that velocity, and LOGS the raw sum
-trace of each "event group" to an .org file, alongside a re-derived interpretation
-(how many hits it renders, at what velocities/times) so you can see exactly why a hit
-did or didn't fire. Restores standalone mode on exit.
+We now have TWO SoftSteps (see ss.list_softsteps): they enumerate differently, so the
+code tells them apart by ALSA port name -- the original "SSCOM" unit and the newer
+"SoftStep" unit. This meter puts EVERY connected SoftStep into tether mode and reads
+them all at once.
+
+To keep the screen small with two boards' worth of pads, the live display shows only
+the LAST TWO PADS PRESSED (across both boards). Each is one row of all five values --
+the pad's 4 individual sensors s0 s1 s2 s3 and their sum -- tagged with WHICH board and
+WHICH pad it is. (The older single-board meter drew a bar per pad; that got to 20 bars
+with two boards, hence this compact view.)
 
   python3 code/python/softstep/meter/main.py          # run until 'q' or Ctrl-C
   python3 code/python/softstep/meter/main.py 5         # run ~5s then exit (for testing)
 
 While it runs:
   r   reload config.toml (thresholds, dB range, group settings) live
+  f   flush open .org event groups to disk now
   q   quit (Ctrl-C also works)
+
+LOGGING, two forms, both under meter/logs/:
+  * CSV  (csv/session-<stamp>.csv) -- one row per sensor frame and per fired hit, across
+    BOTH boards: t_iso,t_ms,device,kind,pad,s0,s1,s2,s3,sum,event,velocity. This is the
+    "deep dive" log -- load it in a spreadsheet / pandas. `event` is blank for a plain
+    sample and "fire" on the frame a hit's onset fires (velocity filled in then).
+  * .org event groups (<device>/pad-<label>/<N>.org) -- the older per-pad grouped trace
+    + re-derived hit interpretation, now namespaced per board. See below.
 
 CONFIG: code/python/softstep/meter/config.toml -- all tunables, hot-reloadable.
 
-EVENT GROUPS: grouping is PER PAD -- each pad has its own independent groups, so several
-can be ongoing at once. A pad's group starts when ITS sum-of-4 rises to/above
-`event-group-separation-threshold`, and ends once it has stayed below that for
-`group-end-hold-ms` (0 = close the instant it dips below). Each group is written to
-logs/pad-<label>/<N>.org, N counting up from the highest already in that pad's folder
-(never overwriting). The .org file has a `* sequence` headline (an org-table: the sum at
-every sampled moment) and a `* interpretation` headline (`** constants` then `** result`
--- the hits that sequence renders under those constants). On start you'll see
-"pad <label>: new group (ongoing): N"; on close, "pad <label>: wrote group: N".
-  See TODO/calibrate-softstep/claude-asks.org for the design choices behind this.
+EVENT GROUPS: grouping is PER PAD PER BOARD -- each pad has its own independent groups.
+A pad's group starts when ITS sum-of-4 rises above `event-group-separation-threshold`
+and ends once it has stayed at/below that for `group-end-hold-ms`. Each group is written
+to logs/<device>/pad-<label>/<N>.org (raw sequence + re-derived interpretation).
 
 HOW VELOCITY SCALES LOUDNESS: loudness is perceived ~logarithmically, so vel 127 is NOT
-127x the amplitude of vel 1 (a ~42 dB spread). Instead the velocity range is spread over
-`vel-db-range` dB; at 20 dB the softest hit is 1/10 the amplitude of the hardest.
+127x the amplitude of vel 1. The velocity range is spread over `vel-db-range` dB.
 """
-import os, sys, time, threading, subprocess, re, signal, tomllib, select, termios, tty
+import os, sys, time, threading, subprocess, re, signal, tomllib, select, termios, tty, csv, datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # find sibling ss.py
 import ss
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.toml")
 LOGDIR = os.path.join(HERE, "logs")
+CSVDIR = os.path.join(LOGDIR, "csv")
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))  # meter/ -> repo root
 SAMPLES_DIR = os.path.join(REPO_ROOT, "drum-samples")  # `audition-sample` resolves under here
 
@@ -58,39 +64,35 @@ DEFAULTS = {
     "event-group-separation-threshold": 20,  # sum-of-4 below this = that pad is "quiet"
     "group-end-hold-ms": 150,                # board stays quiet this long -> close group
     "silence-to-zero-ms": 25,                # a sensor with no CC for this long reads 0 (de-stick); 0 = off
+    "csv": True,                             # write the deep-dive CSV log (csv/session-*.csv)
 }
 CFG = dict(DEFAULTS)
 
-# printed label (as on the board) -> base CC of that pad's 4 sensors (MEASURED)
+# printed label (as on the board) -> base CC of that pad's 4 sensors (MEASURED on the
+# SSCOM unit; CONFIRMED identical on the newer "SoftStep" unit 2026-07-15 by a guided
+# per-pad capture -- both boards use this exact map. See learnings/keith-mcmillen-softstep.org).
 LABEL_BASE = [("1", 44), ("2", 52), ("3", 60), ("4", 68), ("5", 76),
               ("6", 40), ("7", 48), ("8", 56), ("9", 64), ("0", 72)]
 BASE_LABEL = {b: l for l, b in LABEL_BASE}
 BASES = [b for _, b in LABEL_BASE]
 SUM_MAX = 508.0
-BARW = 44
 
-sensors = [0] * 128                              # raw last-received value per CC
-last_seen = [0.0] * 128                          # monotonic time each CC was last received (0 = never)
-state = {b: "idle" for b in BASES}               # idle / watching / held
-peak = {b: 0 for b in BASES}                      # attack peak (sum) while watching
-onset = {b: 0.0 for b in BASES}                   # monotonic time of onset
-hold_peak = {b: (0, 0.0) for b in BASES}          # bar peak-hold (value, time)
-last_vel = {b: 0 for b in BASES}                  # last fired velocity, for display
-last_fire = {b: None for b in BASES}              # onset time of this pad's last FIRED hit (debounce gate)
 recent = "(strike a pad)"
 MESSAGES = []                                     # recent group/reload lines, newest last
+LAST_PRESSED = []                                 # [(dev_index, base)] most-recent-first, len<=2
 lock = threading.RLock()  # reentrant: a SIGTERM handler may flush while the main thread holds it
 
-# Org-table columns for the sequence: the pad's 4 sensors and their sum at every sampled
-# moment. `ms` is milliseconds since the group started. Derived state/velocity live in the
-# interpretation, not here. Rows are written UN-aligned (single-space padded) -- hit TAB
-# in Emacs to align the columns; no widths are computed here.
+# Org-table columns for the .org sequence: the pad's 4 sensors and their sum at every
+# sampled moment. `ms` is milliseconds since the group started.
 SEQ_COLS = ["ms", "s0", "s1", "s2", "s3", "sum"]
 
 # Constants (config keys) restated in each group's interpretation, for reproducibility.
 INTERP_CONSTANTS = ["on-sum", "off-sum", "attack-ms", "debounce-ms", "vel-full-scale",
                     "vel-db-range", "event-group-separation-threshold", "group-end-hold-ms",
                     "silence-to-zero-ms"]
+
+# CSV columns for the deep-dive log.
+CSV_COLS = ["t_iso", "t_ms", "device", "kind", "pad", "s0", "s1", "s2", "s3", "sum", "event", "velocity"]
 
 
 def _org_row(cells):
@@ -123,24 +125,14 @@ def load_config():
         else:
             announce(f"ignoring unknown config key: {k}")
     CFG.update(cfg)
-    for g in GROUPS.values():
-        g.set_params(CFG["event-group-separation-threshold"], CFG["group-end-hold-ms"])
+    for dev in DEVICES:
+        for g in dev.groups.values():
+            g.set_params(CFG["event-group-separation-threshold"], CFG["group-end-hold-ms"])
     if CFG["audition"] and not os.path.exists(audition_path()):
         announce(f"audition sample not found: {audition_path()} (no sound will play)")
 
 
-# --------------------------------------------------------------------------- grouping
-def highest_existing_group(logdir):
-    """The largest N among existing logs/<N>.org (0 if none) -- so we never overwrite."""
-    best = 0
-    if os.path.isdir(logdir):
-        for name in os.listdir(logdir):
-            m = re.fullmatch(r"(\d+)\.org", name)
-            if m:
-                best = max(best, int(m.group(1)))
-    return best
-
-
+# --------------------------------------------------------------------------- velocity math
 def _vel(peak_sum, full_scale):
     """Sum-of-4 attack peak -> velocity 1..127 (the meter's / kit's mapping)."""
     return max(1, min(127, round(peak_sum / full_scale * 127)))
@@ -149,6 +141,17 @@ def _vel(peak_sum, full_scale):
 def _db_of(vel, db_range):
     """The dB below full-scale a velocity plays at (vel 127 -> 0 dB)."""
     return (vel - 1) / 126.0 * db_range - db_range
+
+
+def velocity_from_sum(peak_sum):
+    return _vel(peak_sum, CFG["vel-full-scale"])
+
+
+def gain_from_velocity(vel):
+    """Map velocity 1..127 to a linear gain over `vel-db-range` dB (vel 127 -> 0 dB)."""
+    t = (vel - 1) / 126.0
+    gain_db = (t - 1.0) * CFG["vel-db-range"]
+    return 10.0 ** (gain_db / 20.0)
 
 
 def interpret_hits(seq, on_sum, off_sum, attack_s, full_scale, debounce_s=0.0):
@@ -180,11 +183,22 @@ def interpret_hits(seq, on_sum, off_sum, attack_s, full_scale, debounce_s=0.0):
     return hits
 
 
+# --------------------------------------------------------------------------- .org grouping
+def highest_existing_group(logdir):
+    """The largest N among existing logs/<N>.org (0 if none) -- so we never overwrite."""
+    best = 0
+    if os.path.isdir(logdir):
+        for name in os.listdir(logdir):
+            m = re.fullmatch(r"(\d+)\.org", name)
+            if m:
+                best = max(best, int(m.group(1)))
+    return best
+
+
 class PadGroup:
-    """One pad's event grouping. A group opens when THIS pad's sum-of-4 rises to/above
-    `sep` and closes after it has stayed below that for `hold`. Grouping is per pad, so
-    several pads can have a group open at once. While open it buffers the pad's sum trace;
-    on close it writes logs/pad-<label>/<N>.org (raw sequence + re-derived interpretation)."""
+    """One pad's event grouping (on one board). A group opens when THIS pad's sum-of-4
+    rises above `sep` and closes after it has stayed at/below that for `hold`. While open
+    it buffers the pad's sum trace; on close it writes logs/<device>/pad-<label>/<N>.org."""
 
     def __init__(self, label, logdir):
         self.label = label
@@ -202,10 +216,7 @@ class PadGroup:
         self.hold = hold_ms / 1000.0
 
     def update(self, sum4, now):
-        """Open/refresh/close this pad's group from its current sum-of-4. Under `lock`.
-        A pad is "active" while its sum EXCEEDS `sep` and "quiet" at/below it (strict, like
-        on-sum/off-sum) -- so sep=0 means "log any nonzero activity".
-        With hold == 0 the group closes the instant the sum drops to/below `sep`."""
+        """Open/refresh/close this pad's group from its current sum-of-4. Under `lock`."""
         if sum4 > self.sep:
             if not self.open:
                 self._start(now)
@@ -223,7 +234,7 @@ class PadGroup:
         self.start = now
         self.samples = []
         self.open = True
-        announce(f"pad {self.label}: new group (ongoing): {self.num}")
+        announce(f"{os.path.basename(self.logdir)}: new group (ongoing): {self.num}")
 
     def _end(self):
         self.open = False
@@ -232,7 +243,7 @@ class PadGroup:
         hits = interpret_hits(seq, CFG["on-sum"], CFG["off-sum"], CFG["attack-ms"] / 1000.0,
                               CFG["vel-full-scale"], CFG["debounce-ms"] / 1000.0)
         with open(os.path.join(self.logdir, f"{self.num}.org"), "w") as f:
-            f.write(f"#+title: pad {self.label} -- event group {self.num}\n\n")
+            f.write(f"#+title: {os.path.basename(self.logdir)} -- event group {self.num}\n\n")
             f.write("* sequence\n")
             f.write(_org_row(SEQ_COLS) + "\n|---|\n")
             for (t, s0, s1, s2, s3, summ) in self.samples:
@@ -248,81 +259,177 @@ class PadGroup:
             else:  # with fire-on-onset, 0 hits means the sum never crossed on-sum at all
                 pk = max((summ for (_t, _s0, _s1, _s2, _s3, summ) in self.samples), default=0)
                 f.write(f"0 hits -- the sum peaked at {pk}, never crossing on-sum={CFG['on-sum']}.\n")
-        announce(f"pad {self.label}: wrote group: {self.num}")
+        announce(f"{os.path.basename(self.logdir)}: wrote group: {self.num}")
 
     def flush(self):
-        """Close the group if open, writing it to disk. Used by the 'f' command and the
-        exit/kill path, so an in-progress group is never lost."""
+        """Close the group if open, writing it to disk (the 'f' command / exit path)."""
         if self.open:
             self._end()
 
 
-# One independent grouping per pad, each logging into logs/pad-<label>/.
-GROUPS = {base: PadGroup(label, os.path.join(LOGDIR, f"pad-{label}")) for label, base in LABEL_BASE}
+# --------------------------------------------------------------------------- CSV log
+class CsvLog:
+    """The append-only deep-dive CSV, shared by every board's reader (guarded by `lock`)."""
+
+    def __init__(self):
+        self.f = None
+        self.w = None
+        self.path = None
+
+    def open(self):
+        if not CFG["csv"]:
+            return
+        os.makedirs(CSVDIR, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.path = os.path.join(CSVDIR, f"session-{stamp}.csv")
+        self.f = open(self.path, "w", newline="")
+        self.w = csv.writer(self.f)
+        self.w.writerow(CSV_COLS)
+        self.f.flush()
+
+    def row(self, now, dev, base, s4, summ, event="", velocity=""):
+        """One CSV line: a sensor frame (event="") or a fired hit (event="fire")."""
+        if self.w is None:
+            return
+        self.w.writerow([datetime.datetime.now().isoformat(timespec="milliseconds"),
+                         f"{now * 1000:.1f}", dev.label, dev.kind, BASE_LABEL[base],
+                         s4[0], s4[1], s4[2], s4[3], summ, event, velocity])
+        self.f.flush()
+
+    def close(self):
+        if self.f:
+            self.f.flush()
+            self.f.close()
+            self.f = self.w = None
 
 
-# --------------------------------------------------------------------------- detection
-def interp(cc, now):
-    """The sensor's INTERPRETED value: its raw reading, or 0 once it has been silent (no
-    CC) for longer than `silence-to-zero-ms` -- so a stuck sensor is treated as released to
-    0 (the tether stream is on-change, so a stuck sensor simply stops sending and its last
-    value would otherwise linger). `silence-to-zero-ms` of 0 disables this (always raw)."""
-    silence = CFG["silence-to-zero-ms"] / 1000.0
-    if silence > 0 and now - last_seen[cc] > silence:
-        return 0
-    return sensors[cc]
+CSVLOG = CsvLog()
 
 
-def pad_sum(base, now):
-    return sum(interp(base + k, now) for k in range(4))
+# --------------------------------------------------------------------------- a board
+class Device:
+    """One SoftStep board: its own raw sensor shadow, per-pad detection state machine,
+    and per-pad .org event groups. `kind` is "sscom"/"softstep" (how the two units
+    enumerate); `label` is the short display tag; `port` is the amidi rawmidi port."""
+
+    def __init__(self, index, info):
+        self.index = index
+        self.label = info["label"]
+        self.kind = info["kind"]
+        self.port = info["port"]
+        self.name = info["name"]
+        self.sensors = [0] * 128                    # raw last-received value per CC
+        self.last_seen = [0.0] * 128                # monotonic time each CC was last received
+        self.state = {b: "idle" for b in BASES}     # idle / watching / held
+        self.peak = {b: 0 for b in BASES}            # attack peak (sum) while watching
+        self.onset = {b: 0.0 for b in BASES}         # monotonic time of onset
+        self.last_vel = {b: 0 for b in BASES}        # last fired velocity, for display
+        self.last_fire = {b: None for b in BASES}    # onset time of last FIRED hit (debounce gate)
+        self.proc = None                             # amidi reader subprocess
+        base_dir = os.path.join(LOGDIR, self.label.lower())
+        self.groups = {b: PadGroup(l, os.path.join(base_dir, f"pad-{l}")) for l, b in LABEL_BASE}
+
+    # --- interpreted sensor reads -------------------------------------------------
+    def interp(self, cc, now):
+        """The sensor's INTERPRETED value: its raw reading, or 0 once it has been silent
+        (no CC) for longer than `silence-to-zero-ms` -- so a stuck sensor reads released."""
+        silence = CFG["silence-to-zero-ms"] / 1000.0
+        if silence > 0 and now - self.last_seen[cc] > silence:
+            return 0
+        return self.sensors[cc]
+
+    def sensor4(self, base, now):
+        return [self.interp(base + k, now) for k in range(4)]
+
+    def pad_sum(self, base, now):
+        return sum(self.interp(base + k, now) for k in range(4))
+
+    # --- detection ----------------------------------------------------------------
+    def check_fire(self, now):
+        """Advance each pad's onset/watch state machine off its interpreted sum and return
+        the hits that just completed as (base, velocity). Mirrors the kit's decoder."""
+        fired = []
+        for base in BASES:
+            s = self.pad_sum(base, now)
+            st = self.state[base]
+            if st == "idle":
+                if s > CFG["on-sum"]:
+                    self.state[base] = "watching"; self.peak[base] = s; self.onset[base] = now
+            elif st == "watching":
+                self.peak[base] = max(self.peak[base], s)
+                if s < CFG["off-sum"] or (now - self.onset[base]) * 1000.0 >= CFG["attack-ms"]:
+                    debounce_s = CFG["debounce-ms"] / 1000.0
+                    if self.last_fire[base] is None or (self.onset[base] - self.last_fire[base]) >= debounce_s:
+                        vel = velocity_from_sum(self.peak[base])
+                        self.last_vel[base] = vel
+                        self.last_fire[base] = self.onset[base]
+                        fired.append((base, vel))
+                    self.state[base] = "held" if s >= CFG["off-sum"] else "idle"
+            elif st == "held":
+                if s < CFG["off-sum"]:
+                    self.state[base] = "idle"
+        return fired
+
+    def process(self, now, pad_updates):
+        """Advance groups, log CSV samples for changed pads, fire matured hits. Under `lock`.
+        Returns the hits fired this pass as (base, velocity)."""
+        for base in BASES:
+            self.groups[base].update(self.pad_sum(base, now), now)     # opens on rise; closes after hold
+        for base in dict.fromkeys(pad_updates):                        # one sample per changed pad
+            s4 = self.sensor4(base, now); summ = sum(s4)
+            self.groups[base].sample(now, *s4, summ)
+            CSVLOG.row(now, self, base, s4, summ)
+        fired = self.check_fire(now)
+        for base, vel in fired:
+            s4 = self.sensor4(base, now)
+            CSVLOG.row(now, self, base, s4, sum(s4), event="fire", velocity=vel)
+            note_press(self.index, base)
+            play_audition(self.label, BASE_LABEL[base], vel)
+        return fired
+
+    # --- MIDI in ------------------------------------------------------------------
+    def reader(self):
+        """Read this board's tether CC stream via `amidi -p PORT -d` and drive detection."""
+        self.proc = subprocess.Popen(["stdbuf", "-oL", "amidi", "-p", self.port, "-d"],
+                                     stdout=subprocess.PIPE, text=True, bufsize=1)
+        status = None
+        for line in self.proc.stdout:
+            toks = [int(x, 16) for x in line.split() if re.fullmatch(r"[0-9A-Fa-f]{2}", x)]
+            i = 0
+            pad_updates = []
+            with lock:
+                now = time.monotonic()
+                while i < len(toks):
+                    b = toks[i]
+                    if b >= 0x80:
+                        status = b; i += 1
+                    if status is None:
+                        i += 1; continue
+                    if (status & 0xF0) == 0xB0 and i + 1 < len(toks):
+                        cc, val = toks[i], toks[i + 1]; i += 2
+                        if cc < 128:
+                            self.sensors[cc] = val
+                            self.last_seen[cc] = now
+                            base = 40 + 4 * ((cc - 40) // 4) if 40 <= cc <= 79 else None
+                            if base in self.state:
+                                pad_updates.append(base)
+                    else:
+                        break
+                self.process(now, pad_updates)
 
 
-def sensor4(base, now):
-    return [interp(base + k, now) for k in range(4)]
+DEVICES = []  # populated in main() from ss.list_softsteps()
 
 
-def velocity_from_sum(peak_sum):
-    return _vel(peak_sum, CFG["vel-full-scale"])
-
-
-def gain_from_velocity(vel):
-    """Map velocity 1..127 to a linear gain over `vel-db-range` dB (vel 127 -> 0 dB)."""
-    t = (vel - 1) / 126.0
-    gain_db = (t - 1.0) * CFG["vel-db-range"]
-    return 10.0 ** (gain_db / 20.0)
-
-
-def check_fire(now):
-    """Advance each pad's onset/watch state machine off its interpreted sum and return the
-    hits that just completed. A pad starts WATCHING when its sum crosses on-sum, and fires
-    ONCE -- at the peak seen -- when it releases below off-sum OR the attack window elapses,
-    so even a one-sample tap counts. Mirrors the kit's decoder; the kit fires at onset and
-    ramps its voice up to this same peak (pw-play can't ramp, so the meter auditions the
-    final peak loudness at window close). A stuck sensor going silent reads 0 via `interp`,
-    which trips the release path and re-arms the pad."""
-    fired = []
-    for base in BASES:
-        s = pad_sum(base, now)
-        st = state[base]
-        if st == "idle":
-            if s > CFG["on-sum"]:
-                state[base] = "watching"; peak[base] = s; onset[base] = now
-        elif st == "watching":
-            peak[base] = max(peak[base], s)
-            if s < CFG["off-sum"] or (now - onset[base]) * 1000.0 >= CFG["attack-ms"]:
-                debounce_s = CFG["debounce-ms"] / 1000.0
-                # Debounce is onset-to-onset (like the kit): suppress a hit whose onset is
-                # within `debounce-ms` of the last FIRED hit's onset on this pad.
-                if last_fire[base] is None or (onset[base] - last_fire[base]) >= debounce_s:
-                    vel = velocity_from_sum(peak[base])
-                    last_vel[base] = vel
-                    last_fire[base] = onset[base]
-                    fired.append((base, vel))
-                state[base] = "held" if s >= CFG["off-sum"] else "idle"
-        elif st == "held":
-            if s < CFG["off-sum"]:
-                state[base] = "idle"
-    return fired
+# --------------------------------------------------------------------------- shared events
+def note_press(dev_index, base):
+    """Record a pad press for the compact display: keep the last two DISTINCT (board, pad)
+    pairs, most-recent first. Under `lock`."""
+    key = (dev_index, base)
+    if key in LAST_PRESSED:
+        LAST_PRESSED.remove(key)
+    LAST_PRESSED.insert(0, key)
+    del LAST_PRESSED[2:]
 
 
 def audition_path():
@@ -330,12 +437,12 @@ def audition_path():
     return os.path.join(SAMPLES_DIR, CFG["audition-sample"])
 
 
-def play_audition(label, vel):
+def play_audition(dev_label, pad_label, vel):
     global recent
     gain = gain_from_velocity(vel)
     vol = max(0.0, min(1.0, CFG["master-volume"] * gain))
-    db = (vel - 1) / 126 * CFG["vel-db-range"] - CFG["vel-db-range"]
-    recent = f"pad {label}: vel {vel:3d}  ({db:+.1f} dB, vol {vol:.2f})"
+    db = _db_of(vel, CFG["vel-db-range"])
+    recent = f"{dev_label} pad {pad_label}: vel {vel:3d}  ({db:+.1f} dB, vol {vol:.2f})"
     if CFG["audition"]:
         try:
             subprocess.Popen(["pw-play", f"--volume={vol:.3f}", audition_path()],
@@ -344,77 +451,46 @@ def play_audition(label, vel):
             pass  # no pw-play: still shows velocity
 
 
-def log_events(now, pad_updates, fires):
-    """Advance every pad's group, sample the pads that just changed, and audition any
-    fired hits. Under `lock`. Groups are per pad and run independently/concurrently. The
-    per-group .org (raw sequence + re-derived interpretation) is written when it closes."""
-    for base in BASES:
-        GROUPS[base].update(pad_sum(base, now), now)  # opens on rise; closes after the hold
-    for base in dict.fromkeys(pad_updates):  # one sample per changed pad
-        GROUPS[base].sample(now, *sensor4(base, now), pad_sum(base, now))
-    for base, vel in fires:
-        play_audition(BASE_LABEL[base], vel)
-
-
-# --------------------------------------------------------------------------- MIDI in
-def reader():
-    proc = subprocess.Popen(["stdbuf", "-oL", "amidi", "-p", ss.PORT, "-d"],
-                            stdout=subprocess.PIPE, text=True, bufsize=1)
-    reader.proc = proc
-    status = None
-    for line in proc.stdout:
-        toks = [int(x, 16) for x in line.split() if re.fullmatch(r"[0-9A-Fa-f]{2}", x)]
-        i = 0
-        pad_updates = []
-        with lock:
-            now = time.monotonic()
-            while i < len(toks):
-                b = toks[i]
-                if b >= 0x80:
-                    status = b; i += 1
-                if status is None:
-                    i += 1; continue
-                if (status & 0xF0) == 0xB0 and i + 1 < len(toks):
-                    cc, val = toks[i], toks[i + 1]; i += 2
-                    if cc < 128:
-                        sensors[cc] = val
-                        last_seen[cc] = now
-                        base = 40 + 4 * ((cc - 40) // 4) if 40 <= cc <= 79 else None
-                        if base in state:
-                            pad_updates.append(base)
-                else:
-                    break
-            log_events(now, pad_updates, check_fire(now))
-
-
 # --------------------------------------------------------------------------- display
+def render_row(dev_index, base, now):
+    """One compact display row for a pressed pad: board, pad, its 4 live sensors + sum."""
+    dev = DEVICES[dev_index]
+    s4 = dev.sensor4(base, now)
+    summ = sum(s4)
+    lv = dev.last_vel[base]
+    lvs = f"vel {lv:3d}" if lv else "  --  "
+    g = dev.groups[base]
+    gs = f"g{g.num}*" if g.open else (f"g{g.num}" if g.num else "-")
+    return (f"  {dev.label:<10} [{BASE_LABEL[base]}]  "
+            f"{s4[0]:4d} {s4[1]:4d} {s4[2]:4d} {s4[3]:4d}   {summ:4d}   {lvs}  {gs:>5}")
+
+
 def draw():
     now = time.monotonic()
     with lock:
-        # Fire matured hits and close a group that has gone quiet, even with no new MIDI
-        # (the tether stream is on-change only, so it falls silent after a release).
-        log_events(now, [], check_fire(now))
-        ongoing = sum(1 for g in GROUPS.values() if g.open)
-        lines = ["", f"  KMSS velocity meter -- strike a pad: bar=pressure, plays {CFG['audition-sample']} at that velocity.",
-                 f"  keys: [r]eload  [f]lush  [q]uit  (Ctrl-C / kill also flush+exit)   |   {ongoing} group(s) ongoing", ""]
-        for label, base in LABEL_BASE:
-            s = pad_sum(base, now)
-            pv, pt = hold_peak[base]
-            if s >= pv or now - pt > 0.6:
-                pv, pt = (s, now) if s >= pv else (max(0, pv - 24), pt)
-                hold_peak[base] = (pv, pt)
-            fill = int(s / SUM_MAX * BARW); pk = int(pv / SUM_MAX * BARW)
-            bar = ["-"] * BARW
-            for j in range(min(fill, BARW)):
-                bar[j] = "#"
-            if 0 <= pk < BARW:
-                bar[pk] = "|"
-            lv = last_vel[base]
-            lvs = f"vel{lv:3d}" if lv else "      "
-            g = GROUPS[base]
-            gs = f"g{g.num}*" if g.open else (f"g{g.num}" if g.num else "-")  # * = ongoing
-            lines.append(f"  pad {label}  [{''.join(bar)}] {s:3d}  {lvs}  {gs:>5}")
-        lines += ["", f"  last hit: {recent}",
+        # Fire matured hits and close quiet groups even with no new MIDI (the tether stream
+        # is on-change only, so it falls silent after a release).
+        for dev in DEVICES:
+            dev.process(now, [])
+        ongoing = sum(1 for dev in DEVICES for g in dev.groups.values() if g.open)
+        csv_note = f"CSV {os.path.relpath(CSVLOG.path, REPO_ROOT)}" if CSVLOG.path else "CSV off"
+        lines = ["",
+                 "  KMSS DUAL meter -- reads every SoftStep; rows = the LAST TWO pads pressed",
+                 f"  (each row: board  [pad]  s0 s1 s2 s3  sum  last-velocity).  Plays {CFG['audition-sample']} on a hit.",
+                 f"  keys: [r]eload  [f]lush  [q]uit   |   {ongoing} group(s) ongoing   |   {csv_note}",
+                 "",
+                 f"  {'board':<10} {'pad':>4}  {'s0':>4} {'s1':>4} {'s2':>4} {'s3':>4}   {'sum':>4}   {'vel':>6}  {'grp':>5}"]
+        if LAST_PRESSED:
+            for dev_index, base in LAST_PRESSED:
+                lines.append(render_row(dev_index, base, now))
+            for _ in range(2 - len(LAST_PRESSED)):
+                lines.append("  (waiting for another pad...)")
+        else:
+            lines.append("  (press a pad on either board...)")
+            lines.append("")
+        lines += ["",
+                  "  boards: " + " | ".join(f"{d.label} {d.port} ({d.kind})" for d in DEVICES),
+                  f"  last hit: {recent}",
                   f"  (on-sum={CFG['on-sum']} off-sum={CFG['off-sum']} attack={CFG['attack-ms']}ms "
                   f"debounce={CFG['debounce-ms']}ms full-scale={CFG['vel-full-scale']} db-range={CFG['vel-db-range']:g} "
                   f"sep={CFG['event-group-separation-threshold']} hold={CFG['group-end-hold-ms']}ms "
@@ -426,12 +502,12 @@ def draw():
 
 
 def flush_groups(reason):
-    """Close every open group, writing each to disk. The meter keeps running afterward (a
-    new group opens on the pad's next activity); this is also the exit/kill path."""
+    """Close every open group on every board, writing each to disk."""
     with lock:
-        n = sum(1 for g in GROUPS.values() if g.open)
-        for g in GROUPS.values():
-            g.flush()
+        n = sum(1 for dev in DEVICES for g in dev.groups.values() if g.open)
+        for dev in DEVICES:
+            for g in dev.groups.values():
+                g.flush()
         announce(f"{reason}: flushed {n} open group(s)")
 
 
@@ -448,30 +524,24 @@ def handle_key(ch):
     return True
 
 
-def announce_rust_reference():
-    """Startup banner: the Rust meter (code/rust/midi_pulse/softstep_meter.rs) now
-    drives the SAME decode.rs the drumkit runtime uses -- exactly its onset/release
-    thresholds, attack window, debounce, de-stick, and velocity mapping (including
-    the ditto pad) -- so it is the more accurate reference for calibration. This
-    Python meter is kept for comparison and its .org event-group logger (which the
-    Rust meter does not have)."""
-    print("=" * 78)
-    print("  NOTE: code/rust/midi_pulse/softstep_meter.rs is now the reference")
-    print("  implementation -- it drives the exact same decoder (decode.rs) the")
-    print("  drumkit runtime plays through, so its detection/velocity/ditto reading")
-    print("  is more likely to match what you'll actually hear. Run it (from the repo")
-    print("  root, where Cargo.toml lives) with:")
-    print("      cargo run --bin softstep_meter")
-    print("  (add `pw-jack` in front if you turn on its optional audio audition,")
-    print("  SOFTSTEP_METER_AUDIO=1 -- see its --help/source for details.)")
-    print("  This Python meter still works and remains here for comparison (and for")
-    print("  its per-pad .org event-group logger, which the Rust meter lacks).")
-    print("=" * 78)
-
-
 def main():
-    announce_rust_reference()
+    infos = ss.list_softsteps()
+    if not infos:
+        print("No SoftStep found. Check `amidi -l` shows an 'SSCOM MIDI 1' or "
+              "'SoftStep Control Surface' port.")
+        sys.exit(1)
+    for i, info in enumerate(infos):
+        DEVICES.append(Device(i, info))
+
+    print("=" * 78)
+    print(f"  KMSS dual meter -- {len(DEVICES)} SoftStep(s):")
+    for d in DEVICES:
+        print(f"    [{d.label}] {d.port}  kind={d.kind}  ({d.name})")
+    print("  Rust reference meter (single board, drives decode.rs): cargo run --bin softstep_meter")
+    print("=" * 78)
+
     load_config()  # also warns (in the message panel) if the audition sample is missing
+    CSVLOG.open()
     limit = float(sys.argv[1]) if len(sys.argv) > 1 else None
 
     interactive = sys.stdin.isatty()
@@ -482,22 +552,27 @@ def main():
     done = []
 
     def cleanup():
-        """Flush open groups + restore the terminal/device. Idempotent; runs on q, Ctrl-C,
-        the time limit, an error, OR a SIGTERM/SIGHUP kill -- so groups are never lost."""
+        """Flush groups, close CSV, restore each board + the terminal. Idempotent; runs on
+        q, Ctrl-C, the time limit, an error, OR a SIGTERM/SIGHUP kill."""
         if done:
             return
         done.append(True)
         if interactive and old_term is not None:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_term)
-        try:
-            if getattr(reader, "proc", None):
-                reader.proc.terminate()
-        except Exception:
-            pass
+        for dev in DEVICES:
+            try:
+                if dev.proc:
+                    dev.proc.terminate()
+            except Exception:
+                pass
         flush_groups("exit")            # close + write every open group before we go
+        CSVLOG.close()
         time.sleep(0.2)
-        ss.restore_standalone()
-        sys.stdout.write("\nRestored standalone mode.\n")
+        for dev in DEVICES:
+            ss.restore_standalone(port=dev.port)
+        sys.stdout.write("\nRestored standalone mode on all boards.\n")
+        if CSVLOG.path:
+            sys.stdout.write(f"CSV log: {CSVLOG.path}\n")
 
     # Flush + restore even when killed (SIGTERM/SIGHUP), not just on q / Ctrl-C.
     for sig in (signal.SIGTERM, signal.SIGHUP):
@@ -506,8 +581,10 @@ def main():
         except (ValueError, OSError):
             pass  # signals are only settable from the main thread / on supported platforms
 
-    ss.enter_tether()
-    threading.Thread(target=reader, daemon=True).start()
+    for dev in DEVICES:
+        ss.enter_tether(port=dev.port)
+    for dev in DEVICES:
+        threading.Thread(target=dev.reader, daemon=True).start()
     start = time.monotonic()
     try:
         while True:
