@@ -31,6 +31,10 @@ name = "softstep_meter"
 path = "code/rust/midi_pulse/softstep_meter.rs"
 
 [[bin]]
+name = "pedal_monitor"
+path = "code/rust/midi_pulse/pedal_monitor.rs"
+
+[[bin]]
 name = "triangle_chord"
 path = "code/rust/synth/triangle_chord.rs"
 

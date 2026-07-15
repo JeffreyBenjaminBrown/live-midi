@@ -2,6 +2,7 @@ pub mod rig;
 pub mod rig_org;
 pub mod device_assign;
 pub mod edo_play;
+pub mod expression_pedals;
 pub mod mapping;
 pub mod midi;
 pub mod mock_monome;
