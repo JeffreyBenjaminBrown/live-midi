@@ -1,3 +1,102 @@
+* easy beats
+** define a tattoo
+*** has a drum, or two
+Wherever the one drum doesn't sound,
+it's either silence or the other drum.
+*** has a period
+Huge range from four boolean digits.
+Stick to multiples of 2.
+*** has a phase
+Huge range from four boolean digits.
+The first divides period in 2, the second in 4, etc.
+** manips
+*** Superimpose a slower [saw, square, triangle] wave.
+**** what it means
+It can control silence (flip the drumbeat on/off),
+pitch shift, stereo position.
+This maybe only makes sense if the wave has
+period greater than that of the underlying drumneat.
+
+This too has period and phase.
+The square wave also has an "up" duty fraction.
+Tere are two saw waves: ascending and descending.
+**** define endpoints ahead of time
+volume : [0,1]
+stereo : [L,R]
+pitch : specific to each sample, logarithmic between
+*** amplitude bumps +/- 4db
+*** speed
+*** simplify
+*** cut all for live drumming on monome
+** fade in / out
+*** from volume
+*** from pitch
+*** bitcrush
+** telescoping interrupt
+bass cuts snare cuts hat ...
+** storage
+*** Save a subset of ongoing beats to a pad.
+*** Upon restoring beats from a pad, manipulate, store to same pad or another.
+Manipulations are not destructive to the originating pad unless saved.
+** ? hard
+*** insert a note off-kilter
+Binary digital input for how off-kilter,
+avoids the extant notes.
+*** Euclidean beats?
+e.g. repat every 3, truncate at 16.
+*** Can adjust phase to compensate for period changes, or not.
+Example of compensation: Suppose the 'global' period is 1 second,
+and this drum also has period 1 second,
+and is at 50% phase.
+Increase this drum's period to 2 seconds,
+and compensate by adjusting phase to 0%,
+so that now it hits a subset of the beats it was hitting.
+* two slide methods
+** on one monome, one pedal for high voice, one for low
+Each time a third note is chosen,
+move one pedal to slide one of the other notes to it.
+Or choose a fourth also, and slide both at the same time with one pedal,
+or indicate that the fourth should be moved by the other pedal,
+by adding a note 1/46 octaves away from the one fourth.
+** one monome, one pedal, any number of voices
+Use sustain to hold notes.
+Queue some to slide by pressing 1/46 away from each.
+Then press all their destinations, in order.
+Finally, slide the pedal to the other side.
+** the slide can breathe
+One side of the pedal can sound slightly different from the other.
+* Treat a stored chord like a drum.
+* Add multiple drums to the same tattoo.
+* Ways to gradually decay a held state.
+One note at a time.
+Less volume.
+Shorter duty in cycle.
+Shrinking timbre.
+* superwant during dogfooding
+** sustain, loop comands from feet
+** transpose, other changes to stored things
+** de-harsh a sound (quickly, easily)
+** use two pedals to precisely tune a parameter
+The 'scale' pedal controls, logarithmically,
+the size of the deviations applied by the other, the 'value' pedal.
+Set scale at 0, then move value to midpoint, then increase scale,
+and now 'value' can adjust the current value in either direction.
+** Apply tempo changes to note under fingers.
+** Control tempo changes with pedals.
+Quantized for synchrony.
+* to manipulate a recording
+Display it on the grid.
+? Blink an octave button if something is offscreen.
+Touch a playing note, then another one,
+to move it there (immediately? next pass?).
+* Fix pedal retriggers.
+* Two slid notes, one pedal per monome.
+* Find timbres.
+* Display tempo on each tap-pulsed note?
+* Adjust tap-pulsed note pitch.
+* Adjust tap-pulsed note tempo.
+* Store tap-pulsed note set.
+* Retrieve tap-pulsed note set incrementally.
 * DONE double-tapping "=1" : fix and change
 That button, when tapped once, should reset the tap factor to unity.
 When tapped twice in under 400 ms (I think that's the value currently coded),
