@@ -2,17 +2,17 @@
 //! SAME tether decoder the drumkit runtime uses (`decode::TetherDecoder`, reused
 //! verbatim via `#[path]`), so what you see here is exactly what the drumkit would
 //! fire -- same onset/release thresholds, attack window, debounce, de-stick, and
-//! velocity mapping. Unlike the drumkit it plays no per-pad sample bank and does no
+//! pressure->gain mapping. Unlike the drumkit it plays no per-pad sample bank and does no
 //! monome/accrete/pedal-hook work; it exists purely to watch sensing, hit detection,
-//! velocity, and the ditto pad.
+//! pressure, and the ditto pad.
 //!
 //!   cargo run --bin softstep_meter
 //!
 //! Displays a live pressure bar per pad (sum of its 4 sensors, 0..508) with a
-//! peak-hold marker, and on every detected hit shows the pad, resolved velocity and
+//! peak-hold marker, and on every detected hit shows the pad, resolved pressure and
 //! gain. Pad 3 ("the gap between the feet", mirroring rigs/kmss-drumkit.toml) is
 //! wired as DITTO: struck, it repeats the last REAL pad's hit at the ditto press's
-//! OWN velocity (pad, ditto, ditto repeats the ORIGINAL, not the ditto -- see
+//! OWN pressure (pad, ditto, ditto repeats the ORIGINAL, not the ditto -- see
 //! `resolve_fire`, which mirrors `drumkit_runtime::mod::resolve_fire`).
 //!
 //! Restores standalone mode on exit -- Ctrl-C (via `tether::arm`'s signal thread) or
@@ -20,7 +20,7 @@
 //!
 //! Optional audio audition (off by default): set SOFTSTEP_METER_AUDIO=1 to play
 //! drum-samples/snare.wav via `pw-play` at the resolved gain on every hit -- one
-//! reference sample for every pad, since this is a touch/velocity meter, not the
+//! reference sample for every pad, since this is a touch/pressure meter, not the
 //! kit (mirrors the Python meter's `audition-sample`). Launch under `pw-jack` if you
 //! want that sample to share the sound card via PipeWire.
 
@@ -44,7 +44,7 @@ use midir::{MidiInput, MidiInputPort};
 
 use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
-use decode::{collect_control_changes, gain_from_intensity, DrumEvent, TetherDecoder, NUM_PADS};
+use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecoder, NUM_PADS};
 
 /// Printed label -> base CC of that pad's 4 sensors, in printed-board order (1..9,
 /// then 0). Mirrors decode.rs's private `SLOT_LABEL` / the Python meter's
@@ -59,7 +59,7 @@ const LABEL_BASE: [(u8, u8); NUM_PADS] =
 
 /// The pad wired as ditto, mirroring rigs/kmss-drumkit.toml's pedal 3 ("the gap
 /// between the feet"): struck, it repeats the last REAL pad's hit at ITS OWN
-/// velocity.
+/// pressure.
 const DITTO_LABEL: u8 = 3;
 
 const SUM_MAX: f32 = 508.0;
@@ -104,8 +104,8 @@ const REAL_GAIN: f32 = 1.0;
 
 /// Mirrors `drumkit_runtime::mod::resolve_fire`'s ditto semantics exactly, minus the
 /// sample payload: a REAL press records itself into `last` and resolves to its own
-/// label at its own intensity; a DITTO press resolves to the last REAL press's label,
-/// gain-scaled by the DITTO press's OWN intensity (not the original hit's) -- and,
+/// label at its own pressure; a DITTO press resolves to the last REAL press's label,
+/// gain-scaled by the DITTO press's OWN pressure (not the original hit's) -- and,
 /// deliberately, a Ditto fire never writes `last`, so pad-ditto-ditto repeats the
 /// ORIGINAL, not the ditto. Returns `None` only for a ditto struck before anything
 /// real has played. Pure -- the unit-testable core of the ditto behavior.
@@ -113,18 +113,18 @@ fn resolve_fire(
   kind: PadKind,
   own_label: u8,
   last: &mut Option<LastHit>,
-  intensity: f32,
+  pressure: f32,
   db_range: f32,
 ) -> Option<(u8, f32)> {
   match kind {
     PadKind::Real => {
-      let resolved = REAL_GAIN * gain_from_intensity(intensity, db_range);
+      let resolved = REAL_GAIN * gain_from_pressure(pressure, db_range);
       *last = Some(LastHit { label: own_label, gain: REAL_GAIN });
       Some((own_label, resolved))
     }
     PadKind::Ditto => {
       let hit = last.as_ref()?;
-      Some((hit.label, hit.gain * gain_from_intensity(intensity, db_range)))
+      Some((hit.label, hit.gain * gain_from_pressure(pressure, db_range)))
     }
   }
 }
@@ -132,10 +132,10 @@ fn resolve_fire(
 /// Mirrors `drumkit_runtime::mod::resolve_revise`: what a mid-attack-window Revise
 /// on this pad should update its displayed gain to (`None` only if a ditto revises
 /// before anything real has played, which a Revise implies shouldn't happen).
-fn resolve_revise(kind: PadKind, last: &Option<LastHit>, intensity: f32, db_range: f32) -> Option<f32> {
+fn resolve_revise(kind: PadKind, last: &Option<LastHit>, pressure: f32, db_range: f32) -> Option<f32> {
   match kind {
-    PadKind::Real => Some(REAL_GAIN * gain_from_intensity(intensity, db_range)),
-    PadKind::Ditto => last.as_ref().map(|hit| hit.gain * gain_from_intensity(intensity, db_range)),
+    PadKind::Real => Some(REAL_GAIN * gain_from_pressure(pressure, db_range)),
+    PadKind::Ditto => last.as_ref().map(|hit| hit.gain * gain_from_pressure(pressure, db_range)),
   }
 }
 
@@ -196,13 +196,13 @@ fn interp_shadow(sensors: &[u8; 40], last_seen: &[Option<Instant>; 40], idx: usi
 struct PadDisplay {
   peak_val: u16,
   peak_t: f64,
-  last_intensity: f32,
+  last_pressure: f32,
   last_gain: f32,
 }
 
 impl Default for PadDisplay {
   fn default() -> Self {
-    PadDisplay { peak_val: 0, peak_t: 0.0, last_intensity: 0.0, last_gain: 0.0 }
+    PadDisplay { peak_val: 0, peak_t: 0.0, last_pressure: 0.0, last_gain: 0.0 }
   }
 }
 
@@ -248,8 +248,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     params.off_sum,
     params.attack_ms,
     params.debounce_ms,
-    params.velocity_full_scale,
-    params.velocity_db_range,
+    params.pressure_full_scale,
+    params.gain_db_range,
     params.silence_to_zero_ms,
   );
   println!("  pad {DITTO_LABEL} is DITTO (mirrors rigs/kmss-drumkit.toml pedal 3, \"the gap between the feet\")");
@@ -319,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stop = Arc::clone(&stop);
     thread::Builder::new()
       .name("softstep-meter-poll".to_string())
-      .spawn(move || run_poll_loop(decoder, state, stop, params.velocity_db_range, audio_on))?
+      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on))?
   };
 
   // A background line-reader so `q` + Enter can quit; Ctrl-C also works (via the
@@ -380,16 +380,16 @@ fn run_poll_loop(
     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
     for event in &events {
       match *event {
-        DrumEvent::Fire { label, intensity } => {
+        DrumEvent::Fire { label, pressure } => {
           let kind = pad_kind(label);
-          match resolve_fire(kind, label, &mut st.last_hit, intensity, db_range) {
+          match resolve_fire(kind, label, &mut st.last_hit, pressure, db_range) {
             Some((src, gain)) => {
-              st.pads[label as usize].last_intensity = intensity;
+              st.pads[label as usize].last_pressure = pressure;
               st.pads[label as usize].last_gain = gain;
               let msg = if kind == PadKind::Ditto {
-                format!("pad {label} (ditto): repeats pad {src}'s hit, intensity {intensity:.3} (gain {gain:.3})")
+                format!("pad {label} (ditto): repeats pad {src}'s hit, pressure {pressure:.3} (gain {gain:.3})")
               } else {
-                format!("pad {label}: intensity {intensity:.3} (gain {gain:.3})")
+                format!("pad {label}: pressure {pressure:.3} (gain {gain:.3})")
               };
               st.recent = msg.clone();
               st.push_message(msg);
@@ -404,11 +404,11 @@ fn run_poll_loop(
             }
           }
         }
-        DrumEvent::Revise { label, intensity } => {
+        DrumEvent::Revise { label, pressure } => {
           let kind = pad_kind(label);
           let last_hit = st.last_hit;
-          if let Some(gain) = resolve_revise(kind, &last_hit, intensity, db_range) {
-            st.pads[label as usize].last_intensity = intensity;
+          if let Some(gain) = resolve_revise(kind, &last_hit, pressure, db_range) {
+            st.pads[label as usize].last_pressure = pressure;
             st.pads[label as usize].last_gain = gain;
           }
         }
@@ -440,9 +440,9 @@ fn draw(state: &Mutex<MeterState>, start: Instant, params: SoftstepParams) {
     pad.peak_val = pv;
     pad.peak_t = pt;
     let bar = render_bar(sum, pv);
-    let int_s = if pad.last_intensity > 0.0 { format!("i={:.2}", pad.last_intensity) } else { "      ".to_string() };
+    let pressure_s = if pad.last_pressure > 0.0 { format!("p={:.2}", pad.last_pressure) } else { "      ".to_string() };
     let ditto = if label == DITTO_LABEL { "*" } else { " " };
-    lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {int_s}  gain {:.2}", pad.last_gain));
+    lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {pressure_s}  gain {:.2}", pad.last_gain));
   }
   lines.push(String::new());
   lines.push(format!("  last hit: {}", st.recent));
@@ -452,8 +452,8 @@ fn draw(state: &Mutex<MeterState>, start: Instant, params: SoftstepParams) {
     params.off_sum,
     params.attack_ms,
     params.debounce_ms,
-    params.velocity_full_scale,
-    params.velocity_db_range,
+    params.pressure_full_scale,
+    params.gain_db_range,
     params.silence_to_zero_ms,
     if std::env::var_os("SOFTSTEP_METER_AUDIO").is_some() { "on" } else { "off" },
   ));
@@ -521,7 +521,7 @@ mod tests {
     let mut last: Option<LastHit> = None;
     let (label, gain) = resolve_fire(PadKind::Real, 1, &mut last, 0.5, DB_RANGE).expect("a real pad always fires");
     assert_eq!(label, 1);
-    assert!(gain > 0.0 && gain <= REAL_GAIN, "sub-max intensity resolves within (0, REAL_GAIN]: {gain}");
+    assert!(gain > 0.0 && gain <= REAL_GAIN, "sub-max pressure resolves within (0, REAL_GAIN]: {gain}");
     assert_eq!(last, Some(LastHit { label: 1, gain: REAL_GAIN }), "records itself as the last real hit");
   }
 
@@ -532,13 +532,13 @@ mod tests {
   }
 
   #[test]
-  fn ditto_repeats_the_last_real_pads_label_at_the_dittos_own_intensity() {
+  fn ditto_repeats_the_last_real_pads_label_at_the_dittos_own_pressure() {
     let mut last: Option<LastHit> = None;
     resolve_fire(PadKind::Real, 6, &mut last, 0.5, DB_RANGE).unwrap(); // pad 6 struck soft-ish
     let (echoed_label, echoed_gain) =
       resolve_fire(PadKind::Ditto, DITTO_LABEL, &mut last, 1.0, DB_RANGE).expect("a hit has played");
     assert_eq!(echoed_label, 6, "ditto echoes pad 6, not itself");
-    assert!((echoed_gain - REAL_GAIN).abs() < 1e-6, "intensity 1.0 against REAL_GAIN trim = unity: {echoed_gain}");
+    assert!((echoed_gain - REAL_GAIN).abs() < 1e-6, "pressure 1.0 against REAL_GAIN trim = unity: {echoed_gain}");
   }
 
   #[test]
@@ -564,13 +564,13 @@ mod tests {
   fn revise_scales_a_real_pad_and_a_ditto_pad_once_something_has_played() {
     let mut last: Option<LastHit> = None;
     let scaled = resolve_revise(PadKind::Real, &last, 0.5, DB_RANGE).expect("a real pad always revises");
-    assert!(scaled > 0.0 && scaled < REAL_GAIN, "sub-max intensity revises below unity: {scaled}");
+    assert!(scaled > 0.0 && scaled < REAL_GAIN, "sub-max pressure revises below unity: {scaled}");
 
     assert_eq!(resolve_revise(PadKind::Ditto, &last, 1.0, DB_RANGE), None, "nothing to revise against yet");
 
     resolve_fire(PadKind::Real, 2, &mut last, 0.5, DB_RANGE).unwrap();
     let ditto_scaled = resolve_revise(PadKind::Ditto, &last, 1.0, DB_RANGE).expect("a hit has played");
-    assert!((ditto_scaled - REAL_GAIN).abs() < 1e-6, "intensity 1.0 against REAL_GAIN trim = unity: {ditto_scaled}");
+    assert!((ditto_scaled - REAL_GAIN).abs() < 1e-6, "pressure 1.0 against REAL_GAIN trim = unity: {ditto_scaled}");
   }
 
   #[test]

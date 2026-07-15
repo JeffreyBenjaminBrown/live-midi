@@ -1,12 +1,12 @@
 //! Pure tether-mode decoding: the SoftStep's hosted sensor stream -> per-pad hits
-//! with velocity. No MIDI/audio I/O, so it is unit-testable without hardware.
+//! with a strike pressure. No MIDI/audio I/O, so it is unit-testable without hardware.
 //!
 //! In hosted/tether mode (see `learnings/keith-mcmillen-softstep.org`) the device streams each pad's 4
 //! pressure sensors as Control Change on channel 0: CC number = sensor index, value
 //! 0..127 = reading. A pad owns `baseCC..baseCC+3`. We sum a pad's 4 sensors and, the
 //! instant the sum crosses an on-threshold, FIRE a hit (so even a one-sample tap counts).
 //! For a short attack window after that we keep watching: if a higher peak arrives we emit
-//! a REVISE telling the audio to ramp that pad's playing voice up to the louder velocity.
+//! a REVISE telling the audio to ramp that pad's playing voice up to the louder pressure.
 //! Each pad has its own slot, so two feet landing together yield two hits -- the
 //! limitation the old Program-Change path could not escape.
 
@@ -22,11 +22,11 @@ pub const NUM_PADS: usize = 10;
 /// "6", base 72 = label "0".
 const SLOT_LABEL: [u8; NUM_PADS] = [6, 1, 7, 2, 8, 3, 9, 4, 0, 5];
 
-// The detection & velocity knobs -- onset/release thresholds, the attack WATCH window, the
-// velocity full-scale, and the dB spread -- are NOT constants here. They live in the shared
+// The detection & pressure/gain knobs -- onset/release thresholds, the attack WATCH window,
+// the pressure full-scale, and the dB spread -- are NOT constants here. They live in the shared
 // rigs/softstep.toml (`SoftstepParams`) and are handed to `TetherDecoder::new`. A hit
 // fires the instant the sum crosses `on_sum` (even a one-sample tap); for `attack_ms` after
-// that we keep watching, and a higher peak ramps the playing voice up to the louder velocity
+// that we keep watching, and a higher peak ramps the playing voice up to the louder pressure
 // (see `audio`). So the attack window is *watch-and-adjust*, not "signal must persist this
 // long". Its ~14 ms size comes from real captures: the device scans only ~every 10 ms and a
 // deliberate strike peaks on the 2nd refresh (~10-11 ms). `off_sum` (release) re-arms the pad
@@ -34,17 +34,17 @@ const SLOT_LABEL: [u8; NUM_PADS] = [6, 1, 7, 2, 8, 3, 9, 4, 0, 5];
 
 /// What `poll` emits for a pad. A hit fires at ONSET (`Fire`, so even a one-sample tap
 /// counts); while the attack window is still open, a higher peak emits a `Revise` telling
-/// the audio to ramp that pad's playing voice up to the louder intensity (`audio::VoicePool`).
+/// the audio to ramp that pad's playing voice up to the louder pressure (`audio::VoicePool`).
 ///
-/// `intensity` is a CONTINUOUS strike strength in 0.0..1.0 (peak pressure / full scale),
+/// `pressure` is a CONTINUOUS strike strength in 0.0..1.0 (peak pressure / full scale),
 /// not a MIDI velocity: the audio path consumes the float directly, so there is no lossy
 /// 0..127 quantization step anywhere (this decoder never speaks MIDI). (No `Eq`: f32.)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrumEvent {
-  /// Start a voice for `label` at `intensity` (0.0..1.0).
-  Fire { label: u8, intensity: f32 },
-  /// The pad's current voice should get louder -- ramp it toward `intensity` (0.0..1.0).
-  Revise { label: u8, intensity: f32 },
+  /// Start a voice for `label` at `pressure` (0.0..1.0).
+  Fire { label: u8, pressure: f32 },
+  /// The pad's current voice should get louder -- ramp it toward `pressure` (0.0..1.0).
+  Revise { label: u8, pressure: f32 },
   /// The pad's pressure fell below the off threshold (or de-sticked to zero): the
   /// foot lifted. One-shot samples ignore this; the feet-accrete mirror needs it
   /// (holding a pedal = holding the accrete button). A debounce-suppressed press
@@ -53,19 +53,19 @@ pub enum DrumEvent {
   Release { label: u8 },
 }
 
-/// Linear gain multiplier for an `intensity` 0.0..1.0, spread over `db_range` dB
-/// (intensity 1.0 -> unity gain, 0.0 -> -`db_range` dB). Multiply a pad's configured base
-/// gain by this. `db_range` is `SoftstepParams::velocity_db_range`.
-pub fn gain_from_intensity(intensity: f32, db_range: f32) -> f32 {
-  let t = intensity.clamp(0.0, 1.0);
+/// Linear gain multiplier for a `pressure` 0.0..1.0, spread over `db_range` dB
+/// (pressure 1.0 -> unity gain, 0.0 -> -`db_range` dB). Multiply a pad's configured base
+/// gain by this. `db_range` is `SoftstepParams::gain_db_range`.
+pub fn gain_from_pressure(pressure: f32, db_range: f32) -> f32 {
+  let t = pressure.clamp(0.0, 1.0);
   let db = (t - 1.0) * db_range; // -db_range..0
   10f32.powf(db / 20.0)
 }
 
-/// Continuous strike intensity in 0.0..1.0: peak pressure (sum-of-4) over the configured
+/// Continuous strike pressure in 0.0..1.0: peak pressure (sum-of-4) over the configured
 /// full scale, clamped. No quantization -- this is the whole point of not going through a
 /// 0..127 velocity.
-fn intensity_from_peak(peak: u16, full_scale: u16) -> f32 {
+fn pressure_from_peak(peak: u16, full_scale: u16) -> f32 {
   (peak as f32 / full_scale.max(1) as f32).clamp(0.0, 1.0)
 }
 
@@ -79,7 +79,7 @@ enum PadState {
   Held,
 }
 
-/// Per-pad onset / attack-peak / velocity state machine over the hosted CC stream.
+/// Per-pad onset / attack-peak / pressure state machine over the hosted CC stream.
 /// Its thresholds come from the shared [`SoftstepParams`] (rigs/softstep.toml).
 pub struct TetherDecoder {
   sensors: [u8; 40], // CC 40..79, index = cc - 40
@@ -87,7 +87,7 @@ pub struct TetherDecoder {
   on_sum: u16,               // fire when a pad's sum-of-4 exceeds this
   off_sum: u16,              // re-arm when it falls below this
   attack: Duration,          // watch-and-adjust window after onset
-  velocity_full_scale: u16,  // sum-of-4 mapping to full intensity (1.0)
+  pressure_full_scale: u16,  // sum-of-4 mapping to full pressure (1.0)
   /// Minimum gap between two hits on the SAME pad, on top of requiring a release.
   debounce: Duration,
   /// A sensor with no CC for longer than this reads 0 (de-stick); `ZERO` disables it.
@@ -109,7 +109,7 @@ impl TetherDecoder {
       on_sum: params.on_sum,
       off_sum: params.off_sum,
       attack: Duration::from_millis(params.attack_ms),
-      velocity_full_scale: params.velocity_full_scale,
+      pressure_full_scale: params.pressure_full_scale,
       debounce: Duration::from_millis(params.debounce_ms),
       silence: Duration::from_millis(params.silence_to_zero_ms),
       last_seen: [None; 40],
@@ -147,8 +147,8 @@ impl TetherDecoder {
           if debounced {
             PadState::Held // suppress the too-soon retrigger; it must release first
           } else {
-            let intensity = intensity_from_peak(sum, self.velocity_full_scale);
-            out.push(DrumEvent::Fire { label, intensity });
+            let pressure = pressure_from_peak(sum, self.pressure_full_scale);
+            out.push(DrumEvent::Fire { label, pressure });
             self.last_fire[slot] = Some(now);
             PadState::Watching { onset: now, peak: sum, sent_peak: sum }
           }
@@ -162,15 +162,15 @@ impl TetherDecoder {
         PadState::Watching { onset, peak, sent_peak } => {
           let peak = peak.max(sum);
           let sent_peak = if peak > sent_peak {
-            // A strictly higher peak arrived -> ramp the voice up to the new intensity.
-            let intensity = intensity_from_peak(peak, self.velocity_full_scale);
-            out.push(DrumEvent::Revise { label, intensity });
+            // A strictly higher peak arrived -> ramp the voice up to the new pressure.
+            let pressure = pressure_from_peak(peak, self.pressure_full_scale);
+            out.push(DrumEvent::Revise { label, pressure });
             peak
           } else {
             sent_peak
           };
           if now.duration_since(onset) >= self.attack {
-            PadState::Held // window closed; final intensity locked in
+            PadState::Held // window closed; final pressure locked in
           } else {
             PadState::Watching { onset, peak, sent_peak }
           }
@@ -288,7 +288,7 @@ mod tests {
     events
       .iter()
       .filter_map(|e| match e {
-        DrumEvent::Fire { label, intensity } => Some((*label, *intensity)),
+        DrumEvent::Fire { label, pressure } => Some((*label, *pressure)),
         _ => None,
       })
       .collect()
@@ -298,7 +298,7 @@ mod tests {
     events
       .iter()
       .filter_map(|e| match e {
-        DrumEvent::Revise { label, intensity } => Some((*label, *intensity)),
+        DrumEvent::Revise { label, pressure } => Some((*label, *pressure)),
         _ => None,
       })
       .collect()
@@ -318,7 +318,7 @@ mod tests {
   fn single_pad_fires_one_hit_mapped_to_its_label() {
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    // base 44 = label "1"; sum 461 >= full scale -> max intensity 1.0.
+    // base 44 = label "1"; sum 461 >= full scale -> max pressure 1.0.
     assert_eq!(fires(&strike(&mut d, 44, [127, 127, 127, 80], t0)), vec![(1, 1.0)]);
   }
 
@@ -330,7 +330,7 @@ mod tests {
     d.on_cc(44, 100, t0);
     let mut ev = Vec::new();
     d.poll(t0, &mut ev);
-    assert_eq!(fires(&ev), vec![(1, intensity_from_peak(100, 460))], "fires on onset, immediately");
+    assert_eq!(fires(&ev), vec![(1, pressure_from_peak(100, 460))], "fires on onset, immediately");
   }
 
   #[test]
@@ -358,18 +358,18 @@ mod tests {
     d.on_cc(44, 60, t0);
     let mut ev = Vec::new();
     d.poll(t0, &mut ev);
-    assert_eq!(fires(&ev), vec![(1, intensity_from_peak(60, 460))], "fires on the first sample");
+    assert_eq!(fires(&ev), vec![(1, pressure_from_peak(60, 460))], "fires on the first sample");
     // Within the window the press grows -> a Revise ramps the voice up (no second Fire).
     ev.clear();
     d.on_cc(44, 127, t0 + Duration::from_millis(10)); // sum 254
     d.on_cc(45, 127, t0 + Duration::from_millis(10));
     d.poll(t0 + Duration::from_millis(10), &mut ev);
     assert!(fires(&ev).is_empty(), "no second Fire");
-    assert_eq!(revises(&ev), vec![(1, intensity_from_peak(254, 460))], "Revise up to the higher peak");
+    assert_eq!(revises(&ev), vec![(1, pressure_from_peak(254, 460))], "Revise up to the higher peak");
   }
 
   #[test]
-  fn intensity_scales_with_peak_pressure() {
+  fn pressure_scales_with_peak_pressure() {
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
     // Soft-ish sum 120 vs hard sum 460, each fired on onset. Distinct, soft < hard.
@@ -380,7 +380,7 @@ mod tests {
     d.poll(t0 + ATTACK, &mut Vec::new());
     let hard = fires(&strike(&mut d, 44, [127, 127, 127, 79], t0 + ATTACK * 2))[0].1;
     assert!(soft < hard, "soft {soft} should be quieter than hard {hard}");
-    assert_eq!(hard, 1.0, "sum 460 = full scale -> intensity 1.0");
+    assert_eq!(hard, 1.0, "sum 460 = full scale -> pressure 1.0");
   }
 
   #[test]
@@ -528,11 +528,11 @@ mod tests {
 
   #[test]
   fn gain_spans_the_db_range_and_is_monotonic() {
-    let db = 20.0f32; // = default velocity_db_range
-    assert!((gain_from_intensity(1.0, db) - 1.0).abs() < 1e-6, "intensity 1.0 = unity gain");
-    let soft = gain_from_intensity(0.0, db);
+    let db = 20.0f32; // = default gain_db_range
+    assert!((gain_from_pressure(1.0, db) - 1.0).abs() < 1e-6, "pressure 1.0 = unity gain");
+    let soft = gain_from_pressure(0.0, db);
     let expected = 10f32.powf(-db / 20.0);
-    assert!((soft - expected).abs() < 1e-4, "intensity 0 = -{db} dB: {soft} vs {expected}");
-    assert!(gain_from_intensity(0.75, db) > gain_from_intensity(0.25, db), "louder hit -> more gain");
+    assert!((soft - expected).abs() < 1e-4, "pressure 0 = -{db} dB: {soft} vs {expected}");
+    assert!(gain_from_pressure(0.75, db) > gain_from_pressure(0.25, db), "louder hit -> more gain");
   }
 }

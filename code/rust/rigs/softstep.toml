@@ -1,4 +1,4 @@
-# SoftStep hit-detection & velocity parameters -- shared across every rig.
+# SoftStep hit-detection & pressure parameters -- shared across every rig.
 #
 # There is no reason for these to vary from one rig to the next, so they live here once
 # rather than being duplicated in each rig's [[softstep_windows]]. Every rig that uses
@@ -9,8 +9,8 @@
 
 on_sum              = 20    # a hit fires when a pad's sum-of-4 exceeds this
 off_sum             = 20    # the pad re-arms once its sum-of-4 falls below this
-attack_ms           = 14    # after firing on onset, keep watching this long to raise velocity to a later peak
-velocity_full_scale = 460   # pad sum-of-4 (0..508) that maps to velocity 127
-velocity_db_range   = 20.0  # dB between the softest (vel 1) and hardest (vel 127) hit
+attack_ms           = 14    # after firing on onset, keep watching this long to raise pressure to a later peak
+pressure_full_scale = 460   # pad sum-of-4 (0..508) that maps to full pressure (1.0)
+gain_db_range       = 20.0  # dB between the softest (pressure 0) and hardest (pressure 1) hit
 debounce_ms         = 100   # min gap between two hits on the SAME pad (contact-bounce guard); 0 = off
 silence_to_zero_ms  = 25    # a sensor with no CC for this long reads 0 (de-stick); 0 = off
