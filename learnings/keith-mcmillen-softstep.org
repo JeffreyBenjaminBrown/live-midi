@@ -259,10 +259,10 @@ Ctrl-C.
   reaches 35..127 is visible at a glance. CSV to =pedals/logs/=. See
   =code/python/pedals/README.org= for the EX-P range fix (MIN knob + polarity switch) and
   the MPC-20 (Pedal Config Tool, per-input channel/CC, CC 21 default).
-- *Older, sequencer-based (echo still handy; the senders used the dead seq path):*
-  =echo.py= (human-readable =aseqdump= monitor -- still useful), =backlight_blink.py=
-  and =ssmode.py= (sent control SysEx via =aseqsend=, so they had *no effect*; kept only
-  as a protocol record -- port them to =amidi= if needed).
+- *Older monitor (still handy):* =echo.py= (human-readable =aseqdump= monitor). The dead
+  =aseqsend= senders (=ssmode.py=, =backlight_blink.py=) were *deleted* -- they had *no
+  effect* (the SoftStep ignores control SysEx over the sequencer); the working send path is
+  rawmidi via =amidi=, and the mode-switch SysEx bytes live in =ss.py= and the section above.
 
 *Batched capture:* run =python3 code/python/softstep/capture.py=, follow the self-paced
 prompts (it waits for Enter, never times you), and it writes one log to read back.

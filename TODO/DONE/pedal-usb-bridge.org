@@ -1,5 +1,12 @@
-#+title: Pending task: route the MPC-20 pedals into the container synth (the "bridge")
+#+title: route the MPC-20 pedals into the container synth (the "bridge")
 #+date: 2026-07-15
+
+* STATUS: DONE (2026-07-15)
+Approach A shipped and verified end-to-end: =code/python/pedals/bridge.py= (host USB ->
+virtual ALSA-seq port "MPC-20 pedals") + the Rust reader =midi_pulse::expression_pedals=
+(consts PEDAL_RAW_BOTTOM/TOP, normalize/decode) + the =pedal_monitor= bin, which bound the
+port in the container and displayed both pedals. The durable reference is
+=code/python/pedals/README.org=. The plan below is kept as the design record.
 
 Everything needed to pick this up cold. Companion to =README.org= (device/range/fix
 details) -- read that too.
