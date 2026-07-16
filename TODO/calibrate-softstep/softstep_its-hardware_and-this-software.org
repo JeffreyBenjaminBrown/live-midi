@@ -52,7 +52,7 @@ Pressure is derived entirely from the sensor sum; the KMSS itself has no velocit
 | =gain_db_range=       | 20 dB  | softstep.toml:14                     | loudness spread from pressure 0.0 to pressure 1.0                 |
 | =debounce_ms=         | 100 ms | softstep.toml:15                     | min gap between two fires on the *same* pad                       |
 | poll interval         | 1 ms   | mod.rs:360                            | how often matured hits are checked (device scan ~10 ms dominates) |
-| sink =amplitude=      | 1.6    | 2-monomes_58-8-1_kmss-drums.org:134   | drum master gain, applied at mix, clamped [-1,1]                  |
+| sink =amplitude=      | 1.6    | 2-monomes_kmss-drums.org:134          | drum master gain, applied at mix, clamped [-1,1]                  |
 | device scan           | ~10 ms | firmware (fixed)                     | sensors only refresh ~100 Hz -- the latency/aliasing floor        |
 
 =on_sum=/=off_sum=/=attack_ms=/=pressure_full_scale=/=gain_db_range=/=debounce_ms=

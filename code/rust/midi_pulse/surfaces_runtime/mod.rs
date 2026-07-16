@@ -1983,7 +1983,7 @@ mod tests {
 
   #[test]
   fn resolves_two_grids_with_self_control() {
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums").expect("rig loads");
     let s = resolve_settings(&rig).expect("resolves without hardware");
     assert_eq!(s.grids.len(), 2, "two play grids");
     assert!(s.has_drums, "the KMSS drumkit is present");
@@ -2023,7 +2023,7 @@ mod tests {
   /// staying immune to edits of the shipped rig.
   #[test]
   fn surfaces_tunables_travel_from_the_rig_into_the_settings() {
-    let mut rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    let mut rig = load_named_rig("2-monomes_kmss-drums").expect("rig loads");
     for sink in &mut rig.sinks {
       if let SinkRig::CpalSynth {
         distortion_scale,
@@ -2066,7 +2066,7 @@ mod tests {
   /// retuning by ear never reddens this either.
   #[test]
   fn the_rigs_makeup_table_is_usable_whatever_curve_it_names() {
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums").expect("rig loads");
     let s = resolve_settings(&rig).expect("resolves without hardware");
     let makeup = live_makeup(&s);
     // Silence needs no makeup; the makeup never attenuates; it rises with the bus; and
@@ -2093,7 +2093,7 @@ mod tests {
     // Omitting `[surfaces]` changes nothing: the built-in defaults reach `Settings`.
     // Built by REMOVING the table from a real surfaces rig, rather than leaning on
     // some other rig happening not to declare one (which a rig edit could undo).
-    let mut rig = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("rig loads");
+    let mut rig = load_named_rig("2-monomes_kmss-drums").expect("rig loads");
     rig.surfaces = None;
     let s = resolve_settings(&rig).expect("resolves without hardware");
     let d = SurfacesRig::default();
@@ -2202,7 +2202,7 @@ mod tests {
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
     let detector_port = mock.detector_port();
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
@@ -2274,7 +2274,7 @@ mod tests {
     // Only grid "a" exists; the 2-monome mock rig rig wants two.
     let mock = MockRig::start(0, &[GridSpec::grid_256("a")]).expect("start one mock grid");
     let detector_port = mock.detector_port();
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
@@ -2309,7 +2309,7 @@ mod tests {
     // Start from the mock rig, then "edit" it (amplitude, tuning, a timbre, the
     // slide knobs) and reload: the live params reflect every change and the
     // generation moves, so grid threads and the audio callback pick them up.
-    let base = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("rig loads");
+    let base = load_named_rig("2-monomes_kmss-drums-mock").expect("rig loads");
     let s = resolve_settings(&base).expect("resolves");
     let live = Live {
       generation: AtomicU64::new(0),
@@ -2318,7 +2318,7 @@ mod tests {
     };
 
     let source = std::fs::read_to_string(
-      midi_pulse::rig::mock_rig_dir().join("2-monomes_58-8-1_kmss-drums-mock.org"),
+      midi_pulse::rig::mock_rig_dir().join("2-monomes_kmss-drums-mock.org"),
     )
     .expect("read mock org");
     // The rig is `.org` now: PARAM values still contain the `key = value` text these
@@ -2459,7 +2459,7 @@ mod tests {
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
     let detector_port = mock.detector_port();
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
@@ -2537,7 +2537,7 @@ mod tests {
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
     let detector_port = mock.detector_port();
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
@@ -2624,7 +2624,7 @@ mod tests {
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
       .expect("start mock rig");
     let detector_port = mock.detector_port();
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {
@@ -2684,7 +2684,7 @@ mod tests {
     let mock = MockRig::start(0, &[GridSpec::grid_256("m256-9"), GridSpec::grid_256("m0000777")])
       .expect("start mock rig");
     let detector_port = mock.detector_port();
-    let rig = load_named_rig("2-monomes_58-8-1_kmss-drums-mock").expect("mock rig loads");
+    let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
     STOP.store(false, Ordering::SeqCst);
     let handle = {

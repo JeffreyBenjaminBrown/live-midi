@@ -6,7 +6,7 @@ bottom of each section; each entry says what I chose and why, so you can
 reverse it cheaply if you disagree.
 
 * uncrossing the waveform/volume controls
-- I only rewired the *configs* (=2-monomes_58-8-1_kmss-drums.toml= + its mock):
+- I only rewired the *configs* (=2-monomes_kmss-drums.toml= + its mock):
   =controls = "b"= -> ="a"= etc. The =controls= field itself stays general, so
   cross-wiring remains a config choice. If you'd rather delete the field (self-
   control always, less config surface), that's a small further change.
@@ -159,7 +159,7 @@ low =shape= -- i.e. exactly where he was headed. Fixed, with regression tests.
   your table -- the file stays in =drum-samples/=, just unreferenced by either
   config.
 - *=crash.wav= (the plain TR-808 cymbal) also drops out*, not just wood block.
-  =kmss-drumkit.toml= had it at pedal 8; =2-monomes_58-8-1_kmss-drums.toml= had
+  =kmss-drumkit.toml= had it at pedal 8; =2-monomes_kmss-drums.toml= had
   =crash_electronic.wav= there instead (added later, per =drum-samples/CREDITS.org=).
   Your table's "crash (was at 8)" for the new pedal-0 slot matches the electronic
   one, so I unified both configs onto =crash_electronic.wav= (gain 0.5, same
@@ -248,7 +248,7 @@ low =shape= -- i.e. exactly where he was headed. Fixed, with regression tests.
   config); only the window length is.
 
 * a discrepancy I did NOT touch: the 46-EDO tuning in a 58-named config
-- =configs/2-monomes_58-8-1_kmss-drums.toml= now carries =edo = 46, x_step = 9=
+- =configs/2-monomes_kmss-drums.toml= now carries =edo = 46, x_step = 9=
   (changed in commit 63149a2, "complicate the softstep code"), while the file's
   *name*, =title=, comments, its .org reference, and the mock config all still
   say 58-8-1. I left the tuning as-is (it looked deliberate -- maybe you're

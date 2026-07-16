@@ -3,7 +3,7 @@
 
 This plans the visual/behaviour changes you asked for
 in =TODO/3-surfaces/0_vision.org=
-for =code/rust/rigs/2-monomes_58-8-1_kmss-drums.toml=
+for =code/rust/rigs/2-monomes_kmss-drums.toml=
 (the surfaces runtime).
 
 How to use this doc: read the *Plan* first, then *Problems*. In *Problems* I've
@@ -164,7 +164,7 @@ they use the same faked-dim flash.)
 
 The current surfaces design *deliberately* makes lit cells register-independent
 ("scrolling moves the pitches under your fingers without moving the lit cells" -- it's
-written into =grid.rs= and =2-monomes_58-8-1_kmss-drums.org=). Feature 5 asks for the
+written into =grid.rs= and =2-monomes_kmss-drums.org=). Feature 5 asks for the
 opposite, matching the looper. I can implement it (adopt the looper painter) and will
 update those docs/comments. Flagging only so you know the reversal is intentional.
 

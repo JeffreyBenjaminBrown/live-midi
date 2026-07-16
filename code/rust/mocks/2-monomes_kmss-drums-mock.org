@@ -4,10 +4,10 @@ headlines nest tables and array-of-table elements; any other headline just group
 documents; and every body (like this one) is a human note the loader ignores. It loads
 into the exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 [[file:README.org]]
-* 2-monomes_58-8-1_kmss-drums-mock
+* 2-monomes_kmss-drums-mock
 ** PARAM version = 1
-** PARAM id = "2-monomes_58-8-1_kmss-drums-mock"
-** PARAM title = "Two monomes (58-8-1) + KMSS drums (mock grids)"
+** PARAM id = "2-monomes_kmss-drums-mock"
+** PARAM title = "Two monomes + KMSS drums (mock grids)"
 ** TABLE surfaces
 ---------------------------------------------------------------------------
 Headless mock of the surfaces runtime: two mock 16x16 grids with the scroll

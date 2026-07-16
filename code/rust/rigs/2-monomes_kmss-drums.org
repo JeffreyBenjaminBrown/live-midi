@@ -6,15 +6,15 @@ documents; and every body (like this one) is a human note the loader ignores. A 
 a headline starts a comment, TOML-style, even on a load-bearing one. It loads into the
 exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 [[file:README.org]]
-* 2-monomes_58-8-1_kmss-drums
+* 2-monomes_kmss-drums
 ** PARAM version = 1
 See also softstep.toml (the shared SoftStep detection & velocity parameters).
-** PARAM id = "2-monomes_58-8-1_kmss-drums"
-** PARAM title = "Two monomes (58-8-1) + KMSS drums"
+** PARAM id = "2-monomes_kmss-drums"
+** PARAM title = "Two monomes + KMSS drums"
 ** TABLE surfaces
 ===========================================================================
-THREE SURFACES AT ONCE (see rigs/2-monomes_58-8-1_kmss-drums.org):
-- two 16x16 monome grids, each a full 58-EDO play surface with its own
+THREE SURFACES AT ONCE (see rigs/2-monomes_kmss-drums.org):
+- two 16x16 monome grids, each a full 46-EDO play surface with its own
 independent scroll register and its own voices;
 - the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.
 Each grid also carries a 4-cell waveform strip on its top row that sets its
@@ -23,7 +23,7 @@ in the bottom-right that moves *that* grid's pitch window. The same pitch
 fingered on both grids is two independent voices (releasing one never cuts
 the other), each in its grid's currently-selected waveform.
 Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
-pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
+pw-jack cargo run --bin midi_pulse -- 2-monomes_kmss-drums
 ===========================================================================
 Shared recent-note trail (the dim backdrop of the last few played pitch classes).
 *** PARAM trail_clobber_radius = 27
@@ -146,9 +146,9 @@ grid lands on which is not something this file decides.
 *** PARAM listen_port = 9001        # ...so grid b listens one port up
 *** PARAM prefix = "/surface-b"
 *** PARAM select.size = [16, 16]
-** ELEM monome_windows              # grid A: 58-EDO play surface
+** ELEM monome_windows              # grid A: 46-EDO play surface
 ---------------------------------------------------------------------------
-GRID A -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
+GRID A -- 46-EDO play surface. Its top-row strips set its OWN timbre + volume.
 ---------------------------------------------------------------------------
 *** PARAM id = "grid-a"
 *** PARAM monome = "a"
@@ -248,9 +248,9 @@ separate from any [[timbres]] AM).
 *** PARAM monome = "a"
 *** PARAM kind = "tap_tempo_pad"
 *** PARAM rect = [13, 0, 15, 1]
-** ELEM monome_windows              # grid B: 58-EDO play surface
+** ELEM monome_windows              # grid B: 46-EDO play surface
 ---------------------------------------------------------------------------
-GRID B -- 58-EDO play surface. Its top-row strips set its OWN timbre + volume.
+GRID B -- 46-EDO play surface. Its top-row strips set its OWN timbre + volume.
 ---------------------------------------------------------------------------
 *** PARAM id = "grid-b"
 *** PARAM monome = "b"

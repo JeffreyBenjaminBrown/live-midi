@@ -15,7 +15,7 @@ Key down usually toggles it between playing and not playing.
 But when 'edit pattern' is on, it changes how the pattern slots behave:
 in that case, key down on a pattern slot makes it the target of edits.
 ** drum slots
-Like the softstep has laid out in 2-monomes_58-8-1_kmss-drums.org:
+Like the softstep has laid out in 2-monomes_kmss-drums.org:
 a window (on the monome) 5 wide by 2 high,
 with the bottom being [snare kick ditto something something]
 and the top being the other stuff.
@@ -310,7 +310,7 @@ I trust you more than that (and I don't have a huge token budget).
   no grids); cross-control strips dropped when their target grid is absent; echo
   hidden behind top-level =echo_input= (default off). Decisions in
   jeff-maybe-review-this.org "robust to missing gear + echo_input"; behaviour in
-  code/rust/rigs/README.org (Surfaces) + 2-monomes_58-8-1_kmss-drums.org.
+  code/rust/rigs/README.org (Surfaces) + 2-monomes_kmss-drums.org.
 - *config -> rig rename*: whole-tree sweep -- dir =configs/= -> =rigs/=, every
   identifier (=Config=->=Rig= incl. the sub-structs, =config_dir=->=rig_dir=, the
   =config= module -> =rig=, =CONFIG_NAME=->=RIG_NAME=, ...), and the live docs.
@@ -410,7 +410,7 @@ Welcome, Claude! Please read the following to get acquainted:
 Also please read whatever ORIENTATION.org points to (recursively).
 
 Then: In the sustained note accretion code
-(e.g. in 2-monomes_58-8-1_kmss-drums.toml,
+(e.g. in 2-monomes_kmss-drums.toml,
 but this should apply also to any future rig
 that uses the same code)
 if a note is sustaining and the same note is retriggered manually,

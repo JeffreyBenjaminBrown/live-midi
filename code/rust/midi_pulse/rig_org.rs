@@ -539,7 +539,7 @@ A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
     // The real file now carries inline `#` comments on load-bearing headlines (PARAM,
     // ELEM). Strip them back out of the *source* and the rig must be identical -- the
     // strongest statement of "a comment cannot change what loads".
-    let path = rig_path("2-monomes_58-8-1_kmss-drums").expect("the rig exists");
+    let path = rig_path("2-monomes_kmss-drums").expect("the rig exists");
     let source = std::fs::read_to_string(&path).expect("read the rig");
     let is_commented = |l: &str| headline(l).is_some() && strip_comment(l) != l;
     // Count the comments rather than comparing the stripped text to the original: the

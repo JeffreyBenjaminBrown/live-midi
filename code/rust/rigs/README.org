@@ -43,7 +43,7 @@ The path *to* this folder is not needed.
 alternatives lately:
 
 pw-jack cargo run --bin midi_pulse \
-  2-monomes_58-8-1_kmss-drums
+  2-monomes_kmss-drums
 
 pw-jack cargo run --bin midi_pulse \
   monome-looper-58-8-1-timbre
@@ -331,7 +331,7 @@ A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, l
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
 the window's own ~monome~, though a different play grid is legal (cross-control).
 The surfaces runtime uses it to give each play grid its own timbre control (see
-[[./2-monomes_58-8-1_kmss-drums_readme.org]]). Its rect must cover exactly the four cells
+[[./2-monomes_kmss-drums_readme.org]]). Its rect must cover exactly the four cells
 (one row, four wide).
 
 A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
@@ -669,7 +669,7 @@ sink = "midi"
 * Surfaces
 
 The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
-[[./2-monomes_58-8-1_kmss-drums_readme.org]]) reads one optional table of instrument-wide
+[[./2-monomes_kmss-drums_readme.org]]) reads one optional table of instrument-wide
 scalars for the shared *recent-note trail* -- the dim backdrop of the last few played
 pitch classes:
 

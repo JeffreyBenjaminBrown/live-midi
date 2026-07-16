@@ -278,7 +278,7 @@ mod dispatch_tests {
 
   #[test]
   fn surfaces_rig_routes_to_surfaces_only() {
-    let c = load_named_rig("2-monomes_58-8-1_kmss-drums").expect("loads");
+    let c = load_named_rig("2-monomes_kmss-drums").expect("loads");
     assert!(is_surfaces_rig(&c), "grids+drums is a surfaces rig");
     // It must NOT fall into the drums-only arm (it has monome windows) or the looper /
     // sawwave arms (surfaces is checked first, but assert the tightened predicate too).

@@ -1,8 +1,8 @@
-#+title: Two monomes (58-8-1) + KMSS drums -- reference
+#+title: Two monomes + KMSS drums -- reference
 #+date: 2026-07-01
 
-The =2-monomes_58-8-1_kmss-drums= rig drives *three surfaces at once*: two
-16x16 monome grids as independent 58-EDO play surfaces, and the Keith McMillen
+The =2-monomes_kmss-drums= rig drives *three surfaces at once*: two
+16x16 monome grids as independent 46-EDO play surfaces, and the Keith McMillen
 SoftStep (KMSS) pedalboard as a velocity-sensitive drumkit. It is the first rig
 that *composes* what used to be three mutually-exclusive runtimes (the sawwave EDO
 grid, the looper's scroll pad, the drumkit) into one -- see the "surfaces runtime"
@@ -16,7 +16,7 @@ Background + the runtime-unification rationale:
 
 - *surface* -- one of the three playable devices this rig brings up at once: grid
   A, grid B, or the KMSS.
-- *play grid* -- a 16x16 monome, the whole grid a 58-EDO note surface (=x_step 8=,
+- *play grid* -- a 16x16 monome, the whole grid a 46-EDO note surface (=x_step 9=,
   =y_step 1=, =fundamental_hz 80=). Each grid has its *own* voices and its *own*
   scroll register.
 - *scroll pad* -- a 3x2 pad in a grid's bottom-right (=[13,14,15,15]=) that moves
@@ -86,7 +86,7 @@ Launch under =pw-jack= so the synth *and* the drum sampler share the sound card 
 PipeWire (two JACK nodes in one process):
 
 #+begin_src sh
-pw-jack cargo run --bin midi_pulse -- 2-monomes_58-8-1_kmss-drums
+pw-jack cargo run --bin midi_pulse -- 2-monomes_kmss-drums
 #+end_src
 
 Needs *both* 16x16 grids connected (the runtime hands each rig monome a distinct
@@ -100,7 +100,7 @@ mode.
 
 A headless device-layer smoke (two virtual grids, no sound, no KMSS) runs as a unit
 test (=surfaces_runtime::tests::two_grids_run_against_mock_grids=) against the
-=2-monomes_58-8-1_kmss-drums-mock= rig; see [[../../../MOCK-MONOME.org]].
+=2-monomes_kmss-drums-mock= rig; see [[../../../MOCK-MONOME.org]].
 
 * per-grid layout
 
@@ -113,7 +113,7 @@ overlays drawn on top:
                                                                (see the polyrhythm section)
   row 1  DIST SLIDE  .  .  .                   .   .   .   <- per-grid toggles
   row 2   .  MONO .   .   .                    .   .   .   <- per-grid toggle
-   ...                     (58-EDO play cells)
+   ...                     (46-EDO play cells)
   row 13  .   .   .   .   .                    .   .   .
   row 14 FEET ERASE .  .  .  . . . . . . .  8vaDN UP  8vaUP  <- feet-accrete + erase + scroll pad
   row 15 CLR HOLD ACC  .  .  . . . . . . .  LEFT DOWN RIGHT  <- accrete + scroll pad

@@ -68,12 +68,12 @@ children onto the enclosing table, where =deny_unknown_fields= rejects them. Bot
 loud, neither silent.
 
 ** Worked example
-The head of =2-monomes_58-8-1_kmss-drums= in both notations:
+The head of =2-monomes_kmss-drums= in both notations:
 
 TOML:
 #+begin_src toml
 version = 1
-id = "2-monomes_58-8-1_kmss-drums"
+id = "2-monomes_kmss-drums"
 
 [surfaces]
 trail_clobber_radius = 27      # a divisor of the octave...
@@ -98,9 +98,9 @@ rect = [0, 0, 15, 15]
 
 org:
 #+begin_src org
-,* 2-monomes_58-8-1_kmss-drums
+,* 2-monomes_kmss-drums
 ,** PARAM version = 1
-,** PARAM id = "2-monomes_58-8-1_kmss-drums"
+,** PARAM id = "2-monomes_kmss-drums"
 ,** TABLE surfaces
 Shared recent-note trail (the dim backdrop of the last few played classes).
 ,*** PARAM trail_clobber_radius = 27
@@ -189,7 +189,7 @@ the identical =Rig= as its =.toml=. What's NOT done: converting the rig files.
 
 ** The blocker: rig-vs-doc .org name collision
 =rigs/= already holds =.org= *documentation* next to the =.toml= rigs -- and with
-the SAME basename for 4 rigs: =2-monomes_58-8-1_kmss-drums=, =kmss-drumkit=,
+the SAME basename for 4 rigs: =2-monomes_kmss-drums=, =kmss-drumkit=,
 =monome-looper-58-8-1=, =monome-looper-58-8-1-timbre= each have both a =.toml=
 (the rig) and a =.org= (a rich reference: glossary, layout diagrams, LED tables).
 Plus =README.org= and =RUNTIME-NOTES.org=. So "the rig is =<name>.org=" collides
