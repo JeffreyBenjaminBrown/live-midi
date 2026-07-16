@@ -79,7 +79,7 @@ $ pwd
 On *host*:
 nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
   --run 'sudo python3 code/python/pedals/bridge.py
-** code/python/pedals/bridge-plan.org
+** TODO/DONE/pedal-usb-bridge.org (bridge plan, now DONE/archived)
 ** ask for commits
 ** ask to call the two pedals "Pedal at Doremidi Port [1,2]"
 ** adjust pedal

@@ -3,44 +3,66 @@ The SoftStep is put in *tether mode*, where it streams each pad's *4 pressure
 sensors* as Control Change messages, refreshed only *~every 10 ms*. The runtime
 *sums a pad's 4 sensors* (0..508) and runs a tiny per-pad state machine:
 
-1. *Onset* -- the sum rising above =ON_SUM= (20) starts a hit (=Idle -> Rising=).
-2. *Attack window* -- for =ATTACK= (14 ms) it keeps the *peak* sum seen.
-3. *Fire* -- 14 ms after onset it emits one hit whose *velocity* is that peak
-   scaled to 1..127, *unless* the same pad fired < =debounce_ms= (50 ms) ago.
-4. *Re-arm* -- the pad won't fire again until its sum falls back below =OFF_SUM= (20).
+1. *Onset* -- the sum rising above =on_sum= (20) FIRES immediately
+   (=Idle -> Watching=), even a one-sample tap, at whatever *pressure* the sum
+   already reads (peak-so-far / =pressure_full_scale=, a continuous 0.0..1.0 --
+   no 1..127 quantization step) -- *unless* the same pad fired <
+   =debounce_ms= (100 ms) ago, in which case it is suppressed and must release
+   first.
+2. *Attack window* -- for =attack_ms= (14 ms) after onset it keeps watching: a
+   strictly higher peak emits a *Revise*, ramping the sounding voice up to the
+   new pressure.
+3. *Hold* -- once the window closes the pressure is locked in; the pad stays
+   Held until it releases.
+4. *Re-arm* -- the pad won't fire again until its sum falls back below
+   =off_sum= (20).
 
-Three independent gates must all pass for a kick to sound: the sum must *exceed
-20*, it must *stay above 20 for the full 14 ms* window, and the pad must *not have
-fired in the last 50 ms*.
+For a *first* strike, one gate governs it: the sum must *exceed 20*. For a
+*re*-strike on the same pad, two more apply: the pad must have *released*
+(fallen below 20) since its last fire, and the new onset must land at least
+*100 ms* after that fire.
 
-"How hard" = the peak sum over the 14 ms window, mapped to velocity 1..127, then to
-a *loudness* spread across a 20 dB range (vel 127 = full, vel 1 = -20 dB).
+"How hard" = the peak sum seen during the attack window, over
+=pressure_full_scale= (a continuous 0.0..1.0, no velocity quantization step),
+then mapped to a *loudness* spread across a 20 dB range (pressure 1.0 = full,
+pressure 0.0 = -20 dB).
 
-The two constants most relevant to the symptoms: =ON_SUM= and =OFF_SUM= are *both
-20* (there is *no hysteresis gap*), and =debounce_ms= only guards 50 ms. See
-[[* Where "no hit" comes from]] and [[* Where "double hit" comes from]].
+The two constants most relevant to the symptoms: =on_sum= and =off_sum= are *both
+20* (there is *no hysteresis gap*), and =debounce_ms= guards 100 ms. The symptom
+walk-throughs live in the baseline snapshot:
+[[file:historical/before-these-changes.org::*Where "no hit" comes from][Where "no hit" comes from]] and
+[[file:historical/before-these-changes.org::*Where "double hit" comes from][Where "double hit" comes from]]
+(written against the older velocity model, but the mechanism still reads true).
 
 The old SoftStep device only refreshes its sensors ~every 10 ms
-(which rationalizes the 14 ms wait).
+(which rationalizes the 14 ms attack window).
 The new one (arriving tomorrow) might be faster.
 
 Loudness is ~logarithmic, over a 20 db range.
-Velocity is derived entirely from pressure; the KMSS itself has no velocity.
+Pressure is derived entirely from the sensor sum; the KMSS itself has no velocity.
 
 * constants this code uses
 
-| constant              | value  | where                     | role                                                              |
-|-----------------------+--------+---------------------------+-------------------------------------------------------------------|
-| =ON_SUM=              | 20     | decode.rs:43              | onset: sum must exceed this to *start* a hit                      |
-| =OFF_SUM=             | 20     | decode.rs:44              | release: sum must drop below this to *re-arm*                     |
-| =ATTACK=              | 14 ms  | decode.rs:45              | how long after onset the peak is captured before firing           |
-| =VELOCITY_FULL_SCALE= | 460    | decode.rs:31              | pad sum (0..508) that maps to velocity 127                        |
-| =VELOCITY_DB_RANGE=   | 20 dB  | decode.rs:27              | loudness spread from vel 1 to vel 127                             |
-| =debounce_ms=         | 50 ms  | rig:148 (window field) | min gap between two fires on the *same* pad                       |
-| poll interval         | 1 ms   | mod.rs:256                | how often matured hits are checked (device scan ~10 ms dominates) |
-| sink =amplitude=      | 1.6    | rig:52                 | drum master gain, applied at mix, clamped [-1,1]                  |
-| device scan           | ~10 ms | firmware (fixed)          | sensors only refresh ~100 Hz -- the latency/aliasing floor        |
+| constant              | value  | where                                | role                                                              |
+|-----------------------+--------+---------------------------------------+-------------------------------------------------------------------|
+| =on_sum=              | 20     | softstep.toml:10                     | onset: sum must exceed this to *start* a hit                      |
+| =off_sum=             | 20     | softstep.toml:11                     | release: sum must drop below this to *re-arm*                     |
+| =attack_ms=           | 14 ms  | softstep.toml:12                     | after firing on onset, how long to keep watching for a higher peak |
+| =pressure_full_scale= | 460    | softstep.toml:13                     | pad sum (0..508) that maps to full pressure (1.0)                 |
+| =gain_db_range=       | 20 dB  | softstep.toml:14                     | loudness spread from pressure 0.0 to pressure 1.0                 |
+| =debounce_ms=         | 100 ms | softstep.toml:15                     | min gap between two fires on the *same* pad                       |
+| poll interval         | 1 ms   | mod.rs:360                            | how often matured hits are checked (device scan ~10 ms dominates) |
+| sink =amplitude=      | 1.6    | 2-monomes_58-8-1_kmss-drums.org:134   | drum master gain, applied at mix, clamped [-1,1]                  |
+| device scan           | ~10 ms | firmware (fixed)                     | sensors only refresh ~100 Hz -- the latency/aliasing floor        |
 
-*Note the missing hysteresis gap:* =ON_SUM= and =OFF_SUM= are *both 20*. There is no
-dead-band between "start a hit" and "re-arm." (The Python meter uses 40/20 -- see
-[[* meter.py disagrees with the runtime]].)
+=on_sum=/=off_sum=/=attack_ms=/=pressure_full_scale=/=gain_db_range=/=debounce_ms=
+are all fields of =SoftstepParams= (=code/rust/midi_pulse/rig.rs=); the values
+above are what =rigs/softstep.toml= actually sets (not =decode.rs= consts --
+=decode.rs= just consumes whatever =SoftstepParams= it is given).
+
+*Note the missing hysteresis gap:* =on_sum= and =off_sum= are *both 20*. There is no
+dead-band between "start a hit" and "re-arm." (The Python meter is a *separate*
+source of truth and has drifted further: =code/python/softstep/meter/config.toml=
+now uses =on-sum = 5= / =off-sum = 2= / =pressure-full-scale = 300=. See
+[[file:historical/before-these-changes.org::*meter.py disagrees with the runtime][meter.py disagrees with the runtime]]
+and =code/python/softstep/meter/synth-v-meter.org=.)

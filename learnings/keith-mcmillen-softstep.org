@@ -161,12 +161,14 @@ nothing plugged in -- not a pad, not a heartbeat, not a signal.
   and hard become indistinguishable.
 - *sum-of-4* (0..508) has 4x the headroom and separates hits far better. *Use sum-of-4.*
 
-*Velocity* (the device has none of its own -- it's ours to derive):
+*Strike strength* (the device has no velocity of its own -- it's ours to derive):
 - *onset* = pressure crossing an on-threshold from below; *release* = falling below a
   lower off-threshold (hysteresis avoids chatter).
-- *velocity* = the *peak sum-of-4 within a short attack window* after onset, scaled to
-  1..127. See [[*Drumkit velocity (tether runtime): how it works + the tuning knobs]] for
-  the crucial timing fact (the device refreshes only ~every 10 ms) and the knobs.
+- *strike pressure* = the *peak sum-of-4 within a short attack window* after onset, over
+  =pressure_full_scale= -- a continuous 0.0..1.0, not a 0..127 velocity. The pad fires at
+  onset and a higher peak inside the window revises it up. See
+  [[*Drumkit velocity (tether runtime): how it works + the tuning knobs]] for the crucial
+  timing fact (the device refreshes only ~every 10 ms) and the knobs.
 
 * Two feet at once
 

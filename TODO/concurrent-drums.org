@@ -155,9 +155,10 @@ selecting a different preset (no send needed) or reprogramming/mode-switching it
 1. *Try the other on-device presets first -- FREE, no send.* There are 13 presets
    (display 0..12); scroll with the nav arrows and re-run =aseqdump= per preset,
    stomping two pads. If any preset emits an independent event per pad
-   (polyphonic), point the drumkit at it and we are done. The decode is already
-   preset-independent (=pedal = program % 10=, =decode.rs:12=), so a different
-   preset "just works" as long as it is polyphonic.
+   (polyphonic), point the drumkit at it and we are done. NOTE: the runtime decodes
+   the *tether* CC stream only -- a pad is identified by its sensor CC base
+   (=SLOT_LABEL=, =decode.rs:23=) and the =pedal = program % 10= path is gone -- so
+   pointing it at a Program-Change preset would mean restoring that decode path.
 
 2. *Reprogram to a "notes" preset.* Each pad -> an independent Note On (which also
    carries *velocity* -- a bonus). This is the right long-term answer, but it needs
