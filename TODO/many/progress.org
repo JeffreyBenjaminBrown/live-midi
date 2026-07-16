@@ -1,0 +1,118 @@
+#+title: Progress: two softsteps, per-voice pitch + pulse edit
+#+date: 2026-07-16
+
+Executing =3_plan.org=. Report format per =when-to-stop.org=.
+
+* status
+| phase | what                                    | state |
+|-------+-----------------------------------------+-------|
+|     1 | per-device tether mode                  | DONE  |
+|     2 | device-aware pedal hook                 | DONE  |
+|     3 | rig schema: softstep windows + pinning  | next  |
+|     4 | pressure classification, unbound        |       |
+|     5 | the rig + surfaces wiring               |       |
+|     6 | glide primitive + edit mode             |       |
+|     7 | diamond dance + off-screen flash        |       |
+|     8 | pulse retargeting for edit-mode notes   |       |
+|     9 | the GUI window                          |       |
+|    10 | rename the drums rig                    | handed off |
+
+Suite green throughout: 108 lib + 346 bin.
+
+* what's done and went well
+
+** the two prerequisites are in, and they were the real blockers
+Both were "the second board simply does not work," not "the second board works
+badly," and both are now closed with pure, tested cores:
+
+- *Phase 1 -- per-device tether* (=b48aa30=). =rawmidi_port()= took no device, grepped
+  =amidi -l= for a hardcoded ="SSCOM"=, and preferred a ="MIDI 1"= substring -- all
+  three wrong for the newer board (client ="SoftStep"=, data port ="SoftStep Control
+  Surface"=). It was never matched, so resolution fell through to the =hw:1,0,0=
+  default: *the other board's port*. Each board now resolves from its own
+  =select.name_contains= -- the same selector the rig uses for its sensor stream, so
+  the two cannot disagree.
+- *Phase 2 -- device-aware pedal hook* (=3f977c4=). =PedalHook= is now
+  =Fn(&str, u8, bool)=. Seven tether tests + two hook tests.
+
+** the restore path got the attention it deserved
+The plan called the half-restored pair the real risk, and that held up. =restore_all=
+drains the board list under one lock and attempts each board *independently*, so one
+failure cannot strand the others; it is called from both =Drop= and the signal
+thread; and it tolerates a *poisoned* lock (a panic elsewhere must not be the reason
+a board stays stuck streaming). A board is registered for restore *before* its mode
+switch is attempted -- a send dying between =STANDALONE_OFF= and =TETHER_ON= still
+needs restoring, and restoring a board that never entered is harmless.
+
+** the port preference now lives in one place
+Phase 1 reused =midi::SOFTSTEP_DATA_PORT_PREFERENCE= (added earlier for
+=select_input_port=). So the *sensor stream* and the *mode-switch SysEx* resolve
+their port by the same rule and cannot drift -- which is precisely how the original
+bug arose: =softstep_meter= carried its own copy of =select_input_port= and the two
+fell out of step.
+
+* changes to the plan's envisioned order
+- *Phase 10 (rename the drums rig) pulled forward*, running in parallel via a smaller
+  model. The plan put it last "because it touches files the earlier phases read," but
+  that is only true of the *old* rig; the new rig (phase 5) is a separate file. It is
+  isolated and mechanical, so it is the natural hand-off (=3_plan.org= §3).
+- Otherwise the order stands.
+
+* what's imperfect about what's done
+
+** none of it is verified against hardware, and that will not change here
+No SoftStep is connected (=amidi -l= is empty) and no grids are. So:
+- the port *resolution* is tested against the port names recorded in =learnings/=,
+  and I smoke-tested that the resolved port reaches =amidi= (forcing
+  =MIDI_PULSE_KMSS_RAWMIDI=hw:99,0,0= makes =amidi= report exactly that port) --
+  but *no board has actually entered tether mode under this code*;
+- the *restore-on-signal* path's hardware half is likewise unproven. Its registry
+  logic is tested; the SysEx round trip is not.
+This is the honest limit of what I can check here, and it is Jeff's to confirm. It is
+worth a real check, because the failure mode (a board stuck streaming) is invisible
+until the next run.
+
+** the legacy feet-accrete mirror is pinned, not fixed
+=feet_accrete_hook= now binds the *first declared* board. That removes the ambiguity
+(a second board can no longer mirror onto the same bank) but the mapping is still a
+hardcoded =match= on pedal literals rather than rig-declared. Phase 3 supersedes it;
+the new rig does not use it at all (2f). Leaving it half-modernised is deliberate --
+rewriting a path this build abandons would be waste -- but it *is* an inconsistency
+someone will trip on later.
+
+** =MIDI_PULSE_KMSS_RAWMIDI= is now under-powered
+It is a single process-wide override, so with two boards it forces *both* onto one
+port -- meaningless. Documented as single-board-only rather than fixed, since it is a
+debugging escape hatch and detection now does the real work. A per-board override
+(=..._<id>=) would be the honest version if it ever matters.
+
+* choices determining the future
+
+** one session owning many boards, rather than one session per board
+=TetherSession= holds =Arc<Mutex<Vec<String>>>= of ports. The alternative -- a session
+per board plus a process-global registry for the signal thread to walk -- is more
+orthodox, but it puts the "did we restore *all* of them?" invariant in a global,
+where nothing owns it. Keeping one session preserves the existing ownership (the
+runtime already held exactly one) and makes total restoration a property of a single
+value's =Drop=. Cost: the session is a slightly odd plural of itself, and per-board
+error reporting is by port string rather than by rig id.
+
+** each board resolves its rawmidi port from its RIG selector
+Not from a serial, not from card order. This is what makes the sensor stream and the
+mode switch provably agree, and it means a rig fully determines its boards. It also
+means a rig whose =name_contains= is too loose (e.g. ="Soft"= matching both) will
+bind one board twice -- phase 3 should validate that.
+
+** the pedal hook carries =&str=, not a device index
+An index would be cheaper but would couple the hook to device *order*, which is
+exactly the class of bug being fixed (order is enumeration-dependent). The id is the
+rig's own =[[softsteps]] id=, so a rig reads the same as the code behaves.
+
+* notes for whoever picks this up
+- The two gaps found while planning (=3_plan.org= §1) are both real and both live:
+  §1a (=device_assign= ignores =id_contains=, so the grids can swap and invert the
+  whole spatial pedal layout) is *not yet done* -- it belongs to phase 3, and it
+  matters more than it looks.
+- =when-to-stop.org= says to record deviations rather than escalate. The one
+  *architectural* call taken without Jeff is per-device tether mode; the reasoning is
+  in =2_discussion.org= §7b rather than here, since it is a decision, not progress.
