@@ -258,6 +258,37 @@ IO  hw:2,0,2  SoftStep CV Out
     assert_eq!(parse_rawmidi_port(BOTH_BOARDS, "Launchpad"), None);
   }
 
+  /// Verbatim `amidi -l` from Jeff's rig with both boards connected (2026-07-16).
+  /// Kept because it is the real thing and it is *adversarial by accident*: the newer
+  /// board enumerated FIRST, on card 1 -- which is exactly `DEFAULT_RAWMIDI_PORT`.
+  /// So the old code's fallback would have looked correct on the newer board while
+  /// actually being a coincidence, and the older board (card 3) is the one it named.
+  const JEFFS_RIG: &str = "\
+Dir Device    Name
+IO  hw:1,0,0  SoftStep Control Surface
+ O  hw:1,0,1  SoftStep TRS MIDI Out
+ O  hw:1,0,2  SoftStep CV Out
+IO  hw:3,0,0  SSCOM MIDI 1
+IO  hw:3,0,1  SSCOM MIDI 2
+";
+
+  #[test]
+  fn real_hardware_both_boards_resolve_to_their_own_data_port() {
+    assert_eq!(parse_rawmidi_port(JEFFS_RIG, "SSCOM"), Some("hw:3,0,0".into()));
+    assert_eq!(parse_rawmidi_port(JEFFS_RIG, "SoftStep"), Some("hw:1,0,0".into()));
+  }
+
+  /// The card numbers are not stable (they follow plug order), so nothing may assume
+  /// "SSCOM is card 1". The old hardcoded default did exactly that.
+  #[test]
+  fn real_hardware_the_default_port_is_not_the_sscom_board() {
+    assert_ne!(
+      parse_rawmidi_port(JEFFS_RIG, "SSCOM"),
+      Some(DEFAULT_RAWMIDI_PORT.to_string()),
+      "on this hardware the hw:1,0,0 default is the OTHER board",
+    );
+  }
+
   /// A board with no preferred name still resolves, rather than silently vanishing.
   #[test]
   fn falls_back_to_the_boards_first_port_when_no_preference_matches() {
