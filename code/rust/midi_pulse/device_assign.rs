@@ -12,6 +12,74 @@
 use std::collections::HashMap;
 
 use crate::monome::DeviceInfo;
+use crate::rig::MonomeSelect;
+
+/// Does this device satisfy every predicate the rig monome declared? All provided
+/// `select.*` must match (an omitted predicate matches anything).
+fn matches(device: &DeviceInfo, select: &MonomeSelect) -> bool {
+  select.size.is_none_or(|[w, h]| [device.grid_w, device.grid_h] == [w, h])
+    && select.type_contains.as_ref().is_none_or(|t| device.type_name.contains(t))
+    && select.id_contains.as_ref().is_none_or(|i| device.id.contains(i))
+}
+
+/// Is this selector *discriminating* -- i.e. does it name a particular device rather
+/// than merely a shape? Size alone matches every grid of that shape.
+fn is_pinned(select: &MonomeSelect) -> bool {
+  select.id_contains.is_some() || select.type_contains.is_some()
+}
+
+/// Assign one live device per rig monome, honoring each monome's FULL `select`
+/// (`id_contains` / `type_contains`, not just `size`), tolerating absent gear the way
+/// [`assign_available_devices`] does.
+///
+/// Pinned monomes are resolved FIRST, then unpinned ones fill from what's left. Order
+/// matters: with an unpinned monome `a` and a `b` pinned to a serial, filling in rig
+/// order would let `a` claim the very device `b` names, and `b` would find nothing.
+///
+/// Why this exists: `select.id_contains` has been in the rig schema all along and was
+/// never read, so two same-size grids were handed out in *enumeration* order -- which
+/// flips when they re-enumerate. The looper doesn't care which grid is which, but a
+/// rig whose pedals target "the left monome" very much does: a swap silently inverts
+/// the whole spatial layout.
+pub fn assign_selected_devices(
+  devices: &[DeviceInfo],
+  selects: &[MonomeSelect],
+) -> Vec<Option<DeviceInfo>> {
+  // Distinct live ids, newest port each. Size is per-select now, so filter here only
+  // by "is a grid at all" and let `matches` do the rest.
+  let pool = distinct_newest_any(devices);
+  let mut slots: Vec<Option<DeviceInfo>> = vec![None; selects.len()];
+  let mut claimed: Vec<&str> = Vec::new();
+
+  for pass_pinned in [true, false] {
+    for (slot, select) in selects.iter().enumerate() {
+      if slots[slot].is_some() || is_pinned(select) != pass_pinned {
+        continue;
+      }
+      if let Some(device) = pool
+        .iter()
+        .find(|d| !claimed.contains(&d.id.as_str()) && matches(d, select))
+      {
+        claimed.push(device.id.as_str());
+        slots[slot] = Some(device.clone());
+      }
+    }
+  }
+  slots
+}
+
+/// Every distinct live device, newest port per id, in first-appearance order.
+fn distinct_newest_any(devices: &[DeviceInfo]) -> Vec<DeviceInfo> {
+  let mut order: Vec<String> = vec![];
+  let mut newest: HashMap<String, DeviceInfo> = HashMap::new();
+  for device in devices {
+    if !newest.contains_key(&device.id) {
+      order.push(device.id.clone());
+    }
+    newest.insert(device.id.clone(), device.clone());
+  }
+  order.iter().map(|id| newest[id].clone()).collect()
+}
 
 /// The distinct live grids of `size` in a discovery reply, in first-appearance
 /// order, keeping the newest port per id (serialosc can report one id on several
@@ -168,5 +236,84 @@ mod tests {
     let got = assign_available_devices(&devices, [16, 16], 2);
     assert_eq!(got[0].as_ref().map(|d| d.port), Some(9005), "newest port for a ghosted id");
     assert!(got[1].is_none(), "one id is still one grid");
+  }
+
+  // ---- assign_selected_devices: honoring the full select ----
+
+  fn sel(size: Option<[i32; 2]>, id: Option<&str>) -> MonomeSelect {
+    MonomeSelect {
+      size,
+      type_contains: None,
+      id_contains: id.map(str::to_string),
+    }
+  }
+
+  fn ids(slots: &[Option<DeviceInfo>]) -> Vec<Option<&str>> {
+    slots.iter().map(|s| s.as_ref().map(|d| d.id.as_str())).collect()
+  }
+
+  /// The point of the whole function: a rig pins each grid by serial, so the
+  /// assignment does NOT depend on enumeration order. Here the devices arrive in the
+  /// opposite order to the rig's monomes.
+  #[test]
+  fn pinned_monomes_bind_their_own_serial_regardless_of_enumeration_order() {
+    let devices = [dev("m0000102", 9000, 16, 16), dev("m256-282", 9001, 16, 16)];
+    let selects = [sel(Some([16, 16]), Some("m256-282")), sel(Some([16, 16]), Some("m0000102"))];
+    assert_eq!(ids(&assign_selected_devices(&devices, &selects)), [Some("m256-282"), Some("m0000102")]);
+    // ...and the same rig against the other enumeration order gives the same answer.
+    let flipped = [dev("m256-282", 9001, 16, 16), dev("m0000102", 9000, 16, 16)];
+    assert_eq!(ids(&assign_selected_devices(&flipped, &selects)), [Some("m256-282"), Some("m0000102")]);
+  }
+
+  /// The ordering trap that forces the pinned-first pass: an unpinned monome listed
+  /// FIRST must not swallow the device a later monome pins by name.
+  #[test]
+  fn an_unpinned_monome_does_not_steal_a_pinned_monomes_device() {
+    let devices = [dev("m256-282", 9000, 16, 16), dev("m0000102", 9001, 16, 16)];
+    let selects = [sel(Some([16, 16]), None), sel(Some([16, 16]), Some("m256-282"))];
+    assert_eq!(
+      ids(&assign_selected_devices(&devices, &selects)),
+      [Some("m0000102"), Some("m256-282")],
+      "the pinned monome takes its serial; the unpinned one takes what's left",
+    );
+  }
+
+  #[test]
+  fn a_pinned_monome_whose_grid_is_absent_gets_none_and_does_not_grab_another() {
+    let devices = [dev("m0000102", 9000, 16, 16)];
+    let selects = [sel(Some([16, 16]), Some("m256-282")), sel(Some([16, 16]), Some("m0000102"))];
+    assert_eq!(
+      ids(&assign_selected_devices(&devices, &selects)),
+      [None, Some("m0000102")],
+      "an absent pinned grid stays absent rather than binding the wrong board",
+    );
+  }
+
+  #[test]
+  fn selected_never_hands_one_id_to_two_monomes() {
+    let devices = [dev("a", 9000, 16, 16), dev("a", 9005, 16, 16)];
+    let selects = [sel(Some([16, 16]), None), sel(Some([16, 16]), None)];
+    let got = assign_selected_devices(&devices, &selects);
+    assert_eq!(got[0].as_ref().map(|d| d.port), Some(9005), "newest port for a ghosted id");
+    assert!(got[1].is_none(), "one id is still one grid");
+  }
+
+  #[test]
+  fn selected_respects_size() {
+    let devices = [dev("small", 9000, 8, 8), dev("big", 9001, 16, 16)];
+    let selects = [sel(Some([16, 16]), None)];
+    assert_eq!(ids(&assign_selected_devices(&devices, &selects)), [Some("big")]);
+  }
+
+  /// With no discriminating predicate this must behave exactly like the old
+  /// size-and-count assignment, so unpinned rigs (the looper) are unaffected.
+  #[test]
+  fn selected_with_only_sizes_matches_assign_available_devices() {
+    let devices = [dev("a", 9000, 16, 16), dev("b", 9001, 16, 16), dev("c", 9002, 8, 8)];
+    let selects = [sel(Some([16, 16]), None), sel(Some([16, 16]), None)];
+    assert_eq!(
+      ids(&assign_selected_devices(&devices, &selects)),
+      ids(&assign_available_devices(&devices, [16, 16], 2)),
+    );
   }
 }
