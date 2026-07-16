@@ -1,3 +1,29 @@
+* simple interface for easy beats
+** names for monome key behaviors
+- momentary : Its state in code matches its physical state -- up or down.
+- toggle : Key down switches state, key up does nothing.
+** pattern slots
+*** what they are
+- Multiple can be playing.
+  Solid while playing, black while not.
+- One can be edited at a time.
+  If being edited & not playing, flash [50 ms on, 50 ms off, 50 on, 150 off].
+  If being edited & playing, flash [50 on, 50 off].
+*** triggering one
+Each pattern slot is a toggle.
+Key down usually toggles it between playing and not playing.
+But when 'edit pattern' is on, it changes how the pattern slots behave:
+in that case, key down on a pattern slot makes it the target of edits.
+** drum slots
+Like the softstep has laid out in 2-monomes_58-8-1_kmss-drums.org:
+a window (on the monome) 5 wide by 2 high,
+with the bottom being [snare kick ditto something something]
+and the top being the other stuff.
+Let's deduplicate that layout definition, so that rearranging the drum layout
+can be done in one place and apply to both windows.
+** mode: live play
+Hitting a drum pad plays the drum,
+at a volume equivalent to the midpoint of the softstep pressure range.
 * easy beats
 ** define a tattoo
 *** has a drum, or two
@@ -32,6 +58,8 @@ pitch : specific to each sample, logarithmic between
 *** from volume
 *** from pitch
 *** bitcrush
+*** freq shift
+harmonically destructive, partials move linearly in frequency
 ** telescoping interrupt
 bass cuts snare cuts hat ...
 ** storage
@@ -97,7 +125,8 @@ to move it there (immediately? next pass?).
 * Adjust tap-pulsed note tempo.
 * Store tap-pulsed note set.
 * Retrieve tap-pulsed note set incrementally.
-* DONE double-tapping "=1" : fix and change
+* DONE
+** DONE double-tapping "=1" : fix and change
 That button, when tapped once, should reset the tap factor to unity.
 When tapped twice in under 400 ms (I think that's the value currently coded),
 it should turn off the AM that the tap tempo controls.
@@ -111,7 +140,7 @@ If the tapped tempo AM is currently off, pressing =1 should turn it on,
 Tapping it a second time should set it to unity.
 That should work even if it is tapped within 400 ms --
 the 400 ms test should only be applied when the AM is on.
-** [Claude] done -- both, in =surfaces_runtime/polyrhythm.rs=
+*** [Claude] done -- both, in =surfaces_runtime/polyrhythm.rs=
 Nothing was wrong with the double-tap code, as you suspected; only the two
 requested changes were made.
 - *The display.* New =tapped_hz()=. =tap_blink()= reads it instead of
@@ -134,10 +163,10 @@ implementations: the blink following the applied tempo (caught), switch-on also
 zeroing the factor (caught), and switch-on arming the double-tap detector
 (caught -- the subtle one).
 *Unseen on the grids*; asserted in the pure state tests and the mock-grid test.
-* DONE tap-tempo AM should be a triangle, not a saw
+** DONE tap-tempo AM should be a triangle, not a saw
 Use a triangle wave, not saw, for the tap tempo AM. It should still start at the
 peak. It should of course be a triangle in [0,1] rather than [-1,1].
-** [Claude] done -- the polyrhythm pulse is now |2*phase - 1|
+*** [Claude] done -- the polyrhythm pulse is now |2*phase - 1|
 One line in =sawwave/voices.rs=: the per-voice pulse was =1 - phase= (a descending
 saw), and is now =(2*phase - 1).abs()= -- 1 at the cycle start, 0 at the
 half-cycle, back to 1 at the wrap. Unipolar, and it still peaks at onset.
@@ -151,10 +180,10 @@ Mutation-checked the rewritten test against three wrong shapes -- the old saw, a
 ascending triangle (starts at 0), and a bipolar one in [-1,1] -- each of which it
 catches. Symmetry about the trough is the assertion that pins "triangle".
 *Unheard on the grid* (no hardware here); the shape is asserted numerically.
-* DONE accretion_level is mostly dead.
+** DONE accretion_level is mostly dead.
 Give it a default value so it stops being required,
 then remove it from all rigs that don't use it.
-** [Claude] done -- removed outright, not defaulted
+*** [Claude] done -- removed outright, not defaulted
 It was dead in six of the seven rigs: only the *sawwave* runtime ever read it,
 for its chord-slot "emit" voices (a different feature that happens to share the
 word). Rather than default it, we folded it into the pluck envelope, so there is
@@ -172,7 +201,7 @@ now have an attack and settle at =sustain_level= (0.35) instead of ringing flat
 at 0.5 -- i.e. quieter, and no longer louder than the notes you played to build
 the chord. Surfaces + looper rigs are bit-for-bit unchanged. Never listened to on
 the grid: Jeff no longer plays that rig and accepted the change unheard.
-* DONE : config -> rig; robust to missing gear
+** DONE : config -> rig; robust to missing gear
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
 - code/rust/configs/README.org
@@ -209,7 +238,7 @@ because I can imagine it getting messy, or contradicting earlier code.
 There is no need for adversarial agents to double-check
 things that you consider obviouslyy already correct;
 I trust you more than that (and I don't have a huge token budget).
-** [Claude] BOTH halves DONE (2026-07-09), committed.
+*** [Claude] BOTH halves DONE (2026-07-09), committed.
 - *Robust to missing gear*: surfaces loads around absent devices; red report of
   skipped components (missing dependency); standalone softstep (drums load with
   no grids); cross-control strips dropped when their target grid is absent; echo
@@ -223,7 +252,7 @@ I trust you more than that (and I don't have a huge token budget).
   =host-nix-config-copy=, the Python meter, and the TODO/DONE/ archive. Scope +
   the sub-struct decision are in jeff-maybe-review-this.org "config -> rig rename".
 - 88 lib + 324 bin + 29 meter tests green; 0 warnings. No adversarial agents used.
-* DONE change .toml to .org
+** DONE change .toml to .org
 Top-level headlines, and their descendents down to some level,
 are just for grouping, otherwise ignored by the code.
 Each parameter, which can be at any depth in the tree,
@@ -244,7 +273,7 @@ just making sure to report them all somewhere.
 
 Since (I think) numerous code paths consume .toml,
 this probably warrants a shared library.
-** TODO Claude to Jeff : yes, TOML nests; here's the proposed org syntax
+*** TODO Claude to Jeff : yes, TOML nests; here's the proposed org syntax
 Full design + migration plan: [[file:TODO/toml-to-org-rig-format.org]]. Short version:
 
 TOML has three shapes we must mirror: scalars (=k = v=), *tables* =[a]= (which
@@ -272,7 +301,7 @@ consumer keeps using the same typed structs and validation; only the front-end
 (=load_config_file=) changes from =toml::from_str= to the org loader. I'll queue
 implementation after the rename lands. Keyword names (=ELEM= etc.) are easy to
 change -- say the word.
-** [Claude] DONE (2026-07-10). All rigs are now =.org= (TOML-in-org).
+*** [Claude] DONE (2026-07-10). All rigs are now =.org= (TOML-in-org).
 Parser + loader seam: =code/rust/midi_pulse/rig_org.rs= (=PARAM=/=TABLE=/=ELEM=
 headlines; grouping headlines transparent; bodies are docs). An =.org= rig loads
 through the SAME typed model + validation as =.toml= did (reuses =parse_rig=).
@@ -288,14 +317,14 @@ toml->org script; EVERY file verified to parse to the identical =Rig= as its
 Syntax decisions (all reversible) in [[file:TODO/toml-to-org-rig-format.org]]; the
 =[surfaces]=-style file-intro comments landed as the first following headline's
 body (a minor placement quirk of the auto-conversion -- shuffle freely).
-* DONE rewrite sofstep pressure meter in Rust
+** DONE rewrite sofstep pressure meter in Rust
 It should do everything the actual softstep drum code does,
 including the 'ditto' pad (but not the monome-interaction code).
 When you report what you did please tell me how to run it.
 
 Leave the Python-based meter in place, because I might want to compare them,
 but have the Python one explain to the user that the Rust one is probably better.
-** [Claude] DONE (2026-07-09). Run: =cargo run --bin softstep_meter=
+*** [Claude] DONE (2026-07-09). Run: =cargo run --bin softstep_meter=
 New =code/rust/midi_pulse/softstep_meter.rs= binary (+ =softstep_meter.org= doc).
 It drives the REAL, unmodified drum decoder (=drumkit_runtime/decode.rs=) and
 tether bring-up (=tether.rs=) via =#[path]= includes, so detection / debounce /
@@ -308,7 +337,7 @@ sample). Restores standalone mode on 'q' or Ctrl-C. The Python meter stays (for
 its .org event-group logger) with a startup banner pointing at the Rust one.
 29 meter tests (14 reused decode + 15 new); 88 lib + 324 bin still green.
 Delegated to a Sonnet agent; I reviewed + verified the build/tests before commit.
-* DONE misc
+** DONE misc
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
 - code/rust/configs/README.org
@@ -320,14 +349,14 @@ but this should apply also to any future rig
 that uses the same code)
 if a note is sustaining and the same note is retriggered manually,
 let's have the new note cut off and replace the old note.
-** [Claude] all three done (2026-07-08); full notes live in TODO/misc.org
+*** [Claude] all three done (2026-07-08); full notes live in TODO/misc.org
 The retrigger: fingering a pitch that is sustaining in a grid's bank now cuts
 that drone and the new note replaces it -- and the pitch keeps its set
 membership, so releasing the new finger re-drones it (a retrigger
 re-articulates, never deletes; erase is the deleter). It lives in the shared
 surfaces sink, so any future rig on this runtime inherits it. See misc.org
 "retriggering a sustaining note cuts and replaces it" + jeff-maybe-review-this.org.
-** DONE erase button for accretion
+*** DONE erase button for accretion
 mode-select (requires-hold or toggle) button that affects the accrete button should
 affect this new one the same way. This new one is an erase button. When in effect,
 any pitch pressed is removed from the sustained set, but continues playing until
@@ -335,12 +364,12 @@ the finger that was used to identify that pitch is also removed. If both are on,
 erase overrides accrete. Put it at (1,14).
 
 If this is not clear ask me questions about it but I think you'll get it.
-*** [Claude] done -- it was clear; see misc.org "erase button"
+**** [Claude] done -- it was clear; see misc.org "erase button"
 An optional =erase= kind of =accrete_control=, at (1,14) on both grids, exactly
 as specified (incl. erase-beats-accrete). One continuous-reading choice to
 know: notes already held when erase goes live are erased too, like accrete's
 capture. No pedal mirror.
-** DONE fast double-tap of the =1 button to turn off the amplitude cycles
+*** DONE fast double-tap of the =1 button to turn off the amplitude cycles
 Tapping it once turns it back on. It starts off.
 Tapping a tempo should not turn it on (like it currently does),
 but instead should merely define the tempo,
@@ -350,7 +379,7 @@ but each monome can have a separate applied tempo based on it,
 and whether the amplitude cycling that it causes is on
 should also be a per-monome property (controlled by
 single- and double-taps of the =1 button).
-*** [Claude] done -- see misc.org "fast double-tap of the =1 button"
+**** [Claude] done -- see misc.org "fast double-tap of the =1 button"
 Tap = define + display only (the tap cell blinks, now black <-> fully lit --
 your earlier request -- at each grid's own applied tempo); factor exponents and
 the =1 cycling switch are per-monome; cycling starts off; =1's LED shows the
