@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live DUAL-SoftStep sensor meter + per-hit velocity + CSV / .org logging.
+"""Live DUAL-SoftStep sensor meter + per-hit pressure + CSV / .org logging.
 
 We now have TWO SoftSteps (see ss.list_softsteps): they enumerate differently, so the
 code tells them apart by ALSA port name -- the original "SSCOM" unit and the newer
@@ -22,9 +22,9 @@ While it runs:
 
 LOGGING, two forms, both under meter/logs/:
   * CSV  (csv/session-<stamp>.csv) -- one row per sensor frame and per fired hit, across
-    BOTH boards: t_iso,t_ms,device,kind,pad,s0,s1,s2,s3,sum,event,velocity. This is the
+    BOTH boards: t_iso,t_ms,device,kind,pad,s0,s1,s2,s3,sum,event,pressure. This is the
     "deep dive" log -- load it in a spreadsheet / pandas. `event` is blank for a plain
-    sample and "fire" on the frame a hit's onset fires (velocity filled in then).
+    sample and "fire" on the frame a hit's onset fires (pressure 0..1 filled in then).
   * .org event groups (<device>/pad-<label>/<N>.org) -- the older per-pad grouped trace
     + re-derived hit interpretation, now namespaced per board. See below.
 
@@ -35,8 +35,9 @@ A pad's group starts when ITS sum-of-4 rises above `event-group-separation-thres
 and ends once it has stayed at/below that for `group-end-hold-ms`. Each group is written
 to logs/<device>/pad-<label>/<N>.org (raw sequence + re-derived interpretation).
 
-HOW VELOCITY SCALES LOUDNESS: loudness is perceived ~logarithmically, so vel 127 is NOT
-127x the amplitude of vel 1. The velocity range is spread over `vel-db-range` dB.
+HOW PRESSURE SCALES LOUDNESS: loudness is perceived ~logarithmically, so full pressure is
+NOT 10x the amplitude of a light press -- the pressure range is spread over `gain-db-range`
+dB of gain (pressure 1.0 -> 0 dB, 0.0 -> -`gain-db-range` dB).
 """
 import os, sys, time, threading, subprocess, re, signal, tomllib, select, termios, tty, csv, datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # find sibling ss.py
@@ -54,10 +55,10 @@ SAMPLES_DIR = os.path.join(REPO_ROOT, "drum-samples")  # `audition-sample` resol
 DEFAULTS = {
     "on-sum": 40,           # onset threshold on sum-of-4 (a hit starts above this)
     "off-sum": 20,          # release threshold (hysteresis: must drop below to re-arm)
-    "attack-ms": 14,        # fire on onset; keep watching this long to raise velocity to a later peak
+    "attack-ms": 14,        # fire on onset; keep watching this long to raise pressure to a later peak
     "debounce-ms": 100,     # min gap between two hits on the SAME pad (contact-bounce guard); 0 = off
-    "vel-full-scale": 460,  # pad sum-of-4 that maps to velocity 127
-    "vel-db-range": 20.0,   # dB between the softest (vel 1) and hardest (vel 127) hit
+    "pressure-full-scale": 460,  # pad sum-of-4 that maps to full pressure (1.0)
+    "gain-db-range": 20.0,   # dB between the softest (pressure 0) and hardest (pressure 1) hit
     "master-volume": 0.9,   # ceiling passed to pw-play (0..1)
     "audition": True,       # play a sample on each detected hit
     "audition-sample": "snare.wav",  # which sample to audition (a filename under drum-samples/)
@@ -87,12 +88,12 @@ lock = threading.RLock()  # reentrant: a SIGTERM handler may flush while the mai
 SEQ_COLS = ["ms", "s0", "s1", "s2", "s3", "sum"]
 
 # Constants (config keys) restated in each group's interpretation, for reproducibility.
-INTERP_CONSTANTS = ["on-sum", "off-sum", "attack-ms", "debounce-ms", "vel-full-scale",
-                    "vel-db-range", "event-group-separation-threshold", "group-end-hold-ms",
+INTERP_CONSTANTS = ["on-sum", "off-sum", "attack-ms", "debounce-ms", "pressure-full-scale",
+                    "gain-db-range", "event-group-separation-threshold", "group-end-hold-ms",
                     "silence-to-zero-ms"]
 
 # CSV columns for the deep-dive log.
-CSV_COLS = ["t_iso", "t_ms", "device", "kind", "pad", "s0", "s1", "s2", "s3", "sum", "event", "velocity"]
+CSV_COLS = ["t_iso", "t_ms", "device", "kind", "pad", "s0", "s1", "s2", "s3", "sum", "event", "pressure"]
 
 
 def _org_row(cells):
@@ -132,35 +133,36 @@ def load_config():
         announce(f"audition sample not found: {audition_path()} (no sound will play)")
 
 
-# --------------------------------------------------------------------------- velocity math
-def _vel(peak_sum, full_scale):
-    """Sum-of-4 attack peak -> velocity 1..127 (the meter's / kit's mapping)."""
-    return max(1, min(127, round(peak_sum / full_scale * 127)))
+# --------------------------------------------------------------------------- pressure/gain math
+def _pressure(peak_sum, full_scale):
+    """Sum-of-4 attack peak -> continuous pressure 0.0..1.0 (the meter's / kit's mapping).
+    No quantization -- matches the Rust decoder's `pressure_from_peak`."""
+    return max(0.0, min(1.0, peak_sum / max(1, full_scale)))
 
 
-def _db_of(vel, db_range):
-    """The dB below full-scale a velocity plays at (vel 127 -> 0 dB)."""
-    return (vel - 1) / 126.0 * db_range - db_range
+def _db_of(pressure, db_range):
+    """The dB below full-scale a pressure plays at (pressure 1.0 -> 0 dB, 0.0 -> -db_range)."""
+    return (max(0.0, min(1.0, pressure)) - 1.0) * db_range
 
 
-def velocity_from_sum(peak_sum):
-    return _vel(peak_sum, CFG["vel-full-scale"])
+def pressure_from_sum(peak_sum):
+    return _pressure(peak_sum, CFG["pressure-full-scale"])
 
 
-def gain_from_velocity(vel):
-    """Map velocity 1..127 to a linear gain over `vel-db-range` dB (vel 127 -> 0 dB)."""
-    t = (vel - 1) / 126.0
-    gain_db = (t - 1.0) * CFG["vel-db-range"]
-    return 10.0 ** (gain_db / 20.0)
+def gain_from_pressure(pressure):
+    """Map pressure 0.0..1.0 to a linear gain over `gain-db-range` dB (pressure 1.0 -> 0 dB).
+    Matches the Rust `gain_from_pressure`."""
+    return 10.0 ** (_db_of(pressure, CFG["gain-db-range"]) / 20.0)
 
 
 def interpret_hits(seq, on_sum, off_sum, attack_s, full_scale, debounce_s=0.0):
     """Re-derive the hits a (t, sum) sequence renders under the given constants -- the same
     onset/watch/fire logic as the live meter and the kit. A hit FIRES at onset (the sum
-    first exceeds on-sum), so even a one-sample tap counts; its velocity is the PEAK sum
-    over the attack window (until release below off-sum, or attack_s elapses), which the kit
-    ramps its voice up to. A hit is suppressed if its onset is within `debounce_s` of the
-    last fired hit's onset (onset-to-onset, like the kit). Returns (onset_t, velocity)."""
+    first exceeds on-sum), so even a one-sample tap counts; its pressure is the PEAK sum
+    over the attack window (until release below off-sum, or attack_s elapses) / full scale,
+    which the kit ramps its voice up to. A hit is suppressed if its onset is within
+    `debounce_s` of the last fired hit's onset (onset-to-onset, like the kit).
+    Returns (onset_t, pressure)."""
     hits = []
     st, pk, ons = "idle", 0, 0.0
     last_fire = None
@@ -172,14 +174,14 @@ def interpret_hits(seq, on_sum, off_sum, attack_s, full_scale, debounce_s=0.0):
             pk = max(pk, s)
             if s < off_sum or (t - ons) >= attack_s:   # released, or window elapsed -> finalize
                 if last_fire is None or (ons - last_fire) >= debounce_s:
-                    hits.append((ons, _vel(pk, full_scale)))
+                    hits.append((ons, _pressure(pk, full_scale)))
                     last_fire = ons
                 st = "held" if s >= off_sum else "idle"
         elif st == "held":
             if s < off_sum:
                 st = "idle"
     if st == "watching" and (last_fire is None or (ons - last_fire) >= debounce_s):
-        hits.append((ons, _vel(pk, full_scale)))  # trace ended mid-window -> the hit still fired
+        hits.append((ons, _pressure(pk, full_scale)))  # trace ended mid-window -> the hit still fired
     return hits
 
 
@@ -241,7 +243,7 @@ class PadGroup:
         os.makedirs(self.logdir, exist_ok=True)
         seq = [(t, summ) for (t, _s0, _s1, _s2, _s3, summ) in self.samples]
         hits = interpret_hits(seq, CFG["on-sum"], CFG["off-sum"], CFG["attack-ms"] / 1000.0,
-                              CFG["vel-full-scale"], CFG["debounce-ms"] / 1000.0)
+                              CFG["pressure-full-scale"], CFG["debounce-ms"] / 1000.0)
         with open(os.path.join(self.logdir, f"{self.num}.org"), "w") as f:
             f.write(f"#+title: {os.path.basename(self.logdir)} -- event group {self.num}\n\n")
             f.write("* sequence\n")
@@ -254,8 +256,8 @@ class PadGroup:
             f.write("\n** result\n")
             if hits:
                 f.write(f"{len(hits)} hit{'s' if len(hits) != 1 else ''}.\n")
-                for i, (t, vel) in enumerate(hits, 1):
-                    f.write(f"  hit {i}  t={t * 1000:.1f}ms  velocity {vel}  ({_db_of(vel, CFG['vel-db-range']):+.1f} dB)\n")
+                for i, (t, pressure) in enumerate(hits, 1):
+                    f.write(f"  hit {i}  t={t * 1000:.1f}ms  pressure {pressure:.3f}  ({_db_of(pressure, CFG['gain-db-range']):+.1f} dB)\n")
             else:  # with fire-on-onset, 0 hits means the sum never crossed on-sum at all
                 pk = max((summ for (_t, _s0, _s1, _s2, _s3, summ) in self.samples), default=0)
                 f.write(f"0 hits -- the sum peaked at {pk}, never crossing on-sum={CFG['on-sum']}.\n")
@@ -287,13 +289,14 @@ class CsvLog:
         self.w.writerow(CSV_COLS)
         self.f.flush()
 
-    def row(self, now, dev, base, s4, summ, event="", velocity=""):
-        """One CSV line: a sensor frame (event="") or a fired hit (event="fire")."""
+    def row(self, now, dev, base, s4, summ, event="", pressure=""):
+        """One CSV line: a sensor frame (event="") or a fired hit (event="fire", pressure set)."""
         if self.w is None:
             return
         self.w.writerow([datetime.datetime.now().isoformat(timespec="milliseconds"),
                          f"{now * 1000:.1f}", dev.label, dev.kind, BASE_LABEL[base],
-                         s4[0], s4[1], s4[2], s4[3], summ, event, velocity])
+                         s4[0], s4[1], s4[2], s4[3], summ, event,
+                         f"{pressure:.4f}" if pressure != "" else ""])
         self.f.flush()
 
     def close(self):
@@ -323,7 +326,7 @@ class Device:
         self.state = {b: "idle" for b in BASES}     # idle / watching / held
         self.peak = {b: 0 for b in BASES}            # attack peak (sum) while watching
         self.onset = {b: 0.0 for b in BASES}         # monotonic time of onset
-        self.last_vel = {b: 0 for b in BASES}        # last fired velocity, for display
+        self.last_pressure = {b: 0.0 for b in BASES}  # last fired pressure, for display
         self.last_fire = {b: None for b in BASES}    # onset time of last FIRED hit (debounce gate)
         self.proc = None                             # amidi reader subprocess
         base_dir = os.path.join(LOGDIR, self.label.lower())
@@ -347,7 +350,7 @@ class Device:
     # --- detection ----------------------------------------------------------------
     def check_fire(self, now):
         """Advance each pad's onset/watch state machine off its interpreted sum and return
-        the hits that just completed as (base, velocity). Mirrors the kit's decoder."""
+        the hits that just completed as (base, pressure). Mirrors the kit's decoder."""
         fired = []
         for base in BASES:
             s = self.pad_sum(base, now)
@@ -360,10 +363,10 @@ class Device:
                 if s < CFG["off-sum"] or (now - self.onset[base]) * 1000.0 >= CFG["attack-ms"]:
                     debounce_s = CFG["debounce-ms"] / 1000.0
                     if self.last_fire[base] is None or (self.onset[base] - self.last_fire[base]) >= debounce_s:
-                        vel = velocity_from_sum(self.peak[base])
-                        self.last_vel[base] = vel
+                        pressure = pressure_from_sum(self.peak[base])
+                        self.last_pressure[base] = pressure
                         self.last_fire[base] = self.onset[base]
-                        fired.append((base, vel))
+                        fired.append((base, pressure))
                     self.state[base] = "held" if s >= CFG["off-sum"] else "idle"
             elif st == "held":
                 if s < CFG["off-sum"]:
@@ -372,7 +375,7 @@ class Device:
 
     def process(self, now, pad_updates):
         """Advance groups, log CSV samples for changed pads, fire matured hits. Under `lock`.
-        Returns the hits fired this pass as (base, velocity)."""
+        Returns the hits fired this pass as (base, pressure)."""
         for base in BASES:
             self.groups[base].update(self.pad_sum(base, now), now)     # opens on rise; closes after hold
         for base in dict.fromkeys(pad_updates):                        # one sample per changed pad
@@ -380,11 +383,11 @@ class Device:
             self.groups[base].sample(now, *s4, summ)
             CSVLOG.row(now, self, base, s4, summ)
         fired = self.check_fire(now)
-        for base, vel in fired:
+        for base, pressure in fired:
             s4 = self.sensor4(base, now)
-            CSVLOG.row(now, self, base, s4, sum(s4), event="fire", velocity=vel)
+            CSVLOG.row(now, self, base, s4, sum(s4), event="fire", pressure=pressure)
             note_press(self.index, base)
-            play_audition(self.label, BASE_LABEL[base], vel)
+            play_audition(self.label, BASE_LABEL[base], pressure)
         return fired
 
     # --- MIDI in ------------------------------------------------------------------
@@ -437,18 +440,18 @@ def audition_path():
     return os.path.join(SAMPLES_DIR, CFG["audition-sample"])
 
 
-def play_audition(dev_label, pad_label, vel):
+def play_audition(dev_label, pad_label, pressure):
     global recent
-    gain = gain_from_velocity(vel)
+    gain = gain_from_pressure(pressure)
     vol = max(0.0, min(1.0, CFG["master-volume"] * gain))
-    db = _db_of(vel, CFG["vel-db-range"])
-    recent = f"{dev_label} pad {pad_label}: vel {vel:3d}  ({db:+.1f} dB, vol {vol:.2f})"
+    db = _db_of(pressure, CFG["gain-db-range"])
+    recent = f"{dev_label} pad {pad_label}: p {pressure:.2f}  ({db:+.1f} dB, vol {vol:.2f})"
     if CFG["audition"]:
         try:
             subprocess.Popen(["pw-play", f"--volume={vol:.3f}", audition_path()],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
-            pass  # no pw-play: still shows velocity
+            pass  # no pw-play: still shows pressure
 
 
 # --------------------------------------------------------------------------- display
@@ -457,12 +460,12 @@ def render_row(dev_index, base, now):
     dev = DEVICES[dev_index]
     s4 = dev.sensor4(base, now)
     summ = sum(s4)
-    lv = dev.last_vel[base]
-    lvs = f"vel {lv:3d}" if lv else "  --  "
+    lp = dev.last_pressure[base]
+    lps = f"p {lp:.2f}" if lp else "  --  "
     g = dev.groups[base]
     gs = f"g{g.num}*" if g.open else (f"g{g.num}" if g.num else "-")
     return (f"  {dev.label:<10} [{BASE_LABEL[base]}]  "
-            f"{s4[0]:4d} {s4[1]:4d} {s4[2]:4d} {s4[3]:4d}   {summ:4d}   {lvs}  {gs:>5}")
+            f"{s4[0]:4d} {s4[1]:4d} {s4[2]:4d} {s4[3]:4d}   {summ:4d}   {lps}  {gs:>5}")
 
 
 def draw():
@@ -476,10 +479,10 @@ def draw():
         csv_note = f"CSV {os.path.relpath(CSVLOG.path, REPO_ROOT)}" if CSVLOG.path else "CSV off"
         lines = ["",
                  "  KMSS DUAL meter -- reads every SoftStep; rows = the LAST TWO pads pressed",
-                 f"  (each row: board  [pad]  s0 s1 s2 s3  sum  last-velocity).  Plays {CFG['audition-sample']} on a hit.",
+                 f"  (each row: board  [pad]  s0 s1 s2 s3  sum  last-pressure).  Plays {CFG['audition-sample']} on a hit.",
                  f"  keys: [r]eload  [f]lush  [q]uit   |   {ongoing} group(s) ongoing   |   {csv_note}",
                  "",
-                 f"  {'board':<10} {'pad':>4}  {'s0':>4} {'s1':>4} {'s2':>4} {'s3':>4}   {'sum':>4}   {'vel':>6}  {'grp':>5}"]
+                 f"  {'board':<10} {'pad':>4}  {'s0':>4} {'s1':>4} {'s2':>4} {'s3':>4}   {'sum':>4}   {'press':>6}  {'grp':>5}"]
         if LAST_PRESSED:
             for dev_index, base in LAST_PRESSED:
                 lines.append(render_row(dev_index, base, now))
@@ -492,7 +495,7 @@ def draw():
                   "  boards: " + " | ".join(f"{d.label} {d.port} ({d.kind})" for d in DEVICES),
                   f"  last hit: {recent}",
                   f"  (on-sum={CFG['on-sum']} off-sum={CFG['off-sum']} attack={CFG['attack-ms']}ms "
-                  f"debounce={CFG['debounce-ms']}ms full-scale={CFG['vel-full-scale']} db-range={CFG['vel-db-range']:g} "
+                  f"debounce={CFG['debounce-ms']}ms full-scale={CFG['pressure-full-scale']} db-range={CFG['gain-db-range']:g} "
                   f"sep={CFG['event-group-separation-threshold']} hold={CFG['group-end-hold-ms']}ms "
                   f"silence={CFG['silence-to-zero-ms']}ms audition={'on' if CFG['audition'] else 'off'})", ""]
         for m in MESSAGES:

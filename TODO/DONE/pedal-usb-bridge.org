@@ -1,0 +1,92 @@
+#+title: route the MPC-20 pedals into the container synth (the "bridge")
+#+date: 2026-07-15
+
+* STATUS: DONE (2026-07-15)
+Approach A shipped and verified end-to-end: =code/python/pedals/bridge.py= (host USB ->
+virtual ALSA-seq port "MPC-20 pedals") + the Rust reader =midi_pulse::expression_pedals=
+(consts PEDAL_RAW_BOTTOM/TOP, normalize/decode) + the =pedal_monitor= bin, which bound the
+port in the container and displayed both pedals. The durable reference is
+=code/python/pedals/README.org=. The plan below is kept as the design record.
+
+Everything needed to pick this up cold. Companion to =README.org= (device/range/fix
+details) -- read that too.
+
+* Goal
+Make the two M-Audio EX-P expression pedals (via the DOREMiDi MPC-20) readable by the
+*container* synth (Rust =midi_pulse=) as *normalized continuous f32 in [0,1]*, one per
+pedal.
+
+* The blocker (why they don't "just work")
+The MPC-20 uses a *WCH CH345* USB-MIDI chip (USB id *1a86:752d*) inside a *composite*
+device: a MIDI function (interfaces :1.0 AudioControl + :1.1 MIDIStreaming) plus a CDC-ACM
+*serial* config port (:1.2/:1.3). The kernel has =QUIRK_MIDI_CH345= (=sound/usb/quirks-table.h=,
+=.ifnum = 1=) but it's written for the *standalone* CH345 cable and does NOT fire on this
+composite unit, so =snd-usb-audio= binds interface :1.1 yet creates *no ALSA MIDI port*.
+Result: =amidi -l= and =/proc/asound/cards= omit it; the container can't see it via
+=/dev/snd=. Confirmed on kernel *6.18.38* (NixOS host). NOT a container / Wine / missing-driver
+problem -- it works on Windows because that class driver tolerates the chip's broken
+MIDIStreaming descriptors. The MIDI *endpoints are fine*: interface 1, *bulk IN 0x81 /
+OUT 0x01*.
+
+* What the pedals send (measured 2026-07-15)
+- Both pedals: *CC 21* (the DOREMiDi default expression CC).
+- Pedal 1 -> *MIDI channel 1* (0-based 0); pedal 2 -> *MIDI channel 2* (0-based 1).
+- Raw range *~1 (full heel) .. ~120 (full toe)* after opening both EX-P trim pots fully.
+  The top genuinely maxes ~120 (confirmed in DOREMiDi's own Windows tool); not being chased.
+
+* Normalization (put these consts at the top of the reader's main file, NOT per-rig)
+#+begin_src
+PEDAL_RAW_BOTTOM = 1     # raw CC taken as fully-heel -> 0.0
+PEDAL_RAW_TOP    = 119   # raw CC taken as fully-toe  -> 1.0   (~120 seen; clamp above)
+norm = clamp((raw - PEDAL_RAW_BOTTOM) / (PEDAL_RAW_TOP - PEDAL_RAW_BOTTOM), 0.0, 1.0)  # f32
+#+end_src
+Do NOT requantize to a smaller integer range. Jeff wants normalization to live *once*, in
+the synth ("library") reader, as top-of-file consts.
+
+* Approaches (pick one)
+** A. Host USB -> virtual-ALSA-seq bridge  (IMPLEMENTED: =bridge.py=)
+Reads the CH345 bulk-IN endpoint directly via libusb (reusing =pedals_usb.py='s
+=open_device()= / =decode_usb_midi()=) and re-emits each message on a *virtual ALSA
+sequencer* port "MPC-20 pedals" created on the *host*. The container *shares the host ALSA
+sequencer* (=/dev/snd/seq=): =aconnect -l= inside the container lists host clients (PipeWire
+etc.), so the host virtual port shows up in the container and the synth (midir) -- or
+=aseqdump= -- can read it like any MIDI input. *Re-verify this shared-seq assumption on first
+real run* (=aseqdump -p 'MPC-20 pedals'= in the container while moving a pedal).
+
+Run it (HOST, root, in a nix-shell with pyusb + python-rtmidi):
+: nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 --run 'sudo python3 code/python/pedals/bridge.py'
+
+- Forwards *raw MIDI* (no rescaling) so normalization stays in the Rust synth per Jeff.
+- Reconnects if the pedals are replugged. Could later be a host systemd --user service.
+- STILL TODO: the Rust synth side -- read the "MPC-20 pedals" port and normalize each pedal
+  (ch1/ch2 CC21) to a float [0,1] via the PEDAL_RAW_BOTTOM/TOP consts. Untested end-to-end
+  (needs the MPC-20 plugged + the host nix-shell); the USB-read half is proven by =pedals_usb.py=.
+
+** B. Physical DIN route  (cleanest if hardware is on hand)
+The MPC-20 has 5-pin DIN MIDI out (via its 3.5mm TRS->DIN adapter). Feed it into ANY
+class-compliant USB-MIDI interface -> Linux makes a clean ALSA device -> reaches the
+container via =/dev/snd= like the SoftSteps. No software/kernel hacks. Needs a spare
+USB-MIDI interface + a DIN cable.
+
+** C. Kernel quirk fix  (most "correct", heavy)
+Patch the kernel so =QUIRK_MIDI_CH345= (or an equivalent raw-bytes MIDI quirk) applies to
+this *composite* 1a86:752d device. On NixOS via =boot.kernelPatches=. Makes the pedals a
+normal ALSA device with no daemon; worth an upstream report. Kernel rebuild = slow.
+
+* Rust synth integration (once MIDI is flowing by any route)
+- Read the pedal CC as a MIDI input (midir), like the SoftStep/piano paths.
+- =const PEDAL_RAW_BOTTOM: u8 = 1; const PEDAL_RAW_TOP: u8 = 119;= at the top of the reader
+  file; =fn pedal_norm(raw: u8) -> f32 { ((raw as f32 - BOTTOM as f32) / (TOP - BOTTOM) as f32).clamp(0.0, 1.0) }=.
+- Channel -> pedal: ch 0 (1-based 1) = pedal 1; ch 1 (1-based 2) = pedal 2. Both CC 21.
+- Downstream audio consumes the f32 [0,1] (consistent with the SoftStep intensity work).
+
+* Test tools already built (reuse them)
+- =pedals_usb.py= -- USB-direct reader (HOST): shows true raw CC + min/max, CSV. WORKS; its
+  =open_device()= / =decode_usb_midi()= are the bridge's USB half.
+- =pedals.py= -- ALSA reader: works once an ALSA port exists (bridge or DIN route).
+- =README.org= -- device, EX-P range fix, CH345/Linux explanation, observed range.
+
+* Re-verify when picking up
+- USB id still =1a86:752d=; interface 1 = MIDIStreaming, EP 0x81 in / 0x01 out.
+- Container still shares the host ALSA seq (=aconnect -l= in the container shows host clients).
+- Pedal channels/CC unchanged (ch1/ch2, CC 21) and raw range still ~1..120.

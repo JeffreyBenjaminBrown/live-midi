@@ -11,12 +11,12 @@
 # --- hit detection ---
 on-sum    = 5 # A note starts when a pad's sum-of-4 exceeds this.
 off-sum   = 2 # A note stops  when a pad's sum-of-4 exceeds this.
-attack-ms = 14 # A hit fires on onset; keep watching this long to raise its velocity to a later peak.
+attack-ms = 14 # A hit fires on onset; keep watching this long to raise its pressure to a later peak.
 debounce-ms = 100 # Min gap between two hits on the SAME pad (contact-bounce guard). 0 = off.
 
-# --- velocity -> loudness (how hard) ---
-vel-full-scale = 300  # The theoretical max is 127x4 = 508, but values above this in-practice max are clamped to this.
-vel-db-range   = 20.0 # volume range from min to max velocity
+# --- pressure -> loudness (how hard) ---
+pressure-full-scale = 300  # sum-of-4 mapping to full pressure 1.0 (theoretical max is 127x4 = 508); higher sums clamp to 1.0.
+gain-db-range   = 20.0 # gain (dB) range from lightest (pressure 0) to hardest (pressure 1) press
 master-volume  = 0.9  # ceiling passed to pw-play (0..1)
 audition       = true # play a sample on each detected hit (false = silent meter)
 audition-sample = "snare.wav"  # A filename under drum-samples/.
@@ -38,5 +38,5 @@ silence-to-zero-ms = 25
 
 # --- deep-dive CSV log ---
 # Write logs/csv/session-<stamp>.csv: one row per sensor frame and per fired hit, across
-# BOTH boards (t_iso,t_ms,device,kind,pad,s0,s1,s2,s3,sum,event,velocity). false = off.
+# BOTH boards (t_iso,t_ms,device,kind,pad,s0,s1,s2,s3,sum,event,pressure). false = off.
 csv = true

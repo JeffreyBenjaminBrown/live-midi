@@ -1098,10 +1098,10 @@ impl MonomeWindowRig {
 
 /// One pedal's assignment inside a `drumkit` window: the printed pedal label
 /// (1..9, then 0) and either a sample file to fire or `ditto = true`. `gain` is the
-/// voice's FULL-velocity level for a sample pad; the tether runtime scales it down
+/// voice's FULL-pressure level for a sample pad; the tether runtime scales it down
 /// for softer hits (see `drumkit_runtime::decode`). A `ditto` pad ignores `gain` --
 /// it replays the most recently played sample in its window at THAT hit's already-
-/// resolved (velocity-scaled) gain, "a generalized double-bass pedal" (see
+/// resolved (pressure-scaled) gain, "a generalized double-bass pedal" (see
 /// `drumkit_runtime::mod` for the trigger logic). Validation requires exactly one of
 /// `sample` / `ditto = true` per pad, and at most one ditto pad per window.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -1120,7 +1120,7 @@ fn default_pad_gain() -> f32 {
   1.0
 }
 
-// --- Shared SoftStep detection & velocity parameters (rigs/softstep.toml) ------------
+// --- Shared SoftStep detection & pressure parameters (rigs/softstep.toml) ------------
 // These drive the drumkit decoder. There is no reason for them to vary per rig, so they
 // live in one shared file loaded by `load_softstep_params`, not in each rig's window.
 fn default_on_sum() -> u16 {
@@ -1132,10 +1132,10 @@ fn default_off_sum() -> u16 {
 fn default_attack_ms() -> u64 {
   14
 }
-fn default_velocity_full_scale() -> u16 {
+fn default_pressure_full_scale() -> u16 {
   460
 }
-fn default_velocity_db_range() -> f32 {
+fn default_gain_db_range() -> f32 {
   20.0
 }
 fn default_debounce_ms() -> u64 {
@@ -1145,7 +1145,7 @@ fn default_silence_to_zero_ms() -> u64 {
   25
 }
 
-/// Hit-detection & velocity parameters for the SoftStep, shared by every rig that uses
+/// Hit-detection & pressure parameters for the SoftStep, shared by every rig that uses
 /// it. Loaded once from `rigs/softstep.toml` (not from any per-rig window), so one
 /// set of numbers drives the drumkit. Every field is optional; a missing file or key uses
 /// the default. The Python meter (`code/python/softstep/meter/`) mirrors these.
@@ -1158,15 +1158,16 @@ pub struct SoftstepParams {
   /// The pad re-arms once its sum-of-4 falls below this.
   #[serde(default = "default_off_sum")]
   pub off_sum: u16,
-  /// After firing on onset, keep watching this long to raise velocity to a later peak.
+  /// After firing on onset, keep watching this long to raise pressure to a later peak.
   #[serde(default = "default_attack_ms")]
   pub attack_ms: u64,
-  /// Pad sum-of-4 (0..508) that maps to velocity 127.
-  #[serde(default = "default_velocity_full_scale")]
-  pub velocity_full_scale: u16,
-  /// dB between the softest (vel 1) and hardest (vel 127) hit.
-  #[serde(default = "default_velocity_db_range")]
-  pub velocity_db_range: f32,
+  /// Pad sum-of-4 (0..508) that maps to full pressure (1.0). (Field name is historical;
+  /// the decoder emits a continuous 0.0..1.0 pressure now, not a 0..127 velocity.)
+  #[serde(default = "default_pressure_full_scale")]
+  pub pressure_full_scale: u16,
+  /// dB between the softest (pressure 0.0) and hardest (pressure 1.0) hit.
+  #[serde(default = "default_gain_db_range")]
+  pub gain_db_range: f32,
   /// Minimum gap between two hits on the SAME pad (contact-bounce guard); 0 = off.
   #[serde(default = "default_debounce_ms")]
   pub debounce_ms: u64,
@@ -1181,8 +1182,8 @@ impl Default for SoftstepParams {
       on_sum: default_on_sum(),
       off_sum: default_off_sum(),
       attack_ms: default_attack_ms(),
-      velocity_full_scale: default_velocity_full_scale(),
-      velocity_db_range: default_velocity_db_range(),
+      pressure_full_scale: default_pressure_full_scale(),
+      gain_db_range: default_gain_db_range(),
       debounce_ms: default_debounce_ms(),
       silence_to_zero_ms: default_silence_to_zero_ms(),
     }
@@ -1213,7 +1214,7 @@ pub enum SoftstepWindowRig {
     id: String,
     softstep: String,
     sink: String,
-    // Detection/velocity knobs (debounce, de-stick, thresholds) are NOT here -- they are
+    // Detection/pressure knobs (debounce, de-stick, thresholds) are NOT here -- they are
     // shared across rigs and live in rigs/softstep.toml (see `SoftstepParams`).
     pads: Vec<DrumPadRig>,
   },
@@ -2271,7 +2272,7 @@ mod tests {
     assert_eq!(SoftstepParams::default().on_sum, 20);
     // The shipped softstep.toml parses and every field is present.
     let params = load_softstep_params().expect("rigs/softstep.toml parses");
-    assert!(params.velocity_full_scale > 0 && params.attack_ms > 0);
+    assert!(params.pressure_full_scale > 0 && params.attack_ms > 0);
     // Partial files fill in defaults; unknown keys are rejected.
     let partial: SoftstepParams = toml::from_str("on_sum = 7").unwrap();
     assert_eq!(partial.on_sum, 7);

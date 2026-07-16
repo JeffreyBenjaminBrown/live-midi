@@ -24,6 +24,73 @@ can be done in one place and apply to both windows.
 ** mode: live play
 Hitting a drum pad plays the drum,
 at a volume equivalent to the midpoint of the softstep pressure range.
+* focus on pitch
+** ONGOING sketched in TODO/many.org
+*** rotate one softstep 180 degrees
+No need for code to know,
+but explain to Claude if soemthing I say about
+sofstep pad positions seems contradictory.
+*** square dance around note
+A light dances around it in a four-point circle.
+Iny timef that light would clobber another note, it doesn't.
+All such dances are in sync.
+*** sustain: [accrete, release]
+*** per-note pitch edit
+*** per-note pulse tempo edit
+** nudge amplitude
+** store [pulsing] chord, including timbre
+** nudge global tempo
+** slide between chords
+** store chords
+** timbre
+*** FM log/lin interface
+Pick an interval, above or below the target freq.
+Mirror it in Hz on the other side.
+Thus if the interval is down one octave,
+the FM interval is [0.5, 1.5];
+if it's up one octave, [0,2].
+
+In both cases the interval choice is logarithmic.
+*** assign a timbre to either side of a pedal
+*** edit timbre, inc. via pedals
+*** slide between timbres
+** indicatiors
+*** store entire state to file
+esp. for timbre, amplitude recovery
+*** display state on screen
+Good for timbre, volume.
+** open questions
+*** edit fingered notes  v?  edit stored notes
+*** ?  edit timbre per-note
+*** soft|hard press
+* testing the gear
+** report to claude
+I connected on host.
+In the container I got this:
+```
+$ aseqdump -p 'MPC-20 pedals'
+Invalid port MPC-20 pedals - No such file or directory
+~/host/worktrees/main [2026-07-15 21:32:35]
+$ pwd
+/home/ubuntu/host/worktrees/main
+~/host/worktrees/main [2026-07-15 21:32:46]
+```
+** to connect the pedals
+On *host*:
+nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
+  --run 'sudo python3 code/python/pedals/bridge.py
+** code/python/pedals/bridge-plan.org
+** ask for commits
+** ask to call the two pedals "Pedal at Doremidi Port [1,2]"
+** adjust pedal
+It's almost certainly the limited pedal's own MIN/trim knob (the side thumbwheel — a series-floor pot). Turn it to the extreme that makes heel-down read 0 while watching the live value (direction varies per unit — don't trust CW/CCW), and check the "M-Audio"/"Other" polarity switch on its underside. Quick diagnostic: swap the two pedals between the MPC-20 jacks — if the clip follows the pedal it's the pedal, if it stays with the jack it's that input's software config. The MPC-20 has no heel-to-toe learn-calibration — it's configured only via the Pedal Config Tool software (Gain/Min/Max/Curve; default expression CC=21; per-input channel 1–16, so pedal1=ch1/pedal2=ch2 is a software setting). Full detail + sources in pedals/README.org.
+** how to test the pedal ranges
+From *host*, project root:
+nix-shell -p 'python3.withPackages(p: [p.pyusb])' libusb1 \
+  --run 'sudo python3 code/python/pedals/pedals_usb.py'
+** how to adjust pedal ranges
+Open the trim pots as wide as possible.
+They control the lower bound.
 * easy beats
 ** define a tattoo
 *** has a drum, or two
@@ -118,7 +185,6 @@ Display it on the grid.
 Touch a playing note, then another one,
 to move it there (immediately? next pass?).
 * Fix pedal retriggers.
-* Two slid notes, one pedal per monome.
 * Find timbres.
 * Display tempo on each tap-pulsed note?
 * Adjust tap-pulsed note pitch.
