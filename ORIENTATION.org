@@ -5,15 +5,16 @@ file just points you at the right doors and records the few facts that otherwise
 live only in Claude's memory. Follow the links for depth.
 
 * where you are
-- This is a *bare* git repo: =/home/ubuntu/.bare= is the repo, and the actual
-  checkouts are git worktrees under =/home/ubuntu/worktrees/= -- work in
-  =worktrees/prod= (branch monome-looper) or =worktrees/dev=. The home dir
-  =/home/ubuntu= itself holds no tracked files (just =.bare=, a =.git= file
-  pointing at it, and your home dotfiles).
+- This is a *bare* git repo: =/home/ubuntu/host/.bare= is the repo, and the actual
+  checkouts are git worktrees under =/home/ubuntu/host/worktrees/=. *=main= is always
+  production*; the others are named with *integers* (=2=, then =3=, ...). So today:
+  =worktrees/main= and =worktrees/2=. Run =git worktree list= rather than trusting
+  this line -- the set changes.
 - It's a *Docker container* (UID 1000); Jeff works on the *host* (NixOS), which
-  bind-mounts this tree (host =/home/jeff/code/midi= -> container =/home/ubuntu=).
-  Worktree links are *relative*, so git/magit work from both sides. Separate PR
-  repos live in =/home/ubuntu/other-projects/=. See [[./how-to-parallelize-dev.org]].
+  bind-mounts this tree. Worktree links are *relative*, so git/magit work from both
+  sides. Separate PR repos live in =./other-projects/= (checked out beside the
+  worktrees, e.g. Jeff's NixOS config at =other-projects/nix-jbb/config/=).
+  See [[./how-to-parallelize-dev.org]].
 - The project's point: read/write MIDI and audio between container and host.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
@@ -67,10 +68,13 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
 - [[./code/rust/rigs/README.org]] -- the rig system (windows, kinds, the
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
-- Claude's persistent memory index: =my-dot-claude/projects/<cwd-slug>/memory/MEMORY.md=
-  -- gitignored, and the slug is this checkout's path, so in *this* worktree it is
-  =my-dot-claude/projects/-home-ubuntu-host-worktrees-main/memory/MEMORY.md=. (There
-  is no =~/.claude=; the pointer here used to claim otherwise.)
+- Claude's persistent memory index: =my-dot-claude/projects/<slug>/memory/MEMORY.md=
+  -- gitignored. Don't guess the slug: it is *not* reliably this checkout's path (in
+  a =worktrees/2= session it has been =-home-ubuntu-host--bare=, i.e. slugged from
+  the *bare repo*), the directory is created lazily on first write, and each session
+  is told its own path. Read the one you are given; =ls my-dot-claude/projects/= to
+  see what exists. (There is no =~/.claude=; the pointer here used to claim
+  otherwise.)
 * also possibly relevant files
 - README.org
 - code/rust/rigs/README.org (NOT =code/rust/configs/README.org= -- that directory was

@@ -9,13 +9,11 @@ actual =midi_pulse= source -- =surfaces_runtime/{polyrhythm,accrete,slide,synth}
 =expression_pedals.rs=, =rig.rs= -- so the notes below describe what the runtime
 does *today*, not what the docs claim.
 
-Markers: real org keywords now. *TODO* = still needs you. *ONGOING* = an ancestor
-of something that does. *DONE* = settled (either you answered, or I checked it and
-you didn't object). Everything design-bearing is DONE; the plan is =3_plan.org=.
+Markers: real org keywords. *TODO* = still needs you. *ONGOING* = an ancestor of
+something that does. *DONE* = settled.
 
-The only TODOs left are *two chores and a meta-question*, none of which block the
-build: run =xhost= (3c), tell me the intent behind ORIENTATION's stale paths (5a),
-and the model-handoff question you asked me to record (7).
+*Nothing is TODO any more.* You answered everything; the plan is =3_plan.org= and
+=progress.org= tracks the build.
 
 Headline: the musical design is strong and unusually complete -- the diamond dance
 and the edit-mode gesture are specified down to milliseconds. The gaps are almost
@@ -576,7 +574,7 @@ Don't throw away any of that code,
 and reuse whatever you can in this new rig (e.g. sliding voices),
 but none of those interfaces will be part of the new rig.
 
-* ONGOING 3. Direct answers to the questions you asked
+* DONE 3. Direct answers to the questions you asked
 
 ** DONE 3a. how to give me better softstep data -- yes, the meter logs
 You guessed right, and better than you remembered -- the meter *already* reads
@@ -653,7 +651,7 @@ fixes this completely, and then I can answer the outlier question properly.
 Let's go with a uniform threshold of 200 for now.
 I'll revisit if it turns out to be hard to use.
 
-** ONGOING 3c. the GUI window -- the code exists, docker.sh is ready, and *permissions block it*
+** DONE 3c. the GUI window -- the code exists, docker.sh is ready, and *permissions block it*
 You asked me to check =docker.sh= and tell you if connections/permissions don't
 allow it. They don't -- but it's one host-side command away, and I verified this
 empirically rather than by reading.
@@ -683,7 +681,7 @@ No =XAUTHORITY= is mounted and no cookie is set. Your host is *Plasma 6 on Wayla
 with =X0= served by XWayland -- which is fine, minifb talks X11 and XWayland accepts
 it, subject to auth.
 
-*** TODO run =xhost +local:= on the host (installing it is not enough -- see below)
+*** DONE run =xhost +local:= on the host (installing it is not enough -- see below)
 =PITFALLS.org:213-214= and =rigs/RUNTIME-NOTES.org:47-55= already prescribe the fix:
 run =xhost +local:= on the host. One catch: *=xhost= isn't installed on your NixOS
 host* (=packages.nix:92-93= has only =xorg.xev= and =xorg.xmodmap=). So either:
@@ -701,7 +699,46 @@ path, so =docker.sh= would have to resolve it dynamically. I'd start with =xhost
 
 Once you've done that I can build the window. Nothing else is missing.
 
-**** DONE jeff answered
+**** DONE jeff answered most recently
+Okay, I've run that now. Also I've plugged in all the gear. Good to go?
+
+***** DONE claude: yes -- X11 is open, and both boards are visible
+Re-probed: =first byte: 1 (SUCCESS)=. The X server accepts us now; the window is
+unblocked, and phase 9 can be checked by eye rather than by unit test alone.
+
+And =amidi -l= now shows *both* SoftSteps -- which turned out to be the best
+possible test of phase 1, because your hardware is *adversarial by accident*:
+
+#+begin_example
+IO  hw:1,0,0  SoftStep Control Surface     <- the NEWER board, on card 1
+IO  hw:3,0,0  SSCOM MIDI 1                 <- the OLDER board, on card 3
+#+end_example
+
+The old code grepped for a hardcoded ="SSCOM"= and fell back to
+=DEFAULT_RAWMIDI_PORT = "hw:1,0,0"=. On *this* plug order that default *is the
+newer board* -- so the old code would have found SSCOM at =hw:3,0,0= and tethered
+only it, while anything relying on the default would have silently hit the *other*
+board. Card numbers follow plug order, so that coincidence moves around.
+
+Both boards now resolve correctly against your real =amidi -l=, and I've frozen
+that exact output into =tether.rs= as a test fixture -- it is more adversarial than
+the one I invented. That closes the "unverified against hardware" caveat for *port
+resolution*; actually entering and restoring tether mode on both boards is still
+unproven, and I'd rather prove that in phase 5 with the real rig than by poking the
+boards now.
+
+*Still missing: the monomes.* =/dev/ttyUSB*= and =/dev/ttyACM*= are both empty, so
+serialosc has no grids to report and I can't bring up a play surface. If they're
+plugged in, this is the container not seeing them (or serialoscd needing a restart
+on the host -- =systemctl --user restart serialoscd=). Not urgent: phases 3-4 and
+6-8's logic are pure and testable without grids. It only blocks the real run.
+
+Next to the .org config for this rig, please put a similarly named file ending in
+"_readme.org" file (that pattern should already exist in rigs/)
+with, among whatever else it needs, a startup section explaining
+that I'll need to run that xhost command once per login before using the rig.
+
+**** DONE jeff answered earlier
 That's strange. I just made the following edit to my nix config, and am rebuilding:
 ```
       xhost # to allow X11 connections (e.g. from Docker)
@@ -714,7 +751,7 @@ If you care, you can find my nix config at other-projects/nix-jbb/config/.
 
 But whatever. I've switched into the new config. Can you do it now?
 
-***** TODO claude: no -- *installing* xhost isn't the same as *running* it
+***** DONE claude: no -- *installing* xhost isn't the same as *running* it
 I re-probed after your rebuild; the X server still says the same thing:
 
 #+begin_example
@@ -917,7 +954,7 @@ the *pitch*, so it survives -- but it's a real fork.)
 
 Both harmless; noting them since this doc will become the reference.
 
-* ONGOING 5. Documentation fixed along the way
+* DONE 5. Documentation fixed along the way
 You asked me to have a subagent fix doc problems I came across. I found more than
 I expected, and they turned out to have a *single common cause* worth naming: when
 the SoftStep moved to *tether mode* (continuous pressure) the code changed and the
@@ -986,7 +1023,7 @@ Both of the code-shaped ones you've since settled: the *46-vs-58* mismatch (2a -
 you chose to drop the tuning from the rig's name) and the *port-selection bug*
 (1b -- fixed). That leaves one:
 
-** TODO 5a. what is ORIENTATION.org's worktree/memory section supposed to say?
+** DONE 5a. what is ORIENTATION.org's worktree/memory section supposed to say?
 =ORIENTATION.org= is the one file whose whole job is to be a reliable map, so I
 didn't want to "fix" it on a guess. Two claims in it don't match this machine:
 
@@ -1004,6 +1041,10 @@ mounted somewhere unusual today and ORIENTATION is right about the normal case?
 Tell me which and it's a two-minute fix. (It already carries one self-correction of
 exactly this kind: "There is no =~/.claude=; the pointer here used to claim
 otherwise.")
+
+*** DONE jeff: right, main and 2 are the only branches and only worktrees
+currently. If I introduce more, they will be integers above 2,
+and main will always be production.
 
 * DONE 6. Reuse and implementation notes
 Since reuse is a standing goal, the build/borrow split as the code stands.
@@ -1049,9 +1090,9 @@ Genuinely new (nothing today does these):
 - *Sustained-pressure decoding* (1e), *only* if light/hard lands on a held control.
 - *The GUI window* (3c) -- =edo12n_gui.rs= is the template; needs =xhost= from you.
 
-* ONGOING 7. Meta
+* DONE 7. Meta
 
-** TODO 7a. "hand off to a smaller model where safe" -- no, that is not in my system prompt
+** DONE 7a. "hand off to a smaller model where safe" -- no, that is not in my system prompt
 You asked: /"Your galaxy brain seems likely to be overkill for these musical
 gadgets; wherever you feel absolutely safe handing off to a smaller model, please
 do. (Do I need to say that? Maybe it's part of your system prompt.)"/
@@ -1108,3 +1149,5 @@ acceptance criterion rather than an afterthought.
 
 If you'd rather I *had* stopped for this, tell me -- it's a useful calibration for
 the next one, and cheaper to correct now than mid-build.
+
+*** DONE Jeff : I approve :)
