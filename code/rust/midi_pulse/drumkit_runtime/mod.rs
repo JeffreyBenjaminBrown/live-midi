@@ -213,11 +213,22 @@ pub fn start_with_hook(
     }
   }
 
-  // 3. Setup succeeded -> switch the device into tether mode (and arm restoration).
-  tether_session
-    .enter()
-    .map_err(|e| format!("could not enter tether mode (needs alsa-utils `amidi`): {e}"))?;
-  println!("  device in tether mode (pressure-sensitive); will restore standalone on exit");
+  // 3. Setup succeeded -> switch EVERY declared board into tether mode (and arm
+  // restoration). Each board resolves its own rawmidi port from its own selector, so
+  // two SoftSteps both enter; a board left in standalone would stream no sensors at
+  // all. The session restores all of them together.
+  for softstep in &rig.softsteps {
+    tether_session.enter(softstep.select.name_substring()).map_err(|e| {
+      format!(
+        "could not enter tether mode on {:?} (needs alsa-utils `amidi`): {e}",
+        softstep.id
+      )
+    })?;
+  }
+  println!(
+    "  {} device(s) in tether mode (pressure-sensitive); will restore standalone on exit",
+    rig.softsteps.len()
+  );
 
   // 4. Per device: spawn the poll/fire timer and connect the MIDI input. Connections
   // and timers are held alive for the run.

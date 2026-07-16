@@ -265,7 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   // spawns, so the signal block is inherited by all of them (see tether::arm).
   let session = tether::arm();
   session
-    .enter()
+    .enter(&select_substring)
     .map_err(|e| format!("could not enter tether mode (needs alsa-utils `amidi`): {e}"))?;
   println!("device in tether mode; will restore standalone on exit\n");
 
