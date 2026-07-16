@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
+use midi_pulse::midi;
 use midi_pulse::rig::{
   drum_samples_dir, load_softstep_params, Rig, SinkRig, SoftstepParams, SoftstepWindowRig,
 };
@@ -457,10 +458,18 @@ fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPo
       "no MIDI input port matching {substring:?}; available ports: {available:?}",
     ));
   }
-  if let Some(idx) = matches.iter().position(|(_, name)| name.contains("MIDI 1")) {
-    return Ok(matches.remove(idx).0);
+  let names: Vec<String> = matches.iter().map(|(_, n)| n.clone()).collect();
+  let (idx, guessed) = midi::preferred_port_index(&names, &midi::SOFTSTEP_DATA_PORT_PREFERENCE)
+    .expect("matches is non-empty");
+  if guessed {
+    eprintln!(
+      "warning: {} MIDI input ports match {substring:?} and none looks like a data port \
+       ({names:?}); binding {:?}. Narrow select.name_contains if that is the wrong one.",
+      names.len(),
+      names[idx],
+    );
   }
-  Ok(matches.remove(0).0)
+  Ok(matches.remove(idx).0)
 }
 
 fn print_device_summary(

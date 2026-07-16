@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputPort};
 
+use midi_pulse::midi;
 use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
 use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecoder, NUM_PADS};
@@ -482,9 +483,12 @@ fn play_audition(gain: f32) {
 }
 
 /// Choose the KMSS input port: any whose name contains `substring`, preferring the
-/// performance port ("MIDI 1") -- the one that carries the tether sensor stream.
+/// data port -- the one that carries the tether sensor stream. Which name that is
+/// differs per unit, so the preference order lives in
+/// `midi::SOFTSTEP_DATA_PORT_PREFERENCE`.
 /// A small standalone re-statement of `drumkit_runtime::select_input_port` (private
-/// there, and pulled in a `Rig`-shaped device list this meter has no rig for).
+/// there, and pulled in a `Rig`-shaped device list this meter has no rig for); the
+/// port *preference* itself is shared, so the two cannot drift apart.
 fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPort, String> {
   let mut matches: Vec<(MidiInputPort, String)> = midi_in
     .ports()
@@ -496,10 +500,18 @@ fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPo
     let available: Vec<String> = midi_in.ports().iter().filter_map(|p| midi_in.port_name(p).ok()).collect();
     return Err(format!("no MIDI input port matching {substring:?}; available ports: {available:?}"));
   }
-  if let Some(idx) = matches.iter().position(|(_, name)| name.contains("MIDI 1")) {
-    return Ok(matches.remove(idx).0);
+  let names: Vec<String> = matches.iter().map(|(_, n)| n.clone()).collect();
+  let (idx, guessed) = midi::preferred_port_index(&names, &midi::SOFTSTEP_DATA_PORT_PREFERENCE)
+    .expect("matches is non-empty");
+  if guessed {
+    eprintln!(
+      "warning: {} MIDI input ports match {substring:?} and none looks like a data port \
+       ({names:?}); binding {:?}.",
+      names.len(),
+      names[idx],
+    );
   }
-  Ok(matches.remove(0).0)
+  Ok(matches.remove(idx).0)
 }
 
 #[cfg(test)]
