@@ -59,9 +59,9 @@ foot owns the right (=9 0= top, =4 5= bottom); =3= (bottom-middle) is the gap
 between the feet -- fittingly where *ditto* sits, since either foot can reach it.
 
 *Ditto* (pedal 3) is not a sample: it retriggers whatever sample most recently
-played on ANY pedal in this window, using THIS press's OWN velocity against that
+played on ANY pedal in this window, using THIS press's OWN pressure against that
 sample's own pad's static gain trim ("a generalized double-bass pedal") -- not the
-velocity the original hit was struck at. It does nothing until something else has
+pressure the original hit was struck at. It does nothing until something else has
 played, and a ditto press never itself becomes "the last hit" (so pad, ditto, ditto
 repeats the same sample rather than the ditto echoing itself). See "rig shape"
 below for the =ditto = true= pad schema, and =drumkit_runtime/mod.rs=
@@ -114,7 +114,7 @@ id = "kit"
 softstep = "feet"        # -> [[softsteps]] id
 kind = "drumkit"
 sink = "drums"           # -> a cpal_sampler [[sinks]] id
-# detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml
+# detection/pressure knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml
 pads = [
   { pedal = 1, sample = "kick.wav" },
   { pedal = 2, sample = "snare.wav", gain = 1.0 },
@@ -126,19 +126,31 @@ pads = [
 Each pad binds a *pedal label* to either a *sample* -- a filename under the
 top-level =drum-samples/= folder (a =sample= may name a subpath, e.g.
 =808/kick.wav=, for multi-kit layouts) -- with an optional =gain= (default 1.0;
-the KMSS sends no velocity today, so level is fixed per pad) -- *or* =ditto =
-true=, with no =sample= and no meaningful =gain=: it retriggers the most
-recently played sample in the SAME window, using its OWN press's velocity against
+a per-pad *scale* on top of the strike pressure, not a fixed loudness) -- *or*
+=ditto = true=, with no =sample= and no meaningful =gain=: it retriggers the most
+recently played sample in the SAME window, using its OWN press's pressure against
 that sample's own pad's =gain= trim (see "the mapping" above).
 
 * behavior notes
 
-- *Fixed velocity.* The KMSS currently emits only Program Changes (=PC = preset*10
-  + pedal=), which carry no velocity. So every hit plays at its pad's =gain=.
-  Velocity would need the device's "tether mode," currently blocked
-  ([[../../../learnings/keith-mcmillen-softstep.org]]).
-- *Preset-independent.* The pedal is decoded as =program % 10=, so the kit works
-  no matter which on-device preset is showing.
+- *Pressure-sensitive.* On start the runtime switches the KMSS into *tether
+  (hosted) mode* -- SysEx over ALSA rawmidi (=amidi=) -- and restores standalone
+  mode on exit or Ctrl-C. In tether mode the device streams each pad's 4 pressure
+  sensors as Control Changes on channel 0 (CC 40..79; a pad owns 4 consecutive
+  CCs). The runtime sums a pad's 4 sensors (0..508) into a continuous *pressure*
+  0.0..1.0 (=pressure_full_scale=, 460) and spreads that across =gain_db_range=
+  (20 dB) of loudness -- explicitly *not* a MIDI velocity. A pad's =gain= scales
+  on top of that pressure ([[../../../learnings/keith-mcmillen-softstep.org]]).
+- *Fired at onset, then revised.* A pad fires the instant its sum crosses
+  =on_sum= -- so even a one-sample tap counts -- and for =attack_ms= (14 ms)
+  after that the decoder keeps watching, ramping the sounding voice up if a
+  higher peak arrives. It does not wait out the window before firing.
+- *Preset-independent.* Tether mode identifies a pad by its sensor CCs, so the
+  kit works no matter which on-device preset is showing. (Standalone mode sends
+  Program Changes instead -- no velocity, and simultaneous presses collapse into
+  one or none; that is what tether mode exists to avoid.)
+- *Foot lifts are real releases.* The decoder reports them, so a pedal can be
+  *held*; one-shot samples simply ignore the release.
 - *Per-pedal debounce.* A hard stomp can double-trigger one pedal; the shared
   =debounce_ms= (in =softstep.toml=, default 100) suppresses a repeat of the *same*
   pedal within the window. It is per pedal, so two different pedals struck together

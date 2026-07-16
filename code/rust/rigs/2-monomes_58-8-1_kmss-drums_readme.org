@@ -8,8 +8,9 @@ that *composes* what used to be three mutually-exclusive runtimes (the sawwave E
 grid, the looper's scroll pad, the drumkit) into one -- see the "surfaces runtime"
 in =code/rust/midi_pulse/surfaces_runtime/=.
 
-Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drums.org=
-(the plan) and its =progress.org=.
+Background + the runtime-unification rationale:
+=TODO/DONE/2-monomes_58-8-1_kmss-drums.org= (the plan) and its
+=TODO/DONE/2-monomes_58-8-1_kmss-drums-progress.org= (both archived to DONE).
 
 * glossary
 
@@ -77,7 +78,7 @@ Background + the runtime-unification rationale: =TODO/2-monomes_58-8-1_kmss-drum
   per monome: a grid's buttons drive only its own bank, and only notes fingered on
   that grid can join it. See *sustain (accrete)* below.
 - *drumkit* -- the KMSS as nine TR-808 one-shots, velocity-sensitive (tether mode).
-  Reused verbatim from =kmss-drumkit= (see [[./kmss-drumkit.org]]).
+  Reused verbatim from =kmss-drumkit= (see [[./kmss-drumkit_readme.org]]).
 
 * usage
 
@@ -99,7 +100,7 @@ mode.
 
 A headless device-layer smoke (two virtual grids, no sound, no KMSS) runs as a unit
 test (=surfaces_runtime::tests::two_grids_run_against_mock_grids=) against the
-=2-monomes_58-8-1_kmss-drums-mock= rig rig; see [[../../../MOCK-MONOME.org]].
+=2-monomes_58-8-1_kmss-drums-mock= rig; see [[../../../MOCK-MONOME.org]].
 
 * per-grid layout
 
@@ -356,12 +357,12 @@ factor buttons and the =1 pulse switch belong to the grid you press them on:
 
 * the KMSS drumkit
 
-Identical to [[./kmss-drumkit.org]] -- the same pedal->sample map, the same tether-
-mode velocity path, the same =cpal_sampler= sink. The surfaces runtime *consumes*
-the drumkit's bring-up (=drumkit_runtime::start=) rather than forking it, so any
-future drum change (kit, decode, velocity feel) is inherited for free. Pedal map
-(see =kmss-drumkit.org= "the mapping" for the *ditto* pad's semantics and the
-wood-block-at-8 / cowbell-at-9 rationale):
+Identical to [[./kmss-drumkit_readme.org]] -- the same pedal->sample map, the same
+tether-mode velocity path, the same =cpal_sampler= sink. The surfaces runtime
+*consumes* the drumkit's bring-up (=drumkit_runtime::start=) rather than forking
+it, so any future drum change (kit, decode, velocity feel) is inherited for
+free. Pedal map (see =kmss-drumkit_readme.org= "the mapping" for the *ditto*
+pad's semantics and the wood-block-at-8 / cowbell-at-9 rationale):
 
 | foot  | pedal | voice                    |
 |-------+-------+--------------------------|

@@ -43,18 +43,18 @@ The path *to* this folder is not needed.
 alternatives lately:
 
 pw-jack cargo run --bin midi_pulse \
-  2-monomes_58-8-1_kmss-drums.toml
+  2-monomes_58-8-1_kmss-drums
 
 pw-jack cargo run --bin midi_pulse \
-  monome-looper-58-8-1-timbre.toml
+  monome-looper-58-8-1-timbre
 
 pw-jack cargo run --bin midi_pulse \
-  edo-un12_58-8-1_snap_save-scales.toml
-*** outside, if (sednging MIDI?)
+  edo-un12_58-8-1_snap_save-scales
+*** outside, if (sending MIDI?)
 Use the corresponding filename from in docker:
 
 ./code/rust/connect-midi.sh \
-  edo-un12_58-8-1_snap_save-scales.toml
+  edo-un12_58-8-1_snap_save-scales
 * how to read a rig
 ** read the window arrangements
 The most informative, least obvious aspect of these rigs is the
@@ -572,11 +572,18 @@ Built-in softstep window kinds:
 
 - ~drumkit~
 
-Pedals are addressed by their printed label (1..9, then 0). The KMSS sends only
-Program Changes today (no velocity), so hits play at a fixed per-pad ~gain~; the
-pedal is decoded as ~program % 10~, so a rig is independent of which on-device
-preset is selected. See [[../../../learnings/keith-mcmillen-softstep.org]] for the
-device protocol.
+Pedals are addressed by their printed label (1..9, then 0). On start, the
+runtime puts the device into *tether (hosted) mode* via SysEx sent over ALSA
+rawmidi (~amidi~), restoring standalone mode on exit or Ctrl-C. In tether mode
+the KMSS streams each pad's 4 pressure sensors as Control Changes on channel 0
+(CC 40..79; a pad occupies 4 consecutive CCs). The runtime sums a pad's 4
+sensors (0..508) into a continuous *pressure* 0.0..1.0 (~pressure_full_scale~,
+460) and maps it to gain over a ~gain_db_range~ (20 dB) -- it is explicitly
+*not* a MIDI velocity. A pad's configured ~gain~ is a per-pad *scale* on top of
+that pressure, not a fixed loudness. (Standalone mode -- Program Changes only,
+no velocity, lossy on simultaneous presses -- is why tether mode is used at
+all.) See [[../../../learnings/keith-mcmillen-softstep.org]] for the device
+protocol.
 
 * Optional display
 

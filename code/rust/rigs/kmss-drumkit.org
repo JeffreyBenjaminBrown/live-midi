@@ -11,12 +11,12 @@ See also softstep.toml (the shared SoftStep detection & velocity parameters).
 ** PARAM title = "KMSS Drumkit"
 ** ELEM softsteps
 A simple drumkit on the Keith McMillen SoftStep (KMSS). Each pedal fires a
-one-shot drum sample, VELOCITY-SENSITIVE: on start the runtime switches the KMSS
-into tether/hosted mode (over rawmidi via `amidi`), reads its raw pressure-sensor
+one-shot drum sample, PRESSURE-SENSITIVE: on start the runtime switches the KMSS
+into tether/hosted mode (over rawmidi via =amidi=), reads its raw pressure-sensor
 stream, and scales each hit's loudness by how hard the pad is struck; it restores
-standalone mode on exit (including Ctrl-C). Per-pad `gain` below is the FULL-
-velocity level (a hard hit); softer hits play quieter, spread over VELOCITY_DB_RANGE
-(see drumkit_runtime/decode.rs). See learnings/keith-mcmillen-softstep.org for how this works.
+standalone mode on exit (including Ctrl-C). Per-pad =gain= below is a scale on top
+of that pressure; the strike itself spreads over =gain_db_range= (see softstep.toml).
+See learnings/keith-mcmillen-softstep.org for how this works.
 Launch under pw-jack so the sampler shares the sound card via PipeWire:
 pw-jack cargo run --bin midi_pulse -- kmss-drumkit
 See rigs/kmss-drumkit.org for the full reference.
@@ -52,5 +52,5 @@ THIS press's own velocity against that sample's own pad's static gain trim
 ("a generalized double-bass pedal"); a ditto press does not itself become "the
 last hit" (pad, ditto, ditto repeats the same sample, it does not echo the
 ditto). Does nothing if nothing has played yet. See drumkit_runtime/mod.rs
-(`PadKind::Ditto`).
+(=PadKind::Ditto=).
 real crash (synth, CC0), not the 808 CY; fuller than the kit -> trimmed a bit
