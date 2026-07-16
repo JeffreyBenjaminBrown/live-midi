@@ -31,12 +31,18 @@ use audio::{Sampler, Trigger, VoiceId};
 use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecoder};
 use samples::DrumSample;
 
-/// A host runtime's tap on the pedal stream, called with `(printed label, down)` on
-/// every Fire (down) and Release (up). Returning `true` CONSUMES the event: the pad
-/// plays no sample for it (the surfaces runtime's feet-accrete mirror repurposes
-/// pads this way while its toggle is on). Releases are delivered too, but nothing
-/// sample-side listens to them.
-pub type PedalHook = Arc<dyn Fn(u8, bool) -> bool + Send + Sync>;
+/// A host runtime's tap on the pedal stream, called with `(softstep id, printed
+/// label, down)` on every Fire (down) and Release (up). Returning `true` CONSUMES the
+/// event: the pad plays no sample for it (the surfaces runtime's feet-accrete mirror
+/// repurposes pads this way while its toggle is on). Releases are delivered too, but
+/// nothing sample-side listens to them.
+///
+/// The id is the rig's `[[softsteps]] id`, and it is load-bearing once TWO boards are
+/// connected: the printed labels are the same on both, so `(1, true)` alone cannot
+/// say which board was pressed. One hook is shared by every device's timer thread, so
+/// without the id a rig that gives pedal 1 different jobs on different boards is
+/// undecidable.
+pub type PedalHook = Arc<dyn Fn(&str, u8, bool) -> bool + Send + Sync>;
 
 /// The most recently played (non-ditto) hit in a drumkit window: its sample and the
 /// source pad's static per-pad `gain` trim (NOT pressure-scaled), so a `Ditto` pad
@@ -247,10 +253,11 @@ pub fn start_with_hook(
       let decoder = Arc::clone(&decoder);
       let stop = Arc::clone(&stop);
       let hook = hook.clone();
+      let id = device_id.clone();
       std::thread::Builder::new()
         .name(format!("kmss-voices-{device_id}"))
         .spawn(move || {
-          run_voice_timer(decoder, pedal_map, stop, trace, params.gain_db_range, hook)
+          run_voice_timer(id, decoder, pedal_map, stop, trace, params.gain_db_range, hook)
         })?
     };
     timers.push((stop, timer));
@@ -356,6 +363,7 @@ fn resolve_revise(
 /// a voice at `pad.gain * gain_from_pressure(pressure)`; a `Revise` ramps that pad's
 /// current voice up to a higher pressure read later in the attack window.
 fn run_voice_timer(
+  device_id: String,
   decoder: Arc<Mutex<TetherDecoder>>,
   pad_map: [Option<PadBinding>; 10],
   stop: Arc<AtomicBool>,
@@ -381,7 +389,7 @@ fn run_voice_timer(
           let slot = (label % 10) as usize;
           // A hook that consumes the press owns this pedal for now: no sample, and
           // no stale voice left for a later Revise to re-gain.
-          if hook.as_ref().is_some_and(|h| h(label, true)) {
+          if hook.as_ref().is_some_and(|h| h(&device_id, label, true)) {
             if trace {
               eprintln!("[kmss]   pad {label} FIRE consumed by the host hook");
             }
@@ -423,7 +431,7 @@ fn run_voice_timer(
         // One-shot samples ignore releases; the hook (feet-accrete) needs them.
         DrumEvent::Release { label } => {
           if let Some(h) = hook.as_ref() {
-            let _ = h(label, false);
+            let _ = h(&device_id, label, false);
           }
         }
       }
@@ -507,6 +515,36 @@ fn print_device_summary(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// A `PedalHook` must be able to tell the two boards apart. The printed labels are
+  /// identical on both, and ONE hook Arc is cloned to every device's timer thread, so
+  /// before the id was threaded through, `(1, true)` from either board was the same
+  /// event -- and a rig giving pedal 1 different jobs per board was undecidable.
+  #[test]
+  fn the_hook_distinguishes_two_boards_pressing_the_same_label() {
+    let seen: Arc<Mutex<Vec<(String, u8, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let hook: PedalHook = {
+      let seen = Arc::clone(&seen);
+      Arc::new(move |device, label, down| {
+        seen.lock().unwrap().push((device.to_string(), label, down));
+        // Consume only the older board's pedal 1, to prove routing by device works.
+        device == "old" && label == 1
+      })
+    };
+
+    assert!(hook("old", 1, true), "the old board's pedal 1 should be consumed");
+    assert!(!hook("new", 1, true), "the NEW board's pedal 1 must NOT be consumed");
+    hook("new", 1, false);
+
+    assert_eq!(
+      *seen.lock().unwrap(),
+      vec![
+        ("old".to_string(), 1, true),
+        ("new".to_string(), 1, true),
+        ("new".to_string(), 1, false),
+      ],
+    );
+  }
 
   const DB_RANGE: f32 = 20.0;
 

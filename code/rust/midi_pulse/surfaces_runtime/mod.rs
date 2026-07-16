@@ -856,7 +856,12 @@ fn run(
       .position(|d| d.as_ref().is_some_and(|d| is_monobright(&d.id)))
       .unwrap_or(0);
     let other = (0..num_grids).find(|g| *g != older).unwrap_or(older);
+    // The mirror binds the FIRST declared board. With one softstep (every rig that
+    // uses this hook today) that is simply "the softstep"; naming it keeps a second
+    // board from mirroring the same pedals onto the same banks.
+    let mirror_board = rig.softsteps.first().map(|s| s.id.clone()).unwrap_or_default();
     let hook = feet_accrete_hook(
+      mirror_board,
       Arc::clone(&feet_accrete_on),
       [older, other],
       Arc::clone(&accrete),
@@ -1598,7 +1603,13 @@ fn feet_accrete_button(pedal: u8) -> Option<(usize, AccreteControlKind)> {
 /// that pedal's sample; a pedal whose toggle is off drums as usual. A pedal
 /// "press" is the decoder's Fire (down) and its Release (up), so holding pedal 3
 /// or 0 is exactly holding that bank's accrete button.
+/// `softstep_id` pins the mirror to ONE board. The two triples (1/2/3 and 8/9/0)
+/// distinguish the two GRIDS, not the two boards -- so with a second SoftStep
+/// connected its pedal 3 would otherwise mirror this board's pedal 3, both boards
+/// driving one bank. The rig-declared bindings supersede this hook; it stays for the
+/// existing single-board drums rig.
 fn feet_accrete_hook(
+  softstep_id: String,
   feet_accrete_on: Arc<Vec<AtomicBool>>,
   triple_banks: [usize; 2],
   accrete: Arc<Mutex<Vec<AccreteState>>>,
@@ -1607,7 +1618,10 @@ fn feet_accrete_hook(
   release_secs: f32,
   sample_rate: f32,
 ) -> drumkit_runtime::PedalHook {
-  Arc::new(move |pedal, down| {
+  Arc::new(move |device, pedal, down| {
+    if device != softstep_id {
+      return false;
+    }
     let Some((triple, button)) = feet_accrete_button(pedal) else {
       return false;
     };
@@ -2351,6 +2365,7 @@ mod tests {
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let hook = feet_accrete_hook(
+      "feet".to_string(),
       Arc::clone(&feet_on),
       [0, 1],
       Arc::clone(&accrete),
@@ -2361,20 +2376,29 @@ mod tests {
     );
 
     // Both toggles off: nothing is consumed; the pedals drum as usual.
-    assert!(!hook(3, true), "off: pedal 3 stays a drum pad");
+    assert!(!hook("feet", 3, true), "off: pedal 3 stays a drum pad");
     assert!(!accrete.lock().unwrap()[0].accreting());
 
     feet_on[0].store(true, Ordering::Relaxed);
+    // A DIFFERENT board's pedal 3 must not touch this board's bank, even with the
+    // toggle on: the printed labels are identical across boards, so only the device
+    // id separates them. Without this the second SoftStep would mirror onto grid 0's
+    // accrete bank the moment it was plugged in.
+    assert!(!hook("other-board", 3, true), "another board's pedal 3 is not mirrored");
+    assert!(
+      !accrete.lock().unwrap()[0].accreting(),
+      "another board's pedal 3 must not toggle this bank",
+    );
     // Unmapped pedals still drum even while on.
-    assert!(!hook(4, true), "pedal 4 (closed hat) is never mirrored");
+    assert!(!hook("feet", 4, true), "pedal 4 (closed hat) is never mirrored");
     // The other triple's grid is still off: its pedals keep drumming.
-    assert!(!hook(0, true), "pedal 0 drums while grid 1's toggle is off");
+    assert!(!hook("feet", 0, true), "pedal 0 drums while grid 1's toggle is off");
     // Pedal 3 = grid 0's accrete: default needs-holding is OFF, so a tap toggles the
     // mode -- and the activation captures held notes from grid 0's registry ONLY.
     held_all.lock().unwrap()[0].insert((2, 3), 44);
     held_all.lock().unwrap()[1].insert((7, 7), 51);
-    assert!(hook(3, true), "on: pedal 3 is consumed");
-    hook(3, false);
+    assert!(hook("feet", 3, true), "on: pedal 3 is consumed");
+    hook("feet", 3, false);
     assert!(accrete.lock().unwrap()[0].accreting(), "grid 0's accrete mode toggled by foot");
     assert!(!accrete.lock().unwrap()[1].accreting(), "grid 1's bank untouched");
     assert!(
@@ -2389,8 +2413,8 @@ mod tests {
     // Turn grid 1's toggle on, accrete a note there, then clear it from pedal 8:
     // only grid 1's bank and drone are cleared.
     feet_on[1].store(true, Ordering::Relaxed);
-    assert!(hook(0, true), "pedal 0 = grid 1's accrete, now consumed");
-    hook(0, false);
+    assert!(hook("feet", 0, true), "pedal 0 = grid 1's accrete, now consumed");
+    hook("feet", 0, false);
     let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
     let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
     a.note_on((5, 5), 20, Timbre::default(), None);
@@ -2398,8 +2422,8 @@ mod tests {
     b.note_on((6, 6), 31, Timbre::default(), None);
     b.sustain_note((6, 6), 31);
     accrete.lock().unwrap()[1].note_played(31);
-    assert!(hook(8, true), "pedal 8 = grid 1's clear, consumed");
-    hook(8, false);
+    assert!(hook("feet", 8, true), "pedal 8 = grid 1's clear, consumed");
+    hook("feet", 8, false);
     let v = voices.lock().unwrap();
     for (src, state) in v.iter() {
       let VoiceSource::Accreted { chord, .. } = src else { continue };
