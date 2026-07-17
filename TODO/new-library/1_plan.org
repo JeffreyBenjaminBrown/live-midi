@@ -102,26 +102,44 @@ Every claim the old type made falsely, this one makes structurally:
 =SUSTAIN_BASE= and =RETIRED_BASE= disappear entirely, along with the arithmetic that
 decoded them.
 
-* TODO the one decision I will not guess at
-Burying =midi_pulse= is easy. Deciding what happens to the seven other runtimes is not,
-and it is yours.
+* DONE where the old code goes
+Jeff: "re. bury, please keep it compiling, just in folders separate from this stuff.
+'rust' is a dumb folder name; I shouldn't have done that."
 
-Three options:
+So burying means option 1: the old crate keeps compiling and keeps running the looper,
+piano, un-12 and drums rigs. Nothing is lost, and the seven runtimes this instrument
+does not use simply stop being in the way.
 
-1. Bury and keep building. =buried/= holds the old crate, still compiling, still
-   running the looper / piano / un-12 / drums rigs. The new library serves this rig
-   only. Nothing is lost; the codebase carries two synths.
-2. Bury and let it rot. Same move, but the old rigs are not maintained. They work
-   until they do not.
-3. Bury and delete. The other rigs go. The looper alone is a large feature you
-   designed in detail, so I will not propose this, but it is on the table if you have
-   moved on from them.
+The cost is worth naming once, because it is the failure this repo already has a scar
+from: two synths now exist, and a fix to the oscillator has to land in both or they
+diverge. That is exactly what produced =select_input_port='s twin copies, and the bug
+that followed took a hardware session to find. The mitigation is that =buried/= is
+finished rather than parallel. If a fix is needed in both, that is a signal the new
+library should have cannibalized the thing rather than copied it.
 
-My read: you have played the looper and the drums rigs, and =TODO/DONE/= shows real
-design work in both, so (1) is what "bury" should mean unless you say otherwise. But
-(1) has a cost worth naming: two synths, and any fix to the oscillator has to land in
-both or diverge. That is the exact failure that produced =select_input_port='s twin
-copies and the bug that followed.
+** TODO what replaces "rust" as a folder name
+Jeff is right, and the reason he is right is worth stating: =code/rust/= sorts by
+language, which is the one axis nobody ever searches on. Nobody opens a repo asking
+"what here is Rust?". They ask "where is the instrument?" or "where is the softstep
+decoder?". The current tree answers neither, and it puts =code/python/= beside
+=code/rust/= as though the language were the category.
+
+I would sort by what a thing IS, and put the language nowhere:
+
+: buried/            the old crate, still compiling, no longer in the way
+: edo_surface/       the instrument this rig runs
+: rigs/              the .org rigs and their readmes
+: tools/             the meters, probes and one-off binaries
+: learnings/         unchanged
+: TODO/              unchanged
+
+That reads as: one instrument, its rigs, its tools, and a graveyard. =code/python/='s
+contents are tools (the softstep meter, the pedal bridge), so they land in =tools/=
+beside the Rust ones, sorted by what they do rather than what they are written in.
+
+This is a decision about your repo rather than about the code, so it is yours. It is
+also cheap to defer: I can build =edo_surface= where it is and move the tree once, later,
+in a single commit.
 
 * the order of work
 Edit and sustain are being re-specified as I write this, so their logic lands last;
