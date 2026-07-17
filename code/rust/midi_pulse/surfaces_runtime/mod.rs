@@ -882,11 +882,13 @@ fn run(
       .collect(),
   ));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
-  // Each grid's edit-mode pitches, published OUT of its thread the way `held_all` and
-  // `sounding` are -- the pedal hook needs them: a pulse pedal retunes the edited
-  // notes when there are any, and moves the grid's factor when there are not.
-  let edit_pitches: Arc<Mutex<Vec<HashSet<i32>>>> =
-    Arc::new(Mutex::new(vec![HashSet::new(); num_grids]));
+  // Each grid's edit-mode state, SHARED rather than owned by its grid thread -- the
+  // pedal hook both reads it (a pulse pedal retunes the edited notes when there are
+  // any) and writes it (`clear` must dismiss them, or it silences a note and leaves it
+  // dancing). Same shape as `accrete`, which it is inseparable from: entering edit
+  // mode sustains a pitch in that bank, so the two must not disagree about what rings.
+  let edit: Arc<Mutex<Vec<edit::EditState>>> =
+    Arc::new(Mutex::new((0..num_grids).map(|_| edit::EditState::new()).collect()));
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
@@ -920,6 +922,7 @@ fn run(
         Arc::clone(&accrete),
         Arc::clone(&held_all),
         Arc::clone(&voices),
+        Arc::clone(&edit),
         s.release,
         audio.sample_rate,
       )
@@ -931,7 +934,7 @@ fn run(
         Arc::clone(&held_all),
         Arc::clone(&voices),
         Arc::clone(&poly),
-        Arc::clone(&edit_pitches),
+        Arc::clone(&edit),
         s.tap_window,
         s.release,
         audio.sample_rate,
@@ -1016,8 +1019,7 @@ fn run(
       tap_window: s.tap_window,
       live: Arc::clone(&live),
       slide: SlideCandidates::new(),
-      edit: edit::EditState::new(),
-      edit_pitches: Arc::clone(&edit_pitches),
+      edit: Arc::clone(&edit),
       started: Instant::now(),
       slide_window: s.slide_window,
       slide_duration_secs: s.slide_duration_secs,
@@ -1142,9 +1144,7 @@ struct GridThread {
   slide: SlideCandidates,
   /// Which of THIS grid's pitches are in per-voice edit mode. Grid-local and
   /// pitch-keyed: never mirrored to the other grid, never octave-duplicated.
-  edit: edit::EditState,
-  /// The shared mirror of `edit`, so the pedal hook can see it from another thread.
-  edit_pitches: Arc<Mutex<Vec<HashSet<i32>>>>,
+  edit: Arc<Mutex<Vec<edit::EditState>>>,
   /// When this runtime started. The diamond dance's phase is a pure function of
   /// elapsed time from here, so every dance on the instrument turns in step -- that
   /// is the whole reason a skipped corner is not allowed to retime its dance.
@@ -1283,8 +1283,13 @@ fn grid_thread(mut rt: GridThread) {
     // plus its own sustained pitches: local, never mirrored from the other grid and
     // never octave-duplicated, unlike everything else painted here.
     let elapsed = rt.started.elapsed();
+    // Snapshot under the lock, then draw: the pedal hook writes this too (`clear`).
+    let edited: Vec<i32> = {
+      let states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+      states[rt.grid_index].pitches().collect()
+    };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
-    for pitch in rt.edit.pitches() {
+    for pitch in edited.iter().copied() {
       // A pitch can occupy TWO cells on one grid, and Jeff wants both to dance
       // ("sometimes there are two monome buttons representing exactly the same
       // pitch"). So dance every cell that sounds it, not just the first.
@@ -1306,7 +1311,7 @@ fn grid_thread(mut rt: GridThread) {
         let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
         banks[rt.grid_index].sustained_pitches().collect()
       };
-      dance::off_screen(rt.edit.pitches().chain(sustained), lo, hi)
+      dance::off_screen(edited.iter().copied().chain(sustained), lo, hi)
     } else {
       dance::OffScreen::default()
     };
@@ -1727,6 +1732,7 @@ fn feet_accrete_button(pedal: u8) -> Option<(usize, AccreteControlKind)> {
 /// connected its pedal 3 would otherwise mirror this board's pedal 3, both boards
 /// driving one bank. The rig-declared bindings supersede this hook; it stays for the
 /// existing single-board drums rig.
+#[allow(clippy::too_many_arguments)]
 fn feet_accrete_hook(
   softstep_id: String,
   feet_accrete_on: Arc<Vec<AtomicBool>>,
@@ -1734,6 +1740,7 @@ fn feet_accrete_hook(
   accrete: Arc<Mutex<Vec<AccreteState>>>,
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: Arc<Mutex<VoiceMap>>,
+  edit: Arc<Mutex<Vec<edit::EditState>>>,
   release_secs: f32,
   sample_rate: f32,
 ) -> drumkit_runtime::PedalHook {
@@ -1753,7 +1760,7 @@ fn feet_accrete_hook(
       return false;
     }
     drive_accrete(
-      grid, button, down, &accrete, &held_all, &voices, release_secs, sample_rate,
+      grid, button, down, &accrete, &held_all, &voices, &edit, release_secs, sample_rate,
     )
   })
 }
@@ -1772,6 +1779,7 @@ fn drive_accrete(
   accrete: &Arc<Mutex<Vec<AccreteState>>>,
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: &Arc<Mutex<VoiceMap>>,
+  edit: &Arc<Mutex<Vec<edit::EditState>>>,
   release_secs: f32,
   sample_rate: f32,
 ) -> bool {
@@ -1794,6 +1802,15 @@ fn drive_accrete(
   }
   if button == AccreteControlKind::Clear && down {
     synth::release_sustained_voices(voices, grid, release_secs, sample_rate);
+    // Clear silences this grid's drones -- including any note being edited, since
+    // edit mode sustains through this same bank. Leaving those in edit mode strands
+    // them: silent notes still dancing, still forcing every press to drag. Jeff hit
+    // exactly that ("sustain two, edit one, clear both -> a dancing ghost that won't
+    // go away and blocks all sound").
+    //
+    // Clear is the panic button: it must leave the grid playable. Nothing needs
+    // releasing here -- the voices are already going.
+    edit.lock().unwrap_or_else(|e| e.into_inner())[grid].clear();
   }
   if activated.accrete {
     capture_grid_held_into(held_all, accrete, grid);
@@ -1873,7 +1890,7 @@ fn rig_pedal_hook(
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: Arc<Mutex<VoiceMap>>,
   poly: Arc<Mutex<PolyrhythmState>>,
-  edit_pitches: Arc<Mutex<Vec<HashSet<i32>>>>,
+  edit: Arc<Mutex<Vec<edit::EditState>>>,
   tap_window: Duration,
   release_secs: f32,
   sample_rate: f32,
@@ -1884,7 +1901,7 @@ fn rig_pedal_hook(
     };
     match *action {
       PedalAction::Accrete { grid, control } => drive_accrete(
-        grid, control, down, &accrete, &held_all, &voices, release_secs, sample_rate,
+        grid, control, down, &accrete, &held_all, &voices, &edit, release_secs, sample_rate,
       ),
       // Tap and the factor buttons are key-down only, like their on-grid twins. The
       // press is still CONSUMED on key-up, or the pedal would drum on release.
@@ -1903,11 +1920,11 @@ fn rig_pedal_hook(
           //
           // =1 is never an edit control -- Jeff: "the only edit controls are (*) and
           // (/), not (=)" -- so it always goes to the factor/switch dance.
-          let edited: HashSet<i32> = edit_pitches
+          let edited: HashSet<i32> = edit
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(grid)
-            .cloned()
+            .map(|e| e.pitches().collect())
             .unwrap_or_default();
           match pulse_ratio(factor) {
             Some(ratio) if !edited.is_empty() => {
@@ -1997,62 +2014,69 @@ fn handle_edit_press(
   };
   let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
 
-  let decision = rt.edit.classify(pitch_above, pitch, is_sounding);
-  let fall_through = match decision {
-    edit::Press::Play => true,
-    edit::Press::EnterEdit { pitch } => {
-      // An edited note keeps sounding whether or not a finger stays on it
-      // (`1_vision`: "even if the note in edit mode was being fingered rather than
-      // sustained, it will continue to sound until exiting edit mode"). Sustaining it
-      // in the accrete bank -- rather than in some parallel set -- means the release
-      // path, the bright LEDs and `clear` all treat it like any other ringing note.
-      //
-      // `sustain_pitch` reports whether WE are now the reason it rings; a note the
-      // pedal already accreted has its own reason and must survive our exit.
-      let owns = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-        .sustain_pitch(pitch);
-      rt.edit.enter(pitch, owns);
-      false
+  // Decide under the edit lock and act after it drops: the accrete lock is taken by
+  // both branches below, and this module's rule is no nested locks. `owns` therefore
+  // comes from the snapshot above rather than from a second accrete lock.
+  enum Act {
+    Play,
+    Entered(i32),
+    Exited(i32, bool),
+    Dragged(i32, i32),
+  }
+  let act = {
+    let mut states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+    let e = &mut states[rt.grid_index];
+    match e.classify(pitch_above, pitch, is_sounding) {
+      edit::Press::Play => Act::Play,
+      edit::Press::EnterEdit { pitch } => {
+        // An edited note keeps sounding whether or not a finger stays on it
+        // (`1_vision`). It was already ringing on its own iff the bank had it.
+        e.enter(pitch, !sustained.contains(&pitch));
+        Act::Entered(pitch)
+      }
+      edit::Press::ExitEdit { pitch } => {
+        let owned = e.exit(pitch);
+        Act::Exited(pitch, owned)
+      }
+      edit::Press::Drag { from, to } => {
+        e.moved(from, to);
+        Act::Dragged(from, to)
+      }
     }
-    edit::Press::ExitEdit { pitch } => {
-      // Leaving edit mode takes away the reason WE gave it to ring, and only that:
-      // silence it iff nothing else is holding it up (Jeff: "pressing the button just
-      // below should silence it, and its ghost should not be in edit mode any more").
-      if rt.edit.exit(pitch) {
+  };
+
+  match act {
+    Act::Play => return true,
+    Act::Entered(pitch) => {
+      // Sustain it in the accrete bank rather than a parallel set, so the release
+      // path, the bright LEDs and `clear` all treat it like any other ringing note.
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].sustain_pitch(pitch);
+    }
+    Act::Exited(pitch, owned) => {
+      // Take back only the reason edit mode gave it: a note that was already accreted
+      // keeps its own, and a finger still on it is its own too (and then there is no
+      // drone to cut -- that voice is keyed by cell and dies on the ordinary release).
+      if owned {
         rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].drop_pitch(pitch);
-        // A finger still on it is its own reason -- and then there is no drone to cut
-        // anyway; the voice is keyed by cell and dies on the ordinary release.
         if !held.values().any(|p| *p == pitch) {
           rt.sink.cut_sustained(pitch);
         }
       }
-      false
     }
-    edit::Press::Drag { from, to } => {
-      // Find the voice carrying `from` and glide it. The voice is keyed by the cell
-      // it was STRUCK on, which is not where its pitch now lives, so search `held`.
+    Act::Dragged(from, to) => {
       if let Some(cell) = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c) {
         rt.sink.glide_voice_to(cell, to, rt.slide_duration_secs);
       } else {
-        // A sustained (fingerless) edited note: its voice is the drone.
         rt.sink.glide_sustained_to(from, to, rt.slide_duration_secs);
       }
-      rt.edit.moved(from, to);
       // Accrete and the trail both track PITCHES, so a moved note has to be re-filed
       // under its new one -- otherwise a clear would miss it, and the trail would keep
-      // showing a pitch that is no longer sounding (2_discussion 2b).
+      // showing a pitch that is no longer sounding.
       rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_moved(from, to);
       push_trail(&rt.trail, to.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
-      false
-    }
-  };
-  if !fall_through {
-    let mut e = rt.edit_pitches.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(slot) = e.get_mut(rt.grid_index) {
-      *slot = rt.edit.pitches().collect();
     }
   }
-  fall_through
+  false
 }
 
 /// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the
@@ -2897,6 +2921,71 @@ mod tests {
   /// `needs_holding` switch, so its banks came up in the toggle DEFAULT -- one tap and
   /// every later note sustained with his foot off the pedal. The rig's readme promises
   /// momentary; this asserts the rig actually delivers it.
+  /// Jeff's repro, at the level it actually broke: sustain two notes, edit one, then
+  /// press CLEAR. The clear silences both drones -- and used to leave the edited pitch
+  /// in edit mode with no voice, dancing forever and forcing every press to drag.
+  ///
+  /// The unit test covers the state machine; this covers the wiring, which is where
+  /// the bug was: `clear` reaching `EditState` at all.
+  #[test]
+  fn clearing_a_bank_dismisses_that_grids_edit_mode() {
+    use crate::types::{Timbre, VoiceSource};
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary(), AccreteState::new_momentary()]));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
+
+    // Two notes, both sustained on grid 0 (Jeff: "press two buttons, sustain them
+    // both"), and one of them put into edit mode.
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
+      a.note_on(cell, pitch, Timbre::default(), None);
+      a.sustain_note(cell, pitch);
+      accrete.lock().unwrap()[0].sustain_pitch(pitch);
+    }
+    edit.lock().unwrap()[0].enter(20, false); // already accreted -> not ours
+    assert!(edit.lock().unwrap()[0].any());
+
+    // Clear that grid's bank.
+    assert!(drive_accrete(
+      0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+    ));
+
+    // The drones are going...
+    let v = voices.lock().unwrap();
+    for (src, state) in v.iter() {
+      if matches!(src, VoiceSource::Accreted { chord, .. } if *chord == synth::SUSTAIN_BASE) {
+        assert!(state.target_env <= 0.0, "clear should be releasing this drone");
+      }
+    }
+    drop(v);
+    // ...and, the point: nothing is left dancing, so the grid plays again.
+    assert!(
+      !edit.lock().unwrap()[0].any(),
+      "clear silenced the notes; leaving one in edit mode strands the grid",
+    );
+    assert!(accrete.lock().unwrap()[0].sustained_pitches().next().is_none());
+  }
+
+  /// Clear is per-bank, so it must not dismiss the OTHER grid's edit mode.
+  #[test]
+  fn clearing_one_bank_leaves_the_other_grids_edit_mode_alone() {
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary(), AccreteState::new_momentary()]));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
+    edit.lock().unwrap()[0].enter(10, true);
+    edit.lock().unwrap()[1].enter(20, true);
+
+    drive_accrete(
+      0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+    );
+    assert!(!edit.lock().unwrap()[0].any(), "grid 0 cleared");
+    assert!(edit.lock().unwrap()[1].any(), "grid 1's edit mode is its own business");
+  }
+
   #[test]
   fn the_two_softstep_rigs_accrete_is_momentary_not_toggle() {
     use midi_pulse::rig::{AccreteControlKind, SoftstepWindowRig};
@@ -3018,6 +3107,8 @@ mod tests {
     let accrete = Arc::new(Mutex::new(vec![AccreteState::new(), AccreteState::new()]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
     let hook = feet_accrete_hook(
       "feet".to_string(),
       Arc::clone(&feet_on),
@@ -3025,6 +3116,7 @@ mod tests {
       Arc::clone(&accrete),
       Arc::clone(&held_all),
       Arc::clone(&voices),
+      Arc::clone(&edit),
       0.05,
       48000.0,
     );

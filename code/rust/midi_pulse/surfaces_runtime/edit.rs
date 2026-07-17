@@ -91,12 +91,20 @@ impl EditState {
     sounding: impl Fn(i32) -> bool,
   ) -> Press {
     if let Some(above) = pitch_above {
+      // Exiting must NOT depend on the note being audible. Anything that silences an
+      // edited note out from under us -- `clear` does exactly this -- would otherwise
+      // strand it: it keeps dancing, `any()` stays true so every press drags instead
+      // of playing, and the one gesture that could dismiss it is the one gesture the
+      // silence disabled. The grid becomes unplayable with no way out.
+      //
+      // So an edit-mode note is always dismissable, sounding or not. That makes "no
+      // inescapable state" true by construction, rather than by every future silencer
+      // remembering to clean up after itself.
+      if self.is_editing(above) {
+        return Press::ExitEdit { pitch: above };
+      }
       if sounding(above) {
-        return if self.is_editing(above) {
-          Press::ExitEdit { pitch: above }
-        } else {
-          Press::EnterEdit { pitch: above }
-        };
+        return Press::EnterEdit { pitch: above };
       }
     }
     match self.nearest(pressed_pitch) {
@@ -339,5 +347,79 @@ mod tests {
     e.enter(20, true);
     assert!(e.exit(20));
     assert!(!e.exit(20), "already reclaimed");
+  }
+
+  // ---- no inescapable state ----
+
+  /// Jeff's repro: "press two buttons, sustain them both, put one into edit mode,
+  /// then clear both. Now I have a dancing ghost that won't go away and blocks all
+  /// sound."
+  ///
+  /// `clear` silences the drones but knows nothing about edit mode, so the pitch was
+  /// left edited with no voice. It kept dancing; `any()` stayed true so every press
+  /// dragged instead of playing; and the exit gesture required the note to be
+  /// SOUNDING -- which the clear had just made false. The one way out was the one
+  /// thing the bug disabled.
+  #[test]
+  fn a_silenced_note_can_still_be_dismissed_from_edit_mode() {
+    let mut e = EditState::new();
+    e.enter(20, false); // it was already accreted, as in Jeff's repro
+    // ...clear happens: the note is silenced, nothing sounds any more.
+    let silent = |_: i32| false;
+    assert_eq!(
+      e.classify(Some(20), 21, silent),
+      Press::ExitEdit { pitch: 20 },
+      "a silent edited note must still be dismissable, or the grid is stuck forever",
+    );
+    e.exit(20);
+    assert!(!e.any(), "and dismissing it frees the grid");
+  }
+
+  /// The grid must be playable again the moment nothing is edited.
+  #[test]
+  fn dismissing_the_last_ghost_restores_ordinary_play() {
+    let mut e = EditState::new();
+    e.enter(20, false);
+    let silent = |_: i32| false;
+    assert!(matches!(e.classify(None, 40, silent), Press::Drag { .. }), "stuck while edited");
+    e.exit(20);
+    assert_eq!(e.classify(None, 40, silent), Press::Play, "playable again");
+  }
+
+  /// `clear` dismisses every ghost at once -- it is the panic button, so it must
+  /// leave the grid playable rather than half-stuck.
+  #[test]
+  fn clearing_edit_mode_leaves_no_ghost_behind() {
+    let mut e = EditState::new();
+    e.enter(10, false);
+    e.enter(20, true);
+    e.clear();
+    assert!(!e.any());
+    assert_eq!(e.classify(None, 40, |_| false), Press::Play);
+  }
+
+  /// The general guarantee, not just Jeff's path: whatever silenced it and however it
+  /// got there, an edited pitch is always dismissable by the cell below it.
+  #[test]
+  fn every_edited_pitch_is_dismissable_regardless_of_what_is_sounding() {
+    for owned in [true, false] {
+      for sounds in [true, false] {
+        let mut e = EditState::new();
+        e.enter(20, owned);
+        assert_eq!(
+          e.classify(Some(20), 21, |p| sounds && p == 20),
+          Press::ExitEdit { pitch: 20 },
+          "owned={owned} sounding={sounds}: must be dismissable",
+        );
+      }
+    }
+  }
+
+  /// ...but a note that is merely SILENT and not edited is still just a note: the
+  /// trigger must not fire on nothing.
+  #[test]
+  fn the_cell_under_a_silent_unedited_note_is_still_an_ordinary_press() {
+    let e = EditState::new();
+    assert_eq!(e.classify(Some(20), 21, |_| false), Press::Play);
   }
 }
