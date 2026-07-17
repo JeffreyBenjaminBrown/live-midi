@@ -135,6 +135,23 @@ the *next* way to silence a note. So the exit trigger no longer depends on audib
 at all: an edited pitch is always dismissable. "No inescapable state" is now true by
 construction rather than by every future silencer remembering the rule.
 
+** the bug shape that keeps recurring: a fact recorded in two places
+Three of the hardware bugs are the same shape underneath, and it is worth naming
+because it will recur:
+
+*A thing that is true is written down twice, and one copy is not updated.*
+- =held= says what a finger sounds; the drag moved a voice and didn't re-file it, so
+  releasing looked up the pitch the note USED to be and cut a note it should have kept.
+- =voice_key= packs a CELL into the field a drone uses for its PITCH, so selecting
+  voices by pitch silently matched only drones.
+- edit mode's ring was recorded both in =EditState= and (via =owned=) in the accrete
+  set, and =clear= updated one of them.
+
+The third is now gone by construction: the three reasons a note rings (finger,
+sustain, edit) are orthogonal, each owned by exactly one place. The other two are
+documented in Claude's memory, because they are *representation* traps -- no test
+catches them, only knowing.
+
 ** what the hardware found that 400 tests did not
 Three bugs in the first minutes of playing, none of them subtle, all of them in code
 with thorough unit tests. The pattern is identical each time: every test asserted a
