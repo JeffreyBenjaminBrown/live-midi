@@ -2333,8 +2333,8 @@ mod tests {
       s.replace(from, to)
     }
     let edited = must_replace(&source, "amplitude = 0.15", "amplitude = 0.25");
-    let edited = must_replace(&edited, "edo = 58", "edo = 41");
-    let edited = must_replace(&edited, "x_step = 8", "x_step = 7");
+    let edited = must_replace(&edited, "edo = 46", "edo = 41");
+    let edited = must_replace(&edited, "x_step = 9", "x_step = 7");
     let edited = must_replace(
       &edited, WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0",
     );

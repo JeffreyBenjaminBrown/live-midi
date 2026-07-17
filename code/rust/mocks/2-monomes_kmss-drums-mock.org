@@ -31,8 +31,8 @@ within this many ms...
 Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
 ** ELEM tunings
 *** PARAM id = "main"
-*** PARAM edo = 58
-*** PARAM x_step = 8
+*** PARAM edo = 46
+*** PARAM x_step = 9
 *** PARAM y_step = 1
 *** PARAM fundamental_hz = 80
 ** ELEM timbres
