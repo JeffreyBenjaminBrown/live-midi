@@ -28,6 +28,7 @@ mod dance;
 mod edit;
 mod grid;
 mod polyrhythm;
+mod pulse_window;
 mod readout;
 mod slide;
 mod synth;
@@ -806,6 +807,15 @@ fn run(
   // The polyrhythm state (tap tempo + factor): one instrument-wide machine, both
   // grids' pads.
   let poly = Arc::new(Mutex::new(PolyrhythmState::new(num_grids)));
+  // The on-screen pulse window (phase 9, `TODO/many/3_plan.org`): the =1 LED and
+  // the tap cell's blink moved off the grid onto the feet, so this is the only
+  // place left to see the pulse state. Skipped entirely on a drums-only bring-up
+  // (`plan.any_grid()` false) -- there is no grid's pulse to show. Optional and
+  // non-fatal: `pulse_window::spawn` never blocks, and a window that can't open
+  // just warns once and leaves the rest of the instrument running.
+  if plan.any_grid() {
+    pulse_window::spawn(Arc::clone(&poly), num_grids);
+  }
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {

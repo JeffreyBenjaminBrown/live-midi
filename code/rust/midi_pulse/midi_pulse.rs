@@ -7,6 +7,12 @@ use midi_pulse::midi;
 use std::sync::mpsc;
 use std::{io, thread};
 
+// The shared 5x7 bitmap font (`edo12n_gui`'s original digit glyphs plus the
+// letters/symbols the surfaces pulse window needs); declared at the crate root so
+// both branches of the module tree can reach it via `crate::bitmap_font`.
+#[path = "bitmap_font.rs"]
+mod bitmap_font;
+
 #[path = "monome_edo_midi_runtime.rs"]
 mod monome_edo_midi_runtime;
 #[path = "edo12n_piano_monome_runtime.rs"]

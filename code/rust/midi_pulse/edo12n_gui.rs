@@ -5,6 +5,7 @@ use std::sync::mpsc;
 
 use super::{GRID_ROWS, GRID_COLS, GRID_ANCHOR, GRID_ROW_STEP,
             WHITE_KEYS, pitch_class_shifts};
+use crate::bitmap_font::{self, GLYPH_H};
 
 pub const CELL_W: usize = 90;
 pub const CELL_H: usize = 75;
@@ -12,52 +13,16 @@ pub const BORDER_W: usize = 7;
 pub const WIN_W: usize = GRID_COLS * CELL_W;
 pub const WIN_H: usize = GRID_ROWS * CELL_H;
 
-// 5x7 bitmap font for digits 0-9 and minus sign.
-// Each glyph is [u8; 7], lower 5 bits per row.
-const GLYPHS: [[u8; 7]; 11] = [
-  [ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 ], // 0
-  [ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 ], // 1
-  [ 0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111 ], // 2
-  [ 0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110 ], // 3
-  [ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 ], // 4
-  [ 0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110 ], // 5
-  [ 0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110 ], // 6
-  [ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 ], // 7
-  [ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 ], // 8
-  [ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110 ], // 9
-  [ 0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000 ], // minus (index 10)
-];
-
-const SCALE: usize = 4; // each glyph pixel = 4x4 screen pixels
-const GLYPH_W: usize = 5 * SCALE; // 20
-const GLYPH_H: usize = 7 * SCALE; // 28
-
-fn draw_glyph(buf: &mut [u32], buf_w: usize,
-              glyph_idx: usize, x0: usize, y0: usize, color: u32) {
-  let glyph: &[u8; 7] = &GLYPHS[glyph_idx];
-  for row in 0..7 {
-    for col in 0..5 {
-      if glyph[row] & (1 << (4 - col)) != 0 {
-        for sy in 0..SCALE {
-          for sx in 0..SCALE {
-            let px: usize = x0 + col * SCALE + sx;
-            let py: usize = y0 + row * SCALE + sy;
-            if px < buf_w && py < WIN_H {
-              buf[py * buf_w + px] = color; }} }} }} }
-
+// The 5x7 bitmap font (digits + minus) now lives in `bitmap_font`, shared with the
+// surfaces pulse window (`TODO/many/3_plan.org` phase 9) so the glyph-plotting code
+// is written once. `draw_number` below draws pixel-identical output to before.
 fn draw_number(buf: &mut [u32], buf_w: usize,
                cell_x: usize, cell_y: usize, value: i8, color: u32) {
   let s: String = format!("{}", value);
-  let glyphs: Vec<usize> = s.chars().map(|c: char| match c {
-    '-' => 10,
-    d   => (d as usize) - ('0' as usize),
-  }).collect();
-  let total_w: usize = glyphs.len() * GLYPH_W
-                        + (glyphs.len().saturating_sub(1)); // 1px gap
+  let total_w: usize = bitmap_font::text_width(&s);
   let x0: usize = cell_x + (CELL_W.saturating_sub(total_w)) / 2;
   let y0: usize = cell_y + (CELL_H.saturating_sub(GLYPH_H)) / 2;
-  for (i, &gi) in glyphs.iter().enumerate() {
-    draw_glyph(buf, buf_w, gi, x0 + i * (GLYPH_W + 1), y0, color); }}
+  bitmap_font::draw_text(buf, buf_w, WIN_H, &s, x0, y0, color); }
 
 fn render_grid(buf: &mut [u32],
                held_count: &[u8; 12]) {
