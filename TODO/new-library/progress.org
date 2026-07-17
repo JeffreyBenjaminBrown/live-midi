@@ -51,23 +51,32 @@ at one pitch, and you press above: I end both, on the same "nothing distinguishe
 logic you used for edit. Easily reversed, and recorded below rather than beeped.
 
 * what is done
+- Your two renames are through the live code and its docs: the factored pulse, and the
+  tempo factor. =tempo_am_freq= and =tempo_am_phase= on a voice became
+  =factored_pulse_freq= and =factored_pulse_phase=, =FactorButton= became
+  =TempoFactorButton=, and the on-screen readout now says "factored pulse ON". The
+  suite stayed green throughout.
+- The folder move you approved is running: =buried/=, =edo_surface/=, =rigs/=,
+  =tools/=, with =learnings/= and =TODO/= untouched.
 - =edo_surface= exists as its own crate, and cargo enforces that it cannot see
   =midi_pulse=. I checked that by trying to import from it and confirming the build
   fails, rather than by trusting the manifest.
 - =voice.rs= holds the identity model: VoiceId, Voice, Held, Voices, and the indexes.
   22 tests, including your story walked end to end.
-- The two glossary renames are in flight in the old crate, which is where the live rig
-  still runs.
+- =tuning.rs= holds the pitch arithmetic, cannibalized from =edo_play=. 11 tests.
+
 
 * what's imperfect about what's done
 ** the old crate is still the instrument
 Everything you played tonight runs on =midi_pulse/surfaces_runtime=. =edo_surface= is
 one module and no runtime. Nothing you press touches it yet.
 
-** the folder move has not happened
-You approved =buried/=, =edo_surface/=, =rigs/=, =tools/=. The new crate is sitting at
-=code/rust/edo_surface/=, which is the very path the layout deletes. Moving it is one
-commit and I would rather do it once, when the tree moves.
+** the renames touched code that is about to be buried
+Propagating the factored pulse and the tempo factor through =midi_pulse= is churn on a
+crate that =buried/= is swallowing. I did it anyway, because that crate is still the
+instrument you play, and because the new library cannibalizes those modules -- so the
+names had to be right somewhere before they were copied. It does mean the diff is
+larger than the idea.
 
 * choices determining the future, recorded rather than asked
 Per =when-to-stop.org=: these were easily reversed, so I took them.
