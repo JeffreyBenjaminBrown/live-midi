@@ -1,0 +1,124 @@
+#+title: Glossary for the new library
+#+date: 2026-07-17
+
+Every term the new library is allowed to use, with the one meaning it is allowed to
+have. A word that is not here, or that is used here for two things, is a bug waiting to
+be filed.
+
+The rule this came from: a name that needs a paragraph of explanation is a defect, and
+the fix is the name rather than the paragraph.
+
+* the words that were doing too much
+
+** monomekey
+One button on a monome grid, addressed as =(x, y)=. This is the only sense of "key"
+the library uses. A hash map does not have "keys" in this codebase's prose; it has
+monomekeys nowhere near it, and its lookups are described by the type they take.
+
+The old code called a button a =MonomeKey= and also called =voice_key()= a key and also
+spoke of the =pitch= "key" of a drone. Three meanings, one word.
+
+** chord
+A stored set of pitches that a chord button emits. It is a real feature, and it lives
+in the sawwave runtime (=AppState.chords=, =chord_slot_buttons=, =chord_wipe_button=).
+
+This rig has no chords. The word must not appear in the new library at all. Where the
+old code wrote =chord=, it meant "which grid, and which kind of voice", and the new
+=Voice= enum says that in its variants instead.
+
+** accrete
+To add a played note to the sustained set while a pedal is held. The word is accurate:
+the set grows by accumulation, note by note, as you play. It stays.
+
+Accrete is the verb; sustain is the state it produces.
+
+* the instrument
+
+** grid
+One 16x16 monome, the whole of it a 46-EDO play surface. This rig has two, and each
+carries its own voices, its own scroll register, and its own edit state.
+
+** LOM, RNM
+The left/older monome and the right/newer monome. LOM is the monobright Series 256
+(serial =m256-282=), and it cannot dim a single LED, so it fakes dim by flashing fast.
+RNM is varibright (serial =m0000102=). The rig pins each by serial, so which physical
+grid is which never depends on plug order.
+
+** OSS, NSS
+The old SoftStep (ALSA client =SSCOM=) and the new one (=SoftStep=). OSS carries
+sustain and the tap tempo. NSS carries the pulse, and it sits rotated 180 degrees,
+which the code never learns: it binds printed pedal labels, and the rotation only
+explains why the map reads mirrored.
+
+** register
+A per-grid offset added to every monomekey's step, so the same monomekey sounds a
+different pitch after a scroll. The shift pad moves it.
+
+** pitch
+An absolute step in the tuning, octave included. Distinct from a pitch class.
+
+** pitch class
+A pitch modulo the EDO. The LEDs mostly work in pitch classes, because a sounding note
+lights all its octave-equivalents. The diamond dance is the one exception.
+
+* sounding
+
+** voice
+One thing the synth is sounding, and one entry in the voice map. A voice owns its own
+frequency, envelope, timbre, gain, glide and pulse, so moving or retuning one never
+touches another.
+
+** fingered voice
+A voice under a finger, identified by the monomekey it was struck on. It is not
+identified by pitch, because a per-voice edit can move its pitch away from that
+monomekey's own pitch.
+
+** drone
+A voice ringing with no finger on it, identified by its pitch. Sustain and edit both
+name pitches, so a drone is what they can address.
+
+** fading voice
+A cut voice ramping to silence over its release. Nothing ever looks one up.
+
+** ringing
+A pitch is ringing when the player can hear it. A pitch rings for any of three
+independent reasons: a finger is on it, it is sustained, or it is being edited.
+
+** sustained
+A pitch that keeps ringing with no finger on it. One set per grid. Two things write
+that set: the accrete pedals, and the per-note sustain monomekey. A clear flushes it,
+which is why a clear reaches both.
+
+* the pulse
+
+** pulse
+A unipolar-triangle amplitude modulation applied to a note, at a rate derived from the
+tapped tempo. This is the term; "slow AM" is not, because that already names the timbre
+tremolo, which is a different mechanism that can be on the same note.
+
+** tapped tempo
+The one global tempo, defined by tapping OSS pedal 8 twice. Defining it starts nothing.
+
+** factor
+A per-grid rational multiplier on the tapped tempo, held as exponents =2^a * 3^b=, so
+x3 followed by /3 is exactly unity rather than nearly.
+
+** applied tempo
+The tapped tempo times a grid's factor. This is the rate a note's pulse runs at.
+
+* editing
+
+** edit mode
+A property of a pitch on one grid: the player has selected it for editing. It is one of
+the three reasons a note rings, so an edited note keeps sounding with no finger on it.
+
+Jeff is re-specifying edit and sustain, so the entries below hold only until that lands.
+
+** the diamond dance
+One lit cell turning around each edited note, marking it. It is the only LED rule in
+the instrument that is local: it marks the exact monomekeys holding that exact pitch on
+that one grid, and it never marks octave-equivalents or the other grid.
+
+** drag
+Moving an edited note's pitch by pressing where you want it. The note glides rather
+than jumping.

@@ -1,0 +1,146 @@
+#+title: A new library for the two-softstep rig
+#+date: 2026-07-17
+
+Jeff asked for five things, and they turn out to be one thing:
+
+1. Rename =chord=, because it is not a chord here.
+2. Bury legacy code whose types do not match reality.
+3. Build a new library for this rig, cannibalizing the old one and scrapping the rest.
+4. Never write "key" where it is ambiguous; write "monomekey" for a button.
+5. Stop using bold in the docs, and define terms in a glossary instead.
+
+They are one thing because every item is the same complaint: the names lie, and the
+documentation has been compensating. =edit-mode.org= needed a paragraph explaining that
+the =pitch= field is not a pitch, another explaining that =VoiceSource::Fingered= is not
+what this runtime uses for fingered notes, and a warning that "key" means two things.
+Prose apologising for a type is a bug report, not documentation.
+
+* what this rig actually needs
+The rig is =2-monomes_2-softsteps=: two 16x16 monome grids as 46-EDO play surfaces, two
+SoftStep boards carrying sustain, tap tempo and the pulse, an on-screen readout, and
+per-voice edit. It loads through =surfaces_runtime=.
+
+Of the ~23,500 lines in =midi_pulse=, it uses roughly this much:
+
+| keep (cannibalize)              | why                                        |
+|---------------------------------+--------------------------------------------|
+| =sawwave/{osc,voices,types}.rs= | the synth: oscillators, envelopes, render  |
+| =monome{,_window,_brightness}.rs= | grid discovery, OSC, LED quads           |
+| =edo_play.rs=                   | the cell/step/register arithmetic          |
+| =device_assign.rs=              | binding grids by serial                    |
+| =drumkit_runtime/{decode,tether}.rs= | SoftStep pressure, hosted mode        |
+| =expression_pedals.rs=          | the EX-P reader, unused but working        |
+| =surfaces_runtime/*=            | the instrument itself                      |
+| =rig{,_org}.rs=                 | loading, but only the tables this rig uses |
+| =bitmap_font.rs=, =minifb= glue | the readout window                         |
+
+And it uses none of this:
+
+| scrap for the new library       | which rig wants it                         |
+|---------------------------------+--------------------------------------------|
+| =sawwave/state.rs= (1032 lines) | chord storage: =monome-edo-sawwave=        |
+| =looper_runtime/*=              | the looper rigs                            |
+| =remap_runtime/*=               | the un-12 rigs                             |
+| the piano runtimes              | the piano rigs                             |
+| =drumkit_runtime/{audio,samples}.rs= | the drumkit rigs                      |
+| the drums half of the KMSS path | this rig has no drumkit                    |
+
+* the names that lie
+Each of these cost real debugging time, and each is a fact recorded in a name that
+contradicts it.
+
+** chord
+=VoiceSource::Accreted { chord: ChordId, pitch: i32 }=. =ChordId= indexes
+=AppState.chords=, which is genuine chord storage in the sawwave runtime. This rig has
+no chords, declares no chord windows, and reuses the field as a namespace tag:
+=chord == grid= means fingered, =SUSTAIN_BASE + grid= means a drone,
+=RETIRED_BASE + grid= means fading. The looper does not even pretend; its comment says
+"the =chord= field is unused" and it writes =chord: 0=.
+
+** pitch
+In the same struct, =pitch= holds a packed cell (=y*256 + x=) when the voice is
+fingered. Only a drone's =pitch= is a pitch. This is why =scale_pulse_rate= silently
+matched nothing: it selected by pitch and every fingered note was invisible to it.
+
+** Fingered
+=VoiceSource::Fingered= exists and this runtime never uses it. Fingered notes are
+=Accreted=.
+
+** key
+A monome button is a key. A hash map has keys. =MonomeKey= is a cell. =voice_key=
+returns a =VoiceSource=. The word does too much, so the new library will not use it
+alone: a button is a monomekey, and nothing else is called a key.
+
+** a dead promise
+=ChordId='s comment still reads "commit 5 will set the layout (16 chord buttons, with
+chord 0 reserved for silence)". That commit never happened. The comment has outlived
+the plan it described by years.
+
+* the type this replaces it with
+#+begin_src rust
+/// Everything the synth is sounding, on either grid. A voice is one entry.
+enum Voice {
+  /// A note under a finger. Identified by the monomekey it was struck on, NOT by its
+  /// pitch: a per-voice edit can move its pitch away from that monomekey's own.
+  Fingered { grid: GridIndex, monomekey: MonomeKey },
+  /// A note ringing with no finger on it. Identified by its pitch, because that is
+  /// what sustain and edit both name.
+  Sustaining { grid: GridIndex, pitch: Pitch },
+  /// A cut note, fading out over its release. Nothing looks one up; the id only keeps
+  /// two of them from colliding.
+  Fading { grid: GridIndex, id: VoiceId },
+}
+#+end_src
+
+Every claim the old type made falsely, this one makes structurally:
+- no field named =pitch= holds a monomekey;
+- no field named =chord= holds anything;
+- =Fingered= means fingered;
+- "you cannot find a fingered voice by pitch" becomes a thing the compiler knows,
+  rather than a paragraph in a document.
+
+=SUSTAIN_BASE= and =RETIRED_BASE= disappear entirely, along with the arithmetic that
+decoded them.
+
+* TODO the one decision I will not guess at
+Burying =midi_pulse= is easy. Deciding what happens to the seven other runtimes is not,
+and it is yours.
+
+Three options:
+
+1. Bury and keep building. =buried/= holds the old crate, still compiling, still
+   running the looper / piano / un-12 / drums rigs. The new library serves this rig
+   only. Nothing is lost; the codebase carries two synths.
+2. Bury and let it rot. Same move, but the old rigs are not maintained. They work
+   until they do not.
+3. Bury and delete. The other rigs go. The looper alone is a large feature you
+   designed in detail, so I will not propose this, but it is on the table if you have
+   moved on from them.
+
+My read: you have played the looper and the drums rigs, and =TODO/DONE/= shows real
+design work in both, so (1) is what "bury" should mean unless you say otherwise. But
+(1) has a cost worth naming: two synths, and any fix to the oscillator has to land in
+both or diverge. That is the exact failure that produced =select_input_port='s twin
+copies and the bug that followed.
+
+* the order of work
+Edit and sustain are being re-specified as I write this, so their logic lands last;
+everything below is independent of that spec.
+
+1. The honest =Voice= type, and its map. Small, self-contained, and it is what the
+   rest hangs from.
+2. The synth: oscillators, envelopes, render. Cannibalized from =sawwave/=, minus
+   chords.
+3. The devices: grid discovery and LEDs, SoftStep pressure, pedals.
+4. The rig loader: only the tables this rig declares.
+5. The instrument: sustain, pulse, dance, readout.
+6. Edit and sustain, to Jeff's new spec.
+7. Bury the old crate, once the new one runs the rig.
+
+* the writing rules, from now on
+- No bold. If a term needs defining, the glossary defines it; otherwise the prose
+  carries itself. Asterisks imply either a lazy reader or a writer padding out
+  low-value sentences, and neither should be true.
+- Every sentence has a subject and a verb, parentheticals included.
+- "Key" never appears alone. A button is a monomekey.
+- A name that needs a paragraph of explanation is a defect, and the fix is the name.
