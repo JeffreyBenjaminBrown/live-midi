@@ -157,8 +157,11 @@ pub fn start_with_hook(
   let referenced: HashSet<&str> = rig
     .softstep_windows
     .iter()
-    .map(|w| match w {
-      SoftstepWindowRig::Drumkit { sink, .. } => sink.as_str(),
+    // Only drumkit windows own a sink; the pedal-control kinds (accrete / tap /
+    // pulse-factor) are the host runtime's business and reach it via the PedalHook.
+    .filter_map(|w| match w {
+      SoftstepWindowRig::Drumkit { sink, .. } => Some(sink.as_str()),
+      _ => None,
     })
     .collect();
   let mut samplers: HashMap<String, Sampler> = HashMap::new();
@@ -194,7 +197,11 @@ pub fn start_with_hook(
     );
   }
   for window in &rig.softstep_windows {
-    let SoftstepWindowRig::Drumkit { softstep, sink, pads, .. } = window;
+    // Skip the pedal-control kinds: they bind no sample, and their pedals are
+    // consumed by the host runtime's hook before this map is consulted.
+    let SoftstepWindowRig::Drumkit { softstep, sink, pads, .. } = window else {
+      continue;
+    };
     let sampler = samplers
       .get(sink)
       .ok_or_else(|| format!("drumkit window references unbuilt sink {sink:?}"))?;

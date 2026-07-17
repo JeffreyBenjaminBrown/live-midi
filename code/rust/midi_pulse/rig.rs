@@ -1218,18 +1218,71 @@ pub enum SoftstepWindowRig {
     // shared across rigs and live in rigs/softstep.toml (see `SoftstepParams`).
     pads: Vec<DrumPadRig>,
   },
+  /// One pedal driving one monome's accrete bank -- the same `AccreteControlKind`
+  /// the on-grid buttons use, so a rig can put sustain under a foot instead of
+  /// spending grid cells on it. Unlike the older `softstep_accretes_toggle` mirror
+  /// (which hardcodes pedals 1/2/3 and 8/9/0 and needs an on-grid toggle to turn it
+  /// on), this binding is unconditional and stated in the rig.
+  AccreteControl {
+    id: String,
+    softstep: String,
+    /// Printed label, 0..9.
+    pedal: u8,
+    /// The monome whose bank this drives. Must have an `edo_note_grid`.
+    monome: String,
+    control: AccreteControlKind,
+  },
+  /// The pedal that taps the ONE global tempo. Two taps within
+  /// `[surfaces].tap_tempo_window_ms` define it; tapping only defines it, and starts
+  /// nothing.
+  TapTempoPedal { id: String, softstep: String, pedal: u8 },
+  /// One pedal nudging one monome's pulse. What it acts on depends on that monome's
+  /// edit state: with no note in edit mode it moves the GRID's factor (as the on-grid
+  /// polyrhythm pad does); with notes in edit mode the multipliers retune *those
+  /// notes*. `Unity` is the =1 switch and never retunes edit-mode notes.
+  PulseFactorPedal {
+    id: String,
+    softstep: String,
+    pedal: u8,
+    monome: String,
+    factor: PulseFactorRig,
+  },
+}
+
+/// A pulse-factor pedal's job. The exponent factors are what the on-grid polyrhythm
+/// pad already applies (`2^a * 3^b`, so x3-then-/3 is exactly unity).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+pub enum PulseFactorRig {
+  #[serde(rename = "x2")]
+  Double,
+  #[serde(rename = "x3")]
+  Triple,
+  #[serde(rename = "div2")]
+  Half,
+  #[serde(rename = "div3")]
+  Third,
+  /// The `=1` switch: start cycling / unity the factor / stop, per the double-tap
+  /// dance the on-grid pad uses.
+  #[serde(rename = "unity")]
+  Unity,
 }
 
 impl SoftstepWindowRig {
   pub fn id(&self) -> &str {
     match self {
-      SoftstepWindowRig::Drumkit { id, .. } => id,
+      SoftstepWindowRig::Drumkit { id, .. }
+      | SoftstepWindowRig::AccreteControl { id, .. }
+      | SoftstepWindowRig::TapTempoPedal { id, .. }
+      | SoftstepWindowRig::PulseFactorPedal { id, .. } => id,
     }
   }
 
   pub fn softstep(&self) -> &str {
     match self {
-      SoftstepWindowRig::Drumkit { softstep, .. } => softstep,
+      SoftstepWindowRig::Drumkit { softstep, .. }
+      | SoftstepWindowRig::AccreteControl { softstep, .. }
+      | SoftstepWindowRig::TapTempoPedal { softstep, .. }
+      | SoftstepWindowRig::PulseFactorPedal { softstep, .. } => softstep,
     }
   }
 
@@ -1237,6 +1290,20 @@ impl SoftstepWindowRig {
   pub fn kind_name(&self) -> &'static str {
     match self {
       SoftstepWindowRig::Drumkit { .. } => "drumkit",
+      SoftstepWindowRig::AccreteControl { .. } => "accrete_control",
+      SoftstepWindowRig::TapTempoPedal { .. } => "tap_tempo_pedal",
+      SoftstepWindowRig::PulseFactorPedal { .. } => "pulse_factor_pedal",
+    }
+  }
+
+  /// The pedals this window claims on its device. A drumkit claims one per pad;
+  /// every other kind is a single pedal.
+  pub fn pedals(&self) -> Vec<u8> {
+    match self {
+      SoftstepWindowRig::Drumkit { pads, .. } => pads.iter().map(|p| p.pedal).collect(),
+      SoftstepWindowRig::AccreteControl { pedal, .. }
+      | SoftstepWindowRig::TapTempoPedal { pedal, .. }
+      | SoftstepWindowRig::PulseFactorPedal { pedal, .. } => vec![*pedal],
     }
   }
 }
@@ -1836,8 +1903,80 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
   // pedals already claimed on a given device, so windows partition (never overlap).
   let mut claimed: std::collections::HashMap<&str, HashSet<u8>> = std::collections::HashMap::new();
 
+  // Every kind claims pedals, so range + one-owner-per-pedal are checked once here
+  // rather than per kind -- a pedal bound to both a drum and an accrete control has
+  // no defined behavior, and the old check only looked at drumkit pads.
+  let mut tap_pedal: Option<(&str, u8)> = None;
+  let mut factor_claims: HashSet<(&str, PulseFactorRig)> = HashSet::new();
+  let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
+  // A pedal that drives a grid's accrete bank or pulse needs that grid to be a play
+  // surface; the same requirement the on-grid accrete_control / tap_tempo_pad carry.
+  let play_grid_monomes: HashSet<&str> = rig
+    .monome_windows
+    .iter()
+    .filter_map(|w| match w {
+      MonomeWindowRig::EdoNoteGrid { monome, .. } => Some(monome.as_str()),
+      _ => None,
+    })
+    .collect();
   for window in &rig.softstep_windows {
     require_ref("softstep_window.softstep", window.softstep(), &softstep_ids)?;
+    for pedal in window.pedals() {
+      if pedal > 9 {
+        return Err(format!(
+          "softstep window {:?} pedal {pedal} out of range (the KMSS labels are 0..9)",
+          window.id(),
+        ));
+      }
+    }
+    // Cross-kind pedal ownership (the drumkit's own per-window duplicate check still
+    // runs below; this catches collisions BETWEEN windows, including across kinds).
+    if !matches!(window, SoftstepWindowRig::Drumkit { .. }) {
+      let device_claims = claimed.entry(window.softstep()).or_default();
+      for pedal in window.pedals() {
+        if !device_claims.insert(pedal) {
+          return Err(format!(
+            "pedal {pedal} on softstep {:?} is claimed by more than one window",
+            window.softstep(),
+          ));
+        }
+      }
+    }
+    match window {
+      SoftstepWindowRig::AccreteControl { id, monome, .. } => {
+        require_ref("softstep_window.monome", monome, &monome_ids)?;
+        if !play_grid_monomes.contains(monome.as_str()) {
+          return Err(format!(
+            "accrete_control window {id:?} targets monome {monome:?}, which has no edo_note_grid",
+          ));
+        }
+      }
+      SoftstepWindowRig::TapTempoPedal { id, pedal, .. } => {
+        // ONE global tempo, so one tap pedal: two would be the same button twice,
+        // and a reader could not tell which defines it.
+        if let Some((first, first_pedal)) = tap_pedal {
+          return Err(format!(
+            "rig has two tap_tempo_pedal windows ({first:?} on pedal {first_pedal} and \
+             {id:?} on pedal {pedal}); the tapped tempo is global, so there is one",
+          ));
+        }
+        tap_pedal = Some((id, *pedal));
+      }
+      SoftstepWindowRig::PulseFactorPedal { id, monome, factor, .. } => {
+        require_ref("softstep_window.monome", monome, &monome_ids)?;
+        if !play_grid_monomes.contains(monome.as_str()) {
+          return Err(format!(
+            "pulse_factor_pedal window {id:?} targets monome {monome:?}, which has no edo_note_grid",
+          ));
+        }
+        if !factor_claims.insert((monome.as_str(), *factor)) {
+          return Err(format!(
+            "monome {monome:?} has two {factor:?} pulse_factor_pedal windows ({id:?} is the second)",
+          ));
+        }
+      }
+      SoftstepWindowRig::Drumkit { .. } => {}
+    }
     match window {
       SoftstepWindowRig::Drumkit { id, sink, pads, .. } => {
         if !sampler_sink_ids.contains(sink.as_str()) {
@@ -1896,6 +2035,11 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
           validate_asset_subpath("drumkit sample", id, sample)?;
         }
       }
+      // The single-pedal kinds are fully checked above (pedal range, one owner per
+      // pedal, monome refs, tap uniqueness, per-monome factor uniqueness).
+      SoftstepWindowRig::AccreteControl { .. }
+      | SoftstepWindowRig::TapTempoPedal { .. }
+      | SoftstepWindowRig::PulseFactorPedal { .. } => {}
     }
   }
 
@@ -3103,12 +3247,182 @@ pads = [
 ]
 "#;
 
+  /// Two monomes + one softstep with the pedal-control kinds. Minimal but complete:
+  /// each grid is a play surface, so accrete/pulse pedals have something to target.
+  const PEDAL_CONTROLS_TOML: &str = r#"version = 1
+id = "pedal-controls"
+title = "Pedal controls"
+
+[[tunings]]
+id = "main"
+edo = 46
+x_step = 9
+y_step = 1
+fundamental_hz = 80
+
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.05
+
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/a"
+select.size = [16, 16]
+
+[[monomes]]
+id = "b"
+listen_port = 9001
+prefix = "/b"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "grid-b"
+monome = "b"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[softsteps]]
+id = "old"
+select.name_contains = "SSCOM"
+
+[[softstep_windows]]
+id = "clear-a"
+softstep = "old"
+kind = "accrete_control"
+pedal = 1
+monome = "a"
+control = "clear"
+
+[[softstep_windows]]
+id = "accrete-a"
+softstep = "old"
+kind = "accrete_control"
+pedal = 2
+monome = "a"
+control = "accrete"
+
+[[softstep_windows]]
+id = "tap"
+softstep = "old"
+kind = "tap_tempo_pedal"
+pedal = 8
+
+[[softstep_windows]]
+id = "x2-a"
+softstep = "old"
+kind = "pulse_factor_pedal"
+pedal = 5
+monome = "a"
+factor = "x2"
+"#;
+
+  #[test]
+  fn a_rig_can_bind_pedals_to_accrete_tap_and_pulse() {
+    let rig = parse_rig(PEDAL_CONTROLS_TOML).expect("pedal-control kinds should parse");
+    assert_eq!(rig.softstep_windows.len(), 4);
+    let kinds: Vec<&str> = rig.softstep_windows.iter().map(|w| w.kind_name()).collect();
+    assert_eq!(kinds, ["accrete_control", "accrete_control", "tap_tempo_pedal", "pulse_factor_pedal"]);
+    // Every kind reports the pedals it claims, so ownership is checkable uniformly.
+    let pedals: Vec<Vec<u8>> = rig.softstep_windows.iter().map(|w| w.pedals()).collect();
+    assert_eq!(pedals, [vec![1], vec![2], vec![8], vec![5]]);
+  }
+
+  /// The collision the OLD check could not see: it only walked drumkit pads, so a
+  /// pedal bound to both a drum and a control had no defined behavior and loaded fine.
+  #[test]
+  fn one_pedal_cannot_be_claimed_by_two_windows_even_across_kinds() {
+    let toml = PEDAL_CONTROLS_TOML.replace(
+      "id = \"accrete-a\"\nsoftstep = \"old\"\nkind = \"accrete_control\"\npedal = 2",
+      "id = \"accrete-a\"\nsoftstep = \"old\"\nkind = \"accrete_control\"\npedal = 1",
+    );
+    let err = parse_rig(&toml).expect_err("pedal 1 is claimed twice");
+    assert!(err.contains("claimed by more than one window"), "{err}");
+  }
+
+  #[test]
+  fn a_pedal_label_above_9_is_rejected() {
+    let toml = PEDAL_CONTROLS_TOML.replace("kind = \"tap_tempo_pedal\"\npedal = 8", "kind = \"tap_tempo_pedal\"\npedal = 10");
+    let err = parse_rig(&toml).expect_err("the KMSS labels are 0..9");
+    assert!(err.contains("out of range"), "{err}");
+  }
+
+  /// The tapped tempo is ONE global value, so two tap pedals would be the same
+  /// button twice and a reader could not tell which defines it.
+  #[test]
+  fn two_tap_tempo_pedals_are_rejected() {
+    let toml = format!(
+      "{PEDAL_CONTROLS_TOML}\n[[softstep_windows]]\nid = \"tap2\"\nsoftstep = \"old\"\nkind = \"tap_tempo_pedal\"\npedal = 3\n",
+    );
+    let err = parse_rig(&toml).expect_err("one global tempo means one tap pedal");
+    assert!(err.contains("two tap_tempo_pedal"), "{err}");
+  }
+
+  #[test]
+  fn two_pedals_giving_one_monome_the_same_factor_are_rejected() {
+    let toml = format!(
+      "{PEDAL_CONTROLS_TOML}\n[[softstep_windows]]\nid = \"x2-a-again\"\nsoftstep = \"old\"\nkind = \"pulse_factor_pedal\"\npedal = 4\nmonome = \"a\"\nfactor = \"x2\"\n",
+    );
+    let err = parse_rig(&toml).expect_err("monome a already has an x2 pedal");
+    assert!(err.contains("two"), "{err}");
+  }
+
+  /// The same factor on the OTHER monome is fine -- that is the whole point of
+  /// per-monome factors.
+  #[test]
+  fn the_other_monome_may_have_the_same_factor() {
+    let toml = format!(
+      "{PEDAL_CONTROLS_TOML}\n[[softstep_windows]]\nid = \"x2-b\"\nsoftstep = \"old\"\nkind = \"pulse_factor_pedal\"\npedal = 1\nmonome = \"b\"\nfactor = \"x2\"\n",
+    );
+    // pedal 1 is taken by clear-a, so use a free one.
+    let toml = toml.replace("id = \"x2-b\"\nsoftstep = \"old\"\nkind = \"pulse_factor_pedal\"\npedal = 1", "id = \"x2-b\"\nsoftstep = \"old\"\nkind = \"pulse_factor_pedal\"\npedal = 4");
+    parse_rig(&toml).expect("each monome gets its own x2");
+  }
+
+  #[test]
+  fn a_pedal_control_targeting_a_monome_with_no_play_surface_is_rejected() {
+    // Drop grid-b's play surface entirely, leaving monome `b` declared but silent,
+    // then point an accrete pedal at it: there is nothing to accrete from.
+    let toml = PEDAL_CONTROLS_TOML.replace(
+      "[[monome_windows]]\nid = \"grid-b\"\nmonome = \"b\"\nkind = \"edo_note_grid\"\nrect = [0, 0, 15, 15]\ntuning = \"main\"\nsink = \"synth\"\n",
+      "",
+    );
+    assert!(!toml.contains("grid-b"), "the grid-b window should be gone");
+    let toml = toml.replace("monome = \"a\"\ncontrol = \"clear\"", "monome = \"b\"\ncontrol = \"clear\"");
+    let err = parse_rig(&toml).expect_err("accrete needs a play surface to accrete from");
+    assert!(err.contains("edo_note_grid"), "{err}");
+  }
+
+  #[test]
+  fn a_pedal_control_referencing_an_unknown_monome_is_rejected() {
+    let toml = PEDAL_CONTROLS_TOML.replace("monome = \"a\"\ncontrol = \"clear\"", "monome = \"nope\"\ncontrol = \"clear\"");
+    let err = parse_rig(&toml).expect_err("unknown monome ref");
+    assert!(err.contains("nope"), "{err}");
+  }
+
   #[test]
   fn drumkit_rig_is_valid_with_defaults() {
     let rig = parse_rig(DRUMKIT_TOML).expect("a complete drumkit rig should be valid");
     assert_eq!(rig.softsteps.len(), 1);
     assert_eq!(rig.softsteps[0].select.name_substring(), "SSCOM", "default select substring");
-    let SoftstepWindowRig::Drumkit { pads, .. } = &rig.softstep_windows[0];
+    let SoftstepWindowRig::Drumkit { pads, .. } = &rig.softstep_windows[0] else {
+      panic!("expected a drumkit window");
+    };
     assert_eq!(pads[0].gain, 1.0, "default pad gain");
     assert_eq!(pads.len(), 3);
   }
@@ -3172,7 +3486,9 @@ pads = [
   fn ditto_pad_is_valid_with_no_sample() {
     let toml = DRUMKIT_TOML.replace("{ pedal = 0, sample = \"wood_block.wav\" },", "{ pedal = 0, ditto = true },");
     let rig = parse_rig(&toml).expect("a ditto pad with no sample should be valid");
-    let SoftstepWindowRig::Drumkit { pads, .. } = &rig.softstep_windows[0];
+    let SoftstepWindowRig::Drumkit { pads, .. } = &rig.softstep_windows[0] else {
+      panic!("expected a drumkit window");
+    };
     let ditto = pads.iter().find(|p| p.pedal == 0).expect("pedal 0");
     assert!(ditto.ditto, "ditto flag set");
     assert_eq!(ditto.sample, None, "a ditto pad names no sample");
