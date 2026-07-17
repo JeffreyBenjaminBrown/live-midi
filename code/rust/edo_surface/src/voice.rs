@@ -69,25 +69,30 @@ impl VoiceIds {
 
 /// Why a voice is still sounding.
 ///
-/// A voice sounds while a finger holds it, or while it is sustained, and for no other
-/// reason. Edit is not here: Jeff's spec says edit "isn't a third reason for being for
-/// a voice. It is a property that can be true of any voice."
+/// Edit is not a variant here, because Jeff's spec says edit "isn't a third reason for
+/// being for a voice. It is a property that can be true of any voice." What edit does
+/// is DEFER a fingered voice's release, which is a different claim: the voice is still
+/// the finger's, and the finger has merely let go for now.
 ///
 /// That distinction is what makes the ghost class impossible. An edit property cannot
-/// outlive the voice it is a property of, any more than a colour can outlive the thing
-/// it painted. The old model let edit keep a voice alive, so a clear could silence the
-/// voice and leave its pitch marked as edited, dancing around nothing, with no gesture
-/// able to reach it.
+/// outlive the voice it is a property of, so a clear cannot silence a voice and leave
+/// something dancing around nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Held {
-  /// A finger is on `monomekey`. The voice ends when that finger lifts.
+  /// A finger is physically down on the voice's `home`.
+  Finger,
+  /// The finger lifted, but the voice is edited, so its release waits.
   ///
-  /// The monomekey is where the finger went down, which is not where this voice's
-  /// pitch is drawn once the register scrolls. It is an index for finding the voice
-  /// again on release, and it is not the voice's identity.
-  Finger { monomekey: MonomeKey },
-  /// Nothing physical holds it. It sounds because it is in the sustained set, and it
-  /// ends when a clear or an un-sustain removes it.
+  /// Jeff: "A fingered voice in edit mode should not end on key-up... When edit mode is
+  /// released, the fingered voice resumes normal release behavior." So this state ends
+  /// one of two ways: the finger comes back to `home` and the voice retriggers, or edit
+  /// mode ends and the voice does what the lift would have done.
+  ///
+  /// This is why a voice remembers its `home` even with no finger on it: "If the
+  /// monomekey for that voice is pressed again, it retriggers the fingered voice there
+  /// rather than adding a second voice."
+  EditDeferred,
+  /// It is in the sustained set, and only a clear or an un-sustain ends it.
   Sustained,
   /// It is ringing out after being cut, and nothing can reach it any more.
   Fading,
@@ -102,6 +107,14 @@ pub struct Voice {
   /// What it is sounding right now. An edit can change this, which is precisely why it
   /// is not the identity.
   pub pitch: Pitch,
+  /// The monomekey this voice lives at: where its finger is, or where the finger that
+  /// last held it was. A press here retriggers this voice rather than starting a second
+  /// one, and a drag moves it.
+  ///
+  /// It is not the identity either. The register scrolls, so a monomekey does not
+  /// name a fixed pitch; and a drag re-homes a voice, so it does not name a fixed
+  /// voice for long.
+  pub home: MonomeKey,
   pub held: Held,
   /// Whether the player has this voice selected for editing. A property of the voice,
   /// so it dies with the voice.
@@ -112,6 +125,11 @@ impl Voice {
   /// Can the player still hear it?
   pub fn sounding(&self) -> bool {
     !matches!(self.held, Held::Fading)
+  }
+
+  /// Is a finger physically down on it right now?
+  pub fn under_finger(&self) -> bool {
+    matches!(self.held, Held::Finger)
   }
 }
 
@@ -125,9 +143,12 @@ impl Voice {
 #[derive(Debug, Default)]
 pub struct Voices {
   by_id: HashMap<VoiceId, Voice>,
-  /// Which voice a finger is holding. This is what a lift looks up, and it is the only
-  /// reason a monomekey is recorded at all.
-  under_finger: HashMap<(GridIndex, MonomeKey), VoiceId>,
+  /// Which voice lives at each monomekey.
+  ///
+  /// Not "which finger is down": a voice whose finger lifted while edited still lives
+  /// at its home, because pressing there must retrigger it rather than start a second
+  /// voice. The entry goes when the voice stops being reachable from the surface.
+  home: HashMap<(GridIndex, MonomeKey), VoiceId>,
   ids: VoiceIds,
 }
 
@@ -136,14 +157,14 @@ impl Voices {
     Voices::default()
   }
 
-  /// Start a voice under a finger, and return its id.
+  /// Start a voice under a finger at `monomekey`, and return its id. Any voice already
+  /// living there is displaced, which only happens if the caller failed to retrigger.
   pub fn strike(&mut self, grid: GridIndex, monomekey: MonomeKey, pitch: Pitch) -> VoiceId {
     let id = self.ids.mint();
-    self.by_id.insert(
-      id,
-      Voice { id, grid, pitch, held: Held::Finger { monomekey }, edited: false },
-    );
-    self.under_finger.insert((grid, monomekey), id);
+    self
+      .by_id
+      .insert(id, Voice { id, grid, pitch, home: monomekey, held: Held::Finger, edited: false });
+    self.home.insert((grid, monomekey), id);
     id
   }
 
@@ -151,9 +172,27 @@ impl Voices {
     self.by_id.get(&id)
   }
 
-  /// Which voice is the finger on `monomekey` holding?
-  pub fn under(&self, grid: GridIndex, monomekey: MonomeKey) -> Option<VoiceId> {
-    self.under_finger.get(&(grid, monomekey)).copied()
+  /// Which voice lives at `monomekey`, whether or not a finger is on it.
+  ///
+  /// This is what a press consults before striking: if a voice lives here, the press
+  /// retriggers it. Jeff: "If the monomekey for that voice is pressed again, it
+  /// retriggers the fingered voice there rather than adding a second voice."
+  pub fn at(&self, grid: GridIndex, monomekey: MonomeKey) -> Option<VoiceId> {
+    self.home.get(&(grid, monomekey)).copied()
+  }
+
+  /// Re-strike the voice living at `monomekey`: its finger is back down.
+  ///
+  /// The caller restarts its envelope. Returns the voice, or `None` if none lives here
+  /// or it is beyond reach.
+  pub fn retrigger(&mut self, grid: GridIndex, monomekey: MonomeKey) -> Option<VoiceId> {
+    let id = self.at(grid, monomekey)?;
+    let v = self.by_id.get_mut(&id)?;
+    if matches!(v.held, Held::Fading) {
+      return None;
+    }
+    v.held = Held::Finger;
+    Some(id)
   }
 
   /// Every voice sounding `pitch` on `grid`, in id order.
@@ -178,8 +217,33 @@ impl Voices {
     self.by_id.values().any(|v| v.grid == grid && v.pitch == pitch && v.sounding())
   }
 
-  /// Move a voice's pitch. The indexes need no repair, because none of them is keyed by
-  /// pitch. That is the whole reason this design exists.
+  /// Move a voice to `pitch`, and re-home it at `monomekey` -- the monomekey the player
+  /// pressed to drag it there.
+  ///
+  /// Re-homing is what makes Jeff's story work: "pick a new note to drag it there, leave
+  /// my finger on it, and take it out of edit mode, and I'm still holding it until I
+  /// release it." The finger that dragged it now holds it, so the voice moves house.
+  ///
+  /// A sustained voice keeps its `Sustained` state, because no finger is claiming it;
+  /// it only changes address.
+  pub fn drag(&mut self, id: VoiceId, monomekey: MonomeKey, pitch: Pitch) -> bool {
+    let Some(v) = self.by_id.get_mut(&id) else { return false };
+    if matches!(v.held, Held::Fading) {
+      return false;
+    }
+    let (grid, was) = (v.grid, v.home);
+    v.pitch = pitch;
+    v.home = monomekey;
+    if matches!(v.held, Held::Finger | Held::EditDeferred) {
+      v.held = Held::Finger;
+    }
+    self.home.remove(&(grid, was));
+    self.home.insert((grid, monomekey), id);
+    true
+  }
+
+  /// Move a voice's pitch without moving its home. The pedals and the pulse use this;
+  /// the drag gesture uses [`Voices::drag`].
   pub fn set_pitch(&mut self, id: VoiceId, pitch: Pitch) -> bool {
     match self.by_id.get_mut(&id) {
       Some(v) => {
@@ -190,40 +254,46 @@ impl Voices {
     }
   }
 
-  /// Add a voice to the sustained set, so it keeps sounding once the finger lifts.
-  /// The finger index drops it, since a lift can no longer end it.
+  /// Add a voice to the sustained set, so it keeps sounding with no finger on it.
   pub fn sustain(&mut self, id: VoiceId) -> bool {
-    let Some(v) = self.by_id.get_mut(&id) else { return false };
-    if let Held::Finger { monomekey } = v.held {
-      self.under_finger.remove(&(v.grid, monomekey));
-    }
-    if matches!(v.held, Held::Fading) {
-      return false;
-    }
-    v.held = Held::Sustained;
-    true
-  }
-
-  /// Take a voice out of the sustained set. It has nothing holding it up afterwards,
-  /// so it starts fading.
-  pub fn unsustain(&mut self, id: VoiceId) -> bool {
     match self.by_id.get_mut(&id) {
-      Some(v) if matches!(v.held, Held::Sustained) => {
-        v.held = Held::Fading;
+      Some(v) if !matches!(v.held, Held::Fading) => {
+        v.held = Held::Sustained;
         true
       }
       _ => false,
     }
   }
 
-  /// A finger lifted. The voice ends unless it was sustained, in which case the finger
-  /// was not holding it up in the first place.
+  /// Take a voice out of the sustained set. Nothing else was holding it up, so it ends.
+  pub fn unsustain(&mut self, id: VoiceId) -> bool {
+    let Some(v) = self.by_id.get_mut(&id) else { return false };
+    if !matches!(v.held, Held::Sustained) {
+      return false;
+    }
+    v.held = Held::Fading;
+    let (grid, home) = (v.grid, v.home);
+    self.home.remove(&(grid, home));
+    true
+  }
+
+  /// A finger lifted from `monomekey`.
+  ///
+  /// The voice ends, unless something defers that. Jeff: "A fingered voice in edit mode
+  /// should not end on key-up... But if my finger isn't on it when I take it out of edit
+  /// mode, it ends with the end of the edit mode." So an edited voice waits in
+  /// [`Held::EditDeferred`], and a sustained one was never the finger's to end.
   pub fn lift(&mut self, grid: GridIndex, monomekey: MonomeKey) -> Option<VoiceId> {
-    let id = self.under_finger.remove(&(grid, monomekey))?;
-    if let Some(v) = self.by_id.get_mut(&id) {
-      if matches!(v.held, Held::Finger { .. }) {
-        v.held = Held::Fading;
-      }
+    let id = self.at(grid, monomekey)?;
+    let v = self.by_id.get_mut(&id)?;
+    if !matches!(v.held, Held::Finger) {
+      return Some(id); // sustained, or already waiting: the finger was not holding it
+    }
+    if v.edited {
+      v.held = Held::EditDeferred;
+    } else {
+      v.held = Held::Fading;
+      self.home.remove(&(grid, monomekey));
     }
     Some(id)
   }
@@ -240,31 +310,32 @@ impl Voices {
     ids
   }
 
-  /// Clear this grid's sustained voices, and no others. Fingered voices are untouched,
-  /// as Jeff specified: "The 'clear sustain' button on the softstep should only clear
-  /// sustained notes, not fingered notes."
+  /// Clear this grid's sustained voices, and no others. Jeff: "The 'clear sustain'
+  /// button on the softstep should only clear sustained notes, not fingered notes."
   ///
-  /// Their edit properties go with them, because the property lives on the voice. No
-  /// separate bookkeeping needs telling.
+  /// Their edit properties go with them, because the property lives on the voice.
   pub fn clear_sustained(&mut self, grid: GridIndex) -> Vec<VoiceId> {
     let ids = self.sustained(grid);
     for id in &ids {
-      if let Some(v) = self.by_id.get_mut(id) {
-        v.held = Held::Fading;
-      }
+      self.unsustain(*id);
     }
     ids
   }
 
   /// Set or unset a voice's edit property.
+  ///
+  /// Unsetting it on a voice whose finger already lifted ends that voice, because edit
+  /// was the only thing deferring its release: "if my finger isn't on it when I take it
+  /// out of edit mode, it ends with the end of the edit mode."
   pub fn set_edited(&mut self, id: VoiceId, edited: bool) -> bool {
-    match self.by_id.get_mut(&id) {
-      Some(v) => {
-        v.edited = edited;
-        true
-      }
-      None => false,
+    let Some(v) = self.by_id.get_mut(&id) else { return false };
+    v.edited = edited;
+    if !edited && matches!(v.held, Held::EditDeferred) {
+      v.held = Held::Fading;
+      let (grid, home) = (v.grid, v.home);
+      self.home.remove(&(grid, home));
     }
+    true
   }
 
   /// Every edited voice on `grid`.
@@ -279,14 +350,22 @@ impl Voices {
     ids
   }
 
-  /// Drop the edit property from every voice on `grid`, silencing nothing. This is the
-  /// clear-edit pedal.
-  pub fn clear_edited(&mut self, grid: GridIndex) {
-    for v in self.by_id.values_mut() {
-      if v.grid == grid {
-        v.edited = false;
+  /// Drop the edit property from every voice on `grid`. This is the clear-edit pedal,
+  /// on OSS 6 for LOM and OSS 0 for RNM.
+  ///
+  /// It silences nothing that a finger holds, but it does end the voices that only edit
+  /// mode was keeping alive, by the rule above. Returns those.
+  pub fn clear_edited(&mut self, grid: GridIndex) -> Vec<VoiceId> {
+    let ids: Vec<VoiceId> = self.edited(grid);
+    let mut ended = vec![];
+    for id in ids {
+      let deferred = matches!(self.by_id.get(&id).map(|v| v.held), Some(Held::EditDeferred));
+      self.set_edited(id, false);
+      if deferred {
+        ended.push(id);
       }
     }
+    ended
   }
 
   /// Every pitch class sounding on `grid`, for the LEDs.
@@ -395,7 +474,7 @@ mod tests {
     assert!(v.set_pitch(id, 35));
 
     assert_eq!(v.get(id).unwrap().pitch, 35);
-    assert_eq!(v.under(0, (3, 3)), Some(id), "the finger still finds it");
+    assert_eq!(v.at(0, (3, 3)), Some(id), "the finger still finds it");
     assert!(v.any_sounding(0, 35));
     assert!(!v.any_sounding(0, 20), "and nothing thinks it still sounds the old pitch");
   }
@@ -417,8 +496,8 @@ mod tests {
     let mut v = voices();
     let id = v.strike(0, (3, 3), 20);
     v.sustain(id);
-    assert_eq!(v.lift(0, (3, 3)), None, "the finger no longer holds it up");
-    assert!(v.get(id).unwrap().sounding());
+    v.lift(0, (3, 3));
+    assert!(v.get(id).unwrap().sounding(), "the finger was not what held it up");
   }
 
   #[test]
@@ -432,16 +511,97 @@ mod tests {
 
   // ---- edit is a property, not a reason ----
 
-  /// Jeff: "edit really isn't a third reason for being for a voice. It is a property
-  /// that can be true of any voice." So an edited fingered voice dies on the lift like
-  /// any other, and you sustain it if you want it to stay.
+  /// Jeff, correcting me: "A fingered voice in edit mode should not end on key-up...
+  /// When edit mode is released, the fingered voice resumes normal release behavior."
+  ///
+  /// So edit defers the release rather than being a reason to sound. The distinction
+  /// matters: the voice is still the finger's, and the finger has merely let go for
+  /// now.
   #[test]
-  fn an_edited_fingered_voice_still_dies_when_its_finger_lifts() {
+  fn an_edited_fingered_voice_waits_instead_of_ending_when_its_finger_lifts() {
     let mut v = voices();
     let id = v.strike(0, (3, 3), 20);
     v.set_edited(id, true);
     v.lift(0, (3, 3));
-    assert!(!v.get(id).unwrap().sounding(), "edit is not a reason to keep sounding");
+    assert!(v.get(id).unwrap().sounding(), "edit defers the release");
+    assert_eq!(v.get(id).unwrap().held, Held::EditDeferred);
+    assert!(!v.get(id).unwrap().under_finger(), "but no finger is on it");
+  }
+
+  /// "But if my finger isn't on it when I take it out of edit mode, it ends with the
+  /// end of the edit mode."
+  #[test]
+  fn a_waiting_voice_ends_when_edit_mode_does() {
+    let mut v = voices();
+    let id = v.strike(0, (3, 3), 20);
+    v.set_edited(id, true);
+    v.lift(0, (3, 3));
+    v.set_edited(id, false);
+    assert!(!v.get(id).unwrap().sounding(), "nothing was holding it but the edit");
+    assert_eq!(v.at(0, (3, 3)), None, "and it no longer lives there");
+  }
+
+  /// "...take it out of edit mode, and I'm still holding it until I release it."
+  #[test]
+  fn leaving_edit_mode_with_a_finger_down_resumes_normal_release() {
+    let mut v = voices();
+    let id = v.strike(0, (3, 3), 20);
+    v.set_edited(id, true);
+    v.set_edited(id, false); // never lifted
+    assert!(v.get(id).unwrap().sounding(), "the finger still holds it");
+    assert!(v.get(id).unwrap().under_finger());
+    v.lift(0, (3, 3));
+    assert!(!v.get(id).unwrap().sounding(), "and now it releases normally");
+  }
+
+  /// "If the monomekey for that voice is pressed again, it retriggers the fingered
+  /// voice there rather than adding a second voice."
+  #[test]
+  fn pressing_a_waiting_voices_monomekey_retriggers_it_rather_than_adding_one() {
+    let mut v = voices();
+    let id = v.strike(0, (3, 3), 20);
+    v.set_edited(id, true);
+    v.lift(0, (3, 3));
+
+    assert_eq!(v.retrigger(0, (3, 3)), Some(id), "the same voice comes back");
+    assert_eq!(v.get(id).unwrap().held, Held::Finger);
+    assert_eq!(v.len(), 1, "and no second voice was added");
+  }
+
+  /// Jeff's whole story, end to end: "I can put the note into edit mode, move my hand
+  /// away, pick a new note to drag it there, leave my finger on it, and take it out of
+  /// edit mode, and I'm still holding it until I release it."
+  #[test]
+  fn the_drag_hands_a_waiting_voice_to_the_finger_that_dragged_it() {
+    let mut v = voices();
+    let id = v.strike(0, (3, 3), 20);
+    v.set_edited(id, true);
+    v.lift(0, (3, 3)); // "move my hand away"
+    assert_eq!(v.get(id).unwrap().held, Held::EditDeferred);
+
+    v.drag(id, (7, 7), 35); // "pick a new note to drag it there, leave my finger on it"
+    assert_eq!(v.get(id).unwrap().pitch, 35);
+    assert_eq!(v.get(id).unwrap().home, (7, 7), "it moved house");
+    assert_eq!(v.get(id).unwrap().held, Held::Finger, "the dragging finger now holds it");
+    assert_eq!(v.at(0, (3, 3)), None, "and nothing lives at the old monomekey");
+    assert_eq!(v.at(0, (7, 7)), Some(id));
+
+    v.set_edited(id, false); // "take it out of edit mode"
+    assert!(v.get(id).unwrap().sounding(), "I'm still holding it");
+    v.lift(0, (7, 7)); // "until I release it"
+    assert!(!v.get(id).unwrap().sounding());
+  }
+
+  /// A sustained voice that gets dragged changes address but keeps its own reason to
+  /// sound: no finger is claiming it.
+  #[test]
+  fn dragging_a_sustained_voice_does_not_hand_it_to_a_finger() {
+    let mut v = voices();
+    let id = v.strike(0, (3, 3), 20);
+    v.sustain(id);
+    v.drag(id, (7, 7), 35);
+    assert_eq!(v.get(id).unwrap().held, Held::Sustained);
+    assert_eq!(v.get(id).unwrap().pitch, 35);
   }
 
   /// The ghost class, made impossible. A property cannot outlive the thing it is a
@@ -510,8 +670,8 @@ mod tests {
     let a = v.strike(0, (1, 1), 20);
     let b = v.strike(1, (1, 1), 20);
     assert_ne!(a, b);
-    assert_eq!(v.under(0, (1, 1)), Some(a));
-    assert_eq!(v.under(1, (1, 1)), Some(b));
+    assert_eq!(v.at(0, (1, 1)), Some(a));
+    assert_eq!(v.at(1, (1, 1)), Some(b));
   }
 
   #[test]
@@ -523,5 +683,59 @@ mod tests {
     assert!(v.sounding_pitch(0, 20).is_empty());
     v.retire(id);
     assert!(v.is_empty());
+  }
+
+  /// The clear-edit pedals (OSS 6 for LOM, OSS 0 for RNM) drop the property from every
+  /// voice on one grid. Anything a finger or a sustain holds keeps sounding; anything
+  /// only edit was holding ends, by the same rule as leaving edit mode one voice at a
+  /// time.
+  #[test]
+  fn clear_edit_keeps_held_voices_and_ends_the_waiting_ones() {
+    let mut v = voices();
+    let fingered = v.strike(0, (1, 1), 20);
+    let kept = v.strike(0, (2, 2), 30);
+    let waiting = v.strike(0, (3, 3), 40);
+    v.sustain(kept);
+    for id in [fingered, kept, waiting] {
+      v.set_edited(id, true);
+    }
+    v.lift(0, (3, 3)); // `waiting` is now held up by nothing but its edit
+
+    let ended = v.clear_edited(0);
+    assert_eq!(ended, vec![waiting], "only the voice edit was carrying ends");
+    assert!(v.get(fingered).unwrap().sounding(), "a finger is its own reason");
+    assert!(v.get(kept).unwrap().sounding(), "so is a sustain");
+    assert!(!v.get(waiting).unwrap().sounding());
+    assert!(v.edited(0).is_empty());
+  }
+
+  /// Jeff's corner case, which he decided: pressing above a monomekey where one
+  /// sustained and one fingered voice are ringing "should end the sustained note,
+  /// without adding the fingered note to the sustained set", because otherwise one
+  /// press would do two opposite things.
+  ///
+  /// The rule that falls out: if anything at this pitch is sustained, the gesture
+  /// un-sustains, and it never sustains in the same press.
+  #[test]
+  fn the_sustain_gesture_un_sustains_when_anything_there_is_already_sustained() {
+    let mut v = voices();
+    let fingered = v.strike(0, (1, 1), 20);
+    let already = v.strike(0, (4, 12), 20);
+    v.sustain(already);
+
+    // What the caller will compute from the voices at that pitch.
+    let at_pitch = v.sounding_pitch(0, 20);
+    let any_sustained =
+      at_pitch.iter().any(|id| matches!(v.get(*id).unwrap().held, Held::Sustained));
+    assert!(any_sustained, "so this press un-sustains rather than sustains");
+
+    for id in &at_pitch {
+      if matches!(v.get(*id).unwrap().held, Held::Sustained) {
+        v.unsustain(*id);
+      }
+    }
+    assert!(!v.get(already).unwrap().sounding(), "the sustained voice ends");
+    assert!(v.get(fingered).unwrap().sounding(), "the fingered one is untouched");
+    assert!(v.sustained(0).is_empty(), "and it was not added to the set");
   }
 }
