@@ -2079,11 +2079,19 @@ fn handle_edit_press(
     // note simply keeps sounding when the finger lifts (`release_cell` asks).
     Act::Entered => {}
     Act::Exited(pitch) => {
-      // It falls silent only if nothing else was holding it up. A finger is its own
-      // reason -- and then there is no drone to cut anyway; that voice is keyed by
-      // cell and dies on the ordinary release.
-      let held_here = held.values().any(|p| *p == pitch);
-      if !held_here && !sustained.contains(&pitch) {
+      // Only the DRONE is in question here, and a drone's reasons are exactly two:
+      // sustained, or edited. Not "fingered" -- a finger has its own voice, keyed by
+      // its cell, which this must not touch and which dies on the ordinary release.
+      //
+      // So: having taken away `edited`, cut the drone unless a sustain still holds it
+      // up. `cut_sustained` is a no-op when there is no drone, which is what makes
+      // "exit while still holding the note" keep sounding -- that note has no drone,
+      // only a finger.
+      //
+      // Asking "is any finger on this pitch?" instead (as this did) is a different
+      // question, and answering yes to it stranded a drone that had just lost its
+      // last reason -- audible forever, with nothing left that could cut it.
+      if !sustained.contains(&pitch) {
         rt.sink.cut_sustained(pitch);
       }
     }
@@ -2096,17 +2104,17 @@ fn handle_edit_press(
       }
       drop(banks);
       if !on {
-        // Same rule as leaving edit mode: silence it only if nothing else holds it up.
-        let held_here = held.values().any(|p| *p == pitch);
+        // Same rule as leaving edit mode, and for the same reason: this is about the
+        // DRONE, whose reasons are sustained-or-edited. A finger is not one of them.
         let editing = rt.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
           .is_editing(pitch);
-        if !held_here && !editing {
+        if !editing {
           rt.sink.cut_sustained(pitch);
         }
-      } else if !held.values().any(|p| *p == pitch) {
-        // Sustaining a note whose finger already lifted: it is only still audible
-        // because it is being edited, so it already has a drone. Nothing to start.
       }
+      // Switching sustain ON starts nothing: a fingered note has no drone yet (it
+      // gets one when the finger lifts), and a note ringing because it is edited
+      // already has one.
     }
     Act::Dragged(from, to) => {
       let fingered = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);

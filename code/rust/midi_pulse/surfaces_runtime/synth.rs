@@ -873,4 +873,53 @@ mod tests {
     scale_pulse_rate(&v, 0, -1.0, &all_edited(), &held());
     assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_freq, 2.0);
   }
+
+  // ---- the drone's reasons are sustain and edit, never "a finger is down" ----
+
+  /// Exiting edit mode used to skip the cut whenever ANY finger held that pitch. That
+  /// conflates two different voices: the finger's (keyed by cell) and the drone's
+  /// (keyed by pitch). A drone can exist while a finger is also down -- lift one of
+  /// two fingers on the same pitch and the lifted one becomes a drone -- and skipping
+  /// the cut then stranded it: audible forever, with nothing left able to cut it.
+  #[test]
+  fn a_drone_and_a_finger_can_sound_the_same_pitch_at_once() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 20, Timbre::default(), None);
+    a.note_on((2, 2), 20, Timbre::default(), None); // a second cell, same pitch
+    a.sustain_note((1, 1), 20); // the first finger lifts -> drone
+
+    let g = v.lock().unwrap();
+    assert!(g.contains_key(&sustain_key(0, 20)), "the lifted finger left a drone");
+    assert!(g.contains_key(&voice_key(0, (2, 2))), "the other finger is still its own voice");
+  }
+
+  /// So cutting the drone must not depend on whether a finger is down: it is a
+  /// different voice, and it survives untouched.
+  #[test]
+  fn cutting_the_drone_leaves_a_finger_on_the_same_pitch_alone() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 20, Timbre::default(), None);
+    a.note_on((2, 2), 20, Timbre::default(), None);
+    a.sustain_note((1, 1), 20);
+
+    a.cut_sustained(20);
+    let g = v.lock().unwrap();
+    assert!(!g.contains_key(&sustain_key(0, 20)), "the drone is gone");
+    let finger = &g[&voice_key(0, (2, 2))];
+    assert!(finger.target_env > 0.0, "the finger's own voice is untouched");
+  }
+
+  /// And the case that makes "exit while still holding" work with no special case:
+  /// a note with only a finger has no drone, so the cut is simply a no-op.
+  #[test]
+  fn cutting_a_pitch_with_no_drone_is_a_no_op() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 20, Timbre::default(), None);
+    a.cut_sustained(20);
+    let g = v.lock().unwrap();
+    assert!(g[&voice_key(0, (1, 1))].target_env > 0.0, "the fingered note plays on");
+  }
 }
