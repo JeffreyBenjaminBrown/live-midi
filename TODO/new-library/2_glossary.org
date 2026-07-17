@@ -27,8 +27,8 @@ old code wrote =chord=, it meant "which grid, and which kind of voice", and the 
 =Voice= enum says that in its variants instead.
 
 ** accrete
-To add a played note to the sustained set while a pedal is held. The word is accurate:
-the set grows by accumulation, note by note, as you play. It stays.
+To add a played voice to the sustained set while a pedal is held. The word is
+accurate: the set grows by accumulation, one voice at a time, as you play. It stays.
 
 Accrete is the verb; sustain is the state it produces.
 
@@ -58,45 +58,96 @@ different pitch after a scroll. The shift pad moves it.
 An absolute step in the tuning, octave included. Distinct from a pitch class.
 
 ** pitch class
-A pitch modulo the EDO. The LEDs mostly work in pitch classes, because a sounding note
-lights all its octave-equivalents. The diamond dance is the one exception.
+A pitch modulo the EDO. The LEDs mostly work in pitch classes, because a sounding
+voice lights all its octave-equivalents. The diamond dance is the one exception.
 
 * sounding
 
 ** voice
-One thing the synth is sounding, and one entry in the voice map. A voice owns its own
-frequency, envelope, timbre, gain, glide and factored pulse, so moving or retuning one
-never touches another.
+One thing the synth is sounding. It owns its own frequency, envelope, timbre, gain,
+glide and factored pulse, so moving or retuning one never touches another.
+
+Jeff: "I'll try to always say voice rather than note, because note is confusible for
+pitch. The code should do likewise." So "note" is not a word this library uses. It
+survives in one honest place, which is a MIDI note-on or note-off message.
+
+** VoiceId
+A voice's identity, for its whole life. It is opaque, it is never reused, and it
+carries no information.
+
+That last part is the point. A value that means something is a value that can stop
+being true. A voice's pitch changes when an edit drags it, and two voices are allowed
+to sound one pitch, so pitch can neither identify a voice nor distinguish two. A
+monomekey cannot either, because the register scrolls and a drag re-homes a voice.
+
+** home
+The monomekey a voice lives at: where its finger is, or where the finger that last held
+it was. Pressing there retriggers that voice rather than starting a second one, and a
+drag moves it.
+
+A home is an address rather than an identity. Two voices never share one, but a voice
+changes home when it is dragged.
 
 ** fingered voice
-A voice under a finger, identified by the monomekey it was struck on. It is not
-identified by pitch, because a per-voice edit can move its pitch away from that
-monomekey's own pitch.
+A voice with a finger on its home.
 
-** drone
-A voice ringing with no finger on it, identified by its pitch. Sustain and edit both
-name pitches, so a drone is what they can address.
+** sustained voice
+A voice in the sustained set, which keeps sounding with no finger on it.
+
+It is not identified by its pitch. Two sustained voices may sound the same pitch, and
+Jeff has ruled that legal: "Now we have two sustained voices at the same pitch. Still
+fine. They'll phase; whatever." The old library could not represent that, and silently
+discarded one of the two.
+
+The word "drone" used to mean this and named the pitch-addressing that made it wrong.
+The word is retired.
 
 ** fading voice
-A cut voice ramping to silence over its release. Nothing ever looks one up.
+A voice ramping to silence over its release. Nothing can address one.
 
-** ringing
-A pitch is ringing when the player can hear it. A pitch rings for any of three
-independent reasons: a finger is on it, it is sustained, or it is being edited.
+** sounding
+A voice is sounding when the player can hear it. A voice sounds while a finger holds
+it, or while it is sustained, and for no other reason.
 
-** sustained
-A pitch that keeps ringing with no finger on it. One set per grid. Two things write
-that set: the accrete pedals, and the per-note sustain monomekey. A clear flushes it,
-which is why a clear reaches both.
+Edit is not a third reason. Jeff: "edit really isn't a third reason for being for a
+voice. It is a property that can be true of any voice."
+
+** sustained set
+The voices on one grid that keep sounding with no finger on them. It holds VoiceIds
+rather than pitches.
+
+Two gestures write it: the accrete pedals, and the sustain monomekey. A clear-sustain
+empties it, which is why a clear reaches both, and it leaves fingered voices alone.
+
+** sustain monomekey
+The monomekey directly above a sounding voice, which toggles that voice's sustain. It
+is the mirror of the edit monomekey directly below.
+
+Where several voices sound one pitch, the gesture acts on all of them, because nothing
+in it distinguishes them. Jeff settled the mixed case: if any voice there is already
+sustained, the press ends the sustained ones and does not sustain the fingered ones,
+"if I wanted the fingered note to replace the sustained note, I could have just
+retriggered."
+
+** edit monomekey
+The monomekey directly below a sounding voice, which toggles that voice's edit
+property.
+
+Both gestures are geometric rather than pitch-defined, so they do not move when the
+tuning changes. Jeff's reason: "my other fingers can do either side but my thumb can
+only reach from below." A voice on the top row has no sustain monomekey, and one on the
+bottom row has no edit monomekey.
 
 * the factored pulse
 
 ** factored pulse
-A unipolar-triangle amplitude modulation applied to a note, at a rate derived from the
-tapped tempo. This is the term; "slow AM" is not, because that already names the timbre
-tremolo, which is a different mechanism that can be on the same note. It is called the
-factored pulse, not the pulse, to avoid clobbering (say) PWM or some other potential
-future use of "pulse".
+A unipolar-triangle amplitude modulation applied to a voice, at a rate derived from the
+tapped tempo. It is called the factored pulse rather than the pulse to avoid clobbering
+PWM, or some other future use of a word that general.
+
+It is also not "slow AM". That name already belongs to the timbre tremolo, which is a
+different mechanism, and the two can be on one voice at once -- which is exactly when
+telling them apart matters.
 
 ** tapped tempo
 The one global tempo, defined by tapping OSS pedal 8 twice. Defining it starts nothing.
@@ -107,22 +158,42 @@ x3 followed by /3 is exactly unity rather than nearly. It is called the tempo fa
 not the factor, because "factor" is general enough to clobber something in future.
 
 ** applied tempo
-The tapped tempo times a grid's tempo factor. This is the rate a note's factored pulse
-runs at.
+The tapped tempo times a grid's tempo factor. A voice's factored pulse runs at the
+applied tempo its grid had when the voice was struck, unless an edit retunes it.
 
 * editing
 
 ** edit mode
-A property of a pitch on one grid: the player has selected it for editing. It is one of
-the three reasons a note rings, so an edited note keeps sounding with no finger on it.
+A property of a voice: the player has selected it for editing. It is a property rather
+than a reason to sound, so it cannot outlive the voice it is a property of.
 
-Jeff is re-specifying edit and sustain, so the entries below hold only until that lands.
+That is what makes a whole bug class unbuildable. Edit used to keep a voice alive, so a
+clear could silence the voice and leave its pitch marked as edited, dancing around
+nothing, with no gesture able to reach it.
+
+** deferred release
+What edit mode does to a fingered voice whose finger lifts. Jeff: "A fingered voice in
+edit mode should not end on key-up... When edit mode is released, the fingered voice
+resumes normal release behavior. But if my finger isn't on it when I take it out of
+edit mode, it ends with the end of the edit mode."
+
+So the voice is still the finger's, and the finger has merely let go for now. Pressing
+its home brings the finger back and retriggers it.
 
 ** the diamond dance
-One lit cell turning around each edited note, marking it. It is the only LED rule in
-the instrument that is local: it marks the exact monomekeys holding that exact pitch on
-that one grid, and it never marks octave-equivalents or the other grid.
+One lit cell turning around each edited voice, marking it. It is the only LED rule in
+the instrument that is local: it marks the exact monomekeys sounding that voice's pitch
+on that one grid, and it never marks octave-equivalents or the other grid.
 
 ** drag
-Moving an edited note's pitch by pressing where you want it. The note glides rather
-than jumping.
+Moving an edited voice's pitch by pressing where you want it. The voice glides rather
+than jumping, and it takes the pressed monomekey as its new home, so the finger that
+dragged it now holds it.
+
+** clear-sustain
+The pedal that empties one grid's sustained set. It leaves fingered voices alone.
+
+** clear-edit
+The pedal that drops the edit property from every voice on one grid. It silences
+nothing that a finger or a sustain holds, and it ends the voices that only a deferred
+release was carrying.
