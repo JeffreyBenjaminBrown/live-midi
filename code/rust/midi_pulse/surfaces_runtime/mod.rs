@@ -43,7 +43,7 @@ use midi_pulse::rig::{
   load_named_rig, AccreteControlKind, AmShapeFamilyRig, Rig, MonomeWindowRig,
   SinkRig, WaveformChoice,
 };
-use midi_pulse::device_assign::assign_available_devices;
+use midi_pulse::device_assign::assign_selected_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
 use midi_pulse::monome::{self, DeviceInfo};
 use midi_pulse::monome_brightness::PulseBrightness;
@@ -243,6 +243,11 @@ fn print_inventory(rig: &Rig) {
 /// grid its selector re-timbres.
 struct GridSettings {
   monome_id: String,
+  /// This grid's FULL device selector, not just its size. A rig that pins grids by
+  /// serial (`select.id_contains`) makes the left/right assignment independent of
+  /// serialosc's enumeration order -- which matters the moment anything off-grid
+  /// (a foot pedal) targets "the left monome" by name.
+  select: midi_pulse::rig::MonomeSelect,
   listen_port: u16,
   prefix: String,
   edo_rect: [i32; 4],
@@ -480,6 +485,7 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
       .unwrap_or(NO_RECT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
+      select: monome_cfg.select.clone(),
       listen_port: monome_cfg.listen_port,
       prefix: monome_cfg.prefix.clone(),
       edo_rect,
@@ -721,7 +727,9 @@ fn run(
     .map_err(|e| format!("bind UDP :{}: {e}", s.grids[0].listen_port))?;
   sock0.set_read_timeout(Some(Duration::from_millis(50)))?;
   let devices = monome::discover_devices_via(&sock0, s.grids[0].listen_port, detector_port);
-  let assigned: Vec<Option<DeviceInfo>> = assign_available_devices(&devices, s.size, num_grids);
+  let selects: Vec<midi_pulse::rig::MonomeSelect> =
+    s.grids.iter().map(|g| g.select.clone()).collect();
+  let assigned: Vec<Option<DeviceInfo>> = assign_selected_devices(&devices, &selects);
   let present: Vec<bool> = assigned.iter().map(Option::is_some).collect();
   for (g, dev) in s.grids.iter().zip(&assigned) {
     if let Some(d) = dev {
@@ -2108,6 +2116,11 @@ mod tests {
   /// (present iff `has_selector`) re-timbres `controls_index`; no other overlays.
   fn gs(id: &str, controls_index: usize, has_selector: bool) -> GridSettings {
     GridSettings {
+      select: midi_pulse::rig::MonomeSelect {
+        size: Some([16, 16]),
+        type_contains: None,
+        id_contains: None,
+      },
       monome_id: id.to_string(),
       listen_port: 9000,
       prefix: format!("/{id}"),
@@ -2302,6 +2315,114 @@ mod tests {
     STOP.store(true, Ordering::SeqCst);
     let _ = handle.join();
     STOP.store(false, Ordering::SeqCst);
+  }
+
+  /// The shipped two-softstep rig must load and resolve. This is the rig's only
+  /// automated check -- everything else about it (which pedal does what, whether the
+  /// grids land left/right) is hardware, and hardware is Jeff's to confirm.
+  #[test]
+  fn the_two_softstep_rig_loads_and_pins_its_gear() {
+    use midi_pulse::rig::{AccreteControlKind, PulseFactorRig, SoftstepWindowRig};
+    let source = std::fs::read_to_string(
+      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+    )
+    .expect("read the shipped rig");
+    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("the shipped rig parses");
+
+    // Grids pinned by SERIAL, not by enumeration order: every pedal below targets a
+    // monome by name, so a replug that swapped them would invert the whole board.
+    let pins: Vec<Option<&str>> =
+      rig.monomes.iter().map(|m| m.select.id_contains.as_deref()).collect();
+    assert_eq!(
+      pins,
+      [Some("m256-282"), Some("m0000102")],
+      "a = the monobright/left grid, b = the varibright/right one",
+    );
+
+    // The two boards must select disjointly, or one binds twice and the other never.
+    let subs: Vec<&str> = rig.softsteps.iter().map(|s| s.select.name_substring()).collect();
+    assert_eq!(subs, ["SSCOM", "SoftStep"]);
+    assert!(!"SSCOM MIDI 1".contains("SoftStep"), "the selectors must not overlap");
+    assert!(!"SoftStep Control Surface".contains("SSCOM"));
+
+    // Sustain: clear + accrete per grid, and momentary only -- no needs_holding or
+    // erase is bound (the library still supports both; this rig just doesn't use them).
+    let accretes: Vec<(&str, u8, &str)> = rig
+      .softstep_windows
+      .iter()
+      .filter_map(|w| match w {
+        SoftstepWindowRig::AccreteControl { pedal, monome, control, .. } => {
+          Some((monome.as_str(), *pedal, match control {
+            AccreteControlKind::Clear => "clear",
+            AccreteControlKind::Accrete => "accrete",
+            AccreteControlKind::NeedsHolding => "needs_holding",
+            AccreteControlKind::Erase => "erase",
+          }))
+        }
+        _ => None,
+      })
+      .collect();
+    assert_eq!(
+      accretes,
+      [("a", 1, "clear"), ("a", 2, "accrete"), ("b", 4, "accrete"), ("b", 5, "clear")],
+      "left buttons drive the left grid, right buttons the right",
+    );
+
+    // Exactly one tap pedal (the tempo is global), on the old board.
+    let taps: Vec<u8> = rig
+      .softstep_windows
+      .iter()
+      .filter_map(|w| match w {
+        SoftstepWindowRig::TapTempoPedal { pedal, .. } => Some(*pedal),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(taps, [8]);
+
+    // Each grid gets a full set of five pulse controls, all on the new board.
+    for monome in ["a", "b"] {
+      let mut factors: Vec<PulseFactorRig> = rig
+        .softstep_windows
+        .iter()
+        .filter_map(|w| match w {
+          SoftstepWindowRig::PulseFactorPedal { monome: m, factor, softstep, .. }
+            if m == monome =>
+          {
+            assert_eq!(softstep, "new", "the pulse lives on the new board");
+            Some(*factor)
+          }
+          _ => None,
+        })
+        .collect();
+      factors.sort_by_key(|f| format!("{f:?}"));
+      let mut want = vec![
+        PulseFactorRig::Double,
+        PulseFactorRig::Triple,
+        PulseFactorRig::Half,
+        PulseFactorRig::Third,
+        PulseFactorRig::Unity,
+      ];
+      want.sort_by_key(|f| format!("{f:?}"));
+      assert_eq!(factors, want, "monome {monome} needs all five pulse controls");
+    }
+
+    // The grids carry ONLY the two overlays; everything else on them is a note.
+    let kinds: Vec<&str> = rig.monome_windows.iter().map(|w| w.kind_name()).collect();
+    assert_eq!(
+      kinds,
+      [
+        "edo_note_grid",
+        "waveform_selector",
+        "edo_shift_pad",
+        "edo_note_grid",
+        "waveform_selector",
+        "edo_shift_pad"
+      ],
+      "no distortion/slide/mono/accrete/tap windows on the grids (see 2_discussion 2f)",
+    );
+
+    // And it must resolve, not merely parse.
+    resolve_settings(&rig).expect("the shipped rig resolves to Settings");
   }
 
   #[test]
