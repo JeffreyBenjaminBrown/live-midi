@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "code/rust/edo_surface"]
+
 [package]
 name = "midi_pulse"
 version = "0.1.0"
