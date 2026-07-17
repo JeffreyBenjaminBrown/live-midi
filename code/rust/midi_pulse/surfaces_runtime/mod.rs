@@ -813,7 +813,13 @@ fn run(
   // (`plan.any_grid()` false) -- there is no grid's pulse to show. Optional and
   // non-fatal: `pulse_window::spawn` never blocks, and a window that can't open
   // just warns once and leaves the rest of the instrument running.
-  if plan.any_grid() {
+  //
+  // `no_audio` gates it too: that is this runtime's headless/mock signal (it also
+  // skips the cpal stream), and a window is the same kind of thing -- a real system
+  // resource a test must not reach for. Without this the mock-grid smoke test opens
+  // an X11 window on whoever's display happens to be around, which makes the suite
+  // depend on DISPLAY and on Jeff's per-login `xhost` grant.
+  if plan.any_grid() && !no_audio {
     pulse_window::spawn(Arc::clone(&poly), num_grids);
   }
   let audio = if no_audio {
