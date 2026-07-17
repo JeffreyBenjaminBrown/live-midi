@@ -1,0 +1,241 @@
+#+title: Edit mode: how it is actually implemented
+#+date: 2026-07-17
+
+Per-voice edit mode, as built, in one place. Written because this feature has produced
+*five* bugs on the hardware and every one of them was a *representation* problem --
+some fact recorded in two places, with one copy not updated. None of them were logic
+errors, and none were caught by unit tests, because a unit test asserts one component
+against its own idea of the world and cannot see a disagreement *between* components.
+
+So this document is mostly a map of *where each fact lives* and *who is allowed to
+change it*. The design rationale is in =TODO/many/1_vision.org= and =2_discussion.org=;
+this is the implementation.
+
+Code: =code/rust/midi_pulse/surfaces_runtime/= -- =edit.rs= (the pure state machine),
+=mod.rs= (the wiring), =synth.rs= (voices), =accrete.rs= (sustain), =dance.rs= (the LEDs).
+
+* the one-sentence version
+A *note* is a pitch that is *ringing*; it rings for any of *three independent
+reasons*; edit mode is one of them; and everything that has ever gone wrong here has
+been two records of "what is ringing" disagreeing.
+
+* what a voice is
+The synth holds one flat =VoiceMap=: =HashMap<VoiceSource, VoiceState>=. Every
+sounding thing is one entry. A =VoiceState= carries its own =freq=, envelope, timbre,
+gain, glide target and pulse rate -- so a voice is fully self-contained, and moving or
+retuning one never touches another.
+
+*The key decides what the voice IS.* All three kinds are the same enum variant,
+=VoiceSource::Accreted { chord, pitch }=, distinguished by ranges of =chord=:
+
+| kind        | =chord=              | =pitch= field holds        | lives while                  |
+|-------------+----------------------+----------------------------+------------------------------|
+| *fingered*  | =grid=               | *the packed CELL* (y*256+x) | a finger is on that cell     |
+| *drone*     | =SUSTAIN_BASE + grid= | the real pitch             | something sustains it        |
+| *retired*   | =RETIRED_BASE + grid= | a uniquifier               | it is fading out             |
+
+*The trap, and it has bitten twice:* the field called =pitch= holds a *cell* for a
+fingered voice. Only a drone's =pitch= is a pitch. So *you cannot find a fingered
+voice by pitch* -- see [[* the cell/pitch bridge]].
+
+Retired voices exist so a cut note can fade over =release_secs= without blocking a new
+voice at the same key; nothing ever looks them up again.
+
+* what sustain is
+"Sustain" means exactly one thing: *this pitch keeps ringing with no finger on it.*
+
+It is one set per grid -- =AccreteState::sustained: HashSet<i32>= (=accrete.rs=),
+shared as =Arc<Mutex<Vec<AccreteState>>>=. Both ways of sustaining write the same set,
+which is why a =clear= flushes both:
+
+- the *accrete pedals* (hold to accrete: every note played while held joins the set);
+- the *per-note sustain button* -- press the cell directly ABOVE a sounding note.
+
+Sustaining does not itself create a voice. It changes what happens *when the finger
+lifts*: =release_cell= converts the fingered voice into a drone rather than releasing
+it (=sustain_note=, which re-keys the same =VoiceState= from cell to pitch -- so the
+sound is seamless; it is literally the same voice).
+
+* the three reasons a note rings
+A pitch on a grid is ringing iff *any* of:
+
+1. *a finger is on it* -- =held= has a cell mapping to it;
+2. *it is sustained* -- that grid's =sustained= set has it;
+3. *it is being edited* -- that grid's =EditState= has it.
+
+These are *orthogonal*. Each is owned by exactly one place, each gesture touches only
+its own, and every "does it still ring?" question is the same check. This was not
+always so: edit mode used to make a note ring by inserting into the *sustained* set
+with an =owned= flag recording who put it there, and =clear= updated one of the two
+records and not the other -- which is the bug that made a grid unplayable.
+
+** the invariant
+*A pitch that rings without a finger has exactly one drone; a pitch that rings only
+under a finger has none.*
+
+Corollaries, and both have been got wrong:
+- *A drone's reasons are 2 and 3 only.* Never "fingered" -- a finger has its own,
+  separate voice. So code deciding whether to cut a drone must ask about sustain and
+  edit, and *must not* ask whether a finger is down.
+- =cut_sustained(pitch)= is a *no-op when there is no drone*. That is what makes
+  "leave edit mode while still holding the note" keep sounding, with no special case:
+  the note has only a finger, so there is nothing to cut.
+
+* the representations, and who may write them
+| what                | where                                   | owner                        |
+|---------------------+-----------------------------------------+------------------------------|
+| the voices          | =VoiceMap= (=synth.rs=)                 | =SurfaceSink=, one per grid  |
+| what a finger sounds | =held: HashMap<cell, pitch>=           | its grid thread, private     |
+| what is sustained   | =AccreteState::sustained=               | shared; grid thread + pedals |
+| what is edited      | =EditState::pitches=                    | shared; grid thread + pedals |
+| what the other grid shows | =sounding=, =held_all=            | published out per press      |
+
+=EditState= and =AccreteState= are *shared* (=Arc<Mutex<Vec<_>>>=) rather than owned
+by the grid thread, because the pedal hook must both read them (a pulse pedal retunes
+edited notes) and write them (=clear= must dismiss edit mode). They were not always,
+and =clear= not reaching =EditState= is precisely how a ghost survived a clear.
+
+** the cell/pitch bridge
+=held= maps *cell -> the pitch that finger is currently SOUNDING* -- not the pitch the
+cell nominally means under the current register. Those agree until a drag moves a
+voice, and then =held= is the *only* record of the truth.
+
+This matters because a fingered voice is keyed by its cell, so:
+- to find the voice sounding pitch P, you must look up =held= to get its cell;
+- =cut_sustained(P)= finds only a *drone*, never a dragged fingered voice.
+
+Anything that re-pitches a live voice must re-file =held= in the same breath, or every
+downstream lookup silently asks about the wrong pitch.
+
+* the gestures
+Both triggers act on a *neighbour* of the pressed cell, and both are *geometric* --
+literally the cell above/below, not "the pitch one microtone away". Jeff pinned them
+to position so they do not move when the tuning changes. (They coincide here anyway:
+=y_step = 1= makes the cell below exactly one microtone up.)
+
+| press                        | means                                    |
+|------------------------------+------------------------------------------|
+| below a note in edit mode    | *exit* edit mode                         |
+| below a sounding note        | *enter* edit mode                        |
+| above a sounding note        | *toggle sustain*                         |
+| an edited note's own pitch   | *retrigger* it                           |
+| anything else, while editing | *drag* the nearest edited note here      |
+| anything else                | play                                     |
+
+** precedence, and why it is that order
+=EditState::classify= checks in exactly this order:
+
+1. *exit* -- before anything asks whether a note is audible.
+2. *enter* -- the note above is sounding.
+3. *sustain* -- the note below is sounding.
+4. *retrigger* -- the pressed pitch is itself edited.
+5. *drag* -- something is edited.
+6. *play*.
+
+*Exit is first, and does not test audibility.* Anything that silences an edited note
+out from under us strands it otherwise: still dancing, still forcing every press to
+drag, and un-dismissable because the gesture that dismisses it needed the sound that
+just went away. Putting exit first, with no audibility test, makes *"no inescapable
+state"* true by construction rather than by every future silencer remembering to tidy
+up. It has already been the difference once.
+
+*Edit beats sustain* when a cell has sounding notes on both sides (two notes one cell
+apart, straddling the press). Rare, but decided rather than accidental.
+
+* every state change
+Written as: what changes, and what must change *with* it.
+
+** enter edit mode
+=EditState.pitches += P=. Nothing else. Being edited is itself a reason to ring, so
+the note simply keeps sounding when the finger lifts -- =release_cell= asks.
+
+** exit edit mode
+=EditState.pitches -= P=, then: *if P is not sustained, =cut_sustained(P)=.*
+
+Not "if no finger is on it". The drone is what is in question, and a drone's reasons
+are sustain and edit; a finger has its own voice. If the note is still held, there is
+no drone and the cut is a no-op -- so it keeps sounding, with no special case.
+
+** toggle sustain (the cell above)
+=sustained ^= P=. Turning it *off* cuts the drone unless P is still edited. Turning it
+*on* starts nothing: a fingered note gets its drone when the finger lifts, and an
+edited note already has one.
+
+** drag (any other press, while editing)
+The nearest edited pitch moves. Ties go to the lower note.
+- =EditState=: =P -> Q=.
+- the voice: =glide_voice_to= (fingered, found via =held=) or =glide_sustained_to= (a
+  drone, which re-keys it to =sustain_key(Q)= since a drone's key *is* its pitch).
+- =held[cell] = Q= if it was fingered. *This is the bridge* -- skip it and releasing
+  looks up the pitch the note used to be.
+- =sustained=: re-filed too (=note_moved=), or a clear would miss it.
+- the trail: pushed, so it shows a pitch that is actually sounding.
+
+Re-aiming mid-glide is safe: =glide_voice_to= re-reads the voice's *live* =freq=, so
+dragging back and forth just re-aims. Patching =freq_target= alone would not --
+=glide_per_sample= encodes direction.
+
+** retrigger (striking an edited note's own pitch)
+Falls through to the ordinary note-on path, which already cuts the drone
+(=cut_sustained=, ramped over =release_secs= so it slews rather than clicks) and
+starts a fresh voice. Edit mode is a property of the *pitch*, so it survives.
+
+** release a finger
+=release_cell= asks the two drone-reasons: *sustained or edited?* If either, the voice
+is re-keyed into a drone (=sustain_note=); otherwise it is released. It looks the
+pitch up in =held= -- which is why a stale =held= silently cuts notes it should keep.
+
+If a drone at that pitch already exists, =sustain_note= releases this voice instead of
+inserting, rather than leaving two voices on one key.
+
+** clear (the pedal)
+Flushes =sustained=, releases every drone on that grid, *and clears =EditState=*. It
+is the panic button: it must leave the grid playable. Leaving edit mode populated
+after silencing its notes is exactly the ghost bug.
+
+** the pulse pedals
+With notes in edit mode on a grid, its =x2/x3//2//3= multiply *those notes'* pulse
+rates (=scale_pulse_rate=, selecting by pitch, which needs =held= to reach fingered
+voices -- the bridge again). With none, they move the grid's factor. ~=1~ is never an
+edit control.
+
+* what you see
+- *The dance* -- one lit cell turning around each edited note, 150 ms a corner, 600 ms
+  a lap. Painted from =EditState= directly, so it does not care whether a voice
+  exists: a silent dancer means the invariant is broken, and is a *symptom worth
+  trusting*. It marks the exact cells holding that exact pitch on that grid only --
+  never octave-equivalents, never the other grid, unlike every other LED rule here.
+- *Bright* -- an edited note rings, so it paints bright like anything else, on both
+  grids. It is not in anyone's =sustained= set now, so the LED pass unions the edit
+  pitches in explicitly; miss that and an audible drone looks silent.
+- *The octave corners flash* when an edited or sustained note is off-screen.
+
+* known holes
+Found while writing this, not yet fixed. Both are consequences of [[* the cell/pitch bridge]].
+
+** retriggering a DRAGGED, still-fingered note doubles it
+After a drag, the voice lives at cell C but sounds Q; cell D is the one that
+*nominally* means Q. Striking D retriggers -- but the play path's =cut_sustained(Q)=
+looks only for a *drone*, and this voice is fingered, so nothing is cut and Q sounds
+twice.
+
+The common case is fine (an edited note whose finger has lifted is a drone, and that
+is cut). This needs the finger still down *and* the note dragged.
+
+Arguably it is even consistent -- two cells colliding to one pitch are two independent
+voices by design. But Jeff asked for "cutting off the old one", so it is a hole.
+
+** an edited note can be dragged off-screen and lost
+Nothing stops a drag landing on a pitch outside the visible window. The octave-corner
+flash points at it, so it is recoverable -- but the note has no cell, so it cannot be
+exited until it is scrolled back.
+
+* what is tested, and what that is worth
+=edit.rs=, =dance.rs= and the voice primitives are thoroughly unit-tested (~50 tests),
+and *not one of the five hardware bugs would have been caught by them*. Every one was
+a disagreement between two components, each of which was individually correct.
+
+The tests that would have caught them are the ones that assert *the shipped rig's
+behavior* -- and they are the ones worth adding to. They also pin their own premises
+(e.g. that the rig really binds no =needs_holding= control), so they fail honestly
+rather than passing on an assumption that has quietly stopped being true.
