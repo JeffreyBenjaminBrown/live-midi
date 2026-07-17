@@ -16,6 +16,13 @@ live only in Claude's memory. Follow the links for depth.
   worktrees, e.g. Jeff's NixOS config at =other-projects/nix-jbb/config/=).
   See [[./how-to-parallelize-dev.org]].
 - The project's point: read/write MIDI and audio between container and host.
+- The tree sorts by what a thing IS, not by what language it is written in:
+  =edo_surface/= is the instrument being built now, =buried/= is the old
+  =midi_pulse= crate (it still compiles and still runs the looper, piano, un-12 and
+  drums rigs, it is just out of the way), =rigs/= holds the rigs and their readmes,
+  and =tools/= holds the meters, probes and bridges, Rust and Python alike. There
+  used to be a =code/rust/= and a =code/python/=, which sorted by the one axis nobody
+  ever searches on.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
 
@@ -90,5 +97,6 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
   otherwise.)
 * also possibly relevant files
 - README.org
-- rigs/README.org (NOT =code/rust/configs/README.org= -- that directory was
-  renamed to =rigs/=; the old name survives only inside finished TODO entries.)
+- rigs/README.org -- the rig system. It has been =configs/= and then
+  =code/rust/rigs/= in its time, and both names survive inside finished TODO entries;
+  the rigs live at =rigs/= now.

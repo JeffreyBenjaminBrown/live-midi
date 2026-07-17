@@ -53,8 +53,11 @@ logic you used for edit. Easily reversed, and recorded below rather than beeped.
   =factored_pulse_freq= and =factored_pulse_phase=, =FactorButton= became
   =TempoFactorButton=, and the on-screen readout now says "factored pulse ON". The
   suite stayed green throughout.
-- The folder move you approved is running: =buried/=, =edo_surface/=, =rigs/=,
-  =tools/=, with =learnings/= and =TODO/= untouched.
+- The folder move you approved is done. =buried/= holds the old crate and still runs
+  the looper, piano, un-12 and drums rigs; =edo_surface/= is the new one; =rigs/= holds
+  the rigs; =tools/= holds the meters, probes and bridges, Rust and Python together.
+  =code/= is gone. Both crates pass, and the two-softstep rig still loads from disk --
+  it now fails on "no gear present", which is the right failure at 1am.
 - =edo_surface= exists as its own crate, and cargo enforces that it cannot see
   =midi_pulse=. I checked that by trying to import from it and confirming the build
   fails, rather than by trusting the manifest.
@@ -67,6 +70,18 @@ logic you used for edit. Easily reversed, and recorded below rather than beeped.
 ** the old crate is still the instrument
 Everything you played tonight runs on =midi_pulse/surfaces_runtime=. =edo_surface= is
 one module and no runtime. Nothing you press touches it yet.
+
+** the suite is not safe to run twice at once, and it fooled me for a minute
+I saw two tests fail right after the folder move, then watched them pass three times
+running. The cause is not the move: the surfaces runtime binds the rig's fixed
+=listen_port= (9000 and 9001), and =MOCK_LOCK= only serializes the mock-grid test
+within one process. Two =cargo test= processes at once -- mine racing a subagent's --
+both reach for 9000, and one loses.
+
+Benign, and my own doing. Worth writing down because a suite that fails only when
+something else is testing looks exactly like a real intermittent bug, and I nearly
+went hunting for one. If it ever matters, the fix is an ephemeral port in the mock
+rig rather than a real one.
 
 ** the renames touched code that is about to be buried
 Propagating the factored pulse and the tempo factor through =midi_pulse= is churn on a
