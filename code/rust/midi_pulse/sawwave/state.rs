@@ -107,7 +107,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       freq: freq_for_pitch(abs_pitch, state.fund, state.edo),
       freq_target: 0.0,
       glide_per_sample: 1.0,
-      tempo_am_freq: 0.0, tempo_am_phase: 0.0,
+      factored_pulse_freq: 0.0, factored_pulse_phase: 0.0,
       phase: 0.0, env: 0.0,
       target_env: 1.0,
       ramp_per_sample: 1.0 / (state.audio.attack_secs * state.sample_rate),

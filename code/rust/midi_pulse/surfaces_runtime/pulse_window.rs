@@ -1,20 +1,20 @@
-//! The on-screen pulse readout window (`TODO/many/3_plan.org` phase 9; see
+//! The on-screen factored-pulse readout window (`TODO/many/3_plan.org` phase 9; see
 //! `TODO/many/2_discussion.org` 3c for what it shows and why it exists at all).
-//! The `=1` LED that showed a grid's pulse switch, and the tap cell that blinked
-//! the tapped tempo, both left the grid for the feet (the softstep pedals now
-//! drive tap/factor/`=1` -- see `polyrhythm.rs` and `TODO/many/1_vision.org`), so
-//! there is nowhere left on either monome to see this state. This window is where
-//! it goes instead -- exactly the four things Jeff asked for, nothing more
-//! ("The rest would be too much for me to read live"):
+//! The `=1` LED that showed a grid's factored-pulse switch, and the tap cell that
+//! blinked the tapped tempo, both left the grid for the feet (the softstep pedals
+//! now drive tap/tempo-factor/`=1` -- see `polyrhythm.rs` and
+//! `TODO/many/1_vision.org`), so there is nowhere left on either monome to see this
+//! state. This window is where it goes instead -- exactly the four things Jeff
+//! asked for, nothing more ("The rest would be too much for me to read live"):
 //! 1. the global tapped tempo as BPM to one decimal place (`readout::bpm`);
-//! 2. each grid's factor as `2^x * 3^y` (`readout::grid_line`);
-//! 3. whether each grid's pulse is on at all (also `readout::grid_line`);
+//! 2. each grid's tempo factor as `2^x * 3^y` (`readout::grid_line`);
+//! 3. whether each grid's factored pulse is on at all (also `readout::grid_line`);
 //! 4. a blinker at the UNFACTORED tapped tempo (`PolyrhythmState::tap_phase`).
 //!
 //! Modeled on `edo12n_gui.rs`: `minifb`, a framebuffer, the shared bitmap font
 //! (`crate::bitmap_font`), ~20 fps, Escape to quit. The difference is what drives
 //! the redraw: `edo12n_gui` reacts to an mpsc channel of note events, but there is
-//! no discrete "pulse changed" event here, so this window just polls
+//! no discrete "state changed" event here, so this window just polls
 //! `PolyrhythmState` once per frame instead.
 //!
 //! Optional and non-fatal by design (like the rest of this runtime is robust to
@@ -67,8 +67,8 @@ fn win_h(num_grids: usize) -> usize {
   MARGIN * 3 + LINE_H * (num_grids + 2)
 }
 
-/// Spawn the pulse window on its own thread and return immediately -- opening (or
-/// failing to open) the window never blocks or fails the caller.
+/// Spawn the factored-pulse window on its own thread and return immediately --
+/// opening (or failing to open) the window never blocks or fails the caller.
 pub fn spawn(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
   std::thread::spawn(move || run(poly, num_grids));
 }
@@ -80,16 +80,16 @@ fn run(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
     std::env::set_var("DISPLAY", ":0");
   }
   let win_h = win_h(num_grids);
-  let mut window = match Window::new("surfaces pulse", WIN_W, win_h, WindowOptions::default()) {
+  let mut window = match Window::new("surfaces factored pulse", WIN_W, win_h, WindowOptions::default()) {
     Ok(w) => w,
     Err(e) => {
       // Non-fatal: the instrument plays fine without this window. Name the one
       // fix Jeff actually needs (TODO/many/2_discussion.org 3c) rather than just
       // printing the raw minifb error.
       eprintln!(
-        "surfaces: the pulse window did not open ({e}) -- likely fix: run \
+        "surfaces: the factored-pulse window did not open ({e}) -- likely fix: run \
          `xhost +local:` on the host so this container's X11 connection is \
-         authorized. Playing without the on-screen pulse readout."
+         authorized. Playing without the on-screen factored-pulse readout."
       );
       return;
     }
@@ -160,8 +160,8 @@ fn render(buf: &mut [u32], win_w: usize, win_h: usize, poly: &Arc<Mutex<Polyrhyt
     let blink = screen_blink_on(p.tap_phase(now), p.tapped_hz());
     let lines: Vec<String> = (0..num_grids)
       .map(|g| {
-        let (two_exp, three_exp) = p.factor_exponents(g);
-        readout::grid_line(&grid_name(g), p.pulse_on(g), two_exp, three_exp)
+        let (two_exp, three_exp) = p.tempo_factor_exponents(g);
+        readout::grid_line(&grid_name(g), p.factored_pulse_on(g), two_exp, three_exp)
       })
       .collect();
     (bpm, blink, lines)

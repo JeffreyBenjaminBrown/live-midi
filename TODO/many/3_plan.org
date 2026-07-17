@@ -1,4 +1,4 @@
-#+title: Plan: two softsteps, per-voice pitch + pulse edit
+#+title: Plan: two softsteps, per-voice pitch + factored-pulse edit
 #+date: 2026-07-16
 
 Executes =1_vision.org= as settled in =2_discussion.org=. Every design question there
@@ -56,19 +56,21 @@ Unused: 3, 6, 7, 9, 0. "Momentary" = =needs_holding= permanently on.
 | far row  | 5: x2 LOM | 4: x3 LOM | 3: =1 RNM | 2: x3 RNM | 1: x2 RNM |
 | near row | 0: /2 LOM | 9: /3 LOM | 8: =1 LOM | 7: /3 RNM | 6: /2 RNM |
 
-** the pulse (NOT "slow AM" -- that name is taken by the timbre tremolo, 1c)
+** the factored pulse (NOT "slow AM" -- that name is taken by the timbre tremolo, 1c)
 - One *global tapped tempo* (OSS 8). Two taps within =tap_tempo_window_ms=.
-- Each monome has its own factor =2^a * 3^b= and its own on/off switch.
+- Each monome has its own tempo factor =2^a * 3^b= and its own on/off switch.
 - ==1= keeps the *existing double-tap dance verbatim*: press while off -> cycling ON,
-  factor kept; press while on -> *unity* the factor; second press within 400 ms ->
-  cycling OFF. ==1= *does nothing different in edit mode* -- only =x=/=/= are edit
-  controls (1d).
-- *When >=1 note is in edit mode on monome M:* M's =x2/x3//2//3= multiply the pulse
-  rate of *every edit-mode note on M*, leaving M's grid factor alone.
-- *When no note is in edit mode on M:* they adjust M's grid factor (today's
+  tempo factor kept; press while on -> *unity* the tempo factor; second press within
+  400 ms -> cycling OFF. ==1= *does nothing different in edit mode* -- only =x=/=/=
+  are edit controls (1d).
+- *When >=1 note is in edit mode on monome M:* M's =x2/x3//2//3= multiply the
+  factored-pulse rate of *every edit-mode note on M*, leaving M's grid tempo factor
+  alone.
+- *When no note is in edit mode on M:* they adjust M's grid tempo factor (today's
   behavior).
-- Rate changes on a live voice *keep the phase* (no click). *Turning the pulse off
-  never retroactively touches sounding notes* -- only the multipliers do (2e).
+- Rate changes on a live voice *keep the phase* (no click). *Turning the factored
+  pulse off never retroactively touches sounding notes* -- only the multipliers do
+  (2e).
 
 ** edit mode
 On a press of cell =C= on monome =M=, in this order:
@@ -118,9 +120,9 @@ directions. One signal for both note kinds; Jeff will disambiguate by ear.
   meaningless there, so no sustained-pressure decoding.
 
 ** the GUI window
-- Global pulse as *BPM to one decimal place*.
-- Per-monome factor as *2^x * 3^y* for integer x, y.
-- Per-monome: whether the pulse is on.
+- Global tapped tempo as *BPM to one decimal place*.
+- Per-monome tempo factor as *2^x * 3^y* for integer x, y.
+- Per-monome: whether the factored pulse is on.
 - A blinker at the *unfactored* global tempo.
 - Nothing else -- Jeff: "The rest would be too much for me to read live."
 
@@ -220,21 +222,21 @@ clear/accrete and tap work.
   skipped corner still advances the phase, that two dances stay in phase, and that a
   trail cell is overridden while a sounding cell is not.
 
-** phase 8 -- pulse retargeting for edit-mode notes
-*Goal:* the §pulse rules above.
+** phase 8 -- factored-pulse retargeting for edit-mode notes
+*Goal:* the §factored-pulse rules above.
 - A voice-map walker modeled on =rescale_grid_gain= (=synth.rs:45-57=); assign
-  =tempo_am_freq=, *keep =tempo_am_phase=*. Respect the lock order (poly lock dropped
-  before the voices lock, =mod.rs:1618-1619=).
+  =factored_pulse_freq=, *keep =factored_pulse_phase=*. Respect the lock order (poly
+  lock dropped before the voices lock, =mod.rs:1618-1619=).
 - *Delete the three now-false comments* (=polyrhythm.rs:34-37=, =types.rs:147-149=,
   =synth.rs:122-123=) and fix the readme.
 - *Acceptance:* tests that x2 doubles every edit-mode note's rate and leaves the grid
-  factor alone; that with no note in edit mode the same press moves the factor; that
-  pulse-off leaves sounding notes alone.
+  tempo factor alone; that with no note in edit mode the same press moves the tempo
+  factor; that factored-pulse-off leaves sounding notes alone.
 
 ** phase 9 -- the GUI window
 *Goal:* the four readouts above.
 - =minifb=, modeled on =edo12n_gui.rs=; fed from the polyrhythm/edit state.
-- *Acceptance:* the *formatting* is pure and unit-tested (BPM to 1 dp; factor as
+- *Acceptance:* the *formatting* is pure and unit-tested (BPM to 1 dp; tempo factor as
   =2^x * 3^y=). *The visual check is Jeff's* -- I cannot open a window until =xhost=
   runs (3c), and I will not claim otherwise.
 

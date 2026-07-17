@@ -46,9 +46,9 @@ grid is which never depends on plug order.
 
 ** OSS, NSS
 The old SoftStep (ALSA client =SSCOM=) and the new one (=SoftStep=). OSS carries
-sustain and the tap tempo. NSS carries the pulse, and it sits rotated 180 degrees,
-which the code never learns: it binds printed pedal labels, and the rotation only
-explains why the map reads mirrored.
+sustain and the tap tempo. NSS carries the factored pulse, and it sits rotated 180
+degrees, which the code never learns: it binds printed pedal labels, and the rotation
+only explains why the map reads mirrored.
 
 ** register
 A per-grid offset added to every monomekey's step, so the same monomekey sounds a
@@ -65,8 +65,8 @@ lights all its octave-equivalents. The diamond dance is the one exception.
 
 ** voice
 One thing the synth is sounding, and one entry in the voice map. A voice owns its own
-frequency, envelope, timbre, gain, glide and pulse, so moving or retuning one never
-touches another.
+frequency, envelope, timbre, gain, glide and factored pulse, so moving or retuning one
+never touches another.
 
 ** fingered voice
 A voice under a finger, identified by the monomekey it was struck on. It is not
@@ -89,22 +89,26 @@ A pitch that keeps ringing with no finger on it. One set per grid. Two things wr
 that set: the accrete pedals, and the per-note sustain monomekey. A clear flushes it,
 which is why a clear reaches both.
 
-* the pulse
+* the factored pulse
 
-** pulse
+** factored pulse
 A unipolar-triangle amplitude modulation applied to a note, at a rate derived from the
 tapped tempo. This is the term; "slow AM" is not, because that already names the timbre
-tremolo, which is a different mechanism that can be on the same note.
+tremolo, which is a different mechanism that can be on the same note. It is called the
+factored pulse, not the pulse, to avoid clobbering (say) PWM or some other potential
+future use of "pulse".
 
 ** tapped tempo
 The one global tempo, defined by tapping OSS pedal 8 twice. Defining it starts nothing.
 
-** factor
+** tempo factor
 A per-grid rational multiplier on the tapped tempo, held as exponents =2^a * 3^b=, so
-x3 followed by /3 is exactly unity rather than nearly.
+x3 followed by /3 is exactly unity rather than nearly. It is called the tempo factor,
+not the factor, because "factor" is general enough to clobber something in future.
 
 ** applied tempo
-The tapped tempo times a grid's factor. This is the rate a note's pulse runs at.
+The tapped tempo times a grid's tempo factor. This is the rate a note's factored pulse
+runs at.
 
 * editing
 

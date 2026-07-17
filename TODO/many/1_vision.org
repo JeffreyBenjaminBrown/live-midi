@@ -117,10 +117,10 @@ to bring that note back on-screen should flash.
 Note that there might be such a note in both directions;
 in that case, both such buttons should flash.
 Let's say 150 ms on, 150 ms off.
-** per-voice slow AM (pulse) edit
+** per-voice slow AM (factored pulse) edit
 When a note is in edit mode, the tempo at which it pulses
 can also be adjusted.
-Pulse adjustments are applied to all notes in edit mode on a given monome at once.
+Factored-pulse adjustments are applied to all notes in edit mode on a given monome at once.
 The newer sofstep will provide the interface.
 LOM = left old monome,
 RNM = right new monome.
@@ -138,12 +138,12 @@ Let's use that, rather than shell text.
 Tell me if connections/permissions don't allow it --
 see docker.sh for how this docker container interfaces with the host.
 That window should also have a blinker to indicate the global tempo
-(without multiplying by the rational factor).
+(without multiplying by the rational tempo factor).
 
 When no notes are in edit mode for a given monome,
-the softstep slow AM tempo controls for that monome control the tempo 'factor'
+the softstep slow AM tempo controls for that monome control the tempo factor
 -- the (rational number) frequency multiplier applied to tempo
-to deterine a note's actual pulse frequency.
+to deterine a note's actual factored-pulse frequency.
 That creates some redundancy -- if no notes on either monome are being edited,
 then there are two x2 buttons on the softstep that could double the global tempo.
 That redundancy is okay.

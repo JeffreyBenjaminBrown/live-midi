@@ -57,7 +57,7 @@ use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
 use crate::voices::{Distortion, Makeup};
 
 use accrete::AccreteState;
-use polyrhythm::{FactorButton, PolyrhythmState};
+use polyrhythm::{TempoFactorButton, PolyrhythmState};
 use slide::SlideCandidates;
 use grid::{
   button_level, levels_for_grid, slot_for_selector_cell, volume_cells, volume_gain_for_pos,
@@ -804,15 +804,16 @@ fn run(
   // or neither.
   let feet_accrete_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
-  // The polyrhythm state (tap tempo + factor): one instrument-wide machine, both
-  // grids' pads.
+  // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
+  // both grids' pads.
   let poly = Arc::new(Mutex::new(PolyrhythmState::new(num_grids)));
-  // The on-screen pulse window (phase 9, `TODO/many/3_plan.org`): the =1 LED and
-  // the tap cell's blink moved off the grid onto the feet, so this is the only
-  // place left to see the pulse state. Skipped entirely on a drums-only bring-up
-  // (`plan.any_grid()` false) -- there is no grid's pulse to show. Optional and
-  // non-fatal: `pulse_window::spawn` never blocks, and a window that can't open
-  // just warns once and leaves the rest of the instrument running.
+  // The on-screen factored-pulse window (phase 9, `TODO/many/3_plan.org`): the =1
+  // LED and the tap cell's blink moved off the grid onto the feet, so this is the
+  // only place left to see the factored-pulse state. Skipped entirely on a
+  // drums-only bring-up (`plan.any_grid()` false) -- there is no grid's factored
+  // pulse to show. Optional and non-fatal: `pulse_window::spawn` never blocks, and
+  // a window that can't open just warns once and leaves the rest of the
+  // instrument running.
   //
   // `no_audio` gates it too: that is this runtime's headless/mock signal (it also
   // skips the cpal stream), and a window is the same kind of thing -- a real system
@@ -883,10 +884,11 @@ fn run(
   ));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
   // Each grid's edit-mode state, SHARED rather than owned by its grid thread -- the
-  // pedal hook both reads it (a pulse pedal retunes the edited notes when there are
-  // any) and writes it (`clear` must dismiss them, or it silences a note and leaves it
-  // dancing). Same shape as `accrete`, which it is inseparable from: entering edit
-  // mode sustains a pitch in that bank, so the two must not disagree about what rings.
+  // pedal hook both reads it (a factored-pulse pedal retunes the edited notes when
+  // there are any) and writes it (`clear` must dismiss them, or it silences a note
+  // and leaves it dancing). Same shape as `accrete`, which it is inseparable from:
+  // entering edit mode sustains a pitch in that bank, so the two must not disagree
+  // about what rings.
   let edit: Arc<Mutex<Vec<edit::EditState>>> =
     Arc::new(Mutex::new((0..num_grids).map(|_| edit::EditState::new()).collect()));
 
@@ -1137,7 +1139,7 @@ struct GridThread {
   /// The per-grid feet-accrete switches; this grid's toggle flips (and its LED
   /// shows) element `grid_index` -- "the softstep accretes for THIS monome".
   feet_accrete_on: Arc<Vec<AtomicBool>>,
-  /// The shared polyrhythm state (tap tempo + factor) and its pairing window.
+  /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
   tap_window: Duration,
   /// THIS grid's recently-released notes (slide sources) + the slide knobs.
@@ -1246,9 +1248,10 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.mono_rect, &rt.mono_on));
     buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
     if rt.poly_rect != NO_RECT {
-      // The pad's six cells, all per-THIS-grid state: the factor cells show which
-      // way this grid's factor leans; =1 shows this grid's pulse switch (bright
-      // while its amplitude cycling is on). The tap cell blinks BLACK <-> FULLY
+      // The pad's six cells, all per-THIS-grid state: the tempo-factor cells show
+      // which way this grid's tempo factor leans; =1 shows this grid's
+      // factored-pulse switch (bright while its amplitude cycling is on). The tap
+      // cell blinks BLACK <-> FULLY
       // LIT (10% duty at the TAPPED tempo, unfactored -- so both grids' tap cells
       // blink together, showing the metronome you tapped rather than what this grid
       // made of it; misc.org "tap blink between black and fully lit") whether or not
@@ -1264,12 +1267,12 @@ fn grid_thread(mut rt: GridThread) {
         OFF
       };
       for (dx, dy, level) in [
-        (0, 0, button_level(p.factor_lit(rt.grid_index, FactorButton::Times3))),
-        (1, 0, button_level(p.factor_lit(rt.grid_index, FactorButton::Times2))),
+        (0, 0, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Times3))),
+        (1, 0, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Times2))),
         (2, 0, tap_level),
-        (0, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Div3))),
-        (1, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Div2))),
-        (2, 1, button_level(p.factor_lit(rt.grid_index, FactorButton::Unity))),
+        (0, 1, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Div3))),
+        (1, 1, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Div2))),
+        (2, 1, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Unity))),
       ] {
         let (x, y) = (rt.poly_rect[0] + dx, rt.poly_rect[1] + dy);
         buttons.push(([x, y, x, y], level));
@@ -1421,7 +1424,8 @@ fn handle_key(
     return;
   }
   // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only. The tap sets the
-  // GLOBAL tempo; the factor buttons and the =1 pulse switch act on THIS grid.
+  // GLOBAL tempo; the tempo-factor buttons and the =1 factored-pulse switch act on
+  // THIS grid.
   if in_overlay(rt.poly_rect, cell) {
     if press {
       let (dx, dy) = (cell.0 - rt.poly_rect[0], cell.1 - rt.poly_rect[1]);
@@ -1429,11 +1433,11 @@ fn handle_key(
       let mut p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       match (dx, dy) {
         (2, 0) => p.tap(now, rt.tap_window),
-        (0, 0) => p.press(rt.grid_index, FactorButton::Times3, now),
-        (1, 0) => p.press(rt.grid_index, FactorButton::Times2, now),
-        (0, 1) => p.press(rt.grid_index, FactorButton::Div3, now),
-        (1, 1) => p.press(rt.grid_index, FactorButton::Div2, now),
-        (2, 1) => p.press(rt.grid_index, FactorButton::Unity, now),
+        (0, 0) => p.press(rt.grid_index, TempoFactorButton::Times3, now),
+        (1, 0) => p.press(rt.grid_index, TempoFactorButton::Times2, now),
+        (0, 1) => p.press(rt.grid_index, TempoFactorButton::Div3, now),
+        (1, 1) => p.press(rt.grid_index, TempoFactorButton::Div2, now),
+        (2, 1) => p.press(rt.grid_index, TempoFactorButton::Unity, now),
         _ => {}
       }
     }
@@ -1563,21 +1567,21 @@ fn handle_key(
     } else {
       None
     };
-    // The polyrhythm pulse at THIS note's onset (fixed for the note's life):
-    // this grid's applied tempo, and only while its =1 pulse switch is on.
-    let pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).pulse_hz(rt.grid_index);
+    // The factored pulse at THIS note's onset (fixed for the note's life): this
+    // grid's applied tempo, and only while its =1 factored-pulse switch is on.
+    let factored_pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).factored_pulse_hz(rt.grid_index);
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
     // (A stolen legato voice keeps ITS timbre and gain -- it is the same voice.)
     let stole = legato_from
-      .map(|from| rt.sink.note_on_legato(from, cell, pitch, rt.slide_duration_secs, pulse))
+      .map(|from| rt.sink.note_on_legato(from, cell, pitch, rt.slide_duration_secs, factored_pulse))
       .unwrap_or(false);
     if !stole {
       match source {
         Some(from) => {
-          rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs, pulse)
+          rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs, factored_pulse)
         }
-        None => rt.sink.note_on(cell, pitch, timbre, pulse),
+        None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
       }
     }
     held.insert(cell, pitch);
@@ -1846,7 +1850,7 @@ fn drive_accrete(
 enum PedalAction {
   Accrete { grid: usize, control: AccreteControlKind },
   Tap,
-  Pulse { grid: usize, factor: FactorButton },
+  FactoredPulse { grid: usize, factor: TempoFactorButton },
 }
 
 /// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
@@ -1866,13 +1870,13 @@ fn rig_pedal_actions(
       SoftstepWindowRig::PulseFactorPedal { pedal, monome, factor, .. } => {
         grid_of(monome).map(|grid| {
           let factor = match factor {
-            PulseFactorRig::Double => FactorButton::Times2,
-            PulseFactorRig::Triple => FactorButton::Times3,
-            PulseFactorRig::Half => FactorButton::Div2,
-            PulseFactorRig::Third => FactorButton::Div3,
-            PulseFactorRig::Unity => FactorButton::Unity,
+            PulseFactorRig::Double => TempoFactorButton::Times2,
+            PulseFactorRig::Triple => TempoFactorButton::Times3,
+            PulseFactorRig::Half => TempoFactorButton::Div2,
+            PulseFactorRig::Third => TempoFactorButton::Div3,
+            PulseFactorRig::Unity => TempoFactorButton::Unity,
           };
-          (*pedal, PedalAction::Pulse { grid, factor })
+          (*pedal, PedalAction::FactoredPulse { grid, factor })
         })
       }
       SoftstepWindowRig::Drumkit { .. } => None,
@@ -1884,19 +1888,19 @@ fn rig_pedal_actions(
   map
 }
 
-/// The rate multiplier a factor button applies to an edit-mode note. `None` for
-/// `Unity`: `=1` is a switch, not a multiplier, and is never an edit control.
-fn pulse_ratio(factor: FactorButton) -> Option<f32> {
+/// The rate multiplier a tempo-factor button applies to an edit-mode note. `None`
+/// for `Unity`: `=1` is a switch, not a multiplier, and is never an edit control.
+fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
   match factor {
-    FactorButton::Times2 => Some(2.0),
-    FactorButton::Times3 => Some(3.0),
-    FactorButton::Div2 => Some(0.5),
-    FactorButton::Div3 => Some(1.0 / 3.0),
-    FactorButton::Unity => None,
+    TempoFactorButton::Times2 => Some(2.0),
+    TempoFactorButton::Times3 => Some(3.0),
+    TempoFactorButton::Div2 => Some(0.5),
+    TempoFactorButton::Div3 => Some(1.0 / 3.0),
+    TempoFactorButton::Unity => None,
   }
 }
 
-/// The hook for rig-declared pedal bindings: sustain, tap tempo, and the pulse.
+/// The hook for rig-declared pedal bindings: sustain, tap tempo, and the factored pulse.
 ///
 /// Unconditional, unlike the feet-accrete mirror -- no on-grid toggle gates it. Keyed
 /// by (device, pedal) because the printed labels repeat across boards and each board
@@ -1921,30 +1925,31 @@ fn rig_pedal_hook(
       PedalAction::Accrete { grid, control } => drive_accrete(
         grid, control, down, &accrete, &held_all, &voices, &edit, release_secs, sample_rate,
       ),
-      // Tap and the factor buttons are key-down only, like their on-grid twins. The
-      // press is still CONSUMED on key-up, or the pedal would drum on release.
+      // Tap and the tempo-factor buttons are key-down only, like their on-grid
+      // twins. The press is still CONSUMED on key-up, or the pedal would drum on
+      // release.
       PedalAction::Tap => {
         if down {
           poly.lock().unwrap_or_else(|e| e.into_inner()).tap(Instant::now(), tap_window);
         }
         true
       }
-      PedalAction::Pulse { grid, factor } => {
+      PedalAction::FactoredPulse { grid, factor } => {
         if down {
           // What a multiplier acts on depends on this grid's edit state (1_vision
           // "per-voice slow AM edit"): with notes in edit mode it retunes THOSE
-          // NOTES, leaving the grid's factor alone; with none it moves the factor,
-          // exactly as the on-grid pad does.
+          // NOTES, leaving the grid's tempo factor alone; with none it moves the
+          // tempo factor, exactly as the on-grid pad does.
           //
           // =1 is never an edit control -- Jeff: "the only edit controls are (*) and
-          // (/), not (=)" -- so it always goes to the factor/switch dance.
+          // (/), not (=)" -- so it always goes to the tempo-factor/switch dance.
           let edited: HashSet<i32> = edit
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(grid)
             .map(|e| e.pitches().collect())
             .unwrap_or_default();
-          match pulse_ratio(factor) {
+          match tempo_factor_ratio(factor) {
             Some(ratio) if !edited.is_empty() => {
               // Multiply, don't set: "slower ones continue to be slower than faster
               // ones". Applies to ALL edited notes at once -- the deliberate
@@ -1957,7 +1962,7 @@ fn rig_pedal_hook(
                 .get(grid)
                 .cloned()
                 .unwrap_or_default();
-              synth::scale_pulse_rate(&voices, grid, ratio, &edited, &held);
+              synth::scale_factored_pulse_rate(&voices, grid, ratio, &edited, &held);
             }
             _ => {
               poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
@@ -2846,7 +2851,7 @@ mod tests {
       .collect();
     assert_eq!(taps, [8]);
 
-    // Each grid gets a full set of five pulse controls, all on the new board.
+    // Each grid gets a full set of five factored-pulse controls, all on the new board.
     for monome in ["a", "b"] {
       let mut factors: Vec<PulseFactorRig> = rig
         .softstep_windows
@@ -2855,7 +2860,7 @@ mod tests {
           SoftstepWindowRig::PulseFactorPedal { monome: m, factor, softstep, .. }
             if m == monome =>
           {
-            assert_eq!(softstep, "new", "the pulse lives on the new board");
+            assert_eq!(softstep, "new", "the factored pulse lives on the new board");
             Some(*factor)
           }
           _ => None,
@@ -2870,7 +2875,7 @@ mod tests {
         PulseFactorRig::Unity,
       ];
       want.sort_by_key(|f| format!("{f:?}"));
-      assert_eq!(factors, want, "monome {monome} needs all five pulse controls");
+      assert_eq!(factors, want, "monome {monome} needs all five factored-pulse controls");
     }
 
     // The grids carry ONLY the two overlays; everything else on them is a note.
@@ -2934,19 +2939,19 @@ mod tests {
 
     // NEW board (rotated 180): far row reads 5 4 3 2 1, near row 0 9 8 7 6.
     // Left columns -> left grid, right columns -> right grid.
-    assert_eq!(at("new", 5), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Times2 }));
-    assert_eq!(at("new", 4), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Times3 }));
-    assert_eq!(at("new", 0), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Div2 }));
-    assert_eq!(at("new", 9), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Div3 }));
-    assert_eq!(at("new", 1), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Times2 }));
-    assert_eq!(at("new", 2), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Times3 }));
-    assert_eq!(at("new", 6), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Div2 }));
-    assert_eq!(at("new", 7), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Div3 }));
+    assert_eq!(at("new", 5), Some(PedalAction::FactoredPulse { grid: 0, factor: TempoFactorButton::Times2 }));
+    assert_eq!(at("new", 4), Some(PedalAction::FactoredPulse { grid: 0, factor: TempoFactorButton::Times3 }));
+    assert_eq!(at("new", 0), Some(PedalAction::FactoredPulse { grid: 0, factor: TempoFactorButton::Div2 }));
+    assert_eq!(at("new", 9), Some(PedalAction::FactoredPulse { grid: 0, factor: TempoFactorButton::Div3 }));
+    assert_eq!(at("new", 1), Some(PedalAction::FactoredPulse { grid: 1, factor: TempoFactorButton::Times2 }));
+    assert_eq!(at("new", 2), Some(PedalAction::FactoredPulse { grid: 1, factor: TempoFactorButton::Times3 }));
+    assert_eq!(at("new", 6), Some(PedalAction::FactoredPulse { grid: 1, factor: TempoFactorButton::Div2 }));
+    assert_eq!(at("new", 7), Some(PedalAction::FactoredPulse { grid: 1, factor: TempoFactorButton::Div3 }));
 
     // The middle column splits by DISTANCE, not side: nearer (8) = left grid,
     // farther (3) = right grid. Jeff's rule, and the easiest thing to get backwards.
-    assert_eq!(at("new", 8), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Unity }));
-    assert_eq!(at("new", 3), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Unity }));
+    assert_eq!(at("new", 8), Some(PedalAction::FactoredPulse { grid: 0, factor: TempoFactorButton::Unity }));
+    assert_eq!(at("new", 3), Some(PedalAction::FactoredPulse { grid: 1, factor: TempoFactorButton::Unity }));
 
     // The same label means different things per board -- the reason the hook needs
     // the device id at all.
@@ -3318,11 +3323,12 @@ mod tests {
 
   /// The polyrhythm pad end-to-end: cells rest dim; two quick taps set the ONE
   /// global tempo (the tap cell blinks on both grids, caught mid-flash); the
-  /// factor buttons and the =1 pulse switch are PER-GRID -- a factor press lights
-  /// only its own grid, a lone =1 tap turns that grid's cycling on (lit) and
-  /// resets its factor, and a fast =1 double-tap turns the cycling back off.
+  /// tempo-factor buttons and the =1 factored-pulse switch are PER-GRID -- a
+  /// tempo-factor press lights only its own grid, a lone =1 tap turns that grid's
+  /// cycling on (lit) and resets its tempo factor, and a fast =1 double-tap turns
+  /// the cycling back off.
   #[test]
-  fn tap_tempo_pad_blinks_globally_and_the_pulse_switch_is_per_grid() {
+  fn tap_tempo_pad_blinks_globally_and_the_factored_pulse_switch_is_per_grid() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -3345,7 +3351,7 @@ mod tests {
     let b = mock.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    // At rest: tap (15,0) and the factor cells glow dim; no blink yet.
+    // At rest: tap (15,0) and the tempo-factor cells glow dim; no blink yet.
     assert!(wait_until(secs(3), || a.level_at(15, 0) == 4), "tap rests dim (no tempo)");
     assert!(wait_until(secs(3), || a.level_at(14, 0) == 4), "x2 rests dim");
 
@@ -3362,20 +3368,20 @@ mod tests {
     // x2 from grid b: PER-GRID -- b's cell lights, a's stays at rest.
     b.press(14, 0);
     b.release(14, 0);
-    assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its factor leans up)");
-    assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (factors are per-grid)");
+    assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its tempo factor leans up)");
+    assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (tempo factors are per-grid)");
 
     // The FIRST =1 press on grid b, with cycling off: it turns cycling ON (=1 lit)
-    // and LEAVES the factor alone -- x2 stays lit. Grid a's switch is untouched.
+    // and LEAVES the tempo factor alone -- x2 stays lit. Grid a's switch is untouched.
     b.press(15, 1);
     b.release(15, 1);
     assert!(wait_until(secs(3), || b.level_at(15, 1) == 15), "grid b's =1 lit: cycling on");
-    assert_eq!(b.level_at(14, 0), 15, "the switch-on press KEEPS grid b's x2 factor");
+    assert_eq!(b.level_at(14, 0), 15, "the switch-on press KEEPS grid b's x2 tempo factor");
     assert_eq!(a.level_at(15, 1), 4, "grid a's =1 stays dim (the switch is per-grid)");
 
     // Two more =1 presses, back to back after a >400 ms gap. The first of the pair is
-    // a lone press on an already-cycling grid, so it zeroes the factor (x2 -> dim) and
-    // leaves cycling on; the second lands inside 400 ms of IT, so cycling goes OFF.
+    // a lone press on an already-cycling grid, so it zeroes the tempo factor (x2 -> dim)
+    // and leaves cycling on; the second lands inside 400 ms of IT, so cycling goes OFF.
     // (The switch-on press above cannot be half of that pair -- it never armed the
     // detector -- which is why the >400 ms sleep is what separates the two phases.)
     thread::sleep(Duration::from_millis(500));

@@ -1,4 +1,4 @@
-#+title: Progress: two softsteps, per-voice pitch + pulse edit
+#+title: Progress: two softsteps, per-voice pitch + factored-pulse edit
 #+date: 2026-07-17
 
 Executing =3_plan.org=. Report format per =when-to-stop.org=.
@@ -13,7 +13,7 @@ Executing =3_plan.org=. Report format per =when-to-stop.org=.
 |     5 | the rig + surfaces wiring               | DONE  |
 |     6 | glide primitive + edit mode             | DONE  |
 |     7 | diamond dance + off-screen flash        | DONE  |
-|     8 | pulse retargeting for edit-mode notes   | DONE  |
+|     8 | factored-pulse retargeting for edit-mode notes | DONE  |
 |     9 | the GUI window                          | DONE  |
 |    10 | rename the drums rig                    | DONE  |
 
@@ -167,7 +167,7 @@ that would have caught them all live at the rig/wiring level and assert their ow
 premises, so they fail honestly rather than passing on a false assumption.
 
 ** the window briefly made the test suite non-hermetic
-Phase 9 spawned the pulse window whenever a grid was present -- which includes the
+Phase 9 spawned the factored-pulse window whenever a grid was present -- which includes the
 mock-grid smoke test, so =cargo test= opened a real X11 window on whatever display was
 around. It failed three tests once, non-reproducibly, and then went green four runs in
 a row; a flake, not a bug, which is worse. Now gated on =no_audio=, the runtime's
@@ -183,7 +183,7 @@ One process-wide override, so with two boards it forces both onto one port, whic
 meaningless. Documented as single-board-only rather than fixed.
 
 ** the edit-mode drag has an asymmetry I should flag before it is felt
-A drag moves the nearest edited note; a pulse change moves all of them. Both are
+A drag moves the nearest edited note; a factored-pulse change moves all of them. Both are
 Jeff's explicit calls (2d), and both are right on their own -- but it means "in edit
 mode" denotes a different selection depending on which parameter you touch, and that
 is the sort of thing that reads fine on paper and surprises the hands.
@@ -227,7 +227,7 @@ has to paint itself.
 ** a voice's address does not carry its pitch, and that bit me
 A fingered voice is keyed by the cell it was struck on -- =voice_key= packs
 =y * 256 + x= into the very field a drone uses for its real pitch. So
-=scale_pulse_rate=, selecting by pitch, silently matched nothing for fingered notes.
+=scale_factored_pulse_rate=, selecting by pitch, silently matched nothing for fingered notes.
 Its test caught it immediately. The fix passes the grid's live cell->pitch map in, so
 the packing stays private to =synth=; but the collision of meanings in one field is a
 trap still sitting there for the next person.

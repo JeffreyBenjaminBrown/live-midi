@@ -469,20 +469,20 @@ A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most o
 per monome, on a monome with an ~edo_note_grid~): tap twice within
 ~[surfaces].tap_tempo_window_ms~ (default 2000) to define the ONE global tapped
 tempo (defining it starts nothing). Each monome then scales it into its own
-applied tempo with its own exact 2^a x 3^b factor buttons, and switches its own
-amplitude cycling with =1. Cycling starts off; the =1 LED shows the switch. What
-=1 does depends on the switch: while cycling is *off*, a press turns it *on* and
-leaves the factor alone (so a grid can start cycling at the rate you dialled in);
-while cycling is *on*, a lone press zeroes the factor, and a second press within
-400 ms of that one turns cycling off. The press that switches cycling on never
-counts as half of that double-tap, so from cold you can tap on, tap to unity
+applied tempo with its own exact 2^a x 3^b tempo-factor buttons, and switches its
+own amplitude cycling with =1. Cycling starts off; the =1 LED shows the switch.
+What =1 does depends on the switch: while cycling is off, a press turns it on and
+leaves the tempo factor alone (so a grid can start cycling at the rate you dialled
+in); while cycling is on, a lone press zeroes the tempo factor, and a second press
+within 400 ms of that one turns cycling off. The press that switches cycling on
+never counts as half of that double-tap, so from cold you can tap on, tap to unity
 (however fast), then double-tap off. While a grid's cycling is on, every note
-struck on it pulses with a unipolar triangle (1 at the cycle start, 0 at the
-half-cycle, back to 1) at that grid's applied tempo (fixed at onset). The tap cell
-displays the tempo whether or not cycling is on: it blinks at 10% duty at the
-*tapped* tempo -- unfactored, so both grids' tap cells blink together and no
-factor button moves them -- fully lit against black (it rests dim only before a
-tempo exists).
+struck on it carries a factored pulse -- a unipolar triangle (1 at the cycle
+start, 0 at the half-cycle, back to 1) -- at that grid's applied tempo (fixed at
+onset). The tap cell displays the tempo whether or not cycling is on: it blinks
+at 10% duty at the tapped tempo -- unfactored, so both grids' tap cells blink
+together and no tempo-factor button moves them -- fully lit against black (it
+rests dim only before a tempo exists).
 
 The bundled 12-EDO offset/root board is:
 
@@ -576,7 +576,7 @@ Built-in softstep window kinds:
 - ~pulse_factor_pedal~
 
 The last three bind ONE pedal each to a control that would otherwise cost grid
-cells, and they are *unconditional* -- unlike the older ~softstep_accretes_toggle~
+cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
 mirror, which hardcodes pedals 1/2/3 + 8/9/0 and only acts while an on-grid toggle
 is on. Every binding is stated in the rig rather than buried in the runtime:
 
@@ -600,21 +600,21 @@ id = "x2-a"
 softstep = "new"
 kind = "pulse_factor_pedal"
 pedal = 5
-monome = "a"              # this monome's pulse; must have an edo_note_grid
+monome = "a"              # this monome's factored pulse; must have an edo_note_grid
 factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
 #+end_src
 
 A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
-with no note in edit mode it moves the *grid's* factor (exactly as the on-grid
-~tap_tempo_pad~ does), and with notes in edit mode the multipliers retune *those
-notes*. ~unity~ is the ~=1~ switch and never retunes edit-mode notes.
+with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
+~tap_tempo_pad~ does), and with notes in edit mode the multipliers retune those
+notes. ~unity~ is the ~=1~ switch and never retunes edit-mode notes.
 
-Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows *on
-the same device* (including across kinds -- a pedal that is both a drum and a clear
+Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
+the same device (including across kinds -- a pedal that is both a drum and a clear
 button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
-global, so there is one); two pedals giving the *same* monome the same ~factor~
-(different monomes may of course share a factor -- that is the point of per-monome
-factors); and a ~monome~ that is unknown or has no ~edo_note_grid~.
+global, so there is one); two pedals giving the same monome the same ~factor~
+(different monomes may of course share a tempo factor -- that is the point of
+per-monome tempo factors); and a ~monome~ that is unknown or has no ~edo_note_grid~.
 
 Pedals are addressed by their printed label (1..9, then 0). On start, the
 runtime puts the device into *tether (hosted) mode* via SysEx sent over ALSA

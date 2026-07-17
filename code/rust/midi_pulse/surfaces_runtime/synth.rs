@@ -57,11 +57,11 @@ pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32)
   }
 }
 
-/// Multiply the pulse RATE of one grid's edit-mode voices, in place.
+/// Multiply the factored-pulse RATE of one grid's edit-mode voices, in place.
 ///
-/// Selection is by PITCH, because that is how edit mode selects -- a pulse edit
-/// applies to every note in edit mode on this grid at once (Jeff's asymmetry: a pitch
-/// DRAG moves only the nearest, `2_discussion` 2d).
+/// Selection is by PITCH, because that is how edit mode selects -- a factored-pulse
+/// edit applies to every note in edit mode on this grid at once (Jeff's asymmetry: a
+/// pitch DRAG moves only the nearest, `2_discussion` 2d).
 ///
 /// But a voice's key does not carry its pitch uniformly: a *fingered* voice is keyed
 /// by the cell it was struck on (`voice_key` packs `y * 256 + x` into the same field a
@@ -69,19 +69,19 @@ pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32)
 /// how a fingered voice's pitch is known. Passing it in keeps that packing private
 /// here rather than leaking it to every caller.
 ///
-/// The phase is deliberately KEPT. `tempo_am_phase` free-runs and only
-/// `tempo_am_freq` is read per sample, so changing the rate mid-note is a slope change
+/// The phase is deliberately KEPT. `factored_pulse_phase` free-runs and only
+/// `factored_pulse_freq` is read per sample, so changing the rate mid-note is a slope change
 /// with no amplitude step -- i.e. no click. `note_on_legato` already relied on exactly
-/// that ("re-aims the pulse's rate at this onset, but the pulse phase continues"),
+/// that ("re-aims the factored pulse's rate at this onset, but its phase continues"),
 /// which is why this is safe rather than merely plausible.
 ///
 /// Multiplying, not setting: "slower ones continue to be slower than faster ones"
 /// (`1_vision`), so notes that already differ keep their spread.
 ///
-/// A voice with no pulse (`tempo_am_freq == 0`) stays un-pulsed: multiplying zero
-/// cannot start one, and a note struck while cycling was off is meant to stay silent
-/// of it.
-pub fn scale_pulse_rate(
+/// A voice with no factored pulse (`factored_pulse_freq == 0`) stays un-pulsed:
+/// multiplying zero cannot start one, and a note struck while cycling was off is
+/// meant to stay silent of it.
+pub fn scale_factored_pulse_rate(
   voices: &Arc<Mutex<VoiceMap>>,
   grid: usize,
   ratio: f32,
@@ -99,14 +99,14 @@ pub fn scale_pulse_rate(
     .collect();
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    if state.tempo_am_freq == 0.0 {
+    if state.factored_pulse_freq == 0.0 {
       continue;
     }
     let wanted = cells.contains(src)
       || matches!(src, VoiceSource::Accreted { chord, pitch }
                   if *chord == SUSTAIN_BASE + grid && edited.contains(pitch));
     if wanted {
-      state.tempo_am_freq *= ratio;
+      state.factored_pulse_freq *= ratio;
     }
   }
 }
@@ -174,9 +174,9 @@ impl SurfaceSink {
   /// Start `cell` sounding `pitch` (an absolute EDO step) with `timbre`. Spawns a
   /// fresh voice (its AM/FM LFOs retriggered at phase 0); overwrites any existing
   /// voice for the same cell (a retrigger, though the grid thread debounces
-  /// repeats). `pulse_hz` is the polyrhythm pulse at this note's onset (None = no
-  /// pulse), fixed for the voice's life.
-  pub fn note_on(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, pulse_hz: Option<f32>) {
+  /// repeats). `factored_pulse_hz` is the factored pulse at this note's onset (None =
+  /// no factored pulse), fixed for the voice's life.
+  pub fn note_on(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, factored_pulse_hz: Option<f32>) {
     let id = self.next_id;
     self.next_id += 1;
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,8 +187,8 @@ impl SurfaceSink {
         freq: freq_for_pitch(pitch, self.fund, self.edo),
         freq_target: 0.0,
         glide_per_sample: 1.0,
-        tempo_am_freq: pulse_hz.unwrap_or(0.0),
-        tempo_am_phase: 0.0,
+        factored_pulse_freq: factored_pulse_hz.unwrap_or(0.0),
+        factored_pulse_phase: 0.0,
         phase: 0.0,
         env: 0.0,
         target_env: 1.0,
@@ -225,12 +225,12 @@ impl SurfaceSink {
     from_pitch: i32,
     timbre: Timbre,
     glide_secs: f32,
-    pulse_hz: Option<f32>,
+    factored_pulse_hz: Option<f32>,
   ) {
     if from_pitch == pitch {
-      return self.note_on(cell, pitch, timbre, pulse_hz);
+      return self.note_on(cell, pitch, timbre, factored_pulse_hz);
     }
-    self.note_on(cell, pitch, timbre, pulse_hz);
+    self.note_on(cell, pitch, timbre, factored_pulse_hz);
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
       let from = freq_for_pitch(from_pitch, self.fund, self.edo);
@@ -246,17 +246,17 @@ impl SurfaceSink {
   /// note mono is cutting) and glide it into `pitch` under the new cell's key. The
   /// envelope simply continues -- no attack and no pluck re-trigger (misc.org
   /// "slide when mono is on should not re-trigger the attack") -- and the voice
-  /// keeps its timbre and gain (it IS the same voice). `pulse_hz` re-aims the
-  /// polyrhythm pulse's rate at this onset, but the pulse phase continues (no
-  /// amplitude step). Returns false if nothing sounds at `from_cell` (the caller
-  /// falls back to a fresh strike).
+  /// keeps its timbre and gain (it IS the same voice). `factored_pulse_hz` re-aims
+  /// the factored pulse's rate at this onset, but its phase continues (no amplitude
+  /// step). Returns false if nothing sounds at `from_cell` (the caller falls back to
+  /// a fresh strike).
   pub fn note_on_legato(
     &mut self,
     from_cell: (i32, i32),
     cell: (i32, i32),
     pitch: i32,
     glide_secs: f32,
-    pulse_hz: Option<f32>,
+    factored_pulse_hz: Option<f32>,
   ) -> bool {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut state) = voices.remove(&voice_key(self.grid, from_cell)) else {
@@ -271,14 +271,15 @@ impl SurfaceSink {
       state.freq_target = to;
       state.glide_per_sample = (to / from).powf(1.0 / samples);
     }
-    state.tempo_am_freq = pulse_hz.unwrap_or(0.0);
+    state.factored_pulse_freq = factored_pulse_hz.unwrap_or(0.0);
     voices.insert(voice_key(self.grid, cell), state);
     true
   }
 
   /// Glide the voice at `cell` to `pitch` over `glide_secs`, leaving everything else
-  /// about it alone -- envelope, timbre, gain, pulse rate and phase all continue. The
-  /// per-voice pitch edit: the note keeps sounding and simply *moves*.
+  /// about it alone -- envelope, timbre, gain, and the factored pulse's rate and
+  /// phase all continue. The per-voice pitch edit: the note keeps sounding and simply
+  /// *moves*.
   ///
   /// Unlike `note_on_legato` this neither spawns nor re-keys a voice, so the note
   /// stays addressable at the cell it was struck on while its PITCH moves away from
@@ -746,16 +747,16 @@ mod tests {
   }
 
   /// The edit must not disturb anything else about the note -- it keeps sounding, with
-  /// its own timbre, gain and pulse, and simply moves.
+  /// its own timbre, gain and factored pulse, and simply moves.
   #[test]
-  fn glide_voice_to_preserves_the_envelope_timbre_and_pulse() {
+  fn glide_voice_to_preserves_the_envelope_timbre_and_factored_pulse() {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((3, 3), 20, Timbre { waveform: Waveform::Square, ..Timbre::default() }, Some(3.0));
     let (env, target, wave, pulse, phase) = {
       let g = v.lock().unwrap();
       let st = &g[&voice_key(0, (3, 3))];
-      (st.env, st.target_env, st.timbre.waveform, st.tempo_am_freq, st.tempo_am_phase)
+      (st.env, st.target_env, st.timbre.waveform, st.factored_pulse_freq, st.factored_pulse_phase)
     };
     a.glide_voice_to((3, 3), 31, 0.1);
     let g = v.lock().unwrap();
@@ -763,11 +764,11 @@ mod tests {
     assert_eq!(st.env, env, "no attack re-trigger");
     assert_eq!(st.target_env, target);
     assert_eq!(st.timbre.waveform, wave);
-    assert_eq!(st.tempo_am_freq, pulse, "the pulse rate is untouched by a pitch edit");
-    assert_eq!(st.tempo_am_phase, phase, "and its phase does not jump");
+    assert_eq!(st.factored_pulse_freq, pulse, "the factored-pulse rate is untouched by a pitch edit");
+    assert_eq!(st.factored_pulse_phase, phase, "and its phase does not jump");
   }
 
-  // ---- scale_pulse_rate: retuning sounding notes' pulse (per-voice edit) ----
+  // ---- scale_factored_pulse_rate: retuning sounding notes' factored pulse (per-voice edit) ----
 
   /// The tests below strike notes at pitch 10 on (1,1) and pitch 20 on (2,2); a
   /// fingered voice is keyed by CELL, so its pitch is only knowable via this map.
@@ -780,15 +781,15 @@ mod tests {
   }
 
   #[test]
-  fn scaling_the_pulse_multiplies_only_the_wanted_pitches() {
+  fn scaling_the_factored_pulse_multiplies_only_the_wanted_pitches() {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     a.note_on((2, 2), 20, Timbre::default(), Some(3.0));
-    scale_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
     let g = v.lock().unwrap();
-    assert_eq!(g[&voice_key(0, (1, 1))].tempo_am_freq, 4.0, "the edited note doubles");
-    assert_eq!(g[&voice_key(0, (2, 2))].tempo_am_freq, 3.0, "the other note is untouched");
+    assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 4.0, "the edited note doubles");
+    assert_eq!(g[&voice_key(0, (2, 2))].factored_pulse_freq, 3.0, "the other note is untouched");
   }
 
   /// "x2 makes them all go twice as fast ... slower ones continue to be slower than
@@ -799,52 +800,52 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(1.0));
     a.note_on((2, 2), 20, Timbre::default(), Some(4.0));
-    scale_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
     let g = v.lock().unwrap();
-    let slow = g[&voice_key(0, (1, 1))].tempo_am_freq;
-    let fast = g[&voice_key(0, (2, 2))].tempo_am_freq;
+    let slow = g[&voice_key(0, (1, 1))].factored_pulse_freq;
+    let fast = g[&voice_key(0, (2, 2))].factored_pulse_freq;
     assert_eq!((slow, fast), (2.0, 8.0));
     assert_eq!(fast / slow, 4.0, "the ratio between them is preserved");
   }
 
-  /// The phase must be kept, or the pulse steps and clicks. This is what makes
-  /// retuning a live note safe at all.
+  /// The phase must be kept, or the factored pulse steps and clicks. This is what
+  /// makes retuning a live note safe at all.
   #[test]
-  fn scaling_the_pulse_keeps_the_phase() {
+  fn scaling_the_factored_pulse_keeps_the_phase() {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    v.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().tempo_am_phase = 0.37;
-    scale_pulse_rate(&v, 0, 3.0, &all_edited(), &held());
+    v.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().factored_pulse_phase = 0.37;
+    scale_factored_pulse_rate(&v, 0, 3.0, &all_edited(), &held());
     assert_eq!(
-      v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_phase,
+      v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_phase,
       0.37,
-      "the pulse continues from where it was: a slope change, not a step",
+      "the factored pulse continues from where it was: a slope change, not a step",
     );
   }
 
-  /// A note struck while cycling was off has no pulse, and multiplying zero cannot
-  /// start one -- it is meant to stay un-pulsed.
+  /// A note struck while cycling was off has no factored pulse, and multiplying zero
+  /// cannot start one -- it is meant to stay un-pulsed.
   #[test]
-  fn scaling_cannot_start_a_pulse_on_an_unpulsed_note() {
+  fn scaling_cannot_start_a_factored_pulse_on_an_unpulsed_note() {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), None);
-    scale_pulse_rate(&v, 0, 4.0, &all_edited(), &held());
-    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_freq, 0.0);
+    scale_factored_pulse_rate(&v, 0, 4.0, &all_edited(), &held());
+    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 0.0);
   }
 
   #[test]
-  fn scaling_one_grids_pulse_leaves_the_other_grid_alone() {
+  fn scaling_one_grids_factored_pulse_leaves_the_other_grid_alone() {
     let v = shared();
     let mut a = sink(0, &v);
     let mut b = sink(1, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     b.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    scale_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
     let g = v.lock().unwrap();
-    assert_eq!(g[&voice_key(0, (1, 1))].tempo_am_freq, 4.0);
-    assert_eq!(g[&voice_key(1, (1, 1))].tempo_am_freq, 2.0, "grid 1 untouched");
+    assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 4.0);
+    assert_eq!(g[&voice_key(1, (1, 1))].factored_pulse_freq, 2.0, "grid 1 untouched");
   }
 
   /// Sustained drones are edited too -- an edited note usually IS a drone, since
@@ -855,11 +856,11 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     a.sustain_note((1, 1), 10);
-    scale_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
     let g = v.lock().unwrap();
     assert!(
-      g.values().any(|s| s.tempo_am_freq == 4.0),
-      "the drone's pulse was retuned",
+      g.values().any(|s| s.factored_pulse_freq == 4.0),
+      "the drone's factored pulse was retuned",
     );
   }
 
@@ -868,10 +869,10 @@ mod tests {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    scale_pulse_rate(&v, 0, 0.0, &all_edited(), &held());
-    scale_pulse_rate(&v, 0, f32::NAN, &all_edited(), &held());
-    scale_pulse_rate(&v, 0, -1.0, &all_edited(), &held());
-    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_freq, 2.0);
+    scale_factored_pulse_rate(&v, 0, 0.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, f32::NAN, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, -1.0, &all_edited(), &held());
+    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
   }
 
   // ---- the drone's reasons are sustain and edit, never "a finger is down" ----

@@ -49,7 +49,7 @@ struct VoiceState {
   env, target_env, ramp_per_sample,     // the attack/release envelope
   sustain_env, decay_per_sample,        // the pluck decay
   freq_target, glide_per_sample,        // the pitch glide (drag / slide)
-  tempo_am_freq, tempo_am_phase,        // the polyrhythm pulse
+  factored_pulse_freq, factored_pulse_phase, // the factored pulse
   timbre, am_phase, fm_phase,           // waveform + the timbre AM/FM LFOs
 }
 #+end_src
@@ -63,8 +63,8 @@ Two traps live in this block:
   So the variant names describe neither what this runtime stores, nor -- in the case of
   a plain played note -- anything that was ever accreted.
 - A =VoiceState= is fully self-contained. It carries its own freq, envelope, timbre,
-  glide and pulse. That is why one note can be retuned, re-pitched or cut without
-  touching any other, and why "move a note" is a small operation rather than a
+  glide and factored pulse. That is why one note can be retuned, re-pitched or cut
+  without touching any other, and why "move a note" is a small operation rather than a
   rebuild.
 
 ** this runtime's types
@@ -102,7 +102,7 @@ held: HashMap<(i32,i32), i32>            // cell -> the pitch that finger is SOU
 voices:   Arc<Mutex<VoiceMap>>           // every sounding thing, all grids
 accrete:  Arc<Mutex<Vec<AccreteState>>>  // per grid
 edit:     Arc<Mutex<Vec<EditState>>>     // per grid
-poly:     Arc<Mutex<PolyrhythmState>>    // the pulse: global tempo + per-grid factor
+poly:     Arc<Mutex<PolyrhythmState>>    // the factored pulse: global tempo + per-grid tempo factor
 
 // published out of each grid thread for the other grid to reflect:
 sounding: Arc<Mutex<Vec<HashSet<i32>>>>  // pitch CLASSES under a finger
@@ -120,8 +120,8 @@ it, and only then acts on =accrete= and =voices=.
 * what a voice is
 The synth holds one flat =VoiceMap=: =HashMap<VoiceSource, VoiceState>=. Every
 sounding thing is one entry. A =VoiceState= carries its own =freq=, envelope, timbre,
-gain, glide target and pulse rate -- so a voice is fully self-contained, and moving or
-retuning one never touches another.
+gain, glide target and factored-pulse rate -- so a voice is fully self-contained, and
+moving or retuning one never touches another.
 
 The map key decides what the voice IS. No type and no tag records it, because all
 three kinds are the same enum variant, =VoiceSource::Accreted { chord, pitch }=. Which
@@ -193,9 +193,9 @@ Two corollaries follow, and the code has broken both of them:
 
 =EditState= and =AccreteState= are shared as =Arc<Mutex<Vec<_>>>= rather than owned
 by the grid thread, because the pedal hook must both read them and write them. It reads
-them when a pulse pedal retunes edited notes, and it writes them when a =clear=
-dismisses edit mode. They were not always shared, and a =clear= that could not reach
-=EditState= is precisely how a ghost once survived a clear.
+them when a factored-pulse pedal retunes edited notes, and it writes them when a
+=clear= dismisses edit mode. They were not always shared, and a =clear= that could not
+reach =EditState= is precisely how a ghost once survived a clear.
 
 ** the cell/pitch bridge
 =held= maps a cell to the pitch that finger is currently SOUNDING, which is not the
@@ -304,11 +304,12 @@ Clear flushes =sustained=, releases every drone on that grid, and clears =EditSt
 It is the panic button, so it must leave the grid playable. A clear that silenced its
 notes and left edit mode populated is exactly the ghost bug.
 
-** the pulse pedals
+** the factored-pulse pedals
 When a grid has notes in edit mode, its =x2/x3//2//3= pedals multiply those notes'
-pulse rates. =scale_pulse_rate= does that, and it selects by pitch, so it needs =held=
-to reach fingered voices, which is the bridge again. When the grid has none, the same
-pedals move its factor instead. The ~=1~ pedal is never an edit control.
+factored-pulse rates. =scale_factored_pulse_rate= does that, and it selects by pitch,
+so it needs =held= to reach fingered voices, which is the bridge again. When the grid
+has none, the same pedals move its tempo factor instead. The ~=1~ pedal is never an
+edit control.
 
 * what you see
 - The dance turns one lit cell around each edited note, holding each corner for

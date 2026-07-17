@@ -144,16 +144,17 @@ pub struct VoiceState {
   // freq_target is IGNORED (so plain voices need not keep it in sync with freq).
   pub freq_target:     f32,
   pub glide_per_sample: f32,
-  // The polyrhythm pulse: a unipolar-triangle amplitude multiplier in [0,1] (1 at
-  // each cycle start, 0 at the half-cycle, back to 1) at tempo_am_freq Hz -- the
-  // tempo applied at the note's onset. 0.0 = no pulse, and multiplying it cannot
-  // start one. Usually the note's rate for life, but per-voice edit mode retunes
-  // sounding notes in place (`surfaces_runtime::synth::scale_pulse_rate`): the phase
-  // free-runs and only this field is read per sample, so changing it mid-note is a
-  // slope change with no amplitude step -- no click.
+  // The factored pulse: a unipolar-triangle amplitude multiplier in [0,1] (1 at
+  // each cycle start, 0 at the half-cycle, back to 1) at factored_pulse_freq Hz --
+  // the tempo applied at the note's onset. 0.0 = no factored pulse, and multiplying
+  // it cannot start one. Usually the note's rate for life, but per-voice edit mode
+  // retunes sounding notes in place
+  // (`surfaces_runtime::synth::scale_factored_pulse_rate`): the phase free-runs and
+  // only this field is read per sample, so changing it mid-note is a slope change
+  // with no amplitude step -- no click.
   // Deliberately separate from the note's timbre AM.
-  pub tempo_am_freq:   f32,
-  pub tempo_am_phase:  f32,
+  pub factored_pulse_freq:   f32,
+  pub factored_pulse_phase:  f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
   pub timbre:          Timbre,

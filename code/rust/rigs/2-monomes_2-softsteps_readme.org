@@ -4,7 +4,7 @@
 The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
 grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry every control that would otherwise cost grid cells --
-sustain, tap tempo, and the pulse. No drums, no EX-P pedals: see "what is
+sustain, tap tempo, and the factored pulse. No drums, no EX-P pedals: see "what is
 deliberately NOT here."
 
 Background + every design decision behind this layout: =TODO/many/1_vision.org=
@@ -74,7 +74,7 @@ Here's how to see what's connected:
 - NSS -- the newer SoftStep, ALSA client name =SoftStep=. Farther from Jeff
   and physically rotated 180 degrees. The code never learns about the
   rotation -- it only ever binds printed labels -- the rotation just explains
-  why the map in "NSS: the pulse" looks mirrored. As Jeff reads it (post
+  why the map in "NSS: the factored pulse" looks mirrored. As Jeff reads it (post
   rotation): =5 4 3 2 1= (far row) over =0 9 8 7 6= (near row).
 - play grid -- a 16x16 monome, the whole grid a 46-EDO note surface
   (=x_step 9=, =y_step 1=, =fundamental_hz 80=). Pitch rises down and right,
@@ -86,10 +86,10 @@ Here's how to see what's connected:
 - waveform strip -- a 4-cell radio at a grid's top-left (=[0,0]..[3,0]=):
   sine / triangle / square / saw, left to right. Each grid's strip sets its
   own timbre (=controls= points at its own =monome=).
-- the pulse -- one global tapped tempo (OSS pedal 8), applied to each grid
-  through that grid's own =2^a * 3^b= factor and its own on/off switch (the
-  NSS pedals). Not "slow AM" -- see "the pulse" section below for why that
-  name is reserved for something else.
+- the factored pulse -- one global tapped tempo (OSS pedal 8), applied to each
+  grid through that grid's own =2^a * 3^b= tempo factor and its own on/off
+  switch (the NSS pedals). Not "slow AM" -- see "the factored pulse" section
+  below for why that name is reserved for something else.
 - sustain (accrete) -- each grid has its own bank of sustained notes. Here
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
@@ -114,7 +114,7 @@ independently, so one board failing to restore never strands the other).
 
 The two grids are identical. The whole 16x16 is the play surface, with exactly
 two overlays drawn on top -- nothing else lives on either grid; every other
-control (sustain, tap tempo, the pulse) lives on a SoftStep instead:
+control (sustain, tap tempo, the factored pulse) lives on a SoftStep instead:
 
 #+begin_example
   col: 0   1   2   3   4   5  ...              13    14    15
@@ -166,7 +166,7 @@ middle-FAR button on this board -- i.e. the one nearest the other (new)
 board -- which earns it the shared tempo, since the tapped tempo is global,
 shared by both grids.
 
-* NSS: the pulse
+* NSS: the factored pulse
 
 Each grid gets five controls: =x2=, =x3=, =/2=, =/3=, and ~=1~. The board's
 middle column is ambiguous under Jeff's left/right rule (both boards sit
@@ -188,27 +188,29 @@ pedal, just applied per grid instead of globally.
 - There is one global tapped tempo, set by OSS pedal 8: two taps within
   =tap_tempo_window_ms= (2000 ms here) define it. Tapping only defines the
   tempo; it doesn't start anything on its own.
-- Each grid has its own factor =2^a * 3^b= and its own pulse on/off switch,
-  moved by that grid's =x2= / =x3= / =/2= / =/3= pedals -- so one grid can
-  pulse at, say, 3/2 the rate of the other, or not at all.
+- Each grid has its own tempo factor =2^a * 3^b= and its own factored-pulse
+  on/off switch, moved by that grid's =x2= / =x3= / =/2= / =/3= pedals -- so
+  one grid's factored pulse can run at, say, 3/2 the rate of the other's, or
+  not at all.
 - ~=1~ keeps the existing double-tap dance verbatim: press while the grid's
-  pulse is off -> turns it ON, keeping the current factor; press while it's
-  on -> snaps the factor to unity (back to the tapped tempo, unmultiplied);
-  a second press within 400 ms of that one -> turns the pulse OFF. So from
-  cold: tap to start (at whatever factor was dialled in), tap again to snap to
-  unity, and a fast third tap stops it.
+  factored pulse is off -> turns it ON, keeping the current tempo factor;
+  press while it's on -> snaps the tempo factor to unity (back to the tapped
+  tempo, unmultiplied); a second press within 400 ms of that one -> turns the
+  factored pulse OFF. So from cold: tap to start (at whatever tempo factor
+  was dialled in), tap again to snap to unity, and a fast third tap stops it.
 - ~=1~ does nothing different in edit mode -- only the multipliers (=x2= /
   =x3= / =/2= / =/3=) are edit controls. See "per-voice edit" below for what
   they do there.
 
-Terminology trap: this is called the pulse, never "slow AM". "Slow AM"
-already names a different, separate mechanism -- the timbre tremolo
-(=[[timbres]] am_depth= / =am_freq= / =am_shape=), which morphs a note's
-amplitude as part of its waveform, with its own configurable depth, rate, and
-shape. The pulse is a fixed unipolar triangle in =[0,1]= -- always full swing,
-no depth knob -- driven by the tapped tempo and a grid's factor. Both can be
-on the same note at once, which is exactly when you'd need to tell them apart
-by name.
+Terminology trap: this is called the factored pulse, never "slow AM" and never
+just "the pulse" (to avoid clobbering, say, PWM, or some other future use of
+that word). "Slow AM" already names a different, separate mechanism -- the
+timbre tremolo (=[[timbres]] am_depth= / =am_freq= / =am_shape=), which morphs
+a note's amplitude as part of its waveform, with its own configurable depth,
+rate, and shape. The factored pulse is a fixed unipolar triangle in =[0,1]= --
+always full swing, no depth knob -- driven by the tapped tempo and a grid's
+tempo factor. Both can be on the same note at once, which is exactly when
+you'd need to tell them apart by name.
 
 * LEDs
 
@@ -235,12 +237,12 @@ it skipped for a missing dependency, then plays on.
 
 - If one grid is unplugged, the connected grid loads and plays normally (its
   own waveform strip and scroll pad work); the absent grid's SoftStep pedals
-  that target it (its OSS clear/accrete pair, its NSS pulse pedals) have
-  nothing to act on. Cross-grid LED reflection simply has nothing to reflect
-  from the missing side.
+  that target it (its OSS clear/accrete pair, its NSS factored-pulse pedals)
+  have nothing to act on. Cross-grid LED reflection simply has nothing to
+  reflect from the missing side.
 - If one SoftStep is unplugged, the other SoftStep's bindings still work; the
-  missing board's pedals (its half of sustain, or its half of the pulse, or
-  the global tap if OSS is the one missing) are simply unavailable.
+  missing board's pedals (its half of sustain, or its half of the factored
+  pulse, or the global tap if OSS is the one missing) are simply unavailable.
 - If nothing is connected, the run errors out rather than idling.
 
 * per-voice edit
@@ -291,9 +293,10 @@ While any note on a grid is in edit mode, that grid stops playing new notes: a
 press drags the nearest edited note to the pressed pitch instead, gliding over
 =slide_duration_ms= (100 ms). Leave edit mode to play normally again.
 
-- The nearest edited note moves -- one of them. (Contrast the pulse below, which
-  moves all of them. This is deliberate, and it is worth knowing: "in edit
-  mode" picks a different selection depending on which parameter you touch.)
+- The nearest edited note moves -- one of them. (Contrast the factored pulse
+  below, which moves all of them. This is deliberate, and it is worth
+  knowing: "in edit mode" picks a different selection depending on which
+  parameter you touch.)
 - A tie moves the lower note.
 - Edit mode belongs to the pitch, so it travels with the note: a dragged note is
   still being edited at its new pitch, and can be dragged again. It also survives
@@ -333,31 +336,34 @@ by less than an octave gets no hint. And one signal covers both edit-mode and
 sustained notes, so the LED cannot tell you which kind you are chasing. Both are
 Jeff's calls ("I'll understand").
 
-** editing a note's pulse
+** editing a note's factored pulse
 With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= pedals
-retune those notes' pulse rate directly and leave the grid's factor alone. With no
-note in edit mode, the same pedals move the factor as usual.
+retune those notes' factored-pulse rate directly and leave the grid's tempo
+factor alone. With no note in edit mode, the same pedals move the tempo factor
+as usual.
 
 - It applies to every edited note on that grid at once.
-- It multiplies, so notes that already pulse at different rates keep their spread:
-  "slower ones continue to be slower than faster ones".
-- The pulse phase is kept, so a live note changes slope without a click.
-- A note struck while that grid's pulse was off has no pulse, and multiplying cannot
-  start one.
+- It multiplies, so notes whose factored pulse already runs at different rates
+  keep their spread: "slower ones continue to be slower than faster ones".
+- The factored pulse's phase is kept, so a live note changes slope without a
+  click.
+- A note struck while that grid's factored pulse was off has none, and
+  multiplying cannot start one.
 - ~=1~ is never an edit control -- only the multipliers are.
 
-Note the one asymmetry with cycling: turning a grid's pulse off never retroactively
-touches sounding notes; only the multipliers reach them.
+Note the one asymmetry with cycling: turning a grid's factored pulse off never
+retroactively touches sounding notes; only the multipliers reach them.
 
 * the on-screen window
 The controls left the grid, so their display did too: the ~=1~ LED used to show the
 switch and the tap cell used to blink the tempo. The window shows, and only shows:
 
-- the global pulse as BPM to one decimal place (or that no tempo is tapped yet);
-- each grid's factor as 2^x * 3^y;
-- whether each grid's pulse is on;
+- the global tapped tempo as BPM to one decimal place (or that no tempo is
+  tapped yet);
+- each grid's tempo factor as 2^x * 3^y;
+- whether each grid's factored pulse is on;
 - a blinker at the unfactored global tempo -- the metronome you tapped, so it does
-  not move when a factor does.
+  not move when a tempo factor does.
 
 It needs =xhost= (see "startup"). If it cannot open, the instrument says so once
 and plays on regardless.
@@ -372,6 +378,6 @@ and plays on regardless.
   all exist in the library (reused by =2-monomes_kmss-drums=) but none are
   bound in this rig. Sustain here is the reduced clear+momentary-accrete pair
   only (see "OSS: sustain + tap").
-- No on-grid tap-tempo pad and no on-grid pulse widget -- both moved to the
-  newer SoftStep, per the vision's "use the softsteps instead of the monome
-  for it."
+- No on-grid tap-tempo pad and no on-grid factored-pulse widget -- both moved
+  to the newer SoftStep, per the vision's "use the softsteps instead of the
+  monome for it."

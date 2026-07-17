@@ -13,8 +13,8 @@
 //! press drags the nearest edited note instead. You leave edit mode to play again.
 //!
 //! *Asymmetry, deliberate.* A pitch drag moves the NEAREST edited note (one of them);
-//! a pulse change (`polyrhythm`) applies to ALL of them at once. So "in edit mode"
-//! denotes a different selection depending on which parameter you touch.
+//! a factored-pulse change (`polyrhythm`) applies to ALL of them at once. So "in edit
+//! mode" denotes a different selection depending on which parameter you touch.
 //!
 //! Edit mode is a property of the PITCH, not of a voice or a cell, so it survives
 //! retriggering (`2_discussion` 4h) and it follows the note when the note moves.

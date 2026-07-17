@@ -3,9 +3,9 @@
 //!
 //! Jeff asked for exactly four things and explicitly declined the rest ("The rest
 //! would be too much for me to read live"):
-//! - the global pulse as BPM to one decimal place;
-//! - each monome's factor as `2^x * 3^y` for integer x, y;
-//! - whether each monome's pulse is on at all;
+//! - the global tapped tempo as BPM to one decimal place;
+//! - each monome's tempo factor as `2^x * 3^y` for integer x, y;
+//! - whether each monome's factored pulse is on at all;
 //! - a blinker at the *unfactored* global tempo.
 //!
 //! The window exists because the controls left the grid: the `=1` LED used to show
@@ -17,17 +17,18 @@ pub fn bpm(hz: Option<f32>) -> Option<String> {
   hz.map(|hz| format!("{:.1}", hz * 60.0))
 }
 
-/// A grid's factor as `2^x * 3^y`, Jeff's requested form. Exponents, not a decimal:
-/// that is how the state is actually held (which is why x3-then-/3 is *exactly*
-/// unity), and it is what tells you at a glance which pedals to press to get back.
-pub fn factor(two_exp: i32, three_exp: i32) -> String {
+/// A grid's tempo factor as `2^x * 3^y`, Jeff's requested form. Exponents, not a
+/// decimal: that is how the state is actually held (which is why x3-then-/3 is
+/// *exactly* unity), and it is what tells you at a glance which pedals to press to
+/// get back.
+pub fn tempo_factor(two_exp: i32, three_exp: i32) -> String {
   format!("2^{two_exp} * 3^{three_exp}")
 }
 
-/// One grid's line: its name, whether its pulse is on, and its factor.
-pub fn grid_line(name: &str, pulse_on: bool, two_exp: i32, three_exp: i32) -> String {
-  let state = if pulse_on { "ON " } else { "off" };
-  format!("{name}  pulse {state}  {}", factor(two_exp, three_exp))
+/// One grid's line: its name, whether its factored pulse is on, and its tempo factor.
+pub fn grid_line(name: &str, factored_pulse_on: bool, two_exp: i32, three_exp: i32) -> String {
+  let state = if factored_pulse_on { "ON " } else { "off" };
+  format!("{name}  factored pulse {state}  {}", tempo_factor(two_exp, three_exp))
 }
 
 #[cfg(test)]
@@ -50,16 +51,16 @@ mod tests {
   }
 
   #[test]
-  fn the_factor_reads_as_powers_of_two_and_three() {
-    assert_eq!(factor(0, 0), "2^0 * 3^0", "unity is shown, not blanked");
-    assert_eq!(factor(1, 0), "2^1 * 3^0");
-    assert_eq!(factor(-1, 2), "2^-1 * 3^2");
+  fn the_tempo_factor_reads_as_powers_of_two_and_three() {
+    assert_eq!(tempo_factor(0, 0), "2^0 * 3^0", "unity is shown, not blanked");
+    assert_eq!(tempo_factor(1, 0), "2^1 * 3^0");
+    assert_eq!(tempo_factor(-1, 2), "2^-1 * 3^2");
   }
 
   #[test]
-  fn a_grid_line_shows_the_switch_and_the_factor() {
-    assert_eq!(grid_line("LOM", true, 1, -1), "LOM  pulse ON   2^1 * 3^-1");
-    assert_eq!(grid_line("RNM", false, 0, 0), "RNM  pulse off  2^0 * 3^0");
+  fn a_grid_line_shows_the_switch_and_the_tempo_factor() {
+    assert_eq!(grid_line("LOM", true, 1, -1), "LOM  factored pulse ON   2^1 * 3^-1");
+    assert_eq!(grid_line("RNM", false, 0, 0), "RNM  factored pulse off  2^0 * 3^0");
   }
 
   /// The two grids' lines must be the same width whatever their state, or the column
@@ -68,6 +69,6 @@ mod tests {
   fn the_grid_lines_line_up_across_states() {
     let on = grid_line("LOM", true, 0, 0);
     let off = grid_line("RNM", false, 0, 0);
-    assert_eq!(on.len(), off.len(), "ON/off must not shift the factor column");
+    assert_eq!(on.len(), off.len(), "ON/off must not shift the tempo-factor column");
   }
 }
