@@ -34,6 +34,9 @@ pub enum Press {
   /// The cell above holds sounding note `pitch`, which WAS being edited: stop. The
   /// pressed cell does not sound.
   ExitEdit { pitch: i32 },
+  /// Toggle whether `pitch` keeps sounding with no finger on it. The pressed cell
+  /// does not sound.
+  ToggleSustain { pitch: i32 },
   /// Drag the edited note `from` to `to`, gliding. The pressed cell does not sound.
   Drag { from: i32, to: i32 },
 }
@@ -42,18 +45,11 @@ pub enum Press {
 #[derive(Debug, Default)]
 pub struct EditState {
   pitches: HashSet<i32>,
-  /// The subset whose drone exists ONLY because they are being edited -- i.e. the
-  /// ones this state made ring, rather than ones already sustained by the accrete
-  /// pedal before the edit began.
-  ///
-  /// Needed because leaving edit mode must silence the first kind and NOT the second:
-  /// a note you deliberately accreted has its own reason to ring and must survive.
-  owned: HashSet<i32>,
 }
 
 impl EditState {
   pub fn new() -> Self {
-    EditState { pitches: HashSet::new(), owned: HashSet::new() }
+    EditState { pitches: HashSet::new() }
   }
 
   pub fn is_editing(&self, pitch: i32) -> bool {
@@ -74,37 +70,50 @@ impl EditState {
     self.pitches.iter().copied().min_by_key(|p| ((p - target).abs(), *p))
   }
 
-  /// Decide what a press means. `pitch_above` is the pitch of the cell directly above
-  /// the pressed one (`None` if that cell is off-grid), `pressed_pitch` the pressed
-  /// cell's own pitch, and `sounding` says whether a pitch is currently audible on
-  /// this grid (fingered or sustained -- both count; an edited note keeps sounding).
+  /// Decide what a press means.
   ///
-  /// Order matters. The trigger is checked FIRST: pressing the cell under a sounding
-  /// note always means "edit that note", never "drag to here". Otherwise the exit
-  /// gesture and the drag gesture would both fire on the same press, since the cell
-  /// under an edited note is also a perfectly good drag target (`2_discussion` 2b).
-  /// The cost: you can never drag an edited note down onto the cell that exits it.
+  /// The two triggers are mirror images, and both act on a NEIGHBOUR of the pressed
+  /// cell rather than on the cell itself:
+  /// - `edit_target` is the note directly ABOVE the pressed cell (press below a note
+  ///   to toggle editing it);
+  /// - `sustain_target` is the note directly BELOW it (press above a note to toggle
+  ///   sustaining it).
+  ///
+  /// Either is `None` when that neighbour is off the play grid. `sounding` says
+  /// whether a pitch is currently audible on this grid, by any reason at all.
+  ///
+  /// Order matters, twice over:
+  ///
+  /// *Exit is checked first,* before anything looks at whether a note is audible.
+  /// Anything that silences an edited note out from under us would otherwise strand
+  /// it: still dancing, still forcing every press to drag, and un-dismissable because
+  /// the gesture that dismisses it needed the sound that just went away. Keeping this
+  /// first makes "no inescapable state" true by construction.
+  ///
+  /// *Edit beats sustain* when a cell has sounding notes both above and below it --
+  /// i.e. two notes one cell apart, straddling the press. Rare (Jeff: "there's rarely
+  /// musical reason to play both"), but it must be decided rather than accidental.
+  /// Edit wins because it is the gesture with an exit condition: a wrong sustain is
+  /// undone by pressing again, a wrong edit-mode entry too, but only one of them can
+  /// leave you unable to tell which note you are acting on.
   pub fn classify(
     &self,
-    pitch_above: Option<i32>,
+    edit_target: Option<i32>,
+    sustain_target: Option<i32>,
     pressed_pitch: i32,
     sounding: impl Fn(i32) -> bool,
   ) -> Press {
-    if let Some(above) = pitch_above {
-      // Exiting must NOT depend on the note being audible. Anything that silences an
-      // edited note out from under us -- `clear` does exactly this -- would otherwise
-      // strand it: it keeps dancing, `any()` stays true so every press drags instead
-      // of playing, and the one gesture that could dismiss it is the one gesture the
-      // silence disabled. The grid becomes unplayable with no way out.
-      //
-      // So an edit-mode note is always dismissable, sounding or not. That makes "no
-      // inescapable state" true by construction, rather than by every future silencer
-      // remembering to clean up after itself.
+    if let Some(above) = edit_target {
       if self.is_editing(above) {
         return Press::ExitEdit { pitch: above };
       }
       if sounding(above) {
         return Press::EnterEdit { pitch: above };
+      }
+    }
+    if let Some(below) = sustain_target {
+      if sounding(below) {
+        return Press::ToggleSustain { pitch: below };
       }
     }
     match self.nearest(pressed_pitch) {
@@ -113,22 +122,17 @@ impl EditState {
     }
   }
 
-  /// Start editing `pitch`. `owns_drone` says whether edit mode is now the reason it
-  /// rings (false when it was already sustained some other way), which is what [`exit`]
-  /// consults before silencing it.
-  pub fn enter(&mut self, pitch: i32, owns_drone: bool) {
+  /// Start editing `pitch`. Being edited is itself a reason the note rings, so it
+  /// keeps sounding once the finger lifts (`1_vision`) without this state having to
+  /// reach into anyone else's bookkeeping.
+  pub fn enter(&mut self, pitch: i32) {
     self.pitches.insert(pitch);
-    if owns_drone {
-      self.owned.insert(pitch);
-    }
   }
 
-  /// Stop editing `pitch`. Returns whether edit mode was the reason it rings -- i.e.
-  /// whether the caller should now silence it. A note that was already accreted keeps
-  /// ringing: it has its own reason.
-  pub fn exit(&mut self, pitch: i32) -> bool {
+  /// Stop editing `pitch`. Whether it then falls silent is the caller's to work out:
+  /// a finger or a sustain is its own reason to keep ringing.
+  pub fn exit(&mut self, pitch: i32) {
     self.pitches.remove(&pitch);
-    self.owned.remove(&pitch)
   }
 
   /// Follow a note that moved: edit mode belongs to the pitch, so dragging a note
@@ -138,21 +142,14 @@ impl EditState {
     if self.pitches.remove(&from) {
       self.pitches.insert(to);
     }
-    // The reason it rings travels with it, or a dragged note would be silenced by
-    // an exit that should have spared it (or spared by one that should not).
-    if self.owned.remove(&from) {
-      self.owned.insert(to);
-    }
   }
 
   /// Drop every pitch (the vision's "a button somewhere to clear edit mode from all
   /// notes", left unimplemented for now -- `1_vision` §undecided).
-  /// Drop every pitch, returning those whose drone this state owned -- the caller
-  /// must silence them (the vision's "a button somewhere to clear edit mode from all
-  /// notes", still unbound).
-  pub fn clear(&mut self) -> Vec<i32> {
+  /// Stop editing everything. The caller silences whatever that leaves with no
+  /// reason to ring -- `clear` already releases this grid's voices anyway.
+  pub fn clear(&mut self) {
     self.pitches.clear();
-    self.owned.drain().collect()
   }
 }
 
@@ -164,22 +161,22 @@ mod tests {
   #[test]
   fn a_press_with_nothing_edited_is_an_ordinary_note() {
     let e = EditState::new();
-    assert_eq!(e.classify(Some(20), 21, |_| false), Press::Play);
+    assert_eq!(e.classify(Some(20), None, 21, |_| false), Press::Play);
   }
 
   /// The trigger only fires under a SOUNDING note; otherwise that cell is just a note.
   #[test]
   fn the_cell_under_a_silent_note_still_plays() {
     let e = EditState::new();
-    assert_eq!(e.classify(Some(20), 21, |p| p == 99), Press::Play);
+    assert_eq!(e.classify(Some(20), None, 21, |p| p == 99), Press::Play);
   }
 
   #[test]
   fn pressing_under_a_sounding_note_enters_edit_and_pressing_again_exits() {
     let mut e = EditState::new();
-    assert_eq!(e.classify(Some(20), 21, |p| p == 20), Press::EnterEdit { pitch: 20 });
-    e.enter(20, true);
-    assert_eq!(e.classify(Some(20), 21, |p| p == 20), Press::ExitEdit { pitch: 20 });
+    assert_eq!(e.classify(Some(20), None, 21, |p| p == 20), Press::EnterEdit { pitch: 20 });
+    e.enter(20);
+    assert_eq!(e.classify(Some(20), None, 21, |p| p == 20), Press::ExitEdit { pitch: 20 });
   }
 
   /// The whole point of 2b: the exit gesture and the drag gesture are the same press,
@@ -188,10 +185,10 @@ mod tests {
   #[test]
   fn the_exit_trigger_beats_the_drag_when_both_could_fire() {
     let mut e = EditState::new();
-    e.enter(20, true);
+    e.enter(20);
     // Cell 21's neighbour above is the edited, sounding note 20. Both rules apply.
     assert_eq!(
-      e.classify(Some(20), 21, |p| p == 20),
+      e.classify(Some(20), None, 21, |p| p == 20),
       Press::ExitEdit { pitch: 20 },
       "exit wins; the accepted cost is that you cannot drag a note onto its own exit cell",
     );
@@ -202,26 +199,26 @@ mod tests {
   #[test]
   fn while_editing_an_ordinary_press_drags_instead_of_playing() {
     let mut e = EditState::new();
-    e.enter(20, true);
-    assert_eq!(e.classify(Some(50), 40, |p| p == 20), Press::Drag { from: 20, to: 40 });
+    e.enter(20);
+    assert_eq!(e.classify(Some(50), None, 40, |p| p == 20), Press::Drag { from: 20, to: 40 });
   }
 
   #[test]
   fn a_drag_moves_the_nearest_edited_note() {
     let mut e = EditState::new();
-    e.enter(10, true);
-    e.enter(30, true);
-    assert_eq!(e.classify(None, 28, |_| false), Press::Drag { from: 30, to: 28 });
-    assert_eq!(e.classify(None, 12, |_| false), Press::Drag { from: 10, to: 12 });
+    e.enter(10);
+    e.enter(30);
+    assert_eq!(e.classify(None, None, 28, |_| false), Press::Drag { from: 30, to: 28 });
+    assert_eq!(e.classify(None, None, 12, |_| false), Press::Drag { from: 10, to: 12 });
   }
 
   /// Ties go to the LOWER note (2d), matching the looper's lowest-first rule.
   #[test]
   fn a_tie_drags_the_lower_note() {
     let mut e = EditState::new();
-    e.enter(10, true);
-    e.enter(20, true);
-    assert_eq!(e.classify(None, 15, |_| false), Press::Drag { from: 10, to: 15 });
+    e.enter(10);
+    e.enter(20);
+    assert_eq!(e.classify(None, None, 15, |_| false), Press::Drag { from: 10, to: 15 });
   }
 
   /// Edit mode belongs to the PITCH, so it travels with the note. Otherwise a dragged
@@ -229,18 +226,18 @@ mod tests {
   #[test]
   fn edit_mode_follows_a_note_that_moves() {
     let mut e = EditState::new();
-    e.enter(20, true);
+    e.enter(20);
     e.moved(20, 35);
     assert!(!e.is_editing(20));
     assert!(e.is_editing(35), "the note is still being edited at its new pitch");
     // ...and it can be dragged again from there.
-    assert_eq!(e.classify(None, 40, |_| false), Press::Drag { from: 35, to: 40 });
+    assert_eq!(e.classify(None, None, 40, |_| false), Press::Drag { from: 35, to: 40 });
   }
 
   #[test]
   fn moving_a_note_that_is_not_edited_does_nothing() {
     let mut e = EditState::new();
-    e.enter(20, true);
+    e.enter(20);
     e.moved(99, 100);
     assert!(e.is_editing(20));
     assert!(!e.is_editing(100));
@@ -252,10 +249,10 @@ mod tests {
   #[test]
   fn edit_mode_survives_a_retrigger() {
     let mut e = EditState::new();
-    e.enter(20, true);
+    e.enter(20);
     // The voice is replaced; the pitch is unchanged.
     assert!(e.is_editing(20));
-    assert_eq!(e.classify(Some(20), 21, |p| p == 20), Press::ExitEdit { pitch: 20 });
+    assert_eq!(e.classify(Some(20), None, 21, |p| p == 20), Press::ExitEdit { pitch: 20 });
   }
 
   /// A note on the bottom row has no cell below it, so it can never be edited. The
@@ -263,17 +260,17 @@ mod tests {
   #[test]
   fn a_press_with_no_cell_above_falls_through_to_play_or_drag() {
     let mut e = EditState::new();
-    assert_eq!(e.classify(None, 21, |_| true), Press::Play);
-    e.enter(5, true);
-    assert_eq!(e.classify(None, 21, |_| true), Press::Drag { from: 5, to: 21 });
+    assert_eq!(e.classify(None, None, 21, |_| true), Press::Play);
+    e.enter(5);
+    assert_eq!(e.classify(None, None, 21, |_| true), Press::Drag { from: 5, to: 21 });
   }
 
   #[test]
   fn multiple_notes_can_be_edited_at_once() {
     let mut e = EditState::new();
-    e.enter(10, true);
-    e.enter(20, true);
-    e.enter(30, true);
+    e.enter(10);
+    e.enter(20);
+    e.enter(30);
     let mut got: Vec<i32> = e.pitches().collect();
     got.sort();
     assert_eq!(got, [10, 20, 30]);
@@ -285,68 +282,84 @@ mod tests {
     assert!(!e.any());
   }
 
-  // ---- who owns the drone: what exiting edit mode is allowed to silence ----
+  // ---- the sustain trigger (press ABOVE a note), mirror of the edit one ----
 
-  /// Jeff's report: finger a note, press below it to edit, lift the finger -- the note
-  /// must keep sounding "as if my finger was still on it", and pressing below again
-  /// must silence it. So edit mode OWNS that ring, and exiting reclaims it.
+  /// Jeff's idea: the cell below a note toggles editing it, so the cell above toggles
+  /// sustaining it. Both act on a NEIGHBOUR, both are toggles, neither sounds.
   #[test]
-  fn exiting_reclaims_a_ring_that_edit_mode_itself_created() {
-    let mut e = EditState::new();
-    e.enter(20, true); // nothing else was sustaining it: we made it ring
-    assert!(e.exit(20), "exit must silence the note it made ring");
+  fn pressing_above_a_sounding_note_toggles_its_sustain() {
+    let e = EditState::new();
+    assert_eq!(
+      e.classify(None, Some(20), 19, |p| p == 20),
+      Press::ToggleSustain { pitch: 20 },
+    );
   }
 
-  /// The case that must NOT be silenced: a note already accreted by the pedal has its
-  /// own reason to ring, and editing it then leaving must not take that away.
+  /// The trigger only fires on a note that is actually audible; otherwise that cell
+  /// is just a cell.
   #[test]
-  fn exiting_spares_a_note_that_was_already_sustained() {
-    let mut e = EditState::new();
-    e.enter(20, false); // it was already droning before the edit began
-    assert!(!e.exit(20), "exit must leave an accreted note ringing");
+  fn pressing_above_a_silent_note_is_an_ordinary_press() {
+    let e = EditState::new();
+    assert_eq!(e.classify(None, Some(20), 19, |_| false), Press::Play);
   }
 
+  /// A note on the bottom row has nothing below it, so nothing to sustain from there
+  /// -- the same asymmetry the edit trigger has at the top row.
   #[test]
-  fn exiting_a_note_that_was_never_edited_reclaims_nothing() {
-    let mut e = EditState::new();
-    assert!(!e.exit(99));
+  fn a_press_with_no_cell_below_cannot_sustain() {
+    let e = EditState::new();
+    assert_eq!(e.classify(None, None, 19, |_| true), Press::Play);
   }
 
-  /// The ring travels with the note, or dragging then exiting would silence a note it
-  /// should spare (or spare one it should silence).
+  /// The ambiguity that has to be decided rather than accidental: a cell with sounding
+  /// notes BOTH above and below it -- two notes one cell apart, straddling the press.
+  /// Edit wins.
   #[test]
-  fn the_owned_ring_follows_a_note_that_moves() {
-    let mut e = EditState::new();
-    e.enter(20, true);
-    e.moved(20, 35);
-    assert!(e.exit(35), "still ours at the new pitch");
-
-    let mut e = EditState::new();
-    e.enter(20, false);
-    e.moved(20, 35);
-    assert!(!e.exit(35), "still not ours at the new pitch");
+  fn edit_beats_sustain_when_a_cell_is_sandwiched_between_two_sounding_notes() {
+    let e = EditState::new();
+    assert_eq!(
+      e.classify(Some(21), Some(19), 20, |_| true),
+      Press::EnterEdit { pitch: 21 },
+      "the note above (edit) wins over the note below (sustain)",
+    );
   }
 
+  /// ...and exiting still outranks both, so the escape hatch is never shadowed.
   #[test]
-  fn clear_reports_only_the_rings_edit_mode_owned() {
+  fn exit_beats_sustain_too() {
     let mut e = EditState::new();
-    e.enter(10, true);
-    e.enter(20, false);
-    e.enter(30, true);
-    let mut owned = e.clear();
-    owned.sort();
-    assert_eq!(owned, [10, 30], "the accreted note (20) is not ours to silence");
-    assert!(!e.any());
+    e.enter(21);
+    assert_eq!(
+      e.classify(Some(21), Some(19), 20, |_| true),
+      Press::ExitEdit { pitch: 21 },
+    );
   }
 
-  /// Exiting is not re-entrant: a second exit must not ask the caller to silence a
-  /// note twice.
+  /// Sustain is a plain toggle with no state of its own here: the caller holds the
+  /// sustained set and decides which way the toggle goes. classify only says "the
+  /// user means this pitch".
   #[test]
-  fn exiting_twice_only_reclaims_once() {
+  fn the_sustain_trigger_names_the_pitch_and_leaves_the_direction_to_the_caller() {
+    let e = EditState::new();
+    // Same answer whether or not it is already sustained -- `sounding` is true either
+    // way, and the caller knows which.
+    assert_eq!(
+      e.classify(None, Some(20), 19, |p| p == 20),
+      Press::ToggleSustain { pitch: 20 },
+    );
+  }
+
+  /// While something is edited the grid is a pitch-picker -- but the sustain trigger
+  /// must still work, or you could not sustain a second note while editing a first.
+  #[test]
+  fn the_sustain_trigger_still_works_while_another_note_is_edited() {
     let mut e = EditState::new();
-    e.enter(20, true);
-    assert!(e.exit(20));
-    assert!(!e.exit(20), "already reclaimed");
+    e.enter(50);
+    assert_eq!(
+      e.classify(None, Some(20), 19, |p| p == 20 || p == 50),
+      Press::ToggleSustain { pitch: 20 },
+      "sustain beats the drag fallback",
+    );
   }
 
   // ---- no inescapable state ----
@@ -363,11 +376,11 @@ mod tests {
   #[test]
   fn a_silenced_note_can_still_be_dismissed_from_edit_mode() {
     let mut e = EditState::new();
-    e.enter(20, false); // it was already accreted, as in Jeff's repro
+    e.enter(20); // it was already accreted, as in Jeff's repro
     // ...clear happens: the note is silenced, nothing sounds any more.
     let silent = |_: i32| false;
     assert_eq!(
-      e.classify(Some(20), 21, silent),
+      e.classify(Some(20), None, 21, silent),
       Press::ExitEdit { pitch: 20 },
       "a silent edited note must still be dismissable, or the grid is stuck forever",
     );
@@ -379,11 +392,11 @@ mod tests {
   #[test]
   fn dismissing_the_last_ghost_restores_ordinary_play() {
     let mut e = EditState::new();
-    e.enter(20, false);
+    e.enter(20);
     let silent = |_: i32| false;
-    assert!(matches!(e.classify(None, 40, silent), Press::Drag { .. }), "stuck while edited");
+    assert!(matches!(e.classify(None, None, 40, silent), Press::Drag { .. }), "stuck while edited");
     e.exit(20);
-    assert_eq!(e.classify(None, 40, silent), Press::Play, "playable again");
+    assert_eq!(e.classify(None, None, 40, silent), Press::Play, "playable again");
   }
 
   /// `clear` dismisses every ghost at once -- it is the panic button, so it must
@@ -391,27 +404,25 @@ mod tests {
   #[test]
   fn clearing_edit_mode_leaves_no_ghost_behind() {
     let mut e = EditState::new();
-    e.enter(10, false);
-    e.enter(20, true);
+    e.enter(10);
+    e.enter(20);
     e.clear();
     assert!(!e.any());
-    assert_eq!(e.classify(None, 40, |_| false), Press::Play);
+    assert_eq!(e.classify(None, None, 40, |_| false), Press::Play);
   }
 
   /// The general guarantee, not just Jeff's path: whatever silenced it and however it
   /// got there, an edited pitch is always dismissable by the cell below it.
   #[test]
   fn every_edited_pitch_is_dismissable_regardless_of_what_is_sounding() {
-    for owned in [true, false] {
-      for sounds in [true, false] {
-        let mut e = EditState::new();
-        e.enter(20, owned);
-        assert_eq!(
-          e.classify(Some(20), 21, |p| sounds && p == 20),
-          Press::ExitEdit { pitch: 20 },
-          "owned={owned} sounding={sounds}: must be dismissable",
-        );
-      }
+    for sounds in [true, false] {
+      let mut e = EditState::new();
+      e.enter(20);
+      assert_eq!(
+        e.classify(Some(20), None, 21, |p| sounds && p == 20),
+        Press::ExitEdit { pitch: 20 },
+        "sounding={sounds}: must be dismissable",
+      );
     }
   }
 
@@ -420,6 +431,6 @@ mod tests {
   #[test]
   fn the_cell_under_a_silent_unedited_note_is_still_an_ordinary_press() {
     let e = EditState::new();
-    assert_eq!(e.classify(Some(20), 21, |_| false), Press::Play);
+    assert_eq!(e.classify(Some(20), None, 21, |_| false), Press::Play);
   }
 }

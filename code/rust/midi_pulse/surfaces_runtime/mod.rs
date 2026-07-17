@@ -1277,6 +1277,16 @@ fn grid_thread(mut rt: GridThread) {
     }
     let mut sounding_classes = union_sounding(&rt.sounding);
     sounding_classes.extend(sustained_classes);
+    // An edited note RINGS -- that is the whole point -- so it paints bright like any
+    // other sounding note, on both grids. Edit mode is its own reason to sound, so it
+    // is not in anyone's sustained set to be picked up above; it has to be unioned in
+    // here or an edited drone would go silent-looking while still audible.
+    {
+      let states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+      for state in states.iter() {
+        sounding_classes.extend(state.pitches().map(|p| p.rem_euclid(rt.edo)));
+      }
+    }
     let trail_classes = trail_set(&rt.trail);
 
     // The diamond dances and the off-screen indicator. Both read THIS grid's edit set
@@ -1585,9 +1595,12 @@ fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>, cell: 
     rt.sink.note_off(cell);
     return;
   };
-  let keep = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+  // A note rings without a finger for either of two independent reasons: it is
+  // sustained (pedal, or the per-note button), or it is being edited. Either keeps it.
+  let sustains = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
     .note_released_sustains(pitch);
-  if keep {
+  let editing = rt.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].is_editing(pitch);
+  if sustains || editing {
     rt.sink.sustain_note(cell, pitch);
   } else {
     rt.sink.note_off(cell);
@@ -2001,43 +2014,53 @@ fn handle_edit_press(
   pitch: i32,
   register: &i32,
 ) -> bool {
-  // The pitch of the cell directly ABOVE this one, if that cell is on the play grid.
-  let above = (cell.0, cell.1 - 1);
-  let pitch_above = (above.1 >= rt.edo_rect[1])
-    .then(|| step_for_cell(rt.x_step, rt.y_step, *register, above.0, above.1));
+  // Both triggers act on a NEIGHBOUR of the pressed cell, and both are geometric
+  // rather than pitch-defined -- Jeff pinned them to physical position so they don't
+  // move when the tuning changes. Press BELOW a note to edit it, ABOVE it to sustain
+  // it. A note on the top or bottom row therefore has no trigger cell on that side.
+  let on_grid = |y: i32| y >= rt.edo_rect[1] && y <= rt.edo_rect[3];
+  let neighbour = |dy: i32| {
+    on_grid(cell.1 + dy)
+      .then(|| step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1 + dy))
+  };
+  let edit_target = neighbour(-1); // the note above the pressed cell
+  let sustain_target = neighbour(1); // the note below it
 
-  // "Sounding" on this grid means fingered OR sustained -- an edited note keeps
-  // ringing whether or not a finger is on it, and must stay editable either way.
+  // A note rings for any of three independent reasons: a finger on it, a sustain
+  // (pedal or per-note button), or being edited. Both triggers ask only "is it
+  // audible", so all three count.
   let sustained: HashSet<i32> = {
     let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
     banks[rt.grid_index].sustained_pitches().collect()
   };
-  let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
 
-  // Decide under the edit lock and act after it drops: the accrete lock is taken by
-  // both branches below, and this module's rule is no nested locks. `owns` therefore
-  // comes from the snapshot above rather than from a second accrete lock.
+  // Decide under the edit lock, act after it drops: the branches below take the
+  // accrete lock, and this module's rule is no nested locks.
   enum Act {
     Play,
-    Entered(i32),
-    Exited(i32, bool),
+    Entered,
+    Exited(i32),
+    Sustain(i32, bool),
     Dragged(i32, i32),
   }
   let act = {
     let mut states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+    let editing: HashSet<i32> = states[rt.grid_index].pitches().collect();
+    let is_sounding = |p: i32| {
+      held.values().any(|h| *h == p) || sustained.contains(&p) || editing.contains(&p)
+    };
     let e = &mut states[rt.grid_index];
-    match e.classify(pitch_above, pitch, is_sounding) {
+    match e.classify(edit_target, sustain_target, pitch, is_sounding) {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
-        // An edited note keeps sounding whether or not a finger stays on it
-        // (`1_vision`). It was already ringing on its own iff the bank had it.
-        e.enter(pitch, !sustained.contains(&pitch));
-        Act::Entered(pitch)
+        e.enter(pitch);
+        Act::Entered
       }
       edit::Press::ExitEdit { pitch } => {
-        let owned = e.exit(pitch);
-        Act::Exited(pitch, owned)
+        e.exit(pitch);
+        Act::Exited(pitch)
       }
+      edit::Press::ToggleSustain { pitch } => Act::Sustain(pitch, !sustained.contains(&pitch)),
       edit::Press::Drag { from, to } => {
         e.moved(from, to);
         Act::Dragged(from, to)
@@ -2047,20 +2070,37 @@ fn handle_edit_press(
 
   match act {
     Act::Play => return true,
-    Act::Entered(pitch) => {
-      // Sustain it in the accrete bank rather than a parallel set, so the release
-      // path, the bright LEDs and `clear` all treat it like any other ringing note.
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].sustain_pitch(pitch);
+    // Entering needs nothing else: being edited is itself a reason to ring, so the
+    // note simply keeps sounding when the finger lifts (`release_cell` asks).
+    Act::Entered => {}
+    Act::Exited(pitch) => {
+      // It falls silent only if nothing else was holding it up. A finger is its own
+      // reason -- and then there is no drone to cut anyway; that voice is keyed by
+      // cell and dies on the ordinary release.
+      let held_here = held.values().any(|p| *p == pitch);
+      if !held_here && !sustained.contains(&pitch) {
+        rt.sink.cut_sustained(pitch);
+      }
     }
-    Act::Exited(pitch, owned) => {
-      // Take back only the reason edit mode gave it: a note that was already accreted
-      // keeps its own, and a finger still on it is its own too (and then there is no
-      // drone to cut -- that voice is keyed by cell and dies on the ordinary release).
-      if owned {
-        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].drop_pitch(pitch);
-        if !held.values().any(|p| *p == pitch) {
+    Act::Sustain(pitch, on) => {
+      let mut banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+      if on {
+        banks[rt.grid_index].sustain_pitch(pitch);
+      } else {
+        banks[rt.grid_index].drop_pitch(pitch);
+      }
+      drop(banks);
+      if !on {
+        // Same rule as leaving edit mode: silence it only if nothing else holds it up.
+        let held_here = held.values().any(|p| *p == pitch);
+        let editing = rt.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+          .is_editing(pitch);
+        if !held_here && !editing {
           rt.sink.cut_sustained(pitch);
         }
+      } else if !held.values().any(|p| *p == pitch) {
+        // Sustaining a note whose finger already lifted: it is only still audible
+        // because it is being edited, so it already has a drone. Nothing to start.
       }
     }
     Act::Dragged(from, to) => {
@@ -2944,7 +2984,7 @@ mod tests {
       a.sustain_note(cell, pitch);
       accrete.lock().unwrap()[0].sustain_pitch(pitch);
     }
-    edit.lock().unwrap()[0].enter(20, false); // already accreted -> not ours
+    edit.lock().unwrap()[0].enter(20);
     assert!(edit.lock().unwrap()[0].any());
 
     // Clear that grid's bank.
@@ -2968,6 +3008,38 @@ mod tests {
     assert!(accrete.lock().unwrap()[0].sustained_pitches().next().is_none());
   }
 
+  /// Jeff: "a global clear will now clear even the ones that started sustaining
+  /// without pedals." Per-note sustains and pedal accretes share one set, so clear
+  /// reaches both -- this pins that rather than trusting it, since the last bug here
+  /// was precisely clear failing to reach something that was ringing.
+  #[test]
+  fn clear_flushes_per_note_sustains_as_well_as_pedal_accretes() {
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 1]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new(vec![edit::EditState::new()]));
+
+    // One note sustained by the PEDAL (accrete live while it was played)...
+    {
+      let mut banks = accrete.lock().unwrap();
+      banks[0].press_accrete();
+      banks[0].note_played(10);
+      banks[0].release_accrete();
+    }
+    // ...and one sustained by the per-note button, with no pedal involved at all.
+    accrete.lock().unwrap()[0].sustain_pitch(20);
+    assert_eq!(accrete.lock().unwrap()[0].sustained_pitches().count(), 2);
+
+    drive_accrete(
+      0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+    );
+    assert!(
+      accrete.lock().unwrap()[0].sustained_pitches().next().is_none(),
+      "clear must flush the button-sustained note too, not just the pedalled one",
+    );
+  }
+
   /// Clear is per-bank, so it must not dismiss the OTHER grid's edit mode.
   #[test]
   fn clearing_one_bank_leaves_the_other_grids_edit_mode_alone() {
@@ -2976,8 +3048,8 @@ mod tests {
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let edit: Arc<Mutex<Vec<edit::EditState>>> =
       Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
-    edit.lock().unwrap()[0].enter(10, true);
-    edit.lock().unwrap()[1].enter(20, true);
+    edit.lock().unwrap()[0].enter(10);
+    edit.lock().unwrap()[1].enter(20);
 
     drive_accrete(
       0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
