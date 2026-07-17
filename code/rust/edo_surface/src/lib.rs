@@ -12,4 +12,5 @@
 //! cannibalized across and renamed to say what it is; what it does not need cannot leak
 //! in. The plan and the terms are in `TODO/new-library/`.
 
+pub mod tuning;
 pub mod voice;
