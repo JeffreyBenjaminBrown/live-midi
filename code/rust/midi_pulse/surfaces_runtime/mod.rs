@@ -28,6 +28,7 @@ mod dance;
 mod edit;
 mod grid;
 mod polyrhythm;
+mod readout;
 mod slide;
 mod synth;
 

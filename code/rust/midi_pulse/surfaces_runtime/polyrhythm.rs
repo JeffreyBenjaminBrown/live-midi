@@ -154,6 +154,19 @@ impl PolyrhythmState {
   /// The global tapped tempo in Hz, before any grid's factor -- None before a pair
   /// of taps has set one. This is what the tap cell DISPLAYS, on both grids alike:
   /// the blink is the metronome you tapped, not what either grid made of it.
+  /// One grid's factor exponents, for the on-screen readout: Jeff asked for the
+  /// factor as `2^x * 3^y`, which is also exactly how it is stored -- the reason
+  /// x3-then-/3 is exactly unity rather than nearly.
+  pub fn factor_exponents(&self, grid: usize) -> (i32, i32) {
+    self.grids.get(grid).map(|g| (g.two_exp, g.three_exp)).unwrap_or((0, 0))
+  }
+
+  /// Whether this grid's amplitude cycling is switched on (the `=1` LED's state, now
+  /// also a line in the window).
+  pub fn pulse_on(&self, grid: usize) -> bool {
+    self.grids.get(grid).map(|g| g.pulse_on).unwrap_or(false)
+  }
+
   pub fn tapped_hz(&self) -> Option<f32> {
     let period = self.tapped_period?.as_secs_f32();
     if period <= 0.0 {
