@@ -169,7 +169,9 @@ Currently *142 pitfalls* across 54 files.
 - [[file:waveform-bases.org::Band-limiting][Naive discontinuous waveforms alias]]
   Naive generation of waveforms with discontinuities (sawtooth, square, pulse) causes aliasing.  /Fix:/ Use band-limited methods -- BLIT (integrate a band-limited impulse train) or PolyBLEP (cheap polynomial step correction).
 
-* Monome (grid / serialosc)  (19)
+* Monome (grid / serialosc)  (20)
+- [[file:ORIENTATION.org::the grids are NOT visible as /dev/tty][The grids are NOT /dev/tty* devices in the container -- absence there proves nothing]]
+  Looking for connected grids with =ls /dev/ttyUSB* /dev/ttyACM*= inside the container finds nothing even when both grids are plugged in and working, because serialosc runs on the HOST and owns the tty; the container only ever sees it over the network. Concluding "no grids are connected" from that is wrong.  /Fix:/ Ask serialosc: send =/serialosc/list= to =127.0.0.1:12002= (reachable via =--network host=) and read the =/serialosc/device= replies, which give each grid's *serial id* (=m256-282=, =m0000102=) -- the thing rigs actually pin with =select.id_contains=. Same for the SoftSteps, which DO appear locally (=amidi -l=) because they are plain USB-MIDI.
 - [[file:MOCK-MONOME.org::Why a mock is even needed][Any real run hits real hardware via the 12002 detector port]]
   Discovery is hardwired to ask serialoscd at 127.0.0.1:12002, which in this container is the host's REAL serialosc, so any "real" run hits real hardware -- you can't just "not connect."  /Fix:/ Set MIDI_PULSE_DETECTOR_PORT (default 12002) to point discovery at the in-process mock serialosc instead.
 - [[file:ORIENTATION.org::Serialosc flood][Serialosc flood must be fixed from the host]]

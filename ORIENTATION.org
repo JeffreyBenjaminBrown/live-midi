@@ -57,6 +57,20 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
   the container and can't.
 - *Hardware*: both 16x16 grids must be connected to run the looper for real, and
   you usually can't watch them yourself -- ask Jeff to verify on the grids.
+- *Finding the gear from in here.* The two families answer to different tools, and
+  the grids are NOT visible as /dev/tty devices in the container -- =ls /dev/ttyUSB*=
+  finds nothing even with both grids plugged in and working, because *serialosc runs
+  on the host* and owns the tty. Absence there proves nothing. Ask serialosc instead
+  (it is reachable thanks to =--network host=):
+  #+begin_src sh
+  # grids: send /serialosc/list to 127.0.0.1:12002, read the /serialosc/device replies
+  amidi -l          # softsteps: plain USB-MIDI, so these DO show up locally
+  #+end_src
+  The replies give each grid's *serial id* -- =m256-282= (the older, monobright one)
+  and =m0000102= (the newer, varibright one) -- which is what rigs pin with
+  =select.id_contains=. The SoftSteps distinguish themselves by ALSA client name:
+  ="SSCOM"= is the older board, ="SoftStep"= the newer. Their *card numbers follow
+  plug order and are not stable* -- never hardcode =hw:1,0,0=.
 
 * working style (learned)
 - When told to proceed autonomously, keep building and committing; don't wrap at a

@@ -571,6 +571,50 @@ pads = [
 Built-in softstep window kinds:
 
 - ~drumkit~
+- ~accrete_control~
+- ~tap_tempo_pedal~
+- ~pulse_factor_pedal~
+
+The last three bind ONE pedal each to a control that would otherwise cost grid
+cells, and they are *unconditional* -- unlike the older ~softstep_accretes_toggle~
+mirror, which hardcodes pedals 1/2/3 + 8/9/0 and only acts while an on-grid toggle
+is on. Every binding is stated in the rig rather than buried in the runtime:
+
+#+begin_src toml
+[[softstep_windows]]
+id = "clear-a"
+softstep = "old"          # -> [[softsteps]] id
+kind = "accrete_control"
+pedal = 1                 # printed label, 0..9
+monome = "a"              # whose bank; must have an edo_note_grid
+control = "clear"         # or "accrete" / "needs_holding" / "erase"
+
+[[softstep_windows]]
+id = "tap"
+softstep = "old"
+kind = "tap_tempo_pedal"  # defines the ONE global tapped tempo; at most one per rig
+pedal = 8
+
+[[softstep_windows]]
+id = "x2-a"
+softstep = "new"
+kind = "pulse_factor_pedal"
+pedal = 5
+monome = "a"              # this monome's pulse; must have an edo_note_grid
+factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
+#+end_src
+
+A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
+with no note in edit mode it moves the *grid's* factor (exactly as the on-grid
+~tap_tempo_pad~ does), and with notes in edit mode the multipliers retune *those
+notes*. ~unity~ is the ~=1~ switch and never retunes edit-mode notes.
+
+Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows *on
+the same device* (including across kinds -- a pedal that is both a drum and a clear
+button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
+global, so there is one); two pedals giving the *same* monome the same ~factor~
+(different monomes may of course share a factor -- that is the point of per-monome
+factors); and a ~monome~ that is unknown or has no ~edo_note_grid~.
 
 Pedals are addressed by their printed label (1..9, then 0). On start, the
 runtime puts the device into *tether (hosted) mode* via SysEx sent over ALSA
