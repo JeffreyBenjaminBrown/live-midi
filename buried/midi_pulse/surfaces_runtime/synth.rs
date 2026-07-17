@@ -293,6 +293,10 @@ impl SurfaceSink {
   /// never stop. Dragging an edit-mode note back and forth does exactly that.
   ///
   /// Returns false if no voice is at `cell`.
+  // Superseded by `rehome_to_cell`: a drag always adopts the voice onto the drag
+  // finger's cell, so an in-place glide is no longer called. Kept for its tests, which
+  // document the glide integrator's direction-encoding (see the backward-re-aim one).
+  #[allow(dead_code)]
   pub fn glide_voice_to(&mut self, cell: (i32, i32), pitch: i32, glide_secs: f32) -> bool {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) else {
@@ -310,6 +314,48 @@ impl SurfaceSink {
     true
   }
 
+  /// Hand a sounding voice to the finger now on `cell`: re-home it there as an ordinary
+  /// FINGERED voice, gliding it to `to`, and preserve everything else about it -- its
+  /// envelope, timbre, gain, and the factored pulse's rate and phase all continue.
+  ///
+  /// This is what a drag does. Pressing a monomekey to drag a voice is a finger going
+  /// down, and that finger must own the voice afterwards, or the voice is stranded:
+  /// left at its old cell (which is not where the finger is) or, if the original
+  /// finger had lifted, a bare drone that an exit will cut while the drag finger is
+  /// still held. The source is either a fingered voice at `from_cell` or a drone keyed
+  /// by `from_pitch`; either way it ends up fingered at `cell`.
+  ///
+  /// Unlike `note_on_legato`, this does NOT re-aim the factored pulse -- a drag must
+  /// preserve it, not zero it. Returns false if no voice was found to move.
+  pub fn rehome_to_cell(
+    &mut self,
+    from_cell: Option<(i32, i32)>,
+    from_pitch: i32,
+    cell: (i32, i32),
+    to: i32,
+    glide_secs: f32,
+  ) -> bool {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let src = match from_cell {
+      Some(fc) => voice_key(self.grid, fc),
+      None => sustain_key(self.grid, from_pitch),
+    };
+    let Some(mut state) = voices.remove(&src) else {
+      return false;
+    };
+    let target = freq_for_pitch(to, self.fund, self.edo);
+    let start = state.freq; // live, mid-glide included
+    if target == start {
+      state.glide_per_sample = 1.0;
+    } else {
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq_target = target;
+      state.glide_per_sample = (target / start).powf(1.0 / samples);
+    }
+    voices.insert(voice_key(self.grid, cell), state);
+    true
+  }
+
   /// Glide this grid's SUSTAINED (fingerless) drone at `from` to pitch `to`. The
   /// same edit as `glide_voice_to`, for a note whose finger has lifted: a drone is
   /// keyed by pitch rather than by cell, so it needs its own lookup. Re-keys the
@@ -317,6 +363,10 @@ impl SurfaceSink {
   /// still answer to the pitch it left.
   ///
   /// Returns false if no drone is at `from`.
+  ///
+  /// Superseded by `rehome_to_cell` (a drag adopts the drone onto the drag finger's
+  /// cell), so no longer called; kept for its test.
+  #[allow(dead_code)]
   pub fn glide_sustained_to(&mut self, from: i32, to: i32, glide_secs: f32) -> bool {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut state) = voices.remove(&sustain_key(self.grid, from)) else {
@@ -962,5 +1012,93 @@ mod tests {
     a.note_off((3, 3));
     assert!(v.lock().unwrap()[&voice_key(0, (3, 3))].target_env <= 0.0, "the lifted one releases");
     assert!(v.lock().unwrap()[&voice_key(0, (4, 12))].target_env > 0.0, "the other still sounds");
+  }
+
+  // ---- rehome_to_cell: a dragged voice is adopted by the drag finger ----
+
+  /// Jeff's bug: "press it, put it into edit mode, and drag it, then take it out of
+  /// edit mode, it dies -- even if the button I pressed to drag it is still depressed."
+  ///
+  /// The drag finger lifted from the original key, so the voice became a drone; the
+  /// drag then moved that drone but never tied it to the finger now on the new key.
+  /// Exit cut the drone. Re-homing the voice to the drag cell makes it a fingered voice
+  /// there, which cut_sustained cannot touch.
+  #[test]
+  fn a_dragged_drone_becomes_fingered_and_survives_an_exit() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    // A voice was fingered, then its finger lifted while edited -> a drone at pitch 20.
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    a.sustain_note((3, 3), 20);
+    assert!(v.lock().unwrap().contains_key(&sustain_key(0, 20)), "it is a drone");
+
+    // Drag it to pitch 35 by pressing cell (7,7): the finger on (7,7) adopts it.
+    assert!(a.rehome_to_cell(None, 20, (7, 7), 35, 0.1));
+    assert!(!v.lock().unwrap().contains_key(&sustain_key(0, 20)), "no longer a drone");
+    assert!(v.lock().unwrap().contains_key(&voice_key(0, (7, 7))), "now fingered at the drag cell");
+
+    // Exit edit mode tries to cut the drone at pitch 35 -- but there is none.
+    a.cut_sustained(35);
+    assert!(
+      v.lock().unwrap()[&voice_key(0, (7, 7))].target_env > 0.0,
+      "the fingered voice survives the exit, because the drag finger holds it",
+    );
+
+    // Lifting the drag cell ends it.
+    a.note_off((7, 7));
+    assert!(v.lock().unwrap()[&voice_key(0, (7, 7))].target_env <= 0.0, "and the lift ends it");
+  }
+
+  /// The other source: the original finger never lifted. Re-homing moves the voice off
+  /// its old cell to the drag cell, so the drag finger owns it and the old cell is inert.
+  #[test]
+  fn a_dragged_fingered_voice_moves_to_the_drag_cell() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+
+    assert!(a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 35, 0.1));
+    let g = v.lock().unwrap();
+    assert!(!g.contains_key(&voice_key(0, (3, 3))), "gone from the old cell");
+    assert!(g.contains_key(&voice_key(0, (7, 7))), "at the drag cell");
+  }
+
+  /// Re-homing preserves the factored pulse -- a drag must not silence a pulsing
+  /// voice's pulse the way note_on_legato would.
+  #[test]
+  fn rehoming_keeps_the_factored_pulse() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), Some(3.0));
+    let phase = {
+      let g = v.lock().unwrap();
+      g[&voice_key(0, (3, 3))].factored_pulse_phase
+    };
+    a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 35, 0.1);
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (7, 7))];
+    assert_eq!(st.factored_pulse_freq, 3.0, "the pulse rate is kept");
+    assert_eq!(st.factored_pulse_phase, phase, "and its phase does not jump");
+  }
+
+  #[test]
+  fn rehoming_glides_rather_than_jumping() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    let before = v.lock().unwrap()[&voice_key(0, (3, 3))].freq;
+    a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 40, 0.1);
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (7, 7))];
+    assert_eq!(st.freq, before, "it starts gliding from where it was, not jumping");
+    assert!(st.glide_per_sample > 1.0, "gliding up toward the new pitch");
+  }
+
+  #[test]
+  fn rehoming_a_voice_that_is_not_there_is_false() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    assert!(!a.rehome_to_cell(Some((9, 9)), 20, (7, 7), 35, 0.1));
+    assert!(!a.rehome_to_cell(None, 99, (7, 7), 35, 0.1));
   }
 }

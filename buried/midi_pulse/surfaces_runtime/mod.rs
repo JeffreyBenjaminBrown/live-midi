@@ -2122,19 +2122,20 @@ fn handle_edit_press(
       // already has one.
     }
     Act::Dragged(from, to) => {
-      let fingered = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);
-      if let Some(cell) = fingered {
-        rt.sink.glide_voice_to(cell, to, rt.slide_duration_secs);
-        // `held` says what each finger is SOUNDING, not what its cell nominally
-        // means -- and a drag has just moved this one. Leaving it stale makes the
-        // finger map lie: releasing would look up the old pitch, find it neither
-        // edited nor sustained, and cut a note that should have kept ringing.
-        held.insert(cell, to);
-      } else {
-        rt.sink.glide_sustained_to(from, to, rt.slide_duration_secs);
+      // The finger that pressed `cell` now holds this voice, so re-home the voice to
+      // `cell` as a fingered voice. It was either fingered at some old cell, or a
+      // drone (its original finger having lifted while edited). Either way, adopting
+      // it here is what fixes Jeff's bug: a voice dragged and then taken out of edit
+      // mode used to die, because it stayed a drone that the exit cut while the drag
+      // finger -- invisible to `held` -- was still down.
+      let old_cell = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);
+      rt.sink.rehome_to_cell(old_cell, from, cell, to, rt.slide_duration_secs);
+      if let Some(oc) = old_cell {
+        held.remove(&oc);
       }
-      // Accrete and the trail both track PITCHES, so a moved note has to be re-filed
-      // under its new one -- otherwise a clear would miss it, and the trail would keep
+      held.insert(cell, to);
+      // Accrete and the trail both track PITCHES, so a moved voice is re-filed under
+      // its new one -- otherwise a clear would miss it, and the trail would keep
       // showing a pitch that is no longer sounding.
       rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_moved(from, to);
       push_trail(&rt.trail, to.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
@@ -3024,6 +3025,49 @@ mod tests {
   ///
   /// The unit test covers the state machine; this covers the wiring, which is where
   /// the bug was: `clear` reaching `EditState` at all.
+  /// Jeff on the live rig: "if I press a monome key and then press sustain-accrete for
+  /// that monome, those voices continue to sound after lifting my fingers." This walks
+  /// exactly that through the pedal-hook path (drive_accrete -> capture -> release),
+  /// so if it goes green the fault is in bringing the SoftStep up, not in the logic.
+  #[test]
+  fn accrete_pedal_captures_a_held_note_so_it_survives_the_lift() {
+    use crate::types::{Timbre, VoiceSource};
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    // The two-softstep rig binds no needs_holding, so its banks are momentary.
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 1]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new(vec![edit::EditState::new()]));
+
+    // A finger goes down: a voice sounds, and held_all carries it (what the grid
+    // thread publishes on note-on, and what the pedal hook reads).
+    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    sink.note_on((3, 3), 20, Timbre::default(), None);
+    held_all.lock().unwrap()[0].insert((3, 3), 20);
+
+    // The accrete pedal goes down.
+    assert!(drive_accrete(
+      0, AccreteControlKind::Accrete, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+    ));
+    assert!(
+      accrete.lock().unwrap()[0].sustained_pitches().any(|p| p == 20),
+      "pressing accrete must capture the already-held note",
+    );
+
+    // The finger lifts. release_cell's decision, reproduced: a captured note keeps
+    // ringing.
+    let keep = accrete.lock().unwrap()[0].note_released_sustains(20);
+    assert!(keep, "the lifted note is sustained, so it survives");
+    if keep {
+      sink.sustain_note((3, 3), 20);
+    }
+    // The voice is now a drone, still sounding.
+    let v = voices.lock().unwrap();
+    let drone_key = VoiceSource::Accreted { chord: synth::SUSTAIN_BASE, pitch: 20 };
+    assert!(v.contains_key(&drone_key), "the voice moved to the sustain register");
+    assert!(v[&drone_key].target_env > 0.0, "and it is still sounding after the lift");
+  }
+
   #[test]
   fn clearing_a_bank_dismisses_that_grids_edit_mode() {
     use crate::types::{Timbre, VoiceSource};
