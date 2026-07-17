@@ -6,7 +6,7 @@ A report on the open problem: on the KMSS drumkit (=kmss-drumkit=), striking two
 hit. Single hits and slow alternation work fine. This documents the symptom, what
 has been ruled out, the ranked suspects, and the one experiment that settles it.
 
-Code refs are to =code/rust/midi_pulse/drumkit_runtime/= unless noted. Device
+Code refs are to =buried/midi_pulse/drumkit_runtime/= unless noted. Device
 background is in [[../learnings/keith-mcmillen-softstep.org]] (read it; this problem
 is mostly *that* document's "we can't send to the device" wall, seen from the
 playing side).
@@ -199,7 +199,7 @@ container. Worth retrying that from the host.
 * references
 - [[../learnings/keith-mcmillen-softstep.org]] -- device protocol, the PC preset,
   the "two pedals at once" note (untested), and the blocked send path.
-- =code/rust/midi_pulse/drumkit_runtime/decode.rs= -- PC parse + per-pad debounce.
-- =code/rust/midi_pulse/drumkit_runtime/mod.rs= -- the MIDI callback + trace.
-- =code/rust/midi_pulse/drumkit_runtime/audio.rs= -- the polyphonic sampler.
-- =code/python/softstep/echo.py= -- human-readable monitor (alt to aseqdump).
+- =buried/midi_pulse/drumkit_runtime/decode.rs= -- PC parse + per-pad debounce.
+- =buried/midi_pulse/drumkit_runtime/mod.rs= -- the MIDI callback + trace.
+- =buried/midi_pulse/drumkit_runtime/audio.rs= -- the polyphonic sampler.
+- =tools/softstep/echo.py= -- human-readable monitor (alt to aseqdump).

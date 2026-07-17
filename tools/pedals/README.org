@@ -1,0 +1,160 @@
+#+title: Expression pedals over MIDI: the DOREMiDi MPC-20 + two M-Audio EX-P pedals
+#+date: 2026-07-15
+
+Two M-Audio EX-P expression pedals plugged into a DOREMiDi MPC-20 pedal-to-MIDI
+converter. One EX-P sweeps the full MIDI range 0..127; the other only reaches ~35..127
+(its low end is clipped -- heel-down never gets to 0). This note is the "what am I
+supposed to do to fix that" writeup (researched from the M-Audio and DOREMiDi docs) plus
+how to use the test tool here.
+
+* The test tool
+=pedals.py= -- a live MIDI monitor. For each =(channel, CC)= it sees, it shows the
+current value, a 0..127 sweep bar, and the *min/max seen so far*. The min/max is the
+whole point: a healthy pedal's =min= reaches 0; the clipped pedal's =min= sticks around
+35, which the tool flags.
+
+#+begin_src sh
+python3 tools/pedals/pedals.py            # auto-pick the pedal MIDI port
+python3 tools/pedals/pedals.py --list     # list candidate MIDI-in ports
+python3 tools/pedals/pedals.py --port hw:2,0,0   # force a port
+python3 tools/pedals/pedals.py 8          # run ~8s then quit (testing)
+#+end_src
+
+Keys: =z= re-zero the min/max holds, =q= quit. It logs every MIDI message to
+=tools/pedals/logs/session-<stamp>.csv= (channel shown BOTH 1-based and 0-based, so
+"channel 1 & 2" vs "0 & 1" is never ambiguous). It only listens -- an expression-pedal
+converter is a plain MIDI controller, nothing to mode-switch or restore (unlike the
+SoftStep).
+
+The MPC-20 was *not connected* when this was written; plug it in (USB-C) and it appears
+as a new ALSA MIDI card, which =pedals.py= auto-detects (it excludes the onboard audio
+card and the two SoftSteps).
+
+* Linux gotcha: the MPC-20 makes no ALSA MIDI port (WCH CH345 chip)
+The MPC-20 uses a *WCH CH345* USB-MIDI chip (USB id =1a86:752d=), and it enumerates as a
+*composite* device: a MIDI function (interfaces :1.0 AudioControl + :1.1 MIDIStreaming)
+plus a CDC-ACM *serial* config port (:1.2/:1.3). The host *sees* the USB device fine
+(=/sys/bus/usb= shows =DOREMiDi.cn / DOREMiDi MPC-20=), and =snd-usb-audio= even binds the
+MIDI interface -- but it creates *no ALSA MIDI device*, so =amidi -l= / =aconnect -l= show
+nothing and the container has nothing to read.
+
+Why: the CH345 ships *broken MIDIStreaming descriptors*; the Linux kernel has a quirk
+(=QUIRK_MIDI_CH345=, =quirks-table.h=, =.ifnum = 1=) that bypasses them for the *standalone*
+CH345 cable, but on this *composite* MPC-20 the quirk doesn't take effect on interface 1,
+so generic parsing runs, finds no MIDI jacks, and makes no port. This is *not* a container
+problem, a missing driver, or a Wine problem -- it works on Windows because Windows'
+class driver tolerates the bad descriptors. The MIDI *endpoints* are fine (bulk IN 0x81 /
+OUT 0x01), so the data is readable; only the kernel's ALSA-port creation fails.
+
+Two ways forward:
+- *Read it directly over USB* (works today, for testing): =pedals_usb.py= claims the bulk
+  endpoint via libusb and decodes the stream itself -- run it *on the host*:
+  #+begin_src sh
+  nix-shell -p 'python3.withPackages(p: [p.pyusb])' libusb1 \
+    --run 'sudo python3 tools/pedals/pedals_usb.py'
+  #+end_src
+- *Bridge it to the container synth* (=bridge.py=): forwards the USB stream onto a virtual
+  ALSA-seq port "MPC-20 pedals" that the container shares, so the synth reads it like any
+  MIDI input. Run it *on the host*:
+  #+begin_src sh
+  nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
+    --run 'sudo python3 tools/pedals/bridge.py'
+  #+end_src
+  Verify from the container: =aseqdump -p 'MPC-20 pedals'= while moving a pedal. The
+  container-side reader is =midi_pulse::expression_pedals= (the =pedal_monitor= bin proves
+  it live: =cargo run --bin pedal_monitor=).
+- *Or a real ALSA device the plain way:* a host-side kernel fix (make the CH345 quirk apply
+  to this composite device), OR route the MPC-20's *5-pin DIN* MIDI out (its TRS adapter)
+  into any class-compliant USB-MIDI interface, which Linux reads cleanly.
+
+Check the host's own log to confirm the cause: =dmesg | grep -iE 'usb .*1a86|ch345|midi'=
+right after replugging, and =cat /proc/asound/cards= (the MPC-20 should be *absent*).
+
+* Observed range (read this before writing the bridge)
+As set up now (both EX-P *trim pots opened all the way*), each pedal sends:
+
+- *CC 21* on *MIDI channel 1* (pedal 1) and *channel 2* (pedal 2) -- exactly the
+  "one on ch1, the other on ch2" goal. CC 21 is the DOREMiDi default expression CC.
+- Raw value range *~1 (full heel) to ~120 (full toe)*. This is *not* a bug to chase: the
+  top maxing at ~120 (not 127) was confirmed *both* here and in DOREMiDi's own Windows
+  tool, so it is the pedal's real range with this MPC-20 config. Jeff isn't pursuing the
+  missing 7 counts unless the range shrinks further.
+
+*For whoever writes the bridge* (the host USB->virtual-ALSA-seq forwarder that feeds the
+container synth): normalize this to a *continuous float in [0.0, 1.0]* -- do NOT requantize
+to another integer range (that is lossy for no reason on a continuous controller). Put the
+ends as top-of-file consts so they're easy to retune, e.g.:
+
+#+begin_src
+PEDAL_RAW_BOTTOM = 1     # raw CC taken as fully-heel -> 0.0
+PEDAL_RAW_TOP    = 119   # raw CC taken as fully-toe  -> 1.0  (Jeff's convention; ~120 seen, clamp above)
+norm = clamp((raw - PEDAL_RAW_BOTTOM) / (PEDAL_RAW_TOP - PEDAL_RAW_BOTTOM), 0.0, 1.0)
+#+end_src
+
+The raw meter here (=pedals_usb.py=) deliberately does *not* rescale -- it shows the true
+values so the real range stays visible. Normalization lives in the bridge/synth, once.
+
+* What each M-Audio EX-P control does
+The EX-P is a passive TRS potentiometer pedal with *two per-pedal controls*:
+
+- *Polarity / mode switch* (on the bottom): two positions, *"M-Audio"* and *"Other."*
+  It swaps which of Tip/Ring is the pot's wiper -- i.e. it flips the pedal's polarity to
+  match the host jack. "M-Audio" = M-Audio gear; "Other" = the Roland/most-others
+  convention. Wrong position => reversed and/or compressed range. M-Audio's guidance:
+  "try both switch settings to find the best match for your equipment."
+- *MIN / trim knob* (thumbwheel on the side): sets the *minimum output at heel-down*.
+  Internally a trim pot in series with the foot pot. Turned up, it adds a floor the
+  wiper can't get below -- so the host maps that floor to ~35 instead of 0. *This is the
+  most likely cause of the 35..127 pedal.*
+
+* Fixing the 35..127 pedal -- do this in order
+1. *Turn the limited pedal's MIN knob to its "no floor" extreme.* Which physical
+   direction that is varies per unit (M-Audio support says clockwise; Red Panda says
+   fully counter-clockwise) -- so don't trust a direction, *watch the live value*: rock
+   the pedal heel-down and turn the knob until =pedals.py= reads *0*.
+2. *Check the polarity switch.* Sweep heel->toe and confirm it reads 0->127 (not 127->0,
+   not stuck 35->127). If reversed, flip the M-Audio/Other switch.
+3. *Swap the two pedals between the MPC-20 jacks* to localize the fault:
+   - clip *follows the pedal* -> it's the pedal (knob/switch, then hardware);
+   - clip *stays with the jack* -> it's that input's software config on the MPC-20.
+4. *Shape it in software (Pedal Config Tool).* If a floor stubbornly remains after the
+   knob/switch are right, set that input's *Min = 0, Max = 127* and add *+Gain* until the
+   toe end reaches 127. Caveat: software Min/Max/Gain can *scale/clamp* but cannot invent
+   a 0 the pedal never physically sends -- the low end is really cured by the MIN knob.
+5. *Last resort (invasive):* open the pedal and short/replace the internal ~1 kOhm series
+   resistor near the pot (documented by Red Panda / Line 6) to recover a true 0. Try
+   everything above first.
+
+DOREMiDi's own documented fix for "cannot reach full range" agrees: center the pedal,
+*check and turn the pedal's own knob*, then adjust *Gain* in the Pedal Config Tool.
+
+* The DOREMiDi MPC-20, briefly
+- "MIDI Pedal Converter-2 / Pro." Marketed with *4 pedal jacks* (up to 4 expression or 8
+  switch pedals) -- the 2-jack unit is the smaller *MPC-10*. Count the jacks on yours.
+- Outputs *USB-MIDI* (USB-C, class-compliant, also powers it) and *5-pin DIN* via an
+  included 3.5 mm TRS->DIN adapter.
+- Configured by *software only* -- the *Pedal Config Tool* (Windows/macOS); the box has no
+  config buttons. It saves settings into the converter's memory, then runs standalone.
+- *No heel-to-toe "learn min/max" calibration.* It has *SENSE* (auto-detect pedal TYPE --
+  positive/reverse expression, sustain, dual-switch, hi-hat; if mis-typed, center the
+  pedal and click SENSE) and *software range shaping* (Gain +-50, Min, Max, Curve).
+- Per-input *Channel (1..16)* and *Controller number* are set independently, so
+  *pedal 1 = channel 1 and pedal 2 = channel 2* is exactly a Pedal Config Tool setting.
+- Defaults: expression pedal -> *CC 21*; sustain -> CC 64; dual-switch -> CC 64 + 66;
+  channel default (undocumented) is most likely *1*. If both pedals sit on the default
+  CC 21, put them on *different channels* (or different CCs) so they don't collide --
+  =pedals.py= keys on =(channel, CC)= so it will show them as separate rows either way.
+
+Tool download: https://www.doremidi.club/download/Product/PedalConfigTool/Pedal_Config_Tool
+
+* Sources
+- M-Audio EX-P manual: https://www.manualslib.com/manual/694051/M-Audio-Ex-P.html
+- M-Audio EX-P troubleshooting: https://support.m-audio.com/en/support/solutions/articles/69000847240-m-audio-ex-p-troubleshooting
+- M-Audio "Why is my expression pedal reversed?": https://support.m-audio.com/en/support/solutions/articles/69000861879-ex-p-why-is-my-expression-pedal-reversed-
+- Red Panda EX-P notes (switch, range control, 1 kOhm mod): https://support.redpandalab.com/support/solutions/articles/43000774406-m-audio-ex-p-with-red-panda-pedals
+- Line 6 EX-P setup thread: https://line6.com/support/topic/46072-m-audio-ex-p-setup/
+- MOD Audio EX-P teardown (RV1 pot, RV2 trim): https://forum.mod.audio/t/simple-hardware-for-connecting-m-audio-ex-p-expression-pedal-to-the-mod-dwarf/11732
+- DOREMiDi MPC-20 product page: https://www.doremidi.shop/products/midi-pedal-converter-2-mpc-20
+- DOREMiDi FAQ (incomplete-range fix, SENSE): https://www.doremidi.club/questions/10
+- DOREMiDi MPC-10 manual (CC defaults, channels, Gain/Min/Max/Curve, Pedal Config Tool): https://www.manualslib.com/manual/3734748/Doremidi-Mpc-10.html
+- DOREMiDi Gain/range firmware notes: https://www.doremidi.club/articles/2

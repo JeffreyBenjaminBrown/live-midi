@@ -463,7 +463,7 @@ Making the surfaces runtime load around absent devices instead of erroring
 Deferred until the Rust-meter agent finishes (it's editing Cargo.toml + drumkit
 files; a full-tree sweep now would collide). The plan, so it survives a cutoff:
 
-- *Directory* =code/rust/configs/= -> =code/rust/rigs/= (git mv), and every path
+- *Directory* =code/rust/configs/= -> =rigs/= (git mv), and every path
   reference ("code/rust/configs", =configs/= in docs/scripts) -> rigs.
 - *Full identifier sweep*, code + docs + comments + rig-file comments: whole-word
   =config=->=rig=, =Config=->=Rig=, =configs=->=rigs=; AND our compound tokens
@@ -480,6 +480,6 @@ files; a full-tree sweep now would collide). The plan, so it survives a cutoff:
 - *MUST NOT touch* (verified): cpal's =StreamConfig=, =default_output_config=,
   =supported_output_configs=, local =stream_config=; the verb "configured"
   (=discover_configured_device= stays); Rust =#[cfg]=/=cfg!=; and
-  =code/python/softstep/meter/config.toml= + the whole Python meter (that's the
+  =tools/softstep/meter/config.toml= + the whole Python meter (that's the
   meter agent's turf, and its config.toml is unrelated to rigs).
 - Verify with =cargo test= (must stay 88 lib + 324 bin green) after the sweep.

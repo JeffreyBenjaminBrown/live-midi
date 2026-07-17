@@ -288,7 +288,7 @@ Some families interpolate between known shapes with a small number of
 parameters:
 
 *** DONE Trapezoid wave: one parameter (flat-top fraction) morphs triangle to
-  square. Already implemented in our code/python/synth/.
+  square. Already implemented in our tools/synth/.
 *** TODO huh ? Superformula / superellipse:
 attempt to parameterize 2D shapes;
 can be projected to 1D periodic waveforms.

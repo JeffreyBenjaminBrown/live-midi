@@ -67,15 +67,22 @@
    | Shell script | WAV files        | Wraps Python, same mechanism     |
 
 ** Source layout
-   - code/rust/demos/          : polite_ping.rs, add_echo.rs
-   - code/rust/edo12n_piano/ : keyboard-offset 72-EDO transformer
-   - code/rust/edo12n_piano_monome/ : monome-offset 72-EDO transformer
-   - code/rust/sampler/        : sampler.rs, connect-midi.sh
-   - code/rust/monome/         : monome grid synth, OSC tests, and notes
-   - code/python/              : Python synth and pitch-theory experiments
-   - learnings/           : notes on Docker+MIDI+NixOS integration
-   - host-nix-config-copy/: snapshots of NixOS audio/package config
-   - Cargo.toml           : defines the root Rust binary targets
-   - docker.sh            : container launch command
-   - orientation.org      : original project overview
-   - TODO.org             : feature roadmap
+   Sorted by what each thing IS, not by language (rust/python used to be the
+   top-level split; it wasn't a question anyone ever asked).
+   - buried/              : the old midi_pulse crate. Still compiles, still runs
+     the looper / piano / un-12 / drums rigs; kept out of the way rather than
+     deleted. Includes edo12n_piano_runtime.rs and edo12n_piano_monome_runtime.rs
+     (the keyboard-offset and monome-offset 72-EDO transformers).
+   - edo_surface/         : the new crate for the current instrument.
+   - rigs/                : the .org rig definitions, their readmes, and
+     softstep.toml.
+   - tools/               : meters, probes, bridges, and demos, Rust and Python
+     alike -- polite_ping.rs, add_echo.rs, sampler.rs, triangle_chord.rs, the
+     monome grid-synth OSC tests, and the softstep / pedals / synth / pitch-theory
+     Python scripts.
+   - learnings/           : notes on Docker+MIDI+NixOS integration.
+   - host-nix-config-copy/: snapshots of NixOS audio/package config.
+   - Cargo.toml           : workspace manifest (buried, edo_surface, tools).
+   - docker.sh            : container launch command.
+   - orientation.org      : original project overview.
+   - TODO.org             : feature roadmap.

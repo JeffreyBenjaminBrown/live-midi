@@ -1,0 +1,41 @@
+# The old midi_pulse crate: buried out of the way (see ../TODO/new-library/1_plan.org
+# for why), but still compiling and still running the looper / piano / un-12 / drums
+# rigs. Its rigs live in ../rigs/, its mock rigs in mocks/, drum samples in
+# ../drum-samples/ (see rig.rs's rig_dir/mock_rig_dir/drum_samples_dir).
+
+[package]
+name = "midi_pulse"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "midi_pulse/lib.rs"
+
+[[bin]]
+name = "midi_pulse"
+path = "midi_pulse/midi_pulse.rs"
+
+[[bin]]
+name = "mock_monome"
+path = "midi_pulse/mock_monome_bin.rs"
+
+[[bin]]
+name = "softstep_meter"
+path = "midi_pulse/softstep_meter.rs"
+
+[[bin]]
+name = "pedal_monitor"
+path = "midi_pulse/pedal_monitor.rs"
+
+[dependencies]
+midir = "0.10"
+minifb = "0.27"
+# Pure-Rust TTF rasterizer with anti-aliasing, for the on-screen readouts. No
+# system font/C deps: it takes the bytes we embed and hands back a coverage mask.
+fontdue = "0.9"
+rosc = "0.10"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+cpal = { version = "0.15", features = ["jack"] }
+hound = "3"

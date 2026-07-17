@@ -1,0 +1,57 @@
+* DONE Step 9 — Sound test (verify audio stack)
+
+New project: turn button presses into triangle-wave tones. Before
+writing the integration, confirm the pieces separately. This step
+confirms sound output — compiles =tools/synth/triangle_chord.rs=
+(your existing file) and plays a 220 Hz tone for ~2 seconds.
+
+Run:
+#+begin_src bash
+cd /home/ubuntu/tools/demos-and-explorations/monome
+bash ./09-sound-test.sh
+#+end_src
+
+Output: =09-sound-test.out=
+
+Tell Claude "step 9 done — heard it" or "step 9 done — silence".
+
+* DONE Step 10 — Button-press test (no Rust yet)
+
+Uses =oscsend=/=oscdump= (both from liblo, already on PATH). Tells
+serialoscd to forward events for your device to UDP :9000, then
+=oscdump= prints everything arriving there for 15 seconds. Press some
+buttons during that window.
+
+Expected lines in the output look like:
+  =/256-1-cable/grid/key iii 3 5 1=   (press at x=3, y=5)
+  =/256-1-cable/grid/key iii 3 5 0=   (release)
+
+Run:
+#+begin_src bash
+cd /home/ubuntu/tools/demos-and-explorations/monome
+bash ./10-button-test.sh
+#+end_src
+
+Output: =10-button-test.out=
+
+Tell Claude "step 10 done" plus any notable observations (events
+arrived? timing felt responsive? any weird keys?).
+
+* Step 11 — Grid synth (the fun part)                             :pending:
+
+Single Rust program:
+=/home/ubuntu/target/debug/midi_pulse=, run from the project root:
+- Discovers the grid via serialoscd's detector (same as step 10).
+- Registers UDP :9000 as the receiver, sets prefix to /256-1-cable,
+  clears all LEDs.
+- Uses =cpal= for real-time audio output (PipeWire, f32 samples).
+- Uses the =monome-edo-sawwave= rig for tuning, audio envelope,
+  monome selection, and chord/accretion windows.
+
+Run:
+#+begin_src bash
+cd /home/ubuntu
+cargo run --bin midi_pulse -- monome-edo-sawwave
+#+end_src
+
+Runs forever. Ctrl-C to quit. First build fetches cpal (~1 min).

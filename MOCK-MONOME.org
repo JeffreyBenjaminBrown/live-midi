@@ -24,7 +24,7 @@ touch the env var (no cross-test races).
 
 * Two ways to use it
 ** A. As an automated test (no hardware, runs in `cargo test`)
-The round-trip test in =code/rust/midi_pulse/mock_monome.rs= drives the whole
+The round-trip test in =buried/midi_pulse/mock_monome.rs= drives the whole
 device layer against the mock: discover -> register -> an LED write lands in the
 mock's buffer -> an injected key press arrives back as =<prefix>/grid/key=.
 #+begin_src sh
@@ -92,11 +92,11 @@ asserting that the editors fold, a fingered note lights, and unfolding the loops
 reflows the looper stack. Runs in =cargo test= (~2s), no hardware, no sound.
 
 * Where the code is
-- =code/rust/midi_pulse/mock_monome.rs= -- the library: =GridSpec=, =MockRig=,
+- =buried/midi_pulse/mock_monome.rs= -- the library: =GridSpec=, =MockRig=,
   =MockGrid= (=press=/=release=/=tap=, =levels=/=level_at=/=render=), =wait_until=,
   and the round-trip test.
-- =code/rust/midi_pulse/mock_monome_bin.rs= -- the =mock_monome= binary (the
+- =buried/midi_pulse/mock_monome_bin.rs= -- the =mock_monome= binary (the
   interactive rig above).
-- =code/rust/midi_pulse/monome.rs= -- the =MIDI_PULSE_DETECTOR_PORT= seam
+- =buried/midi_pulse/monome.rs= -- the =MIDI_PULSE_DETECTOR_PORT= seam
   (=detector_port()=, =discover_devices_via=).
-- =code/rust/rigs/monome-looper-58-8-1-mock.toml= -- the non-colliding rig.
+- =buried/mocks/monome-looper-58-8-1-mock.org= -- the non-colliding rig.

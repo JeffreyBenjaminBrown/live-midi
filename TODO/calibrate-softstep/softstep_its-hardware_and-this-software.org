@@ -56,13 +56,13 @@ Pressure is derived entirely from the sensor sum; the KMSS itself has no velocit
 | device scan           | ~10 ms | firmware (fixed)                     | sensors only refresh ~100 Hz -- the latency/aliasing floor        |
 
 =on_sum=/=off_sum=/=attack_ms=/=pressure_full_scale=/=gain_db_range=/=debounce_ms=
-are all fields of =SoftstepParams= (=code/rust/midi_pulse/rig.rs=); the values
+are all fields of =SoftstepParams= (=buried/midi_pulse/rig.rs=); the values
 above are what =rigs/softstep.toml= actually sets (not =decode.rs= consts --
 =decode.rs= just consumes whatever =SoftstepParams= it is given).
 
 *Note the missing hysteresis gap:* =on_sum= and =off_sum= are *both 20*. There is no
 dead-band between "start a hit" and "re-arm." (The Python meter is a *separate*
-source of truth and has drifted further: =code/python/softstep/meter/config.toml=
+source of truth and has drifted further: =tools/softstep/meter/config.toml=
 now uses =on-sum = 5= / =off-sum = 2= / =pressure-full-scale = 300=. See
 [[file:historical/before-these-changes.org::*meter.py disagrees with the runtime][meter.py disagrees with the runtime]]
-and =code/python/softstep/meter/synth-v-meter.org=.)
+and =tools/softstep/meter/synth-v-meter.org=.)

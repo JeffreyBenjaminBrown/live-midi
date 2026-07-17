@@ -250,7 +250,7 @@ a lock the audio-adjacent hook also takes.
   6, 7, 9 and 0 free.
 - Nothing is bound to light/hard pressure (phase 4). The plumbing is there and
   tested; =pressure_threshold_sum = 200= is a guess Jeff picked to move on, not a
-  measurement. One meter session (=code/python/softstep/meter/main.py=, light then
+  measurement. One meter session (=tools/softstep/meter/main.py=, light then
   hard on each pad) would let it be set from data -- and would answer the pad-outlier
   question that has been open since the discussion.
 - The =has_drums= flag now gates the SoftStep bring-up generally, and the

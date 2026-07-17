@@ -3,7 +3,7 @@
 
 This plans the visual/behaviour changes you asked for
 in =TODO/3-surfaces/0_vision.org=
-for =code/rust/rigs/2-monomes_kmss-drums.toml=
+for =rigs/2-monomes_kmss-drums.toml=
 (the surfaces runtime).
 
 How to use this doc: read the *Plan* first, then *Problems*. In *Problems* I've

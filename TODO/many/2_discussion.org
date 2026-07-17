@@ -1,6 +1,6 @@
 * DONE discussion: many features (two softsteps, EX-P pedals, per-voice edit)
 This responds to =1_vision.org=. I also read =ORIENTATION.org= and everything it
-points at, =code/rust/rigs/README.org= (the =configs/= path you gave me is stale --
+points at, =rigs/README.org= (the =configs/= path you gave me is stale --
 that directory was renamed to =rigs/=; ORIENTATION already says so), the
 =2-monomes_58-8-1_kmss-drums_readme.org=, =TODO/calibrate-softstep/*=,
 =TODO/DONE/pedal-usb-bridge.org=, =learnings/keith-mcmillen-softstep.org=, and the
@@ -55,7 +55,7 @@ your call, and it's blocking.
 
 *** DONE the good news: the plumbing is already done and verified
 Worth knowing before you decide, since it makes this cheap:
-- =code/rust/midi_pulse/expression_pedals.rs= already reads both pedals and hands
+- =buried/midi_pulse/expression_pedals.rs= already reads both pedals and hands
   Rust a normalized =f32= in =[0,1]= per pedal (=PedalReader=). Pedal 1 = MIDI ch
   1, pedal 2 = ch 2, both on *CC 21*; raw travel 1..119.
 - It works end-to-end (=TODO/DONE/pedal-usb-bridge.org=: "DONE (2026-07-15).
@@ -67,14 +67,14 @@ Worth knowing before you decide, since it makes this cheap:
 *** DONE two operational catches you should know before choosing
 1. *The host bridge must be running.* The MPC-20 uses a WCH CH345 chip whose
    kernel quirk doesn't fire, so it exposes *no ALSA MIDI port*. The shipped
-   workaround is =code/python/pedals/bridge.py= running *on the host*, publishing
+   workaround is =tools/pedals/bridge.py= running *on the host*, publishing
    a virtual ALSA-seq client named "MPC-20 pedals". You already tripped on this
    once -- =TODO.org= records =aseqdump -p 'MPC-20 pedals'= failing with "Invalid
    port ... No such file or directory" from inside the container. That wasn't a
    bug; the bridge just wasn't up. So the rig needs to *degrade gracefully* when
    the pedals are absent, exactly like the surfaces runtime's red missing-gear
    report. I'd wire it that way by default.
-2. *One of your two EX-Ps is mis-trimmed.* =code/python/pedals/README.org= records
+2. *One of your two EX-Ps is mis-trimmed.* =tools/pedals/README.org= records
    one pedal reading ~35..127 instead of ~1..119. The EX-P has a *MIN thumbwheel*
    on its side and a *polarity switch* (M-Audio / Other) on its bottom; the trim
    is almost certainly the cause. Worth fixing in hardware before we calibrate
@@ -379,7 +379,7 @@ You wrote "a single microtone (1/46 octaves)". Every doc, and the rig's own
 *filename*, says 58-EDO. I assumed you'd slipped. You hadn't -- the *docs* have:
 
 #+begin_src org
-# code/rust/rigs/2-monomes_58-8-1_kmss-drums.org, lines 44-47
+# rigs/2-monomes_58-8-1_kmss-drums.org, lines 44-47
 ,*** PARAM edo = 46
 ,*** PARAM x_step = 9
 ,*** PARAM y_step = 1
@@ -581,10 +581,10 @@ You guessed right, and better than you remembered -- the meter *already* reads
 *both* boards and *already* writes logs:
 
 #+begin_src sh
-python3 code/python/softstep/meter/main.py        # 'q' quit, 'r' reload config, 'f' flush
+python3 tools/softstep/meter/main.py        # 'q' quit, 'r' reload config, 'f' flush
 #+end_src
 
-It writes two things under =code/python/softstep/meter/logs/=:
+It writes two things under =tools/softstep/meter/logs/=:
 - =csv/session-<stamp>.csv= -- one row per sensor frame *and* per fired hit, across
   *both* boards: =t_iso, t_ms, device, kind, pad, s0, s1, s2, s3, sum, event, pressure=.
   This is the one I want.
@@ -598,7 +598,7 @@ both. That single capture answers the threshold question and the outlier questio
 at once.
 
 *** DONE one snag -- the logs are gitignored, so I can't see them
-=.gitignore= has =/code/python/softstep/meter/logs/=. So after you capture, either
+=.gitignore= has =/tools/softstep/meter/logs/=. So after you capture, either
 un-ignore it, or paste a session CSV somewhere I can read. Tell me which you'd
 prefer -- I'd suggest committing *one* reference capture under
 =TODO/calibrate-softstep/= as calibration data, since it's small, it's exactly the
@@ -656,7 +656,7 @@ You asked me to check =docker.sh= and tell you if connections/permissions don't
 allow it. They don't -- but it's one host-side command away, and I verified this
 empirically rather than by reading.
 
-*The code exists and is real.* =code/rust/midi_pulse/edo12n_gui.rs= opens an actual
+*The code exists and is real.* =buried/midi_pulse/edo12n_gui.rs= opens an actual
 X11 window via =minifb= (=Cargo.toml:43=) -- a 630x450 framebuffer, hand-rolled 5x7
 bitmap font, 20 fps, Escape to quit. It's what =[display] kind = "pitch_class_grid"=
 drives (=edo12n_piano_runtime.rs:106-108=). So "a window, not shell text" is
@@ -981,7 +981,7 @@ Confirmed and fixed:
 - =rigs/README.org= "to run something" listed =.toml= rig files; rigs are =.org= now
   and load by *bare name*.
 - =rigs/README.org= typo "outside, if (sednging MIDI?)".
-- =TODO.org= pointed at =code/python/pedals/bridge-plan.org=, moved to
+- =TODO.org= pointed at =tools/pedals/bridge-plan.org=, moved to
   =TODO/DONE/pedal-usb-bridge.org= in =cfbab72=.
 - =2-monomes_58-8-1_kmss-drums_readme.org= pointed at =TODO/2-monomes...= (now under
   =TODO/DONE/=), and said "the ... mock rig rig".
@@ -1013,10 +1013,10 @@ Confirmed and fixed:
   further down tuned tether mode's attack window. Also a dead org link (its
   =::search text= anchor no longer existed in the target), =debounce_ms= listed as
   50 (it's 100), and a whole tuning table in dead constant names.
-- =code/rust/rigs/kmss-drumkit.org= (the rig itself), =learnings/keith-mcmillen-softstep.org=
+- =rigs/kmss-drumkit.org= (the rig itself), =learnings/keith-mcmillen-softstep.org=
   (its "Velocity" block contradicted its own knobs table), =TODO/concurrent-drums.org=.
 
-Left alone deliberately: =code/python/softstep/echo.py='s "PC only, no velocity"
+Left alone deliberately: =tools/softstep/echo.py='s "PC only, no velocity"
 comment -- =echo.py= *is* the standalone-mode monitor, so it's true in context.
 
 Both of the code-shaped ones you've since settled: the *46-vs-58* mismatch (2a --

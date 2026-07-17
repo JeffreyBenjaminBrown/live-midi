@@ -148,18 +148,18 @@ so we still never clobber).
   =event-group-separation-threshold= and made the *other* keys hyphenated too for
   consistency (=on-sum=, =off-sum=, =attack-ms=, ...). Say the word if you'd rather
   have =snake_case=.
-- *Run command changed* (the move): =python3 code/python/softstep/meter/main.py=. I
+- *Run command changed* (the move): =python3 tools/softstep/meter/main.py=. I
   updated the doc references (=TODO.org=, =PITFALLS.org=, =learnings/=).
 - *=logs/= is git-ignored* (a =.gitignore= keeps the folder but ignores =*.csv=) so
   capture logs don't get committed. Say if you actually want logs tracked.
 
 * What I built (so you know the state)
 
-- =code/python/softstep/meter/main.py= -- moved from =meter.py= (=git mv=, history
+- =tools/softstep/meter/main.py= -- moved from =meter.py= (=git mv=, history
   kept), rewritten: rig-driven, =r=eload / =q=uit keys, board-wide group state
   machine, per-group CSV, the two status messages, still draws the live bars + plays
   the audition.
-- =code/python/softstep/meter/rig.toml= -- all tunables, commented.
-- =code/python/softstep/meter/logs/.gitignore= -- keeps the dir, ignores =*.csv=.
+- =tools/softstep/meter/rig.toml= -- all tunables, commented.
+- =tools/softstep/meter/logs/.gitignore= -- keeps the dir, ignores =*.csv=.
 
 Once you answer 1-5 I'll adjust; none of it is deep surgery.

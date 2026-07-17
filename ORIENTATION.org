@@ -23,10 +23,10 @@ live only in Claude's memory. Follow the links for depth.
 A two-grid looping instrument in 58-EDO; no piano. One grid plays notes, the
 other records / plays back / edits loops.
 - *Canonical reference (read this first):*
-  [[./code/rust/rigs/monome-looper-58-8-1_readme.org]] -- glossary, usage, layout,
+  [[./rigs/monome-looper-58-8-1_readme.org]] -- glossary, usage, layout,
   settings. It is the source of truth for how the instrument behaves.
-- Rig: =code/rust/rigs/monome-looper-58-8-1.org= (our TOML-in-org format).
-- Runtime: =code/rust/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
+- Rig: =rigs/monome-looper-58-8-1.org= (our TOML-in-org format).
+- Runtime: =buried/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
   unit-tested key/LED/playback logic -- change behavior here). =sink.rs= = audio
   voices; =loop_store.rs= = slots + playback; =remap.rs= = pitch edits;
   =display.rs= = the 2D loop picture; =mod.rs= = the I/O shell (threads, sockets).
@@ -35,7 +35,6 @@ other records / plays back / edits loops.
 
 * build / run / test
 #+begin_src sh
-cd code/rust
 cargo test -p midi_pulse looper_runtime              # fast, no hardware
 cargo run  --bin midi_pulse -- monome-looper-58-8-1  # needs BOTH 16x16 grids
 #+end_src
@@ -79,7 +78,7 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
 - Commit in natural, bite-sized chunks.
 
 * deeper pointers
-- [[./code/rust/rigs/README.org]] -- the rig system (windows, kinds, the
+- [[./rigs/README.org]] -- the rig system (windows, kinds, the
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
 - Claude's persistent memory index: =my-dot-claude/projects/<slug>/memory/MEMORY.md=
@@ -91,5 +90,5 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
   otherwise.)
 * also possibly relevant files
 - README.org
-- code/rust/rigs/README.org (NOT =code/rust/configs/README.org= -- that directory was
+- rigs/README.org (NOT =code/rust/configs/README.org= -- that directory was
   renamed to =rigs/=; the old name survives only inside finished TODO entries.)

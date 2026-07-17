@@ -22,7 +22,7 @@ Consolidated from Jeff's answers so no builder has to re-read the discussion.
 - *No EX-P pedals* (1a), *no drumkit*, no distortion / slide / mono / erase /
   needs-holding / feet-accrete interfaces (2f). None of that code is deleted -- it
   simply isn't bound by this rig.
-- New rig: =code/rust/rigs/2-monomes_2-softsteps.org= + =_readme.org=.
+- New rig: =rigs/2-monomes_2-softsteps.org= + =_readme.org=.
   *Working name; Jeff said he'd name it and hasn't. Trivially reversible, so I
   picked one rather than stall (=when-to-stop=).*
 

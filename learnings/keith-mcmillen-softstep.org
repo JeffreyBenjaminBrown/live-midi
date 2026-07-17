@@ -112,7 +112,7 @@ Three ways in, easiest to most production-ready:
 2. *Python =python-rtmidi= / =mido=* -- clean callback API, but NOT installed here, so
    our Python tools shell out to =amidi= / =aseqdump= instead.
 3. *Rust =midir=* -- the project's MIDI lib, and where this lives
-   (=code/rust/midi_pulse/=). Open the input matching "SSCOM" (prefer "MIDI 1"),
+   (=buried/midi_pulse/=). Open the input matching "SSCOM" (prefer "MIDI 1"),
    register a callback, match on the status nibble. midir reads via the sequencer, and
    the tether CC stream comes through it.
 
@@ -232,7 +232,7 @@ offers to update/reload firmware, click *No*. We don't use the editor, so it won
 up -- and you do *not* need a Mac: we read richer data out of the firmware already on the
 device, we don't change it.
 
-* The tools (=code/python/softstep/=)
+* The tools (=tools/softstep/=)
 
 No Python MIDI libraries needed -- everything shells out to =amidi= / =aseqdump=
 (alsa-utils). The mode-changing tools *restore standalone mode on exit*, including on
@@ -256,17 +256,17 @@ Ctrl-C.
     re-derived hit interpretation). Tunables in =meter/config.toml= (reload with =r=). For
     calibrating touch and diagnosing missed/double hits.
 - *Expression pedals (a different device -- DOREMiDi MPC-20 + M-Audio EX-P):*
-  =code/python/pedals/pedals.py= -- live MIDI monitor for expression-pedal CC: per
+  =tools/pedals/pedals.py= -- live MIDI monitor for expression-pedal CC: per
   =(channel, CC)= it shows value + 0..127 sweep bar + *min/max seen*, so a pedal that only
   reaches 35..127 is visible at a glance. CSV to =pedals/logs/=. See
-  =code/python/pedals/README.org= for the EX-P range fix (MIN knob + polarity switch) and
+  =tools/pedals/README.org= for the EX-P range fix (MIN knob + polarity switch) and
   the MPC-20 (Pedal Config Tool, per-input channel/CC, CC 21 default).
 - *Older monitor (still handy):* =echo.py= (human-readable =aseqdump= monitor). The dead
   =aseqsend= senders (=ssmode.py=, =backlight_blink.py=) were *deleted* -- they had *no
   effect* (the SoftStep ignores control SysEx over the sequencer); the working send path is
   rawmidi via =amidi=, and the mode-switch SysEx bytes live in =ss.py= and the section above.
 
-*Batched capture:* run =python3 code/python/softstep/capture.py=, follow the self-paced
+*Batched capture:* run =python3 tools/softstep/capture.py=, follow the self-paced
 prompts (it waits for Enter, never times you), and it writes one log to read back.
 
 * Drumkit velocity (tether runtime): how it works + the tuning knobs
@@ -297,9 +297,9 @@ Consequences:
 
 ** The knobs
 The detection & velocity knobs are all *rig* now: they live in the shared
-=code/rust/rigs/softstep.toml= (loaded by =drumkit_runtime=), not as =decode.rs=
+=rigs/softstep.toml= (loaded by =drumkit_runtime=), not as =decode.rs=
 consts. The poll interval is the one exception (=drumkit_runtime/mod.rs=). The Python
-meter =code/python/softstep/meter/= mirrors them in its own =rig.toml= (=on-sum=,
+meter =tools/softstep/meter/= mirrors them in its own =rig.toml= (=on-sum=,
 =attack-ms=, =debounce-ms=, ...) so what you audition matches the kit. Symptom -> fix:
 
 | knob                | default | what it does                                                        | symptom -> fix                                                                                          |
@@ -409,7 +409,7 @@ undoing the 8->7-byte SysEx packing): packet type 5 = FW_HEADER whose =buildnum=
 - =github.com/Muse-Kinetics/sendsysex= -- KMI CLI for SysEx/firmware
 - KMI brick/firmware facts: support.keithmcmillen.com "Legacy Users: Updating SoftStep
   Firmware"; the "SoftStep Firmware Readme" (fw <=94 = no bootloader)
-- Our tools: =code/python/softstep/{ss,probe,capture}.py= + =meter/main.py= (rawmidi) and
+- Our tools: =tools/softstep/{ss,probe,capture}.py= + =meter/main.py= (rawmidi) and
   the older =echo.py= (=aseqdump= monitor)
 - Related repo docs: =TODO/concurrent-drums.org= (the concurrency problem, now explained),
-  =code/rust/rigs/kmss-drumkit.org= (the drumkit rig reference)
+  =rigs/kmss-drumkit.org= (the drumkit rig reference)
