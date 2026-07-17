@@ -41,16 +41,34 @@ const SLOT_LABEL: [u8; NUM_PADS] = [6, 1, 7, 2, 8, 3, 9, 4, 0, 5];
 /// 0..127 quantization step anywhere (this decoder never speaks MIDI). (No `Eq`: f32.)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrumEvent {
-  /// Start a voice for `label` at `pressure` (0.0..1.0).
-  Fire { label: u8, pressure: f32 },
+  /// Start a voice for `label` at `pressure` (0.0..1.0). `hard` is the quantized
+  /// light/hard call (see [`is_hard`]) for the peak seen SO FAR.
+  Fire { label: u8, pressure: f32, hard: bool },
   /// The pad's current voice should get louder -- ramp it toward `pressure` (0.0..1.0).
-  Revise { label: u8, pressure: f32 },
+  /// `hard` re-reports the light/hard call for the new, higher peak: a press that
+  /// starts light and grows past the threshold arrives as `Fire{hard:false}` then
+  /// `Revise{hard:true}`, exactly as the loudness does.
+  Revise { label: u8, pressure: f32, hard: bool },
   /// The pad's pressure fell below the off threshold (or de-sticked to zero): the
   /// foot lifted. One-shot samples ignore this; the feet-accrete mirror needs it
   /// (holding a pedal = holding the accrete button). A debounce-suppressed press
   /// releases without ever having Fired -- consumers must tolerate an unpaired
   /// Release.
   Release { label: u8 },
+}
+
+/// Is this peak sum-of-4 a HARD strike rather than a light one? The "one pad, two
+/// related purposes" trick: tap lightly for one job, stomp for the other.
+///
+/// Compares the RAW sum (not a pressure), so `threshold` is directly comparable to
+/// `on_sum` / `pressure_full_scale` and readable off the meter's `sum` column.
+///
+/// This necessarily reads the ATTACK PEAK, i.e. how *fast* you stomped, not how hard
+/// you are standing once down. That is right for a tap and meaningless for a pedal you
+/// HOLD (accrete) -- sustained pressure would need the decoder to keep tracking past
+/// the attack window, which nothing asks for yet.
+pub fn is_hard(peak_sum: u16, threshold: u16) -> bool {
+  peak_sum >= threshold
 }
 
 /// Linear gain multiplier for a `pressure` 0.0..1.0, spread over `db_range` dB
@@ -88,6 +106,9 @@ pub struct TetherDecoder {
   off_sum: u16,              // re-arm when it falls below this
   attack: Duration,          // watch-and-adjust window after onset
   pressure_full_scale: u16,  // sum-of-4 mapping to full pressure (1.0)
+  /// Sum-of-4 at or above which a strike reports `hard` (see `is_hard`). Plumbing
+  /// only: nothing binds light/hard to behavior yet.
+  pressure_threshold_sum: u16,
   /// Minimum gap between two hits on the SAME pad, on top of requiring a release.
   debounce: Duration,
   /// A sensor with no CC for longer than this reads 0 (de-stick); `ZERO` disables it.
@@ -110,6 +131,7 @@ impl TetherDecoder {
       off_sum: params.off_sum,
       attack: Duration::from_millis(params.attack_ms),
       pressure_full_scale: params.pressure_full_scale,
+      pressure_threshold_sum: params.pressure_threshold_sum,
       debounce: Duration::from_millis(params.debounce_ms),
       silence: Duration::from_millis(params.silence_to_zero_ms),
       last_seen: [None; 40],
@@ -148,7 +170,8 @@ impl TetherDecoder {
             PadState::Held // suppress the too-soon retrigger; it must release first
           } else {
             let pressure = pressure_from_peak(sum, self.pressure_full_scale);
-            out.push(DrumEvent::Fire { label, pressure });
+            let hard = is_hard(sum, self.pressure_threshold_sum);
+            out.push(DrumEvent::Fire { label, pressure, hard });
             self.last_fire[slot] = Some(now);
             PadState::Watching { onset: now, peak: sum, sent_peak: sum }
           }
@@ -164,7 +187,8 @@ impl TetherDecoder {
           let sent_peak = if peak > sent_peak {
             // A strictly higher peak arrived -> ramp the voice up to the new pressure.
             let pressure = pressure_from_peak(peak, self.pressure_full_scale);
-            out.push(DrumEvent::Revise { label, pressure });
+            let hard = is_hard(peak, self.pressure_threshold_sum);
+            out.push(DrumEvent::Revise { label, pressure, hard });
             peak
           } else {
             sent_peak
@@ -288,7 +312,7 @@ mod tests {
     events
       .iter()
       .filter_map(|e| match e {
-        DrumEvent::Fire { label, pressure } => Some((*label, *pressure)),
+        DrumEvent::Fire { label, pressure, .. } => Some((*label, *pressure)),
         _ => None,
       })
       .collect()
@@ -298,7 +322,7 @@ mod tests {
     events
       .iter()
       .filter_map(|e| match e {
-        DrumEvent::Revise { label, pressure } => Some((*label, *pressure)),
+        DrumEvent::Revise { label, pressure, .. } => Some((*label, *pressure)),
         _ => None,
       })
       .collect()
@@ -534,5 +558,70 @@ mod tests {
     let expected = 10f32.powf(-db / 20.0);
     assert!((soft - expected).abs() < 1e-4, "pressure 0 = -{db} dB: {soft} vs {expected}");
     assert!(gain_from_pressure(0.75, db) > gain_from_pressure(0.25, db), "louder hit -> more gain");
+  }
+
+  // ---- light/hard quantization (plumbing; nothing binds it yet) ----
+
+  #[test]
+  fn is_hard_is_a_threshold_on_the_raw_sum() {
+    assert!(!is_hard(199, 200), "below the threshold is light");
+    assert!(is_hard(200, 200), "at the threshold is hard (>=)");
+    assert!(is_hard(201, 200));
+  }
+
+  /// A hard stomp measures ~430-460 of 508 (the only figure ever recorded), so the
+  /// default 200 must call that hard, and a gentle press light.
+  #[test]
+  fn the_default_threshold_separates_a_recorded_hard_hit_from_a_gentle_one() {
+    let t = SoftstepParams::default().pressure_threshold_sum;
+    assert!(is_hard(440, t), "a recorded hard hit (~430-460) must read hard");
+    assert!(!is_hard(60, t), "a gentle press must read light");
+  }
+
+  /// The classification has to ride the PEAK, not the onset sum. The device scans
+  /// every ~10 ms and a real strike peaks on the 2nd refresh, so at onset the peak
+  /// has not arrived: a press that ends up hard necessarily starts light and is
+  /// corrected by a Revise, exactly as the loudness is.
+  #[test]
+  fn a_hard_stomp_arrives_as_light_then_revises_to_hard() {
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    // Onset: the sum crosses on_sum (20) but is nowhere near the threshold (200).
+    d.on_cc(44, 30, t0);
+    let mut ev = vec![];
+    d.poll(t0, &mut ev);
+    assert!(
+      matches!(ev.as_slice(), [DrumEvent::Fire { label: 1, hard: false, .. }]),
+      "onset fires light: {ev:?}",
+    );
+
+    // The real peak lands on the next refresh, inside the attack window.
+    ev.clear();
+    d.on_cc(44, 120, t0 + Duration::from_millis(10));
+    d.on_cc(45, 120, t0 + Duration::from_millis(10));
+    d.on_cc(46, 120, t0 + Duration::from_millis(10));
+    d.poll(t0 + Duration::from_millis(10), &mut ev);
+    assert!(
+      ev.iter().any(|e| matches!(e, DrumEvent::Revise { label: 1, hard: true, .. })),
+      "the peak crosses the threshold and revises to hard: {ev:?}",
+    );
+  }
+
+  #[test]
+  fn a_light_tap_never_reports_hard() {
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    d.on_cc(44, 30, t0);
+    let mut ev = vec![];
+    d.poll(t0, &mut ev);
+    d.on_cc(44, 45, t0 + Duration::from_millis(10));
+    d.poll(t0 + Duration::from_millis(10), &mut ev);
+    assert!(
+      !ev.iter().any(|e| matches!(
+        e,
+        DrumEvent::Fire { hard: true, .. } | DrumEvent::Revise { hard: true, .. }
+      )),
+      "a light tap stays light throughout: {ev:?}",
+    );
   }
 }

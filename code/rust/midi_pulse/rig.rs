@@ -1145,6 +1145,10 @@ fn default_silence_to_zero_ms() -> u64 {
   25
 }
 
+fn default_pressure_threshold_sum() -> u16 {
+  200
+}
+
 /// Hit-detection & pressure parameters for the SoftStep, shared by every rig that uses
 /// it. Loaded once from `rigs/softstep.toml` (not from any per-rig window), so one
 /// set of numbers drives the drumkit. Every field is optional; a missing file or key uses
@@ -1174,6 +1178,21 @@ pub struct SoftstepParams {
   /// A sensor with no CC for this long reads 0 (de-stick); 0 = off.
   #[serde(default = "default_silence_to_zero_ms")]
   pub silence_to_zero_ms: u64,
+  /// Sum-of-4 at or above which a strike counts as HARD rather than light -- the
+  /// "one pad, two purposes" trick (tap lightly for one job, stomp for another).
+  ///
+  /// A raw sum, NOT a pressure or a velocity, so it is comparable to `on_sum` /
+  /// `pressure_full_scale` and readable straight off the meter's `sum` column.
+  ///
+  /// 200 is Jeff's pick to get moving, not a measurement: the only figure ever
+  /// recorded is "hard hits measure ~430-460 against the 508 ceiling", and no
+  /// light-press figure exists at all, so there is no observed range to halve. Revisit
+  /// with a meter capture (`code/python/softstep/meter/main.py`).
+  ///
+  /// Measures the ATTACK PEAK, so it reads how fast you stomp, not how hard you end up
+  /// standing -- meaningless for a pedal you HOLD (accrete), correct for a tap.
+  #[serde(default = "default_pressure_threshold_sum")]
+  pub pressure_threshold_sum: u16,
 }
 
 impl Default for SoftstepParams {
@@ -1186,6 +1205,7 @@ impl Default for SoftstepParams {
       gain_db_range: default_gain_db_range(),
       debounce_ms: default_debounce_ms(),
       silence_to_zero_ms: default_silence_to_zero_ms(),
+      pressure_threshold_sum: default_pressure_threshold_sum(),
     }
   }
 }

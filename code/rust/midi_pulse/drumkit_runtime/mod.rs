@@ -392,7 +392,7 @@ fn run_voice_timer(
     }
     for event in &events {
       match *event {
-        DrumEvent::Fire { label, pressure } => {
+        DrumEvent::Fire { label, pressure, .. } => {
           let slot = (label % 10) as usize;
           // A hook that consumes the press owns this pedal for now: no sample, and
           // no stale voice left for a later Revise to re-gain.
@@ -424,7 +424,7 @@ fn run_voice_timer(
             eprintln!("[kmss]   pad {label} pressure {pressure:.3}: unmapped");
           }
         }
-        DrumEvent::Revise { label, pressure } => {
+        DrumEvent::Revise { label, pressure, .. } => {
           let slot = (label % 10) as usize;
           if let (Some(binding), Some(id)) = (&pad_map[slot], current[slot]) {
             if let Some(gain) = resolve_revise(&binding.kind, &binding.last, pressure, db_range) {

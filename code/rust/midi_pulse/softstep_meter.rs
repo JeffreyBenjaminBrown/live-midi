@@ -381,7 +381,7 @@ fn run_poll_loop(
     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
     for event in &events {
       match *event {
-        DrumEvent::Fire { label, pressure } => {
+        DrumEvent::Fire { label, pressure, .. } => {
           let kind = pad_kind(label);
           match resolve_fire(kind, label, &mut st.last_hit, pressure, db_range) {
             Some((src, gain)) => {
@@ -405,7 +405,7 @@ fn run_poll_loop(
             }
           }
         }
-        DrumEvent::Revise { label, pressure } => {
+        DrumEvent::Revise { label, pressure, .. } => {
           let kind = pad_kind(label);
           let last_hit = st.last_hit;
           if let Some(gain) = resolve_revise(kind, &last_hit, pressure, db_range) {
