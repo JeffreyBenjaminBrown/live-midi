@@ -200,6 +200,20 @@ impl PolyrhythmState {
   /// therefore the same on both grids, and neither grid's factor buttons move it.
   /// It blinks whether or not cycling is on (the painter renders ON as fully lit,
   /// OFF as black), and is always off before a tempo exists (the button rests dim).
+  /// The tap blink's phase at `now`, 0.0..1.0 through one cycle of the *tapped*
+  /// (unfactored) tempo. `None` before any tempo exists.
+  ///
+  /// Exposed because the LED and the screen cannot share a duty cycle. `BLINK_DUTY`
+  /// (10%) suits an LED, which is sampled far faster than it flashes. A window
+  /// redrawing at tens of Hz cannot render a 10% flash at a brisk tempo -- at 120 bpm
+  /// that is 50 ms, one frame, so it lands or misses on the frame boundary. The
+  /// caller picks a duty it can actually draw; the phase is the shared part.
+  pub fn tap_phase(&self, now: Instant) -> Option<f32> {
+    let (hz, anchor) = (self.tapped_hz()?, self.anchor?);
+    let period = 1.0 / hz;
+    Some((now.duration_since(anchor).as_secs_f32() / period).fract())
+  }
+
   pub fn tap_blink(&self, now: Instant) -> bool {
     let (Some(hz), Some(anchor)) = (self.tapped_hz(), self.anchor) else {
       return false;

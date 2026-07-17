@@ -9,7 +9,7 @@
 //! 1. the global tapped tempo as BPM to one decimal place (`readout::bpm`);
 //! 2. each grid's factor as `2^x * 3^y` (`readout::grid_line`);
 //! 3. whether each grid's pulse is on at all (also `readout::grid_line`);
-//! 4. a blinker at the UNFACTORED tapped tempo (`PolyrhythmState::tap_blink`).
+//! 4. a blinker at the UNFACTORED tapped tempo (`PolyrhythmState::tap_phase`).
 //!
 //! Modeled on `edo12n_gui.rs`: `minifb`, a framebuffer, the shared bitmap font
 //! (`crate::bitmap_font`), ~20 fps, Escape to quit. The difference is what drives
@@ -94,7 +94,10 @@ fn run(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
       return;
     }
   };
-  window.set_target_fps(20);
+  // 60, not 20. The blinker is the only thing here that moves fast, and at 20 fps
+  // (50 ms frames) a brisk tempo's flash is shorter than a single frame -- see
+  // `screen_blink_on`. Redrawing a handful of text lines is cheap.
+  window.set_target_fps(60);
   let mut buf = vec![0u32; WIN_W * win_h];
 
   // Escape or the window's own close button end only this thread -- the window is
@@ -116,12 +119,45 @@ fn run(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
 /// drawing calls below or a `window.update_with_buffer` -- per this module's
 /// no-nested-locks rule (`surfaces_runtime/mod.rs`'s header comment); this thread
 /// never touches any other lock, so there is nothing to nest it with anyway.
+/// The shortest flash a redraw can reliably show. Below this it is a coin toss
+/// whether any frame lands inside the lit window, so the blink reads as erratic --
+/// which is exactly what it did at 20 fps with the LED's 10% duty.
+const MIN_BLINK_ON: f32 = 0.060;
+
+/// Never let the flash swallow more than half the cycle; past that it stops reading
+/// as a pulse and starts reading as a square wave that is mostly on.
+const MAX_BLINK_DUTY: f32 = 0.5;
+
+/// Is the on-screen blinker lit, given the tap phase and tempo?
+///
+/// The LED's 10% duty is right for an LED and wrong for a screen: a monome cell is
+/// scanned far faster than it flashes, while a window redraws at tens of Hz. At 120
+/// bpm a 10% flash is 50 ms -- one frame at 20 fps, well under one at 240 bpm -- so it
+/// renders or not depending on where the frame boundary happens to fall.
+///
+/// So the screen keeps the LED's *phase* (both are anchored to the taps, both
+/// unfactored, so they agree about WHEN the beat is) and widens the *duty* only as far
+/// as it must: at slow tempos this is the same 10% spark, and it stretches only once
+/// 10% would be too brief to draw.
+fn screen_blink_on(phase: Option<f32>, hz: Option<f32>) -> bool {
+  let (Some(phase), Some(hz)) = (phase, hz) else { return false };
+  if hz <= 0.0 {
+    return false;
+  }
+  let period = 1.0 / hz;
+  let duty = (MIN_BLINK_ON / period).max(LED_BLINK_DUTY).min(MAX_BLINK_DUTY);
+  phase < duty
+}
+
+/// The LED's duty, mirrored here so the two agree at tempos slow enough for both.
+const LED_BLINK_DUTY: f32 = 0.1;
+
 fn render(buf: &mut [u32], win_w: usize, win_h: usize, poly: &Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
   let now = Instant::now();
   let (bpm, blink, lines) = {
     let p = poly.lock().unwrap_or_else(|e| e.into_inner());
     let bpm = readout::bpm(p.tapped_hz());
-    let blink = p.tap_blink(now);
+    let blink = screen_blink_on(p.tap_phase(now), p.tapped_hz());
     let lines: Vec<String> = (0..num_grids)
       .map(|g| {
         let (two_exp, three_exp) = p.factor_exponents(g);
@@ -161,5 +197,75 @@ fn fill_rect(buf: &mut [u32], buf_w: usize, buf_h: usize, x0: usize, y0: usize, 
     for x in x0..(x0 + w).min(buf_w) {
       buf[y * buf_w + x] = color;
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The bug Jeff saw: "the tempo flashing on the computer screen is all sorts of
+  /// off". At 20 fps a 10% flash is one frame at 120 bpm and HALF a frame at 240, so
+  /// whether it drew at all depended on where the frame boundary landed. Whatever the
+  /// tempo, the lit window must now span several frames.
+  #[test]
+  fn the_flash_is_never_shorter_than_a_frame_at_any_musical_tempo() {
+    let frame = 1.0 / 60.0;
+    for bpm in [40.0f32, 60.0, 120.0, 180.0, 240.0, 300.0] {
+      let hz = bpm / 60.0;
+      let period = 1.0 / hz;
+      // The lit fraction, found by asking the rule where it turns off.
+      let duty = (1..=1000)
+        .map(|i| i as f32 / 1000.0)
+        .take_while(|p| screen_blink_on(Some(*p), Some(hz)))
+        .last()
+        .expect("some part of the cycle is lit");
+      let on_secs = duty * period;
+      assert!(
+        on_secs >= frame * 2.0,
+        "{bpm} bpm: lit for {:.0} ms = {:.1} frames -- too brief to draw reliably",
+        on_secs * 1000.0,
+        on_secs / frame,
+      );
+    }
+  }
+
+  /// ...but it must stay a PULSE, not creep toward a square wave that is mostly on.
+  #[test]
+  fn the_flash_never_swallows_more_than_half_the_cycle() {
+    for bpm in [120.0f32, 240.0, 600.0, 2000.0] {
+      let hz = bpm / 60.0;
+      assert!(!screen_blink_on(Some(0.5), Some(hz)), "{bpm} bpm: still lit at half-cycle");
+    }
+  }
+
+  /// At tempos slow enough for both, the screen keeps the LED's own 10% spark -- the
+  /// duty widens only when it must.
+  #[test]
+  fn a_slow_tempo_keeps_the_leds_ten_percent_duty() {
+    let hz = 1.0; // 60 bpm: a 10% flash is 100 ms, plenty of frames
+    assert!(screen_blink_on(Some(0.09), Some(hz)));
+    assert!(!screen_blink_on(Some(0.11), Some(hz)), "no wider than the LED needs");
+  }
+
+  /// The screen and the LED must agree about WHEN the beat is, or the window and the
+  /// grid would disagree about the tempo they are both showing.
+  #[test]
+  fn the_flash_starts_at_the_top_of_the_cycle_like_the_led() {
+    assert!(screen_blink_on(Some(0.0), Some(2.0)), "lit at the downbeat");
+    assert!(!screen_blink_on(Some(0.99), Some(2.0)), "dark just before it");
+  }
+
+  #[test]
+  fn there_is_no_blink_before_a_tempo_is_tapped() {
+    assert!(!screen_blink_on(None, None));
+    assert!(!screen_blink_on(Some(0.0), None));
+    assert!(!screen_blink_on(None, Some(2.0)));
+  }
+
+  #[test]
+  fn a_nonsense_tempo_does_not_blink_or_divide_by_zero() {
+    assert!(!screen_blink_on(Some(0.0), Some(0.0)));
+    assert!(!screen_blink_on(Some(0.0), Some(-1.0)));
   }
 }
