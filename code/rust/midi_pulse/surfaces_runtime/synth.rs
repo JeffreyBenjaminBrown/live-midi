@@ -254,6 +254,31 @@ impl SurfaceSink {
     true
   }
 
+  /// Glide this grid's SUSTAINED (fingerless) drone at `from` to pitch `to`. The
+  /// same edit as `glide_voice_to`, for a note whose finger has lifted: a drone is
+  /// keyed by pitch rather than by cell, so it needs its own lookup. Re-keys the
+  /// voice to `to`, since the key IS the pitch here -- otherwise the drone would
+  /// still answer to the pitch it left.
+  ///
+  /// Returns false if no drone is at `from`.
+  pub fn glide_sustained_to(&mut self, from: i32, to: i32, glide_secs: f32) -> bool {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut state) = voices.remove(&sustain_key(self.grid, from)) else {
+      return false;
+    };
+    let target = freq_for_pitch(to, self.fund, self.edo);
+    let start = state.freq; // live, mid-glide included
+    if target == start {
+      state.glide_per_sample = 1.0;
+    } else {
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq_target = target;
+      state.glide_per_sample = (target / start).powf(1.0 / samples);
+    }
+    voices.insert(sustain_key(self.grid, to), state);
+    true
+  }
+
   /// Release `cell`: its voice rings out (ramps to zero over `release_secs`).
   pub fn note_off(&mut self, cell: (i32, i32)) {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());

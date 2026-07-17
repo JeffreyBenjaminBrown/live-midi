@@ -208,6 +208,24 @@ impl AccreteState {
     self.sustained.contains(&pitch)
   }
 
+  /// The sustained pitches themselves (not classes). Edit mode asks per-pitch
+  /// whether a note is sounding on THIS grid, and a drone counts: an edited note
+  /// keeps ringing with no finger on it and must stay editable.
+  pub fn sustained_pitches(&self) -> impl Iterator<Item = i32> + '_ {
+    self.sustained.iter().copied()
+  }
+
+  /// Re-file a sustained pitch that MOVED (a per-voice pitch edit dragged it). The
+  /// set is keyed by pitch, so without this a dragged drone would still be filed
+  /// under the pitch it left: clear would still flush it, but by the wrong name, and
+  /// `note_released_sustains` would re-drone the old pitch. A no-op if `from` was not
+  /// sustained (a fingered note was dragged, which the finger map tracks instead).
+  pub fn note_moved(&mut self, from: i32, to: i32) {
+    if self.sustained.remove(&from) {
+      self.sustained.insert(to);
+    }
+  }
+
   /// The sustained pitch *classes* (for the shared bright-LED reflection; the
   /// runtime paints the union of every bank's classes -- they are all sounding).
   pub fn sustained_classes(&self, edo: i32) -> HashSet<i32> {

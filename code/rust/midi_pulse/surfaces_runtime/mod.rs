@@ -977,6 +977,7 @@ fn run(
       tap_window: s.tap_window,
       live: Arc::clone(&live),
       slide: SlideCandidates::new(),
+      edit: edit::EditState::new(),
       slide_window: s.slide_window,
       slide_duration_secs: s.slide_duration_secs,
       voices: Arc::clone(&voices),
@@ -1098,6 +1099,9 @@ struct GridThread {
   tap_window: Duration,
   /// THIS grid's recently-released notes (slide sources) + the slide knobs.
   slide: SlideCandidates,
+  /// Which of THIS grid's pitches are in per-voice edit mode. Grid-local and
+  /// pitch-keyed: never mirrored to the other grid, never octave-duplicated.
+  edit: edit::EditState,
   slide_window: Duration,
   slide_duration_secs: f32,
   /// The hot-reloadable parameters; refreshed into the fields above when the
@@ -1409,6 +1413,11 @@ fn handle_key(
     if rt.echo_input {
       let f = rt.fund * 2f64.powf(pitch as f64 / rt.edo as f64);
       eprintln!("press grid={} x={:>2} y={:>2} f={f:.2} Hz", rt.grid_index, cell.0, cell.1);
+    }
+    // Per-voice edit mode, BEFORE the play path: this press may be an edit trigger or
+    // a pitch drag rather than a note, and in both of those cases it must not sound.
+    if !handle_edit_press(rt, held, cell, pitch, register) {
+      return;
     }
     // Mono: a new note cuts this grid's other fingered notes first. With slide on
     // too, the nearest cut note is not released but STOLEN: its voice will glide
@@ -1798,6 +1807,66 @@ fn rig_pedal_hook(
       }
     }
   })
+}
+
+/// The edit-mode half of a play-cell press. Returns whether the press should fall
+/// through to the ordinary play path.
+///
+/// Runs first because both of its outcomes are SILENT: the cell under a sounding note
+/// is an edit trigger and never sounds, and while anything on this grid is being
+/// edited every other press drags instead of playing (2_discussion 2b/2c).
+///
+/// `cell_above` is geometric, not pitch-derived: Jeff pinned the gesture to the cell
+/// physically below a note so it doesn't move with the tuning. A note on the bottom
+/// row therefore has no trigger cell and cannot be edited.
+fn handle_edit_press(
+  rt: &mut GridThread,
+  held: &HashMap<(i32, i32), i32>,
+  cell: (i32, i32),
+  pitch: i32,
+  register: &i32,
+) -> bool {
+  // The pitch of the cell directly ABOVE this one, if that cell is on the play grid.
+  let above = (cell.0, cell.1 - 1);
+  let pitch_above = (above.1 >= rt.edo_rect[1])
+    .then(|| step_for_cell(rt.x_step, rt.y_step, *register, above.0, above.1));
+
+  // "Sounding" on this grid means fingered OR sustained -- an edited note keeps
+  // ringing whether or not a finger is on it, and must stay editable either way.
+  let sustained: HashSet<i32> = {
+    let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+    banks[rt.grid_index].sustained_pitches().collect()
+  };
+  let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
+
+  match rt.edit.classify(pitch_above, pitch, is_sounding) {
+    edit::Press::Play => true,
+    edit::Press::EnterEdit { pitch } => {
+      rt.edit.enter(pitch);
+      false
+    }
+    edit::Press::ExitEdit { pitch } => {
+      rt.edit.exit(pitch);
+      false
+    }
+    edit::Press::Drag { from, to } => {
+      // Find the voice carrying `from` and glide it. The voice is keyed by the cell
+      // it was STRUCK on, which is not where its pitch now lives, so search `held`.
+      if let Some(cell) = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c) {
+        rt.sink.glide_voice_to(cell, to, rt.slide_duration_secs);
+      } else {
+        // A sustained (fingerless) edited note: its voice is the drone.
+        rt.sink.glide_sustained_to(from, to, rt.slide_duration_secs);
+      }
+      rt.edit.moved(from, to);
+      // Accrete and the trail both track PITCHES, so a moved note has to be re-filed
+      // under its new one -- otherwise a clear would miss it, and the trail would keep
+      // showing a pitch that is no longer sounding (2_discussion 2b).
+      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_moved(from, to);
+      push_trail(&rt.trail, to.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
+      false
+    }
+  }
 }
 
 /// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the

@@ -36,10 +36,6 @@ pub enum Press {
   ExitEdit { pitch: i32 },
   /// Drag the edited note `from` to `to`, gliding. The pressed cell does not sound.
   Drag { from: i32, to: i32 },
-  /// Something is being edited but nothing can move (only possible if the edit set is
-  /// empty, which `Drag` already covers) -- or the press is a trigger for a note that
-  /// is not sounding. Silent no-op.
-  Ignore,
 }
 
 /// One grid's set of pitches currently in edit mode.
