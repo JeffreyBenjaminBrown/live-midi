@@ -98,6 +98,27 @@ what a pedal means, so running both would make a pedal's job depend on hook orde
 Deliberate -- modernising a path this build abandons is waste -- but it is an
 inconsistency someone will trip on.
 
+** the first hardware run found a real bug, in the first thing tried
+Jeff: "even after removing my foot, new notes sustain ... for this rig it should only
+ever be in momentary mode." Correct, and *my* miss, not a design gap: =3_plan.org=
+phase 5 said accrete would run "with =needs_holding= forced on", and nothing ever
+forced it. =needs_holding= defaults to false, which makes =accreting()= read =mode_on=
+-- a toggle -- and the rig deliberately binds only clear and accrete, so the switch
+could never be turned on by anyone.
+
+Fixed as a general rule rather than a special case: a bank whose =needs_holding= is
+bound *nowhere* comes up momentary, because such a bank can never leave whatever mode
+it starts in, and toggle-with-no-switch is a trap. The drums rig binds the button, so
+it is unchanged (asserted, not assumed).
+
+*The lesson is about the tests, not the bug.* 400 tests passed while the instrument's
+single most-used control was in the wrong mode -- because every test covered the
+components and none asserted what the *shipped rig* would actually do when a foot went
+down. The fix adds that missing level, and pins its own premise (that the rig really
+binds no =needs_holding= control), so it fails honestly rather than passing silently if
+that changes. This is precisely the class of thing I flagged as "deferred, not
+retired", and it landed on the first press.
+
 ** the window briefly made the test suite non-hermetic
 Phase 9 spawned the pulse window whenever a grid was present -- which includes the
 mock-grid smoke test, so =cargo test= opened a real X11 window on whatever display was
