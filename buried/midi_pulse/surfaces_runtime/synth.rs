@@ -923,4 +923,44 @@ mod tests {
     let g = v.lock().unwrap();
     assert!(g[&voice_key(0, (1, 1))].target_env > 0.0, "the fingered note plays on");
   }
+
+  // ---- a fingered voice is ended by its CELL, so scrolling cannot orphan it ----
+
+  /// Jeff's worry: "we need to be sure that scrolling and then lifting the finger still
+  /// ends the note." It does, and this is why. A fingered voice is keyed by the cell it
+  /// was struck on, and `note_off` takes only that cell -- the register is not a
+  /// parameter of any voice operation, so scrolling cannot reach a sounding voice.
+  ///
+  /// The pitch a cell was struck at is deliberately varied here to stand in for a
+  /// scroll having changed what the cell means: the release must not care.
+  #[test]
+  fn note_off_ends_the_voice_at_a_cell_whatever_pitch_it_was_struck_at() {
+    for pitch in [0, 20, -37, 500] {
+      let v = shared();
+      let mut a = sink(0, &v);
+      a.note_on((3, 3), pitch, Timbre::default(), None);
+      assert!(v.lock().unwrap()[&voice_key(0, (3, 3))].target_env > 0.0, "sounding");
+
+      a.note_off((3, 3));
+      assert!(
+        v.lock().unwrap()[&voice_key(0, (3, 3))].target_env <= 0.0,
+        "the cell's voice releases, struck-pitch {pitch} notwithstanding",
+      );
+    }
+  }
+
+  /// The stronger statement: releasing one cell touches only that cell's voice, even
+  /// when another cell is sounding the very same pitch -- which is what a scroll can
+  /// arrange, two fingers landing on one pitch from different cells.
+  #[test]
+  fn releasing_one_cell_leaves_another_cell_at_the_same_pitch_alone() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    a.note_on((4, 12), 20, Timbre::default(), None); // same pitch, other cell
+
+    a.note_off((3, 3));
+    assert!(v.lock().unwrap()[&voice_key(0, (3, 3))].target_env <= 0.0, "the lifted one releases");
+    assert!(v.lock().unwrap()[&voice_key(0, (4, 12))].target_env > 0.0, "the other still sounds");
+  }
 }
