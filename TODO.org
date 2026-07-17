@@ -37,6 +37,13 @@ All such dances are in sync.
 *** sustain: [accrete, release]
 *** per-note pitch edit
 *** per-note pulse tempo edit
+** to run the new rig
+serial
+*** outside of docker
+xhost --run 'xhost +local:'   # per login, not per use of a rig
+*** in docker
+pw-jack cargo run --bin midi_pulse \
+ -- 2-monomes_2-softsteps
 ** nudge amplitude
 ** store [pulsing] chord, including timbre
 ** nudge global tempo

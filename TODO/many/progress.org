@@ -98,6 +98,18 @@ what a pedal means, so running both would make a pedal's job depend on hook orde
 Deliberate -- modernising a path this build abandons is waste -- but it is an
 inconsistency someone will trip on.
 
+** the window briefly made the test suite non-hermetic
+Phase 9 spawned the pulse window whenever a grid was present -- which includes the
+mock-grid smoke test, so =cargo test= opened a real X11 window on whatever display was
+around. It failed three tests once, non-reproducibly, and then went green four runs in
+a row; a flake, not a bug, which is worse. Now gated on =no_audio=, the runtime's
+existing headless/mock signal, and verified by running the suite with =DISPLAY= unset.
+
+Worth naming because of *how* it slipped: the subagent that built the window reported
+the suite green and cited the smoke test opening a window inline as *evidence it
+worked*. It was evidence of the defect. A test that reaches for a real system resource
+looks like success right up until it doesn't.
+
 ** =MIDI_PULSE_KMSS_RAWMIDI= is under-powered
 One process-wide override, so with two boards it forces both onto one port, which is
 meaningless. Documented as single-board-only rather than fixed.
