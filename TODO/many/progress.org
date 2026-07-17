@@ -119,6 +119,35 @@ binds no =needs_holding= control), so it fails honestly rather than passing sile
 that changes. This is precisely the class of thing I flagged as "deferred, not
 retired", and it landed on the first press.
 
+** the second and third hardware bugs were the same shape as the first
+Both were *specified behavior I did not implement*, not design gaps:
+- An edited note must keep sounding once the finger lifts (=1_vision=, verbatim). It
+  didn't; it died and left the dance circling a silent trail.
+- =clear= silenced an edited note and left it in edit mode -- Jeff's repro: sustain
+  two, edit one, clear both. The result was *inescapable*: it kept dancing, =any()=
+  stayed true so every press dragged instead of playing, and the exit gesture required
+  the note to be SOUNDING, which the clear had just made false. The only way out was
+  the one thing the bug disabled.
+
+The second fix is the one worth remembering, because the obvious fix was not enough.
+Making =clear= tidy up after itself would have left the identical trap waiting behind
+the *next* way to silence a note. So the exit trigger no longer depends on audibility
+at all: an edited pitch is always dismissable. "No inescapable state" is now true by
+construction rather than by every future silencer remembering the rule.
+
+** what the hardware found that 400 tests did not
+Three bugs in the first minutes of playing, none of them subtle, all of them in code
+with thorough unit tests. The pattern is identical each time: every test asserted a
+*component* behaves as specified, and none asserted that the *instrument* does what
+the vision says when a foot goes down and a finger lifts. Momentary accrete, the
+sustain-on-edit rule, and the clear interaction were each fully covered at the level
+below the one where they broke.
+
+The lesson is not "write more tests". It is that a component test cannot see a missing
+*connection* -- and every one of these was a connection I never made. The new tests
+that would have caught them all live at the rig/wiring level and assert their own
+premises, so they fail honestly rather than passing on a false assumption.
+
 ** the window briefly made the test suite non-hermetic
 Phase 9 spawned the pulse window whenever a grid was present -- which includes the
 mock-grid smoke test, so =cargo test= opened a real X11 window on whatever display was
