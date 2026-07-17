@@ -221,6 +221,39 @@ impl SurfaceSink {
     true
   }
 
+  /// Glide the voice at `cell` to `pitch` over `glide_secs`, leaving everything else
+  /// about it alone -- envelope, timbre, gain, pulse rate and phase all continue. The
+  /// per-voice pitch edit: the note keeps sounding and simply *moves*.
+  ///
+  /// Unlike `note_on_legato` this neither spawns nor re-keys a voice, so the note
+  /// stays addressable at the cell it was struck on while its PITCH moves away from
+  /// that cell's nominal pitch.
+  ///
+  /// Safe to call repeatedly, including mid-glide and in the opposite direction: the
+  /// source is re-read from the voice's LIVE `freq`, so each call simply re-aims from
+  /// wherever it currently is. That matters -- `glide_per_sample` encodes direction
+  /// (the integrator's crossing test compares it against 1.0), so re-aiming backwards
+  /// by patching `freq_target` alone would make the voice sail past its target and
+  /// never stop. Dragging an edit-mode note back and forth does exactly that.
+  ///
+  /// Returns false if no voice is at `cell`.
+  pub fn glide_voice_to(&mut self, cell: (i32, i32), pitch: i32, glide_secs: f32) -> bool {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) else {
+      return false;
+    };
+    let to = freq_for_pitch(pitch, self.fund, self.edo);
+    let from = state.freq; // live, mid-glide included
+    if to == from {
+      state.glide_per_sample = 1.0;
+    } else {
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq_target = to;
+      state.glide_per_sample = (to / from).powf(1.0 / samples);
+    }
+    true
+  }
+
   /// Release `cell`: its voice rings out (ramps to zero over `release_secs`).
   pub fn note_off(&mut self, cell: (i32, i32)) {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -557,5 +590,100 @@ mod tests {
     let g0 = v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain).unwrap();
     assert!((g0 - 0.2).abs() < 1e-6, "grid 0's drone rescaled by the ratio: {g0}");
     assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.timbre.gain), Some(1.0), "grid 1's drone untouched");
+  }
+
+  // ---- glide_voice_to: the per-voice pitch edit primitive ----
+
+  #[test]
+  fn glide_voice_to_aims_the_voice_at_the_new_pitch_without_re_keying_it() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    let before = v.lock().unwrap()[&voice_key(0, (3, 3))].freq;
+
+    assert!(a.glide_voice_to((3, 3), 30, 0.1));
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (3, 3))];
+    assert_eq!(st.freq, before, "the voice does not JUMP; it starts gliding from where it was");
+    assert_eq!(st.freq_target, freq_for_pitch(30, 80.0, 58));
+    assert!(st.glide_per_sample > 1.0, "gliding up");
+    assert_eq!(g.len(), 1, "no new voice; the note MOVES rather than restriking");
+  }
+
+  #[test]
+  fn glide_voice_to_leaves_the_voice_addressable_at_its_original_cell() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    a.glide_voice_to((3, 3), 30, 0.1);
+    // Still keyed by the cell it was struck on, even though its pitch has left that
+    // cell's nominal pitch -- so a later release/edit still finds it.
+    assert!(v.lock().unwrap().contains_key(&voice_key(0, (3, 3))));
+    a.note_off((3, 3));
+    let g = v.lock().unwrap();
+    assert!(g[&voice_key(0, (3, 3))].target_env <= 0.0, "the moved note still releases");
+  }
+
+  /// The sharp edge: `glide_per_sample` encodes DIRECTION (the integrator's crossing
+  /// test compares it against 1.0), so re-aiming must recompute it from the voice's
+  /// live freq. Patching `freq_target` alone would leave a voice gliding up past a
+  /// target now below it, and it would never stop. Dragging a note back and forth --
+  /// exactly what edit mode does -- hits this.
+  #[test]
+  fn re_aiming_a_glide_backwards_mid_flight_reverses_its_direction() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    a.glide_voice_to((3, 3), 40, 0.1);
+    assert!(v.lock().unwrap()[&voice_key(0, (3, 3))].glide_per_sample > 1.0, "up first");
+
+    // Now aim BELOW the start, without letting the first glide finish.
+    a.glide_voice_to((3, 3), 5, 0.1);
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (3, 3))];
+    assert!(st.glide_per_sample < 1.0, "re-aimed downward, not left sailing upward");
+    assert_eq!(st.freq_target, freq_for_pitch(5, 80.0, 58));
+  }
+
+  #[test]
+  fn gliding_a_voice_to_its_own_pitch_is_inert() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    assert!(a.glide_voice_to((3, 3), 20, 0.1));
+    assert_eq!(
+      v.lock().unwrap()[&voice_key(0, (3, 3))].glide_per_sample,
+      1.0,
+      "a no-op drag must not leave the integrator running",
+    );
+  }
+
+  #[test]
+  fn glide_voice_to_an_empty_cell_is_false() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    assert!(!a.glide_voice_to((9, 9), 30, 0.1));
+  }
+
+  /// The edit must not disturb anything else about the note -- it keeps sounding, with
+  /// its own timbre, gain and pulse, and simply moves.
+  #[test]
+  fn glide_voice_to_preserves_the_envelope_timbre_and_pulse() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre { waveform: Waveform::Square, ..Timbre::default() }, Some(3.0));
+    let (env, target, wave, pulse, phase) = {
+      let g = v.lock().unwrap();
+      let st = &g[&voice_key(0, (3, 3))];
+      (st.env, st.target_env, st.timbre.waveform, st.tempo_am_freq, st.tempo_am_phase)
+    };
+    a.glide_voice_to((3, 3), 31, 0.1);
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (3, 3))];
+    assert_eq!(st.env, env, "no attack re-trigger");
+    assert_eq!(st.target_env, target);
+    assert_eq!(st.timbre.waveform, wave);
+    assert_eq!(st.tempo_am_freq, pulse, "the pulse rate is untouched by a pitch edit");
+    assert_eq!(st.tempo_am_phase, phase, "and its phase does not jump");
   }
 }
