@@ -1,0 +1,104 @@
+#+title: Progress: the new library
+#+date: 2026-07-17
+
+Executing =1_plan.org=, with the terms in =2_glossary.org= and the edit/sustain spec in
+=TODO/many/edit-and-sustain.org=. Report format per =when-to-stop.org=. Jeff went to bed,
+so everything that would have been a beep is a TODO here instead.
+
+* TODO things to look at in the morning
+Nothing here blocks me. I have carried on past all of it.
+
+** TODO your glossary edits landed while I was mid-rewrite, and one is now stale
+Your two renames are being propagated: the factored pulse, and the tempo factor.
+
+The =edit mode= entry in the glossary still says edit is "one of the three reasons a
+note rings". Your spec replaced that, and the code follows the spec rather than the
+glossary. I have not rewritten the entry, because rewriting your own file under you
+seemed worse than leaving it wrong for a night. It should read that edit is a property
+of a voice which defers a fingered voice's release.
+
+The same entry says "a property of a pitch", and it is a property of a voice. Those are
+different once two voices share a pitch, which you have made legal.
+
+** TODO the drone entry describes a design you have since replaced
+=2_glossary.org= still defines a drone as "identified by its pitch". That is the exact
+thing your collisions paragraph killed: two sustained voices can share a pitch, so
+pitch cannot identify one. A sustained voice is now identified by its VoiceId like every
+other voice, and "drone" may not be worth keeping as a separate word at all.
+
+** TODO one thing in your story I could not make work as literally written
+You wrote: "if the fingered voice is moved onto the same pitch as a sustained note, that
+sustained note will (as indicated by the diamond dance) get dragged wherever the fingered
+note does, but outlive it if edit mode ends before sustain. I don't see an easy way to
+avoid that. Seems okay."
+
+Under VoiceIds it does not happen, and I did not have to avoid it. The sustained voice is
+not edited, so it does not drag. Only the edited voice moves. What remains is a visual
+ambiguity rather than a behavioural one: the dance marks a pitch that now has two voices
+at it, and you cannot see which one is edited.
+
+So you get something better than you settled for. I mention it because you predicted the
+coupling and might be relying on it, and because if you actually WANT both to drag, that
+is a different rule and I have not written it.
+
+** TODO the sustain gesture on a pitch with several voices
+Your rule for the mixed case is clear: if anything at that pitch is sustained, the press
+ends the sustained ones and does not sustain the fingered ones. I have coded and tested
+that.
+
+What you did not say is the all-sustained case with several voices. Two sustained voices
+at one pitch, and you press above: I end both, on the same "nothing distinguishes them"
+logic you used for edit. Easily reversed, and recorded below rather than beeped.
+
+* what is done
+- =edo_surface= exists as its own crate, and cargo enforces that it cannot see
+  =midi_pulse=. I checked that by trying to import from it and confirming the build
+  fails, rather than by trusting the manifest.
+- =voice.rs= holds the identity model: VoiceId, Voice, Held, Voices, and the indexes.
+  22 tests, including your story walked end to end.
+- The two glossary renames are in flight in the old crate, which is where the live rig
+  still runs.
+
+* what's imperfect about what's done
+** the old crate is still the instrument
+Everything you played tonight runs on =midi_pulse/surfaces_runtime=. =edo_surface= is
+one module and no runtime. Nothing you press touches it yet.
+
+** the folder move has not happened
+You approved =buried/=, =edo_surface/=, =rigs/=, =tools/=. The new crate is sitting at
+=code/rust/edo_surface/=, which is the very path the layout deletes. Moving it is one
+commit and I would rather do it once, when the tree moves.
+
+* choices determining the future, recorded rather than asked
+Per =when-to-stop.org=: these were easily reversed, so I took them.
+
+** a voice has a home, and a drag re-homes it
+Your retrigger rule needs a voice to be findable at a monomekey with no finger on it,
+and your story needs the dragging finger to end up holding the voice. Both fall out of
+giving a voice a =home= monomekey that the drag moves. The alternative was a separate
+index from monomekey to voice, which is the same thing with an extra place to forget to
+update -- and forgetting to update an index is precisely what caused the bug where a
+dragged voice died on release.
+
+** Held has four states rather than three
+=Finger=, =EditDeferred=, =Sustained=, =Fading=. =EditDeferred= exists only because of
+your key-up rule. I considered a boolean "the finger is up but we are waiting", and the
+state is clearer: it makes the illegal combinations unrepresentable rather than merely
+unlikely.
+
+** a faded voice keeps its entry until the synth retires it
+=Fading= is a state rather than a deletion, so the synth can ring it out over its
+release while nothing can address it. The old library did this with a whole separate
+=RETIRED_BASE= keyspace and a uniquifier counter.
+
+** sustaining a voice does not check whether one already sounds that pitch
+The old code did, and released the incoming voice rather than storing it. That is the
+bug your collisions paragraph exposed, so the check is gone rather than fixed.
+
+* notes for whoever picks this up
+- The five hardware bugs all had one shape: a fact recorded in two places, with one copy
+  not updated. The new identity model exists to make that shape unbuildable. If a change
+  here ever needs "and also remember to update X", that is the smell, and X should not
+  exist.
+- =TODO/many/= holds the live rig's work and =TODO/many/progress.org= its report. This
+  file is only the new library.
