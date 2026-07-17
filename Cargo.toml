@@ -41,6 +41,9 @@ path = "code/rust/synth/triangle_chord.rs"
 [dependencies]
 midir = "0.10"
 minifb = "0.27"
+# Pure-Rust TTF rasterizer with anti-aliasing, for the on-screen readouts. No
+# system font/C deps: it takes the bytes we embed and hands back a coverage mask.
+fontdue = "0.9"
 rosc = "0.10"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
