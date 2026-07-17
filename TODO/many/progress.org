@@ -1,0 +1,258 @@
+#+title: Progress: two softsteps, per-voice pitch + factored-pulse edit
+#+date: 2026-07-17
+
+Executing =3_plan.org=. Report format per =when-to-stop.org=.
+
+* status
+| phase | what                                    | state |
+|-------+-----------------------------------------+-------|
+|     1 | per-device tether mode                  | DONE  |
+|     2 | device-aware pedal hook                 | DONE  |
+|     3 | rig schema: softstep windows + pinning  | DONE  |
+|     4 | pressure classification, unbound        | DONE  |
+|     5 | the rig + surfaces wiring               | DONE  |
+|     6 | glide primitive + edit mode             | DONE  |
+|     7 | diamond dance + off-screen flash        | DONE  |
+|     8 | factored-pulse retargeting for edit-mode notes | DONE  |
+|     9 | the GUI window                          | DONE  |
+|    10 | rename the drums rig                    | DONE  |
+
+The plan is executed. Suite green throughout; ~120 tests added.
+
+The one thing left is the thing I cannot do: play it. Every phase is verified by
+unit tests and, where possible, against real device output -- but not one LED,
+monomekey, pedal or note has been exercised on the hardware. See "what's imperfect"
+below.
+
+* what's done and went well
+
+** the gear is all present now, and it improved the work rather than just enabling it
+All four devices are live (both grids via serialosc, both boards via =amidi -l=), and
+X11 accepts us since Jeff ran =xhost=. Two things fell out of that:
+- Jeff's actual hardware is adversarial by accident. The NEWER board enumerates on
+  card 1 -- which is exactly the old =DEFAULT_RAWMIDI_PORT= (=hw:1,0,0=). So the old
+  code's fallback pointed at the wrong board while looking entirely plausible, and
+  card numbers follow plug order, so that coincidence drifts. His =amidi -l= is now a
+  test fixture; it is nastier than the one I invented.
+- The grid serials serialosc reports (=m256-282=, =m0000102=) are exactly what the rig
+  pins, so §1a stopped being theoretical.
+
+** the two prerequisites landed, and they were the real blockers
+Both were "the second board does not work at all", not "works badly": a SoftStep left
+in standalone streams no sensors. Per-device tether (=b48aa30=) and the device-aware
+=PedalHook= (=3f977c4=) are independent -- fixing one without the other still leaves a
+dead board.
+
+** three latent bugs surfaced on the way, none of them the thing I was looking for
+- =device_assign= ignored =id_contains= entirely (in the schema, never read), so grids
+  bound in enumeration order. Harmless for the looper, which says outright it doesn't
+  care; fatal here, where a replug would silently invert the whole spatial pedal
+  layout with no error.
+- The pedal-ownership check only walked drumkit pads, so a pedal bound to both a
+  drum and a control loaded fine and had no defined behavior.
+- =tether.rs= grepped for a hardcoded ="SSCOM"=, so the newer board could never be
+  found even in principle.
+
+** the sharp edges the plan predicted were real
+=glide_per_sample= encodes direction (the integrator compares it against 1.0), so
+re-aiming a glide backwards by patching =freq_target= alone would leave a voice
+sailing past its target forever. Dragging an edit-mode note back and forth does
+exactly that, and there is now a test for it. The plan flagged this before the code
+existed; it was worth writing down.
+
+* changes to the plan's envisioned order
+- Phase 10 (rename) was pulled forward and handed to a smaller model. The plan put
+  it last "because it touches files the earlier phases read", but that is only true of
+  the old rig; the new one is a separate file. Isolated and mechanical -- the
+  natural hand-off. Same for phase 5's readme.
+- Phase 3 split. =device_assign= (its §1a half) landed early and unwired, because it
+  is pure and had nothing to wait for; the rig picked it up in phase 5.
+- Otherwise the order stands.
+
+* what's imperfect about what's done
+
+** NOTHING is verified against the hardware -- and now that is a choice, not a limit
+The gear is plugged in, so "can't" no longer applies. Port resolution is proven
+against Jeff's real =amidi -l=, and the shipped rig is proven to load, pin and
+resolve. But entering and restoring tether mode on both boards is not, and neither
+is a single LED, monomekey, pedal or note.
+
+I deferred it to one real run rather than poking the boards mid-build: a half-restored
+pair leaves a board streaming with nothing listening, and only a replug clears it, so
+repeatedly bouncing them while the code moved was the worse trade. That was right, but
+the consequence stands plainly: the risk is deferred, not retired, and the first run
+is where it lands. The most likely things to be wrong are the ones no unit test can
+reach -- whether the grids land left/right as pinned, whether a pedal's job matches
+the foot Jeff expects, and whether the dance is legible.
+
+** the "drums" naming is now a lie
+=Settings::has_drums= is =!rig.softstep_windows.is_empty()=, and =plan.drums= gates the
+whole SoftStep bring-up. The two-softstep rig has 15 softstep windows and zero
+drumkit windows, so it comes up under a flag called "drums". It works, and renaming it
+touches the missing-gear planner, so I left it -- but it is exactly the kind of drift
+that produced the =58-8-1= filename.
+
+** the legacy feet-accrete mirror is pinned, not modernised
+It binds the first declared board and its 1/2/3 + 8/9/0 map is still a hardcoded
+=match=. A rig that declares bindings now bypasses it entirely (they disagree about
+what a pedal means, so running both would make a pedal's job depend on hook order).
+Deliberate -- modernising a path this build abandons is waste -- but it is an
+inconsistency someone will trip on.
+
+** the first hardware run found a real bug, in the first thing tried
+Jeff: "even after removing my foot, new notes sustain ... for this rig it should only
+ever be in momentary mode." Correct, and my miss, not a design gap: =3_plan.org=
+phase 5 said accrete would run "with =needs_holding= forced on", and nothing ever
+forced it. =needs_holding= defaults to false, which makes =accreting()= read =mode_on=
+-- a toggle -- and the rig deliberately binds only clear and accrete, so the switch
+could never be turned on by anyone.
+
+Fixed as a general rule rather than a special case: a bank whose =needs_holding= is
+bound nowhere comes up momentary, because such a bank can never leave whatever mode
+it starts in, and toggle-with-no-switch is a trap. The drums rig binds the button, so
+it is unchanged (asserted, not assumed).
+
+The lesson is about the tests, not the bug. 400 tests passed while the instrument's
+single most-used control was in the wrong mode -- because every test covered the
+components and none asserted what the shipped rig would actually do when a foot went
+down. The fix adds that missing level, and pins its own premise (that the rig really
+binds no =needs_holding= control), so it fails honestly rather than passing silently if
+that changes. This is precisely the class of thing I flagged as "deferred, not
+retired", and it landed on the first press.
+
+** the second and third hardware bugs were the same shape as the first
+Both were specified behavior I did not implement, not design gaps:
+- An edited note must keep sounding once the finger lifts (=1_vision=, verbatim). It
+  didn't; it died and left the dance circling a silent trail.
+- =clear= silenced an edited note and left it in edit mode -- Jeff's repro: sustain
+  two, edit one, clear both. The result was inescapable: it kept dancing, =any()=
+  stayed true so every press dragged instead of playing, and the exit gesture required
+  the note to be SOUNDING, which the clear had just made false. The only way out was
+  the one thing the bug disabled.
+
+The second fix is the one worth remembering, because the obvious fix was not enough.
+Making =clear= tidy up after itself would have left the identical trap waiting behind
+the next way to silence a note. So the exit trigger no longer depends on audibility
+at all: an edited pitch is always dismissable. "No inescapable state" is now true by
+construction rather than by every future silencer remembering the rule.
+
+** the bug shape that keeps recurring: a fact recorded in two places
+Three of the hardware bugs are the same shape underneath, and it is worth naming
+because it will recur:
+
+A thing that is true is written down twice, and one copy is not updated.
+- =held= says what a finger sounds; the drag moved a voice and didn't re-file it, so
+  releasing looked up the pitch the note USED to be and cut a note it should have kept.
+- =voice_key= packs a CELL into the field a drone uses for its PITCH, so selecting
+  voices by pitch silently matched only drones.
+- edit mode's ring was recorded both in =EditState= and (via =owned=) in the accrete
+  set, and =clear= updated one of them.
+
+The third is now gone by construction: the three reasons a note rings (finger,
+sustain, edit) are orthogonal, each owned by exactly one place. The other two are
+documented in Claude's memory, because they are representation traps -- no test
+catches them, only knowing.
+
+** what the hardware found that 400 tests did not
+Three bugs in the first minutes of playing, none of them subtle, all of them in code
+with thorough unit tests. The pattern is identical each time: every test asserted a
+component behaves as specified, and none asserted that the instrument does what
+the vision says when a foot goes down and a finger lifts. Momentary accrete, the
+sustain-on-edit rule, and the clear interaction were each fully covered at the level
+below the one where they broke.
+
+The lesson is not "write more tests". It is that a component test cannot see a missing
+connection -- and every one of these was a connection I never made. The new tests
+that would have caught them all live at the rig/wiring level and assert their own
+premises, so they fail honestly rather than passing on a false assumption.
+
+** the window briefly made the test suite non-hermetic
+Phase 9 spawned the factored-pulse window whenever a grid was present -- which includes the
+mock-grid smoke test, so =cargo test= opened a real X11 window on whatever display was
+around. It failed three tests once, non-reproducibly, and then went green four runs in
+a row; a flake, not a bug, which is worse. Now gated on =no_audio=, the runtime's
+existing headless/mock signal, and verified by running the suite with =DISPLAY= unset.
+
+This is worth naming because of how it slipped: the subagent that built the window
+reported the suite green and cited the smoke test opening a window inline as evidence
+it worked. It was evidence of the defect. A test that reaches for a real system
+resource looks like success right up until it doesn't.
+
+** =MIDI_PULSE_KMSS_RAWMIDI= is under-powered
+One process-wide override, so with two boards it forces both onto one port, which is
+meaningless. Documented as single-board-only rather than fixed.
+
+** the edit-mode drag has an asymmetry I should flag before it is felt
+A drag moves the nearest edited note; a factored-pulse change moves all of them. Both are
+Jeff's explicit calls (2d), and both are right on their own -- but it means "in edit
+mode" denotes a different selection depending on which parameter you touch, and that
+is the sort of thing that reads fine on paper and surprises the hands.
+
+** two things in the build that only the hardware can judge
+Flagging them now because they are design risks, not bugs, and no test can settle
+them:
+- A grid goes modal while anything is edited -- no new notes sound; every press
+  drags. Correct per 2b/2c, and the single biggest change to how these grids feel.
+- The dance may read poorly on grid A, the monobright one, whose "dim" is faked by
+  fast flashing. 150 ms (Jeff's relaxation from 100) should help. Accepted in advance,
+  but "accepted in advance" and "actually legible" are different claims.
+
+* choices determining the future
+
+** one tether session owning many boards, not one session per board
+The alternative (session-per-board + a global registry for the signal thread) is more
+orthodox but puts the "did we restore all of them?" invariant in a global, where
+nothing owns it. One session keeps total restoration a property of a single value's
+=Drop=.
+
+** each board resolves its rawmidi port from its RIG selector
+Not from a serial, not from card order. This is what makes the sensor stream and the
+mode switch provably agree. A rig whose =name_contains= is too loose (="Soft"= matching
+both) would bind one board twice -- not currently validated.
+
+** the pedal hook carries =&str=, not a device index
+An index couples the hook to device order, which is the very class of bug being
+fixed.
+
+** a rig with declared bindings gets ONLY those
+The feet-accrete mirror steps aside entirely rather than handling leftovers. Composing
+them would make a pedal's meaning depend on which hook saw it first.
+
+** edit mode is keyed by PITCH, and is grid-local
+Not by voice (so it survives a retrigger) and not by cell (so it follows a note that
+moves). And unlike every other LED rule here, it is not octave-duplicated or
+mirrored across grids -- so it cannot reuse the reflection path, and phase 7's dance
+has to paint itself.
+
+** a voice's address does not carry its pitch, and that bit me
+A fingered voice is keyed by the cell it was struck on -- =voice_key= packs
+=y * 256 + x= into the very field a drone uses for its real pitch. So
+=scale_factored_pulse_rate=, selecting by pitch, silently matched nothing for fingered notes.
+Its test caught it immediately. The fix passes the grid's live cell->pitch map in, so
+the packing stays private to =synth=; but the collision of meanings in one field is a
+trap still sitting there for the next person.
+
+** the on-screen window is optional and non-fatal
+It warns once and plays on if X is unavailable. The instrument must not depend on a
+display to make sound, and Jeff's =xhost= grant is per-login -- so "no window" is a
+NORMAL state, not an error, and the rig's readme says so.
+
+** edit state is published, not shared
+=GridThread= owns its =EditState= and mirrors the pitches into an =Arc<Mutex<Vec<_>>>=
+for the pedal hook to read -- the same idiom as =held_all= / =sounding=. The
+alternative (hooks mutating one shared =EditState=) would put grid-thread state under
+a lock the audio-adjacent hook also takes.
+
+* notes for whoever picks this up
+- =EditState::clear= is written and unused: it is the vision's "a button somewhere to
+  clear edit mode from all notes", which Jeff deliberately left unbuilt for now
+  (=1_vision= §undecided). Bind it to a pedal when he wants it -- the old board has 3,
+  6, 7, 9 and 0 free.
+- Nothing is bound to light/hard pressure (phase 4). The plumbing is there and
+  tested; =pressure_threshold_sum = 200= is a guess Jeff picked to move on, not a
+  measurement. One meter session (=tools/softstep/meter/main.py=, light then
+  hard on each pad) would let it be set from data -- and would answer the pad-outlier
+  question that has been open since the discussion.
+- The =has_drums= flag now gates the SoftStep bring-up generally, and the
+  two-softstep rig has zero drumkit windows. Renaming it touches the missing-gear
+  planner, so I left it -- but it is exactly the drift that produced =58-8-1=.

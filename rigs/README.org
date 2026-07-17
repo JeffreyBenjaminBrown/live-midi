@@ -1,0 +1,823 @@
+* The .org rig format (TOML-in-org)
+Rigs are ~.org~ files in our *TOML-in-org* format: the org outline carries the data,
+and every parameter's documentation lives beside it in the headline tree. Each rig file
+opens with a short note pointing back here (Emacs ~C-c C-o~ follows the link).
+
+- ~PARAM <key> = <value>~ -- a scalar. ~<key>~ may be dotted (~select.size~); ~<value>~
+  is ordinary TOML value syntax, so inline arrays/tables just work
+  (~PARAM rect = [0, 0, 15, 13]~).
+- ~TABLE <name>~ -- a (sub)table; its descendants are its contents. ~TABLE~ nests
+  (~[a.b]~ = ~TABLE a~ > ~TABLE b~).
+- ~ELEM <name>~ -- ONE element of the array-of-tables ~<name>~ (one ~[[name]]~).
+  Repeat sibling ~ELEM <name>~ headlines to grow the array, in order.
+- Any *other* headline is pure grouping: transparent to the data, there only to
+  organize and document. Every *body* (the lines under a headline) is a human note the
+  loader ignores.
+- ~#~ starts a *comment* on any headline, load-bearing or not -- TOML's own rule, so it
+  runs to end of line and a ~#~ inside a quoted string is data, not a comment:
+
+  #+begin_src org
+  ,*** PARAM rect = [0, 15, 0, 15]     # exactly one cell
+  ,** ELEM monome_windows              # grid A accrete: erase
+  ,*** PARAM prefix = "/256#1-cable"   # the hash in the string survives
+  #+end_src
+
+  Bodies were always free-form prose; this is for the short note that belongs *on* the
+  line. Starting a title with ~#~ comments the whole headline out -- a ~PARAM~ then just
+  goes missing (falling back to its default, or erroring as a missing field), while a
+  commented-out ~TABLE~/~ELEM~ orphans its children onto the enclosing table, where the
+  unknown-key check rejects them. Loud either way, never silent.
+
+It loads into the exact same typed rig as the old TOML did (same fields, same
+validation, unknown keys still rejected). Full spec + migration notes:
+[[file:../../../TODO/toml-to-org-rig-format.org]]. A rig's own reference doc, when it has
+one, is the sibling ~<name>_readme.org~. (~softstep.toml~ stays TOML -- it is the shared
+SoftStep-params file, not a rig.)
+
+* to run something
+** about the file argument
+The file argument (to both commands) must exist in this folder.
+The path *to* this folder is not needed.
+** do both of these
+*** in docker
+alternatives lately:
+
+pw-jack cargo run --bin midi_pulse \
+  2-monomes_kmss-drums
+
+pw-jack cargo run --bin midi_pulse \
+  monome-looper-58-8-1-timbre
+
+pw-jack cargo run --bin midi_pulse \
+  edo-un12_58-8-1_snap_save-scales
+*** outside, if (sending MIDI?)
+Use the corresponding filename from in docker:
+
+./tools/connect-midi.sh \
+  edo-un12_58-8-1_snap_save-scales
+* how to read a rig
+** read the window arrangements
+The most informative, least obvious aspect of these rigs is the
+~[[monome_windows]]~ array. In TOML, double-bracket tables are arrays of
+tables, so each ~[[monome_windows]]~ block adds one element to the
+~monome_windows~ list.
+
+Each element specifies a ~rect~, read as:
+
+#+begin_src toml
+rect = [left_x, top_y, right_x, bottom_y]
+#+end_src
+
+So you could read that as (x,y) (z,w)
+where the first pair is the top-left corner, etc.
+
+Both endpoints are included. For example, ~rect = [0, 1, 9, 15]~ covers
+columns 0 through 9 and rows 1 through 15.
+** jump to program definitions
+Each element has an ~id~ and a ~kind~. The ~id~ is the local name of that
+specific window inside this rig. The ~kind~ is the program/window type:
+~preimage_row~, ~remappable_un12_grid~, ~remap_undo_button~, and so on.
+After running ~rebuild-etags~, the Rust behavior definition for a ~kind~
+value can be jumped to in Emacs with ~M-.~.
+
+* midi_pulse rig syntax
+
+Rigs live in ~rigs/~ and are loaded by name:
+
+#+begin_src sh
+cargo run --bin midi_pulse -- RIG_NAME
+#+end_src
+
+~RIG_NAME~ resolves to ~rigs/RIG_NAME.org~ (our TOML-in-org format; see above).
+
+On the host, MIDI routing can use the same rig name:
+
+#+begin_src sh
+./tools/connect-midi.sh RIG_NAME
+#+end_src
+
+That script reads ~[midi.input].virtual_name~ and
+~[midi.output].virtual_name~ from the rig and connects the keyboard
+and Reaper MIDI ports accordingly. It also connects Reaper audio to the
+best available built-in output, preferring ~Headphones~ when present and
+falling back to ~Speaker~. Rerun it after plugging or unplugging the
+1/8" audio jack. Rigs without MIDI input or output simply skip that
+side.
+
+Every rig starts with the fields below. The examples in this section are written in
+the underlying TOML to show the *data model*; in an actual ~.org~ rig each becomes a
+~PARAM~ / ~TABLE~ / ~ELEM~ headline (see *The .org rig format* at the top), e.g.
+~version = 1~ is ~** PARAM version = 1~.
+
+#+begin_src toml
+version = 1
+id = "monome-edo-sawwave"
+title = "Monome EDO Sawwave"
+#+end_src
+
+Unknown fields are rejected. Tables with a ~kind~ field are tagged variants:
+fields for one kind cannot be mixed with fields from another kind.
+
+An optional top-level ~echo_input~ toggles echoing each fingered note to the
+terminal (~press grid=.. x=.. y=.. f=.. Hz~ on stderr):
+
+#+begin_src toml
+echo_input = false   # default; set true only when debugging
+#+end_src
+
+It defaults *off* so a startup warning -- e.g. the surfaces runtime's red report
+of components that could not load for missing gear (see *Surfaces*) -- stays on
+screen instead of scrolling away under a stream of key echoes as you play. The
+surfaces and sawwave runtimes honor it.
+
+* Coordinates
+
+Monome rectangles are inclusive:
+
+#+begin_src toml
+rect = [x0, y0, x1, y1]
+#+end_src
+
+For example, ~[0, 14, 3, 14]~ covers ~(0,14)~, ~(1,14)~,
+~(2,14)~, and ~(3,14)~.
+
+Windows are listed back-to-front: earlier windows are underneath later
+windows. The runtime's window visibility and dispatch logic decides which
+overlapping window receives or paints each cell.
+
+* Tunings
+
+Tunings are named blocks:
+
+#+begin_src toml
+[[tunings]]
+id = "main"
+edo = 46
+x_step = 9
+y_step = 1
+fundamental_hz = 220
+#+end_src
+
+The ~id~ is a local name inside the same rig file. References such as
+~tuning = "main"~ mean "use the ~[[tunings]]~ block whose ~id~ is
+~"main"~." The word ~main~ is not special; any ID may be used as long as
+the reference matches an existing tuning ID.
+
+This lets multiple parts of a rig share one tuning, or lets one rig
+define several tunings and explicitly choose between them.
+
+* Monomes
+
+#+begin_src toml
+[[monomes]]
+id = "big"
+listen_port = 9000
+prefix = "/256-1-cable"
+select.size = [16, 16]
+select.type_contains = "256"
+#+end_src
+
+All provided ~select.*~ predicates must match. If multiple devices match,
+the newest serialosc reply is used and the runtime warns. Each configured
+monome gets its own runtime thread and UDP socket. ~listen_port~ values
+must be unique.
+
+* MIDI piano input
+
+#+begin_src toml
+[midi.input]
+virtual_name = "edo12n_piano-in"
+
+[midi.output]
+virtual_name = "edo12n_piano-out"
+min_channel = 1
+min_note = 28
+#+end_src
+
+Piano mappings are tagged by ~kind~.
+
+#+begin_src toml
+[piano.mapping]
+kind = "twelve_n"
+lowest_note = 21
+shift_before_mapping = -5
+edo_per_12 = 6
+#+end_src
+
+#+begin_src toml
+[piano.mapping]
+kind = "remappable_un12"
+lowest_note = 24
+tuning = "main"
+remap_idiom = "snap"
+initial_map = "even"
+#+end_src
+
+For ~remappable_un12~, ~tuning~ is a reference to a ~[[tunings]]~ ID in
+the same file. For example, ~tuning = "main"~ selects:
+
+#+begin_src toml
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+#+end_src
+
+Piano regions are inclusive MIDI note ranges:
+
+#+begin_src toml
+[[piano.regions]]
+range = [0, 96]
+action = "emit_notes"
+
+[[piano.regions]]
+range = [97, 108]
+action = "held_offset_control"
+zero_note = 102
+#+end_src
+
+* Output sinks
+
+#+begin_src toml
+[[sinks]]
+id = "midi"
+kind = "midi"
+
+[[sinks]]
+id = "saw"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.050
+# Optional (defaults shown). Pluck envelope: a strike peaks, then decays toward
+# sustain_level x peak with time constant decay_secs (>= 1.0 / <= 0 disable).
+# EVERY voice takes this curve -- fingered, looped, and accreted alike, so a
+# sustained note sounds exactly like the same note held under a finger:
+sustain_level = 0.35
+decay_secs = 0.5
+# Optional. Global distortion curve, heard only under a distortion_toggle window:
+distortion_scale = 1.0
+distortion_shape = 2.0
+#+end_src
+
+A third sink kind, ~cpal_sampler~ (a one-shot WAV player), drives the SoftStep
+~drumkit~ window; see the SoftStep section below.
+
+* Timbres (the waveform strip's four choices)
+
+An optional top-level ~[[timbres]]~ array (exactly four entries when present)
+defines what each cell of a ~waveform_selector~ strip selects, left to right.
+Absent, the strip selects the plain four waveforms -- identical behavior. Each
+entry has a ~waveform~ ("sin"/"sine", "tri"/"triangle", "square", "saw") plus
+numeric parameters, all optional and (except ~amplitude~, default 1.0) "off":
+
+#+begin_src toml
+[[timbres]]
+waveform = "saw"
+amplitude = 0.8        # per-timbre gain below the volume fader; 0..1 typical
+am_depth = 0.4         # tremolo depth 0..1 (0 = off)
+am_freq = 3.0          # tremolo Hz, ~0.1..10
+am_shape = 0.2         # LFO morph 0..1 (0 smooth .. 1 near-square)
+fm_depth_cents = 12.0  # vibrato cents (~5..50 subtle; 0 = off)
+fm_freq = 5.5          # vibrato Hz, ~0.1..10
+#+end_src
+
+The tremolo's LFO wave family comes from the instrument-wide ~[am]~ table. Notes
+snapshot their timbre at note-on (radio semantics).
+
+* Monome windows
+
+Monome windows reference configured monomes, tunings, and sinks by ID.
+
+#+begin_src toml
+[[monome_windows]]
+id = "edo-grid"
+monome = "big"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 13]
+tuning = "main"
+sink = "saw"
+#+end_src
+
+Here, ~monome = "big"~ references ~[[monomes]] id = "big"~,
+~tuning = "main"~ references ~[[tunings]] id = "main"~, and
+~sink = "saw"~ references ~[[sinks]] id = "saw"~.
+
+Built-in unbundled window kinds:
+
+- ~edo_note_grid~
+- ~chord_wipe_button~
+- ~chord_accrete_toggle~
+- ~chord_emit_mode_toggle~
+- ~chord_target_button~
+- ~chord_slot_buttons~
+- ~preimage_row~
+- ~remappable_un12_grid~
+- ~remap_undo_button~
+- ~waveform_selector~
+- ~volume_strip~
+- ~accrete_control~
+- ~distortion_toggle~
+- ~slide_toggle~
+- ~mono_toggle~
+- ~softstep_accretes_toggle~
+- ~tap_tempo_pad~
+
+A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
+to right) that sets the timbre of the monome named by its ~controls~ field -- usually
+the window's own ~monome~, though a different play grid is legal (cross-control).
+The surfaces runtime uses it to give each play grid its own timbre control (see
+[[./2-monomes_kmss-drums_readme.org]]). Its rect must cover exactly the four cells
+(one row, four wide).
+
+A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
+loudness of the monome named by its ~controls~ field (again usually its own grid)
+and is *live* -- moving it rescales that grid's sounding voices, not just future
+notes. The active cell is lit, the rest dark.
+
+#+begin_src toml
+[[monome_windows]]
+id = "vol-a"
+monome = "a"               # drawn on grid A's top row
+kind = "volume_strip"
+rect = [4, 0, 15, 0]       # 12 cells, right of the 4-cell waveform strip
+controls = "a"             # -> sets grid A's own loudness
+#+end_src
+
+#+begin_src toml
+[[monome_windows]]
+id = "wave-a"
+monome = "a"               # drawn on grid A's top row
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "a"             # -> sets grid A's own timbre (must have an edo_note_grid)
+#+end_src
+
+The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
+*generally-valid* window now: it may sit on any grid that has an ~edo_note_grid~,
+not only in a full looper stack.
+
+An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Four
+kinds -- set by its ~control~ field: the clear / needs_holding / accrete trio is
+all-or-nothing per monome, and ~erase~ is optional on top of it. Each monome's
+buttons drive its OWN accrete bank: only notes fingered on that grid can join
+its sustained set, and its ~clear~ leaves the other bank ringing:
+
+#+begin_src toml
+[[monome_windows]]
+id = "acc-clear-a"
+monome = "a"                 # must have an edo_note_grid
+kind = "accrete_control"
+rect = [0, 15, 0, 15]        # exactly one cell
+control = "clear"            # or "needs_holding", "accrete", "erase"
+#+end_src
+
+- ~clear~ (key-down; lit while pressed) silences and flushes this bank's sustained
+  notes.
+- ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ and
+  ~erase~ must be *held* or are themselves toggles.
+- ~accrete~: while the accreting condition is live (button held, or accrete mode
+  toggled on), notes played on this grid -- plus notes already held here when it
+  went live -- join the bank's *sustained set* and keep ringing after their fingers
+  lift, until ~clear~. Lit while the condition is live, dim otherwise.
+- ~erase~ (optional): accrete's mirror image, under the same ~needs_holding~ rule.
+  While the erasing condition is live, pitches pressed on this grid -- plus those
+  already held when it went live -- LEAVE the sustained set; each keeps sounding
+  until its own finger lifts. With accrete and erase both live, erase wins. Lit
+  while the condition is live.
+
+Sustained notes paint like any sounding note (bright octave-equivalents on both
+grids) and follow the volume fader of the grid they came from. Re-fingering a
+pitch that is sustaining in this grid's bank cuts the old drone and the new note
+replaces it (the pitch stays in the set, so releasing the new finger re-drones it).
+
+A ~distortion_toggle~ is a single-cell on/off for a *per-monome* soft-clip
+distortion (surfaces runtime; at most one per monome, each grid's toggle switching
+its OWN voices onto the distorted bus -- grids left off bypass the clipper). The
+curve's parameters live on the ~cpal_synth~ sink:
+
+#+begin_src toml
+[[sinks]]
+kind = "cpal_synth"
+# ...
+distortion_scale = 1.0   # s: the asymptote; ~0.3 heavy, ~1.0 strong, >=5 nearly clean
+distortion_shape = 2.0   # k: elbow harshness; 1 gentle, 2 smooth, 4-8 hard-ish
+
+[[monome_windows]]
+id = "dist-a"
+monome = "a"              # must have an edo_note_grid
+kind = "distortion_toggle"
+rect = [0, 1, 0, 1]       # exactly one cell
+#+end_src
+
+The button is dim at rest, bright while on; key-down toggles, key-up does nothing.
+See =learnings/distortion.org= for the curve family.
+
+A soft-clipper *loses level*, and loses more of it the more notes are summed into it
+(the loss depends only on the dirty bus's RMS, which grows like =sqrt(N)=). Two more
+sink fields undo that, so the toggle changes timbre and not volume:
+
+#+begin_src toml
+[[sinks]]
+kind = "cpal_synth"
+# ...
+distortion_auto_makeup = true   # restore the RMS the clean bus would have had
+distortion_makeup = 1.0         # trim on top of it (~0.8 if it reads hot); must be > 0
+distortion_makeup_slew_ms = 0.0 # 0 = exact. A character knob; see below.
+#+end_src
+
+With =distortion_auto_makeup= on, note count affects loudness exactly as much as it
+does with distortion *off*, while the grit still grows with the chord -- the makeup is
+computed from the voice envelopes each sample, not from an audio detector, so it
+neither lags the attack nor pumps the decay. It is correct for *every* =distortion_scale=
+and =distortion_shape= you can dial, not just the defaults. Turn it off and
+=distortion_makeup= acts alone, as a plain constant gain (which cannot track =N=; fine
+when =distortion_scale >= 0.5=, poor below). All three are hot-reloadable with ='r'=. The
+derivation, the option space, and the measured error bounds:
+[[../../../learnings/distortion-volume-compensation.org]].
+
+=distortion_makeup_slew_ms= lags the applied makeup. *It does not protect attacks -- it
+erodes them.* The makeup must *rise* at a strike (a louder bus loses more to the
+clipper), so lagging it under-corrects exactly where the clipper bites hardest: 200 ms
+costs ~4 dB of attack contrast and adds a swell. What it buys is the clipper's own
+dynamic compression, and as it grows the makeup freezes toward a constant -- so the knob
+slides continuously from =auto_makeup = true= (0 ms) to =auto_makeup = false= (very
+large). Leave it at 0 unless you want that compression as an effect.
+
+Note that =distortion_shape= below 1 bends the curve straight from the origin and eats
+level fast (=k = 0.5= costs ~5 dB on a *single* note), which the compensation now hides.
+
+A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
+(single cell, at most one of each per monome, dim/bright LED). All are
+per-grid switches, like the distortion toggle. Slide: a new note on that grid
+re-triggers the nearest pitch released within ~slide_candidate_window_ms~ and
+glides it into the new pitch over ~slide_duration_ms~ (both optional in the
+~[surfaces]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
+other fingered notes -- its own grid's switch (and with that grid's slide on,
+the new note *steals* the cut note's voice and glides it over -- true legato,
+no attack re-trigger).
+Softstep-accretes: while grid g's toggle is on, the
+KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
+for the other) mirrors g's accrete trio instead of playing samples -- one
+monome, both, or neither (see the rig's .org).
+
+A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
+per monome, on a monome with an ~edo_note_grid~): tap twice within
+~[surfaces].tap_tempo_window_ms~ (default 2000) to define the ONE global tapped
+tempo (defining it starts nothing). Each monome then scales it into its own
+applied tempo with its own exact 2^a x 3^b tempo-factor buttons, and switches its
+own amplitude cycling with =1. Cycling starts off; the =1 LED shows the switch.
+What =1 does depends on the switch: while cycling is off, a press turns it on and
+leaves the tempo factor alone (so a grid can start cycling at the rate you dialled
+in); while cycling is on, a lone press zeroes the tempo factor, and a second press
+within 400 ms of that one turns cycling off. The press that switches cycling on
+never counts as half of that double-tap, so from cold you can tap on, tap to unity
+(however fast), then double-tap off. While a grid's cycling is on, every note
+struck on it carries a factored pulse -- a unipolar triangle (1 at the cycle
+start, 0 at the half-cycle, back to 1) -- at that grid's applied tempo (fixed at
+onset). The tap cell displays the tempo whether or not cycling is on: it blinks
+at 10% duty at the tapped tempo -- unfactored, so both grids' tap cells blink
+together and no tempo-factor button moves them -- fully lit against black (it
+rests dim only before a tempo exists).
+
+The bundled 12-EDO offset/root board is:
+
+#+begin_src toml
+[[monome_windows]]
+id = "offset-board"
+monome = "little"
+kind = "twelve_edo_offset_board"
+rect = [0, 0, 15, 7]
+offset_columns = [0, 11]
+offset_rows = [1, 7]
+zero_row = 4
+root_row = 0
+group_columns = [13, 14, 15]
+group_intervals = [[0, 2, 5, 7], [1, 3, 8, 10], [4, 6, 9, 11]]
+#+end_src
+
+For remappable un-12 behavior:
+
+#+begin_src toml
+[[monome_windows]]
+id = "preimage-row"
+monome = "big"
+kind = "preimage_row"
+rect = [0, 0, 11, 0]
+
+[[monome_windows]]
+id = "remap-grid"
+monome = "big"
+kind = "remappable_un12_grid"
+rect = [0, 1, 9, 15]
+tuning = "main"
+
+[[monome_windows]]
+id = "undo"
+monome = "big"
+kind = "remap_undo_button"
+rect = [15, 15, 15, 15]
+#+end_src
+
+* SoftStep (KMSS)
+
+The Keith McMillen SoftStep foot controller uses the *same windowing idiom* as the
+monomes, adapted to its 10 labeled pedals (printed ~6 7 8 9 0~ on top, ~1 2 3 4 5~
+on the bottom). A device is declared once and referenced by ~id~; windows carry a
+~kind~. Full reference: [[./kmss-drumkit_readme.org]].
+
+The device, matched by input-port-name substring (default ~"SSCOM"~, the KMSS's
+ALSA client name -- never a hardcoded client number):
+
+#+begin_src toml
+[[softsteps]]
+id = "feet"
+select.name_contains = "SSCOM"
+#+end_src
+
+A one-shot sample-player sink (same cpal/JACK path as ~cpal_synth~; launch under
+~pw-jack~):
+
+#+begin_src toml
+[[sinks]]
+id = "drums"
+kind = "cpal_sampler"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.8
+#+end_src
+
+A ~drumkit~ window maps pedal labels to one-shot samples (filenames under the
+top-level ~drum-samples/~ folder; a ~sample~ may name a subpath for an alternate
+kit):
+
+#+begin_src toml
+[[softstep_windows]]
+id = "kit"
+softstep = "feet" # -> [[softsteps]] id
+kind = "drumkit"
+sink = "drums"    # -> a cpal_sampler [[sinks]] id
+# detection/velocity knobs (debounce, de-stick, thresholds) are shared -- see softstep.toml
+pads = [
+  { pedal = 1, sample = "kick.wav" },
+  { pedal = 2, sample = "snare.wav", gain = 1.0 },
+]
+#+end_src
+
+Built-in softstep window kinds:
+
+- ~drumkit~
+- ~accrete_control~
+- ~tap_tempo_pedal~
+- ~pulse_factor_pedal~
+
+The last three bind ONE pedal each to a control that would otherwise cost grid
+cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
+mirror, which hardcodes pedals 1/2/3 + 8/9/0 and only acts while an on-grid toggle
+is on. Every binding is stated in the rig rather than buried in the runtime:
+
+#+begin_src toml
+[[softstep_windows]]
+id = "clear-a"
+softstep = "old"          # -> [[softsteps]] id
+kind = "accrete_control"
+pedal = 1                 # printed label, 0..9
+monome = "a"              # whose bank; must have an edo_note_grid
+control = "clear"         # or "accrete" / "needs_holding" / "erase"
+
+[[softstep_windows]]
+id = "tap"
+softstep = "old"
+kind = "tap_tempo_pedal"  # defines the ONE global tapped tempo; at most one per rig
+pedal = 8
+
+[[softstep_windows]]
+id = "x2-a"
+softstep = "new"
+kind = "pulse_factor_pedal"
+pedal = 5
+monome = "a"              # this monome's factored pulse; must have an edo_note_grid
+factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
+#+end_src
+
+A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
+with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
+~tap_tempo_pad~ does), and with notes in edit mode the multipliers retune those
+notes. ~unity~ is the ~=1~ switch and never retunes edit-mode notes.
+
+Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
+the same device (including across kinds -- a pedal that is both a drum and a clear
+button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
+global, so there is one); two pedals giving the same monome the same ~factor~
+(different monomes may of course share a tempo factor -- that is the point of
+per-monome tempo factors); and a ~monome~ that is unknown or has no ~edo_note_grid~.
+
+Pedals are addressed by their printed label (1..9, then 0). On start, the
+runtime puts the device into *tether (hosted) mode* via SysEx sent over ALSA
+rawmidi (~amidi~), restoring standalone mode on exit or Ctrl-C. In tether mode
+the KMSS streams each pad's 4 pressure sensors as Control Changes on channel 0
+(CC 40..79; a pad occupies 4 consecutive CCs). The runtime sums a pad's 4
+sensors (0..508) into a continuous *pressure* 0.0..1.0 (~pressure_full_scale~,
+460) and maps it to gain over a ~gain_db_range~ (20 dB) -- it is explicitly
+*not* a MIDI velocity. A pad's configured ~gain~ is a per-pad *scale* on top of
+that pressure, not a fixed loudness. (Standalone mode -- Program Changes only,
+no velocity, lossy on simultaneous presses -- is why tether mode is used at
+all.) See [[../../../learnings/keith-mcmillen-softstep.org]] for the device
+protocol.
+
+* Optional display
+
+#+begin_src toml
+[display]
+kind = "pitch_class_grid"
+enabled = true
+rows = 6
+cols = 7
+anchor_12edo_value = 4
+row_step = 5
+flash_millis = 500
+tick_millis = 50
+#+end_src
+
+Use ~anchor_12edo_values~ for lists of 12-EDO anchor values:
+
+#+begin_src toml
+anchor_12edo_values = [0, 5, 7]
+#+end_src
+
+* Default rig families
+
+Piano-only 12n:
+
+#+begin_src toml
+version = 1
+id = "edo12n-piano"
+title = "EDO 12n Piano"
+
+[piano.mapping]
+kind = "twelve_n"
+lowest_note = 21
+shift_before_mapping = -5
+edo_per_12 = 6
+#+end_src
+
+Remappable un-12:
+
+#+begin_src toml
+version = 1
+id = "edo-un12-31-loose"
+title = "EDO un-12 31 Loose"
+
+[[tunings]]
+id = "main"
+edo = 31
+x_step = 6
+y_step = 1
+fundamental_hz = 80
+
+[piano.mapping]
+kind = "remappable_un12"
+lowest_note = 24
+tuning = "main"
+remap_idiom = "loose"
+initial_map = "even"
+#+end_src
+
+Monome EDO grid:
+
+#+begin_src toml
+version = 1
+id = "monome-edo-midi"
+title = "Monome EDO MIDI"
+
+[[tunings]]
+id = "main"
+edo = 46
+x_step = 9
+y_step = 1
+fundamental_hz = 220
+
+[[monome_windows]]
+id = "edo-grid"
+monome = "big"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 13]
+tuning = "main"
+sink = "midi"
+#+end_src
+
+* Surfaces
+
+The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
+[[./2-monomes_kmss-drums_readme.org]]) reads one optional table of instrument-wide
+scalars for the shared *recent-note trail* -- the dim backdrop of the last few played
+pitch classes:
+
+#+begin_src toml
+[surfaces]
+trail_clobber_radius = 27  # clear trailed classes within edo/this steps of a played note
+trails_max = 9             # keep at most this many distinct classes (newest first)
+#+end_src
+
+- ~trail_clobber_radius~ is a *divisor of the octave*: a played note clears any trailed
+  class within ~edo / trail_clobber_radius~ steps of it, so close pitches never crowd the
+  backdrop. Bigger = tighter; ~27~ is 1/27 of an octave (~44 cents). Default ~27~.
+- ~trails_max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
+
+The whole table (and each field) is optional; omitting it uses the defaults, so behaviour
+is unchanged for rigs that don't declare it. Only the surfaces runtime consults it.
+
+** Robustness to missing gear
+
+The surfaces runtime no longer requires every device the rig declares to be
+connected. It brings up whatever is present and skips only the components that
+*functionally depend* on something missing, reporting each skipped component to
+the player in *red* on startup -- then plays on. The rule is simple: a component
+loads iff every device it depends on is present.
+
+- *An absent grid* drops only its own play surface and overlays. The other grid
+  (and the drumkit) still load.
+- *Cross-surface control.* A ~waveform_selector~ / ~volume_strip~ whose
+  ~controls~ names a *different* grid (one monome setting the other's timbre or
+  volume) is dropped when that target grid is absent -- its cells revert to plain
+  play cells. A *self*-controlling strip (the current rigs) is unaffected.
+- *The SoftStep drumkit is standalone.* It loads whenever its SoftStep is
+  present, even with *no* grids connected -- it is a sample-trigger surface in
+  its own right (the monome->softstep accretion mirror is an add-on a grid
+  enables, never a load-time requirement). With grids absent, the feet-accrete
+  toggles simply never turn on, so every pedal drums.
+- If *nothing* runnable is present (no grids and no SoftStep), the run errors
+  rather than idling.
+
+Set ~echo_input = false~ (the default) so this red report is not scrolled off
+screen by note echoes while you play.
+
+* Looper
+
+The looper is a two-monome instrument (no piano): one grid is the EDO play
+surface, the other holds loops. Run it like any other rig:
+
+#+begin_src sh
+cargo run --bin midi_pulse -- monome-looper-58-8-1
+#+end_src
+
+It is selected when the rig declares a ~loop_display~ window (the dispatch
+checks this *before* the sawwave path, since a looper rig is a superset of
+the sawwave one). It needs *two* ~[[monomes]]~ of the same ~select.size~; the
+runtime hands each a distinct grid in rig order (it does not matter which
+physical grid is which).
+
+** Looper window kinds
+
+- ~edo_note_grid~ -- the play surface (also reflects the active loop and doubles
+  as the remap pitch-picker). References a ~tuning~ and a ~cpal_synth~ ~sink~.
+- ~edo_shift_pad~ -- a 3x2 pad overlaying the edo grid's lower-right. The four
+  arrows shift the pitch image by one cell, the two top corners by an octave.
+- ~loop_slots~ -- the slot grid; one slot is active. The number of slots is
+  whatever the rect covers.
+- ~loop_control~ with ~control = "start" | "stop" | "play"~ -- single-cell
+  transport, acting on the active slot. ~start~ records (overwriting); ~stop~
+  halts the active slot's record *or* play; ~play~ loops the active slot as the
+  sole sounding loop. (Only one loop sounds at a time; no layering.)
+- ~loop_remap_mode_toggle~ -- fine vs group-transpose remap (lit solid in fine,
+  dim in group transpose).
+- ~loop_copy_button~ -- copy a slot: press it, then a 'from' slot, then a 'to'.
+  Lit solid while armed; pressing it again mid-copy cancels.
+- ~loop_remap_undo~ -- undo the last loop remap (its own kind, so it does not
+  pull in the un-12 "remap" window group).
+- ~loop_display~ -- the 2D display compound. One rect derives a left row-picker
+  column, a top column-picker row, a reserved top-left corner, and the main
+  time x pitch area. (The pickers select rows/columns/cells to remap.)
+
+The core windows (~loop_slots~, ~loop_display~, the three ~loop_control~ kinds)
+are required together; the shift pad, toggle, copy and undo are optional. The
+~edo_note_grid~ rect must fit its grid, and ~remap_center~ must lie inside it.
+
+** The ~[looper]~ table
+
+#+begin_src toml
+[looper]
+clock_bpm = 240           # metronome (4*75 -> 200ms cycle): transport snaps to it, note-ons within 1/16 cycle snap
+cluster_display_ms = 100  # note-ons within this of each other = one display column
+flash_ms = 50             # reflection / equivalent flash half-period
+remap_center = [7, 7]     # the edo-grid cell meaning "unison" in group-transpose remap
+#+end_src
+
+The table and the looper windows imply each other; declaring one without the
+other is rejected.
+
+** Playing it
+
+- *Play* on the edo grid; the shift pad transposes. A sounding pitch lights all
+  its octave-equivalents solid.
+- *Record*: select a slot, press ~start~, play, then ~play~ to loop it (or
+  ~stop~ to keep it without playing). The *sounding* loop reflects on the edo grid
+  -- dim throughout, each note solid while it individually sounds.
+- *Remap*: pick rows/columns/cells in the loop display (mutually exclusive); the
+  edo grid enters remap mode. *Fine* sets each selected pitch to the edo cell you
+  press (lowest-first); *group transpose* transposes/duplicates the selection by
+  the interval from ~remap_center~ to the cell you press. ~loop_remap_undo~ reverts.

@@ -1,0 +1,204 @@
+* TODO Jeff to Claude: ideas
+I don't really have a spec, just some stories and thoughts.
+I hope you can extract a spec from this.
+
+I press a monome key. It sounds. It is a voice.
+A voice has a lot of associated timbre and pitch data,
+which the old code seemed to handle quite well.
+But there are some special data used to identify the voice,
+which may have been getting mangled.
+
+A fingered voice can be identified by the monomekey that originally pressed it.
+That's important because the monome display might scroll;
+it's latest displayed position would not be where the finger,
+still holding it down, is found.
+
+A fingered voice can be added to the sustained set
+by pressing the key above it (at (x,y-1)).
+Once the voice is in that set,
+we don't need its monome's coordinates to find it.
+The pitch of a voice can change over its lifetime,
+so pitch won't work as an ID; hence we use a VoiceID instead.
+Doesn't matter what it is as longas they don't collide.
+
+I'll try to always say voice rather than note,
+because note is confusible for pitch.
+The code should do likewise.
+
+A voice in the sustained set can be removed from that set
+by pressing the monome key immediately above any representation of it.
+
+What about collisions?
+The sustained voices can be playing,
+and on the same surface one could play a voice at the same pitch
+as one of them. That seems fine -- lifting the finger ends the fingered voice,
+without changing the sustained voice; clearing sustained voices
+likewise won't affect the fingered voice.
+
+But that fingered voice could then be added to the sustained set.
+Now we have two sustained voices at the same pitch.
+Still fine. They'll phase; whatever.
+
+What if, now, the monomekey at which some sustained or fingered notes
+enters edit mode? There's no way to specify which to edit,
+so all of them should gain the edit property.
+Pulse tempo changes that would apply to one apply to all;
+pitch dragging, similarly.
+
+So edit really isn't a third reason for being for a voice.
+It is a property that can be true of any voice.
+
+The "clear sustain" button on the softstep should only clear sustained notes,
+not fingered notes. But clearing edit mode from all notes also seems handy.
+Let's have that on the softstep just above the two 'clear sustain' pads.
+
+* DONE claude: the spec I extract from this
+Restated so you can tell me where I have misread you. I have used "voice" throughout,
+never "note", per your rule.
+
+** identity
+A voice is identified by a VoiceId, and by nothing else. The VoiceId is opaque and
+unique, and it never changes over the voice's life.
+
+Pitch is not an identity, because a voice's pitch changes. A monomekey is not an
+identity either, because the display scrolls, so the monomekey under the finger is not
+where that voice's pitch is drawn any more.
+
+A monomekey is instead an index into the fingered voices: it is how a lift finds the
+voice to end. That index is what "a fingered voice can be identified by the monomekey
+that originally pressed it" means, and it is the same reason the old code kept a
+cell-to-pitch map.
+
+** the two sets
+The sustained set holds VoiceIds. The edit set holds VoiceIds. Both are per grid.
+
+Neither set holds pitches, and that is the substantive change.
+
+** the properties
+A voice sounds while a finger holds it, or while it is in the sustained set. Those are
+the only two reasons a voice sounds.
+
+Edit is a property of a voice and not a reason for one to exist. A voice in edit mode
+that loses its last reason to sound simply dies, and its edit property dies with it.
+
+** the gestures
+Pressing the monomekey above a voice adds it to the sustained set, and pressing it
+again removes it. Pressing the monomekey below a voice toggles its edit property.
+
+Where several voices sound the same pitch, both gestures act on all of them, because
+nothing in the gesture distinguishes them.
+
+** clearing
+Clear-sustain empties the sustained set for one grid, and it does not touch fingered
+voices. Clear-edit empties the edit set for one grid, and it does not silence anything.
+
+* DONE claude: this corrects the type I committed an hour ago, and the correction matters
+Your paragraph about collisions is the most important thing in this document, and my
+new =Voice= type gets it wrong.
+
+I wrote =Drone { grid, pitch }=, which addresses a sustained voice by its pitch. You
+say two sustained voices can share a pitch and that this is fine, that they will phase,
+and whatever. Under my type they cannot: they are the same map entry, so the second one
+overwrites the first.
+
+The old code has the same flaw and hides it. =sustain_note= checks whether a drone
+already exists at that pitch, and if one does it releases the incoming voice instead of
+storing it. So the old instrument silently kills one of your two sustained voices, and
+it has been doing that the whole time you have been playing it.
+
+A VoiceId fixes this at the root, because the identity stops carrying data that can
+change or repeat. Two sustained voices at one pitch become two entries with two ids,
+and they phase, as you want. I am rewriting =voice.rs= around that.
+
+** DONE the shape it becomes
+#+begin_src rust
+struct VoiceId(u64);              // opaque, unique, never reused
+
+struct Voices {
+  by_id:        HashMap<VoiceId, VoiceState>,
+  fingered:     HashMap<(GridIndex, MonomeKey), VoiceId>,  // the lift index
+  sustained:    Vec<HashSet<VoiceId>>,                     // per grid
+  edited:       Vec<HashSet<VoiceId>>,                     // per grid
+}
+#+end_src
+Every question the instrument asks becomes a lookup rather than an inference. "Which
+voices sound this pitch" is a scan of =by_id=, which is small. "Which voice does this
+lift end" is the fingered index. "What does clear-sustain kill" is one set.
+
+* DONE claude: what this model deletes, which is the real argument for it
+Making edit a property rather than a reason removes the bug class that has produced
+three of the five hardware failures, and it removes it structurally rather than by
+care.
+
+Edit mode could previously outlive the thing it edited. A clear silenced a voice and
+left its pitch in the edit set, so the grid kept dancing around a voice that was not
+there, every press dragged instead of playing, and the gesture that would have
+dismissed it required the voice to be audible. Nothing could reach it.
+
+Under your model that state cannot be built. The edit property lives on the voice, so
+it cannot outlive the voice any more than a colour can outlive the thing it painted.
+Clear-sustain kills the voices, and their edit properties go with them.
+
+It also deletes the ownership bookkeeping. I had a flag recording whether edit mode was
+the reason a voice rang, so that leaving edit mode knew whether to silence it. That flag
+exists only because edit was pretending to be a reason. It goes.
+
+* TODO claude: one place this contradicts you, and I need you to pick
+=1_vision.org= says: "Even if the note in edit mode was being fingered rather than
+sustained, it will continue to sound until exiting edit mode." You reported the bug
+where it did not, and I fixed it so that entering edit mode keeps a fingered voice
+alive after the finger lifts.
+
+This document reverses that. If edit is not a reason to sound, then a fingered voice in
+edit mode dies when the finger lifts, exactly like any other fingered voice.
+
+I think you mean the reversal, and that the per-note sustain gesture is what replaces
+it: you sustain a voice, and then you edit it. That is cleaner, and it is what makes the
+whole ghost class impossible. But it is a real change to how the instrument plays -- you
+now need two presses where one used to do -- so I want you to say it rather than have me
+infer it.
+
+* TODO claude: does un-sustain also act on all voices at that pitch?
+You say the edit trigger acts on every voice at the monomekey, since nothing
+distinguishes them. The same argument applies to the sustain trigger, and you did not
+say so outright.
+
+So: pressing above a monomekey where two sustained voices are ringing removes both,
+and pressing above a monomekey where one sustained and one fingered voice are ringing
+sustains the fingered one while un-sustaining the sustained one. That second case
+bothers me slightly, because one press does two opposite things.
+
+The alternative is that the gesture reads the majority, or that sustain wins over
+un-sustain, or that it only ever adds. I have no strong view; you will feel it.
+
+* TODO claude: which pedals are the clear-edit pads?
+The old SoftStep reads
+: 6 7 8 9 0    (far row)
+: 1 2 3 4 5    (near row)
+and clear-sustain sits on 1 for LOM and 5 for RNM. The pads immediately above those are
+6 and 0, and both are free, so I read you as wanting 6 for LOM and 0 for RNM.
+
+That leaves 3 and 7 free on that board, and 8 stays the tap tempo.
+
+* DONE claude: consequences I will build in, unless you stop me
+These follow from your model rather than being new decisions, but they change behavior
+that you have played, so they are worth seeing listed.
+
+** the drag still moves the nearest edited voice
+You settled this before: pitch drag moves the nearest, pulse applies to all. Your
+"pitch dragging, similarly" reads to me as being about voices that share a monomekey
+moving together, rather than as reversing that. Two edited voices at one pitch drag
+together, because nothing distinguishes them; two edited voices at different pitches do
+not.
+
+** the dance marks voices, not pitches
+The dance currently paints from a set of pitches. It will paint from the edit set,
+which is voices, and it will light every monomekey drawing the pitch of an edited
+voice. Two edited voices at one pitch look like one dance, which is correct: they are
+one pitch on the surface.
+
+** "note" leaves the vocabulary
+You said you will always say voice, and that the code should too. The glossary at
+=TODO/new-library/2_glossary.org= already defines voice, and I will strike "note" from
+it and from the new library. The word survives in one honest place, which is MIDI
+note-on and note-off messages.

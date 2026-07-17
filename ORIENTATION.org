@@ -5,16 +5,24 @@ file just points you at the right doors and records the few facts that otherwise
 live only in Claude's memory. Follow the links for depth.
 
 * where you are
-- This is a *bare* git repo: =/home/ubuntu/.bare= is the repo, and the actual
-  checkouts are git worktrees under =/home/ubuntu/worktrees/= -- work in
-  =worktrees/prod= (branch monome-looper) or =worktrees/dev=. The home dir
-  =/home/ubuntu= itself holds no tracked files (just =.bare=, a =.git= file
-  pointing at it, and your home dotfiles).
+- This is a *bare* git repo: =/home/ubuntu/host/.bare= is the repo, and the actual
+  checkouts are git worktrees under =/home/ubuntu/host/worktrees/=. *=main= is always
+  production*; the others are named with *integers* (=2=, then =3=, ...). So today:
+  =worktrees/main= and =worktrees/2=. Run =git worktree list= rather than trusting
+  this line -- the set changes.
 - It's a *Docker container* (UID 1000); Jeff works on the *host* (NixOS), which
-  bind-mounts this tree (host =/home/jeff/code/midi= -> container =/home/ubuntu=).
-  Worktree links are *relative*, so git/magit work from both sides. Separate PR
-  repos live in =/home/ubuntu/other-projects/=. See [[./how-to-parallelize-dev.org]].
+  bind-mounts this tree. Worktree links are *relative*, so git/magit work from both
+  sides. Separate PR repos live in =./other-projects/= (checked out beside the
+  worktrees, e.g. Jeff's NixOS config at =other-projects/nix-jbb/config/=).
+  See [[./how-to-parallelize-dev.org]].
 - The project's point: read/write MIDI and audio between container and host.
+- The tree sorts by what a thing IS, not by what language it is written in:
+  =edo_surface/= is the instrument being built now, =buried/= is the old
+  =midi_pulse= crate (it still compiles and still runs the looper, piano, un-12 and
+  drums rigs, it is just out of the way), =rigs/= holds the rigs and their readmes,
+  and =tools/= holds the meters, probes and bridges, Rust and Python alike. There
+  used to be a =code/rust/= and a =code/python/=, which sorted by the one axis nobody
+  ever searches on.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
 
@@ -22,10 +30,10 @@ live only in Claude's memory. Follow the links for depth.
 A two-grid looping instrument in 58-EDO; no piano. One grid plays notes, the
 other records / plays back / edits loops.
 - *Canonical reference (read this first):*
-  [[./code/rust/rigs/monome-looper-58-8-1_readme.org]] -- glossary, usage, layout,
+  [[./rigs/monome-looper-58-8-1_readme.org]] -- glossary, usage, layout,
   settings. It is the source of truth for how the instrument behaves.
-- Rig: =code/rust/rigs/monome-looper-58-8-1.org= (our TOML-in-org format).
-- Runtime: =code/rust/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
+- Rig: =rigs/monome-looper-58-8-1.org= (our TOML-in-org format).
+- Runtime: =buried/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
   unit-tested key/LED/playback logic -- change behavior here). =sink.rs= = audio
   voices; =loop_store.rs= = slots + playback; =remap.rs= = pitch edits;
   =display.rs= = the 2D loop picture; =mod.rs= = the I/O shell (threads, sockets).
@@ -34,7 +42,6 @@ other records / plays back / edits loops.
 
 * build / run / test
 #+begin_src sh
-cd code/rust
 cargo test -p midi_pulse looper_runtime              # fast, no hardware
 cargo run  --bin midi_pulse -- monome-looper-58-8-1  # needs BOTH 16x16 grids
 #+end_src
@@ -56,6 +63,20 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
   the container and can't.
 - *Hardware*: both 16x16 grids must be connected to run the looper for real, and
   you usually can't watch them yourself -- ask Jeff to verify on the grids.
+- *Finding the gear from in here.* The two families answer to different tools, and
+  the grids are NOT visible as /dev/tty devices in the container -- =ls /dev/ttyUSB*=
+  finds nothing even with both grids plugged in and working, because *serialosc runs
+  on the host* and owns the tty. Absence there proves nothing. Ask serialosc instead
+  (it is reachable thanks to =--network host=):
+  #+begin_src sh
+  # grids: send /serialosc/list to 127.0.0.1:12002, read the /serialosc/device replies
+  amidi -l          # softsteps: plain USB-MIDI, so these DO show up locally
+  #+end_src
+  The replies give each grid's *serial id* -- =m256-282= (the older, monobright one)
+  and =m0000102= (the newer, varibright one) -- which is what rigs pin with
+  =select.id_contains=. The SoftSteps distinguish themselves by ALSA client name:
+  ="SSCOM"= is the older board, ="SoftStep"= the newer. Their *card numbers follow
+  plug order and are not stable* -- never hardcode =hw:1,0,0=.
 
 * working style (learned)
 - When told to proceed autonomously, keep building and committing; don't wrap at a
@@ -64,14 +85,18 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
 - Commit in natural, bite-sized chunks.
 
 * deeper pointers
-- [[./code/rust/rigs/README.org]] -- the rig system (windows, kinds, the
+- [[./rigs/README.org]] -- the rig system (windows, kinds, the
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
-- Claude's persistent memory index: =my-dot-claude/projects/<cwd-slug>/memory/MEMORY.md=
-  -- gitignored, and the slug is this checkout's path, so in *this* worktree it is
-  =my-dot-claude/projects/-home-ubuntu-host-worktrees-main/memory/MEMORY.md=. (There
-  is no =~/.claude=; the pointer here used to claim otherwise.)
+- Claude's persistent memory index: =my-dot-claude/projects/<slug>/memory/MEMORY.md=
+  -- gitignored. Don't guess the slug: it is *not* reliably this checkout's path (in
+  a =worktrees/2= session it has been =-home-ubuntu-host--bare=, i.e. slugged from
+  the *bare repo*), the directory is created lazily on first write, and each session
+  is told its own path. Read the one you are given; =ls my-dot-claude/projects/= to
+  see what exists. (There is no =~/.claude=; the pointer here used to claim
+  otherwise.)
 * also possibly relevant files
 - README.org
-- code/rust/rigs/README.org (NOT =code/rust/configs/README.org= -- that directory was
-  renamed to =rigs/=; the old name survives only inside finished TODO entries.)
+- rigs/README.org -- the rig system. It has been =configs/= and then
+  =code/rust/rigs/= in its time, and both names survive inside finished TODO entries;
+  the rigs live at =rigs/= now.

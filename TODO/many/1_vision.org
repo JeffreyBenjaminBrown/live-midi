@@ -1,0 +1,160 @@
+* overview: big plans for extending the rig
+I intend to introduce a number of new features,
+and to use some new gear -- the second (newer) softstep,
+and the two M-Audio EX-P continuous controller pedals.
+** I will rotate the newer softstep 180 degrees.
+There is no need for code to know about this,
+but if soemthing I say about sofstep pad positions seems contradictory,
+I may have got confused.
+From my POV, the newer softsep buttons will read
+```
+5 4 3 2 1
+0 9 8 7 6
+```
+** layout principles
+One EX-P will be on the left,
+probably usually dedicated to the left (older) monome.
+The other will be on the right,
+probably usually dedicated to the right (newer) monome.
+
+The softsteps are between them.
+The newer softstep will be farther from me, upside-down.
+On both softsteps the left buttons will
+probably usually dedicated to the left (older) monome,
+and the right ones to the right (newer) monome.
+But there are 5 columns of buttons on both,
+so that leaves the middle column ambiguous.
+For the middle buttons,
+the one closer to me will probably usually be for the left monome,
+and the farther one usually probably usually for the right monome.
+** things to reuse from 2-monomes_58-8-1_kmss-drums.org
+Both monome surfaces should have the usual big edo surface,
+the four waveform selectors in the top left,
+and the octave selector in the bottom right.
+We'll also reuse some of the *code* for pulsing notes
+that the old rig made accessible
+via the widget in the upper-right of the monomes,
+but we'll use the softsteps instead of the monome for it.
+I don't remember what that was called then -- slow AM, maybe?
+Which is a more specific name so actually let's go with that.
+** quantizing softstep pressure.
+I might want to use one pad for multiple purposes -- esp. for two related ones.
+I can't reliably press up/down/left/right (quickly) on those pads;
+they're too small.
+So I'll tap lightly for one purpose, and hard for another.
+I might eventually want per-pad thresholds, if they behave differently,
+but let's start with a single const threshold value,
+at whatever the midpoint is of the range observed in the data.
+(Somewhere there is data stored, I think, about softstep presses.
+In your report please indicate how I can provide better data --
+hopefully the softstep meter already creates a log,
+and I can just run it and step on each pedal.
+Also let me know if any softsep pads look like outliers, with ranges
+markedly different from the others.)
+** the 'diamond dance' indicator
+Sometimes I will choose to edit a single already-sounding note,
+to (among maybe other things later) change its pitch or LFO speed.
+Or maybe I will select multiple notes, but not all the sounding notes available.
+To visually indicate that the note is selected,
+I would like the buttons around it to do a "diamond dance":
+light up above, left, below and to the right, cycling,
+each lit for 100 ms and unlit for 300 ms.
+If the dance would clobber an LED that is already lit for some other reason,
+the dance leaves that note alone, but waits for 100 ms on it
+before proceeding. That is so that all diamond dances can be kept in sync.
+
+Unlike some (most?) other note LED algorithms implemented in this code,
+the diamond dance is not duplicated across octaves or monomes.
+That is, when I edit a certain pitch, only the button(s) corresponding to
+precisely that pitch on that particular monome will exhibit the diamond dance.
+I say 'buttons' because sometimes there are two monome buttons
+representing exactly the same pitch.
+** simpler sustain, softstep-only
+There is complex code for sustaining notes on the monome:
+One button clears the sustained notes,
+one toggles whether the accrete button is momentary or toggle,
+one is the accrete button, and one controls whether a softstep
+has similar controls.
+It turns out that I only ever want to use a momentary accrete button,
+so we can reduce the number of controls to 2: clear and momentary accrete.
+(By 'momentary' I mean 'accrete is on when my foot is on the accrete button,
+otherwise it's off; key-up and key-down both matter'.
+'Toggle' buttons, by contrast, switch state on key-down and ignore key-up.)
+
+Let's keep the library code for the more complex sustain behavior,
+but the new rig (which I'll name after writing this plan)
+can just use two softstep buttons: the older monome,
+buttons 1 and 5 to clear the left (old) and right (new) monomes,
+and buttons 2 (left) and 4 (right) to accrete to them.
+** per-voice pitch edit
+Sometimes a sustained note is in 'edit mode'.
+Edit mode is enabled by pressing the button corresponding to the pitch
+a single microtone (1/46 octaves) above the note to be edited.
+(There's rarely musical reason to play both; I'm sacrificing the possibility.)
+The button that puts the note into edit mode does not emit a sound,
+the way it usually would.
+It starts a diamond dance around the note to be edited.
+Even if the note in edit mode was being fingered rather than sustained,
+it will continue to sound until exiting edit mode.
+
+Multiple notes can be in edit mode at once.
+Each is indicated by a diamond dance.
+As soon as a note is touched on the same monome
+that is not in edit mode, the nearest note in edit mode
+moves from its own pitch to that pitch,
+continuously, slow enough that a human listener will hear it move
+but fast enough that it won't mess with the rhythm. Let's try 100 ms to start.
+
+Even after a note in edit mode moves to another pitch,
+it stays in edit mode. Pressing the button corresponding to 1/46 octaves
+above its current (not its original) pitch takes it out of edit mode.
+There will also be a button somewhere to clear edit mode from all notes.
+
+A note in edit mode might be off-screen.
+So might a sustained note.
+In both cases, the button for switching octaves that would allow the user
+to bring that note back on-screen should flash.
+Note that there might be such a note in both directions;
+in that case, both such buttons should flash.
+Let's say 150 ms on, 150 ms off.
+** per-voice slow AM (factored pulse) edit
+When a note is in edit mode, the tempo at which it pulses
+can also be adjusted.
+Factored-pulse adjustments are applied to all notes in edit mode on a given monome at once.
+The newer sofstep will provide the interface.
+LOM = left old monome,
+RNM = right new monome.
+| LOM    | LOM    | both                      | RNM    | RNM    |
+| 5 : x2 | 4 : x3 | 3 : =1 (right new monome) | 2 : x3 | 1 : x2 |
+| 0 : /2 | 9 : /3 | 8 : =1 (left old monome)  | 7 : /3 | 2 : /2 |
+
+The computer screen should indicate, for each monome,
+whether slow AM is on at all. When it is turned off,
+sustained notes that had it on continue to have it;
+it only determines whether new notes will have slow AM applied.
+There's code somewhere (I *think* in this repo?)
+to let Docker create a window on the host system.
+Let's use that, rather than shell text.
+Tell me if connections/permissions don't allow it --
+see docker.sh for how this docker container interfaces with the host.
+That window should also have a blinker to indicate the global tempo
+(without multiplying by the rational tempo factor).
+
+When no notes are in edit mode for a given monome,
+the softstep slow AM tempo controls for that monome control the tempo factor
+-- the (rational number) frequency multiplier applied to tempo
+to deterine a note's actual factored-pulse frequency.
+That creates some redundancy -- if no notes on either monome are being edited,
+then there are two x2 buttons on the softstep that could double the global tempo.
+That redundancy is okay.
+
+If any note on a given monome *is* in edit mode,
+then the softstep tempo multiplier controls for that monome
+can be used to adjust the frequency of all notes that are in edit mode at once.
+That is, x2 makes them all go twice as fast.
+(Thus slower ones continue to be slower than faster ones;
+this does not each one's frequency, but rather multiplies it by something.)
+** undecided
+*** how to clear all notes from edit mode
+For now it needn't be implemented;
+touching each note one by one is sufficent for experimentation.

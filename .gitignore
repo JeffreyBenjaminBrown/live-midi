@@ -11,12 +11,12 @@
 /.lesshst
 /.npm
 /TAGS
-/code/python/softstep/captures
-/code/python/synth/play.py
+/tools/softstep/captures
+/tools/synth/play.py
 /temp/
 /worktrees/
 Cargo.lock
 __pycache__/
 my-dot-claude/
 target/
-/code/python/softstep/meter/logs/
+/tools/softstep/meter/logs/

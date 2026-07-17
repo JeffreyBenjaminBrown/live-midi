@@ -1,0 +1,399 @@
+* midi_pulse runtime notes
+
+These notes preserve the useful operating details from the old
+per-runtime directories that were folded into the rig-driven
+~midi_pulse~ binary.
+
+Run rigs from the repository root. Launch under ~pw-jack~ so audio output
+goes through PipeWire's JACK server: the synth then appears as an ordinary
+JACK node (visible in QJackCtl / ~pw-link~, routable to Reaper) and *shares*
+the sound card. Running a cpal-audio binary WITHOUT ~pw-jack~ either errors
+("JACK host unavailable...") or, if built without the ~jack~ feature, falls
+back to ALSA -- which grabs the card exclusively and silences everything else
+on the host (e.g. the Claude stop-hook beep). So always use ~pw-jack~.
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- RIG_NAME
+#+end_src
+
+For example:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- edo12n-piano
+pw-jack cargo run --bin midi_pulse -- edo12n-piano-monome
+pw-jack cargo run --bin midi_pulse -- edo-un12-31-loose
+pw-jack cargo run --bin midi_pulse -- monome-edo-midi
+pw-jack cargo run --bin midi_pulse -- monome-edo-sawwave
+#+end_src
+
+* 12n piano
+
+The 12n piano transformer maps MIDI keyboard notes to multi-channel
+output for 72-EDO by default.
+
+For piano notes 21-96:
+
+- subtract the lowest A, 21
+- divide by 12
+- add the quotient to the output channel base
+- multiply the remainder by the configured EDO-per-12 value and add
+  it to the output note base
+
+The top offset-control range in the default rig is notes 97-108.
+With ~zero_note = 102~, F#7 means no offset, G7 means +1, F7 means -1,
+and so on. Held offset notes change the stored shift for any pitch
+class played while they are held.
+
+The optional display rig opens an X11/minifb pitch-class grid.
+Inside the Docker container, the host must allow X11 access, for
+example:
+
+#+begin_src sh
+xhost +local:
+#+end_src
+
+The container also needs the X11 socket mounted and ~DISPLAY~ set.
+
+* 12n monome offset board
+
+The default ~edo12n-piano-monome~ rig uses a 16x8 monome.
+Coordinates use ~y=0~ at the top.
+
+- Columns ~x=0..11~ correspond to pitch classes C through B.
+- Top row ~y=0~ selects the root for future group-detune presses.
+- Offset rows are ~y=1..7~.
+- ~y=4~ means offset 0.
+- Moving upward raises pitch: ~y=3~ is +1 step.
+- Moving downward lowers pitch: ~y=5~ is -1 step.
+- Columns ~x=13..15~ are group-detune controls.
+
+Default group intervals, relative to the current root:
+
+- ~x=13~ sets notes ~0, 2, 5, 7~
+- ~x=14~ sets notes ~1, 3, 8, 10~
+- ~x=15~ sets notes ~4, 6, 9, 11~
+
+Group-detune presses write offsets into the main pitch-class offset
+area. Later direct edits in the main offset area do not update the
+group-detune columns.
+
+Keyboard note-ons flash the corresponding pitch-class column at full
+brightness for about 30 ms.
+
+* Remappable un-12 monome
+
+The ~edo-un12-*~ rigs map the twelve piano pitch classes into an
+arbitrary EDO. The monome grid size is inferred from serialosc's device
+type when possible. Known sizes include 16x8 for monome 128 and 16x16
+for monome 256.
+
+The default layout uses:
+
+- preimage row at ~y=0~, first 12 keys C through B
+- EDO map below the preimage row
+- undo button at the bottom-right key
+
+Each EDO-map key represents:
+
+#+begin_example
+step = x_step*x + y_step*y mod edo
+#+end_example
+
+The lit EDO steps are the current image of the twelve piano pitch
+classes. Initially they are spaced as evenly as possible. For 31-EDO:
+
+#+begin_example
+0, 3, 5, 8, 10, 13, 16, 18, 21, 23, 26, 28
+#+end_example
+
+For 58-EDO:
+
+#+begin_example
+0, 5, 10, 15, 19, 24, 29, 34, 39, 44, 48, 53
+#+end_example
+
+LED priorities:
+
+- with no piano notes held, current images of C, F, and G flash at full brightness
+- with piano notes held, the most recently keyed held pitch is steady on
+- other held pitches flash at full brightness
+- current image pitches that are not held are steady dim
+
+In the ~loose~ idiom, tapping a lit pitch makes its 12-EDO/EDO pair
+loose. If at least one neighboring lit pitch is loose, tapping a dark
+pitch moves a loose neighbor to that dark pitch and fixes it again.
+If both neighbors are loose, the nearer one moves; ties pick the higher
+neighbor.
+
+In the ~snap~ idiom, tapping a dark pitch moves the nearest current
+image to that pitch. Distance is measured in the EDO ring, not in the
+2D monome layout. In a tie, the higher image snaps down.
+
+The runtime tracks signed lift for each pitch class. For example, in
+31-EDO, moving C from step 0 to step 30 means -1, not +30, so outgoing
+MIDI moves down by one EDO step rather than jumping around the octave
+ring.
+
+Recording controls for the ~edo-un12-*~ rigs live at:
+
+| (13,0) start | (14,0) stop      | (15,0) loop    |
+| (13,1) arm   | (14,1) erase ons | (15,1) end all |
+|              |                  | (15,2) RSCM    |
+
+There is one in-memory recording slot per runtime process. ~arm~
+toggles recording readiness. With an empty slot, ~start~ begins a new
+recording if armed. With a non-empty slot, ~start~ begins playback; if
+armed, it also starts overdubbing. ~stop~ stops playback and recording,
+resets the playhead to zero, and disarms. During recording, ~loop~
+sets the loop duration, stops recording, disarms, and starts playback.
+Pressing ~start~ then ~loop~ within 100 ms clears the slot.
+
+While held during recording, ~erase ons~ removes note-ons swept by the
+playhead and removes their paired note-offs. ~end all~ writes note-offs
+for notes currently down in the recording pass without affecting live
+piano notes. ~RSCM~ means "recording slot clobbers map"; when lit,
+starting playback applies the slot's stored map to the active map, and
+turning it on during playback applies the stored map immediately.
+
+* Monome EDO MIDI
+
+~monome-edo-midi~ uses the same grid/chord model as the sawwave
+runtime, but sends MIDI note events instead of rendering audio.
+
+Cell ~(x,y)~ maps to absolute EDO step:
+
+#+begin_example
+step = x_step*x + y_step*y
+#+end_example
+
+MIDI output uses:
+
+#+begin_example
+channel = min_channel + step div EDO
+note    = min_note + step mod EDO
+#+end_example
+
+The default virtual output port is:
+
+#+begin_example
+monome_edo_midi-out:out
+#+end_example
+
+* Monome EDO sawwave and chord storage
+
+~monome-edo-sawwave~ renders audio directly with cpal and uses the
+same chord storage UI as the MIDI grid runtime.
+
+Default chord controls:
+
+#+begin_example
+              x=0     x=1     x=2     x=3     x=4 ... x=15
+           +-------+-------+-------+-------+----- ... -----+
+    y=14   | wipe  |accrete| emit- | set-  |   (EDO grid)  |
+           |       |  -on  |  is-  | accr- |               |
+           |       |       |toggle | target|               |
+           +-------+-------+-------+-------+----- ... -----+
+    y=15   |silence|chord 1|chord 2|chord 3| chord 4 ... 15|
+           +-------+-------+-------+-------+----- ... -----+
+#+end_example
+
+Concepts:
+
+- At most one chord is emitting; its button is bright.
+- Exactly one chord is the accretion target; its button is dim unless
+  it is also emitting.
+- The emitting chord and target are independent.
+- Chord 0 is silence and cannot be the accretion target.
+
+Top-row controls:
+
+| key | kind | behavior |
+|-----+------+----------|
+| wipe | fire | empty the accretion target; if it is emitting, ramp voices to silence |
+| accrete-on | toggle | add EDO presses to the target; toggling on snapshots held keys |
+| emit-is-toggle | toggle | on means chord buttons toggle; off means chord buttons are nursed |
+| set-accretion-target | fire | press, then press a chord button to choose the target |
+
+In toggle mode, pressing a chord switches the emitter to it; pressing
+the current emitter toggles it off. In nursed mode, held chord buttons
+form a stack: press B while holding A and B emits; release B and A
+resumes.
+
+If a pressed key's pitch is in the currently-emitting chord, releasing
+that key can transform the fingered voice into an accreted sustained
+voice. This only happens for the last alive origin voice for that pitch.
+
+* Monome and serialosc operations
+
+The serialosc detector listens on UDP port 12002. Send:
+
+#+begin_example
+/serialosc/list s <replyHost> i <replyPort>
+#+end_example
+
+It replies with one ~/serialosc/device~ message per connected device:
+
+#+begin_example
+/serialosc/device s <id> s <type> i <devicePort>
+#+end_example
+
+To receive key events and send LEDs, register with the device port:
+
+| send | meaning |
+|------+---------|
+| ~/sys/host s "127.0.0.1"~ | event destination host |
+| ~/sys/port i 9000~ | event destination port |
+| ~/sys/prefix s "/mygridname"~ | OSC prefix for this client |
+
+Then the device sends:
+
+#+begin_example
+/<prefix>/grid/key i x i y i s
+#+end_example
+
+where ~s=1~ is press and ~s=0~ is release.
+
+LED commands include:
+
+#+begin_example
+/<prefix>/grid/led/set i x i y i s
+/<prefix>/grid/led/all i s
+/<prefix>/grid/led/level/set i x i y i level
+#+end_example
+
+The prefix is important: commands whose address does not begin with
+the device's current prefix are silently ignored.
+
+** Ghost tty devices
+
+If serialosc reports several ports for the same device id, only the
+newest may correspond to the physical grid. Stale serialosc-device
+processes can be left behind after FTDI USB re-enumeration.
+
+Symptoms:
+
+- serialosc reports multiple ~/serialosc/device~ replies for one id
+- LEDs may work on one port while key events never arrive
+- host logs may show ~libmonome: error in write: Input/output error~
+
+Host-side fix:
+
+#+begin_src sh
+systemctl --user restart serialoscd
+# unplug the monome, wait about 3 seconds, replug
+#+end_src
+
+After restart, there should be one serialosc-device child on one
+~/dev/ttyUSBN~.
+
+* Brightness
+
+On Jeff's grid, the 0-15 level API appears to have roughly four
+visible brightness buckets rather than sixteen. For UI design, use a
+small set such as 0, 4, 8, and 15 instead of depending on fine-grained
+brightness differences.
+
+To re-test:
+
+#+begin_src sh
+bash tools/demos-and-explorations/monome/12-brightness-test.sh
+bash tools/demos-and-explorations/monome/12-brightness-test.sh 8
+#+end_src
+
+* MIDI connection recipes
+
+Use the rig-aware host script:
+
+#+begin_src sh
+./tools/connect-midi.sh RIG_NAME
+#+end_src
+
+For example:
+
+#+begin_src sh
+./tools/connect-midi.sh edo-un12-58-8-1-snap
+#+end_src
+
+The script reads the rig's MIDI virtual port names and uses
+~tools/connect-midi-lib.sh~. Equivalent manual operations:
+
+For piano input rigs:
+
+#+begin_src sh
+connect_keyboard_to_alsa_client "edo12n_piano" "edo12n_piano-in"
+connect_keyboard_to_alsa_client "edo12n_piano_monome" "edo12n_piano_monome-in"
+connect_keyboard_to_alsa_client "edo_un12_piano_monome" "edo_un12_piano_monome-in"
+#+end_src
+
+For Reaper MIDI output:
+
+#+begin_src sh
+connect_pipewire_midi \
+  "Midi-Bridge:edo12n_piano-out:(capture_0) out" \
+  "REAPER:MIDI Input 1" \
+  "edo12n_piano-out -> REAPER MIDI Input 1"
+
+connect_pipewire_midi \
+  "Midi-Bridge:edo12n_piano_monome-out:(capture_0) out" \
+  "REAPER:MIDI Input 1" \
+  "edo12n_piano_monome-out -> REAPER MIDI Input 1"
+
+connect_pipewire_midi \
+  "Midi-Bridge:edo_un12_piano_monome-out:(capture_0) out" \
+  "REAPER:MIDI Input 1" \
+  "edo_un12_piano_monome-out -> REAPER MIDI Input 1"
+
+connect_pipewire_midi \
+  "Midi-Bridge:monome_edo_midi-out:(capture_0) out" \
+  "REAPER:MIDI Input 1" \
+  "monome_edo_midi-out -> REAPER MIDI Input 1"
+#+end_src
+
+For Reaper audio output, choose available PipeWire playback sink ports
+for left and right channels and connect:
+
+#+begin_src sh
+pw-link "REAPER:out1" "$left_sink"
+pw-link "REAPER:out2" "$right_sink"
+#+end_src
+
+* Looper
+
+~monome-looper-58-8-1~ is a two-monome instrument (no piano). Code lives in
+~buried/midi_pulse/looper_runtime/~. The pure logic (the note sink, device
+assignment, the edo play/shift math, the loop store + playback, the display
+model, the remap resolution, and the LooperState key/LED logic) is all
+unit-tested; the rest is the I/O shell.
+
+** Architecture
+
+- *Two grids, shared state.* Three threads run over one ~Arc<Mutex<LooperState>>~:
+  one event loop per grid plus a playback ticker (~3 ms). Both grid threads
+  repaint every iteration, so a change from any thread shows on both grids within
+  a tick -- no message bus.
+- *Lock discipline.* A thread holds the control lock only to mutate state and/or
+  compute an LED vector (no I/O), then drops it before the UDP LED sends. The cpal
+  audio callback locks only the voice map. ~control -> voices~ is the single,
+  brief nesting; the realtime thread never waits on the control lock. All locks
+  recover from poisoning so one panic can't cascade or kill audio.
+- *Teardown.* A ~StopOnExit~ Drop guard makes any thread's exit (clean or panic)
+  set the shared STOP, freeing the others; ~run()~ then blanks both grids and
+  drops the audio stream. A startup that can't find two distinct grids fails
+  cleanly before spawning anything.
+- *Audio.* A ~cpal_synth~ sink. Both live edo play and loop playback drive one
+  ~VoiceMap~ through the unchanged sawwave ~render_block~; the looper's ~NoteSink~
+  is pitch-keyed and ref-counts sources (live + each slot), so a pitch wanted by
+  several sources is one voice.
+- *Devices.* Discovery dedupes serialosc replies by id (keeping the newest port),
+  requires two distinct live ids of the configured size, and assigns them in
+  rig order. Key events are debounced (one press / one release per cell), so a
+  stuck or echoing grid can't corrupt state.
+
+** When a grid floods
+
+A faulty/echoing grid can spew ~/grid/key~ events (we saw a ~256 flood (0,0)
+presses at ~276k/sec). The debounce keeps the runtime stable, but real input is
+drowned. The fix is host-side: *unplug the monomes, restart serialosc, reconnect
+them.* To check a grid's health, send ~/serialosc/list~ to UDP 12002, register to
+each device port, and count inbound messages for ~1 s -- a healthy grid sends ~0,
+a flooding one thousands.

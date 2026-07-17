@@ -1,9 +1,9 @@
 * ONGOING measurement
-There's a program at python3 code/python/softstep/meter.py
+There's a program at python3 tools/softstep/meter.py
 that seems to show pad presses even when no sound would happen.
 I want to beef up that program.
 
-Let's move it into code/python/softstep/meter/main.py.
+Let's move it into tools/softstep/meter/main.py.
 Let's also give it a rig.toml file, in the same folder.
 While the program runs, pressing 'r' should 'r'eload the rig.
 

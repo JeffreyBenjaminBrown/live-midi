@@ -1,0 +1,269 @@
+#+title: Plan: two softsteps, per-voice pitch + factored-pulse edit
+#+date: 2026-07-16
+
+Executes =1_vision.org= as settled in =2_discussion.org=. Every design question there
+is DONE; the three TODOs left (run =xhost=, ORIENTATION's intent, the model-handoff
+meta-question) block nothing here.
+
+Deviations from *how* this plan achieves its goals get recorded in =progress.org=,
+not escalated (=when-to-stop.org=). The goals themselves are below.
+
+* 0. The settled spec, in one place
+Consolidated from Jeff's answers so no builder has to re-read the discussion.
+
+** gear and naming
+- *LOM* = left, older monome. Series 256, serial =m256-282=, *monobright*.
+- *RNM* = right, newer monome. Serial =m0000102=, varibright.
+- *OSS* = old softstep. ALSA client =SSCOM=, ports =SSCOM MIDI 1/2=. Nearer to Jeff.
+- *NSS* = new softstep. ALSA client =SoftStep=, data port =SoftStep Control Surface=.
+  Farther, and *physically rotated 180 degrees* -- which the code never learns; it
+  binds printed labels, and the rotation only explains why the label map looks
+  mirrored.
+- *No EX-P pedals* (1a), *no drumkit*, no distortion / slide / mono / erase /
+  needs-holding / feet-accrete interfaces (2f). None of that code is deleted -- it
+  simply isn't bound by this rig.
+- New rig: =rigs/2-monomes_2-softsteps.org= + =_readme.org=.
+  *Working name; Jeff said he'd name it and hasn't. Trivially reversible, so I
+  picked one rather than stall (=when-to-stop=).*
+
+** tuning
+46-EDO, =x_step = 9=, =y_step = 1=, =fundamental_hz = 80= -- i.e. what the drums rig
+*already contains* despite its =58-8-1= name. Pitch rises *down and right*; one step
+= one cell *down*.
+
+** monome layout (identical on both grids)
+#+begin_example
+  col: 0   1   2   3   4  ...            13  14  15
+  row 0  [SIN TRI SQR SAW]  (play cells)  .   .   .   <- waveform strip
+   ...                  (46-EDO play cells)
+  row 14  .   .   .   .                  8vaDN UP  8vaUP  <- shift pad
+  row 15  .   .   .   .                  LEFT DOWN RIGHT
+#+end_example
+Only two overlays: =waveform_selector= =[0,0,3,0]= (=controls= its own grid) and
+=edo_shift_pad= =[13,14,15,15]=. Everything else is a play cell.
+
+** OSS pedal map (printed labels; bottom row is 1..5, nearer Jeff)
+| pedal | job                     |
+|-------+-------------------------|
+|     1 | clear LOM               |
+|     2 | accrete LOM (momentary) |
+|     4 | accrete RNM (momentary) |
+|     5 | clear RNM               |
+|     8 | *tap tempo* (global)    |
+Unused: 3, 6, 7, 9, 0. "Momentary" = =needs_holding= permanently on.
+
+** NSS pedal map (printed labels, as Jeff reads them once rotated)
+| far row  | 5: x2 LOM | 4: x3 LOM | 3: =1 RNM | 2: x3 RNM | 1: x2 RNM |
+| near row | 0: /2 LOM | 9: /3 LOM | 8: =1 LOM | 7: /3 RNM | 6: /2 RNM |
+
+** the factored pulse (NOT "slow AM" -- that name is taken by the timbre tremolo, 1c)
+- One *global tapped tempo* (OSS 8). Two taps within =tap_tempo_window_ms=.
+- Each monome has its own tempo factor =2^a * 3^b= and its own on/off switch.
+- ==1= keeps the *existing double-tap dance verbatim*: press while off -> cycling ON,
+  tempo factor kept; press while on -> *unity* the tempo factor; second press within
+  400 ms -> cycling OFF. ==1= *does nothing different in edit mode* -- only =x=/=/=
+  are edit controls (1d).
+- *When >=1 note is in edit mode on monome M:* M's =x2/x3//2//3= multiply the
+  factored-pulse rate of *every edit-mode note on M*, leaving M's grid tempo factor
+  alone.
+- *When no note is in edit mode on M:* they adjust M's grid tempo factor (today's
+  behavior).
+- Rate changes on a live voice *keep the phase* (no click). *Turning the factored
+  pulse off never retroactively touches sounding notes* -- only the multipliers do
+  (2e).
+
+** edit mode
+On a press of cell =C= on monome =M=, in this order:
+1. *If the cell directly above =C= (=y-1=) holds a sounding note =N=* -- toggle =N='s
+   edit mode (enter if out, exit if in). =C= *does not sound* and *does not drag*.
+   The trigger is *geometric* (=y+1= below the note), deliberately *not* pitch-defined,
+   so it doesn't move with the tuning (2a).
+2. *Else if any note on =M= is in edit mode* -- the *nearest in pitch* edit-mode note
+   glides to =pitch(C)= over =slide_duration_ms= (100 ms default, hot-reloadable).
+   Tie -> the *lower* note moves (2d). =C= *does not sound* (2c).
+3. *Else* -- an ordinary note-on.
+
+Consequences, all accepted by Jeff:
+- While *any* note on =M= is in edit mode, =M= plays no new notes: it is a
+  pitch-picker until you exit.
+- A note on the bottom row has no cell below it, so it cannot enter edit mode.
+- Edit mode is a property of the *pitch*, and *survives retrigger* (4h).
+- Edit mode is per-monome and per-note. It is NOT octave-duplicated or mirrored.
+- *Moving a note updates the trail set*, so trails always show pitches that are
+  actually sounding (2b).
+
+** the diamond dance
+- Marks each edit-mode note, on *that monome only*, at *every cell holding that exact
+  pitch* (a pitch can occupy two cells) -- never octave-equivalents, never the other
+  grid. This is the *only* LED rule in the codebase that is local rather than
+  pitch-class-and-cross-grid.
+- Four phases -- above, left, below, right -- each lit *150 ms* (4f), so a *600 ms*
+  period; exactly one of the four is lit at any instant.
+- A phase whose cell is unavailable (off-grid, or lit *bright* by a sounding note) is
+  *skipped but still consumes its 150 ms slot*, so every dance everywhere stays in
+  phase.
+- A cell lit *dim* by a trail is *clobbered*: the dance wins and shows bright (4e).
+- All dances share one global phase clock.
+
+** off-screen indicator
+If an edit-mode *or* sustained note is scrolled off =M='s window, flash the *octave*
+shifter that would bring it back -- *only the two corners, never the arrows* (4g) --
+at 150 ms on / 150 ms off. Both corners flash if there are such notes in both
+directions. One signal for both note kinds; Jeff will disambiguate by ear.
+
+** pressure quantization
+- Uniform threshold: *sum-of-4 = 200* (3b). Not measured -- Jeff picked it to move on,
+  and will revisit.
+- *Build the plumbing, bind it to nothing* (1e): "I just want the code to be ready for
+  me to use the trick once I have a reason to."
+- Attack-peak pressure only. Explicitly *not* for held buttons -- Jeff agrees it's
+  meaningless there, so no sustained-pressure decoding.
+
+** the GUI window
+- Global tapped tempo as *BPM to one decimal place*.
+- Per-monome tempo factor as *2^x * 3^y* for integer x, y.
+- Per-monome: whether the factored pulse is on.
+- A blinker at the *unfactored* global tempo.
+- Nothing else -- Jeff: "The rest would be too much for me to read live."
+
+* 1. Two gaps found while planning (not in the discussion)
+
+** 1a. grids must be pinned to serials, or the whole spatial layout can invert
+=device_assign::assign_distinct_devices(devices, size, count)= matches on *size and
+count only*; =MonomeSelect::id_contains= exists in the schema and is *never read*. The
+drums rig even documents the consequence: "which physical grid lands on which is not
+something this file decides."
+
+Harmless there. *Fatal here*: every OSS/NSS pedal targets LOM or RNM by name, and
+Jeff's entire layout principle is spatial (left buttons -> left monome). If the grids
+enumerate in the other order after a replug, pedal 1 clears the wrong grid and the
+left half of both boards silently controls the right monome.
+
+So: *honor =id_contains= in =device_assign=*, and pin =a -> m256-282=,
+=b -> m0000102= in the rig. Not a fork -- the field exists for exactly this, and the
+alternative (today's =is_monobright= serial sniff, =surfaces_runtime/mod.rs:1676=) is
+the same information via a hack. Doing it properly also lets =is_monobright= stay
+purely a *rendering* concern.
+
+** 1b. tether mode is single-device by construction (the top blocker)
+=rawmidi_port()= / =enter_tether()= / =amidi_send()= take *no device argument*;
+=MIDI_PULSE_KMSS_RAWMIDI= is one global override; and =rawmidi_port()= greps =amidi -l=
+for a hardcoded ="SSCOM"=, so NSS is never even found. With both boards connected only
+one enters tether mode -- *the other streams nothing at all*.
+
+The risk is not the per-device split; it's the *restore*. Today one global
+SIGINT/SIGTERM handler restores standalone, and a half-restored pair leaves a board
+*stuck streaming*. Hence phase 1's acceptance criterion.
+
+* 2. Order of work
+Each phase ends green (=cargo test -p midi_pulse=) and gets its own commit. Phases 1-3
+are prerequisites and land before any new behavior.
+
+** phase 1 -- per-device tether mode
+*Goal:* both boards enter tether on start and are *always* restored to standalone.
+- Give =TetherSession= a device identity; =rawmidi_port(select)= resolves *per device*
+  from =amidi -l=, matching the rig's =name_contains= rather than a hardcoded "SSCOM",
+  and preferring the data port (reuse =midi::SOFTSTEP_DATA_PORT_PREFERENCE=).
+- One session per declared softstep; the signal handler restores *all* live sessions.
+- *Acceptance:* both boards restored on normal exit, on Ctrl-C, and on panic; a
+  partial failure to enter still restores whatever did enter. Unit-test the port
+  resolution (pure); the restore path gets a test for the registry, and an honest
+  note that the hardware half is unverifiable here.
+
+** phase 2 -- device-aware pedal hook
+*Goal:* a press is attributable to a board.
+- =PedalHook= -> =Fn(&str, u8, bool) -> bool= (device id, label, pressed).
+- Thread the softstep id through =run_voice_timer= (=drumkit_runtime/mod.rs:352,372,413=).
+- *Acceptance:* a test drives two decoders with the same label and asserts the hook
+  sees distinct device ids.
+
+** phase 3 -- rig schema for softstep windows + grid pinning
+*Goal:* the rig encodes every binding, per Jeff's standing "the rig should show every
+window at a glance" rule -- nothing buried in a =match= arm.
+- =SoftstepWindowRig= gains =AccreteControl { softstep, pedal, monome, control }=,
+  =TapTempoPedal { softstep, pedal }=, =PulseFactorPedal { softstep, pedal, monome,
+  factor }= (=factor= one of =x2/x3/div2/div3/unity=). =Drumkit= stays.
+- =device_assign= honors =id_contains= (§1a).
+- Validation: unique (softstep, pedal); a bound pedal plays no sample; referenced
+  monome/softstep ids must exist.
+- *Acceptance:* rig round-trips; unknown keys still rejected; a rig binding one pedal
+  twice is rejected at load.
+
+** phase 4 -- pressure classification, unbound
+*Goal:* the trick is ready, and used by nothing.
+- =softstep.toml= gains =pressure_threshold_sum = 200=; the decoder classifies each
+  =Fire= as light/hard on the attack peak and carries it on the event.
+- *Acceptance:* pure tests at 199/200/201; no rig binds it; behavior otherwise
+  identical.
+
+** phase 5 -- the rig + surfaces wiring
+*Goal:* both grids play, with only the waveform strip and shift pad on top; OSS
+clear/accrete and tap work.
+- Write =2-monomes_2-softsteps.org= + readme. Build the pedal map from the rig.
+- Accrete via =AccreteState= unchanged (4c) with =needs_holding= forced on.
+- *Acceptance:* the mock-grid smoke test (cf. =two_grids_run_against_mock_grids=)
+  brings up two grids + two softsteps; missing-gear degradation still reports in red.
+
+** phase 6 -- glide primitive + edit mode
+*Goal:* the §edit-mode state machine above, exactly.
+- Extract =glide_voice_to(cell, pitch, secs)= from =note_on_legato= (=synth.rs:210-218=)
+  minus the re-keying. *Recompute =glide_per_sample= from the live =freq= when
+  re-aiming* -- the crossing test (=voices.rs:442-443=) is directional and dragging
+  back and forth will hit it.
+- Edit-mode set per monome; the 3-branch press rule; trail update on move.
+- *Acceptance:* pure tests for enter/exit/drag/tie-goes-lower/retrigger-survives/
+  bottom-row-cannot-enter/no-new-notes-while-editing.
+
+** phase 7 -- diamond dance + off-screen flash
+*Goal:* the §diamond-dance and §off-screen rules, phase-synced.
+- One global phase clock; per-(grid, cell) rendering; clobber dim, yield to bright,
+  skip-but-wait.
+- *Acceptance:* pure tests that exactly one corner is lit per 150 ms slot, that a
+  skipped corner still advances the phase, that two dances stay in phase, and that a
+  trail cell is overridden while a sounding cell is not.
+
+** phase 8 -- factored-pulse retargeting for edit-mode notes
+*Goal:* the §factored-pulse rules above.
+- A voice-map walker modeled on =rescale_grid_gain= (=synth.rs:45-57=); assign
+  =factored_pulse_freq=, *keep =factored_pulse_phase=*. Respect the lock order (poly
+  lock dropped before the voices lock, =mod.rs:1618-1619=).
+- *Delete the three now-false comments* (=polyrhythm.rs:34-37=, =types.rs:147-149=,
+  =synth.rs:122-123=) and fix the readme.
+- *Acceptance:* tests that x2 doubles every edit-mode note's rate and leaves the grid
+  tempo factor alone; that with no note in edit mode the same press moves the tempo
+  factor; that factored-pulse-off leaves sounding notes alone.
+
+** phase 9 -- the GUI window
+*Goal:* the four readouts above.
+- =minifb=, modeled on =edo12n_gui.rs=; fed from the polyrhythm/edit state.
+- *Acceptance:* the *formatting* is pure and unit-tested (BPM to 1 dp; tempo factor as
+  =2^x * 3^y=). *The visual check is Jeff's* -- I cannot open a window until =xhost=
+  runs (3c), and I will not claim otherwise.
+
+** phase 10 -- rename the drums rig
+*Goal:* names stop lying (2a: "rename that rig to simply not mention the tuning").
+- =2-monomes_58-8-1_kmss-drums.org= -> =2-monomes_kmss-drums.org=; same for its
+  =_readme.org= and the mock rig; update the =58-EDO / x_step 8= prose to 46-9-1 and
+  every reference.
+- Last because it touches files the earlier phases read, and it is pure renaming.
+- *Acceptance:* =rg '58-8-1'= finds only the looper rigs (which really are 58-8-1).
+
+* 3. Where I'll hand off to a smaller model
+Per Jeff's standing preference (7a) -- hand off where correctness is decided by a
+test, the compiler, or a readable diff; keep where it's decided by judgement:
+- *Hand off:* phase 10 (mechanical rename), the rig =.org= + readme prose once the
+  layout is pinned, rote test-writing against the acceptance criteria above.
+- *Keep:* phases 1, 2, 6, 7, 8 -- threading, restore-on-panic, the edit-mode state
+  machine, LED priority. Those are exactly where plausible-but-wrong survives review.
+
+* 4. Risks
+- *Restore-on-panic with two boards* (phase 1) is the one place a bug leaves hardware
+  in a bad state. Treated as an acceptance criterion, not an afterthought.
+- *No hardware here.* Two grids and two softsteps are unavailable in this container,
+  so every phase's verification is unit tests + the mock-monome path. The device
+  layer, the LED look, and the window are Jeff's to confirm. I'll say so per phase in
+  =progress.org= rather than implying more.
+- *The dance on the monobright grid* (4f) may read as flicker; accepted in advance.
+- *Edit mode makes a grid modal* -- no new notes sound while any note is in edit mode.
+  Correct per 2b/2c, but it is the biggest playability change here and the most
+  likely thing to feel wrong in the hand.

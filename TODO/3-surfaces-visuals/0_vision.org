@@ -1,4 +1,4 @@
-I need a few changes to '2-monomes_58-8-1_kmss-drums.toml'.
+I need a few changes to '2-monomes_kmss-drums.toml'.
 * the four waveform buttons should be identical on both monomes
 Each monome has four buttons in the top-righto control the other's waveform.
 On one of them, the active one is lit solid, and the others are dim.

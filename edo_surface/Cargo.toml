@@ -1,0 +1,11 @@
+[package]
+name = "edo_surface"
+version = "0.1.0"
+edition = "2021"
+
+# Deliberately does NOT depend on midi_pulse. The point of a separate crate is that
+# the old library is unreachable from here: anything this instrument needs gets
+# cannibalized across with an honest name, and anything it does not need cannot leak
+# in by accident.
+
+[dependencies]

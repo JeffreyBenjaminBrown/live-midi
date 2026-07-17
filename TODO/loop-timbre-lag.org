@@ -5,8 +5,8 @@ the deeper /how are these things represented?/ It also explains the symptom that
 started this -- the edo grid's lit waveform button only updates "on the next
 played note," and not at all when no loop is playing.
 
-All file:line references are to =code/rust/midi_pulse/looper_runtime/= unless noted
-(=types.rs= is =code/rust/midi_pulse/sawwave/types.rs=).
+All file:line references are to =buried/midi_pulse/looper_runtime/= unless noted
+(=types.rs= is =buried/midi_pulse/sawwave/types.rs=).
 
 * the short answers
 

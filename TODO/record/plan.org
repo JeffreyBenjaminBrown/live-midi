@@ -43,7 +43,7 @@ The monome dispatch should check recording controls before falling back
 to EDO/remap behavior.
 
 * modules
-Add a new module under ~code/rust/midi_pulse/remap_runtime/~:
+Add a new module under ~buried/midi_pulse/remap_runtime/~:
 
 - ~record.rs~: recording slot data model, recorder/playback state
   machine, control actions, event insertion/deletion, and tests.

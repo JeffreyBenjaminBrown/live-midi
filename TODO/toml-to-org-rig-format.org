@@ -68,12 +68,12 @@ children onto the enclosing table, where =deny_unknown_fields= rejects them. Bot
 loud, neither silent.
 
 ** Worked example
-The head of =2-monomes_58-8-1_kmss-drums= in both notations:
+The head of =2-monomes_kmss-drums= in both notations:
 
 TOML:
 #+begin_src toml
 version = 1
-id = "2-monomes_58-8-1_kmss-drums"
+id = "2-monomes_kmss-drums"
 
 [surfaces]
 trail_clobber_radius = 27      # a divisor of the octave...
@@ -98,9 +98,9 @@ rect = [0, 0, 15, 15]
 
 org:
 #+begin_src org
-,* 2-monomes_58-8-1_kmss-drums
+,* 2-monomes_kmss-drums
 ,** PARAM version = 1
-,** PARAM id = "2-monomes_58-8-1_kmss-drums"
+,** PARAM id = "2-monomes_kmss-drums"
 ,** TABLE surfaces
 Shared recent-note trail (the dim backdrop of the last few played classes).
 ,*** PARAM trail_clobber_radius = 27
@@ -160,8 +160,8 @@ Errors report the headline line number + the offending title/value.
    the resulting =Rig= to loading the equivalent .toml).
 2. =rig_path=/=load_config_file= dispatch on extension: prefer =<name>.org=, fall
    back to =<name>.toml= during transition (so nothing breaks mid-migration).
-3. Convert the rigs in =code/rust/rigs/= (was =configs/=) and the mock rigs in
-   =code/rust/mocks/= from .toml to .org, folding each file's comments into
+3. Convert the rigs in =rigs/= (was =configs/=) and the mock rigs in
+   =buried/mocks/= from .toml to .org, folding each file's comments into
    headline bodies. Keep =softstep.toml= shape (shared params) on the same path.
 4. Update =connect-midi.sh= / =connect-midi-lib.sh= (they read =virtual_name= out
    of the file) to read .org, or keep reading whichever exists.
@@ -189,7 +189,7 @@ the identical =Rig= as its =.toml=. What's NOT done: converting the rig files.
 
 ** The blocker: rig-vs-doc .org name collision
 =rigs/= already holds =.org= *documentation* next to the =.toml= rigs -- and with
-the SAME basename for 4 rigs: =2-monomes_58-8-1_kmss-drums=, =kmss-drumkit=,
+the SAME basename for 4 rigs: =2-monomes_kmss-drums=, =kmss-drumkit=,
 =monome-looper-58-8-1=, =monome-looper-58-8-1-timbre= each have both a =.toml=
 (the rig) and a =.org= (a rich reference: glossary, layout diagrams, LED tables).
 Plus =README.org= and =RUNTIME-NOTES.org=. So "the rig is =<name>.org=" collides
@@ -224,11 +224,11 @@ docs unprompted, so I stopped here.
   =.org= iff it has NO sibling =.toml= and is not a known doc (=README.org=,
   =RUNTIME-NOTES.org=, and -- under option B -- =*-reference.org=).
 - Update =connect-midi.sh= (reads =rigs/$RIG_NAME.toml=) to try =.org= too.
-- Update =rig_path='s not-found default + the mock rigs in =code/rust/mocks/=.
+- Update =rig_path='s not-found default + the mock rigs in =buried/mocks/=.
 
 * DONE (2026-07-10): migration complete
 Jeff chose: rigs -> =<name>.org=, each headed with a link to this format
-([[file:../code/rust/rigs/README.org]]); reference docs renamed =<name>_readme.org=;
+([[file:../rigs/README.org]]); reference docs renamed =<name>_readme.org=;
 =softstep.toml= stays TOML. All 13 rigs + 3 mock rigs converted (comment-preserving
 =toml->org= script), each verified to parse to the identical =Rig= as its =.toml=
 before deletion. Loader/dir-scan/connect-midi.sh/README/ORIENTATION updated. Commit

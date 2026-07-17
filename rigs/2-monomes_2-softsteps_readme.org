@@ -1,0 +1,383 @@
+#+title: Two monomes + two SoftSteps -- reference
+#+date: 2026-07-17
+
+The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
+grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
+pedalboards that carry every control that would otherwise cost grid cells --
+sustain, tap tempo, and the factored pulse. No drums, no EX-P pedals: see "what is
+deliberately NOT here."
+
+Background + every design decision behind this layout: =TODO/many/1_vision.org=
+(Jeff's original ask), =TODO/many/2_discussion.org= (the settled answers -- long,
+but the rig's own inline comments summarise most of it), =TODO/many/3_plan.org=
+(the build plan), =TODO/many/progress.org=.
+
+* startup
+
+Run it under =pw-jack= so the synth shares the sound card via PipeWire:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+#+end_src
+
+Needs both 16x16 grids AND both SoftSteps connected. The rig pins the grids
+by serial (=m256-282= = the older/monobright/LEFT grid, =m0000102= = the
+newer/varibright/RIGHT grid) -- see "the two grids" below -- so which physical
+grid ends up which is decided by the rig, not by plug order.
+
+Run this ONCE PER LOGIN, on the HOST, before using the rig:
+
+#+begin_src sh
+xhost +local:
+#+end_src
+
+=xhost= is already installed -- it's in the host's =packages.nix=, so nothing
+needs rebuilding. What's missing is running it: =xhost= mutates the running
+X server's access list, and that list is rebuilt from scratch every time the
+server starts. Installing a package, or rebuilding NixOS, never touches a
+running server's access list -- only executing the command, in a terminal
+inside the Plasma session (so it inherits that session's =DISPLAY= and cookie),
+does. Without it, the container's X connection is refused outright:
+
+#+begin_example
+Authorization required, but no authorization protocol specified
+#+end_example
+
+The tighter form =xhost +si:localuser:jeff= also works and is the more
+targeted grant. Either is per-session -- it does not survive logout, so this is
+a once-per-login step, not a once-ever one.
+
+Telling the two SoftSteps apart is by ALSA client name, not by card number:
+the older board presents as =SSCOM=, the newer as =SoftStep=. Their card
+numbers follow plug order and are not stable -- never hardcode e.g.
+=hw:1,0,0=; the rig's =select.name_contains= is what resolves each board, every
+run, regardless of plug order.
+
+Here's how to see what's connected:
+- SoftSteps: =amidi -l= (they are plain USB-MIDI, so they show up locally).
+- Grids: NOT visible as =/dev/tty*= devices in the container -- serialosc runs
+  on the HOST and owns the tty, so the container only ever sees a grid over the
+  network. Ask serialosc instead: send =/serialosc/list= to =127.0.0.1:12002=
+  and read the =/serialosc/device= replies, which carry each grid's serial id.
+
+* glossary
+
+- surface -- one of the four playable devices this rig brings up at once:
+  grid A (LOM), grid B (RNM), the old SoftStep (OSS), the new SoftStep (NSS).
+- LOM -- grid A, the LEFT / older monome. A Series 256, serial =m256-282=; it
+  is monobright, so it cannot dim a single LED and fakes "dim" by flashing
+  fast.
+- RNM -- grid B, the RIGHT / newer monome, serial =m0000102=. Varibright.
+- OSS -- the older SoftStep, ALSA client name =SSCOM=. Nearer to Jeff, not
+  rotated: its printed labels read =6 7 8 9 0= (far row) over =1 2 3 4 5=
+  (near row).
+- NSS -- the newer SoftStep, ALSA client name =SoftStep=. Farther from Jeff
+  and physically rotated 180 degrees. The code never learns about the
+  rotation -- it only ever binds printed labels -- the rotation just explains
+  why the map in "NSS: the factored pulse" looks mirrored. As Jeff reads it (post
+  rotation): =5 4 3 2 1= (far row) over =0 9 8 7 6= (near row).
+- play grid -- a 16x16 monome, the whole grid a 46-EDO note surface
+  (=x_step 9=, =y_step 1=, =fundamental_hz 80=). Pitch rises down and right,
+  so "one microtone above" a note is the cell directly below it. Each grid
+  has its own voices and its own scroll register.
+- scroll pad -- a 3x2 pad at a grid's bottom-right (=[13,14,15,15]=) that
+  moves that grid's pitch window: the four arrows shift by one cell, the two
+  top corners by an octave.
+- waveform strip -- a 4-cell radio at a grid's top-left (=[0,0]..[3,0]=):
+  sine / triangle / square / saw, left to right. Each grid's strip sets its
+  own timbre (=controls= points at its own =monome=).
+- the factored pulse -- one global tapped tempo (OSS pedal 8), applied to each
+  grid through that grid's own =2^a * 3^b= tempo factor and its own on/off
+  switch (the NSS pedals). Not "slow AM" -- see "the factored pulse" section
+  below for why that name is reserved for something else.
+- sustain (accrete) -- each grid has its own bank of sustained notes. Here
+  it's reduced to two OSS pedals per grid: clear and a momentary accrete
+  (hold to add notes, release to stop adding -- nothing is ever un-added by
+  releasing). See "OSS: sustain + tap".
+
+* usage
+
+Launch under =pw-jack= so the synth (=cpal_synth=) shares the sound card via
+PipeWire:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+#+end_src
+
+Needs both 16x16 grids and both SoftSteps -- see "startup" above for how to
+verify what's connected, and "robustness to missing gear" below for what
+happens if something isn't. =Ctrl-C= blanks both grids, stops the synth, and
+restores both SoftSteps to standalone mode (each is registered for restore
+independently, so one board failing to restore never strands the other).
+
+* per-grid layout
+
+The two grids are identical. The whole 16x16 is the play surface, with exactly
+two overlays drawn on top -- nothing else lives on either grid; every other
+control (sustain, tap tempo, the factored pulse) lives on a SoftStep instead:
+
+#+begin_example
+  col: 0   1   2   3   4   5  ...              13    14    15
+  row 0  [SIN TRI SQR SAW]  .   .   .  (play cells)    .     .     .
+   ...                        (46-EDO play cells)
+  row 13   .   .   .   .   .   .                       .     .     .
+  row 14   .   .   .   .   .   .                     8vaDN   UP  8vaUP  <- scroll pad
+  row 15   .   .   .   .   .   .                     LEFT   DOWN RIGHT  <- scroll pad
+#+end_example
+
+- The waveform strip (=[0,0,3,0]=) and the scroll pad (=[13,14,15,15]=)
+  occlude the play grid: pressing them re-timbres or scrolls rather than
+  sounding a note. Every other cell on both grids is an ordinary 46-EDO play
+  cell.
+- The scroll-pad corners follow the usual convention: top-left = down an
+  octave (notes sound lower), top-right = up an octave; the four arrows shift
+  the window by one cell.
+
+* the two grids
+
+The rig pins the grids by serial, not by plug/enumeration order
+(=select.id_contains= in the rig): grid A = LOM = =m256-282=, grid B = RNM =
+=m0000102=. This matters more here than in other two-grid rigs, because every
+SoftStep pedal below targets a monome by name ("clear the left monome") and
+the whole layout is spatial -- left buttons drive the left grid. Assigning by
+enumeration order instead would let a replug silently swap the grids,
+inverting the entire pedal board with no error.
+
+* OSS: sustain + tap
+
+Sustain is momentary only: hold the accrete pedal to add notes to that
+grid's sustained set, release to stop adding (nothing already added is
+removed by releasing). This rig binds only two pedals per grid (clear +
+accrete) rather than the on-grid four the library also supports --
+=needs_holding= and =erase= still exist in the library code, they are simply
+unbound here (permanently-on =needs_holding=, in effect).
+
+| pedal | job                       |
+|-------+---------------------------|
+|     1 | clear grid A (LOM)        |
+|     2 | accrete grid A (momentary) |
+|     4 | accrete grid B (momentary) |
+|     5 | clear grid B (RNM)        |
+|     8 | tap tempo (global)        |
+
+Pedals 3, 6, 7, 9, 0 are free. Left buttons drive the left grid, right buttons
+the right grid, matching Jeff's left/right principle; pedal 8 is the
+middle-FAR button on this board -- i.e. the one nearest the other (new)
+board -- which earns it the shared tempo, since the tapped tempo is global,
+shared by both grids.
+
+* NSS: the factored pulse
+
+Each grid gets five controls: =x2=, =x3=, =/2=, =/3=, and ~=1~. The board's
+middle column is ambiguous under Jeff's left/right rule (both boards sit
+between the two grids), so the ambiguity is resolved by distance: the pedal
+nearer Jeff drives the left grid (LOM), the farther one drives the right grid
+(RNM).
+
+As Jeff reads the rotated board (=5 4 3 2 1= far row, =0 9 8 7 6= near row):
+
+| far row  | 5: x2 LOM | 4: x3 LOM | 3: ~=1~ RNM | 2: x3 RNM | 1: x2 RNM |
+| near row | 0: /2 LOM | 9: /3 LOM | 8: ~=1~ LOM | 7: /3 RNM | 6: /2 RNM |
+
+Pedal 8 (middle NEAR) is nearer Jeff, so it is LOM's ~=1~; pedal 3 (middle
+FAR) is farther, so it is RNM's ~=1~ -- the same near/far rule as the OSS tap
+pedal, just applied per grid instead of globally.
+
+** what these pedals do
+
+- There is one global tapped tempo, set by OSS pedal 8: two taps within
+  =tap_tempo_window_ms= (2000 ms here) define it. Tapping only defines the
+  tempo; it doesn't start anything on its own.
+- Each grid has its own tempo factor =2^a * 3^b= and its own factored-pulse
+  on/off switch, moved by that grid's =x2= / =x3= / =/2= / =/3= pedals -- so
+  one grid's factored pulse can run at, say, 3/2 the rate of the other's, or
+  not at all.
+- ~=1~ keeps the existing double-tap dance verbatim: press while the grid's
+  factored pulse is off -> turns it ON, keeping the current tempo factor;
+  press while it's on -> snaps the tempo factor to unity (back to the tapped
+  tempo, unmultiplied); a second press within 400 ms of that one -> turns the
+  factored pulse OFF. So from cold: tap to start (at whatever tempo factor
+  was dialled in), tap again to snap to unity, and a fast third tap stops it.
+- ~=1~ does nothing different in edit mode -- only the multipliers (=x2= /
+  =x3= / =/2= / =/3=) are edit controls. See "per-voice edit" below for what
+  they do there.
+
+Terminology trap: this is called the factored pulse, never "slow AM" and never
+just "the pulse" (to avoid clobbering, say, PWM, or some other future use of
+that word). "Slow AM" already names a different, separate mechanism -- the
+timbre tremolo (=[[timbres]] am_depth= / =am_freq= / =am_shape=), which morphs
+a note's amplitude as part of its waveform, with its own configurable depth,
+rate, and shape. The factored pulse is a fixed unipolar triangle in =[0,1]= --
+always full swing, no depth knob -- driven by the tapped tempo and a grid's
+tempo factor. Both can be on the same note at once, which is exactly when
+you'd need to tell them apart by name.
+
+* LEDs
+
+Play-grid LEDs follow the usual =surfaces_runtime= rules (shared with the
+=2-monomes_kmss-drums= rig -- see its readme's "LEDs" section for the full
+detail): held notes light bright, reflected across both grids under each
+grid's own scroll register; a shared recent-note trail (up to =trails_max= 9
+pitch classes) lights dim; the waveform strip shows the selected waveform
+bright, the rest dim; the scroll pad's arrows are dim, its octave corners
+dark, and it fully occludes the play grid beneath it.
+
+Grid A is monobright and Grid B is varibright. Grid A (=m256-282=) cannot dim
+a single LED -- it thresholds any level <= 7 to off -- so its "dim" (unselected
+waveform cells, trail, arrows) is faked by flashing the cell on/off fast
+(~1/32 duty, ~67 Hz) via whole-quad writes. Grid B (=m0000102=) uses a native
+dim level. With many dim cells lit at once the flash slows into mild flicker
+on grid A -- an accepted trade.
+
+* robustness to missing gear
+
+This rig brings up whatever is connected and loads around what is not,
+rather than refusing to start. On startup it lists, in red, every component
+it skipped for a missing dependency, then plays on.
+
+- If one grid is unplugged, the connected grid loads and plays normally (its
+  own waveform strip and scroll pad work); the absent grid's SoftStep pedals
+  that target it (its OSS clear/accrete pair, its NSS factored-pulse pedals)
+  have nothing to act on. Cross-grid LED reflection simply has nothing to
+  reflect from the missing side.
+- If one SoftStep is unplugged, the other SoftStep's bindings still work; the
+  missing board's pedals (its half of sustain, or its half of the factored
+  pulse, or the global tap if OSS is the one missing) are simply unavailable.
+- If nothing is connected, the run errors out rather than idling.
+
+* per-voice edit
+Sometimes you want to change ONE already-sounding note. Accrete it (so your hands
+are free), then edit it in place: it keeps ringing and simply moves.
+
+** the two neighbour gestures
+The cells directly above and below a sounding note are its handles. Both are toggles,
+neither sounds, and both are geometric -- literally the cell above/below, not "the
+pitch one microtone away" -- so they don't move when the tuning changes.
+
+| press          | acts on           | does             |
+|----------------+-------------------+------------------|
+| the cell BELOW | the note above it | toggle edit mode |
+| the cell ABOVE | the note below it | toggle sustain   |
+
+Sustain here is the same sustain the pedals give, just aimed at one note: it joins
+the same set, paints the same, and a clear flushes it like any other -- including
+notes that never went near a pedal.
+
+A cell with sounding notes on both sides (two notes one cell apart, straddling it)
+is ambiguous. Edit wins. That case is rare enough not to matter often, but it is
+decided rather than accidental.
+
+A note on the top row has no cell above it, and one on the bottom row none below, so
+each loses one of its two handles.
+
+** entering and leaving edit mode
+Press the cell directly below a sounding note to toggle that note's edit mode.
+
+Jeff's reason for pinning it below rather than by pitch: "my other fingers can do
+either side but my thumb can only reach from below." (They coincide here anyway, since
+=y_step = 1= makes the cell below exactly one microtone up.)
+
+An edited note keeps sounding whether or not a finger stays on it -- lift your finger
+and it goes on ringing until you leave edit mode. Being edited is its own reason to
+ring, alongside a finger and a sustain; a note rings while any of the three holds.
+So leaving edit mode silences it only if nothing else was holding it up: a note you
+had also sustained keeps going.
+
+Leaving always works, whether or not the note can still be heard. That matters more
+than it sounds: anything that silences an edited note (a =clear=, say) would otherwise
+strand it -- still dancing, still forcing every press to drag, and un-dismissable
+because the gesture that dismisses it needed the sound that just went away.
+
+** dragging a note's pitch
+While any note on a grid is in edit mode, that grid stops playing new notes: a
+press drags the nearest edited note to the pressed pitch instead, gliding over
+=slide_duration_ms= (100 ms). Leave edit mode to play normally again.
+
+- The nearest edited note moves -- one of them. (Contrast the factored pulse
+  below, which moves all of them. This is deliberate, and it is worth
+  knowing: "in edit mode" picks a different selection depending on which
+  parameter you touch.)
+- A tie moves the lower note.
+- Edit mode belongs to the pitch, so it travels with the note: a dragged note is
+  still being edited at its new pitch, and can be dragged again. It also survives
+  re-fingering the note.
+
+** what you give up, on purpose
+- The cell below a sounding note can never sound.
+- You cannot drag a note onto its own exit cell -- that press exits instead. The
+  exit gesture and the drag gesture are the same press, and exit wins, because
+  otherwise there would be no way out of edit mode.
+- A note on the bottom row has no cell below it, so it cannot be edited.
+
+** the diamond dance
+Each edited note is marked by a single lit cell turning around it -- above, left,
+below, right -- holding each corner 150 ms, so one turn is 600 ms.
+
+- This is local, unlike everything else on these grids. It marks the exact
+  cell(s) holding that exact pitch on that one grid: never octave-equivalents,
+  never the other grid. (A pitch can occupy two cells here -- with =x_step 9=,
+  =(x,y)= and =(x+1,y-9)= collide -- and both dance.)
+- It stays in step everywhere. The phase comes from one clock, so every dance
+  turns together. That is why a corner that cannot be drawn is skipped but
+  still spends its slot: compressing the turn would drift that dance out of
+  phase.
+- It clobbers a dim trail but yields to a bright note. A trail is decoration; a
+  sounding note is information. Without the clobber, a note whose four neighbours
+  happened to be trailed would dance invisibly -- exactly when the grid is busiest.
+- Expect it to read less cleanly on grid A, whose "dim" is faked by fast flashing.
+
+** off-screen notes
+If an edit-mode or sustained note scrolls out of the pitch window, the scroll pad's
+octave corner that would bring it back flashes (150 ms on / off). Both corners
+flash if there are such notes in both directions.
+
+Only the octave corners ever flash -- never the four arrows -- so a note scrolled off
+by less than an octave gets no hint. And one signal covers both edit-mode and
+sustained notes, so the LED cannot tell you which kind you are chasing. Both are
+Jeff's calls ("I'll understand").
+
+** editing a note's factored pulse
+With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= pedals
+retune those notes' factored-pulse rate directly and leave the grid's tempo
+factor alone. With no note in edit mode, the same pedals move the tempo factor
+as usual.
+
+- It applies to every edited note on that grid at once.
+- It multiplies, so notes whose factored pulse already runs at different rates
+  keep their spread: "slower ones continue to be slower than faster ones".
+- The factored pulse's phase is kept, so a live note changes slope without a
+  click.
+- A note struck while that grid's factored pulse was off has none, and
+  multiplying cannot start one.
+- ~=1~ is never an edit control -- only the multipliers are.
+
+Note the one asymmetry with cycling: turning a grid's factored pulse off never
+retroactively touches sounding notes; only the multipliers reach them.
+
+* the on-screen window
+The controls left the grid, so their display did too: the ~=1~ LED used to show the
+switch and the tap cell used to blink the tempo. The window shows, and only shows:
+
+- the global tapped tempo as BPM to one decimal place (or that no tempo is
+  tapped yet);
+- each grid's tempo factor as 2^x * 3^y;
+- whether each grid's factored pulse is on;
+- a blinker at the unfactored global tempo -- the metronome you tapped, so it does
+  not move when a tempo factor does.
+
+It needs =xhost= (see "startup"). If it cannot open, the instrument says so once
+and plays on regardless.
+
+* what is deliberately NOT here
+
+- No drumkit. Neither SoftStep plays samples in this rig.
+- No EX-P expression pedals -- deferred (=TODO/many/2_discussion.org= 1a);
+  the reader (=expression_pedals.rs=) exists but nothing in this rig consumes
+  it.
+- No distortion, slide, mono, erase, needs-holding, or feet-accrete toggles --
+  all exist in the library (reused by =2-monomes_kmss-drums=) but none are
+  bound in this rig. Sustain here is the reduced clear+momentary-accrete pair
+  only (see "OSS: sustain + tap").
+- No on-grid tap-tempo pad and no on-grid factored-pulse widget -- both moved
+  to the newer SoftStep, per the vision's "use the softsteps instead of the
+  monome for it."

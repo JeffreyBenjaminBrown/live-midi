@@ -1,0 +1,30 @@
+# Meters, probes, bridges, and demos -- sorted here by what they ARE, not by
+# language (see ../TODO/new-library/1_plan.org). The Rust ones that need a slice of
+# the buried midi_pulse crate (port-preference helpers etc.) depend on it by path;
+# everything else here (Python scripts, shell scripts, the standalone button_test
+# crate) is not part of this package.
+
+[package]
+name = "tools"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "polite_ping"
+path = "demos-and-explorations/polite_ping.rs"
+
+[[bin]]
+name = "add_echo"
+path = "demos-and-explorations/add_echo.rs"
+
+[[bin]]
+name = "sampler"
+path = "sampler/sampler.rs"
+
+[[bin]]
+name = "triangle_chord"
+path = "synth/triangle_chord.rs"
+
+[dependencies]
+midir = "0.10"
+midi_pulse = { path = "../buried" }
