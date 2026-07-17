@@ -24,6 +24,7 @@
 
 mod accrete;
 pub mod audio;
+mod edit;
 mod grid;
 mod polyrhythm;
 mod slide;
