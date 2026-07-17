@@ -850,6 +850,11 @@ fn run(
   let accrete: Arc<Mutex<Vec<AccreteState>>> =
     Arc::new(Mutex::new((0..num_grids).map(|_| AccreteState::new()).collect()));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
+  // Each grid's edit-mode pitches, published OUT of its thread the way `held_all` and
+  // `sounding` are -- the pedal hook needs them: a pulse pedal retunes the edited
+  // notes when there are any, and moves the grid's factor when there are not.
+  let edit_pitches: Arc<Mutex<Vec<HashSet<i32>>>> =
+    Arc::new(Mutex::new(vec![HashSet::new(); num_grids]));
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
@@ -894,6 +899,7 @@ fn run(
         Arc::clone(&held_all),
         Arc::clone(&voices),
         Arc::clone(&poly),
+        Arc::clone(&edit_pitches),
         s.tap_window,
         s.release,
         audio.sample_rate,
@@ -979,6 +985,7 @@ fn run(
       live: Arc::clone(&live),
       slide: SlideCandidates::new(),
       edit: edit::EditState::new(),
+      edit_pitches: Arc::clone(&edit_pitches),
       started: Instant::now(),
       slide_window: s.slide_window,
       slide_duration_secs: s.slide_duration_secs,
@@ -1104,6 +1111,8 @@ struct GridThread {
   /// Which of THIS grid's pitches are in per-voice edit mode. Grid-local and
   /// pitch-keyed: never mirrored to the other grid, never octave-duplicated.
   edit: edit::EditState,
+  /// The shared mirror of `edit`, so the pedal hook can see it from another thread.
+  edit_pitches: Arc<Mutex<Vec<HashSet<i32>>>>,
   /// When this runtime started. The diamond dance's phase is a pure function of
   /// elapsed time from here, so every dance on the instrument turns in step -- that
   /// is the whole reason a skipped corner is not allowed to retime its dance.
@@ -1808,6 +1817,18 @@ fn rig_pedal_actions(
   map
 }
 
+/// The rate multiplier a factor button applies to an edit-mode note. `None` for
+/// `Unity`: `=1` is a switch, not a multiplier, and is never an edit control.
+fn pulse_ratio(factor: FactorButton) -> Option<f32> {
+  match factor {
+    FactorButton::Times2 => Some(2.0),
+    FactorButton::Times3 => Some(3.0),
+    FactorButton::Div2 => Some(0.5),
+    FactorButton::Div3 => Some(1.0 / 3.0),
+    FactorButton::Unity => None,
+  }
+}
+
 /// The hook for rig-declared pedal bindings: sustain, tap tempo, and the pulse.
 ///
 /// Unconditional, unlike the feet-accrete mirror -- no on-grid toggle gates it. Keyed
@@ -1820,6 +1841,7 @@ fn rig_pedal_hook(
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: Arc<Mutex<VoiceMap>>,
   poly: Arc<Mutex<PolyrhythmState>>,
+  edit_pitches: Arc<Mutex<Vec<HashSet<i32>>>>,
   tap_window: Duration,
   release_secs: f32,
   sample_rate: f32,
@@ -1842,7 +1864,38 @@ fn rig_pedal_hook(
       }
       PedalAction::Pulse { grid, factor } => {
         if down {
-          poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
+          // What a multiplier acts on depends on this grid's edit state (1_vision
+          // "per-voice slow AM edit"): with notes in edit mode it retunes THOSE
+          // NOTES, leaving the grid's factor alone; with none it moves the factor,
+          // exactly as the on-grid pad does.
+          //
+          // =1 is never an edit control -- Jeff: "the only edit controls are (*) and
+          // (/), not (=)" -- so it always goes to the factor/switch dance.
+          let edited: HashSet<i32> = edit_pitches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(grid)
+            .cloned()
+            .unwrap_or_default();
+          match pulse_ratio(factor) {
+            Some(ratio) if !edited.is_empty() => {
+              // Multiply, don't set: "slower ones continue to be slower than faster
+              // ones". Applies to ALL edited notes at once -- the deliberate
+              // asymmetry against a pitch drag, which moves only the nearest (2d).
+              // `held` is needed because a fingered voice is keyed by its CELL, not
+              // its pitch; only a drone is keyed by pitch.
+              let held: HashMap<(i32, i32), i32> = held_all
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(grid)
+                .cloned()
+                .unwrap_or_default();
+              synth::scale_pulse_rate(&voices, grid, ratio, &edited, &held);
+            }
+            _ => {
+              poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
+            }
+          }
         }
         true
       }
@@ -1896,7 +1949,8 @@ fn handle_edit_press(
   };
   let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
 
-  match rt.edit.classify(pitch_above, pitch, is_sounding) {
+  let decision = rt.edit.classify(pitch_above, pitch, is_sounding);
+  let fall_through = match decision {
     edit::Press::Play => true,
     edit::Press::EnterEdit { pitch } => {
       rt.edit.enter(pitch);
@@ -1923,7 +1977,14 @@ fn handle_edit_press(
       push_trail(&rt.trail, to.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
       false
     }
+  };
+  if !fall_through {
+    let mut e = rt.edit_pitches.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(slot) = e.get_mut(rt.grid_index) {
+      *slot = rt.edit.pitches().collect();
+    }
   }
+  fall_through
 }
 
 /// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the

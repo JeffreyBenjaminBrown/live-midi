@@ -33,8 +33,12 @@
 //!
 //! *Effect.* Each note struck while its grid's cycling is on (and a tempo
 //! exists) gets a unipolar-triangle amplitude pulse in [0,1] at that grid's
-//! applied tempo *at its onset* (fixed for the note's life; the engine's
-//! `tempo_am_freq`/`tempo_am_phase`).
+//! applied tempo *at its onset* (the engine's `tempo_am_freq`/`tempo_am_phase`).
+//! That onset rate is the note's rate for life UNLESS it is put into per-voice edit
+//! mode, whose multipliers retune sounding notes in place (`synth::scale_pulse_rate`).
+//! Turning a grid's cycling off never retroactively touches sounding notes -- only
+//! the multipliers do (Jeff, `2_discussion` 2e), which also dodges the amplitude step
+//! that snapping a live pulse to none would make.
 
 use std::time::{Duration, Instant};
 

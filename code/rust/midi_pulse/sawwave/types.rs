@@ -146,7 +146,11 @@ pub struct VoiceState {
   pub glide_per_sample: f32,
   // The polyrhythm pulse: a unipolar-triangle amplitude multiplier in [0,1] (1 at
   // each cycle start, 0 at the half-cycle, back to 1) at tempo_am_freq Hz -- the
-  // tempo applied at the note's onset, fixed for its life. 0.0 = no pulse.
+  // tempo applied at the note's onset. 0.0 = no pulse, and multiplying it cannot
+  // start one. Usually the note's rate for life, but per-voice edit mode retunes
+  // sounding notes in place (`surfaces_runtime::synth::scale_pulse_rate`): the phase
+  // free-runs and only this field is read per sample, so changing it mid-note is a
+  // slope change with no amplitude step -- no click.
   // Deliberately separate from the note's timbre AM.
   pub tempo_am_freq:   f32,
   pub tempo_am_phase:  f32,

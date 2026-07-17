@@ -14,6 +14,7 @@
 //! per-voice handle (`render_block` never reads the key), here packing the grid index
 //! and the cell into it.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::pitch::freq_for_pitch;
@@ -52,6 +53,60 @@ pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32)
       if *chord == grid || *chord == SUSTAIN_BASE + grid {
         state.timbre.gain *= ratio;
       }
+    }
+  }
+}
+
+/// Multiply the pulse RATE of one grid's edit-mode voices, in place.
+///
+/// Selection is by PITCH, because that is how edit mode selects -- a pulse edit
+/// applies to every note in edit mode on this grid at once (Jeff's asymmetry: a pitch
+/// DRAG moves only the nearest, `2_discussion` 2d).
+///
+/// But a voice's key does not carry its pitch uniformly: a *fingered* voice is keyed
+/// by the cell it was struck on (`voice_key` packs `y * 256 + x` into the same field a
+/// drone uses for its pitch), so `held` -- this grid's live cell -> pitch map -- is
+/// how a fingered voice's pitch is known. Passing it in keeps that packing private
+/// here rather than leaking it to every caller.
+///
+/// The phase is deliberately KEPT. `tempo_am_phase` free-runs and only
+/// `tempo_am_freq` is read per sample, so changing the rate mid-note is a slope change
+/// with no amplitude step -- i.e. no click. `note_on_legato` already relied on exactly
+/// that ("re-aims the pulse's rate at this onset, but the pulse phase continues"),
+/// which is why this is safe rather than merely plausible.
+///
+/// Multiplying, not setting: "slower ones continue to be slower than faster ones"
+/// (`1_vision`), so notes that already differ keep their spread.
+///
+/// A voice with no pulse (`tempo_am_freq == 0`) stays un-pulsed: multiplying zero
+/// cannot start one, and a note struck while cycling was off is meant to stay silent
+/// of it.
+pub fn scale_pulse_rate(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  ratio: f32,
+  edited: &HashSet<i32>,
+  held: &HashMap<(i32, i32), i32>,
+) {
+  if !ratio.is_finite() || ratio <= 0.0 || edited.is_empty() {
+    return;
+  }
+  // The fingered voices whose pitch is being edited, by their cell keys.
+  let cells: HashSet<VoiceSource> = held
+    .iter()
+    .filter(|(_, pitch)| edited.contains(pitch))
+    .map(|(cell, _)| voice_key(grid, *cell))
+    .collect();
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    if state.tempo_am_freq == 0.0 {
+      continue;
+    }
+    let wanted = cells.contains(src)
+      || matches!(src, VoiceSource::Accreted { chord, pitch }
+                  if *chord == SUSTAIN_BASE + grid && edited.contains(pitch));
+    if wanted {
+      state.tempo_am_freq *= ratio;
     }
   }
 }
@@ -710,5 +765,112 @@ mod tests {
     assert_eq!(st.timbre.waveform, wave);
     assert_eq!(st.tempo_am_freq, pulse, "the pulse rate is untouched by a pitch edit");
     assert_eq!(st.tempo_am_phase, phase, "and its phase does not jump");
+  }
+
+  // ---- scale_pulse_rate: retuning sounding notes' pulse (per-voice edit) ----
+
+  /// The tests below strike notes at pitch 10 on (1,1) and pitch 20 on (2,2); a
+  /// fingered voice is keyed by CELL, so its pitch is only knowable via this map.
+  fn held() -> HashMap<(i32, i32), i32> {
+    [((1, 1), 10), ((2, 2), 20)].into_iter().collect()
+  }
+
+  fn all_edited() -> HashSet<i32> {
+    [10, 20].into_iter().collect()
+  }
+
+  #[test]
+  fn scaling_the_pulse_multiplies_only_the_wanted_pitches() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    a.note_on((2, 2), 20, Timbre::default(), Some(3.0));
+    scale_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
+    let g = v.lock().unwrap();
+    assert_eq!(g[&voice_key(0, (1, 1))].tempo_am_freq, 4.0, "the edited note doubles");
+    assert_eq!(g[&voice_key(0, (2, 2))].tempo_am_freq, 3.0, "the other note is untouched");
+  }
+
+  /// "x2 makes them all go twice as fast ... slower ones continue to be slower than
+  /// faster ones" (1_vision) -- so it MULTIPLIES; it does not set a common rate.
+  #[test]
+  fn scaling_preserves_the_spread_between_notes() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(1.0));
+    a.note_on((2, 2), 20, Timbre::default(), Some(4.0));
+    scale_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
+    let g = v.lock().unwrap();
+    let slow = g[&voice_key(0, (1, 1))].tempo_am_freq;
+    let fast = g[&voice_key(0, (2, 2))].tempo_am_freq;
+    assert_eq!((slow, fast), (2.0, 8.0));
+    assert_eq!(fast / slow, 4.0, "the ratio between them is preserved");
+  }
+
+  /// The phase must be kept, or the pulse steps and clicks. This is what makes
+  /// retuning a live note safe at all.
+  #[test]
+  fn scaling_the_pulse_keeps_the_phase() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    v.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().tempo_am_phase = 0.37;
+    scale_pulse_rate(&v, 0, 3.0, &all_edited(), &held());
+    assert_eq!(
+      v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_phase,
+      0.37,
+      "the pulse continues from where it was: a slope change, not a step",
+    );
+  }
+
+  /// A note struck while cycling was off has no pulse, and multiplying zero cannot
+  /// start one -- it is meant to stay un-pulsed.
+  #[test]
+  fn scaling_cannot_start_a_pulse_on_an_unpulsed_note() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), None);
+    scale_pulse_rate(&v, 0, 4.0, &all_edited(), &held());
+    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_freq, 0.0);
+  }
+
+  #[test]
+  fn scaling_one_grids_pulse_leaves_the_other_grid_alone() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    let mut b = sink(1, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    b.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    scale_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
+    let g = v.lock().unwrap();
+    assert_eq!(g[&voice_key(0, (1, 1))].tempo_am_freq, 4.0);
+    assert_eq!(g[&voice_key(1, (1, 1))].tempo_am_freq, 2.0, "grid 1 untouched");
+  }
+
+  /// Sustained drones are edited too -- an edited note usually IS a drone, since
+  /// accrete is how you free your hands to edit it.
+  #[test]
+  fn scaling_reaches_this_grids_sustained_drones() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    a.sustain_note((1, 1), 10);
+    scale_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
+    let g = v.lock().unwrap();
+    assert!(
+      g.values().any(|s| s.tempo_am_freq == 4.0),
+      "the drone's pulse was retuned",
+    );
+  }
+
+  #[test]
+  fn a_nonsense_ratio_is_ignored_rather_than_wrecking_the_voice() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    scale_pulse_rate(&v, 0, 0.0, &all_edited(), &held());
+    scale_pulse_rate(&v, 0, f32::NAN, &all_edited(), &held());
+    scale_pulse_rate(&v, 0, -1.0, &all_edited(), &held());
+    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].tempo_am_freq, 2.0);
   }
 }
