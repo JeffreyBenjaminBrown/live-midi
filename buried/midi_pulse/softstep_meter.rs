@@ -237,47 +237,54 @@ impl MeterState {
   }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let params = load_softstep_params()?;
-  let audio_on = std::env::var_os("SOFTSTEP_METER_AUDIO").is_some();
-  let select_substring = std::env::args().nth(1).unwrap_or_else(|| "SSCOM".to_string());
+/// The SoftStep boards this meter knows how to name, as (port-name substring, label).
+/// The two units present disjointly: SSCOM ports never contain "SoftStep" and vice
+/// versa, so a substring match picks exactly one board.
+const KNOWN_BOARDS: [(&str, &str); 2] =
+  [("SSCOM", "older SoftStep (SSCOM)"), ("SoftStep", "newer SoftStep")];
 
-  println!("softstep_meter -- SoftStep pressure meter (Rust; the reference implementation, see the Python meter's startup banner)");
-  println!(
-    "  on_sum={} off_sum={} attack={}ms debounce={}ms full_scale={} db_range={} de-stick={}ms",
-    params.on_sum,
-    params.off_sum,
-    params.attack_ms,
-    params.debounce_ms,
-    params.pressure_full_scale,
-    params.gain_db_range,
-    params.silence_to_zero_ms,
-  );
-  println!("  pad {DITTO_LABEL} is DITTO (mirrors rigs/kmss-drumkit.toml pedal 3, \"the gap between the feet\")");
-  if audio_on {
-    println!("  audio audition ON (SOFTSTEP_METER_AUDIO set): plays drum-samples/{AUDITION_SAMPLE} via `pw-play` at the resolved gain");
-  } else {
-    println!("  audio audition OFF (silent meter). Set SOFTSTEP_METER_AUDIO=1 to hear hits via `pw-play`.");
-  }
-  println!("  keys: q + Enter quits (Ctrl-C also restores standalone mode)\n");
+/// Which known boards are actually plugged in, by scanning the MIDI input ports once.
+fn present_boards() -> Vec<(&'static str, &'static str)> {
+  let Ok(midi_in) = MidiInput::new("softstep-meter-probe") else {
+    return vec![];
+  };
+  let names: Vec<String> =
+    midi_in.ports().iter().filter_map(|p| midi_in.port_name(p).ok()).collect();
+  KNOWN_BOARDS
+    .into_iter()
+    .filter(|(sub, _)| names.iter().any(|n| n.contains(sub)))
+    .collect()
+}
 
-  // Arm Ctrl-C/SIGTERM restoration FIRST, before any MIDI/poll/keyboard thread
-  // spawns, so the signal block is inherited by all of them (see tether::arm).
-  let session = tether::arm();
-  session
-    .enter(&select_substring)
-    .map_err(|e| format!("could not enter tether mode (needs alsa-utils `amidi`): {e}"))?;
-  println!("device in tether mode; will restore standalone on exit\n");
+/// One board's live meter: its display state, its poll thread, and the MIDI connection
+/// kept alive for the run.
+struct Board {
+  label: String,
+  state: Arc<Mutex<MeterState>>,
+  stop: Arc<AtomicBool>,
+  poll: thread::JoinHandle<()>,
+  _conn: midir::MidiInputConnection<()>,
+}
+
+/// Tether one board and start reading it. Returns an error (rather than aborting the
+/// whole meter) if this board cannot be brought up, so one dead board does not hide a
+/// working one.
+fn start_board(
+  substring: &str,
+  label: &str,
+  params: SoftstepParams,
+  audio_on: bool,
+  session: &tether::TetherSession,
+) -> Result<Board, String> {
+  session.enter(substring).map_err(|e| format!("tether {label}: {e}"))?;
 
   let state = Arc::new(Mutex::new(MeterState::new()));
   let decoder = Arc::new(Mutex::new(TetherDecoder::new(params)));
 
-  let midi_in = MidiInput::new("softstep-meter")?;
-  let port = select_input_port(&midi_in, &select_substring)?;
+  let midi_in = MidiInput::new(&format!("softstep-meter-{substring}")).map_err(|e| e.to_string())?;
+  let port = select_input_port(&midi_in, substring)?;
   let port_name = midi_in.port_name(&port).unwrap_or_else(|_| "<unknown>".to_string());
-  println!("bound MIDI input {port_name:?}\n");
 
-  // MIDI callback: feed every CC into BOTH the display shadow and the real decoder.
   let state_cb = Arc::clone(&state);
   let decoder_cb = Arc::clone(&decoder);
   let mut ccs: Vec<(u8, u8)> = Vec::with_capacity(16);
@@ -309,22 +316,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       },
       (),
     )
-    .map_err(|e| format!("connect to {port_name:?}: {e}"))?;
+    .map_err(|e| format!("connect {label} ({port_name:?}): {e}"))?;
 
-  // Poll thread: advance the decoder every ~1 ms (same cadence as the drumkit
-  // runtime's `run_voice_timer`), resolve ditto, and update the display state.
   let stop = Arc::new(AtomicBool::new(false));
-  let poll_handle = {
+  let poll = {
     let state = Arc::clone(&state);
-    let decoder = Arc::clone(&decoder);
     let stop = Arc::clone(&stop);
     thread::Builder::new()
-      .name("softstep-meter-poll".to_string())
-      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on))?
+      .name(format!("softstep-meter-poll-{substring}"))
+      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on))
+      .map_err(|e| e.to_string())?
   };
 
-  // A background line-reader so `q` + Enter can quit; Ctrl-C also works (via the
-  // signal thread `tether::arm` installed above).
+  println!("  bound {label}: {port_name:?}");
+  Ok(Board { label: label.to_string(), state, stop, poll, _conn: conn })
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+  let params = load_softstep_params()?;
+  let audio_on = std::env::var_os("SOFTSTEP_METER_AUDIO").is_some();
+
+  // With an argument, meter just the board whose port name contains it (the old
+  // behaviour). With none, meter EVERY connected board -- which is what a two-board
+  // rig wants, and what stops the old default of "SSCOM only" from silently hiding
+  // the newer board. `q` + Enter quits; Ctrl-C restores standalone on all of them.
+  let targets: Vec<(String, String)> = match std::env::args().nth(1) {
+    Some(arg) => vec![(arg.clone(), arg)],
+    None => {
+      let present = present_boards();
+      if present.is_empty() {
+        return Err("no SoftStep found (looked for SSCOM and SoftStep); is one plugged in?".into());
+      }
+      present.into_iter().map(|(sub, label)| (sub.to_string(), label.to_string())).collect()
+    }
+  };
+
+  println!("softstep_meter -- SoftStep pressure meter (Rust; the reference implementation)");
+  println!(
+    "  on_sum={} off_sum={} attack={}ms debounce={}ms full_scale={} db_range={} de-stick={}ms",
+    params.on_sum,
+    params.off_sum,
+    params.attack_ms,
+    params.debounce_ms,
+    params.pressure_full_scale,
+    params.gain_db_range,
+    params.silence_to_zero_ms,
+  );
+  println!("  pad {DITTO_LABEL} is DITTO (mirrors rigs/kmss-drumkit.toml pedal 3, the gap between the feet)");
+  if audio_on {
+    println!("  audio audition ON: plays drum-samples/{AUDITION_SAMPLE} via `pw-play` at the resolved gain");
+  } else {
+    println!("  audio audition OFF (silent meter). Set SOFTSTEP_METER_AUDIO=1 to hear hits.");
+  }
+  println!("  keys: q + Enter quits (Ctrl-C also restores standalone mode)\n");
+
+  // Arm Ctrl-C/SIGTERM restoration FIRST, before any MIDI/poll thread spawns, so the
+  // signal block is inherited by all of them. One session covers every board.
+  let session = tether::arm();
+
+  let mut boards: Vec<Board> = Vec::new();
+  for (substring, label) in &targets {
+    match start_board(substring, label, params, audio_on, &session) {
+      Ok(board) => boards.push(board),
+      Err(e) => eprintln!("  skipped a board: {e}"),
+    }
+  }
+  if boards.is_empty() {
+    return Err("no SoftStep could be brought up".into());
+  }
+  println!();
+
   let quit = Arc::new(AtomicBool::new(false));
   {
     let quit = Arc::clone(&quit);
@@ -342,19 +403,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let start = Instant::now();
   while !quit.load(Ordering::SeqCst) {
-    draw(&state, start, params);
+    draw(&boards, start, params);
     thread::sleep(DRAW_TICK);
   }
 
-  // Tear down in the same order as `DrumSession`'s `Drop`: stop the poll thread,
-  // release the MIDI connection, THEN restore standalone mode (the `session` drop
-  // at the end of this function, after `conn` has already gone out of scope).
-  stop.store(true, Ordering::Relaxed);
-  let _ = poll_handle.join();
-  drop(conn);
+  // Tear down like `DrumSession`'s `Drop`: stop the poll threads, release the MIDI
+  // connections, THEN restore standalone (the `session` drop, after every `_conn`).
+  for board in &boards {
+    board.stop.store(true, Ordering::Relaxed);
+  }
+  for board in boards {
+    let _ = board.poll.join();
+    drop(board._conn);
+  }
   drop(session);
   Ok(())
 }
+
 
 /// The poll loop: advance the decoder, resolve any Fire/Revise into the shared
 /// display state (ditto via `resolve_fire`/`resolve_revise`), and optionally
@@ -421,32 +486,44 @@ fn run_poll_loop(
 
 /// Redraw the whole screen in place (ANSI clear + cursor-home, like the Python
 /// meter), one line per pad in printed-label order (1..9, then 0).
-fn draw(state: &Mutex<MeterState>, start: Instant, params: SoftstepParams) {
+fn draw(boards: &[Board], start: Instant, params: SoftstepParams) {
   let now = Instant::now();
   let now_secs = now.duration_since(start).as_secs_f64();
   let silence = Duration::from_millis(params.silence_to_zero_ms);
-  let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
 
   let mut lines = vec![
     String::new(),
     "  SoftStep pressure meter (Rust) -- strike a pad: bar=pressure, peak-hold marked; pad 3=ditto".to_string(),
     "  keys: q + Enter quits (Ctrl-C also restores standalone mode)".to_string(),
-    String::new(),
   ];
-  for &(label, base) in LABEL_BASE.iter() {
-    let idx0 = (base - 40) as usize;
-    let sum: u16 = (0..4).map(|k| interp_shadow(&st.sensors, &st.last_seen, idx0 + k, now, silence)).sum();
-    let pad = &mut st.pads[label as usize];
-    let (pv, pt) = peak_hold_tick(sum, pad.peak_val, pad.peak_t, now_secs);
-    pad.peak_val = pv;
-    pad.peak_t = pt;
-    let bar = render_bar(sum, pv);
-    let pressure_s = if pad.last_pressure > 0.0 { format!("p={:.2}", pad.last_pressure) } else { "      ".to_string() };
-    let ditto = if label == DITTO_LABEL { "*" } else { " " };
-    lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {pressure_s}  gain {:.2}", pad.last_gain));
+
+  for board in boards {
+    lines.push(String::new());
+    // Only label the board when there is more than one, so a single-board run reads
+    // exactly as it always did.
+    if boards.len() > 1 {
+      lines.push(format!("  == {} ==", board.label));
+    }
+    let mut st = board.state.lock().unwrap_or_else(|e| e.into_inner());
+    for &(label, base) in LABEL_BASE.iter() {
+      let idx0 = (base - 40) as usize;
+      let sum: u16 = (0..4).map(|k| interp_shadow(&st.sensors, &st.last_seen, idx0 + k, now, silence)).sum();
+      let pad = &mut st.pads[label as usize];
+      let (pv, pt) = peak_hold_tick(sum, pad.peak_val, pad.peak_t, now_secs);
+      pad.peak_val = pv;
+      pad.peak_t = pt;
+      let bar = render_bar(sum, pv);
+      let pressure_s = if pad.last_pressure > 0.0 { format!("p={:.2}", pad.last_pressure) } else { "      ".to_string() };
+      let ditto = if label == DITTO_LABEL { "*" } else { " " };
+      lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {pressure_s}  gain {:.2}", pad.last_gain));
+    }
+    lines.push(format!("  last hit: {}", st.recent));
+    for m in &st.messages {
+      lines.push(format!("    {m}"));
+    }
   }
+
   lines.push(String::new());
-  lines.push(format!("  last hit: {}", st.recent));
   lines.push(format!(
     "  (on_sum={} off_sum={} attack={}ms debounce={}ms full_scale={} db_range={} de-stick={}ms audio={})",
     params.on_sum,
@@ -459,10 +536,6 @@ fn draw(state: &Mutex<MeterState>, start: Instant, params: SoftstepParams) {
     if std::env::var_os("SOFTSTEP_METER_AUDIO").is_some() { "on" } else { "off" },
   ));
   lines.push(String::new());
-  for m in &st.messages {
-    lines.push(format!("    {m}"));
-  }
-  drop(st);
 
   print!("\x1b[2J\x1b[H{}\n", lines.join("\n"));
   let _ = io::stdout().flush();
