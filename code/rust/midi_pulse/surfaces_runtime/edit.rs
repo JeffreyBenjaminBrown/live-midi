@@ -116,6 +116,14 @@ impl EditState {
         return Press::ToggleSustain { pitch: below };
       }
     }
+    // Striking an edited note's OWN pitch retriggers it, exactly as striking a
+    // sustained note's pitch does: the ordinary note-on path cuts the old voice and
+    // the new one replaces it. Without this the press would be a drag onto the note's
+    // current pitch -- a no-op -- so re-articulating an edited drone was impossible.
+    // Edit mode is a property of the pitch, so it survives the retrigger.
+    if self.is_editing(pressed_pitch) {
+      return Press::Play;
+    }
     match self.nearest(pressed_pitch) {
       Some(from) => Press::Drag { from, to: pressed_pitch },
       None => Press::Play,
@@ -432,5 +440,67 @@ mod tests {
   fn the_cell_under_a_silent_unedited_note_is_still_an_ordinary_press() {
     let e = EditState::new();
     assert_eq!(e.classify(Some(20), None, 21, |_| false), Press::Play);
+  }
+
+  // ---- retriggering an edited note ----
+
+  /// Jeff: "if it's in edit mode and I hit the pitch again, it should retrigger,
+  /// cutting off the old one ... just like sustained notes already do."
+  ///
+  /// It used to be a drag onto the note's own pitch -- a no-op -- so an edited drone
+  /// could not be re-articulated at all.
+  #[test]
+  fn striking_an_edited_notes_own_pitch_retriggers_it() {
+    let mut e = EditState::new();
+    e.enter(20);
+    assert_eq!(
+      e.classify(None, None, 20, |p| p == 20),
+      Press::Play,
+      "the ordinary note-on path cuts the old voice and replaces it",
+    );
+  }
+
+  /// Edit mode is a property of the PITCH, so it survives the retrigger -- the note
+  /// keeps dancing and stays draggable.
+  #[test]
+  fn a_retriggered_note_is_still_edited() {
+    let mut e = EditState::new();
+    e.enter(20);
+    e.classify(None, None, 20, |p| p == 20);
+    assert!(e.is_editing(20), "retriggering must not end the edit");
+  }
+
+  /// Retrigger is exact: a NEIGHBOURING pitch still drags, or you could never move a
+  /// note by one step.
+  #[test]
+  fn striking_next_to_an_edited_note_still_drags_it() {
+    let mut e = EditState::new();
+    e.enter(20);
+    assert_eq!(e.classify(None, None, 21, |_| false), Press::Drag { from: 20, to: 21 });
+    assert_eq!(e.classify(None, None, 19, |_| false), Press::Drag { from: 20, to: 19 });
+  }
+
+  /// With several edited notes, striking one of them retriggers THAT one rather than
+  /// dragging the nearest -- the pressed pitch is unambiguous.
+  #[test]
+  fn striking_one_of_several_edited_notes_retriggers_rather_than_drags() {
+    let mut e = EditState::new();
+    e.enter(10);
+    e.enter(20);
+    assert_eq!(e.classify(None, None, 20, |_| true), Press::Play);
+  }
+
+  /// The triggers still outrank a retrigger: the cell below an edited note is its
+  /// exit, even if that cell's own pitch happens to be edited too.
+  #[test]
+  fn the_exit_trigger_still_beats_a_retrigger() {
+    let mut e = EditState::new();
+    e.enter(20); // the note above the pressed cell
+    e.enter(21); // and the pressed cell's own pitch
+    assert_eq!(
+      e.classify(Some(20), None, 21, |_| true),
+      Press::ExitEdit { pitch: 20 },
+      "dismissing must never be shadowed",
+    );
   }
 }

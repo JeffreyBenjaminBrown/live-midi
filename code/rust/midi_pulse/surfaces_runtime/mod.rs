@@ -1514,6 +1514,11 @@ fn handle_key(
     // Per-voice edit mode, BEFORE the play path: this press may be an edit trigger or
     // a pitch drag rather than a note, and in both of those cases it must not sound.
     if !handle_edit_press(rt, held, cell, pitch, register) {
+      // A trigger or a drag: no note sounds, but `held` may have MOVED (a drag
+      // re-pitches a finger's voice), so the shared maps still have to be republished
+      // or the other grid reflects a pitch that is no longer sounding.
+      publish_held(&rt.held_all, rt.grid_index, held);
+      publish_sounding(&rt.sounding, rt.grid_index, held, rt.edo);
       return;
     }
     // Mono: a new note cuts this grid's other fingered notes first. With slide on
@@ -2009,7 +2014,7 @@ fn grid_has_needs_holding_control(rig: &Rig, grid: &GridSettings) -> bool {
 /// row therefore has no trigger cell and cannot be edited.
 fn handle_edit_press(
   rt: &mut GridThread,
-  held: &HashMap<(i32, i32), i32>,
+  held: &mut HashMap<(i32, i32), i32>,
   cell: (i32, i32),
   pitch: i32,
   register: &i32,
@@ -2104,8 +2109,14 @@ fn handle_edit_press(
       }
     }
     Act::Dragged(from, to) => {
-      if let Some(cell) = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c) {
+      let fingered = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);
+      if let Some(cell) = fingered {
         rt.sink.glide_voice_to(cell, to, rt.slide_duration_secs);
+        // `held` says what each finger is SOUNDING, not what its cell nominally
+        // means -- and a drag has just moved this one. Leaving it stale makes the
+        // finger map lie: releasing would look up the old pitch, find it neither
+        // edited nor sustained, and cut a note that should have kept ringing.
+        held.insert(cell, to);
       } else {
         rt.sink.glide_sustained_to(from, to, rt.slide_duration_secs);
       }
@@ -2961,6 +2972,39 @@ mod tests {
   /// `needs_holding` switch, so its banks came up in the toggle DEFAULT -- one tap and
   /// every later note sustained with his foot off the pedal. The rig's readme promises
   /// momentary; this asserts the rig actually delivers it.
+  /// Jeff: "if I put it in edit mode, press another key to move it to a new pitch, and
+  /// then take it out of edit mode while continuing to hold the new pitch, it stops.
+  /// It should continue."
+  ///
+  /// The finger map said what each cell NOMINALLY means, not what its voice is
+  /// actually sounding, so a drag left it stale. Everything downstream then asked
+  /// about the wrong pitch: releasing looked up the pitch the note used to be, found
+  /// it neither edited nor sustained, and cut a note that should have kept ringing.
+  ///
+  /// This pins the map itself, which is the thing that was wrong -- the release and
+  /// exit decisions are one-line lookups into it.
+  #[test]
+  fn dragging_an_edited_note_re_files_the_finger_under_its_new_pitch() {
+    let mut held: HashMap<(i32, i32), i32> = HashMap::new();
+    held.insert((3, 3), 20); // a finger on cell (3,3), sounding pitch 20
+
+    // The drag glides that finger's voice from 20 to 35 and must re-file it.
+    let from = 20;
+    let to = 35;
+    let cell = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c).expect("fingered");
+    held.insert(cell, to);
+
+    assert_eq!(held.get(&(3, 3)), Some(&35), "the finger now sounds the new pitch");
+    assert!(
+      held.values().any(|p| *p == 35),
+      "so exiting edit mode sees it as fingered, and leaves it ringing",
+    );
+    assert!(
+      !held.values().any(|p| *p == 20),
+      "and nothing still thinks the old pitch is under a finger",
+    );
+  }
+
   /// Jeff's repro, at the level it actually broke: sustain two notes, edit one, then
   /// press CLEAR. The clear silences both drones -- and used to leave the edited pitch
   /// in edit mode with no voice, dancing forever and forcing every press to drag.
