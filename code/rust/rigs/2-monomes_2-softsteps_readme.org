@@ -198,9 +198,8 @@ pedal, just applied per grid instead of globally.
   cold: tap to start (at whatever factor was dialled in), tap again to snap to
   unity, and a fast third tap stops it.
 - ~=1~ does *nothing different* in edit mode -- only the multipliers (=x2= /
-  =x3= / =/2= / =/3=) are edit controls. (Per-voice edit mode is not yet
-  built; see "not yet built" below. This rule is recorded now so the pedal map
-  doesn't need revisiting when it lands.)
+  =x3= / =/2= / =/3=) are edit controls. See *per-voice edit* below for what
+  they do there.
 
 *Terminology trap:* this is called *the pulse*, never "slow AM". "Slow AM"
 already names a different, separate mechanism -- the *timbre* tremolo
@@ -244,29 +243,95 @@ it skipped for a missing dependency, then plays on.
   the global tap if OSS is the one missing) are simply unavailable.
 - *Nothing connected.* The run errors out rather than idling.
 
-* not yet built
+* per-voice edit
+Sometimes you want to change ONE already-sounding note. Accrete it (so your hands
+are free), then edit it in place: it keeps ringing and simply moves.
 
-The following are part of the design (=TODO/many/1_vision.org=,
-=TODO/many/2_discussion.org=) and are planned in =TODO/many/3_plan.org=
-(phases 6-9), but are *not implemented yet* -- do not expect them to work:
+** entering and leaving
+Press the cell *directly below* a sounding note to toggle that note's edit mode.
+That cell does not sound.
 
-- *Per-voice pitch edit mode.* Pressing the cell directly below a sounding
-  note is meant to toggle "edit mode" for that note (a diamond-dance-marked
-  pitch you can then drag to a new cell without it sounding a fresh note).
-- *The diamond dance.* A four-phase LED rotator (above/left/below/right,
-  150 ms each) meant to mark exactly which cell(s) hold an edit-mode note, and
-  an off-screen flash on the scroll pad's octave corners when an edit-mode or
-  sustained note scrolls out of view.
-- *Pulse retargeting for edit-mode notes.* When a grid has notes in edit mode,
-  its =x2= / =x3= / =/2= / =/3= pedals are meant to retune those notes' pulse
-  rate directly instead of moving the grid's factor.
-- *The on-screen GUI window.* An X11 window (via =xhost=, see "startup") meant
-  to show the global tempo as BPM, each grid's factor as =2^x * 3^y=, and
-  whether each grid's pulse is on.
+The trigger is *geometric* -- literally the cell below, =y+1= -- not "the pitch one
+microtone up". They coincide here (=y_step = 1=), but defining it by position means
+the gesture does not move when the tuning changes. Jeff's reason: "my other fingers
+can do either side but my thumb can only reach from below."
 
-Until these land, both grids are plain 46-EDO play surfaces with sustain and
-the pulse, and nothing responds to the cell below a note except an ordinary
-note.
+"Sounding" means fingered *or* sustained; an edited note usually is a drone.
+
+** dragging a note's pitch
+While *any* note on a grid is in edit mode, that grid stops playing new notes: a
+press *drags* the nearest edited note to the pressed pitch instead, gliding over
+=slide_duration_ms= (100 ms). Leave edit mode to play normally again.
+
+- The *nearest* edited note moves -- one of them. (Contrast the pulse below, which
+  moves *all* of them. Deliberate, and worth knowing: "in edit mode" picks a
+  different selection depending on which parameter you touch.)
+- A tie moves the *lower* note.
+- Edit mode belongs to the *pitch*, so it travels with the note: a dragged note is
+  still being edited at its new pitch, and can be dragged again. It also survives
+  re-fingering the note.
+
+** what you give up, on purpose
+- The cell below a sounding note can never sound.
+- You cannot drag a note *onto its own exit cell* -- that press exits instead. The
+  exit gesture and the drag gesture are the same press, and exit wins, because
+  otherwise there would be no way out of edit mode.
+- A note on the *bottom row* has no cell below it, so it cannot be edited.
+
+** the diamond dance
+Each edited note is marked by a single lit cell turning around it -- above, left,
+below, right -- holding each corner 150 ms, so one turn is 600 ms.
+
+- *Local, unlike everything else on these grids.* It marks the exact cell(s) holding
+  that exact pitch on that one grid: never octave-equivalents, never the other grid.
+  (A pitch can occupy two cells here -- with =x_step 9=, =(x,y)= and =(x+1,y-9)=
+  collide -- and both dance.)
+- *In step everywhere.* The phase comes from one clock, so every dance turns
+  together. That is why a corner that cannot be drawn is *skipped but still spends
+  its slot*: compressing the turn would drift that dance out of phase.
+- *It clobbers a dim trail but yields to a bright note.* A trail is decoration; a
+  sounding note is information. Without the clobber, a note whose four neighbours
+  happened to be trailed would dance invisibly -- exactly when the grid is busiest.
+- Expect it to read less cleanly on *grid A*, whose "dim" is faked by fast flashing.
+
+** off-screen notes
+If an edit-mode or sustained note scrolls out of the pitch window, the scroll pad's
+*octave* corner that would bring it back flashes (150 ms on / off). Both corners
+flash if there are such notes in both directions.
+
+Only the octave corners ever flash -- never the four arrows -- so a note scrolled off
+by *less* than an octave gets no hint. And one signal covers both edit-mode and
+sustained notes, so the LED cannot tell you which kind you are chasing. Both are
+Jeff's calls ("I'll understand").
+
+** editing a note's pulse
+With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= pedals
+retune *those notes'* pulse rate directly and leave the grid's factor alone. With no
+note in edit mode, the same pedals move the factor as usual.
+
+- It applies to *every* edited note on that grid at once.
+- It *multiplies*, so notes that already pulse at different rates keep their spread:
+  "slower ones continue to be slower than faster ones".
+- The pulse *phase* is kept, so a live note changes slope without a click.
+- A note struck while that grid's pulse was off has no pulse, and multiplying cannot
+  start one.
+- ~=1~ is never an edit control -- only the multipliers are.
+
+Note the one asymmetry with cycling: turning a grid's pulse *off* never retroactively
+touches sounding notes; only the multipliers reach them.
+
+* the on-screen window
+The controls left the grid, so their display did too: the ~=1~ LED used to show the
+switch and the tap cell used to blink the tempo. The window shows, and only shows:
+
+- the global pulse as *BPM to one decimal place* (or that no tempo is tapped yet);
+- each grid's factor as *2^x * 3^y*;
+- whether each grid's pulse is on;
+- a blinker at the *unfactored* global tempo -- the metronome you tapped, so it does
+  not move when a factor does.
+
+It needs =xhost= (see *startup*). If it cannot open, the instrument says so once and
+plays on regardless.
 
 * what is deliberately NOT here
 
