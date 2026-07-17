@@ -40,8 +40,8 @@ use std::time::{Duration, Instant};
 use rosc::{decoder, OscPacket, OscType};
 
 use midi_pulse::rig::{
-  load_named_rig, AccreteControlKind, AmShapeFamilyRig, Rig, MonomeWindowRig,
-  SinkRig, WaveformChoice,
+  load_named_rig, AccreteControlKind, AmShapeFamilyRig, MonomeWindowRig, PulseFactorRig, Rig,
+  SinkRig, SoftstepWindowRig, WaveformChoice,
 };
 use midi_pulse::device_assign::assign_selected_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
@@ -868,16 +868,35 @@ fn run(
     // uses this hook today) that is simply "the softstep"; naming it keeps a second
     // board from mirroring the same pedals onto the same banks.
     let mirror_board = rig.softsteps.first().map(|s| s.id.clone()).unwrap_or_default();
-    let hook = feet_accrete_hook(
-      mirror_board,
-      Arc::clone(&feet_accrete_on),
-      [older, other],
-      Arc::clone(&accrete),
-      Arc::clone(&held_all),
-      Arc::clone(&voices),
-      s.release,
-      audio.sample_rate,
-    );
+    // A rig that declares its pedal bindings explicitly gets exactly those, and the
+    // feet-accrete mirror stays out of the way: the two disagree about what a pedal
+    // means (the mirror hardcodes 1/2/3 + 8/9/0 and needs an on-grid toggle), so
+    // running both would make a pedal's job depend on which hook saw it first.
+    let actions = rig_pedal_actions(rig, |m| s.grids.iter().position(|g| g.monome_id == m));
+    let hook = if actions.is_empty() {
+      feet_accrete_hook(
+        mirror_board,
+        Arc::clone(&feet_accrete_on),
+        [older, other],
+        Arc::clone(&accrete),
+        Arc::clone(&held_all),
+        Arc::clone(&voices),
+        s.release,
+        audio.sample_rate,
+      )
+    } else {
+      println!("surfaces: {} rig-declared pedal binding(s)", actions.len());
+      rig_pedal_hook(
+        actions,
+        Arc::clone(&accrete),
+        Arc::clone(&held_all),
+        Arc::clone(&voices),
+        Arc::clone(&poly),
+        s.tap_window,
+        s.release,
+        audio.sample_rate,
+      )
+    };
     Some(drumkit_runtime::start_with_hook(
       rig,
       drumkit_runtime::tether::session(),
@@ -1637,37 +1656,146 @@ fn feet_accrete_hook(
     if !feet_accrete_on.get(grid).map(|b| b.load(Ordering::Relaxed)).unwrap_or(false) {
       return false;
     }
-    // Decide under the accrete lock, touch voices after it drops (the module's
-    // no-nested-locks rule), exactly like the on-grid buttons.
-    let mut activated = accrete::Activated::default();
-    {
-      let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-      let Some(state) = banks.get_mut(grid) else {
-        return false;
-      };
-      match (button, down) {
-        (AccreteControlKind::Clear, true) => state.press_clear(),
-        (AccreteControlKind::Clear, false) => state.release_clear(),
-        (AccreteControlKind::NeedsHolding, true) => activated = state.press_needs_holding(),
-        (AccreteControlKind::NeedsHolding, false) => {}
-        (AccreteControlKind::Accrete, true) => activated.accrete = state.press_accrete(),
-        (AccreteControlKind::Accrete, false) => state.release_accrete(),
-        // The pedals mirror only the trio; erase has no pedal (feet_accrete_button
-        // never yields it).
-        (AccreteControlKind::Erase, _) => return false,
+    // The trio only; erase has no pedal here (feet_accrete_button never yields it).
+    if button == AccreteControlKind::Erase {
+      return false;
+    }
+    drive_accrete(
+      grid, button, down, &accrete, &held_all, &voices, release_secs, sample_rate,
+    )
+  })
+}
+
+/// Apply one accrete-button edge to one grid's bank, from a foot or a finger.
+///
+/// Shared by the legacy feet-accrete mirror and the rig-declared `accrete_control`
+/// pedals so the two cannot drift. Decides under the accrete lock and touches voices
+/// only after it drops -- the module's no-nested-locks rule, same as the on-grid
+/// buttons. Returns whether the press was consumed.
+#[allow(clippy::too_many_arguments)]
+fn drive_accrete(
+  grid: usize,
+  button: AccreteControlKind,
+  down: bool,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  voices: &Arc<Mutex<VoiceMap>>,
+  release_secs: f32,
+  sample_rate: f32,
+) -> bool {
+  let mut activated = accrete::Activated::default();
+  {
+    let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(state) = banks.get_mut(grid) else {
+      return false;
+    };
+    match (button, down) {
+      (AccreteControlKind::Clear, true) => state.press_clear(),
+      (AccreteControlKind::Clear, false) => state.release_clear(),
+      (AccreteControlKind::NeedsHolding, true) => activated = state.press_needs_holding(),
+      (AccreteControlKind::NeedsHolding, false) => {}
+      (AccreteControlKind::Accrete, true) => activated.accrete = state.press_accrete(),
+      (AccreteControlKind::Accrete, false) => state.release_accrete(),
+      (AccreteControlKind::Erase, true) => activated.erase = state.press_erase(),
+      (AccreteControlKind::Erase, false) => state.release_erase(),
+    }
+  }
+  if button == AccreteControlKind::Clear && down {
+    synth::release_sustained_voices(voices, grid, release_secs, sample_rate);
+  }
+  if activated.accrete {
+    capture_grid_held_into(held_all, accrete, grid);
+  }
+  if activated.erase {
+    // A needs-holding flip can activate a physically-held ERASE button.
+    erase_grid_held_into(held_all, accrete, grid);
+  }
+  true
+}
+
+/// What a rig-declared pedal does. Resolved once at bring-up from
+/// `[[softstep_windows]]`, keyed by (softstep id, printed label).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PedalAction {
+  Accrete { grid: usize, control: AccreteControlKind },
+  Tap,
+  Pulse { grid: usize, factor: FactorButton },
+}
+
+/// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
+/// to its play-grid index; a pedal naming a monome that is not a play grid (or is
+/// absent) is dropped, so the rig loads around missing gear like everything else.
+fn rig_pedal_actions(
+  rig: &Rig,
+  grid_of: impl Fn(&str) -> Option<usize>,
+) -> HashMap<(String, u8), PedalAction> {
+  let mut map = HashMap::new();
+  for window in &rig.softstep_windows {
+    let action = match window {
+      SoftstepWindowRig::AccreteControl { pedal, monome, control, .. } => {
+        grid_of(monome).map(|grid| (*pedal, PedalAction::Accrete { grid, control: *control }))
+      }
+      SoftstepWindowRig::TapTempoPedal { pedal, .. } => Some((*pedal, PedalAction::Tap)),
+      SoftstepWindowRig::PulseFactorPedal { pedal, monome, factor, .. } => {
+        grid_of(monome).map(|grid| {
+          let factor = match factor {
+            PulseFactorRig::Double => FactorButton::Times2,
+            PulseFactorRig::Triple => FactorButton::Times3,
+            PulseFactorRig::Half => FactorButton::Div2,
+            PulseFactorRig::Third => FactorButton::Div3,
+            PulseFactorRig::Unity => FactorButton::Unity,
+          };
+          (*pedal, PedalAction::Pulse { grid, factor })
+        })
+      }
+      SoftstepWindowRig::Drumkit { .. } => None,
+    };
+    if let Some((pedal, action)) = action {
+      map.insert((window.softstep().to_string(), pedal), action);
+    }
+  }
+  map
+}
+
+/// The hook for rig-declared pedal bindings: sustain, tap tempo, and the pulse.
+///
+/// Unconditional, unlike the feet-accrete mirror -- no on-grid toggle gates it. Keyed
+/// by (device, pedal) because the printed labels repeat across boards and each board
+/// gives them different jobs.
+#[allow(clippy::too_many_arguments)]
+fn rig_pedal_hook(
+  actions: HashMap<(String, u8), PedalAction>,
+  accrete: Arc<Mutex<Vec<AccreteState>>>,
+  held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  voices: Arc<Mutex<VoiceMap>>,
+  poly: Arc<Mutex<PolyrhythmState>>,
+  tap_window: Duration,
+  release_secs: f32,
+  sample_rate: f32,
+) -> drumkit_runtime::PedalHook {
+  Arc::new(move |device, pedal, down| {
+    let Some(action) = actions.get(&(device.to_string(), pedal)) else {
+      return false;
+    };
+    match *action {
+      PedalAction::Accrete { grid, control } => drive_accrete(
+        grid, control, down, &accrete, &held_all, &voices, release_secs, sample_rate,
+      ),
+      // Tap and the factor buttons are key-down only, like their on-grid twins. The
+      // press is still CONSUMED on key-up, or the pedal would drum on release.
+      PedalAction::Tap => {
+        if down {
+          poly.lock().unwrap_or_else(|e| e.into_inner()).tap(Instant::now(), tap_window);
+        }
+        true
+      }
+      PedalAction::Pulse { grid, factor } => {
+        if down {
+          poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
+        }
+        true
       }
     }
-    if button == AccreteControlKind::Clear && down {
-      synth::release_sustained_voices(&voices, grid, release_secs, sample_rate);
-    }
-    if activated.accrete {
-      capture_grid_held_into(&held_all, &accrete, grid);
-    }
-    if activated.erase {
-      // A pedal needs-holding flip can activate a physically-held ERASE button.
-      erase_grid_held_into(&held_all, &accrete, grid);
-    }
-    true
   })
 }
 
@@ -2423,6 +2551,90 @@ mod tests {
 
     // And it must resolve, not merely parse.
     resolve_settings(&rig).expect("the shipped rig resolves to Settings");
+  }
+
+  /// The pedal map the shipped rig actually produces. This is the layer where a typo
+  /// is invisible: the rig says `pedal = 5, monome = "a", factor = "x2"`, and only
+  /// this map decides that a press of 5 on the NEW board doubles the LEFT grid.
+  #[test]
+  fn the_two_softstep_rigs_pedals_resolve_to_the_right_actions() {
+    let source = std::fs::read_to_string(
+      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+    )
+    .expect("read the shipped rig");
+    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    // Grid 0 = "a" = LOM (left/old), grid 1 = "b" = RNM (right/new), as resolve does.
+    let actions = rig_pedal_actions(&rig, |m| match m {
+      "a" => Some(0),
+      "b" => Some(1),
+      _ => None,
+    });
+    let at = |dev: &str, pedal: u8| actions.get(&(dev.to_string(), pedal)).copied();
+
+    // OLD board: sustain, left buttons -> left grid.
+    assert_eq!(
+      at("old", 1),
+      Some(PedalAction::Accrete { grid: 0, control: AccreteControlKind::Clear }),
+    );
+    assert_eq!(
+      at("old", 2),
+      Some(PedalAction::Accrete { grid: 0, control: AccreteControlKind::Accrete }),
+    );
+    assert_eq!(
+      at("old", 4),
+      Some(PedalAction::Accrete { grid: 1, control: AccreteControlKind::Accrete }),
+    );
+    assert_eq!(
+      at("old", 5),
+      Some(PedalAction::Accrete { grid: 1, control: AccreteControlKind::Clear }),
+    );
+    assert_eq!(at("old", 8), Some(PedalAction::Tap));
+    for free in [3, 6, 7, 9, 0] {
+      assert_eq!(at("old", free), None, "old pedal {free} is deliberately unbound");
+    }
+
+    // NEW board (rotated 180): far row reads 5 4 3 2 1, near row 0 9 8 7 6.
+    // Left columns -> left grid, right columns -> right grid.
+    assert_eq!(at("new", 5), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Times2 }));
+    assert_eq!(at("new", 4), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Times3 }));
+    assert_eq!(at("new", 0), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Div2 }));
+    assert_eq!(at("new", 9), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Div3 }));
+    assert_eq!(at("new", 1), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Times2 }));
+    assert_eq!(at("new", 2), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Times3 }));
+    assert_eq!(at("new", 6), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Div2 }));
+    assert_eq!(at("new", 7), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Div3 }));
+
+    // The middle column splits by DISTANCE, not side: nearer (8) = left grid,
+    // farther (3) = right grid. Jeff's rule, and the easiest thing to get backwards.
+    assert_eq!(at("new", 8), Some(PedalAction::Pulse { grid: 0, factor: FactorButton::Unity }));
+    assert_eq!(at("new", 3), Some(PedalAction::Pulse { grid: 1, factor: FactorButton::Unity }));
+
+    // The same label means different things per board -- the reason the hook needs
+    // the device id at all.
+    assert_ne!(at("old", 1), at("new", 1));
+    assert_ne!(at("old", 5), at("new", 5));
+    assert_ne!(at("old", 8), at("new", 8));
+  }
+
+  /// A pedal naming a monome with no play grid (unplugged, say) is dropped rather
+  /// than binding to the wrong grid or panicking -- the missing-gear path.
+  #[test]
+  fn a_pedal_whose_grid_is_absent_is_dropped() {
+    let source = std::fs::read_to_string(
+      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+    )
+    .expect("read");
+    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    // Only grid "a" is present.
+    let actions = rig_pedal_actions(&rig, |m| if m == "a" { Some(0) } else { None });
+    assert_eq!(
+      actions.get(&("old".to_string(), 1)),
+      Some(&PedalAction::Accrete { grid: 0, control: AccreteControlKind::Clear }),
+      "a's pedals still bind",
+    );
+    assert!(actions.get(&("old".to_string(), 5)).is_none(), "b's clear is dropped");
+    assert!(actions.get(&("new".to_string(), 1)).is_none(), "b's x2 is dropped");
+    assert_eq!(actions.get(&("old".to_string(), 8)), Some(&PedalAction::Tap), "tap is global");
   }
 
   #[test]
