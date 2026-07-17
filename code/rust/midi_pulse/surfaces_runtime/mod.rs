@@ -2001,11 +2001,31 @@ fn handle_edit_press(
   let fall_through = match decision {
     edit::Press::Play => true,
     edit::Press::EnterEdit { pitch } => {
-      rt.edit.enter(pitch);
+      // An edited note keeps sounding whether or not a finger stays on it
+      // (`1_vision`: "even if the note in edit mode was being fingered rather than
+      // sustained, it will continue to sound until exiting edit mode"). Sustaining it
+      // in the accrete bank -- rather than in some parallel set -- means the release
+      // path, the bright LEDs and `clear` all treat it like any other ringing note.
+      //
+      // `sustain_pitch` reports whether WE are now the reason it rings; a note the
+      // pedal already accreted has its own reason and must survive our exit.
+      let owns = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .sustain_pitch(pitch);
+      rt.edit.enter(pitch, owns);
       false
     }
     edit::Press::ExitEdit { pitch } => {
-      rt.edit.exit(pitch);
+      // Leaving edit mode takes away the reason WE gave it to ring, and only that:
+      // silence it iff nothing else is holding it up (Jeff: "pressing the button just
+      // below should silence it, and its ghost should not be in edit mode any more").
+      if rt.edit.exit(pitch) {
+        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].drop_pitch(pitch);
+        // A finger still on it is its own reason -- and then there is no drone to cut
+        // anyway; the voice is keyed by cell and dies on the ordinary release.
+        if !held.values().any(|p| *p == pitch) {
+          rt.sink.cut_sustained(pitch);
+        }
+      }
       false
     }
     edit::Press::Drag { from, to } => {

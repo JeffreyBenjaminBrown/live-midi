@@ -230,6 +230,25 @@ impl AccreteState {
     self.sustained.iter().copied()
   }
 
+  /// Sustain `pitch` outright, whatever the accrete condition. Returns whether it was
+  /// NEWLY sustained -- i.e. whether the caller is now the reason it rings.
+  ///
+  /// For per-voice edit mode, which is a *second* reason a note keeps sounding
+  /// (`1_vision`: "even if the note in edit mode was being fingered rather than
+  /// sustained, it will continue to sound until exiting edit mode"). Routing it through
+  /// this bank rather than inventing a parallel set means every downstream reader --
+  /// the release path, the bright-LED reflection, `clear` -- treats an edited note
+  /// exactly like any other sounding note, with no special cases.
+  pub fn sustain_pitch(&mut self, pitch: i32) -> bool {
+    self.sustained.insert(pitch)
+  }
+
+  /// Stop sustaining `pitch`. The mirror of [`sustain_pitch`], for a caller undoing
+  /// its own reason (edit mode ending); the voice itself is the caller's to release.
+  pub fn drop_pitch(&mut self, pitch: i32) {
+    self.sustained.remove(&pitch);
+  }
+
   /// Re-file a sustained pitch that MOVED (a per-voice pitch edit dragged it). The
   /// set is keyed by pitch, so without this a dragged drone would still be filed
   /// under the pitch it left: clear would still flush it, but by the wrong name, and

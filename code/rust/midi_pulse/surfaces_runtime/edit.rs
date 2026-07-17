@@ -42,11 +42,18 @@ pub enum Press {
 #[derive(Debug, Default)]
 pub struct EditState {
   pitches: HashSet<i32>,
+  /// The subset whose drone exists ONLY because they are being edited -- i.e. the
+  /// ones this state made ring, rather than ones already sustained by the accrete
+  /// pedal before the edit began.
+  ///
+  /// Needed because leaving edit mode must silence the first kind and NOT the second:
+  /// a note you deliberately accreted has its own reason to ring and must survive.
+  owned: HashSet<i32>,
 }
 
 impl EditState {
   pub fn new() -> Self {
-    EditState { pitches: HashSet::new() }
+    EditState { pitches: HashSet::new(), owned: HashSet::new() }
   }
 
   pub fn is_editing(&self, pitch: i32) -> bool {
@@ -98,12 +105,22 @@ impl EditState {
     }
   }
 
-  pub fn enter(&mut self, pitch: i32) {
+  /// Start editing `pitch`. `owns_drone` says whether edit mode is now the reason it
+  /// rings (false when it was already sustained some other way), which is what [`exit`]
+  /// consults before silencing it.
+  pub fn enter(&mut self, pitch: i32, owns_drone: bool) {
     self.pitches.insert(pitch);
+    if owns_drone {
+      self.owned.insert(pitch);
+    }
   }
 
-  pub fn exit(&mut self, pitch: i32) {
+  /// Stop editing `pitch`. Returns whether edit mode was the reason it rings -- i.e.
+  /// whether the caller should now silence it. A note that was already accreted keeps
+  /// ringing: it has its own reason.
+  pub fn exit(&mut self, pitch: i32) -> bool {
     self.pitches.remove(&pitch);
+    self.owned.remove(&pitch)
   }
 
   /// Follow a note that moved: edit mode belongs to the pitch, so dragging a note
@@ -113,12 +130,21 @@ impl EditState {
     if self.pitches.remove(&from) {
       self.pitches.insert(to);
     }
+    // The reason it rings travels with it, or a dragged note would be silenced by
+    // an exit that should have spared it (or spared by one that should not).
+    if self.owned.remove(&from) {
+      self.owned.insert(to);
+    }
   }
 
   /// Drop every pitch (the vision's "a button somewhere to clear edit mode from all
   /// notes", left unimplemented for now -- `1_vision` §undecided).
-  pub fn clear(&mut self) {
+  /// Drop every pitch, returning those whose drone this state owned -- the caller
+  /// must silence them (the vision's "a button somewhere to clear edit mode from all
+  /// notes", still unbound).
+  pub fn clear(&mut self) -> Vec<i32> {
     self.pitches.clear();
+    self.owned.drain().collect()
   }
 }
 
@@ -144,7 +170,7 @@ mod tests {
   fn pressing_under_a_sounding_note_enters_edit_and_pressing_again_exits() {
     let mut e = EditState::new();
     assert_eq!(e.classify(Some(20), 21, |p| p == 20), Press::EnterEdit { pitch: 20 });
-    e.enter(20);
+    e.enter(20, true);
     assert_eq!(e.classify(Some(20), 21, |p| p == 20), Press::ExitEdit { pitch: 20 });
   }
 
@@ -154,7 +180,7 @@ mod tests {
   #[test]
   fn the_exit_trigger_beats_the_drag_when_both_could_fire() {
     let mut e = EditState::new();
-    e.enter(20);
+    e.enter(20, true);
     // Cell 21's neighbour above is the edited, sounding note 20. Both rules apply.
     assert_eq!(
       e.classify(Some(20), 21, |p| p == 20),
@@ -168,15 +194,15 @@ mod tests {
   #[test]
   fn while_editing_an_ordinary_press_drags_instead_of_playing() {
     let mut e = EditState::new();
-    e.enter(20);
+    e.enter(20, true);
     assert_eq!(e.classify(Some(50), 40, |p| p == 20), Press::Drag { from: 20, to: 40 });
   }
 
   #[test]
   fn a_drag_moves_the_nearest_edited_note() {
     let mut e = EditState::new();
-    e.enter(10);
-    e.enter(30);
+    e.enter(10, true);
+    e.enter(30, true);
     assert_eq!(e.classify(None, 28, |_| false), Press::Drag { from: 30, to: 28 });
     assert_eq!(e.classify(None, 12, |_| false), Press::Drag { from: 10, to: 12 });
   }
@@ -185,8 +211,8 @@ mod tests {
   #[test]
   fn a_tie_drags_the_lower_note() {
     let mut e = EditState::new();
-    e.enter(10);
-    e.enter(20);
+    e.enter(10, true);
+    e.enter(20, true);
     assert_eq!(e.classify(None, 15, |_| false), Press::Drag { from: 10, to: 15 });
   }
 
@@ -195,7 +221,7 @@ mod tests {
   #[test]
   fn edit_mode_follows_a_note_that_moves() {
     let mut e = EditState::new();
-    e.enter(20);
+    e.enter(20, true);
     e.moved(20, 35);
     assert!(!e.is_editing(20));
     assert!(e.is_editing(35), "the note is still being edited at its new pitch");
@@ -206,7 +232,7 @@ mod tests {
   #[test]
   fn moving_a_note_that_is_not_edited_does_nothing() {
     let mut e = EditState::new();
-    e.enter(20);
+    e.enter(20, true);
     e.moved(99, 100);
     assert!(e.is_editing(20));
     assert!(!e.is_editing(100));
@@ -218,7 +244,7 @@ mod tests {
   #[test]
   fn edit_mode_survives_a_retrigger() {
     let mut e = EditState::new();
-    e.enter(20);
+    e.enter(20, true);
     // The voice is replaced; the pitch is unchanged.
     assert!(e.is_editing(20));
     assert_eq!(e.classify(Some(20), 21, |p| p == 20), Press::ExitEdit { pitch: 20 });
@@ -230,16 +256,16 @@ mod tests {
   fn a_press_with_no_cell_above_falls_through_to_play_or_drag() {
     let mut e = EditState::new();
     assert_eq!(e.classify(None, 21, |_| true), Press::Play);
-    e.enter(5);
+    e.enter(5, true);
     assert_eq!(e.classify(None, 21, |_| true), Press::Drag { from: 5, to: 21 });
   }
 
   #[test]
   fn multiple_notes_can_be_edited_at_once() {
     let mut e = EditState::new();
-    e.enter(10);
-    e.enter(20);
-    e.enter(30);
+    e.enter(10, true);
+    e.enter(20, true);
+    e.enter(30, true);
     let mut got: Vec<i32> = e.pitches().collect();
     got.sort();
     assert_eq!(got, [10, 20, 30]);
@@ -249,5 +275,69 @@ mod tests {
     assert!(e.is_editing(10) && e.is_editing(30));
     e.clear();
     assert!(!e.any());
+  }
+
+  // ---- who owns the drone: what exiting edit mode is allowed to silence ----
+
+  /// Jeff's report: finger a note, press below it to edit, lift the finger -- the note
+  /// must keep sounding "as if my finger was still on it", and pressing below again
+  /// must silence it. So edit mode OWNS that ring, and exiting reclaims it.
+  #[test]
+  fn exiting_reclaims_a_ring_that_edit_mode_itself_created() {
+    let mut e = EditState::new();
+    e.enter(20, true); // nothing else was sustaining it: we made it ring
+    assert!(e.exit(20), "exit must silence the note it made ring");
+  }
+
+  /// The case that must NOT be silenced: a note already accreted by the pedal has its
+  /// own reason to ring, and editing it then leaving must not take that away.
+  #[test]
+  fn exiting_spares_a_note_that_was_already_sustained() {
+    let mut e = EditState::new();
+    e.enter(20, false); // it was already droning before the edit began
+    assert!(!e.exit(20), "exit must leave an accreted note ringing");
+  }
+
+  #[test]
+  fn exiting_a_note_that_was_never_edited_reclaims_nothing() {
+    let mut e = EditState::new();
+    assert!(!e.exit(99));
+  }
+
+  /// The ring travels with the note, or dragging then exiting would silence a note it
+  /// should spare (or spare one it should silence).
+  #[test]
+  fn the_owned_ring_follows_a_note_that_moves() {
+    let mut e = EditState::new();
+    e.enter(20, true);
+    e.moved(20, 35);
+    assert!(e.exit(35), "still ours at the new pitch");
+
+    let mut e = EditState::new();
+    e.enter(20, false);
+    e.moved(20, 35);
+    assert!(!e.exit(35), "still not ours at the new pitch");
+  }
+
+  #[test]
+  fn clear_reports_only_the_rings_edit_mode_owned() {
+    let mut e = EditState::new();
+    e.enter(10, true);
+    e.enter(20, false);
+    e.enter(30, true);
+    let mut owned = e.clear();
+    owned.sort();
+    assert_eq!(owned, [10, 30], "the accreted note (20) is not ours to silence");
+    assert!(!e.any());
+  }
+
+  /// Exiting is not re-entrant: a second exit must not ask the caller to silence a
+  /// note twice.
+  #[test]
+  fn exiting_twice_only_reclaims_once() {
+    let mut e = EditState::new();
+    e.enter(20, true);
+    assert!(e.exit(20));
+    assert!(!e.exit(20), "already reclaimed");
   }
 }
