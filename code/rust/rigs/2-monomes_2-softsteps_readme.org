@@ -247,16 +247,44 @@ it skipped for a missing dependency, then plays on.
 Sometimes you want to change ONE already-sounding note. Accrete it (so your hands
 are free), then edit it in place: it keeps ringing and simply moves.
 
-** entering and leaving
+** the two neighbour gestures
+The cells directly above and below a sounding note are its handles. Both are toggles,
+neither sounds, and both are *geometric* -- literally the cell above/below, not "the
+pitch one microtone away" -- so they don't move when the tuning changes.
+
+| press           | acts on          | does                    |
+|-----------------+------------------+-------------------------|
+| the cell BELOW  | the note above it | toggle *edit mode*      |
+| the cell ABOVE  | the note below it | toggle *sustain*        |
+
+*Sustain* here is the same sustain the pedals give, just aimed at one note: it joins
+the same set, paints the same, and a *clear* flushes it like any other -- including
+notes that never went near a pedal.
+
+A cell with sounding notes on *both* sides (two notes one cell apart, straddling it)
+is ambiguous. *Edit wins.* Rare enough not to matter often, but decided rather than
+accidental.
+
+A note on the top row has no cell above it, and one on the bottom row none below, so
+each loses one of its two handles.
+
+** entering and leaving edit mode
 Press the cell *directly below* a sounding note to toggle that note's edit mode.
-That cell does not sound.
 
-The trigger is *geometric* -- literally the cell below, =y+1= -- not "the pitch one
-microtone up". They coincide here (=y_step = 1=), but defining it by position means
-the gesture does not move when the tuning changes. Jeff's reason: "my other fingers
-can do either side but my thumb can only reach from below."
+Jeff's reason for pinning it below rather than by pitch: "my other fingers can do
+either side but my thumb can only reach from below." (They coincide here anyway, since
+=y_step = 1= makes the cell below exactly one microtone up.)
 
-"Sounding" means fingered *or* sustained; an edited note usually is a drone.
+*An edited note keeps sounding* whether or not a finger stays on it -- lift your finger
+and it goes on ringing until you leave edit mode. Being edited is its own reason to
+ring, alongside a finger and a sustain; a note rings while *any* of the three holds.
+So leaving edit mode silences it only if nothing else was holding it up: a note you
+had also sustained keeps going.
+
+*Leaving always works*, whether or not the note can still be heard. That matters more
+than it sounds: anything that silences an edited note (a =clear=, say) would otherwise
+strand it -- still dancing, still forcing every press to drag, and un-dismissable
+because the gesture that dismisses it needed the sound that just went away.
 
 ** dragging a note's pitch
 While *any* note on a grid is in edit mode, that grid stops playing new notes: a
