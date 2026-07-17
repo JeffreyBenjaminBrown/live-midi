@@ -22,7 +22,7 @@ spoke of the =pitch= "key" of a drone. Three meanings, one word.
 A stored set of pitches that a chord button emits. It is a real feature, and it lives
 in the sawwave runtime (=AppState.chords=, =chord_slot_buttons=, =chord_wipe_button=).
 
-This rig has no chords. The word must not appear in the new library at all. Where the
+This rig has no chords. The word must not appear (yet, at least) in the new library at all. Where the
 old code wrote =chord=, it meant "which grid, and which kind of voice", and the new
 =Voice= enum says that in its variants instead.
 
