@@ -68,6 +68,8 @@ pub struct Activated {
 }
 
 impl AccreteState {
+  /// A bank whose `needs_holding` switch IS bound somewhere, so the player can flip
+  /// it. Starts in toggle mode, as it always has.
   pub fn new() -> Self {
     AccreteState {
       needs_holding: false,
@@ -78,6 +80,19 @@ impl AccreteState {
       clear_count: 0,
       sustained: HashSet::new(),
     }
+  }
+
+  /// A bank that is MOMENTARY forever: accrete is live only while its button is
+  /// physically held.
+  ///
+  /// For rigs that bind no `needs_holding` control anywhere. Without that switch the
+  /// mode can never be changed, so leaving it at the toggle default is a trap: one tap
+  /// of accrete and every later note sustains, with nothing on the surface saying why
+  /// and no way back except `clear`. Jeff hit exactly that ("even after removing my
+  /// foot, new notes sustain ... for this rig it should only ever be in momentary
+  /// mode"). Bind a `needs_holding` control and you get the switchable bank instead.
+  pub fn new_momentary() -> Self {
+    AccreteState { needs_holding: true, ..AccreteState::new() }
   }
 
   /// Is the accreting condition live right now?
@@ -536,5 +551,66 @@ mod tests {
     s.press_erase(); // erase off again
     s.release_erase();
     assert!(s.note_released_sustains(20), "the survivor still sustains");
+  }
+
+  // ---- momentary banks (rigs that bind no needs_holding control) ----
+
+  /// The bug Jeff hit on the hardware: with the toggle default, ONE tap of accrete
+  /// latched the mode on, so every later note sustained even with his foot off it.
+  #[test]
+  fn a_momentary_bank_stops_accreting_the_moment_the_button_is_released() {
+    let mut a = AccreteState::new_momentary();
+    a.press_accrete();
+    assert!(a.accreting(), "held: accreting");
+    a.release_accrete();
+    assert!(!a.accreting(), "released: NOT accreting -- a tap must not latch");
+
+    // ...and a note played afterwards must not sustain.
+    a.note_played(40);
+    assert!(!a.note_released_sustains(40), "a note played after the lift is not sustained");
+  }
+
+  /// The contrast, and why the default is not simply wrong: a bank WITH the switch
+  /// bound still toggles, which is what the drums rig has always done.
+  #[test]
+  fn a_switchable_bank_still_toggles_on_a_tap() {
+    let mut a = AccreteState::new();
+    a.press_accrete();
+    a.release_accrete();
+    assert!(a.accreting(), "toggle mode: the tap latches, by design");
+  }
+
+  #[test]
+  fn a_momentary_bank_sustains_notes_played_while_held() {
+    let mut a = AccreteState::new_momentary();
+    a.press_accrete();
+    a.note_played(40);
+    assert!(a.note_released_sustains(40), "held: the note joins the sustained set");
+    a.release_accrete();
+    // It stays sustained -- lifting the foot stops ADDING, it does not flush.
+    assert!(a.sustained_pitches().any(|p| p == 40), "lifting does not clear what was caught");
+  }
+
+  /// Two feet / a pedal and a button can overlap on one bank; the hold is counted,
+  /// not a boolean, so releasing one does not cancel the other.
+  #[test]
+  fn a_momentary_banks_holds_are_counted() {
+    let mut a = AccreteState::new_momentary();
+    a.press_accrete();
+    a.press_accrete();
+    a.release_accrete();
+    assert!(a.accreting(), "still held by the second presser");
+    a.release_accrete();
+    assert!(!a.accreting());
+  }
+
+  #[test]
+  fn clear_still_flushes_a_momentary_bank() {
+    let mut a = AccreteState::new_momentary();
+    a.press_accrete();
+    a.note_played(40);
+    a.release_accrete();
+    a.press_clear();
+    assert!(a.sustained_pitches().next().is_none(), "clear empties the set");
   }
 }

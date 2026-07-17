@@ -864,8 +864,23 @@ fn run(
   // that grid's notes can join it. Alongside: a mirror of every grid's held notes
   // (cell -> struck pitch), so a bank's activation can capture what is fingered on
   // its grid even from the pedal hook.
-  let accrete: Arc<Mutex<Vec<AccreteState>>> =
-    Arc::new(Mutex::new((0..num_grids).map(|_| AccreteState::new()).collect()));
+  // A bank whose `needs_holding` switch is bound NOWHERE -- neither an on-grid button
+  // nor a rig-declared pedal -- can never leave whatever mode it starts in. Leaving it
+  // at the toggle default is then a trap: one tap of accrete and every later note
+  // sustains, with nothing on the surface saying why and no way back but `clear`. So
+  // such a bank is momentary: hold to accrete, lift to stop. Bind a `needs_holding`
+  // control and you get the switchable bank the drums rig has always had.
+  let accrete: Arc<Mutex<Vec<AccreteState>>> = Arc::new(Mutex::new(
+    (0..num_grids)
+      .map(|g| {
+        if grid_has_needs_holding_control(rig, &s.grids[g]) {
+          AccreteState::new()
+        } else {
+          AccreteState::new_momentary()
+        }
+      })
+      .collect(),
+  ));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
   // Each grid's edit-mode pitches, published OUT of its thread the way `held_all` and
   // `sounding` are -- the pedal hook needs them: a pulse pedal retunes the edited
@@ -1936,6 +1951,22 @@ fn cells_for_pitch(rt: &GridThread, register: i32, pitch: i32) -> Vec<(i32, i32)
   out
 }
 
+/// Can this grid's `needs_holding` switch be flipped at all -- by an on-grid button or
+/// by a rig-declared pedal? If not, the mode is fixed forever at whatever it starts
+/// as, which is why the caller makes such a bank momentary rather than toggling.
+fn grid_has_needs_holding_control(rig: &Rig, grid: &GridSettings) -> bool {
+  if grid.needs_holding_rect != NO_RECT {
+    return true;
+  }
+  rig.softstep_windows.iter().any(|w| {
+    matches!(
+      w,
+      SoftstepWindowRig::AccreteControl { monome, control: AccreteControlKind::NeedsHolding, .. }
+        if *monome == grid.monome_id
+    )
+  })
+}
+
 /// The edit-mode half of a play-cell press. Returns whether the press should fall
 /// through to the ordinary play path.
 ///
@@ -2840,6 +2871,71 @@ mod tests {
     assert!(actions.get(&("old".to_string(), 5)).is_none(), "b's clear is dropped");
     assert!(actions.get(&("new".to_string(), 1)).is_none(), "b's x2 is dropped");
     assert_eq!(actions.get(&("old".to_string(), 8)), Some(&PedalAction::Tap), "tap is global");
+  }
+
+  /// The bug Jeff hit on the hardware: the shipped rig binds accrete and clear but no
+  /// `needs_holding` switch, so its banks came up in the toggle DEFAULT -- one tap and
+  /// every later note sustained with his foot off the pedal. The rig's readme promises
+  /// momentary; this asserts the rig actually delivers it.
+  #[test]
+  fn the_two_softstep_rigs_accrete_is_momentary_not_toggle() {
+    use midi_pulse::rig::{AccreteControlKind, SoftstepWindowRig};
+    let source = std::fs::read_to_string(
+      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+    )
+    .expect("read the shipped rig");
+    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    let s = resolve_settings(&rig).expect("resolves");
+
+    // Premise: it really does bind no needs_holding control anywhere.
+    assert!(
+      !rig.softstep_windows.iter().any(|w| matches!(
+        w,
+        SoftstepWindowRig::AccreteControl { control: AccreteControlKind::NeedsHolding, .. }
+      )),
+      "this rig deliberately binds no needs_holding pedal",
+    );
+    for grid in &s.grids {
+      assert_eq!(grid.needs_holding_rect, NO_RECT, "nor an on-grid one");
+      assert!(
+        !grid_has_needs_holding_control(&rig, grid),
+        "so grid {:?} can never leave whatever mode it starts in",
+        grid.monome_id,
+      );
+    }
+
+    // Therefore every bank must come up momentary: hold to accrete, lift to stop.
+    for grid in &s.grids {
+      let mut bank = if grid_has_needs_holding_control(&rig, grid) {
+        AccreteState::new()
+      } else {
+        AccreteState::new_momentary()
+      };
+      bank.press_accrete();
+      bank.release_accrete();
+      assert!(
+        !bank.accreting(),
+        "grid {:?}: a tap must not latch accrete on",
+        grid.monome_id,
+      );
+    }
+  }
+
+  /// ...and the drums rig, which DOES bind the switch, keeps its toggle behavior.
+  #[test]
+  fn the_drums_rigs_accrete_still_toggles() {
+    let source = std::fs::read_to_string(
+      midi_pulse::rig::rig_dir().join("2-monomes_kmss-drums.org"),
+    )
+    .expect("read the drums rig");
+    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    let s = resolve_settings(&rig).expect("resolves");
+    for grid in &s.grids {
+      assert!(
+        grid_has_needs_holding_control(&rig, grid),
+        "the drums rig has an on-grid needs_holding button, so it stays switchable",
+      );
+    }
   }
 
   #[test]
