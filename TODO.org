@@ -285,6 +285,30 @@ to move it there (immediately? next pass?).
 * Store tap-pulsed note set.
 * Retrieve tap-pulsed note set incrementally.
 * DONE
+** DONE BUG : exit edit mode kills fingered voice after drag
+If I press a monomekey to start a voice,
+put it in edit mode, then take it out of edit mode,
+but my finger never left it, it continues to sound. Good.
+
+But if I press it, put it into edit mode, and drag it,
+then take it out of edit mode, it dies --
+even if the button I pressed to drag it to a new pitch is still depressed. Bad.
+
+Note that if I retrigger that voice at the new pitch before exiting edit mode,
+it continues to sound. I suspect the problem is that the test for
+whether it is still fingered is looking for key-up at the old monome key,
+not the new one.
+
+*** DONE claude: fixed
+Your diagnosis was exactly right. Dragging moved the voice's pitch but left it keyed to
+the OLD monomekey (or, if you'd lifted that finger, a bare drone), so the finger on the
+NEW monomekey was invisible and exit cut the voice. The drag now re-homes the voice onto
+the drag finger's cell, so it is an ordinary fingered voice there: exit spares it, and
+lifting the drag key ends it. Reproduced and pinned with tests
+(=a_dragged_drone_becomes_fingered_and_survives_an_exit=).
+
+This is the behaviour edo_surface already has by construction; the fix retrofits it into
+the live crate.
 ** DONE double-tapping "=1" : fix and change
 That button, when tapped once, should reset the tap factor to unity.
 When tapped twice in under 400 ms (I think that's the value currently coded),
