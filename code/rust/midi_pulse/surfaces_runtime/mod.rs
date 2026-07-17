@@ -24,6 +24,7 @@
 
 mod accrete;
 pub mod audio;
+mod dance;
 mod edit;
 mod grid;
 mod polyrhythm;
@@ -978,6 +979,7 @@ fn run(
       live: Arc::clone(&live),
       slide: SlideCandidates::new(),
       edit: edit::EditState::new(),
+      started: Instant::now(),
       slide_window: s.slide_window,
       slide_duration_secs: s.slide_duration_secs,
       voices: Arc::clone(&voices),
@@ -1102,6 +1104,10 @@ struct GridThread {
   /// Which of THIS grid's pitches are in per-voice edit mode. Grid-local and
   /// pitch-keyed: never mirrored to the other grid, never octave-duplicated.
   edit: edit::EditState,
+  /// When this runtime started. The diamond dance's phase is a pure function of
+  /// elapsed time from here, so every dance on the instrument turns in step -- that
+  /// is the whole reason a skipped corner is not allowed to retime its dance.
+  started: Instant,
   slide_window: Duration,
   slide_duration_secs: f32,
   /// The hot-reloadable parameters; refreshed into the fields above when the
@@ -1231,9 +1237,44 @@ fn grid_thread(mut rt: GridThread) {
     let mut sounding_classes = union_sounding(&rt.sounding);
     sounding_classes.extend(sustained_classes);
     let trail_classes = trail_set(&rt.trail);
+
+    // The diamond dances and the off-screen indicator. Both read THIS grid's edit set
+    // plus its own sustained pitches: local, never mirrored from the other grid and
+    // never octave-duplicated, unlike everything else painted here.
+    let elapsed = rt.started.elapsed();
+    let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
+    for pitch in rt.edit.pitches() {
+      // A pitch can occupy TWO cells on one grid, and Jeff wants both to dance
+      // ("sometimes there are two monome buttons representing exactly the same
+      // pitch"). So dance every cell that sounds it, not just the first.
+      for (x, y) in cells_for_pitch(&rt, register, pitch) {
+        dance_cells.insert(dance::corner_cell((x, y), elapsed));
+      }
+    }
+    // The visible pitch window, for "is that note off-screen".
+    let [ex0, ey0, ex1, ey1] = rt.edo_rect;
+    let corners = [
+      step_for_cell(rt.x_step, rt.y_step, register, ex0, ey0),
+      step_for_cell(rt.x_step, rt.y_step, register, ex1, ey1),
+    ];
+    let (lo, hi) = (corners[0].min(corners[1]), corners[0].max(corners[1]));
+    let off = if dance::flash_on(elapsed) {
+      // One signal for BOTH edit-mode and sustained notes -- Jeff's call ("in both
+      // cases"), so the LED cannot say which kind you are chasing.
+      let sustained: Vec<i32> = {
+        let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+        banks[rt.grid_index].sustained_pitches().collect()
+      };
+      dance::off_screen(rt.edit.pitches().chain(sustained), lo, hi)
+    } else {
+      dance::OffScreen::default()
+    };
+
     let levels = levels_for_grid(
       &sounding_classes,
       &trail_classes,
+      &dance_cells,
+      off,
       rt.edo_rect,
       rt.selector_rect,
       selector_slot,
@@ -1807,6 +1848,22 @@ fn rig_pedal_hook(
       }
     }
   })
+}
+
+/// Every cell of this grid's play surface that sounds exactly `pitch` under the
+/// current register. Usually one, but a grid can hold the same pitch twice (with
+/// `x_step = 9`, `(x, y)` and `(x+1, y-9)` collide), and Jeff wants both to dance.
+fn cells_for_pitch(rt: &GridThread, register: i32, pitch: i32) -> Vec<(i32, i32)> {
+  let [ex0, ey0, ex1, ey1] = rt.edo_rect;
+  let mut out = vec![];
+  for y in ey0..=ey1 {
+    for x in ex0..=ex1 {
+      if step_for_cell(rt.x_step, rt.y_step, register, x, y) == pitch {
+        out.push((x, y));
+      }
+    }
+  }
+  out
 }
 
 /// The edit-mode half of a play-cell press. Returns whether the press should fall
