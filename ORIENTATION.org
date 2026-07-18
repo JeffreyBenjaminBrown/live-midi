@@ -17,22 +17,36 @@ live only in Claude's memory. Follow the links for depth.
   See [[./how-to-parallelize-dev.org]].
 - The project's point: read/write MIDI and audio between container and host.
 - The tree sorts by what a thing IS, not by what language it is written in:
-  =edo_surface/= is the instrument being built now, =buried/= is the old
-  =midi_pulse= crate (it still compiles and still runs the looper, piano, un-12 and
-  drums rigs, it is just out of the way), =rigs/= holds the rigs and their readmes,
+  =buried/= holds the =midi_pulse= crate -- despite the name, it is where ALL the
+  live instrument code runs today (the surfaces runtime, the looper, piano, un-12
+  and drums rigs); =edo_surface/= is a mostly-empty successor crate that never took
+  over; =rigs/= holds the rigs and their readmes,
   and =tools/= holds the meters, probes and bridges, Rust and Python alike. There
   used to be a =code/rust/= and a =code/python/=, which sorted by the one axis nobody
   ever searches on.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
 
-* the active work: monome-looper-58-8-1
-A two-grid looping instrument in 58-EDO; no piano. One grid plays notes, the
-other records / plays back / edits loops.
+* the active work: 2-monomes_2-softsteps (the surfaces runtime)
+Jeff's daily instrument lately: two 46-EDO play grids + two SoftStep pedal
+boards (sustain + edit mode underfoot), two EX-P volume pedals, per-grid
+factored pulse, per-voice edit mode, configurable timbres with abs/rel AM+FM.
 - *Canonical reference (read this first):*
-  [[./rigs/monome-looper-58-8-1_readme.org]] -- glossary, usage, layout,
-  settings. It is the source of truth for how the instrument behaves.
-- Rig: =rigs/monome-looper-58-8-1.org= (our TOML-in-org format).
+  [[./rigs/2-monomes_2-softsteps_readme.org]] -- glossary, usage, layout.
+- Rig: =rigs/2-monomes_2-softsteps.org= (TOML-in-org; heavily commented).
+- Runtime: =buried/midi_pulse/surfaces_runtime/=. =mod.rs= is the shell AND most
+  behavior (large; grep for the window kind you care about); pure pieces live in
+  =edit.rs= (per-voice edit state), =accrete.rs= (sustain banks),
+  =polyrhythm.rs= (tap tempo + factors), =synth.rs= (the (grid,cell)-keyed voice
+  driver), =grid.rs=, =slide.rs=. The shared voice/render engine is
+  =buried/midi_pulse/sawwave/= (=types.rs=, =voices.rs=).
+- Design history: =TODO/many/= (=1_vision= .. =3_plan=, =progress=); newer
+  features are journaled in =queue.org= DONE entries and commit messages.
+
+* the previous instrument: monome-looper-58-8-1
+A two-grid looping instrument in 58-EDO; still runs.
+- Reference: [[./rigs/monome-looper-58-8-1_readme.org]];
+  rig =rigs/monome-looper-58-8-1.org=.
 - Runtime: =buried/midi_pulse/looper_runtime/=. =state.rs= is the brain (pure,
   unit-tested key/LED/playback logic -- change behavior here). =sink.rs= = audio
   voices; =loop_store.rs= = slots + playback; =remap.rs= = pitch edits;
@@ -42,8 +56,8 @@ other records / plays back / edits loops.
 
 * build / run / test
 #+begin_src sh
-cargo test -p midi_pulse looper_runtime              # fast, no hardware
-cargo run  --bin midi_pulse -- monome-looper-58-8-1  # needs BOTH 16x16 grids
+cargo test -p midi_pulse                                      # fast, no hardware
+pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps   # needs the gear
 #+end_src
 Most logic is testable without hardware; do that. Running for real needs the
 grids and audio routing (below). Ctrl-C blanks both grids and stops audio.

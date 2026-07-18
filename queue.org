@@ -39,7 +39,8 @@ the first two, they change behavior you already had:
   yesterday's =edit_delete_*= kinds are gone. The erase pedal (unbound in
   this rig) still erases fingered notes only -- extending it to edited ones
   seemed out of scope; say the word.
-* TODO refactor and investigate with an eye to safety
+* TODO merge branch 2 into this
+* DONE refactor and investigate with an eye to safety
 Could any names be clearer?
 Could the code and/or documentation be better organized? Deduplicated?
 Are there too many entry points for learning about things?
@@ -50,3 +51,18 @@ Are there any implicit concepts that could be usefully reified?
 These are higher-risk questions, so rather than immediately fixing,
 please merely assess and report back in an org-file, 'could-be-better.org',
 including a section on the dangers of each potential improvement.
+** DONE claude (2026-07-18): see could-be-better.org
+Fixed outright (its first section logs them): ORIENTATION's stale active-work
+map (it still said the looper; now it maps the surfaces runtime and stops
+calling edo_surface "the instrument being built"), and the triplicated
+[[timbres]] parameter doc (rig + mock now point at rigs/README.org, the one
+home -- both copies had drifted on every rename). Deliberately NOT fixed on my
+own, though they are "just names": the rig-facing renames (tap_tempo_pad ->
+factored_pulse_pad, the [surfaces] table your own TODO calls dumb,
+softstep_accretes_toggle, and buried/ itself) -- each is trivial alone but
+they cross worktrees and your muscle memory, so the report proposes one
+deliberate rename-day batch with your choice of names. The seven assessed
+items are ordered by value-per-risk; the short version: reifying "reasons to
+ring" is the one with real payoff and real danger, the voice-key pun has a
+safe 80% version (helper predicates), and mod.rs/GridThread splits are pure
+churn best done when the worktrees are level.
