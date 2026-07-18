@@ -24,6 +24,12 @@
 //! pedals use in the real rig. Type a number (or the name) + Enter to switch, per the
 //! banner. It starts on `standard`, which is what most real pads use.
 //!
+//! Transcript (opt-in): set `SOFTSTEP_METER_LOG` (to a path, or `1` for the default
+//! `softstep_meter.log`) and every FIRE/revise/release plus each treatment switch is
+//! appended with a millisecond timestamp. The on-screen log keeps only the last 8 lines
+//! and is wiped on every redraw, so this is the only way to review a run afterwards -- and
+//! the way to tell a genuine too-close pair of hits from a double-fire, by their gap.
+//!
 //! Restores standalone mode on exit -- Ctrl-C (via `tether::arm`'s signal thread) or
 //! `q` + Enter (via `TetherSession`'s `Drop`) -- exactly like the drumkit runtime.
 //!
@@ -47,6 +53,7 @@ mod decode;
 mod tether;
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -373,6 +380,47 @@ fn present_boards() -> Vec<(&'static str, &'static str)> {
     .collect()
 }
 
+/// An optional timestamped transcript of hit events, so a run can be reviewed after the
+/// fact -- the on-screen log keeps only the last 8 lines and is wiped on every redraw, so
+/// nothing survives the session without this. Enabled by the `SOFTSTEP_METER_LOG` env var.
+/// Every line is prefixed with milliseconds since the meter started, which is what makes a
+/// too-close pair of hits (the phasing you can hear) visible as a small gap. Cloneable:
+/// each board's poll thread and the stdin thread hold a handle onto the one shared file.
+#[derive(Clone)]
+struct Logger {
+  file: Arc<Mutex<File>>,
+  epoch: Instant,
+}
+
+impl Logger {
+  /// Open (truncating) the transcript named by `SOFTSTEP_METER_LOG`. An empty value or
+  /// `"1"` uses the default name `softstep_meter.log` in the working directory. Returns
+  /// `None` when the var is unset, or when the file cannot be opened -- logging is
+  /// best-effort and never stops the meter.
+  fn from_env(epoch: Instant) -> Option<Logger> {
+    let val = std::env::var("SOFTSTEP_METER_LOG").ok()?;
+    let path = if val.is_empty() || val == "1" { "softstep_meter.log".to_string() } else { val };
+    match File::create(&path) {
+      Ok(file) => {
+        println!("  transcript: logging every hit to {path:?} (SOFTSTEP_METER_LOG)");
+        Some(Logger { file: Arc::new(Mutex::new(file)), epoch })
+      }
+      Err(e) => {
+        eprintln!("  transcript: could not open {path:?}: {e} -- continuing without a log");
+        None
+      }
+    }
+  }
+
+  /// Append one timestamped line, then flush so a transcript survives a `kill`. Best-effort.
+  fn line(&self, msg: &str) {
+    let ms = self.epoch.elapsed().as_secs_f64() * 1000.0;
+    let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = writeln!(f, "{ms:>10.1}ms  {msg}");
+    let _ = f.flush();
+  }
+}
+
 /// One board's live meter: its display state, its poll thread, and the MIDI connection
 /// kept alive for the run.
 struct Board {
@@ -393,6 +441,7 @@ fn start_board(
   label: &str,
   params: SoftstepParams,
   audio_on: bool,
+  logger: Option<Logger>,
   session: &tether::TetherSession,
 ) -> Result<Board, String> {
   session.enter(substring).map_err(|e| format!("tether {label}: {e}"))?;
@@ -442,9 +491,10 @@ fn start_board(
     let decoder = Arc::clone(&decoder);
     let state = Arc::clone(&state);
     let stop = Arc::clone(&stop);
+    let board = label.to_string();
     thread::Builder::new()
       .name(format!("softstep-meter-poll-{substring}"))
-      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on))
+      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on, board, logger))
       .map_err(|e| e.to_string())?
   };
 
@@ -488,6 +538,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     println!("  audio audition OFF (SOFTSTEP_METER_SILENT set): silent meter.");
   }
+  // A transcript (opt-in via SOFTSTEP_METER_LOG) with one timestamped line per event, so a
+  // run can be reviewed afterwards -- the on-screen log is wiped on every redraw.
+  let epoch = Instant::now();
+  let logger = Logger::from_env(epoch);
   println!("  keys: a treatment number, or q, + Enter (Ctrl-C also restores standalone mode)\n");
 
   // Arm Ctrl-C/SIGTERM restoration FIRST, before any MIDI/poll thread spawns, so the
@@ -496,7 +550,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let mut boards: Vec<Board> = Vec::new();
   for (substring, label) in &targets {
-    match start_board(substring, label, params, audio_on, &session) {
+    match start_board(substring, label, params, audio_on, logger.clone(), &session) {
       Ok(board) => boards.push(board),
       Err(e) => eprintln!("  skipped a board: {e}"),
     }
@@ -510,9 +564,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   // The live treatment, shared by the stdin thread (writes) and the draw loop (reads). It
   // starts on `standard`, which is what every decoder is already built with.
   let treatment = Arc::new(Mutex::new(Treatment::Standard));
+  if let Some(log) = &logger {
+    log.line("TREATMENT -> standard (initial)");
+  }
   {
     let quit = Arc::clone(&quit);
     let treatment = Arc::clone(&treatment);
+    let logger = logger.clone();
     // Each board's decoder, so a treatment switch re-arms every pad on every board.
     let decoders: Vec<Arc<Mutex<TetherDecoder>>> =
       boards.iter().map(|b| Arc::clone(&b.decoder)).collect();
@@ -530,6 +588,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           let mode = t.mode(&params);
           for dec in &decoders {
             dec.lock().unwrap_or_else(|e| e.into_inner()).set_all_debounce(mode);
+          }
+          if let Some(log) = &logger {
+            log.line(&format!("TREATMENT -> {}", t.name()));
           }
         }
       }
@@ -567,6 +628,8 @@ fn run_poll_loop(
   stop: Arc<AtomicBool>,
   db_range: f32,
   audio_on: bool,
+  board: String,
+  logger: Option<Logger>,
 ) {
   let mut events: Vec<DrumEvent> = Vec::with_capacity(8);
   while !stop.load(Ordering::Relaxed) {
@@ -583,6 +646,11 @@ fn run_poll_loop(
     for event in &events {
       match *event {
         DrumEvent::Fire { label, pressure, .. } => {
+          // The transcript's most important line: a FIRE with its timestamp, so a
+          // too-close pair (the phasing you can hear) shows up as a small gap.
+          if let Some(log) = &logger {
+            log.line(&format!("{board:>18}  FIRE     pad {label}  pressure {pressure:.3}"));
+          }
           // Every detected hit brings its pad to the top of the two-pad meter and
           // advances that pad's running count (ditto no-ops included -- the pad WAS
           // struck), before we resolve ditto / message / audition below.
@@ -611,6 +679,9 @@ fn run_poll_loop(
           }
         }
         DrumEvent::Revise { label, pressure, .. } => {
+          if let Some(log) = &logger {
+            log.line(&format!("{board:>18}  revise   pad {label}  pressure {pressure:.3}"));
+          }
           let kind = pad_kind(label);
           let last_hit = st.last_hit;
           if let Some(gain) = resolve_revise(kind, &last_hit, pressure, db_range) {
@@ -618,7 +689,13 @@ fn run_poll_loop(
             st.pads[label as usize].last_gain = gain;
           }
         }
-        DrumEvent::Release { .. } => {} // one-shot display; the drumkit's samples ignore this too
+        DrumEvent::Release { label } => {
+          // One-shot display (the drumkit's samples ignore Release too); logged only so a
+          // transcript shows the full press/lift envelope in Standard mode.
+          if let Some(log) = &logger {
+            log.line(&format!("{board:>18}  release  pad {label}"));
+          }
+        }
       }
     }
   }
