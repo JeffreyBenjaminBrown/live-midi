@@ -453,34 +453,27 @@ impl SurfaceSink {
 }
 
 /// The edit-delete control's voice half: delete -- silence and end, by the ordinary
-/// release ramp, exactly how every voice ends -- each voice of `grid` sounding an
-/// edited pitch. That is the drone at the pitch AND any fingered voice holding it (a
-/// drag finger, or a held retrigger): "all voices in edit mode" means all of them.
-/// `held` maps this grid's pressed cells to their struck pitches (fingered voices
-/// are keyed by CELL, so pitches alone cannot find them). The caller empties the
-/// edit set and the sustain-bank entries; this touches only the voices.
-pub fn end_edited_voices(
+/// release ramp, exactly how every voice ends -- each DRONE of `grid` at an edited
+/// pitch. Fingered voices are deliberately not here: a finger's voice is the
+/// finger's to end (the rule the exit gesture already lives by), so a held note
+/// merely loses its edit/sustain reasons and ends on the ordinary release when the
+/// finger lifts. The caller empties the edit set and the sustain-bank entries;
+/// this touches only the voices.
+pub fn end_edited_drones(
   voices: &Arc<Mutex<VoiceMap>>,
   grid: usize,
   edited: &HashSet<i32>,
-  held: &HashMap<(i32, i32), i32>,
   release_secs: f32,
   sample_rate: f32,
 ) {
   if edited.is_empty() {
     return;
   }
-  let fingered: HashSet<VoiceSource> = held
-    .iter()
-    .filter(|(_, pitch)| edited.contains(pitch))
-    .map(|(cell, _)| voice_key(grid, *cell))
-    .collect();
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    let dying = fingered.contains(src)
-      || matches!(src, VoiceSource::Accreted { chord, pitch }
-           if *chord == SUSTAIN_BASE + grid && edited.contains(pitch));
-    if dying {
+    if matches!(src, VoiceSource::Accreted { chord, pitch }
+         if *chord == SUSTAIN_BASE + grid && edited.contains(pitch))
+    {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (release_secs * sample_rate);
     }
@@ -662,7 +655,7 @@ mod tests {
   }
 
   #[test]
-  fn end_edited_voices_releases_drones_and_fingers_at_edited_pitches_only() {
+  fn end_edited_drones_releases_edited_drones_and_spares_every_finger() {
     // Grid 0 has: a drone at edited pitch 20, a fingered voice at edited pitch 30,
     // a fingered voice at unedited pitch 40, and a drone at unedited pitch 50.
     // Grid 1 has a drone at pitch 20 too (edited pitches are per-grid).
@@ -679,13 +672,15 @@ mod tests {
     b.sustain_note((0, 0), 20);
 
     let edited: HashSet<i32> = [20, 30].into();
-    let held: HashMap<(i32, i32), i32> = [((1, 0), 30), ((2, 0), 40)].into();
-    end_edited_voices(&voices, 0, &edited, &held, 0.05, 48000.0);
+    end_edited_drones(&voices, 0, &edited, 0.05, 48000.0);
 
     let v = voices.lock().unwrap();
     let ended = |src: &VoiceSource| v[src].target_env == 0.0;
     assert!(ended(&sustain_key(0, 20)), "the edited drone rings out");
-    assert!(ended(&voice_key(0, (1, 0))), "the finger holding an edited pitch too");
+    assert!(
+      !ended(&voice_key(0, (1, 0))),
+      "the finger holding an edited pitch keeps sounding -- a finger's voice is the finger's to end",
+    );
     assert!(!ended(&voice_key(0, (2, 0))), "an unedited finger keeps sounding");
     assert!(!ended(&sustain_key(0, 50)), "an unedited drone keeps sounding");
     assert!(!ended(&sustain_key(1, 20)), "the OTHER grid's drone at 20 is untouched");

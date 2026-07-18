@@ -774,10 +774,11 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
   },
   // A single-cell momentary button (surfaces runtime): key-down deletes -- silences
-  // and ends, by the ordinary release ramp -- every voice in edit mode on this
-  // monome's grid, dropping those pitches from its sustain bank and leaving edit
-  // mode empty (the grid plays again immediately). The same job as an
-  // `edit_delete_pedal`, on-grid.
+  // and ends, by the ordinary release ramp -- every DRONE at an edited pitch on
+  // this monome's grid, dropping those pitches from its sustain bank and leaving
+  // edit mode empty (the grid plays again immediately). A fingered voice does not
+  // end -- it only loses its edit/sustain reasons, ending on the ordinary release
+  // when the finger lifts. The same job as an `edit_delete_pedal`, on-grid.
   EditDeleteButton {
     id: String,
     monome: String,
@@ -1328,9 +1329,11 @@ pub enum SoftstepWindowRig {
     factor: PulseFactorRig,
   },
   /// One pedal that deletes -- silences and ends, by the ordinary release ramp --
-  /// every voice in edit mode on one monome's grid, dropping those pitches from its
-  /// sustain bank and leaving edit mode empty (the grid plays again immediately).
-  /// The same job as an on-grid `edit_delete_button`.
+  /// every DRONE at an edited pitch on one monome's grid, dropping those pitches
+  /// from its sustain bank and leaving edit mode empty (the grid plays again
+  /// immediately). A fingered voice does not end -- it only loses its edit/sustain
+  /// reasons, ending on the ordinary release when the finger lifts. The same job
+  /// as an on-grid `edit_delete_button`.
   EditDeletePedal {
     id: String,
     softstep: String,

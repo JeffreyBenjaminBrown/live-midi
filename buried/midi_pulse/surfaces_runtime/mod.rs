@@ -1469,9 +1469,7 @@ fn handle_key(
     rt.edit_delete_down = press;
     if press {
       let (release_secs, sample_rate) = rt.sink.release_params();
-      delete_edited(
-        rt.grid_index, &rt.edit, &rt.accrete, held, &rt.voices, release_secs, sample_rate,
-      );
+      delete_edited(rt.grid_index, &rt.edit, &rt.accrete, &rt.voices, release_secs, sample_rate);
     }
     return;
   }
@@ -1969,18 +1967,18 @@ fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
 
 /// The edit-delete control on `grid`, from EITHER surface -- a softstep pedal or
 /// the grid's own button run exactly this. Delete = silence and end, by the
-/// ordinary release ramp, exactly how every voice ends: every voice in edit mode
-/// on this grid -- the drones and any fingered voice holding an edited pitch --
-/// rings out, those pitches leave the grid's sustain bank (a deleted note must not
-/// keep painting as sustained or re-drone on the next touch), and edit mode is
-/// left empty, so the grid plays again immediately. `held` is this grid's pressed
-/// cells -> struck pitches (the grid thread passes its own map; the pedal hook
-/// reads the shared mirror). One lock at a time, per the module's rule.
+/// ordinary release ramp, exactly how every voice ends: every DRONE at an edited
+/// pitch on this grid rings out, those pitches leave the grid's sustain bank (a
+/// deleted note must not keep painting as sustained or re-drone on the next
+/// touch), and edit mode is left empty, so the grid plays again immediately. A
+/// FINGERED voice at an edited pitch does not end -- a finger's voice is the
+/// finger's to end (the exit gesture's rule) -- it only loses its edit/sustain
+/// reasons here, so it ends on the ordinary release when the finger lifts. One
+/// lock at a time, per the module's rule.
 fn delete_edited(
   grid: usize,
   edit: &Arc<Mutex<Vec<edit::EditState>>>,
   accrete: &Arc<Mutex<Vec<AccreteState>>>,
-  held: &HashMap<(i32, i32), i32>,
   voices: &Arc<Mutex<VoiceMap>>,
   release_secs: f32,
   sample_rate: f32,
@@ -2003,7 +2001,7 @@ fn delete_edited(
       }
     }
   }
-  synth::end_edited_voices(voices, grid, &edited, held, release_secs, sample_rate);
+  synth::end_edited_drones(voices, grid, &edited, release_secs, sample_rate);
 }
 
 /// A tempo-factor press on `grid`, from EITHER surface -- a softstep pedal or the
@@ -2093,16 +2091,8 @@ fn rig_pedal_hook(
       }
       PedalAction::EditDelete { grid } => {
         if down {
-          // Shared with the on-grid edit-delete button (`delete_edited`). The
-          // held map comes from the shared mirror; the grid thread's own copy is
-          // only reachable from its thread.
-          let held = held_all
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(grid)
-            .cloned()
-            .unwrap_or_default();
-          delete_edited(grid, &edit, &accrete, &held, &voices, release_secs, sample_rate);
+          // Shared with the on-grid edit-delete button (`delete_edited`).
+          delete_edited(grid, &edit, &accrete, &voices, release_secs, sample_rate);
         }
         true
       }

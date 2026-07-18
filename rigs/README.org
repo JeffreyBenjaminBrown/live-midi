@@ -633,11 +633,13 @@ and never retunes edit-mode notes.
 
 An ~edit_delete_pedal~ (one pedal, a ~monome~ with an ~edo_note_grid~, at most one
 per monome) deletes -- silences and ends, by the ordinary release ramp -- every
-voice in edit mode on that monome's grid: the drones and any fingered voice
-holding an edited pitch. The pitches leave the grid's sustain bank and edit mode
-empties, so the grid plays again immediately. The on-grid ~edit_delete_button~
-(single cell, at most one per monome, dim at rest / bright while pressed) is the
-same control on the grid itself.
+DRONE at an edited pitch on that monome's grid. The pitches leave the grid's
+sustain bank and edit mode empties, so the grid plays again immediately. A
+fingered voice at an edited pitch does NOT end (a finger's voice is the finger's
+to end): it only loses its edit/sustain reasons, so it ends on the ordinary
+release when the finger lifts. The on-grid ~edit_delete_button~ (single cell, at
+most one per monome, dim at rest / bright while pressed) is the same control on
+the grid itself.
 
 Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
 the same device (including across kinds -- a pedal that is both a drum and a clear

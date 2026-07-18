@@ -96,7 +96,7 @@ Here's how to see what's connected:
 - sustain (accrete) -- each grid has its own bank of sustained notes. Here
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
-  releasing). See "OSS: sustain".
+  releasing). See "OSS: sustain + edit-delete".
 
 * usage
 
@@ -136,8 +136,9 @@ lives on a SoftStep instead:
   other cell on both grids is an ordinary 46-EDO play cell.
 - The edit-delete button ((12,0), just left of the pad's =x3=; dim at rest,
   bright while pressed) deletes -- silences and ends, the ordinary voice
-  ending -- every voice in edit mode on its own grid, and leaves edit mode
-  empty. Same job as OSS pedals 7/9 (see "OSS: sustain + edit-delete").
+  ending -- every edited drone on its own grid, and leaves edit mode empty
+  (a fingered note just leaves edit mode, ending when its finger lifts).
+  Same job as OSS pedals 7/9 (see "OSS: sustain + edit-delete").
 - The factored-pulse pad is the six-button block from the kmss rig, brought
   back by request: its factor buttons and ~=1~ drive the same per-grid state
   as the NSS pedals (see "NSS: the factored pulse"), and its tap cell blinks
@@ -166,8 +167,9 @@ removed by releasing). This rig binds only two sustain pedals per grid (clear
 =needs_holding= and =erase= still exist in the library code, they are simply
 unbound here (permanently-on =needs_holding=, in effect). Each grid also gets
 an edit-delete pedal: stomp to delete -- silence and end, the ordinary voice
-ending -- every voice in edit mode on that grid, leaving edit mode empty (the
-same control as the grid's own (12,0) button).
+ending -- every edited drone on that grid, leaving edit mode empty; fingered
+notes just leave edit mode and end when their finger lifts (the same control
+as the grid's own (12,0) button).
 
 | pedal | job                       |
 |-------+---------------------------|
@@ -307,10 +309,12 @@ had also sustained keeps going.
 
 To be rid of ALL of them at once there is the *edit-delete* control -- OSS
 pedal 7 (grid A) / 9 (grid B), or the grid's own (12,0) button. Unlike the
-one-note exit gesture, delete is unconditional: every voice in edit mode on
-that grid is silenced and ended (the ordinary release ramp), sustains and
-held fingers included, its pitches leave the sustain bank, and edit mode
-empties -- the grid plays again immediately.
+one-note exit gesture it acts on everything: every edited DRONE is silenced
+and ended (the ordinary release ramp), sustains included; the pitches leave
+the sustain bank; and edit mode empties -- the grid plays again immediately.
+A note a finger is physically holding does not end (a finger's voice is the
+finger's to end): it just loses its edit and sustain reasons, so it ends
+normally the moment the finger lifts.
 
 Leaving always works, whether or not the note can still be heard. That matters more
 than it sounds: anything that silences an edited note (a =clear=, say) would otherwise
