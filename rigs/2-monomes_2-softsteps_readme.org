@@ -3,9 +3,10 @@
 
 The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
 grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
-pedalboards that carry every control that would otherwise cost grid cells --
-sustain and the factored pulse. No drums, no EX-P pedals: see "what is
-deliberately NOT here."
+pedalboards that carry the controls that would otherwise cost grid cells --
+sustain and the factored pulse (the factored pulse is ALSO on each grid's
+upper-right 3x2 pad; hands and feet drive the same state). No drums, no EX-P
+pedals: see "what is deliberately NOT here."
 
 Background + every design decision behind this layout: =TODO/many/1_vision.org=
 (Jeff's original ask), =TODO/many/2_discussion.org= (the settled answers -- long,
@@ -86,10 +87,12 @@ Here's how to see what's connected:
 - waveform strip -- a 4-cell radio at a grid's top-left (=[0,0]..[3,0]=):
   sine / triangle / square / saw, left to right. Each grid's strip sets its
   own timbre (=controls= points at its own =monome=).
-- the factored pulse -- a fixed 1 Hz base tempo, applied to each grid through
-  that grid's own =2^a * 3^b= tempo factor and its own on/off switch (the NSS
-  pedals). Not "slow AM" -- see "the factored pulse" section below for why that
-  name is reserved for something else.
+- the factored pulse -- a base tempo (seeded 1 Hz; retappable on a grid pad's
+  tap cell), applied to each grid through that grid's own =2^a * 3^b= tempo
+  factor and its own on/off switch. Driven from either surface: the NSS pedals
+  or the grid's own upper-right 3x2 pad, same state. Not "slow AM" -- see "the
+  factored pulse" section below for why that name is reserved for something
+  else.
 - sustain (accrete) -- each grid has its own bank of sustained notes. Here
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
@@ -113,22 +116,28 @@ independently, so one board failing to restore never strands the other).
 * per-grid layout
 
 The two grids are identical. The whole 16x16 is the play surface, with exactly
-two overlays drawn on top -- nothing else lives on either grid; every other
-control (sustain, the factored pulse) lives on a SoftStep instead:
+three overlays drawn on top -- nothing else lives on either grid; sustain
+lives on a SoftStep instead:
 
 #+begin_example
   col: 0   1   2   3   4   5  ...              13    14    15
-  row 0  [SIN TRI SQR SAW]  .   .   .  (play cells)    .     .     .
+  row 0  [SIN TRI SQR SAW]  .   .   .  (play cells)  x3    x2    tap   <- factored-pulse pad
+  row 1    .   .   .   .   .   .                     /3    /2    =1    <- factored-pulse pad
    ...                        (46-EDO play cells)
   row 13   .   .   .   .   .   .                       .     .     .
   row 14   .   .   .   .   .   .                     8vaDN   UP  8vaUP  <- scroll pad
   row 15   .   .   .   .   .   .                     LEFT   DOWN RIGHT  <- scroll pad
 #+end_example
 
-- The waveform strip (=[0,0,3,0]=) and the scroll pad (=[13,14,15,15]=)
-  occlude the play grid: pressing them re-timbres or scrolls rather than
-  sounding a note. Every other cell on both grids is an ordinary 46-EDO play
-  cell.
+- The waveform strip (=[0,0,3,0]=), the factored-pulse pad (=[13,0,15,1]=),
+  and the scroll pad (=[13,14,15,15]=) occlude the play grid: pressing them
+  re-timbres, moves the factored pulse, or scrolls rather than sounding a
+  note. Every other cell on both grids is an ordinary 46-EDO play cell.
+- The factored-pulse pad is the six-button block from the kmss rig, brought
+  back by request: its factor buttons and ~=1~ drive the same per-grid state
+  as the NSS pedals (see "NSS: the factored pulse"), and its tap cell blinks
+  the base tempo (all grids' tap cells blink together -- the blink is
+  unfactored).
 - The scroll-pad corners follow the usual convention: top-left = down an
   octave (notes sound lower), top-right = up an octave; the four arrows shift
   the window by one cell.
@@ -162,7 +171,8 @@ unbound here (permanently-on =needs_holding=, in effect).
 Pedals 3, 6, 7, 8, 9, 0 are free. Left buttons drive the left grid, right
 buttons the right grid, matching Jeff's left/right principle. Pedal 8 once held
 a global tap tempo; Jeff retired it (he never set a tempo with it), so the base
-tempo is now a fixed 1 Hz -- see "NSS: the factored pulse".
+tempo is a seeded 1 Hz, retappable only on the grid pads' tap cells -- see
+"NSS: the factored pulse".
 
 * NSS: the factored pulse
 
@@ -183,13 +193,15 @@ ambiguous middle column, here applied per grid.
 
 ** what these pedals do
 
-- The base tempo is a fixed 1 Hz. The tap pedal was retired (Jeff never set a
-  tempo with it), so this rig has no tap source, and a rig with no tap source
-  runs at a fixed 1 Hz base rather than waiting for a tap that can never come.
+- The base tempo is seeded at 1 Hz on bring-up, so the factors multiply
+  something from the first press. The tap pedal was retired (Jeff never set a
+  tempo with it); the only way to change the base is the tap cell on a grid's
+  upper-right pad, and doing so is never necessary.
 - Each grid has its own tempo factor =2^a * 3^b= and its own factored-pulse
-  on/off switch, moved by that grid's =x2= / =x3= / =/2= / =/3= pedals -- so
-  one grid's factored pulse can run at, say, 3/2 the rate of the other's, or
-  not at all.
+  on/off switch, moved by that grid's =x2= / =x3= / =/2= / =/3= pedals OR the
+  matching buttons on its own upper-right pad (same state; the pad's LEDs
+  reflect pedal presses and vice versa) -- so one grid's factored pulse can
+  run at, say, 3/2 the rate of the other's, or not at all.
 - ~=1~ keeps the existing double-tap dance verbatim: press while the grid's
   factored pulse is off -> turns it ON, keeping the current tempo factor;
   press while it's on -> snaps the tempo factor to unity (back to the base
@@ -340,7 +352,9 @@ Jeff's calls ("I'll understand").
 With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= pedals
 retune those notes' factored-pulse rate directly and leave the grid's tempo
 factor alone. With no note in edit mode, the same pedals move the tempo factor
-as usual.
+as usual. This edit duty is the PEDALS' only: the multipliers on the grid's
+upper-right pad always move the grid's tempo factor, edit mode or not -- the
+pad is a factor control, per the ask that brought it back.
 
 - It applies to every edited note on that grid at once.
 - It multiplies, so notes whose factored pulse already runs at different rates
@@ -355,10 +369,12 @@ Note the one asymmetry with cycling: turning a grid's factored pulse off never
 retroactively touches sounding notes; only the multipliers reach them.
 
 * the on-screen window
-The controls left the grid, so their display did too: the ~=1~ LED used to show the
-switch and the tap cell used to blink the tempo. The window shows, and only shows:
+Born when the factored-pulse controls left the grid for the feet (a pedal has no
+display); kept now that the upper-right pads are back, as the at-a-glance numeric
+view of the same state. The window shows, and only shows:
 
-- the base tempo as BPM to one decimal place (a fixed 1 Hz = 60.0 BPM here);
+- the base tempo as BPM to one decimal place (the seeded 1 Hz = 60.0 BPM,
+  unless retapped);
 - each grid's tempo factor as 2^x * 3^y;
 - whether each grid's factored pulse is on;
 - a blinker at the unfactored base tempo, so it does not move when a tempo
@@ -377,7 +393,9 @@ and plays on regardless.
   all exist in the library (reused by =2-monomes_kmss-drums=) but none are
   bound in this rig. Sustain here is the reduced clear+momentary-accrete pair
   only (see "OSS: sustain").
-- No tap tempo at all. The tap pedal was retired and there is no on-grid tap
-  pad, so the base tempo is a fixed 1 Hz; the factored-pulse controls moved to
-  the newer SoftStep, per the vision's "use the softsteps instead of the
-  monome for it."
+- No tap tempo *pedal*. It was retired (Jeff never tapped), and the base tempo
+  is seeded at 1 Hz so nothing waits on a tap. The factored-pulse controls
+  live on the newer SoftStep per the vision's "use the softsteps instead of
+  the monome for it" -- AND, brought back later by request, on each grid's
+  upper-right 3x2 pad, whose tap cell is the one (optional) way to retap the
+  base.

@@ -101,11 +101,12 @@ impl PolyrhythmState {
     }
   }
 
-  /// Seed a FIXED base tempo, for a rig with no way to tap (no tap pedal and no
-  /// on-grid tap pad). Without this the base would stay `None` and the tempo-factor
-  /// pedals would have nothing to multiply, so no factored pulse could ever run. The
-  /// phase anchor is `now`, so the on-screen blinker pulses at this rate from bring-up.
-  /// Tapping, where a rig offers it, still overrides this later.
+  /// Seed the base tempo at bring-up (the surfaces runtime seeds 1 Hz for every
+  /// rig). Without a seed the base would stay `None` until the first tap, and the
+  /// tempo-factor controls would have nothing to multiply -- fatal in a rig with no
+  /// tap source at all (2-monomes_2-softsteps: Jeff never taps), and a pointless
+  /// wait in the rest. The phase anchor is `now`, so blinkers pulse at this rate
+  /// from bring-up. Tapping, where a rig offers it, still overrides this later.
   pub fn set_fixed_tempo(&mut self, hz: f32, now: Instant) {
     if hz > 0.0 {
       self.tapped_period = Some(Duration::from_secs_f32(1.0 / hz));
@@ -273,7 +274,7 @@ mod tests {
 
   #[test]
   fn a_fixed_tempo_gives_the_factor_pedals_a_base_with_no_tapping() {
-    // A rig with no tap source seeds a fixed 1 Hz base, so the tempo-factor pedals still
+    // The runtime seeds a fixed 1 Hz base at bring-up, so the tempo-factor controls
     // have something to multiply and the blinker still pulses.
     let t0 = Instant::now();
     let mut p = two_grids();

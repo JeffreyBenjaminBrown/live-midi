@@ -811,19 +811,20 @@ fn run(
   let feet_accrete_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
-  // both grids' pads. A rig with no tap source (no tap pedal, no on-grid tap pad) gets a
-  // fixed 1 Hz base instead, so its tempo-factor pedals still have something to multiply
-  // (2-monomes_2-softsteps retired its tap pedal: Jeff never set a tempo with it).
+  // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
+  // tempo-factor controls multiply something from bring-up -- a rig with no tap
+  // source at all (2-monomes_2-softsteps retired its tap pedal: Jeff never set a
+  // tempo with it) is not stuck waiting for a tap that can never come, and where a
+  // tap source exists, tapping simply overrides the seed.
   let poly = {
     let mut p = PolyrhythmState::new(num_grids);
-    if !rig_has_tap_source(rig) {
-      p.set_fixed_tempo(1.0, Instant::now());
-    }
+    p.set_fixed_tempo(1.0, Instant::now());
     Arc::new(Mutex::new(p))
   };
-  // The on-screen factored-pulse window (phase 9, `TODO/many/3_plan.org`): the =1
-  // LED and the tap cell's blink moved off the grid onto the feet, so this is the
-  // only place left to see the factored-pulse state. Skipped entirely on a
+  // The on-screen factored-pulse window (phase 9, `TODO/many/3_plan.org`): born
+  // when the =1 LED and the tap cell's blink moved off the grid onto the feet and
+  // this was the only place left to see the factored-pulse state; kept now that the
+  // on-grid pads are back, as the at-a-glance numeric view. Skipped entirely on a
   // drums-only bring-up (`plan.any_grid()` false) -- there is no grid's factored
   // pulse to show. Optional and non-fatal: `pulse_window::spawn` never blocks, and
   // a window that can't open just warns once and leaves the rest of the
@@ -1266,11 +1267,13 @@ fn grid_thread(mut rt: GridThread) {
       // which way this grid's tempo factor leans; =1 shows this grid's
       // factored-pulse switch (bright while its amplitude cycling is on). The tap
       // cell blinks BLACK <-> FULLY
-      // LIT (10% duty at the TAPPED tempo, unfactored -- so both grids' tap cells
-      // blink together, showing the metronome you tapped rather than what this grid
-      // made of it; misc.org "tap blink between black and fully lit") whether or not
-      // cycling is on -- it is the tempo display -- and only rests dim before any
-      // tempo exists, to stay findable.
+      // LIT (10% duty at the BASE tempo, unfactored -- so both grids' tap cells
+      // blink together, showing the metronome rather than what this grid made of
+      // it; misc.org "tap blink between black and fully lit") whether or not
+      // cycling is on -- it is the tempo display. The dim no-tempo rest state is
+      // unreachable now that the base is seeded at 1 Hz, but kept as a fallback.
+      // This same state also answers to the softstep factor pedals, so the pad's
+      // LEDs reflect pedal presses and vice versa -- one machine, two surfaces.
       let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
       let tap_level = if p.tapped_hz().is_none() {
@@ -1876,14 +1879,6 @@ enum PedalAction {
 /// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
 /// to its play-grid index; a pedal naming a monome that is not a play grid (or is
 /// absent) is dropped, so the rig loads around missing gear like everything else.
-/// Does this rig offer any way to tap the tempo -- a softstep tap pedal or an on-grid tap
-/// pad? A rig with none runs at a fixed base tempo instead of waiting for a tap that can
-/// never come (see `PolyrhythmState::set_fixed_tempo`).
-fn rig_has_tap_source(rig: &Rig) -> bool {
-  rig.softstep_windows.iter().any(|w| matches!(w, SoftstepWindowRig::TapTempoPedal { .. }))
-    || rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. }))
-}
-
 fn rig_pedal_actions(
   rig: &Rig,
   grid_of: impl Fn(&str) -> Option<usize>,
@@ -2869,8 +2864,8 @@ mod tests {
       "left buttons drive the left grid, right buttons the right",
     );
 
-    // No tap pedal: Jeff retired it (he never set a tempo with it), so the rig has no tap
-    // source and the runtime fixes the base tempo at 1 Hz for the factor pedals to multiply.
+    // No tap pedal: Jeff retired it (he never set a tempo with it); the runtime's seeded
+    // 1 Hz base gives the factor controls something to multiply regardless.
     let taps: Vec<u8> = rig
       .softstep_windows
       .iter()
@@ -2880,7 +2875,16 @@ mod tests {
       })
       .collect();
     assert!(taps.is_empty(), "the tap pedal was retired: {taps:?}");
-    assert!(!rig_has_tap_source(&rig), "no tap pedal and no on-grid tap pad -> fixed tempo");
+
+    // Each grid also carries the on-grid 3x2 factored-pulse pad, upper right (the
+    // six-button x3/x2/tap over /3//2/=1 block, brought back from the kmss rig).
+    for monome in ["a", "b"] {
+      let pad = rig.monome_windows.iter().find_map(|w| match w {
+        MonomeWindowRig::TapTempoPad { monome: m, rect, .. } if m == monome => Some(*rect),
+        _ => None,
+      });
+      assert_eq!(pad, Some([13, 0, 15, 1]), "monome {monome} has the upper-right pad");
+    }
 
     // Each grid gets a full set of five factored-pulse controls, all on the new board.
     for monome in ["a", "b"] {
@@ -2909,7 +2913,8 @@ mod tests {
       assert_eq!(factors, want, "monome {monome} needs all five factored-pulse controls");
     }
 
-    // The grids carry ONLY the two overlays; everything else on them is a note.
+    // The grids carry ONLY the three overlays (the factored-pulse pad came back by
+    // request after 2_discussion 2f pared the grids down); everything else is a note.
     let kinds: Vec<&str> = rig.monome_windows.iter().map(|w| w.kind_name()).collect();
     assert_eq!(
       kinds,
@@ -2917,11 +2922,13 @@ mod tests {
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
+        "tap_tempo_pad",
         "edo_note_grid",
         "waveform_selector",
-        "edo_shift_pad"
+        "edo_shift_pad",
+        "tap_tempo_pad"
       ],
-      "no distortion/slide/mono/accrete/tap windows on the grids (see 2_discussion 2f)",
+      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
     );
 
     // And it must resolve, not merely parse.
@@ -3398,12 +3405,13 @@ mod tests {
     );
   }
 
-  /// The polyrhythm pad end-to-end: cells rest dim; two quick taps set the ONE
-  /// global tempo (the tap cell blinks on both grids, caught mid-flash); the
-  /// tempo-factor buttons and the =1 factored-pulse switch are PER-GRID -- a
-  /// tempo-factor press lights only its own grid, a lone =1 tap turns that grid's
-  /// cycling on (lit) and resets its tempo factor, and a fast =1 double-tap turns
-  /// the cycling back off.
+  /// The polyrhythm pad end-to-end: the factor cells rest dim while the tap cell
+  /// blinks the seeded 1 Hz base from bring-up (no tap needed); two quick taps
+  /// override the base with the ONE global tempo (the faster blink shows on both
+  /// grids, caught mid-flash); the tempo-factor buttons and the =1 factored-pulse
+  /// switch are PER-GRID -- a tempo-factor press lights only its own grid, a lone
+  /// =1 tap turns that grid's cycling on (lit) and resets its tempo factor, and a
+  /// fast =1 double-tap turns the cycling back off.
   #[test]
   fn tap_tempo_pad_blinks_globally_and_the_factored_pulse_switch_is_per_grid() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
@@ -3428,9 +3436,11 @@ mod tests {
     let b = mock.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    // At rest: tap (15,0) and the tempo-factor cells glow dim; no blink yet.
-    assert!(wait_until(secs(3), || a.level_at(15, 0) == 4), "tap rests dim (no tempo)");
+    // At rest: the tempo-factor cells glow dim, and the tap cell already blinks --
+    // the base tempo is seeded at 1 Hz at bring-up, no tap required (10% duty =
+    // 100 ms on per second; polling catches an on-flash within a few seconds).
     assert!(wait_until(secs(3), || a.level_at(14, 0) == 4), "x2 rests dim");
+    assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "the tap cell blinks the seeded base");
 
     // Two taps ~200 ms apart set a 5 Hz tempo: the tap cell blinks at 10% duty
     // (20 ms on per 200 ms); polling catches an on-flash within a few seconds.

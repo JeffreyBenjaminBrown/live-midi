@@ -320,11 +320,13 @@ factor buttons and the =1 pulse switch belong to the grid you press them on:
   window *rolls*, so a stale first tap simply re-arms) and the interval becomes
   the *tapped tempo* -- shared by both grids. Taps pair up: a third tap inside the
   window does nothing until its fourth arrives, and that pair overrides the
-  first. Tapping only DEFINES the tempo; no cycling starts. The tap cell is the
+  first. Tapping only DEFINES the tempo; no cycling starts. The base tempo is
+  seeded at 1 Hz on bring-up, so a tempo always exists and tapping only ever
+  *overrides* it. The tap cell is the
   tempo *display*: it *blinks* between black and fully lit -- full-on for the
-  first 10% of each cycle of the *tapped* tempo, dark between flashes,
-  phase-anchored to your taps, whether or not this grid's cycling is on -- and
-  rests dim before any tempo exists. The blink is *unfactored*: it shows the
+  first 10% of each cycle of the *base* tempo, dark between flashes,
+  phase-anchored to your taps once you tap, whether or not this grid's cycling
+  is on. The blink is *unfactored*: it shows the
   metronome you tapped, as if every grid were at unity, so both grids' tap cells
   blink in step and no factor button ever moves them. (What a grid's factor
   changes is the rate its *notes* pulse at, not the display.)

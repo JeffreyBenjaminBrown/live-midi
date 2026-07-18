@@ -23,10 +23,11 @@ meter reads it too, so one edit there reaches all of them at once.
 ** TABLE surfaces # TODO : this is a dumb name for a diverse collection
 ===========================================================================
 FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 46-EDO play
-surface, and two SoftStep boards that carry every control that would
+surface, and two SoftStep boards that carry the controls that would
 otherwise cost grid cells: sustain and the factored pulse.
-Each grid keeps only two overlays -- a 4-cell waveform strip (top-left) and
-a 3x2 scroll pad (bottom-right). Everything else on the grid is a note.
+Each grid keeps three overlays -- a 4-cell waveform strip (top-left), a 3x2
+factored-pulse pad (top-right, doubling the NSS pedals), and a 3x2 scroll
+pad (bottom-right). Everything else on the grid is a note.
 Launch under pw-jack so the synth shares the card via PipeWire:
 pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
 ===========================================================================
@@ -44,9 +45,9 @@ edit-mode note to a new pitch reuses this, so 'r' retunes the drag feel live.
 Jeff's starting value; slow enough to hear it move, fast enough not to smear
 the rhythm.
 *** PARAM tap_tempo_window_ms = 2000
-Currently unused: this rig retired its tap pedal, so it has no tap source and
-runs at a fixed 1 Hz base tempo. The value stays here for any future rig that
-re-adds tapping. Two taps at most this far apart would set the one global tempo.
+Two taps at most this far apart on a pad's tap cell set the one global tempo.
+The base is seeded at 1 Hz, so tapping is optional: the tap pedal was retired
+(Jeff never tapped), and the on-grid pads' tap cells are the only tap source.
 ** ELEM tunings
 *** PARAM id = "main"
 *** PARAM edo = 46
@@ -124,6 +125,15 @@ The WHOLE grid is the play surface; the two overlays below sit on top of it.
 ***** PARAM rect = [13, 14, 15, 15]
 Arrows shift by one cell; the two top corners by an octave. Only the octave
 corners flash when an edit-mode or sustained note is off-screen.
+**** ELEM monome_windows              # grid A: factored-pulse pad
+***** PARAM id = "poly-a"
+***** PARAM monome = "a"
+***** PARAM kind = "tap_tempo_pad"
+***** PARAM rect = [13, 0, 15, 1]
+The six-button block from the kmss rig, back by request: | x3 x2 tap | over
+| /3 /2 =1 |. The factor buttons and =1 act on the same per-grid state as the
+NSS pedals (either surface works, hands or feet). The tap cell blinks the base
+tempo -- seeded at 1 Hz, so tapping is possible here but never necessary.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -150,6 +160,12 @@ GRID B = RNM, the RIGHT / newer monome. Varibright.
 ***** PARAM monome = "b"
 ***** PARAM kind = "edo_shift_pad"
 ***** PARAM rect = [13, 14, 15, 15]
+**** ELEM monome_windows              # grid B: factored-pulse pad
+***** PARAM id = "poly-b"
+***** PARAM monome = "b"
+***** PARAM kind = "tap_tempo_pad"
+***** PARAM rect = [13, 0, 15, 1]
+Same six-button block as grid A's, driving grid B's own factor and switch.
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
