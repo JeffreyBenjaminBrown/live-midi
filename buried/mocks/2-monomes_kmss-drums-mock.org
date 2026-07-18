@@ -43,10 +43,10 @@ numeric parameters; everything but amplitude ships "off". Ranges:
 amplitude      per-timbre gain, multiplied below the volume fader; 0..1
 typical (above 1 amplifies -- watch the clamp). Default 1.0.
 am_depth       tremolo depth 0..1 (0 = off; 1 dips to silence)
-am_freq        tremolo rate in Hz; ~0.1..10 musical (default 1.0)
+am_hz          tremolo rate in Hz; ~0.1..10 musical (default 1.0)
 am_shape       tremolo LFO morph 0..1 (0 smooth .. 1 near-square chop)
 fm_depth_cents vibrato depth in cents; ~5..50 subtle, 100+ seasick (0 = off)
-fm_freq        vibrato rate in Hz; ~0.1..10 musical (default 1.0)
+fm_hz          vibrato rate in Hz; ~0.1..10 musical (default 1.0)
 ---------------------------------------------------------------------------
 *** PARAM waveform = "sin"
 ** ELEM timbres

@@ -72,7 +72,7 @@ pub struct TimbreRig {
   pub am_depth: f32,
   /// Tremolo rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
   #[serde(default = "default_timbre_freq")]
-  pub am_freq: f32,
+  pub am_hz: f32,
   /// Tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the rig's
   /// `[am]` family), 1 = near-square chop. Default 0.
   #[serde(default)]
@@ -82,7 +82,7 @@ pub struct TimbreRig {
   pub fm_depth_cents: f32,
   /// Vibrato rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
   #[serde(default = "default_timbre_freq")]
-  pub fm_freq: f32,
+  pub fm_hz: f32,
 }
 
 fn default_timbre_amplitude() -> f32 {
@@ -1629,8 +1629,8 @@ fn validate_timbres(rig: &Rig) -> Result<(), String> {
     if t.fm_depth_cents < 0.0 {
       return Err(format!("timbre {i}: fm_depth_cents must be >= 0, got {}", t.fm_depth_cents));
     }
-    if t.am_freq <= 0.0 || t.fm_freq <= 0.0 {
-      return Err(format!("timbre {i}: am_freq/fm_freq must be > 0"));
+    if t.am_hz <= 0.0 || t.fm_hz <= 0.0 {
+      return Err(format!("timbre {i}: am_hz/fm_hz must be > 0"));
     }
   }
   Ok(())
@@ -3850,7 +3850,7 @@ waveform = "sin"
 [[timbres]]
 waveform = "tri"
 am_depth = 0.5
-am_freq = 3.0
+am_hz = 3.0
 am_shape = 1.0
 [[timbres]]
 waveform = "square"
@@ -3858,7 +3858,7 @@ amplitude = 0.6
 [[timbres]]
 waveform = "saw"
 fm_depth_cents = 30.0
-fm_freq = 6.0
+fm_hz = 6.0
 "#;
 
   #[test]
@@ -3875,7 +3875,7 @@ fm_freq = 6.0
     // Explicit values land.
     assert_eq!(rig.timbres[1].am_depth, 0.5);
     assert_eq!(rig.timbres[2].amplitude, 0.6);
-    assert_eq!(rig.timbres[3].fm_freq, 6.0);
+    assert_eq!(rig.timbres[3].fm_hz, 6.0);
   }
 
   #[test]
