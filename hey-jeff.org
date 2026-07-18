@@ -33,7 +33,13 @@ every drum pad behaves.
 I need you to tell me whether I should make this change. If you say yes, then I
 will make a drum pad ignore an early lift until its amplitude window closes.
 
-** TODO yes, it should keep watching
+** DONE yes, it now keeps watching
+A Standard pad no longer releases the instant the foot lifts inside the attack
+window. It keeps watching until the window closes, so a late peak still ramps the
+same voice rather than starting a second one, and the Release lands at window
+close. This changes drum pads and the accrete pedals, which both use Standard,
+but the effect on a held accrete pedal is only that an ultra-fast tap's release
+waits out the ~14 ms window, which is imperceptible.
 
 * Question 3: where should the debounce settings live?
 You asked me to make the debounce setting a per-rig parameter, and you asked me

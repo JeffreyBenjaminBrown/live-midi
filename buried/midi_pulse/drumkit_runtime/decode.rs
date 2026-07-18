@@ -50,7 +50,9 @@ pub enum DrumEvent {
   /// `Revise{hard:true}`, exactly as the loudness does.
   Revise { label: u8, pressure: f32, hard: bool },
   /// The pad's pressure fell below the off threshold (or de-sticked to zero): the
-  /// foot lifted. One-shot samples ignore this; the feet-accrete mirror needs it
+  /// foot lifted. A lift INSIDE the attack window is held until the window closes (the pad
+  /// keeps watching for a late peak), so the Release lands at window close, not at the
+  /// instant of the lift. One-shot samples ignore this; the feet-accrete mirror needs it
   /// (holding a pedal = holding the accrete button). A debounce-suppressed press
   /// releases without ever having Fired -- consumers must tolerate an unpaired
   /// Release.
@@ -246,11 +248,6 @@ impl TetherDecoder {
             PadState::Settling { inactive_since, since_fire, quiet }
           }
         }
-        // Released (or de-sticked to 0) before the window closed: the voice plays out.
-        PadState::Watching { .. } if sum < self.off_sum => {
-          out.push(DrumEvent::Release { label });
-          PadState::Idle
-        }
         PadState::Watching { onset, peak, sent_peak } => {
           let peak = peak.max(sum);
           let sent_peak = if peak > sent_peak {
@@ -262,8 +259,18 @@ impl TetherDecoder {
           } else {
             sent_peak
           };
+          // Keep watching until the window closes, even if the foot has already lifted
+          // (Jeff: a pad "should keep watching until its amplitude window has passed").
+          // The device scans only every ~10 ms, so a real strike's peak can land AFTER an
+          // early lift; holding the window open catches it instead of dropping it. Only
+          // once the window closes do we act on the lift: release if already down, else Held.
           if now.duration_since(onset) >= self.attack {
-            PadState::Held // window closed; final pressure locked in
+            if sum < self.off_sum {
+              out.push(DrumEvent::Release { label });
+              PadState::Idle
+            } else {
+              PadState::Held // window closed; final pressure locked in
+            }
           } else {
             PadState::Watching { onset, peak, sent_peak }
           }
@@ -519,17 +526,21 @@ mod tests {
     d.on_cc(44, 100, t0);
     d.poll(t0, &mut ev);
     assert_eq!(fires(&ev).len(), 1, "first hit fires");
-    // Release, then re-press ~10 ms after the first hit (inside the debounce window).
+    // Lift, and poll past the amplitude window so the pad re-arms to Idle (a lift inside the
+    // window is now held until the window closes -- see `a_release_event_follows_the_foot_lifting`).
     d.on_cc(44, 0, t0 + Duration::from_millis(2));
     d.poll(t0 + Duration::from_millis(2), &mut ev);
-    let onset2 = t0 + Duration::from_millis(10);
+    d.poll(t0 + ATTACK + Duration::from_millis(1), &mut ev);
+    // Re-press ~20 ms after the first hit: past the window, but inside the 50 ms debounce.
+    let onset2 = t0 + Duration::from_millis(20);
     d.on_cc(44, 100, onset2);
     ev.clear();
     d.poll(onset2, &mut ev);
     assert!(fires(&ev).is_empty(), "a re-press within debounce is suppressed");
-    // Release, then re-press well past the debounce window from the first hit.
+    // Lift and re-arm again, then re-press well past the debounce window from the first hit.
     d.on_cc(44, 0, onset2 + Duration::from_millis(2));
     d.poll(onset2 + Duration::from_millis(2), &mut ev);
+    d.poll(onset2 + ATTACK + Duration::from_millis(1), &mut ev);
     let onset3 = t0 + Duration::from_millis(120);
     d.on_cc(44, 100, onset3);
     ev.clear();
@@ -667,9 +678,10 @@ mod tests {
 
   #[test]
   fn a_release_event_follows_the_foot_lifting() {
-    // Fire on press; a Release fires once the pad's sum falls below the off
-    // threshold -- whether that happens during the attack window or after it. The
-    // feet-accrete mirror relies on this down/up pairing (sensor base 44 = label 1).
+    // Fire on press; a Release follows once the foot lifts. A lift INSIDE the attack window
+    // is held until the window closes (the pad keeps watching for a late peak), so the
+    // Release lands at window close, not at the instant of the lift. The feet-accrete
+    // mirror relies on this down/up pairing (sensor base 44 = label 1).
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
     let mut ev = Vec::new();
@@ -681,7 +693,7 @@ mod tests {
     d.on_cc(44, 100, t0 + ATTACK * 2);
     d.poll(t0 + ATTACK * 2, &mut ev);
     assert!(!ev.iter().any(|e| matches!(e, DrumEvent::Release { .. })), "held: no Release");
-    // Lift the foot (sum to zero): a Release for the same label.
+    // Lift the foot (sum to zero) well past the window: a Release for the same label.
     ev.clear();
     d.on_cc(44, 0, t0 + ATTACK * 3);
     d.poll(t0 + ATTACK * 3, &mut ev);
@@ -689,17 +701,49 @@ mod tests {
       ev.iter().any(|e| matches!(e, DrumEvent::Release { label: 1 })),
       "the lift emits a Release: {ev:?}",
     );
-    // A quick tap released DURING the window also pairs Fire with Release.
+    // A quick tap that lifts DURING the window: the Release waits for the window to close.
+    let onset = t0 + ATTACK * 5;
+    d.on_cc(44, 100, onset);
     ev.clear();
-    d.on_cc(44, 100, t0 + ATTACK * 5);
-    d.poll(t0 + ATTACK * 5, &mut ev);
-    d.on_cc(44, 0, t0 + ATTACK * 5 + Duration::from_millis(2));
-    d.poll(t0 + ATTACK * 5 + Duration::from_millis(2), &mut ev);
-    assert!(ev.iter().any(|e| matches!(e, DrumEvent::Fire { label: 1, .. })));
+    d.poll(onset, &mut ev);
+    assert!(ev.iter().any(|e| matches!(e, DrumEvent::Fire { label: 1, .. })), "the tap fires");
+    // Lift 2 ms in; a poll now must NOT release yet -- the window is still open.
+    d.on_cc(44, 0, onset + Duration::from_millis(2));
+    ev.clear();
+    d.poll(onset + Duration::from_millis(2), &mut ev);
+    assert!(
+      !ev.iter().any(|e| matches!(e, DrumEvent::Release { .. })),
+      "an in-window lift does not release until the window closes: {ev:?}",
+    );
+    // A poll after the window closes finally emits the Release.
+    ev.clear();
+    d.poll(onset + ATTACK + Duration::from_millis(1), &mut ev);
     assert!(
       ev.iter().any(|e| matches!(e, DrumEvent::Release { label: 1 })),
-      "an in-window lift also emits a Release: {ev:?}",
+      "the Release lands once the window closes: {ev:?}",
     );
+  }
+
+  #[test]
+  fn a_late_peak_after_an_early_dip_revises_instead_of_refiring() {
+    // The reason a pad keeps watching through the window: the device scans only every
+    // ~10 ms, so a strike's true peak can land AFTER the sum has already dipped. That late
+    // peak must ramp the SAME voice (a Revise), not start a second one. Before this change
+    // the early dip re-armed the pad, and the late peak read as a fresh Fire.
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 30, t0)).len(), 1, "onset fires light");
+    // The sum dips below off_sum early (a bounce, or the start of a lift), still in window.
+    let ev = feed(&mut d, 44, 0, t0 + Duration::from_millis(2));
+    assert!(ev.is_empty(), "the dip alone emits nothing: {ev:?}");
+    // A late, higher peak lands within the window: it Revises the same voice, no second Fire.
+    let mut ev = Vec::new();
+    d.on_cc(44, 120, t0 + Duration::from_millis(8));
+    d.on_cc(45, 120, t0 + Duration::from_millis(8));
+    d.on_cc(46, 90, t0 + Duration::from_millis(8));
+    d.poll(t0 + Duration::from_millis(8), &mut ev);
+    assert!(fires(&ev).is_empty(), "the late peak does not re-fire: {ev:?}");
+    assert!(!revises(&ev).is_empty(), "the late peak revises the voice up: {ev:?}");
   }
 
   #[test]
