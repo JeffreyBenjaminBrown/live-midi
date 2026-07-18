@@ -87,6 +87,9 @@ per-pad capture (=capture.py A= on the newer unit) *confirmed all ten pads map i
 into a physically-adjacent pad's nearest sensor when pressed on carpet, but the dominant
 group is always the assumed base. So the existing decoder / CC map applies to both boards;
 the only new work was reading *two* devices at once and tagging each hit with its board.
+Their sensor *scan rate* is identical too (~10.2 ms / ~98-99 Hz on each, measured
+2026-07-18 -- the newer does NOT read faster; see *The one empirical fact that drives
+everything*).
 
 *For the Python tools:* =ss.list_softsteps()= discovers every unit's control port by name
 and returns =kind= ("sscom"/"softstep"), =label=, and =port=; every =ss= op takes an
@@ -283,6 +286,18 @@ The device refreshes its sensors only *~every 10 ms* (~100 Hz scan -- measured f
 timestamped captures; it is fixed in firmware, not tunable). A deliberate strike's
 pressure peaks on the *2nd refresh* (~10-11 ms after the hit is first seen) on a
 *hard floor*; on a springy/mushy surface (carpet) the peak lags 20 ms or more.
+
+/Same on BOTH units (measured 2026-07-18):/ a phase-S capture (slow pressure rolls + a
+hold-with-wiggle) on each board, analyzed by =tools/softstep/analyze_timing.py=, put the
+newer "SoftStep" at a *10.15 ms* median scan (98.6 Hz, 166 frames) and the original
+"SSCOM" at *10.17 ms* (98.3 Hz, 1020 frames) -- a 0.02 ms gap, i.e. identical. The newer
+board does *not* read faster, despite KMI marketing the SoftStep 2 as "faster response and
+brighter lights"
+([[https://support.keithmcmillen.com/hc/en-us/articles/202658809-What-is-the-difference-between-SoftStep-1-and-SoftStep-2-hardware][KMI: SS1 vs SS2]]);
+for our tether path the ~10 ms scan is the floor on both. (Onset->peak latency was too
+noisy in that run to compare, and the read-rate answer did not need it.) Reproduce:
+=capture.py --board sscom|softstep S=, then =analyze_timing.py captures/*.log=.
+
 Consequences:
 - The peak isn't known until ~2 refreshes in. Rather than *wait* to fire (which delayed
   every hit and dropped one-sample taps), the runtime FIRES on onset and then RAMPS the
