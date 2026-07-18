@@ -360,7 +360,7 @@ Farther from Jeff -> the RIGHT grid.
 ***** PARAM factor = "div2"
 ** the EX-P volume pedals
 Two M-Audio EX-P expression pedals, reaching the runtime via the MPC-20 ->
-host bridge (tools/pedals/bridge.py must be running on the HOST; if its
+host bridge (run tools/pedals/bridge.sh on the HOST; if its
 "MPC-20 pedals" port is missing the runtime prints a red note and plays on
 without them). Each is a simple LINEAR volume for one grid: the pedal's
 reliable ~1..119 CC travel maps to an amplitude factor 0..1 -- full heel

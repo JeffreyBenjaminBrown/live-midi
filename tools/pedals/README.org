@@ -7,6 +7,35 @@ converter. One EX-P sweeps the full MIDI range 0..127; the other only reaches ~3
 supposed to do to fix that" writeup (researched from the M-Audio and DOREMiDi docs) plus
 how to use the test tool here.
 
+* Run the bridge (start here)
+The bridge (=bridge.py=) is what makes the pedals reachable by the synth: it reads
+the MPC-20's raw USB endpoint on the HOST and re-emits the MIDI on a virtual
+ALSA-seq port named "MPC-20 pedals", which the container shares. One command, on
+the host:
+
+#+begin_src sh
+tools/pedals/bridge.sh
+#+end_src
+
+That's the whole interface. =bridge.sh= wraps =bridge.py= in the nix shell it
+needs (=bridge.nix=: python with pyusb + python-rtmidi, and libusb) and runs it
+as root (required, to detach the USB interface from =snd-usb-audio=) -- it will
+prompt for your sudo password. Ctrl-C stops it; it reconnects across replugs.
+Verify from the container: =aseqdump -p 'MPC-20 pedals'= and move a pedal.
+
+Why a wrapper instead of typing the =nix-shell= line by hand -- two traps it
+sidesteps, both observed in the wild:
+- =nix-shell='s =--run= takes ONE (quoted) argument. Unquoted, =--run sudo
+  python3 bridge.py= runs only =sudo=, and nix-shell then executes =bridge.py=
+  as if it were a shell script -- bash chews through the Python docstring and
+  prints nonsense like "aconnect: command not found".
+- =sudo= resets =PATH=, so =sudo python3= inside the shell can silently pick
+  the bare system python (no pyusb). The wrapper resolves =python3= to its
+  =/nix/store= path *inside* the shell and hands sudo that absolute path.
+
+=bridge.nix= also stands alone: =nix-shell tools/pedals/bridge.nix= drops you
+in the environment (e.g. to run =pedals_usb.py= or poke at the device by hand).
+
 * The test tool
 =pedals.py= -- a live MIDI monitor. For each =(channel, CC)= it sees, it shows the
 current value, a 0..127 sweep bar, and the *min/max seen so far*. The min/max is the
@@ -50,15 +79,14 @@ Two ways forward:
 - *Read it directly over USB* (works today, for testing): =pedals_usb.py= claims the bulk
   endpoint via libusb and decodes the stream itself -- run it *on the host*:
   #+begin_src sh
-  nix-shell -p 'python3.withPackages(p: [p.pyusb])' libusb1 \
-    --run 'sudo python3 tools/pedals/pedals_usb.py'
+  nix-shell tools/pedals/bridge.nix \
+    --run 'sudo "$(command -v python3)" tools/pedals/pedals_usb.py'
   #+end_src
 - *Bridge it to the container synth* (=bridge.py=): forwards the USB stream onto a virtual
   ALSA-seq port "MPC-20 pedals" that the container shares, so the synth reads it like any
-  MIDI input. Run it *on the host*:
+  MIDI input. Run it *on the host* -- see "Run the bridge" at the top:
   #+begin_src sh
-  nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
-    --run 'sudo python3 tools/pedals/bridge.py'
+  tools/pedals/bridge.sh
   #+end_src
   Verify from the container: =aseqdump -p 'MPC-20 pedals'= while moving a pedal. The
   container-side reader is =midi_pulse::expression_pedals= (the =pedal_monitor= bin proves
