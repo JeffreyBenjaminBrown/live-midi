@@ -1,7 +1,7 @@
 //! `softstep_meter` -- a live per-pad pressure meter for the SoftStep, DRIVING THE
 //! SAME tether decoder the drumkit runtime uses (`decode::TetherDecoder`, reused
 //! verbatim via `#[path]`), so what you see here is exactly what the drumkit would
-//! fire -- same onset/release thresholds, attack window, debounce, de-stick, and
+//! fire -- same onset/release thresholds, attack window, quiet gate, de-stick, and
 //! pressure->gain mapping. Unlike the drumkit it plays no per-pad sample bank and does no
 //! monome/accrete/pedal-hook work; it exists purely to watch sensing, hit detection,
 //! pressure, and the ditto pad.
@@ -580,11 +580,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   println!("softstep_meter -- SoftStep pressure meter (Rust; the reference implementation)");
   println!(
-    "  on_sum={} off_sum={} attack={}ms debounce={}ms full_scale={} db_range={} de-stick={}ms",
+    "  on_sum={} off_sum={} attack={}ms quiet={}ms full_scale={} db_range={} de-stick={}ms",
     params.on_sum,
     params.off_sum,
     params.attack_ms,
-    params.debounce_ms,
+    params.factor_release_ms,
     params.pressure_full_scale,
     params.gain_db_range,
     params.silence_to_zero_ms,
@@ -827,11 +827,11 @@ fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool
 
   lines.push(String::new());
   lines.push(format!(
-    "  (on_sum={} off_sum={} attack={}ms debounce={}ms full_scale={} db_range={} de-stick={}ms audio={})",
+    "  (on_sum={} off_sum={} attack={}ms quiet={}ms full_scale={} db_range={} de-stick={}ms audio={})",
     params.on_sum,
     params.off_sum,
     params.attack_ms,
-    params.debounce_ms,
+    params.factor_release_ms,
     params.pressure_full_scale,
     params.gain_db_range,
     params.silence_to_zero_ms,
