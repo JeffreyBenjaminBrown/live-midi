@@ -1,0 +1,127 @@
+#+title: The quiet gate's timing subtlety
+#+date: 2026-07-18
+
+This document explains one subtle point in the Standard quiet gate: how the
+decoder measures "the sum was quiet for 25 ms before the press" at the very poll
+where the press arrives. The glossary at the bottom defines every term.
+
+* the problem
+The quiet gate wants to fire a pad only when its sum was quiet for at least the
+quiet window (25 ms) right before the press began. The trouble is that the press
+itself is a change: the sum jumps up when the foot lands. If the decoder asked
+"is the sum quiet right now?" at the poll where the press arrives, the answer
+would always be "no", because the sum just changed at that very poll. Under that
+naive check nothing would ever fire.
+
+* the fix: check the OLD change time, then record the new one
+The decoder keeps one timestamp per pad, =last_change=, which is the time the
+pad's sum last differed from the previous poll's value. On each poll the decoder
+does two things in this order:
+
+1. It computes =stable= from the EXISTING =last_change=. It asks how long the sum
+   has held constant, which is =now - last_change=, and it sets =stable= to true
+   when that span is at least the quiet window.
+2. It then records this poll's change. If the sum differs from the previous
+   poll's value, the decoder sets =last_change= to =now=.
+
+Because step 1 runs before step 2, =stable= at a press reflects the stillness
+BEFORE the rise, not the rise itself. The order matters. If the decoder recorded
+the change first and checked afterwards, =last_change= would already equal =now=
+at the press, the span would be zero, and the pad would never fire.
+
+* a worked example
+Take =on_sum = 20= and a quiet window of 25 ms, with the decoder polling every
+1 ms.
+
+A clean press after rest fires:
+- The pad rests at sum 0. The sum last changed when the foot lifted earlier, so
+  =last_change= sits at, say, t = 0 ms.
+- The polls at 1 ms, 2 ms, and on up to 100 ms all read sum 0. The sum does not
+  change, so =last_change= stays at 0 ms.
+- At t = 100 ms the foot presses, and the poll there reads sum 80.
+- That poll computes =stable= first. The sum held constant from 0 ms to 100 ms,
+  which is 100 ms, and 100 ms is at least 25 ms, so =stable= is true.
+- The poll then records the change, so =last_change= becomes 100 ms.
+- Because =stable= was true, the pad fires.
+
+A bounce right after that fire is suppressed:
+- The pad fired at 100 ms and is now active. The foot rocks.
+- At t = 108 ms the sum drops to 0, which is a change, so =last_change= becomes
+  108 ms.
+- At t = 112 ms the sum rises to 80 again, which is the bounce. This poll computes
+  =stable= first: the sum held constant only from 108 ms to 112 ms, which is 4 ms,
+  and 4 ms is less than 25 ms, so =stable= is false.
+- The poll then records the change, and because =stable= was false, the pad does
+  not fire. The bounce produced no second hit.
+
+* why a press looks like a step, not a ramp
+One reasonable worry is this: what if a press rises gradually, reading 0, then 5,
+then 30, then 80 across several polls? Each of those polls is a change, so by the
+poll where the sum finally crosses 20, the last change was only a poll ago, and
+=stable= would be false. The gate would then wrongly suppress a real press.
+
+This does not happen, because two clocks run at very different rates. The SoftStep
+scans its own sensors only about every 10 ms, and it transmits a Control Change
+only when a sensor value actually changes, since the tether is an on-change
+stream. The decoder, by contrast, polls about every 1 ms. Between two of the
+board's scans the decoder receives no new Control Change, so a pad's sum holds
+perfectly constant across those roughly ten polls. A press therefore reaches the
+decoder as a step: the sum sits at its resting value for many polls, and then it
+jumps to the pressed value in a single poll when that press's Control Change
+arrives. Because the onset is a single-poll jump, the change just before it is the
+pad's long-standing resting value, and the quiet-before-the-rise is measured
+correctly.
+
+Even a press that spans two of the board's scans behaves well. The first scan
+already crosses the threshold and fires, because the quiet before it was the long
+rest. The second scan's further rise arrives inside the attack window, so the
+decoder treats it as a Revise that raises the note's volume, not as a fresh onset
+that the gate would judge.
+
+* glossary
+** poll
+:: A poll is one advance of the decoder's state machine. The decoder polls
+  about every 1 ms, and each poll reads every pad's current sum and emits any
+  events.
+** scan
+:: A scan is one reading of the SoftStep's own sensors by the board. The
+  board scans about every 10 ms, far less often than the decoder polls.
+** on-change stream (tether)
+:: The tether is the SoftStep's hosted mode, in which
+  the board sends a Control Change only when a sensor value changes. A sensor that
+  holds steady sends nothing, so the decoder's stored sum for it stays constant.
+** onset
+:: An onset is the moment a pad's sum crosses the on-threshold going up.
+  An onset is what a fire responds to.
+** change
+:: A change is a poll at which a pad's sum differs from the previous
+  poll's value. A constant sum, at any level, is not a change.
+** quiet
+:: A pad is quiet while its sum does not change. A constant positive value
+  counts as quiet, exactly as a constant zero does.
+** quiet window
+:: The quiet window is how long a pad's sum must stay quiet before
+  the pad may fire again. It is 25 ms, the same value Settle uses.
+** quiet gate
+:: The quiet gate is the Standard rule that a pad fires on an onset
+  only if its sum was quiet for the quiet window just before the rise. A bounce
+  keeps changing, so it is never quiet, and the gate suppresses it.
+** last_change
+:: =last_change= is the stored timestamp of a pad's most recent
+  change. The decoder reads it to measure how long the sum has held constant.
+** stable
+:: =stable= is the boolean the decoder computes each poll: it is true when
+  the sum has been quiet for at least the quiet window. The Standard fire uses it.
+** attack window
+:: The attack window is the short span after a fire during which a
+  higher peak raises the note's volume through a Revise. It lasts about 14 ms.
+** Revise
+:: A Revise is the event that raises a sounding note's volume when a
+  higher peak arrives inside the attack window. A Revise is not a new hit.
+** DONE familiar
+*** sum (pad sum)
+:: A pad sum is the total of a pad's four pressure sensors. The
+  decoder compares this sum against the thresholds.
+*** Control Change
+:: A Control Change is the MIDI message the board sends for one
+  sensor reading. The decoder turns these into per-pad sums.
