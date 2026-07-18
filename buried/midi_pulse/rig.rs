@@ -67,22 +67,48 @@ pub struct TimbreRig {
   /// (values above 1 amplify and can push the mix into the clamp). Default 1.0.
   #[serde(default = "default_timbre_amplitude")]
   pub amplitude: f32,
-  /// Tremolo depth in [0,1]: 0 = off (default), 1 = dips to silence.
+  /// *Absolute* tremolo depth in [0,1]: 0 = off (default), 1 = dips to silence.
+  /// "Absolute" = the LFO rate is a fixed Hz, disregarding the voice's pitch
+  /// (the `rel_*` family below tracks it instead).
   #[serde(default)]
-  pub am_depth: f32,
-  /// Tremolo rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
+  pub abs_am_depth: f32,
+  /// Absolute tremolo rate in Hz (~0.1..10 musical). Default 1.0; inert while
+  /// depth = 0.
   #[serde(default = "default_timbre_freq")]
-  pub am_hz: f32,
-  /// Tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the rig's
-  /// `[am]` family), 1 = near-square chop. Default 0.
+  pub abs_am_hz: f32,
+  /// Absolute tremolo LFO morph in [0,1]: 0 = smooth (sine/tri end of the rig's
+  /// `[am]` family), 1 = near-square chop. Default 0. (The relative AM's LFO is
+  /// a plain sine; this knob does not touch it.)
   #[serde(default)]
   pub am_shape: f32,
-  /// Vibrato depth in cents: 0 = off (default); ~5..50 subtle, 100+ = seasick.
+  /// *Absolute* vibrato depth in cents: 0 = off (default); ~5..50 subtle, 100+ =
+  /// seasick. Exponential (a pitch offset), so it can never reach 0 Hz.
   #[serde(default)]
-  pub fm_depth_cents: f32,
-  /// Vibrato rate in Hz (~0.1..10 musical). Default 1.0; inert while depth = 0.
+  pub abs_fm_depth_cents: f32,
+  /// Absolute vibrato rate in Hz (~0.1..10 musical). Default 1.0; inert while
+  /// depth = 0.
   #[serde(default = "default_timbre_freq")]
-  pub fm_hz: f32,
+  pub abs_fm_hz: f32,
+  /// *Relative* AM depth in [0,1] -- a second, independent tremolo whose LFO rate
+  /// is `rel_am_freq` x the voice's pitch. 0 = off (default). Both AMs may run on
+  /// one voice (typically abs slow, rel fast).
+  #[serde(default)]
+  pub rel_am_depth: f32,
+  /// Relative AM rate as a unitless multiple of the voice's frequency (1 = the
+  /// voice's own pitch -- audio-rate, ring-mod territory; give the sink
+  /// `oversample`). 0 = off. Default 1.0; inert while depth = 0.
+  #[serde(default = "default_timbre_freq")]
+  pub rel_am_freq: f32,
+  /// *Relative* FM depth as a multiple of the voice's frequency -- linear FM,
+  /// independent of the absolute vibrato: 0 = off (default), 1 sweeps the carrier
+  /// all the way from 2*f down to 0*f, and > 1 goes through zero (the oscillator
+  /// runs backward).
+  #[serde(default)]
+  pub rel_fm_depth: f32,
+  /// Relative FM rate as a unitless multiple of the voice's frequency (see
+  /// `rel_am_freq`). 0 = off. Default 1.0; inert while depth = 0.
+  #[serde(default = "default_timbre_freq")]
+  pub rel_fm_freq: f32,
 }
 
 fn default_timbre_amplitude() -> f32 {
@@ -1620,17 +1646,32 @@ fn validate_timbres(rig: &Rig) -> Result<(), String> {
     if t.amplitude < 0.0 {
       return Err(format!("timbre {i}: amplitude must be >= 0, got {}", t.amplitude));
     }
-    if !(0.0..=1.0).contains(&t.am_depth) {
-      return Err(format!("timbre {i}: am_depth must be in 0..=1, got {}", t.am_depth));
+    if !(0.0..=1.0).contains(&t.abs_am_depth) {
+      return Err(format!("timbre {i}: abs_am_depth must be in 0..=1, got {}", t.abs_am_depth));
     }
     if !(0.0..=1.0).contains(&t.am_shape) {
       return Err(format!("timbre {i}: am_shape must be in 0..=1, got {}", t.am_shape));
     }
-    if t.fm_depth_cents < 0.0 {
-      return Err(format!("timbre {i}: fm_depth_cents must be >= 0, got {}", t.fm_depth_cents));
+    if t.abs_fm_depth_cents < 0.0 {
+      return Err(format!(
+        "timbre {i}: abs_fm_depth_cents must be >= 0, got {}",
+        t.abs_fm_depth_cents
+      ));
     }
-    if t.am_hz <= 0.0 || t.fm_hz <= 0.0 {
-      return Err(format!("timbre {i}: am_hz/fm_hz must be > 0"));
+    if t.abs_am_hz <= 0.0 || t.abs_fm_hz <= 0.0 {
+      return Err(format!("timbre {i}: abs_am_hz/abs_fm_hz must be > 0"));
+    }
+    if !(0.0..=1.0).contains(&t.rel_am_depth) {
+      return Err(format!("timbre {i}: rel_am_depth must be in 0..=1, got {}", t.rel_am_depth));
+    }
+    // rel_fm_depth may exceed 1 -- that is the through-zero region -- but a negative
+    // depth is just a phase-flipped LFO; keep the sign convention single.
+    if t.rel_fm_depth < 0.0 {
+      return Err(format!("timbre {i}: rel_fm_depth must be >= 0, got {}", t.rel_fm_depth));
+    }
+    // 0 is a legal relative rate ("off"); negative rates are not a thing.
+    if t.rel_am_freq < 0.0 || t.rel_fm_freq < 0.0 {
+      return Err(format!("timbre {i}: rel_am_freq/rel_fm_freq must be >= 0"));
     }
   }
   Ok(())
@@ -3849,16 +3890,20 @@ rect = [0, 1, 0, 1]
 waveform = "sin"
 [[timbres]]
 waveform = "tri"
-am_depth = 0.5
-am_hz = 3.0
+abs_am_depth = 0.5
+abs_am_hz = 3.0
 am_shape = 1.0
+rel_am_depth = 0.7
+rel_am_freq = 0.5
 [[timbres]]
 waveform = "square"
 amplitude = 0.6
 [[timbres]]
 waveform = "saw"
-fm_depth_cents = 30.0
-fm_hz = 6.0
+abs_fm_depth_cents = 30.0
+abs_fm_hz = 6.0
+rel_fm_depth = 1.5
+rel_fm_freq = 2.0
 "#;
 
   #[test]
@@ -3868,14 +3913,23 @@ fm_hz = 6.0
     assert_eq!(rig.timbres.len(), 4);
     assert_eq!(rig.timbres[0].waveform, WaveformChoice::Sine, "'sin' alias");
     assert_eq!(rig.timbres[1].waveform, WaveformChoice::Triangle, "'tri' alias");
-    // Defaults: full amplitude, modulation off.
+    // Defaults: full amplitude, modulation (abs and rel alike) off.
     assert_eq!(rig.timbres[0].amplitude, 1.0);
-    assert_eq!(rig.timbres[0].am_depth, 0.0);
-    assert_eq!(rig.timbres[0].fm_depth_cents, 0.0);
+    assert_eq!(rig.timbres[0].abs_am_depth, 0.0);
+    assert_eq!(rig.timbres[0].abs_fm_depth_cents, 0.0);
+    assert_eq!(rig.timbres[0].rel_am_depth, 0.0);
+    assert_eq!(rig.timbres[0].rel_fm_depth, 0.0);
+    assert_eq!(rig.timbres[0].rel_am_freq, 1.0);
+    assert_eq!(rig.timbres[0].rel_fm_freq, 1.0);
     // Explicit values land.
-    assert_eq!(rig.timbres[1].am_depth, 0.5);
+    assert_eq!(rig.timbres[1].abs_am_depth, 0.5);
+    assert_eq!(rig.timbres[1].rel_am_depth, 0.7);
+    assert_eq!(rig.timbres[1].rel_am_freq, 0.5);
     assert_eq!(rig.timbres[2].amplitude, 0.6);
-    assert_eq!(rig.timbres[3].fm_hz, 6.0);
+    assert_eq!(rig.timbres[3].abs_fm_hz, 6.0);
+    // rel_fm_depth > 1 is legal: that is the through-zero region.
+    assert_eq!(rig.timbres[3].rel_fm_depth, 1.5);
+    assert_eq!(rig.timbres[3].rel_fm_freq, 2.0);
   }
 
   #[test]
@@ -3887,9 +3941,26 @@ fm_hz = 6.0
 
   #[test]
   fn timbres_reject_out_of_range_parameters() {
-    let toml = format!("{SURFACES_MIN}{}", TIMBRES_FOUR.replace("am_depth = 0.5", "am_depth = 1.5"));
-    let err = parse_rig(&toml).expect_err("am_depth > 1 fails");
-    assert!(err.contains("am_depth"), "{err}");
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      TIMBRES_FOUR.replace("abs_am_depth = 0.5", "abs_am_depth = 1.5"),
+    );
+    let err = parse_rig(&toml).expect_err("abs_am_depth > 1 fails");
+    assert!(err.contains("abs_am_depth"), "{err}");
+    // The relative AM depth has the same 0..=1 range...
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      TIMBRES_FOUR.replace("rel_am_depth = 0.7", "rel_am_depth = 1.2"),
+    );
+    let err = parse_rig(&toml).expect_err("rel_am_depth > 1 fails");
+    assert!(err.contains("rel_am_depth"), "{err}");
+    // ...but a negative relative rate is rejected (0 itself is legal: "off").
+    let toml = format!(
+      "{SURFACES_MIN}{}",
+      TIMBRES_FOUR.replace("rel_fm_freq = 2.0", "rel_fm_freq = -1.0"),
+    );
+    let err = parse_rig(&toml).expect_err("negative rel_fm_freq fails");
+    assert!(err.contains("rel_fm_freq"), "{err}");
   }
 
   #[test]

@@ -53,7 +53,7 @@ use midi_pulse::monome::{self, DeviceInfo};
 use midi_pulse::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
-use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
+use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Timbre, VoiceMap, Waveform};
 use crate::voices::{Distortion, Makeup};
 
 use accrete::AccreteState;
@@ -89,6 +89,8 @@ pub(crate) struct TimbreSlot {
   amplitude: f32,
   am: Am,
   fm: Fm,
+  rel_am: RelAm,
+  rel_fm: RelFm,
 }
 
 /// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
@@ -192,6 +194,8 @@ fn default_timbre_slots() -> [TimbreSlot; SELECTOR_CELLS] {
     amplitude: 1.0,
     am: Am::default(),
     fm: Fm::default(),
+    rel_am: RelAm::default(),
+    rel_fm: RelFm::default(),
   };
   [
     plain(Waveform::Sine),
@@ -572,8 +576,10 @@ fn resolve_timbre_slots(rig: &Rig) -> [TimbreSlot; SELECTOR_CELLS] {
         WaveformChoice::Saw => Waveform::Saw,
       },
       amplitude: t.amplitude,
-      am: Am { depth: t.am_depth, freq: t.am_hz, shape: t.am_shape },
-      fm: Fm { depth_cents: t.fm_depth_cents, freq: t.fm_hz },
+      am: Am { depth: t.abs_am_depth, freq: t.abs_am_hz, shape: t.am_shape },
+      fm: Fm { depth_cents: t.abs_fm_depth_cents, freq: t.abs_fm_hz },
+      rel_am: RelAm { depth: t.rel_am_depth, freq: t.rel_am_freq },
+      rel_fm: RelFm { depth: t.rel_fm_depth, freq: t.rel_fm_freq },
     };
   }
   slots
@@ -1557,8 +1563,14 @@ fn handle_key(
     rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
-    let timbre =
-      Timbre { waveform: slot.waveform, gain: slot.amplitude * gain, am: slot.am, fm: slot.fm };
+    let timbre = Timbre {
+      waveform: slot.waveform,
+      gain: slot.amplitude * gain,
+      am: slot.am,
+      fm: slot.fm,
+      rel_am: slot.rel_am,
+      rel_fm: slot.rel_fm,
+    };
     // Slide: while on, glide into this note -- legato from the voice mono just
     // cut, or, with no stolen voice, by re-triggering the nearest recently-
     // released pitch (consuming it as a source); otherwise a plain note.
@@ -3239,7 +3251,7 @@ mod tests {
     .expect("read mock org");
     // The rig is `.org` now: PARAM values still contain the `key = value` text these
     // replaces target, but an INJECTED field must be its own PARAM headline at the
-    // timbre's depth (slot 2 = square, so its fm_depth_cents lands in timbres[2]).
+    // timbre's depth (slot 2 = square, so the fields land in timbres[2]).
     //
     // Each replacement must actually apply. A bare `str::replace` no-ops silently when
     // the mock rig's value drifts, leaving the test asserting a value that nothing set
@@ -3252,7 +3264,9 @@ mod tests {
     let edited = must_replace(&edited, "edo = 46", "edo = 41");
     let edited = must_replace(&edited, "x_step = 9", "x_step = 7");
     let edited = must_replace(
-      &edited, WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0",
+      &edited,
+      WAVE_SQUARE,
+      "waveform = \"square\"\n*** PARAM abs_fm_depth_cents = 25.0\n*** PARAM rel_fm_depth = 1.5",
     );
     let edited = must_replace(&edited, "slide_duration_ms = 100", "slide_duration_ms = 250");
     let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
@@ -3264,6 +3278,7 @@ mod tests {
     assert_eq!(p.edo, 41);
     assert_eq!(p.x_step, 7);
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
+    assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
   }
 

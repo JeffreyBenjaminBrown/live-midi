@@ -26,6 +26,9 @@ reverse it cheaply if you disagree.
 - *Revisit if:* you wanted audible through-zero linear FM as a playable timbre
   dimension. That means a new timbre parameter (deviation in Hz, not cents) and
   a config/editor surface for it -- say the word and I'll build it.
+- *Built* (queue.org, 2026-07-18): the =[[timbres]]= =rel_fm_depth= /
+  =rel_fm_freq= params are exactly that linear FM (deviation and LFO rate as
+  multiples of the voice's pitch); =rel_fm_depth > 1= goes through zero.
 
 * sustain ("accrete") -- choices where the spec was silent
 - *Which grid(s).* You wrote "the big edo grid"; this rig has two equal 16x16 play

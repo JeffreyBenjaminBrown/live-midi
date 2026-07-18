@@ -35,6 +35,9 @@ If what you actually want is audible through-zero *linear* FM as a playable
 timbre dimension, that's a new timbre parameter + rig surface -- happy to
 build it, but since nothing existing would change sound, I stopped here.
 (Also noted in jeff-maybe-review-this.org.)
+UPDATE 2026-07-18: built, via queue.org "add relative AM and FM" -- the
+=[[timbres]]= =rel_fm_depth= / =rel_fm_freq= params are that linear FM, and
+=rel_fm_depth > 1= reaches through-zero for real.
 * DONE sustain ("accrete")
 For the 3-surfaces rig(s) -- that is, softstep + 2 monomes --
 let's put three buttons in the bottom row on the left:
@@ -184,8 +187,9 @@ They should all be commented to indicate reasonable value range.
 ** [Claude] done -- a top-level =[[timbres]]= array of exactly four entries
 The waveform strip's four cells now select configurable *timbres*, not bare
 waveforms. Each entry: =waveform= (accepts your spellings: sin, tri, square,
-saw), =amplitude= (default 1.0), and per-timbre =am_depth= / =am_hz= /
-=am_shape= / =fm_depth_cents= / =fm_hz=, all defaulting to off. The
+saw), =amplitude= (default 1.0), and per-timbre =abs_am_depth= / =abs_am_hz= /
+=am_shape= / =abs_fm_depth_cents= / =abs_fm_hz= (named =am_depth= etc. until
+the =rel_*= pitch-relative family arrived), all defaulting to off. The
 surfaces toml ships with the four plain waveforms and a comment block giving
 each parameter's reasonable range, so nothing sounds different until you
 edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a

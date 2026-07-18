@@ -51,12 +51,18 @@ per-voice edit gesture uses.
 The four selectable timbres behind each grid's waveform strip, left to right.
 *** ELEM timbres
 **** PARAM waveform = "sin"
-**** PARAM amplitude = 1.0     # > 1 can clip
-**** PARAM am_depth = 0.0      # 0 = off, 1 dips to silence
-**** PARAM am_hz = 1.0
-**** PARAM am_shape = 0.0      # 0 smooth .. 1 near-square
-**** PARAM fm_depth_cents = 0.0
-**** PARAM fm_hz = 1.0
+**** PARAM amplitude = 1.0          # > 1 can clip
+abs_* = fixed-Hz modulators; rel_* = an independent pair whose LFO rates (and
+the FM depth) are multiples of the voice's pitch. All defaults shown.
+**** PARAM abs_am_depth = 0.0       # 0 = off, 1 dips to silence
+**** PARAM abs_am_hz = 1.0
+**** PARAM am_shape = 0.0           # abs LFO morph: 0 smooth .. 1 near-square
+**** PARAM abs_fm_depth_cents = 0.0
+**** PARAM abs_fm_hz = 1.0
+**** PARAM rel_am_depth = 0.0       # 0 = off, 1 dips to silence
+**** PARAM rel_am_freq = 1.0        # x voice pitch; 1 = audio-rate (oversample!)
+**** PARAM rel_fm_depth = 0.0       # x voice pitch; 1 sweeps 2f..0, > 1 thru-zero
+**** PARAM rel_fm_freq = 1.0        # x voice pitch
 *** ELEM timbres
 **** PARAM waveform = "tri"
 *** ELEM timbres
