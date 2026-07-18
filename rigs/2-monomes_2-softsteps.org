@@ -362,15 +362,26 @@ Farther from Jeff -> the RIGHT grid.
 Two M-Audio EX-P expression pedals, reaching the runtime via the MPC-20 ->
 host bridge (run tools/pedals/bridge.sh on the HOST; if its
 "MPC-20 pedals" port is missing the runtime prints a red note and plays on
-without them). Each is a simple LINEAR volume for one grid: the pedal's
-reliable ~1..119 CC travel maps to an amplitude factor 0..1 -- full heel
-silent, full toe unity -- applied to that grid's sounding and future voices,
-slewed in the engine (~20 ms) so sweeps don't zipper. Until a pedal first
-moves it contributes unity, so an unplugged pedal never mutes its grid.
+without them). Each is a volume pedal for one grid: the pedal's reliable
+~1..119 CC travel maps to a position 0..1, tapered by the fader law -- an
+exponential (dB-linear) over most of the travel, spliced to a linear fade at
+the heel; see the curve_* params on each pedal below -- full heel silent,
+full toe unity -- applied to that grid's sounding and future voices, slewed
+in the engine (~20 ms) so sweeps don't zipper. Until a pedal first moves it
+contributes unity, so an unplugged pedal never mutes its grid.
 Swap the monome values here if the pedals end up cabled the other way round.
 *** ELEM expression_pedals            # MPC-20 channel 1 -> grid A's volume
 **** PARAM channel = 1
 **** PARAM monome = "a"
+The taper (both params at their defaults, spelled out so the names are here):
+the top (1 - curve_initial_lin_frac) of the travel is EXPONENTIAL, running
+dB-linearly over curve_remainder_exp_db up to unity at full toe; the first
+curve_initial_lin_frac fades LINEARLY from exact silence up to the
+exponential's floor, since an exponential alone never reaches 0.
+**** PARAM curve_initial_lin_frac = 0.1
+**** PARAM curve_remainder_exp_db = 50.0
 *** ELEM expression_pedals            # MPC-20 channel 2 -> grid B's volume
 **** PARAM channel = 2
 **** PARAM monome = "b"
+**** PARAM curve_initial_lin_frac = 0.1
+**** PARAM curve_remainder_exp_db = 50.0

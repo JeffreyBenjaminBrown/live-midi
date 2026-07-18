@@ -121,11 +121,14 @@ fn default_timbre_amplitude() -> f32 {
 
 /// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
 /// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
-/// deliberately drops) bound as a simple LINEAR volume for one monome's grid: the
-/// pedal's reliable ~1..119 CC travel maps to an amplitude factor 0..1 (full heel =
-/// silent, full toe = unity), applied to that grid's sounding and future voices and
-/// slewed in the engine (`voices::GAIN_SLEW_SECS`) so sweeps don't zipper. Until a
-/// pedal first moves it contributes unity, so an unplugged pedal never mutes a grid.
+/// deliberately drops) bound as a volume pedal for one monome's grid: the pedal's
+/// reliable ~1..119 CC travel maps to a position 0..1, tapered into the amplitude
+/// factor by the standard fader law -- an EXPONENTIAL (dB-linear) curve over most
+/// of the travel, SPLICED to a linear fade over the first `curve_initial_lin_frac`
+/// of it so full heel is exactly silent (an exponential alone never reaches 0).
+/// Full toe = unity. Applied to that grid's sounding and future voices, slewed in
+/// the engine (`voices::GAIN_SLEW_SECS`) so sweeps don't zipper. Until a pedal
+/// first moves it contributes unity, so an unplugged pedal never mutes a grid.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExpressionPedalRig {
@@ -134,6 +137,23 @@ pub struct ExpressionPedalRig {
   pub channel: u8,
   /// The monome whose grid volume this pedal drives. Must have an `edo_note_grid`.
   pub monome: String,
+  /// The fraction of the travel, from the heel, that fades LINEARLY from silence up
+  /// to the exponential's floor. In [0, 1); 0 = no splice (silence snaps on at the
+  /// exact bottom). Default 0.1.
+  #[serde(default = "default_curve_initial_lin_frac")]
+  pub curve_initial_lin_frac: f32,
+  /// The dB span of the exponential remainder of the travel: gain runs dB-linearly
+  /// from -this (where the splice meets it) up to 0 dB at full toe. > 0. Default 50.
+  #[serde(default = "default_curve_remainder_exp_db")]
+  pub curve_remainder_exp_db: f32,
+}
+
+fn default_curve_initial_lin_frac() -> f32 {
+  0.1
+}
+
+fn default_curve_remainder_exp_db() -> f32 {
+  50.0
 }
 
 fn default_timbre_freq() -> f32 {
@@ -1724,6 +1744,21 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
     }
     if !monomes.insert(p.monome.as_str()) {
       return Err(format!("monome {:?} has two expression pedals", p.monome));
+    }
+    if !p.curve_initial_lin_frac.is_finite()
+      || !(0.0..1.0).contains(&p.curve_initial_lin_frac)
+    {
+      return Err(format!(
+        "expression pedal (channel {}): curve_initial_lin_frac must be in 0..1 \
+         (1 would leave no travel for the exponential), got {}",
+        p.channel, p.curve_initial_lin_frac,
+      ));
+    }
+    if !p.curve_remainder_exp_db.is_finite() || p.curve_remainder_exp_db <= 0.0 {
+      return Err(format!(
+        "expression pedal (channel {}): curve_remainder_exp_db must be > 0, got {}",
+        p.channel, p.curve_remainder_exp_db,
+      ));
     }
   }
   Ok(())
@@ -4082,6 +4117,11 @@ monome = "b"
     bad(&EXPRESSION_PEDALS.replace("channel = 2", "channel = 1"), "two expression pedals");
     bad(&EXPRESSION_PEDALS.replace("monome = \"b\"", "monome = \"a\""), "two expression pedals");
     bad(&EXPRESSION_PEDALS.replace("monome = \"b\"", "monome = \"nope\""), "no edo_note_grid");
+    // The taper knobs: the linear splice must leave room for the exponential, and
+    // the exponential must span a positive dB range.
+    let with = |extra: &str| format!("{EXPRESSION_PEDALS}{extra}");
+    bad(&with("curve_initial_lin_frac = 1.0\n"), "curve_initial_lin_frac");
+    bad(&with("curve_remainder_exp_db = 0.0\n"), "curve_remainder_exp_db");
   }
 
   #[test]

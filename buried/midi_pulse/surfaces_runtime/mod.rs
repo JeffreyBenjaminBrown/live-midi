@@ -50,6 +50,7 @@ use midi_pulse::rig::{
 use midi_pulse::device_assign::assign_selected_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
 use midi_pulse::monome::{self, DeviceInfo};
+use midi_pulse::expression_pedals::NUM_PEDALS;
 use midi_pulse::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
@@ -125,10 +126,23 @@ pub(crate) struct LiveParams {
   pub tap_window: Duration,
   pub trail_clobber_radius: i32,
   pub trails_max: usize,
+  /// The EX-P volume pedals, indexed by pedal (= MPC-20 channel - 1):
+  /// `(grid index, taper)`. Live so Jeff can tweak the curve_* knobs mid-play
+  /// ('r' reload); the pedal thread re-reads them each poll. Rebinding or
+  /// removing a pedal live also takes effect, but a rig that STARTS with no
+  /// pedals never spawns the thread -- adding the first pedal needs a restart,
+  /// like any other bound resource.
+  pub expression_pedals: [Option<(usize, PedalVolumeCurve)>; NUM_PEDALS],
 }
 
 /// The live subset of resolved settings.
 fn live_params(s: &Settings) -> LiveParams {
+  let mut expression_pedals = [None; NUM_PEDALS];
+  for &(pedal, grid, curve) in &s.expression_pedals {
+    if let Some(slot) = expression_pedals.get_mut(pedal) {
+      *slot = Some((grid, curve));
+    }
+  }
   LiveParams {
     amplitude: s.amplitude,
     distortion: s.distortion,
@@ -144,6 +158,7 @@ fn live_params(s: &Settings) -> LiveParams {
     tap_window: s.tap_window,
     trail_clobber_radius: s.trail_clobber_radius,
     trails_max: s.trails_max,
+    expression_pedals,
   }
 }
 
@@ -164,7 +179,7 @@ fn live_makeup(s: &Settings) -> Arc<Makeup> {
 fn reload_live(name: &str, live: &Live) {
   match load_named_rig(name).and_then(|rig| adopt_rig(&rig, live)) {
     Ok(()) => println!(
-      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / slide / trail applied (layout + ports need a restart)",
+      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / slide / trail / pedal curves applied (layout + ports need a restart)",
     ),
     Err(e) => eprintln!("reload of {name} failed; keeping the running parameters: {e}"),
   }
@@ -338,8 +353,8 @@ struct Settings {
   /// scrolling away under key echoes as you play.
   echo_input: bool,
   /// The EX-P volume pedals (`[[expression_pedals]]`), resolved to
-  /// `(pedal index = MPC-20 channel - 1, grid index)`.
-  expression_pedals: Vec<(usize, usize)>,
+  /// `(pedal index = MPC-20 channel - 1, grid index, taper)`.
+  expression_pedals: Vec<(usize, usize, PedalVolumeCurve)>,
 }
 
 fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -542,15 +557,19 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
   let surfaces = rig.surfaces.unwrap_or_default();
 
   // The EX-P volume pedals, by grid index (= position in `grids`). Validation
-  // already pinned channel to 1|2 and the monome to a play grid.
+  // already pinned channel to 1|2, the monome to a play grid, and the curve
+  // parameters to their legal ranges.
   let expression_pedals = rig
     .expression_pedals
     .iter()
     .filter_map(|p| {
-      grids
-        .iter()
-        .position(|g| g.monome_id == p.monome)
-        .map(|grid| (p.channel as usize - 1, grid))
+      grids.iter().position(|g| g.monome_id == p.monome).map(|grid| {
+        let curve = PedalVolumeCurve {
+          lin_frac: p.curve_initial_lin_frac,
+          exp_db: p.curve_remainder_exp_db,
+        };
+        (p.channel as usize - 1, grid, curve)
+      })
     })
     .collect();
 
@@ -756,7 +775,7 @@ fn run(
         }
       }
     });
-    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup).");
+    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves).");
   }
 
   // Discover whatever grids are actually connected and assign each configured grid a
@@ -875,10 +894,10 @@ fn run(
   // stream -- a headless/mock run must not open MIDI connections.
   let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; num_grids]));
   if !s.expression_pedals.is_empty() && !no_audio {
-    let map = s.expression_pedals.clone();
+    let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
     let gains = Arc::clone(&pedal_gains);
-    thread::spawn(move || expression_pedal_loop(map, voices_for_pedals, gains));
+    thread::spawn(move || expression_pedal_loop(live_for_pedals, voices_for_pedals, gains));
   }
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
@@ -1994,22 +2013,63 @@ fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
   }
 }
 
+/// One volume pedal's taper: the standard fader law, exponential with a linear
+/// splice at the heel (rig `curve_initial_lin_frac` / `curve_remainder_exp_db`).
+///
+/// Loudness is roughly logarithmic in amplitude, so the perceptually even taper is
+/// dB-LINEAR in travel -- an exponential. Its one flaw is that it never reaches 0,
+/// which the splice fixes: over the first `lin_frac` of the travel the gain fades
+/// linearly from exact silence up to the exponential's floor (`-exp_db` dB), and
+/// from there the exponential covers `exp_db` dB up to unity at full toe. The two
+/// halves meet, so the curve is continuous, monotonic, and pinned at 0 and 1.
+/// (Tried before this: linear -- numb at the toe, a cliff at the heel -- then
+/// quadratic, better but still not spread right. This is the console fader's law.)
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PedalVolumeCurve {
+  lin_frac: f32,
+  exp_db: f32,
+}
+
+impl PedalVolumeCurve {
+  fn gain(&self, norm: f32) -> f32 {
+    let x = norm.clamp(0.0, 1.0);
+    if x <= 0.0 {
+      return 0.0;
+    }
+    // The exponential's floor: the gain where the splice hands over.
+    let floor = 10.0_f32.powf(-self.exp_db / 20.0);
+    if x < self.lin_frac {
+      return floor * (x / self.lin_frac);
+    }
+    10.0_f32.powf(-self.exp_db * (1.0 - x) / ((1.0 - self.lin_frac) * 20.0))
+  }
+}
+
 /// The EX-P volume-pedal thread: poll the MPC-20 bridge reader (~100 Hz) and aim
-/// each mapped grid at its pedal's position. Linear: the pedal's reliable ~1..119
-/// CC travel normalizes to an amplitude factor 0..1 (full heel = silent, full toe
-/// = unity; `expression_pedals::normalize`). The per-sample slew that keeps a
+/// each mapped grid at its pedal's position. The pedal's reliable ~1..119 CC
+/// travel normalizes to a position 0..1 (`expression_pedals::normalize`), which
+/// the pedal's own `PedalVolumeCurve` tapers into the amplitude factor
+/// (exponential with a linear splice at the heel; full heel = silent, full toe =
+/// unity). The per-sample slew that keeps a
 /// sweep from zippering lives in the engine (`voices::GAIN_SLEW_SECS`) -- this
 /// thread only moves TARGETS: the shared per-grid gain (for future note-ons) and
 /// every sounding voice's `grid_gain_target`. A pedal that has never moved
 /// contributes unity, so an unplugged pedal cannot mute its grid. A missing
 /// bridge is a red report, not an error: the instrument plays on without pedals,
 /// like any other absent gear.
+///
+/// The bindings and tapers come from `Live`, re-read every poll, so the curve_*
+/// knobs are hot-reloadable ('r'): a reload bumps the generation, and every pedal
+/// that has ever reported a position is re-applied through its new taper
+/// immediately -- a curve tweak is audible without moving the pedal. (A rig that
+/// STARTS with no pedals never spawns this thread; adding the first pedal needs a
+/// restart, like any other bound resource.)
 fn expression_pedal_loop(
-  map: Vec<(usize, usize)>,
+  live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
 ) {
-  use midi_pulse::expression_pedals::{PedalReader, DEFAULT_PORT, NUM_PEDALS};
+  use midi_pulse::expression_pedals::{PedalReader, DEFAULT_PORT};
   let reader = match PedalReader::connect(DEFAULT_PORT) {
     Ok(r) => r,
     Err(e) => {
@@ -2019,19 +2079,27 @@ fn expression_pedal_loop(
   };
   println!("expression pedals: connected to {:?}", reader.port_name());
   let mut last = [f32::NAN; NUM_PEDALS];
+  let mut last_generation = live.generation.load(Ordering::SeqCst);
   while !STOP.load(Ordering::SeqCst) {
+    let generation = live.generation.load(Ordering::SeqCst);
+    let reloaded = generation != last_generation;
+    last_generation = generation;
+    let map = live.params.lock().unwrap_or_else(|e| e.into_inner()).expression_pedals;
     let pedals = reader.pedals();
-    for &(pedal, grid) in &map {
+    for (pedal, binding) in map.iter().enumerate() {
+      let Some((grid, curve)) = *binding else { continue };
       let p = pedals[pedal];
       // No CC yet = no position to trust; keep unity rather than muting the grid.
-      if p.updates == 0 || last[pedal] == p.norm {
+      // A reload re-applies a known position through the (possibly new) taper.
+      if p.updates == 0 || (!reloaded && last[pedal] == p.norm) {
         continue;
       }
       last[pedal] = p.norm;
+      let gain = curve.gain(p.norm);
       if let Some(g) = pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).get_mut(grid) {
-        *g = p.norm;
+        *g = gain;
       }
-      synth::set_grid_pedal_gain(&voices, grid, p.norm);
+      synth::set_grid_pedal_gain(&voices, grid, gain);
     }
     thread::sleep(Duration::from_millis(10));
   }
@@ -3132,12 +3200,29 @@ mod tests {
     }
 
     // The EX-P volume pedals: MPC-20 channel 1 -> grid a, channel 2 -> grid b,
-    // resolving to pedal indices 0/1 on grid indices 0/1.
+    // resolving to pedal indices 0/1 on grid indices 0/1, carrying the default
+    // taper (10% linear splice, 50 dB exponential remainder -- spelled out in the
+    // rig so the parameter names are findable).
     let pedals: Vec<(u8, &str)> =
       rig.expression_pedals.iter().map(|p| (p.channel, p.monome.as_str())).collect();
     assert_eq!(pedals, [(1, "a"), (2, "b")]);
     let s = resolve_settings(&rig).expect("resolves");
-    assert_eq!(s.expression_pedals, [(0, 0), (1, 1)]);
+    let curve = PedalVolumeCurve { lin_frac: 0.1, exp_db: 50.0 };
+    assert_eq!(s.expression_pedals, [(0, 0, curve), (1, 1, curve)]);
+
+    // The taper: exponential (dB-linear in travel) spliced to a linear fade over
+    // the first lin_frac, so the ends are pinned at exact 0 and 1.
+    assert_eq!(curve.gain(0.0), 0.0);
+    assert_eq!(curve.gain(1.0), 1.0);
+    let floor = 10f32.powf(-50.0 / 20.0); // where the splice meets the exponential
+    assert!((curve.gain(0.1) - floor).abs() < 1e-6, "continuous at the splice");
+    assert!((curve.gain(0.05) - floor / 2.0).abs() < 1e-6, "linear below it");
+    // dB-linear above it: the middle of the exponential span sits at -25 dB.
+    let mid = curve.gain(0.55);
+    assert!((20.0 * mid.log10() - -25.0).abs() < 0.1, "dB-linear: {mid}");
+    // Monotonic across the whole travel.
+    let g: Vec<f32> = (0..=100).map(|i| curve.gain(i as f32 / 100.0)).collect();
+    assert!(g.windows(2).all(|w| w[1] >= w[0]));
 
     // And it must resolve, not merely parse.
     resolve_settings(&rig).expect("the shipped rig resolves to Settings");
@@ -3505,6 +3590,12 @@ mod tests {
       "waveform = \"square\"\n*** PARAM abs_fm_depth_cents = 25.0\n*** PARAM rel_fm_depth = 1.5",
     );
     let edited = must_replace(&edited, "slide_duration_ms = 100", "slide_duration_ms = 250");
+    // "Add" an expression pedal with a non-default taper: the pedal thread re-reads
+    // Live every poll, so the curve_* knobs are exactly as live as the rest.
+    let edited = format!(
+      "{edited}\n** ELEM expression_pedals\n*** PARAM channel = 1\n\
+       *** PARAM monome = \"a\"\n*** PARAM curve_remainder_exp_db = 40.0\n",
+    );
     let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
     adopt_rig(&rig, &live).expect("adopts");
 
@@ -3513,6 +3604,11 @@ mod tests {
     assert_eq!(p.amplitude, 0.25);
     assert_eq!(p.edo, 41);
     assert_eq!(p.x_step, 7);
+    assert_eq!(
+      p.expression_pedals,
+      [Some((0, PedalVolumeCurve { lin_frac: 0.1, exp_db: 40.0 })), None],
+      "the pedal taper reloads (lin_frac keeps its default; exp_db moved)",
+    );
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
     assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);

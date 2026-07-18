@@ -99,8 +99,8 @@ Here's how to see what's connected:
   (hold to add notes, release to stop adding -- nothing is ever un-added by
   releasing). See "OSS: sustain + edit-delete".
 - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
-  grid, each a simple linear volume: heel silent, toe unity, slewed. See
-  "the EX-P volume pedals".
+  grid, each a volume pedal: heel silent, toe unity, fader-law taper
+  (exponential + linear splice), slewed. See "the EX-P volume pedals".
 
 * usage
 
@@ -249,8 +249,17 @@ its "MPC-20 pedals" port is missing the rig prints a red note at startup and
 plays on without them). Not the SoftSteps' own EX-P jacks -- that CC is still
 deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
 
-- *Linear.* The pedal's reliable ~1..119 CC travel maps straight to an
-  amplitude factor 0..1: full heel = silent, full toe = unity. No taper.
+- *The fader law: exponential with a linear splice.* The pedal's reliable
+  ~1..119 CC travel maps to a position 0..1. The top 90% of the travel is
+  EXPONENTIAL -- dB-linear, covering =curve_remainder_exp_db= (50 dB) up to
+  unity at full toe, so equal travel is an equal loudness step -- and the
+  first =curve_initial_lin_frac= (10%) fades linearly from exact silence up
+  to the exponential's -50 dB floor, because an exponential alone never
+  reaches 0. Both knobs are per-pedal in the rig, written out at their
+  defaults, and HOT-RELOADABLE: edit them and press =r= + Enter -- the new
+  taper is applied through the pedal's current position immediately, no
+  pedal movement needed. (Linear was tried first -- numb at the toe, a cliff at the
+  heel -- then quadratic; this is how console faders are actually built.)
 - *Live and future.* It rescales the grid's sounding voices (drones included)
   and every note struck later, multiplying below the waveform strip's timbre
   amplitude and the synth master volume.

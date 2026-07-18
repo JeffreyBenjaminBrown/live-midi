@@ -665,7 +665,7 @@ protocol.
 * Expression pedals (EX-P volume)
 
 An optional top-level ~[[expression_pedals]]~ array (surfaces runtime) binds the
-M-Audio EX-P expression pedals as simple LINEAR volume pedals, one per monome.
+M-Audio EX-P expression pedals as volume pedals, one per monome.
 The pedals reach the runtime via the MPC-20 -> host bridge
 (run ~tools/pedals/bridge.sh~ on the HOST; both pedals send
 CC 21, one per MIDI channel) -- NOT via the SoftSteps' own EX-P jacks, whose CC
@@ -673,16 +673,28 @@ the decoder deliberately drops.
 
 #+begin_src toml
 [[expression_pedals]]
-channel = 1   # MPC-20 MIDI channel, 1 or 2
-monome = "a"  # whose grid volume this pedal drives; must have an edo_note_grid
+channel = 1                     # MPC-20 MIDI channel, 1 or 2
+monome = "a"                    # whose grid volume; must have an edo_note_grid
+curve_initial_lin_frac = 0.1    # heel fraction that fades linearly to exact 0
+curve_remainder_exp_db = 50.0   # dB span of the exponential rest of the travel
 
 [[expression_pedals]]
 channel = 2
 monome = "b"
 #+end_src
 
-The pedal's reliable ~1..119 CC travel maps linearly to an amplitude factor
-0..1: full heel = silent, full toe = unity. It applies to the grid's sounding
+The pedal's reliable ~1..119 CC travel maps to a position 0..1, tapered into
+the amplitude factor by the standard fader law: the top ~(1 -
+curve_initial_lin_frac)~ of the travel is *exponential* (dB-linear), covering
+~curve_remainder_exp_db~ up to unity at full toe, and the first
+~curve_initial_lin_frac~ fades *linearly* from exact silence up to the
+exponential's floor -- an exponential alone never reaches 0. Defaults: 0.1 and
+50 dB; both are per-pedal fields, validated to [0,1) and > 0, and
+hot-reloadable with ~r~ (the new taper is applied through the pedal's current
+position immediately). (Linear was
+tried first -- numb at the toe, a cliff at the heel, since
+amplitude-to-loudness is roughly logarithmic -- then quadratic; this is the
+console fader's law.) It applies to the grid's sounding
 voices AND its future notes, multiplying below the timbre amplitude and the
 volume fader, and the engine slews each voice toward the pedal (~20 ms time
 constant, per sample), so sweeps are smooth rather than zipper-stepping at CC
