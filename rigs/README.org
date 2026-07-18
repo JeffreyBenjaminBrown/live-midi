@@ -344,6 +344,7 @@ Built-in unbundled window kinds:
 - ~mono_toggle~
 - ~softstep_accretes_toggle~
 - ~tap_tempo_pad~
+- ~edit_delete_button~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -593,8 +594,9 @@ Built-in softstep window kinds:
 - ~accrete_control~
 - ~tap_tempo_pedal~
 - ~pulse_factor_pedal~
+- ~edit_delete_pedal~
 
-The last three bind ONE pedal each to a control that would otherwise cost grid
+All but the drumkit bind ONE pedal each to a control that would otherwise cost grid
 cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
 mirror, which hardcodes pedals 1/2/3 + 8/9/0 and only acts while an on-grid toggle
 is on. Every binding is stated in the rig rather than buried in the runtime:
@@ -625,15 +627,27 @@ factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
 
 A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
 with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
-~tap_tempo_pad~ does), and with notes in edit mode the multipliers retune those
-notes. ~unity~ is the ~=1~ switch and never retunes edit-mode notes.
+~tap_tempo_pad~'s factor cells do -- pad and pedal run the same code), and with
+notes in edit mode the multipliers retune those notes. ~unity~ is the ~=1~ switch
+and never retunes edit-mode notes.
+
+An ~edit_delete_pedal~ (one pedal, a ~monome~ with an ~edo_note_grid~, at most one
+per monome) deletes -- silences and ends, by the ordinary release ramp -- every
+DRONE at an edited pitch on that monome's grid. The pitches leave the grid's
+sustain bank and edit mode empties, so the grid plays again immediately. A
+fingered voice at an edited pitch does NOT end (a finger's voice is the finger's
+to end): it only loses its edit/sustain reasons, so it ends on the ordinary
+release when the finger lifts. The on-grid ~edit_delete_button~ (single cell, at
+most one per monome, dim at rest / bright while pressed) is the same control on
+the grid itself.
 
 Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
 the same device (including across kinds -- a pedal that is both a drum and a clear
 button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
 global, so there is one); two pedals giving the same monome the same ~factor~
 (different monomes may of course share a tempo factor -- that is the point of
-per-monome tempo factors); and a ~monome~ that is unknown or has no ~edo_note_grid~.
+per-monome tempo factors); two ~edit_delete_pedal~ windows for one monome; and a
+~monome~ that is unknown or has no ~edo_note_grid~.
 
 Pedals are addressed by their printed label (1..9, then 0). On start, the
 runtime puts the device into *tether (hosted) mode* via SysEx sent over ALSA

@@ -4,9 +4,9 @@
 The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
 grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry the controls that would otherwise cost grid cells --
-sustain and the factored pulse (the factored pulse is ALSO on each grid's
-upper-right 3x2 pad; hands and feet drive the same state). No drums, no EX-P
-pedals: see "what is deliberately NOT here."
+sustain, the factored pulse, and edit-delete (the factored pulse and
+edit-delete are ALSO on each grid, upper right; hands and feet drive the same
+state). No drums, no EX-P pedals: see "what is deliberately NOT here."
 
 Background + every design decision behind this layout: =TODO/many/1_vision.org=
 (Jeff's original ask), =TODO/many/2_discussion.org= (the settled answers -- long,
@@ -96,7 +96,7 @@ Here's how to see what's connected:
 - sustain (accrete) -- each grid has its own bank of sustained notes. Here
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
-  releasing). See "OSS: sustain".
+  releasing). See "OSS: sustain + edit-delete".
 
 * usage
 
@@ -116,23 +116,29 @@ independently, so one board failing to restore never strands the other).
 * per-grid layout
 
 The two grids are identical. The whole 16x16 is the play surface, with exactly
-three overlays drawn on top -- nothing else lives on either grid; sustain
+four overlays drawn on top -- nothing else lives on either grid; sustain
 lives on a SoftStep instead:
 
 #+begin_example
-  col: 0   1   2   3   4   5  ...              13    14    15
-  row 0  [SIN TRI SQR SAW]  .   .   .  (play cells)  x3    x2    tap   <- factored-pulse pad
-  row 1    .   .   .   .   .   .                     /3    /2    =1    <- factored-pulse pad
+  col: 0   1   2   3   4   5  ...        12    13    14    15
+  row 0  [SIN TRI SQR SAW]  .   .   .   DEL    x3    x2    tap   <- edit-delete + factored-pulse pad
+  row 1    .   .   .   .   .   .          .    /3    /2    =1    <- factored-pulse pad
    ...                        (46-EDO play cells)
-  row 13   .   .   .   .   .   .                       .     .     .
-  row 14   .   .   .   .   .   .                     8vaDN   UP  8vaUP  <- scroll pad
-  row 15   .   .   .   .   .   .                     LEFT   DOWN RIGHT  <- scroll pad
+  row 13   .   .   .   .   .   .          .     .     .     .
+  row 14   .   .   .   .   .   .          .   8vaDN   UP  8vaUP  <- scroll pad
+  row 15   .   .   .   .   .   .          .   LEFT   DOWN RIGHT  <- scroll pad
 #+end_example
 
-- The waveform strip (=[0,0,3,0]=), the factored-pulse pad (=[13,0,15,1]=),
-  and the scroll pad (=[13,14,15,15]=) occlude the play grid: pressing them
-  re-timbres, moves the factored pulse, or scrolls rather than sounding a
-  note. Every other cell on both grids is an ordinary 46-EDO play cell.
+- The waveform strip (=[0,0,3,0]=), the edit-delete button (=[12,0]=), the
+  factored-pulse pad (=[13,0,15,1]=), and the scroll pad (=[13,14,15,15]=)
+  occlude the play grid: pressing them re-timbres, deletes the edited voices,
+  moves the factored pulse, or scrolls rather than sounding a note. Every
+  other cell on both grids is an ordinary 46-EDO play cell.
+- The edit-delete button ((12,0), just left of the pad's =x3=; dim at rest,
+  bright while pressed) deletes -- silences and ends, the ordinary voice
+  ending -- every edited drone on its own grid, and leaves edit mode empty
+  (a fingered note just leaves edit mode, ending when its finger lifts).
+  Same job as OSS pedals 7/9 (see "OSS: sustain + edit-delete").
 - The factored-pulse pad is the six-button block from the kmss rig, brought
   back by request: its factor buttons and ~=1~ drive the same per-grid state
   as the NSS pedals (see "NSS: the factored pulse"), and its tap cell blinks
@@ -152,14 +158,18 @@ the whole layout is spatial -- left buttons drive the left grid. Assigning by
 enumeration order instead would let a replug silently swap the grids,
 inverting the entire pedal board with no error.
 
-* OSS: sustain
+* OSS: sustain + edit-delete
 
 Sustain is momentary only: hold the accrete pedal to add notes to that
 grid's sustained set, release to stop adding (nothing already added is
-removed by releasing). This rig binds only two pedals per grid (clear +
-accrete) rather than the on-grid four the library also supports --
+removed by releasing). This rig binds only two sustain pedals per grid (clear
++ accrete) rather than the on-grid four the library also supports --
 =needs_holding= and =erase= still exist in the library code, they are simply
-unbound here (permanently-on =needs_holding=, in effect).
+unbound here (permanently-on =needs_holding=, in effect). Each grid also gets
+an edit-delete pedal: stomp to delete -- silence and end, the ordinary voice
+ending -- every edited drone on that grid, leaving edit mode empty; fingered
+notes just leave edit mode and end when their finger lifts (the same control
+as the grid's own (12,0) button).
 
 | pedal | job                       |
 |-------+---------------------------|
@@ -167,8 +177,10 @@ unbound here (permanently-on =needs_holding=, in effect).
 |     2 | accrete grid A (momentary) |
 |     4 | accrete grid B (momentary) |
 |     5 | clear grid B (RNM)        |
+|     7 | delete grid A's edit-mode voices |
+|     9 | delete grid B's edit-mode voices |
 
-Pedals 3, 6, 7, 8, 9, 0 are free. Left buttons drive the left grid, right
+Pedals 3, 6, 8, 0 are free. Left buttons drive the left grid, right
 buttons the right grid, matching Jeff's left/right principle. Pedal 8 once held
 a global tap tempo; Jeff retired it (he never set a tempo with it), so the base
 tempo is a seeded 1 Hz, retappable only on the grid pads' tap cells -- see
@@ -294,6 +306,15 @@ and it goes on ringing until you leave edit mode. Being edited is its own reason
 ring, alongside a finger and a sustain; a note rings while any of the three holds.
 So leaving edit mode silences it only if nothing else was holding it up: a note you
 had also sustained keeps going.
+
+To be rid of ALL of them at once there is the *edit-delete* control -- OSS
+pedal 7 (grid A) / 9 (grid B), or the grid's own (12,0) button. Unlike the
+one-note exit gesture it acts on everything: every edited DRONE is silenced
+and ended (the ordinary release ramp), sustains included; the pitches leave
+the sustain bank; and edit mode empties -- the grid plays again immediately.
+A note a finger is physically holding does not end (a finger's voice is the
+finger's to end): it just loses its edit and sustain reasons, so it ends
+normally the moment the finger lifts.
 
 Leaving always works, whether or not the note can still be heard. That matters more
 than it sounds: anything that silences an edited note (a =clear=, say) would otherwise
