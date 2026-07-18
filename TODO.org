@@ -1,84 +1,22 @@
-* response (in org-format because it's long)
-I added a few TODO items to TODO/new-library/2_glossary.org;
-please (have the smallest mind you're completely confident in)
-propagate those through the code.
-** "This reverses an earlier fix of yours."
-Ah crud. That would be awkward.
-A fingered voice in edit mode should not end on key-up.
-If the monomekey for that voice is pressed again,
-it retriggers the fingered voice there rather than adding a second voice.
-When edit mode is released, the fingered voice resumes normal release behavior.
-(This way I can put the note into edit mode,
-move my hand away, pick a new note to drag it there,
-leave my finger on it, and take it out of edit mode,
-and I'm still holding it until I release it.
-But if my finger isn't on it when I take it out of edit mode,
-it ends with the end of the edit mode.)
-
-I guess this means if the fingered voice is moved onto the same pitch
-as a sustained note, that sustained note will (as indicated by the diamond dance)
-get dragged wherever the fingered note does, but outlive it
-if edit mode ends before sustain. I don't see an easy way to avoid that.
-Seems okay.
-** "bothers me: pressing above a pitch with one sustained and one fingered voice would sustain one and un-sustain the other"
-Excellent job -- very obscure corner case.
-In that case let's end the sustained note,
-without adding the fingered note to the sustained set.
-(If I wanted the fingered note to replace the sustained note,
-I could have just retriggered. If I want to add the fingered note
-to the sustained set, I'm being weird
--- other notes probably deserve my attention more.)
-** right, older SS pads 6 and 0
-** that folder layout sounds great to me
-** Please go as far as you can!
-Anything that needs my attention, add to TODO/new-library/hey-jeff.org,
-mark it TODO, beep at me and then continue with other things
-that don't need my attention.
-In the spirit of when-to-stop.org, don't beep at me for any
-easily reversed decisions, but do record them in progress.org.
-* ONGOING problems
-** Holding onto legacy code is making the codebase stupid.
-*** example: "*=VoiceSource::Fingered= is not what surfaces uses.* "
-That's a quote from edit-mode.org.
-Anything that's like that, where the types don't match the reality,
-let's bury the old code under a folder called 'buried',
-and start a new library with a type that's better suited to our purposes.
-** We need clarity on terms.
-If key is ambiguous, never use it. Say monomekey instead.
-** Don't call it 'chord' if that's not what it is.
-** Actually screw it, let's build a whole new library for this latest rig.
-Cannibalize the old one, scrapping anything we don't use,
-using precise names that actually explain what's going on.
-** Don't use *bold* in the docs.
-It slows my reading. I feel (despite my rational mind) like I'm being yelled at.
-If something is language that needs definition, define it in a glossary;
-otherwise do nothing to call attention to particular terms or phrases.
-The prose should speak for itslef; asterisks imply either the reader is lazy
-or the speaker says lots of low-value stuff, neither of which should be true.
-* ONGOING fixes to TODO/many
-** ONGOING accrete should be momentary
-The sustain seems begin, and therefore be forever, in toggle mode rather than momentary mode.
-That is, I can play normally until I press the accrete button on the SS. Once I do that,
-even after removing my foot, new notes sustain. That's the behavior I got in the earlier rig
-when the accrete button was in toggle rather than momentary mode. For this rig it should only
-ever be in momentary mode.
-** TODO edit mode should persist notes and be exitable
-*** 1
-Currently, if I finger a note and then press the button below it,
-it enters edit mode -- good.
-But if I take my finger off of it, the note stops sounding,
-and the dance continues around the trail it left.
-It should instead persist as if my finger was still on it.
-Pressing the button just below should silence it,
-and its ghost should not be in edit mode any more.
-*** 2
-A refinement to edit mode exit:
-If I exit edit mode for a note that is either accreted into sustain
-or under a finger, it should persist.
-** TODO exiting edit mode, if the note is fingered, should not kill the note
-** remove note from sustained set
-by pressing the key one space above
-(lower y value, per graphics-style monome coordinates)
+* PINNED : how to do some things
+** the new rig
+*** to run
+serial
+**** outside of docker
+xhost --run 'xhost +local:'   # per login, not per use of a rig
+**** in docker
+pw-jack cargo run --bin midi_pulse \
+ -- 2-monomes_2-softsteps
+*** where SS pads are
+| New SS, upside-down |                 |           |                 |               |
+| x2                  | x3              | RNM : =1  | x3              | x2            |
+| /2 ? /3             | LOM : =1        | /3        | /2              |               |
+| Old SS              |                 |           |                 |               |
+| clear edits         | _               | tap tempo | _               | clear edits   |
+| clear sustain       | accrete sustain | _         | accrete sustain | clear sustain |
+* do timbre experiments
+Equalize volume across the four base timbres.
+How does volume interact with range?
 * simple interface for easy beats
 ** names for monome key behaviors
 - momentary : Its state in code matches its physical state -- up or down.
@@ -106,18 +44,6 @@ can be done in one place and apply to both windows.
 Hitting a drum pad plays the drum,
 at a volume equivalent to the midpoint of the softstep pressure range.
 * focus on pitch
-** ONGOING sketched in TODO/many.org
-*** rotate one softstep 180 degrees
-No need for code to know,
-but explain to Claude if soemthing I say about
-sofstep pad positions seems contradictory.
-*** square dance around note
-A light dances around it in a four-point circle.
-Iny timef that light would clobber another note, it doesn't.
-All such dances are in sync.
-*** sustain: [accrete, release]
-*** per-note pitch edit
-*** per-note pulse tempo edit
 ** to run the new rig
 serial
 *** outside of docker
