@@ -42,6 +42,9 @@ The path *to* this folder is not needed.
 *** in docker
 alternatives lately:
 
+# on host, once per login
+xhost +local:
+# in docker:
 pw-jack cargo run --bin midi_pulse \
   2-monomes_kmss-drums
 
