@@ -27,7 +27,11 @@
 //! Set SOFTSTEP_METER_SILENT=1 for a silent meter. Launch under `pw-jack` so that
 //! sample shares the sound card via PipeWire.
 
+// `set_debounce_by_label` / `DebounceMode::Settle` are used by the drumkit runtime to
+// give timing pedals an aggressive settle debounce; the meter shares this decoder verbatim
+// but shows every pad raw, so it never sets a per-pad mode -- hence the allow.
 #[path = "drumkit_runtime/decode.rs"]
+#[allow(dead_code)]
 mod decode;
 // `tether::session()` (an alternate constructor for a host runtime that owns its own
 // signal handling) is unused here -- this meter is standalone, so it uses `arm()`

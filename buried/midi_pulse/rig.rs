@@ -1144,6 +1144,9 @@ fn default_debounce_ms() -> u64 {
 fn default_silence_to_zero_ms() -> u64 {
   25
 }
+fn default_factor_settle_ms() -> u64 {
+  150
+}
 
 fn default_pressure_threshold_sum() -> u16 {
   200
@@ -1178,6 +1181,13 @@ pub struct SoftstepParams {
   /// A sensor with no CC for this long reads 0 (de-stick); 0 = off.
   #[serde(default = "default_silence_to_zero_ms")]
   pub silence_to_zero_ms: u64,
+  /// Settle-debounce window for a momentary TIMING pedal (the tempo-factor pedals): after
+  /// it fires, it accepts no further fire until its sum has been quiet this long AND has
+  /// released. Only pads the runtime marks `Settle` use it (see `DebounceMode::Settle`);
+  /// drum and held pedals ignore it and use `debounce_ms`. Deliberately much longer than
+  /// `debounce_ms`, because one stomp on a timing pedal must never read as several.
+  #[serde(default = "default_factor_settle_ms")]
+  pub factor_settle_ms: u64,
   /// Sum-of-4 at or above which a strike counts as HARD rather than light -- the
   /// "one pad, two purposes" trick (tap lightly for one job, stomp for another).
   ///
@@ -1205,6 +1215,7 @@ impl Default for SoftstepParams {
       gain_db_range: default_gain_db_range(),
       debounce_ms: default_debounce_ms(),
       silence_to_zero_ms: default_silence_to_zero_ms(),
+      factor_settle_ms: default_factor_settle_ms(),
       pressure_threshold_sum: default_pressure_threshold_sum(),
     }
   }
