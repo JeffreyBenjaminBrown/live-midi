@@ -3,7 +3,8 @@
 //! These are the two M-Audio EX-P *expression* pedals (via the MPC-20), NOT the SoftStep's
 //! foot pads (which the drumkit also calls "pedals"). The MPC-20's WCH CH345 chip makes no
 //! ALSA MIDI device on Linux, so the pedals reach us via the host-side *bridge*
-//! (`tools/pedals/bridge.py`), which re-emits their MIDI on a virtual ALSA-seq port
+//! (`tools/pedals/bridge.py`; run it via `tools/pedals/bridge.sh` on the host), which
+//! re-emits their MIDI on a virtual ALSA-seq port
 //! named "MPC-20 pedals". This module connects to that port (midir) and tracks each pedal's
 //! latest position. Background: `tools/pedals/{README,bridge-plan}.org`.
 //!
@@ -125,7 +126,7 @@ fn select_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPort, St
   let available: Vec<String> = ports.iter().filter_map(|p| midi_in.port_name(p).ok()).collect();
   Err(format!(
     "no MIDI input matching {substring:?}; available: {available:?}. Is the bridge running? \
-     (run tools/pedals/bridge.py on the host)"
+     (run tools/pedals/bridge.sh on the host)"
   ))
 }
 

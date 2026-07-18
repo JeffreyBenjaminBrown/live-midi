@@ -13,10 +13,10 @@ It forwards RAW MIDI (no rescaling). Normalizing each pedal's raw ~1..120 to a c
 0.0..1.0 float happens in the synth reader (midi_pulse::expression_pedals, PEDAL_RAW_BOTTOM/TOP).
 
   *** RUN ON THE HOST *** (the container has no /dev/bus/usb), as root (to take the USB
-  interface from snd-usb-audio):
+  interface from snd-usb-audio). The sibling wrapper does the whole dance -- the nix
+  shell (bridge.nix), the quoting, and handing sudo the shell's own python:
 
-  nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
-    --run 'sudo python3 tools/pedals/bridge.py'
+  tools/pedals/bridge.sh
 
 Verify from the CONTAINER, without the synth:  aseqdump -p 'MPC-20 pedals'  (move a pedal).
 Ctrl-C to stop. It reconnects if the pedals are replugged.
@@ -27,13 +27,11 @@ try:
     import usb.core
     import usb.util
 except ImportError:
-    sys.exit("pyusb not found. Run under: nix-shell -p "
-             "'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 --run 'sudo python3 ...'")
+    sys.exit("pyusb not found. Run tools/pedals/bridge.sh (wraps this in the right nix shell).")
 try:
     import rtmidi
 except ImportError:
-    sys.exit("python-rtmidi not found. Run under: nix-shell -p "
-             "'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 --run 'sudo python3 ...'")
+    sys.exit("python-rtmidi not found. Run tools/pedals/bridge.sh (wraps this in the right nix shell).")
 
 import pedals_usb  # sibling: open_device(), decode_usb_midi(), EP_IN, MIDI_IFACE
 

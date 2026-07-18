@@ -667,7 +667,7 @@ protocol.
 An optional top-level ~[[expression_pedals]]~ array (surfaces runtime) binds the
 M-Audio EX-P expression pedals as simple LINEAR volume pedals, one per monome.
 The pedals reach the runtime via the MPC-20 -> host bridge
-(~tools/pedals/bridge.py~, which must be running on the HOST; both pedals send
+(run ~tools/pedals/bridge.sh~ on the HOST; both pedals send
 CC 21, one per MIDI channel) -- NOT via the SoftSteps' own EX-P jacks, whose CC
 the decoder deliberately drops.
 
