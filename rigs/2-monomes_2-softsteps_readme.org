@@ -244,7 +244,7 @@ you'd need to tell them apart by name.
 The two M-Audio EX-P expression pedals are per-grid volume: MPC-20 channel 1
 drives grid A (LOM), channel 2 grid B (RNM) -- swap the =monome= values in the
 rig if the cabling turns out the other way round. They reach the runtime via
-the MPC-20 -> host bridge (=tools/pedals/bridge.py=, run it on the HOST; if
+the MPC-20 -> host bridge (run =tools/pedals/bridge.sh= on the HOST; if
 its "MPC-20 pedals" port is missing the rig prints a red note at startup and
 plays on without them). Not the SoftSteps' own EX-P jacks -- that CC is still
 deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
