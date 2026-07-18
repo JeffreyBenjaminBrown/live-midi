@@ -24,11 +24,12 @@
 //! pedals use in the real rig. Type a number (or the name) + Enter to switch, per the
 //! banner. It starts on `standard`, which is what most real pads use.
 //!
-//! Transcript (opt-in): set `SOFTSTEP_METER_LOG` (to a path, or `1` for the default
-//! `softstep_meter.log`) and every FIRE/revise/release plus each treatment switch is
-//! appended with a millisecond timestamp. The on-screen log keeps only the last 8 lines
-//! and is wiped on every redraw, so this is the only way to review a run afterwards -- and
-//! the way to tell a genuine too-close pair of hits from a double-fire, by their gap.
+//! Transcript (ON by default): every FIRE/revise/release plus each treatment switch is
+//! appended to `softstep_meter.log` with a millisecond timestamp. The on-screen log keeps
+//! only the last 8 lines and is wiped on every redraw, so this is the only way to review a
+//! run afterwards -- and the way to tell a genuine too-close pair of hits from a
+//! double-fire, by their gap. Set `SOFTSTEP_METER_NO_LOG` to turn it off, or
+//! `SOFTSTEP_METER_LOG=<path>` to write it elsewhere.
 //!
 //! Restores standalone mode on exit -- Ctrl-C (via `tether::arm`'s signal thread) or
 //! `q` + Enter (via `TetherSession`'s `Drop`) -- exactly like the drumkit runtime.
@@ -54,7 +55,7 @@ mod tether;
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -380,30 +381,72 @@ fn present_boards() -> Vec<(&'static str, &'static str)> {
     .collect()
 }
 
-/// An optional timestamped transcript of hit events, so a run can be reviewed after the
-/// fact -- the on-screen log keeps only the last 8 lines and is wiped on every redraw, so
-/// nothing survives the session without this. Enabled by the `SOFTSTEP_METER_LOG` env var.
-/// Every line is prefixed with milliseconds since the meter started, which is what makes a
-/// too-close pair of hits (the phasing you can hear) visible as a small gap. Cloneable:
-/// each board's poll thread and the stdin thread hold a handle onto the one shared file.
+/// The on-disk cap: 1 MB, which is ~17k events -- far more than any real diagnostic run.
+/// Past it the transcript keeps the most RECENT lines (nearest whatever you are chasing)
+/// and drops the oldest, so a long session never grows the file without bound.
+const LOG_CAP_BYTES: u64 = 1_000_000;
+
+/// A timestamped transcript of hit events, so a run can be reviewed after the fact -- the
+/// on-screen log keeps only the last 8 lines and is wiped on every redraw, so nothing
+/// survives the session without this. ON by default; `SOFTSTEP_METER_NO_LOG` disables it
+/// (see `from_env`). Every line is prefixed with milliseconds since the meter started,
+/// which is what makes a too-close pair of hits (the phasing you can hear) visible as a
+/// small gap. Capped at `LOG_CAP_BYTES`, keeping the tail. Cloneable: each board's poll
+/// thread and the stdin thread hold a handle onto the one shared file.
 #[derive(Clone)]
 struct Logger {
-  file: Arc<Mutex<File>>,
+  inner: Arc<Mutex<LogInner>>,
   epoch: Instant,
 }
 
+/// The open file plus a mirror of its current lines and byte total, so the log can be
+/// trimmed to its tail (on hitting the cap) without re-reading the disk.
+struct LogInner {
+  file: File,
+  lines: VecDeque<String>,
+  bytes: u64,
+}
+
+/// Drop oldest lines until the retained bytes fit the cap, keeping the tail. Trims only
+/// once actually over `cap`, and then all the way to `cap / 2`, so appends between trims
+/// stay O(1) (amortised) rather than trimming on every line at the ceiling. Returns whether
+/// it removed anything, i.e. whether the caller must rewrite the file from `lines`. Pure.
+fn trim_to_cap(lines: &mut VecDeque<String>, bytes: &mut u64, cap: u64) -> bool {
+  if *bytes <= cap {
+    return false;
+  }
+  while *bytes > cap / 2 {
+    match lines.pop_front() {
+      Some(front) => *bytes -= front.len() as u64,
+      None => break,
+    }
+  }
+  true
+}
+
 impl Logger {
-  /// Open (truncating) the transcript named by `SOFTSTEP_METER_LOG`. An empty value or
-  /// `"1"` uses the default name `softstep_meter.log` in the working directory. Returns
-  /// `None` when the var is unset, or when the file cannot be opened -- logging is
-  /// best-effort and never stops the meter.
+  /// Open (truncating) the transcript. ON by default, to `softstep_meter.log` in the
+  /// working directory. `SOFTSTEP_METER_NO_LOG` turns it off; `SOFTSTEP_METER_LOG=<path>`
+  /// relocates it (an empty value or `"1"` keeps the default name). Returns `None` when
+  /// disabled or when the file cannot be opened -- logging is best-effort and never stops
+  /// the meter.
   fn from_env(epoch: Instant) -> Option<Logger> {
-    let val = std::env::var("SOFTSTEP_METER_LOG").ok()?;
-    let path = if val.is_empty() || val == "1" { "softstep_meter.log".to_string() } else { val };
+    if std::env::var_os("SOFTSTEP_METER_NO_LOG").is_some() {
+      println!("  transcript: OFF (SOFTSTEP_METER_NO_LOG set)");
+      return None;
+    }
+    let path = match std::env::var("SOFTSTEP_METER_LOG") {
+      Ok(v) if !v.is_empty() && v != "1" => v,
+      _ => "softstep_meter.log".to_string(),
+    };
     match File::create(&path) {
       Ok(file) => {
-        println!("  transcript: logging every hit to {path:?} (SOFTSTEP_METER_LOG)");
-        Some(Logger { file: Arc::new(Mutex::new(file)), epoch })
+        println!(
+          "  transcript: logging every hit to {path:?} (capped at 1 MB, keeps the tail; \
+           SOFTSTEP_METER_NO_LOG disables; SOFTSTEP_METER_LOG=<path> relocates)"
+        );
+        let inner = LogInner { file, lines: VecDeque::new(), bytes: 0 };
+        Some(Logger { inner: Arc::new(Mutex::new(inner)), epoch })
       }
       Err(e) => {
         eprintln!("  transcript: could not open {path:?}: {e} -- continuing without a log");
@@ -412,12 +455,26 @@ impl Logger {
     }
   }
 
-  /// Append one timestamped line, then flush so a transcript survives a `kill`. Best-effort.
+  /// Append one timestamped line, then flush so a transcript survives a `kill`. When the
+  /// file passes the 1 MB cap, drop the oldest lines and rewrite it from the retained tail.
+  /// Best-effort: any I/O error is swallowed rather than crashing the meter.
   fn line(&self, msg: &str) {
     let ms = self.epoch.elapsed().as_secs_f64() * 1000.0;
-    let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = writeln!(f, "{ms:>10.1}ms  {msg}");
-    let _ = f.flush();
+    let text = format!("{ms:>10.1}ms  {msg}\n");
+    let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+    let g = &mut *guard;
+    let _ = g.file.write_all(text.as_bytes());
+    g.bytes += text.len() as u64;
+    g.lines.push_back(text);
+    if trim_to_cap(&mut g.lines, &mut g.bytes, LOG_CAP_BYTES) {
+      // Rewrite the whole file from the retained tail, so on disk it never exceeds the cap.
+      let _ = g.file.set_len(0);
+      let _ = g.file.seek(SeekFrom::Start(0));
+      for l in &g.lines {
+        let _ = g.file.write_all(l.as_bytes());
+      }
+    }
+    let _ = g.file.flush();
   }
 }
 
@@ -1084,6 +1141,28 @@ mod tests {
         quiet: Duration::from_millis(25),
       },
     );
+  }
+
+  #[test]
+  fn trim_to_cap_leaves_a_short_log_alone() {
+    let mut lines: VecDeque<String> = ["a\n", "b\n", "c\n"].iter().map(|s| s.to_string()).collect();
+    let mut bytes = 6;
+    assert!(!trim_to_cap(&mut lines, &mut bytes, 1000), "under the cap: no trim");
+    assert_eq!(lines.len(), 3);
+    assert_eq!(bytes, 6);
+  }
+
+  #[test]
+  fn trim_to_cap_drops_the_oldest_and_keeps_the_tail_under_half() {
+    // 100 four-byte lines "000\n".."099\n" = 400 bytes; a 100-byte cap trims to <= 50.
+    let mut lines: VecDeque<String> = (0..100u32).map(|i| format!("{i:03}\n")).collect();
+    let mut bytes = 400;
+    assert!(trim_to_cap(&mut lines, &mut bytes, 100), "over the cap trims");
+    assert!(bytes <= 50, "trims down to at most cap/2: {bytes}");
+    assert_eq!(bytes as usize, lines.iter().map(|s| s.len()).sum::<usize>(), "byte total stays consistent");
+    assert_eq!(lines.back().map(String::as_str), Some("099\n"), "keeps the newest line");
+    let oldest_kept: u32 = lines.front().unwrap().trim().parse().unwrap();
+    assert!(oldest_kept > 80, "the retained lines are the tail, not the head: oldest kept = {oldest_kept}");
   }
 
   #[test]
