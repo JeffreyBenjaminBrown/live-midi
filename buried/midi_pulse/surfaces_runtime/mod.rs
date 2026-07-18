@@ -805,8 +805,16 @@ fn run(
   let feet_accrete_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
-  // both grids' pads.
-  let poly = Arc::new(Mutex::new(PolyrhythmState::new(num_grids)));
+  // both grids' pads. A rig with no tap source (no tap pedal, no on-grid tap pad) gets a
+  // fixed 1 Hz base instead, so its tempo-factor pedals still have something to multiply
+  // (2-monomes_2-softsteps retired its tap pedal: Jeff never set a tempo with it).
+  let poly = {
+    let mut p = PolyrhythmState::new(num_grids);
+    if !rig_has_tap_source(rig) {
+      p.set_fixed_tempo(1.0, Instant::now());
+    }
+    Arc::new(Mutex::new(p))
+  };
   // The on-screen factored-pulse window (phase 9, `TODO/many/3_plan.org`): the =1
   // LED and the tap cell's blink moved off the grid onto the feet, so this is the
   // only place left to see the factored-pulse state. Skipped entirely on a
@@ -1856,6 +1864,14 @@ enum PedalAction {
 /// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
 /// to its play-grid index; a pedal naming a monome that is not a play grid (or is
 /// absent) is dropped, so the rig loads around missing gear like everything else.
+/// Does this rig offer any way to tap the tempo -- a softstep tap pedal or an on-grid tap
+/// pad? A rig with none runs at a fixed base tempo instead of waiting for a tap that can
+/// never come (see `PolyrhythmState::set_fixed_tempo`).
+fn rig_has_tap_source(rig: &Rig) -> bool {
+  rig.softstep_windows.iter().any(|w| matches!(w, SoftstepWindowRig::TapTempoPedal { .. }))
+    || rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. }))
+}
+
 fn rig_pedal_actions(
   rig: &Rig,
   grid_of: impl Fn(&str) -> Option<usize>,
@@ -2841,7 +2857,8 @@ mod tests {
       "left buttons drive the left grid, right buttons the right",
     );
 
-    // Exactly one tap pedal (the tempo is global), on the old board.
+    // No tap pedal: Jeff retired it (he never set a tempo with it), so the rig has no tap
+    // source and the runtime fixes the base tempo at 1 Hz for the factor pedals to multiply.
     let taps: Vec<u8> = rig
       .softstep_windows
       .iter()
@@ -2850,7 +2867,8 @@ mod tests {
         _ => None,
       })
       .collect();
-    assert_eq!(taps, [8]);
+    assert!(taps.is_empty(), "the tap pedal was retired: {taps:?}");
+    assert!(!rig_has_tap_source(&rig), "no tap pedal and no on-grid tap pad -> fixed tempo");
 
     // Each grid gets a full set of five factored-pulse controls, all on the new board.
     for monome in ["a", "b"] {
@@ -2933,8 +2951,8 @@ mod tests {
       at("old", 5),
       Some(PedalAction::Accrete { grid: 1, control: AccreteControlKind::Clear }),
     );
-    assert_eq!(at("old", 8), Some(PedalAction::Tap));
-    for free in [3, 6, 7, 9, 0] {
+    // Pedal 8 held the retired tap tempo; it and the other gaps are now all free.
+    for free in [3, 6, 7, 8, 9, 0] {
       assert_eq!(at("old", free), None, "old pedal {free} is deliberately unbound");
     }
 
@@ -2979,7 +2997,7 @@ mod tests {
     );
     assert!(actions.get(&("old".to_string(), 5)).is_none(), "b's clear is dropped");
     assert!(actions.get(&("new".to_string(), 1)).is_none(), "b's x2 is dropped");
-    assert_eq!(actions.get(&("old".to_string(), 8)), Some(&PedalAction::Tap), "tap is global");
+    assert!(actions.get(&("old".to_string(), 8)).is_none(), "pedal 8 is free (tap retired)");
   }
 
   /// The bug Jeff hit on the hardware: the shipped rig binds accrete and clear but no

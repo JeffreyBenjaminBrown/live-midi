@@ -174,14 +174,10 @@ The OLDER board, nearer Jeff. Not rotated, so its printed labels read
 ***** PARAM pedal = 5
 ***** PARAM monome = "b"
 ***** PARAM control = "clear"
-**** ELEM softstep_windows            # pedal 8: the global tap tempo
-***** PARAM id = "tap"
-***** PARAM softstep = "old"
-***** PARAM kind = "tap_tempo_pedal"
-***** PARAM pedal = 8
-Jeff's pick: 8 is the middle-FAR button on this board, i.e. the one closest to
-the new board. The tapped tempo is global -- shared by both grids -- so it earns
-the shared middle column. Pedals 3, 6, 7, 9, 0 are free.
+# The tap-tempo pedal was retired: Jeff never used it to set a tempo. With no tap
+# source, the runtime fixes the base tempo at 1 Hz (see rig_has_tap_source /
+# PolyrhythmState::set_fixed_tempo), so the x2 / /2 / ... pedals still have a base to
+# multiply. Pedals 3, 6, 7, 8, 9, 0 on this board are now free.
 *** new softstep: the pulse, 5 controls per grid
 Each grid gets x2, x3, /2, /3 and =1. The far/near split follows Jeff's rule for
 the ambiguous middle column: nearer = left grid, farther = right grid.
