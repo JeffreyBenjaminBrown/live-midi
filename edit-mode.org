@@ -268,21 +268,27 @@ still edited. Turning it on starts nothing, because a fingered note gets its dro
 when the finger lifts, and an edited note already has one.
 
 ** drag (any other press, while editing)
-The nearest edited pitch moves, and ties go to the lower note. Five things change
+The nearest edited pitch moves, and ties go to the lower note. Several things change
 together:
 - =EditState= moves =P= to =Q=.
-- The voice glides. =glide_voice_to= handles a fingered one, which it finds via =held=;
-  =glide_sustained_to= handles a drone, and it re-files that drone under
-  =sustain_key(Q)=, because a drone's map key is its pitch.
+- =rehome_to_cell= adopts the voice onto the drag finger's cell and glides it to =Q=. It
+  finds a fingered source via =held= and a drone source via =sustain_key(P)=, and either
+  way the voice ends up fingered at the drag cell, which is what lets it survive a later
+  exit. Its timbre, gain, and factored pulse all continue across the move.
+- The drag retriggers the pluck at its onset, so each drag lands a rhythmic accent
+  (Jeff's request). =rehome_to_cell= re-aims the envelope at the attack peak while the
+  voice is still at the old pitch =P=, and the glide then carries it to =Q=. The re-attack
+  lifts from the voice's current level rather than from silence, so it swells up with no
+  click.
 - =held= re-files the cell under =Q= if the note was fingered. This step is the
   bridge: code that skips it makes releasing look up the pitch the note used to be.
 - =sustained= re-files =P= as =Q= too, which =note_moved= does, or a clear would miss
   it.
 - The trail gains =Q=, so that it shows a pitch which is actually sounding.
 
-Re-aiming mid-glide is safe, because =glide_voice_to= re-reads the voice's live
-=freq=, so dragging back and forth simply re-aims it. Patching =freq_target= alone
-would not work, because =glide_per_sample= encodes the direction.
+Re-aiming mid-glide is safe, because =rehome_to_cell= re-reads the voice's live =freq=,
+so dragging back and forth simply re-aims it. Patching =freq_target= alone would not
+work, because =glide_per_sample= encodes the direction.
 
 ** retrigger (striking an edited note's own pitch)
 The press falls through to the ordinary note-on path, which already cuts the drone and

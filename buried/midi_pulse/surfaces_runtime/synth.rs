@@ -333,8 +333,10 @@ impl SurfaceSink {
   }
 
   /// Hand a sounding voice to the finger now on `cell`: re-home it there as an ordinary
-  /// FINGERED voice, gliding it to `to`, and preserve everything else about it -- its
-  /// envelope, timbre, gain, and the factored pulse's rate and phase all continue.
+  /// FINGERED voice, gliding it to `to`, and RETRIGGER its pluck at the drag's onset. Its
+  /// timbre, gain, and the factored pulse's rate and phase all continue; only the envelope
+  /// re-fires, so each drag lands a rhythmic accent (Jeff). The re-attack happens at the
+  /// OLD pitch -- the glide has not moved `freq` yet -- and the glide then carries it to `to`.
   ///
   /// This is what a drag does. Pressing a monomekey to drag a voice is a finger going
   /// down, and that finger must own the voice afterwards, or the voice is stranded:
@@ -361,6 +363,12 @@ impl SurfaceSink {
     let Some(mut state) = voices.remove(&src) else {
       return false;
     };
+    // Retrigger the pluck at the drag's onset, at the OLD pitch (freq is untouched here).
+    // Re-aim the envelope at the attack peak so the note re-strikes and lands a rhythmic
+    // accent. This lifts from the voice's CURRENT level rather than zeroing it, so the
+    // attack swells up with no click; the voice's own pluck decay then rings it back down.
+    state.target_env = 1.0;
+    state.ramp_per_sample = 1.0 / (self.attack_secs * self.sample_rate);
     let target = freq_for_pitch(to, self.fund, self.edo);
     let start = state.freq; // live, mid-glide included
     if target == start {
@@ -1210,6 +1218,29 @@ mod tests {
     let st = &g[&voice_key(0, (7, 7))];
     assert_eq!(st.factored_pulse_freq, 3.0, "the pulse rate is kept");
     assert_eq!(st.factored_pulse_phase, phase, "and its phase does not jump");
+  }
+
+  /// A drag retriggers the pluck so each drag lands a rhythmic accent (Jeff). A voice that
+  /// is NOT attacking (here, released and ringing down) re-aims at the attack peak when
+  /// dragged, and it does so from its current level rather than being zeroed -- no click.
+  #[test]
+  fn a_drag_retriggers_the_pluck_for_a_rhythmic_accent() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    // Put the voice in a clearly non-attacking state: partway down and releasing.
+    {
+      let mut g = v.lock().unwrap();
+      let st = g.get_mut(&voice_key(0, (3, 3))).unwrap();
+      st.env = 0.3;
+      st.target_env = 0.0;
+    }
+    a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 35, 0.1);
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (7, 7))];
+    assert_eq!(st.target_env, 1.0, "the drag re-aims the envelope at the attack peak");
+    assert!(st.ramp_per_sample > 0.0, "and ramps toward it (a fresh attack)");
+    assert!(st.env > 0.0, "it re-attacks from the current level, not silence -- no click");
   }
 
   #[test]
