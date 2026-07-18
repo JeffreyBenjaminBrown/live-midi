@@ -185,6 +185,13 @@ impl TetherDecoder {
     }
   }
 
+  /// Set every pad's bounce guard at once. The meter uses this to audition one treatment
+  /// across the whole board; changing the mode does not disturb a pad's current state, so
+  /// it takes effect on that pad's next fire.
+  pub fn set_all_debounce(&mut self, mode: DebounceMode) {
+    self.debounce_mode = [mode; NUM_PADS];
+  }
+
   /// Feed one Control-Change sensor reading at time `now`. CCs outside the key range
   /// (nav pad 80..83, expression pedal 86, etc.) are ignored.
   pub fn on_cc(&mut self, cc: u8, val: u8, now: Instant) {

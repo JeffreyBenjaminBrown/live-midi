@@ -18,6 +18,12 @@
 //! OWN pressure (pad, ditto, ditto repeats the ORIGINAL, not the ditto -- see
 //! `resolve_fire`, which mirrors `drumkit_runtime::mod::resolve_fire`).
 //!
+//! Pedal treatment (live-switchable): the meter applies ONE debounce treatment to every
+//! pad, so you can stomp a pad and feel each policy. `standard` is the everyday
+//! fire-on-onset behaviour; `settle` is the aggressive two-condition guard the timing
+//! pedals use in the real rig. Type a number (or the name) + Enter to switch, per the
+//! banner. It starts on `standard`, which is what most real pads use.
+//!
 //! Restores standalone mode on exit -- Ctrl-C (via `tether::arm`'s signal thread) or
 //! `q` + Enter (via `TetherSession`'s `Drop`) -- exactly like the drumkit runtime.
 //!
@@ -27,9 +33,9 @@
 //! Set SOFTSTEP_METER_SILENT=1 for a silent meter. Launch under `pw-jack` so that
 //! sample shares the sound card via PipeWire.
 
-// `set_debounce_by_label` / `DebounceMode::Settle` are used by the drumkit runtime to
-// give timing pedals an aggressive settle debounce; the meter shares this decoder verbatim
-// but shows every pad raw, so it never sets a per-pad mode -- hence the allow.
+// The meter now uses the debounce controls (the treatment toggle drives
+// `set_all_debounce`), but it still leaves other decoder internals (`is_hard`, the
+// per-label `set_debounce_by_label`) unexercised, so the allow stays.
 #[path = "drumkit_runtime/decode.rs"]
 #[allow(dead_code)]
 mod decode;
@@ -52,7 +58,9 @@ use midir::{MidiInput, MidiInputPort};
 use midi_pulse::midi;
 use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
-use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecoder, NUM_PADS};
+use decode::{
+  collect_control_changes, gain_from_pressure, DebounceMode, DrumEvent, TetherDecoder, NUM_PADS,
+};
 
 /// Printed label -> base CC of that pad's 4 sensors, in printed-board order (1..9,
 /// then 0). Mirrors decode.rs's private `SLOT_LABEL` / the Python meter's
@@ -89,6 +97,64 @@ const AUDITION_SAMPLE: &str = "snare.wav";
 // --------------------------------------------------------------------------------
 // Pure, hardware-free logic (unit tested below).
 // --------------------------------------------------------------------------------
+
+/// A debounce treatment the meter applies to every pad at once, so you can stomp a pad
+/// and feel each policy. Mirrors `decode::DebounceMode`, but as a small user-facing menu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Treatment {
+  /// The everyday fire-on-onset behaviour, with the attack window and the min-gap guard.
+  Standard,
+  /// The aggressive two-condition guard the timing pedals use in the real rig.
+  Settle,
+}
+
+/// Every treatment, in the order the banner lists them. A treatment's 1-based position
+/// here is the number key that selects it, so adding one here adds its banner entry and
+/// its key with no other change.
+const TREATMENTS: [Treatment; 2] = [Treatment::Standard, Treatment::Settle];
+
+impl Treatment {
+  fn name(self) -> &'static str {
+    match self {
+      Treatment::Standard => "standard",
+      Treatment::Settle => "settle",
+    }
+  }
+
+  /// The number key that selects this treatment: its 1-based position in `TREATMENTS`.
+  fn key(self) -> char {
+    let i = TREATMENTS.iter().position(|&t| t == self).unwrap_or(0);
+    char::from(b'1' + i as u8)
+  }
+
+  /// The decoder debounce mode for this treatment, filled from softstep.toml.
+  fn mode(self, params: &SoftstepParams) -> DebounceMode {
+    match self {
+      Treatment::Standard => DebounceMode::Standard,
+      Treatment::Settle => DebounceMode::Settle {
+        since_fire: Duration::from_millis(params.factor_settle_ms),
+        quiet: Duration::from_millis(params.factor_release_ms),
+      },
+    }
+  }
+
+  /// Parse a typed line into a treatment. It accepts the number key or the full name, in
+  /// any case; anything else (including `q`) returns `None`.
+  fn from_input(line: &str) -> Option<Treatment> {
+    let s = line.trim().to_ascii_lowercase();
+    TREATMENTS.iter().copied().find(|t| s == t.key().to_string() || s == t.name())
+  }
+}
+
+/// The one-line banner: which treatment is live, and the key for each. Reads, e.g.,
+/// `pedal treatment (current: SETTLE):  press 1 + Enter for standard,  press 2 + ...`.
+fn treatment_banner(current: Treatment) -> String {
+  let opts: Vec<String> = TREATMENTS
+    .iter()
+    .map(|&t| format!("press {} + Enter for {}", t.key(), t.name()))
+    .collect();
+  format!("pedal treatment (current: {}):  {}", current.name().to_uppercase(), opts.join(",  "))
+}
 
 /// What a pad does when struck. The meter has no per-pad sample bank (unlike the
 /// drumkit); a "hit" is identified by its printed label only.
@@ -314,6 +380,8 @@ struct Board {
   state: Arc<Mutex<MeterState>>,
   stop: Arc<AtomicBool>,
   poll: thread::JoinHandle<()>,
+  /// The board's live decoder, so the treatment toggle can re-arm every pad on it.
+  decoder: Arc<Mutex<TetherDecoder>>,
   _conn: midir::MidiInputConnection<()>,
 }
 
@@ -371,6 +439,7 @@ fn start_board(
 
   let stop = Arc::new(AtomicBool::new(false));
   let poll = {
+    let decoder = Arc::clone(&decoder);
     let state = Arc::clone(&state);
     let stop = Arc::clone(&stop);
     thread::Builder::new()
@@ -380,7 +449,7 @@ fn start_board(
   };
 
   println!("  bound {label}: {port_name:?}");
-  Ok(Board { label: label.to_string(), state, stop, poll, _conn: conn })
+  Ok(Board { label: label.to_string(), state, stop, poll, decoder, _conn: conn })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -419,7 +488,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     println!("  audio audition OFF (SOFTSTEP_METER_SILENT set): silent meter.");
   }
-  println!("  keys: q + Enter quits (Ctrl-C also restores standalone mode)\n");
+  println!("  keys: a treatment number, or q, + Enter (Ctrl-C also restores standalone mode)\n");
 
   // Arm Ctrl-C/SIGTERM restoration FIRST, before any MIDI/poll thread spawns, so the
   // signal block is inherited by all of them. One session covers every board.
@@ -438,15 +507,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   println!();
 
   let quit = Arc::new(AtomicBool::new(false));
+  // The live treatment, shared by the stdin thread (writes) and the draw loop (reads). It
+  // starts on `standard`, which is what every decoder is already built with.
+  let treatment = Arc::new(Mutex::new(Treatment::Standard));
   {
     let quit = Arc::clone(&quit);
+    let treatment = Arc::clone(&treatment);
+    // Each board's decoder, so a treatment switch re-arms every pad on every board.
+    let decoders: Vec<Arc<Mutex<TetherDecoder>>> =
+      boards.iter().map(|b| Arc::clone(&b.decoder)).collect();
     thread::spawn(move || {
       let stdin = io::stdin();
       for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
-        if matches!(line.trim(), "q" | "Q" | "quit") {
+        let cmd = line.trim();
+        if matches!(cmd, "q" | "Q" | "quit") {
           quit.store(true, Ordering::SeqCst);
           break;
+        }
+        if let Some(t) = Treatment::from_input(cmd) {
+          *treatment.lock().unwrap_or_else(|e| e.into_inner()) = t;
+          let mode = t.mode(&params);
+          for dec in &decoders {
+            dec.lock().unwrap_or_else(|e| e.into_inner()).set_all_debounce(mode);
+          }
         }
       }
     });
@@ -454,7 +538,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let start = Instant::now();
   while !quit.load(Ordering::SeqCst) {
-    draw(&boards, start, params, audio_on);
+    let current = *treatment.lock().unwrap_or_else(|e| e.into_inner());
+    draw(&boards, start, params, audio_on, current);
     thread::sleep(DRAW_TICK);
   }
 
@@ -543,7 +628,7 @@ fn run_poll_loop(
 /// Every connected board gets its own labelled section; within each, the two
 /// most-recently-struck pads, newest first, each as four sensor bars then their sum
 /// bar, with the top pad's running hit-count, its last-hit line, and its event log.
-fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool) {
+fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool, treatment: Treatment) {
   let now = Instant::now();
   let now_secs = now.duration_since(start).as_secs_f64();
   let silence = Duration::from_millis(params.silence_to_zero_ms);
@@ -552,6 +637,7 @@ fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool
     String::new(),
     "  SoftStep pressure meter (Rust) -- the last two pads struck, newest on top;".to_string(),
     "  each shows its 4 sensors then their sum -- bar (peak-hold |), value, recent max; pad 3 = ditto.".to_string(),
+    format!("  {}", treatment_banner(treatment)),
     "  keys: q + Enter quits (Ctrl-C also restores standalone mode)".to_string(),
   ];
 
@@ -885,6 +971,50 @@ mod tests {
     sensors[3] = 42;
     let last_seen: [Option<Instant>; 40] = [None; 40]; // never seen, but silence=0 disables de-stick
     assert_eq!(interp_shadow(&sensors, &last_seen, 3, now0, Duration::ZERO), 42);
+  }
+
+  // ---- pedal treatment toggle ----
+
+  #[test]
+  fn treatment_from_input_accepts_a_number_or_a_name_in_any_case() {
+    assert_eq!(Treatment::from_input("1"), Some(Treatment::Standard));
+    assert_eq!(Treatment::from_input("2"), Some(Treatment::Settle));
+    assert_eq!(Treatment::from_input("standard"), Some(Treatment::Standard));
+    assert_eq!(Treatment::from_input("  SETTLE  "), Some(Treatment::Settle), "trims and lowercases");
+    assert_eq!(Treatment::from_input("q"), None, "quit is not a treatment");
+    assert_eq!(Treatment::from_input("3"), None, "there is no third treatment yet");
+    assert_eq!(Treatment::from_input(""), None);
+  }
+
+  #[test]
+  fn treatment_keys_follow_their_position_and_round_trip() {
+    assert_eq!(Treatment::Standard.key(), '1');
+    assert_eq!(Treatment::Settle.key(), '2');
+    for &t in &TREATMENTS {
+      assert_eq!(Treatment::from_input(&t.key().to_string()), Some(t), "{t:?} round-trips via its key");
+    }
+  }
+
+  #[test]
+  fn treatment_maps_to_the_matching_decoder_mode() {
+    let params =
+      SoftstepParams { factor_settle_ms: 150, factor_release_ms: 25, ..SoftstepParams::default() };
+    assert_eq!(Treatment::Standard.mode(&params), DebounceMode::Standard);
+    assert_eq!(
+      Treatment::Settle.mode(&params),
+      DebounceMode::Settle {
+        since_fire: Duration::from_millis(150),
+        quiet: Duration::from_millis(25),
+      },
+    );
+  }
+
+  #[test]
+  fn the_banner_names_the_current_treatment_and_every_key() {
+    let b = treatment_banner(Treatment::Settle);
+    assert!(b.contains("current: SETTLE"), "shows the live treatment: {b}");
+    assert!(b.contains("press 1 + Enter for standard"), "lists standard's key: {b}");
+    assert!(b.contains("press 2 + Enter for settle"), "lists settle's key: {b}");
   }
 
   #[test]
