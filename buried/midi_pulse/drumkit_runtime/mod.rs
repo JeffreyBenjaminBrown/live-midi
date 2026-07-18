@@ -248,7 +248,10 @@ pub fn start_with_hook(
   // own double-tap dance a settle window would fight) get the aggressive settle debounce,
   // so one stomp is one event instead of x2 heard as x2^10 (see `DebounceMode::Settle`).
   // Keyed by (softstep id, printed label), like the pedal map.
-  let settle_window = Duration::from_millis(params.factor_settle_ms);
+  let settle_mode = DebounceMode::Settle {
+    since_fire: Duration::from_millis(params.factor_settle_ms),
+    quiet: Duration::from_millis(params.factor_release_ms),
+  };
   let mut settle_pads: HashMap<String, Vec<u8>> = HashMap::new();
   for window in &rig.softstep_windows {
     if let SoftstepWindowRig::PulseFactorPedal { softstep, pedal, factor, .. } = window {
@@ -270,7 +273,7 @@ pub fn start_with_hook(
     if let Some(labels) = settle_pads.get(&device_id) {
       let mut d = decoder.lock().unwrap_or_else(|e| e.into_inner());
       for &label in labels {
-        d.set_debounce_by_label(label, DebounceMode::Settle { stable_for: settle_window });
+        d.set_debounce_by_label(label, settle_mode);
       }
     }
 

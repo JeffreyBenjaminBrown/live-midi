@@ -98,17 +98,19 @@ pub enum DebounceMode {
   /// drum pads (a fast double-tap is two real hits) and for HELD pedals like accrete
   /// (every genuine press counts, and lifting must register at once).
   Standard,
-  /// Aggressive settle debounce for a momentary TIMING pedal (the tempo-factor pedals).
-  /// Fire once on onset, emit no `Revise`, then accept no further fire until the pad's
-  /// sum has held perfectly steady for `stable_for` AND fallen back below `off_sum`.
+  /// Settle debounce for a momentary TIMING pedal (the tempo-factor pedals). Fire once on
+  /// onset, emit no `Revise`, then accept no further fire until BOTH conditions hold:
+  /// at least `since_fire` has passed since that fire, AND the pad has been inactive (sum
+  /// below `off_sum`) for at least `quiet`.
   ///
   /// A single stomp on a bare fire-on-onset pad reads as many presses -- its sum dips and
-  /// re-crosses the threshold as the foot rocks, so `x2` is heard as `x2^10`. A fixed
-  /// min-gap does not fix this (a slow bounce outlasts the gap); requiring the SIGNAL to
-  /// go quiet does, because the bounce keeps the sum changing and so keeps resetting the
-  /// clock. One stomp then yields exactly one event, at the cost of not being able to
-  /// re-fire for `stable_for` after releasing -- fine for a timing control.
-  Settle { stable_for: Duration },
+  /// re-crosses the threshold as the foot rocks, so `x2` is heard as `x2^10`. The `quiet`
+  /// condition kills that, because each dip-and-rise re-activates the pad and restarts the
+  /// inactivity clock, so a bouncing press never re-arms mid-stomp. The `since_fire`
+  /// condition caps how fast deliberate repeats can land. Jeff tuned this to be no more
+  /// aggressive than it must: after a long hold the pad re-arms `quiet` after the foot
+  /// lifts, not `since_fire` later, so quick repeats (x2, x2 = x4) stay responsive.
+  Settle { since_fire: Duration, quiet: Duration },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -118,12 +120,11 @@ enum PadState {
   /// is the highest peak already emitted (Fire, then any Revises); we ramp up only when a
   /// strictly higher peak arrives -- comparing raw peaks, not a quantized velocity.
   Watching { onset: Instant, peak: u16, sent_peak: u16 },
-  /// `DebounceMode::Settle` hold after a fire: emit nothing until the sum goes quiet.
-  /// `stable_since` is when the sum last stopped changing; `last_sum` is the previous
-  /// poll's sum (a change resets `stable_since`). Re-arm to `Idle` only once the sum has
-  /// been unchanged for `stable_for` AND is below `off_sum` (released) -- so holding the
-  /// pad down, however steadily, never retriggers it.
-  Settling { stable_since: Instant, last_sum: u16, stable_for: Duration },
+  /// `DebounceMode::Settle` hold after a fire: emit nothing until the pad may re-arm.
+  /// `inactive_since` is when the sum last fell below `off_sum` (or `None` while the pad
+  /// is active); any activity resets it. Re-arm to `Idle` only once `since_fire` has
+  /// passed since the fire (via `last_fire`) AND the pad has been inactive for `quiet`.
+  Settling { inactive_since: Option<Instant>, since_fire: Duration, quiet: Duration },
   Held,
 }
 
@@ -218,25 +219,31 @@ impl TetherDecoder {
             self.last_fire[slot] = Some(now);
             match self.debounce_mode[slot] {
               // Timing pedal: no attack watch, no Revise -- go straight to settling and
-              // stay mute until the sum goes quiet and releases (see `DebounceMode`).
-              DebounceMode::Settle { stable_for } => {
-                PadState::Settling { stable_since: now, last_sum: sum, stable_for }
+              // stay mute until it may re-arm (see `DebounceMode::Settle`). The pad is
+              // active at the fire, so the inactivity clock has not started.
+              DebounceMode::Settle { since_fire, quiet } => {
+                PadState::Settling { inactive_since: None, since_fire, quiet }
               }
               DebounceMode::Standard => PadState::Watching { onset: now, peak: sum, sent_peak: sum },
             }
           }
         }
         PadState::Idle => PadState::Idle,
-        // Settling (a fired timing pedal): emit nothing. A changing sum keeps resetting
-        // the stability clock; re-arm only once it has been steady for `stable_for` and
-        // has fallen below `off_sum`. So one stomp is one event, and holding never repeats.
-        PadState::Settling { stable_since, last_sum, stable_for } => {
-          let (stable_since, last_sum) =
-            if sum != last_sum { (now, sum) } else { (stable_since, last_sum) };
-          if sum < self.off_sum && now.duration_since(stable_since) >= stable_for {
+        // Settling (a fired timing pedal): emit nothing. Re-arm only once BOTH hold: at
+        // least `since_fire` has passed since the fire, AND the pad has been inactive
+        // (sum below off_sum) for `quiet`. Any activity restarts the inactivity clock, so
+        // a bouncing single stomp -- which keeps re-crossing off_sum -- never re-arms.
+        PadState::Settling { inactive_since, since_fire, quiet } => {
+          let inactive_since =
+            if sum < self.off_sum { inactive_since.or(Some(now)) } else { None };
+          let fired_long_ago =
+            matches!(self.last_fire[slot], Some(t) if now.duration_since(t) >= since_fire);
+          let quiet_enough =
+            matches!(inactive_since, Some(t) if now.duration_since(t) >= quiet);
+          if fired_long_ago && quiet_enough {
             PadState::Idle
           } else {
-            PadState::Settling { stable_since, last_sum, stable_for }
+            PadState::Settling { inactive_since, since_fire, quiet }
           }
         }
         // Released (or de-sticked to 0) before the window closed: the voice plays out.
@@ -537,7 +544,11 @@ mod tests {
 
   // ---- Settle debounce for timing pedals (DebounceMode::Settle) ----
 
-  const SETTLE: Duration = Duration::from_millis(150);
+  const SINCE_FIRE: Duration = Duration::from_millis(150);
+  const QUIET: Duration = Duration::from_millis(25);
+  fn settle() -> DebounceMode {
+    DebounceMode::Settle { since_fire: SINCE_FIRE, quiet: QUIET }
+  }
 
   /// Drive one sensor of a pad to `val` at `t`, then poll, returning the events.
   fn feed(d: &mut TetherDecoder, cc: u8, val: u8, t: Instant) -> Vec<DrumEvent> {
@@ -550,13 +561,13 @@ mod tests {
   #[test]
   fn a_settle_pad_fires_once_through_a_bouncing_press() {
     // The x2 -> x(2^10) bug: one physical stomp whose sum rocks up and down. A Standard
-    // pad would re-fire on every up-crossing; a Settle pad fires exactly once.
+    // pad would re-fire on every up-crossing; a Settle pad fires exactly once, because the
+    // sum keeps re-crossing off_sum so it is never inactive for 25 ms straight (and it is
+    // never 150 ms past the fire either).
     let mut d = decoder(0, 0);
-    d.set_debounce_by_label(1, DebounceMode::Settle { stable_for: SETTLE }); // base 44 = label 1
+    d.set_debounce_by_label(1, settle()); // base 44 = label 1
     let t0 = Instant::now();
     let mut fires_seen = 0;
-    // A jittery ~120 ms press: sum crosses on/off_sum (20) up and down many times, each
-    // reading 2 ms apart -- never quiet for 150 ms, so it stays one event.
     for (i, &v) in [80u8, 5, 90, 3, 100, 0, 70, 4, 88, 2, 95, 6, 77].iter().enumerate() {
       let ev = feed(&mut d, 44, v, t0 + Duration::from_millis(i as u64 * 2));
       fires_seen += fires(&ev).len();
@@ -567,11 +578,11 @@ mod tests {
   #[test]
   fn a_settle_pad_does_not_retrigger_while_held_steady() {
     let mut d = decoder(0, 0);
-    d.set_debounce_by_label(1, DebounceMode::Settle { stable_for: SETTLE });
+    d.set_debounce_by_label(1, settle());
     let t0 = Instant::now();
     assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "fires on onset");
-    // Held perfectly steady well past the settle window: still no second fire (the sum is
-    // quiet, but it never fell below off_sum, so the pad stays disarmed).
+    // Held down well past 150 ms: still no second fire, because the pad never goes inactive
+    // (the inactivity clock never starts), so the quiet condition can never be met.
     let mut later = Vec::new();
     for ms in [200u64, 400, 800] {
       let mut ev = Vec::new();
@@ -583,29 +594,48 @@ mod tests {
   }
 
   #[test]
-  fn a_settle_pad_re_arms_only_after_it_goes_quiet_and_releases() {
+  fn a_settle_pad_needs_both_time_since_fire_and_a_quiet_release_to_re_arm() {
     let mut d = decoder(0, 0);
-    d.set_debounce_by_label(1, DebounceMode::Settle { stable_for: SETTLE });
+    d.set_debounce_by_label(1, settle());
     let t0 = Instant::now();
     assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "first stomp fires");
-    // Release, then stomp again just 50 ms later -- still inside the settle window, so it
-    // is swallowed (aggressive debounce, as asked for the timing pedals).
+    // Release, then stomp again at 50 ms. The pad has been quiet long enough by then, but
+    // it has NOT been 150 ms since the fire, so the stomp is swallowed.
     d.on_cc(44, 0, t0 + Duration::from_millis(10));
     d.poll(t0 + Duration::from_millis(10), &mut Vec::new());
     assert!(
       fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(50))).is_empty(),
-      "a stomp within the settle window is suppressed",
+      "a stomp before 150 ms since the fire is suppressed",
     );
-    // Let it go quiet and stay released. The first poll after the release observes the
-    // drop to zero (resetting the clock); a later poll finds it unchanged past the window
-    // (real polling runs every ~1 ms, so quiet genuinely accumulates). Then a fresh stomp fires.
+    // Now let BOTH conditions come true: past 150 ms since the fire, and inactive for more
+    // than 25 ms. Then a fresh stomp fires.
     d.on_cc(44, 0, t0 + Duration::from_millis(60));
-    d.poll(t0 + Duration::from_millis(60), &mut Vec::new()); // observe the release
-    d.poll(t0 + Duration::from_millis(250), &mut Vec::new()); // still 0, quiet past 150 ms -> re-arm
+    d.poll(t0 + Duration::from_millis(60), &mut Vec::new()); // start the inactivity clock
+    d.poll(t0 + Duration::from_millis(200), &mut Vec::new()); // >150 since fire, quiet 140 ms
     assert_eq!(
-      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(300))).len(),
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(210))).len(),
       1,
-      "after quiet + release past the window, the next stomp fires",
+      "re-arms once both conditions hold",
+    );
+  }
+
+  #[test]
+  fn a_settle_pad_re_arms_soon_after_a_long_hold_ends() {
+    // Jeff's less-aggressive rule: after a long hold the since-fire condition is already
+    // met, so the pad re-arms shortly (~25 ms) after the foot lifts, NOT 150 ms later.
+    let mut d = decoder(0, 0);
+    d.set_debounce_by_label(1, settle());
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "stomp fires");
+    d.poll(t0 + Duration::from_millis(300), &mut Vec::new()); // held well past since_fire
+    // Lift, then let the 25 ms quiet window pass -- only ~30 ms, far less than 150 ms.
+    d.on_cc(44, 0, t0 + Duration::from_millis(300));
+    d.poll(t0 + Duration::from_millis(300), &mut Vec::new()); // inactivity starts
+    d.poll(t0 + Duration::from_millis(330), &mut Vec::new()); // quiet 30 ms -> re-arm
+    assert_eq!(
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(340))).len(),
+      1,
+      "re-arms ~25 ms after the lift, not 150 ms later",
     );
   }
 
@@ -613,7 +643,7 @@ mod tests {
   fn settle_is_per_pad_and_leaves_standard_pads_alone() {
     // Only label 1 is Settle; label 3 stays Standard and behaves as before.
     let mut d = decoder(0, 0);
-    d.set_debounce_by_label(1, DebounceMode::Settle { stable_for: SETTLE });
+    d.set_debounce_by_label(1, settle());
     let t0 = Instant::now();
     // Standard pad (label 3, base 60): fires, then a higher peak Revises within the window.
     assert_eq!(fires(&feed(&mut d, 60, 60, t0)).len(), 1, "standard pad fires");

@@ -18,6 +18,10 @@ I need you to tell me whether the =1 pedals bounce when you press them. If they
 do bounce, then I will design a gentler guard for them. That gentler guard would
 still let the double-tap dance work.
 
+** TODO waiting on your hardware test
+You have not answered this one yet, so I left the =1 pedals on Standard. Tell me
+after you have played the rig whether the =1 pedals misfire, and I will act then.
+
 * Question 2: should a drum pad keep watching after you lift your foot early?
 You told me that a drum pad should keep watching until its amplitude window has
 passed, even when you lift your foot before that window closes. Today a drum pad
@@ -28,6 +32,8 @@ every drum pad behaves.
 
 I need you to tell me whether I should make this change. If you say yes, then I
 will make a drum pad ignore an early lift until its amplitude window closes.
+
+** TODO yes, it should keep watching
 
 * Question 3: where should the debounce settings live?
 You asked me to make the debounce setting a per-rig parameter, and you asked me
@@ -48,6 +54,11 @@ file, and that is what I did. The second path splits the settings so that each
 rig carries its own, and it gives the meter its own configuration in its own
 folder. The second path accepts that the two configurations can drift apart.
 
+** TODO you're right to hesitate
+Let's keep one config for the softstep,
+and just add a note (as a top-level headline) to every config that uses it,
+explaining that it's relevant.
+
 * Question 4: is a per-kind rule enough, or do you want a per-pad override?
 You said that whether a pad debounces should be a property of the pad. I built
 this as a per-kind rule. A factor pedal uses the Settle debounce, and every other
@@ -57,6 +68,9 @@ named pad in the rig file.
 I need you to tell me whether the per-kind rule is enough. If you want to force
 one specific pad to settle, or if you want to force one specific pad not to
 settle, then I will add a per-pad setting to the rig file.
+
+** DONE it's already good
+You are happy with the per-kind rule, so I added no per-pad override.
 
 * Question 5: which pads did you mean by "the sustain and edit pads on the other monome"?
 One sentence in your note confused me, and it was the sentence about "the sustain
@@ -70,48 +84,76 @@ after 25 milliseconds of silence.
 I need you to confirm that guess, or I need you to point me at the pads you
 actually meant.
 
+** DONE you meant the other softstep, and those pads are already handled
+You meant the pads on the other softstep, not the other monome. Those are the
+accrete pedals on the old board. They stay on the Standard debounce, which is
+what an idempotent hold pedal wants, and their sensors already read zero after 25
+milliseconds of silence through the de-stick rule. So this case already behaves
+the way you described, and I changed nothing.
+
 * Glossary
-- Standard :: Standard is the debounce mode that every pad used before this work,
-  and it is the mode that most pads still use. A pad in Standard mode fires the
-  moment its pad sum crosses the on-threshold. It then watches for a louder peak
-  through its amplitude window. It re-arms once its pad sum falls below the
-  off-threshold. It also refuses to re-fire within a short fixed min-gap after its
-  last fire. This mode suits a drum pad, because a fast double-tap on a drum is
-  two real hits. It also suits a held pedal such as an accrete pedal, because
-  every genuine press counts and a lift must register at once.
-- Settle :: Settle is the aggressive debounce mode that I added for the timing
-  pedals. A pad in Settle mode fires once, and it then emits no louder-peak
-  updates. It refuses to fire again until its pad sum has held perfectly steady
-  for a set time and has also fallen back below the off-threshold. The set time is
-  150 milliseconds by default. A single stomp makes the pad sum jitter as the foot
-  rocks, and that jitter keeps resetting the steadiness clock, so one stomp
-  produces exactly one event.
-- timing pedal :: A timing pedal is one of the four tempo-factor pedals, which are
-  the =x2=, =x3=, =/2=, and =/3= pedals. Each one multiplies a grid's tempo
-  factor. I gave these pedals the Settle debounce. Some people also call these the
-  factor pedals.
-- =1 pedal :: The =1 pedal is the pedal that switches a grid's factored pulse on
-  and off. The word Unity also names this pedal in the code. This pedal is not a
-  timing pedal, and it runs its own double-tap dance.
-- double-tap dance :: The double-tap dance is the sequence of =1 presses that
-  turns a grid's factored pulse off. A first press snaps the tempo factor to
-  unity, and a second press within 400 milliseconds turns the factored pulse off.
-- accrete pedal :: An accrete pedal is a softstep pedal that sustains notes. A
-  musician holds it to add notes to a grid's sustained set, and the musician
-  releases it to stop adding notes.
-- drum pad :: A drum pad is a softstep pad that plays a drum sample when a foot
-  strikes it. No rig uses drum pads at the moment, though the code still supports
-  them.
-- pad sum :: A pad sum is the sum of a pad's four pressure sensors. The decoder
-  compares this pad sum against the on-threshold and the off-threshold.
-- amplitude window :: The amplitude window is the short span after a pad fires,
-  during which a louder peak can raise the note's volume. This window lasts about
-  14 milliseconds by default.
-- de-stick :: De-stick is the rule that a sensor which has sent no reading for a
-  set time reads as zero. This rule frees a pad whose sensor has physically stuck.
-  The set time is 25 milliseconds today.
-- the meter :: The meter is the =softstep_meter= program. It shows every pad's raw
-  pressure so that you can see what the hardware is sending. It reads the same
-  =rigs/softstep.toml= file that the runtime reads.
-- monomekey :: A monomekey is one button on a monome grid. A monomekey sends a
-  clean press and a clean release, and it carries no pressure reading.
+** Standard :: Standard
+is the debounce mode that every pad used before this work,
+and it is the mode that most pads still use. A pad in Standard mode fires the
+moment its pad sum crosses the on-threshold. It then watches for a louder peak
+through its amplitude window. It re-arms once its pad sum falls below the
+off-threshold. It also refuses to re-fire within a short fixed min-gap after its
+last fire. This mode suits a drum pad, because a fast double-tap on a drum is
+two real hits. It also suits a held pedal such as an accrete pedal, because
+every genuine press counts and a lift must register at once.
+** Settle
+is the debounce mode for the timing pedals. A pad in Settle mode
+fires once, and it then emits no louder-peak updates. It refuses to fire again
+until two conditions both hold. The first condition is that at least 150
+milliseconds have passed since the fire. The second condition is that the pad has
+been inactive for the last 25 milliseconds, which means that its pad sum has
+stayed below the off-threshold for that whole span. A single stomp makes the pad
+sum rock above and below the off-threshold, and each rise restarts the inactivity
+clock, so a bouncing stomp never satisfies the second condition and produces
+exactly one event.
+*** DONE this two-condition rule is now live
+I replaced the old steady-for-150-ms rule with your two conditions. The two
+numbers are =factor_settle_ms= (150) and =factor_release_ms= (25) in
+=rigs/softstep.toml=. After a long hold the pad now re-arms about 25 milliseconds
+after the foot lifts, rather than 150 milliseconds later, so quick repeats stay
+responsive.
+** de-stick
+De-stick is the rule that a sensor which has sent no reading for a
+set time reads as zero. This rule frees a pad whose sensor has physically stuck.
+The set time is 25 milliseconds today.
+** DONE internalized
+*** timing pedal
+is one of the four tempo-factor pedals, which are
+the =x2=, =x3=, =/2=, and =/3= pedals. Each one multiplies a grid's tempo
+factor. I gave these pedals the Settle debounce. Some people also call these the
+factor pedals.
+*** =1 pedal
+is the pedal that switches a grid's factored pulse on
+and off. The word Unity also names this pedal in the code. This pedal is not a
+timing pedal, and it runs its own double-tap dance.
+*** double-tap dance
+double-tap dance is the sequence of =1 presses that
+turns a grid's factored pulse off. A first press snaps the tempo factor to
+unity, and a second press within 400 milliseconds turns the factored pulse off.
+*** accrete pedal
+accrete pedal is a softstep pedal that sustains notes. A
+musician holds it to add notes to a grid's sustained set, and the musician
+releases it to stop adding notes.
+*** drum pad
+A drum pad is a softstep pad that plays a drum sample when a foot
+strikes it. No rig uses drum pads at the moment, though the code still supports
+them.
+*** pad sum
+A pad sum is the sum of a pad's four pressure sensors. The decoder
+compares this pad sum against the on-threshold and the off-threshold.
+*** amplitude window
+The amplitude window is the short span after a pad fires,
+during which a louder peak can raise the note's volume. This window lasts about
+14 milliseconds by default.
+*** the meter
+The meter is the =softstep_meter= program. It shows every pad's raw
+pressure so that you can see what the hardware is sending. It reads the same
+=rigs/softstep.toml= file that the runtime reads.
+*** monomekey
+A monomekey is one button on a monome grid. A monomekey sends a
+clean press and a clean release, and it carries no pressure reading.

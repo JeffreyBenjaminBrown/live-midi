@@ -36,16 +36,16 @@ done and committed; the rest is below, with the genuine forks marked TODO for yo
 
 ** DONE the aggressive debounce for the timing pedals
 The decoder now has a per-pad debounce mode. The timing pedals (=x2=, =x3=,
-=/2=, =/3=) use a new =Settle= mode: a pad fires once, emits no amplitude
-revise, and then accepts no further fire until its sum-of-4 has held perfectly
-steady for =factor_settle_ms= (150 by default) AND has fallen back below the
-release threshold. A single stomp keeps the sum changing as the foot rocks,
-which keeps resetting the stability clock, so one stomp is exactly one event.
-This is why I read your "not varied for 150 ms" as a stability test rather than
-a fixed gap: a fixed gap lets a slow bounce through, and a stability test does
-not. I added a test that feeds a bouncing press and asserts exactly one fire.
-The cost is that a timing pedal cannot re-fire for ~150 ms after you release it,
-which a timing control does not need.
+=/2=, =/3=) use a new =Settle= mode. A pad fires once, emits no amplitude revise,
+and then accepts no further fire until two conditions both hold. The first
+condition is that at least =factor_settle_ms= (150) has passed since the fire.
+The second condition is that the pad has been inactive, meaning its sum-of-4 has
+stayed below the release threshold, for at least =factor_release_ms= (25). A
+bouncing single stomp keeps re-crossing the release threshold, which restarts the
+inactivity clock, so the second condition is never met mid-stomp and one stomp is
+exactly one event. After a long hold the pad re-arms about 25 ms after the foot
+lifts rather than 150 ms later, so quick repeats stay responsive. This replaced an
+earlier steady-for-150-ms rule, per your note in =hey-jeff.org=.
 
 Everything else (drum pads, the accrete pedals) keeps the old =Standard= mode.
 
