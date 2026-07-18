@@ -207,6 +207,7 @@ impl SurfaceSink {
         env: 0.0,
         target_env: 1.0,
         ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        pending_attack: None,
         sustain_env: self.sustain_env,
         decay_per_sample: self.decay_per_sample,
         timbre,
@@ -363,12 +364,16 @@ impl SurfaceSink {
     let Some(mut state) = voices.remove(&src) else {
       return false;
     };
-    // Retrigger the pluck at the drag's onset, at the OLD pitch (freq is untouched here).
-    // Re-aim the envelope at the attack peak so the note re-strikes and lands a rhythmic
-    // accent. This lifts from the voice's CURRENT level rather than zeroing it, so the
-    // attack swells up with no click; the voice's own pluck decay then rings it back down.
-    state.target_env = 1.0;
-    state.ramp_per_sample = 1.0 / (self.attack_secs * self.sample_rate);
+    // Retrigger the pluck at the drag's onset, at the OLD pitch (freq is untouched here),
+    // with a dip-then-attack for a punchy accent: ramp the envelope DOWN to silence over
+    // ~2 ms, and the engine then launches a fresh attack to the peak (see
+    // `VoiceState::pending_attack`). The dip avoids the click a hard reset-to-silence
+    // makes, and the full silence->peak attack gives real bite; the pluck decay then
+    // rings it back down.
+    const DIP_SECS: f32 = 0.002;
+    state.target_env = 0.0;
+    state.ramp_per_sample = state.env / (DIP_SECS * self.sample_rate).max(1.0);
+    state.pending_attack = Some(1.0 / (self.attack_secs * self.sample_rate));
     let target = freq_for_pitch(to, self.fund, self.edo);
     let start = state.freq; // live, mid-glide included
     if target == start {
@@ -417,6 +422,7 @@ impl SurfaceSink {
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+      state.pending_attack = None; // a finger lifting mid-drag-dip must NOT re-strike
     }
   }
 
@@ -1178,10 +1184,16 @@ mod tests {
 
     // Exit edit mode tries to cut the drone at pitch 35 -- but there is none.
     a.cut_sustained(35);
-    assert!(
-      v.lock().unwrap()[&voice_key(0, (7, 7))].target_env > 0.0,
-      "the fingered voice survives the exit, because the drag finger holds it",
-    );
+    {
+      let g = v.lock().unwrap();
+      let st = &g[&voice_key(0, (7, 7))];
+      // Alive: the drag's dip-then-attack leaves it at target_env 0 with an attack queued
+      // for the moment it bottoms out, so aliveness is "sounding OR about to re-strike".
+      assert!(
+        st.target_env > 0.0 || st.pending_attack.is_some(),
+        "the fingered voice survives the exit, because the drag finger holds it",
+      );
+    }
 
     // Lifting the drag cell ends it.
     a.note_off((7, 7));
@@ -1220,27 +1232,29 @@ mod tests {
     assert_eq!(st.factored_pulse_phase, phase, "and its phase does not jump");
   }
 
-  /// A drag retriggers the pluck so each drag lands a rhythmic accent (Jeff). A voice that
-  /// is NOT attacking (here, released and ringing down) re-aims at the attack peak when
-  /// dragged, and it does so from its current level rather than being zeroed -- no click.
+  /// A drag retriggers the pluck with a dip-then-attack, so each drag lands a punchy accent
+  /// (Jeff). The drag first ramps the envelope DOWN toward silence and queues a fresh
+  /// attack, which the engine launches once the dip bottoms out (see the sawwave test
+  /// `a_pending_attack_dips_to_silence_then_re_strikes`).
   #[test]
-  fn a_drag_retriggers_the_pluck_for_a_rhythmic_accent() {
+  fn a_drag_sets_up_the_dip_then_attack_retrigger() {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((3, 3), 20, Timbre::default(), None);
-    // Put the voice in a clearly non-attacking state: partway down and releasing.
+    // A voice mid-attack, well above silence.
     {
       let mut g = v.lock().unwrap();
       let st = g.get_mut(&voice_key(0, (3, 3))).unwrap();
-      st.env = 0.3;
-      st.target_env = 0.0;
+      st.env = 0.5;
+      st.target_env = 1.0;
+      st.pending_attack = None;
     }
     a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 35, 0.1);
     let g = v.lock().unwrap();
     let st = &g[&voice_key(0, (7, 7))];
-    assert_eq!(st.target_env, 1.0, "the drag re-aims the envelope at the attack peak");
-    assert!(st.ramp_per_sample > 0.0, "and ramps toward it (a fresh attack)");
-    assert!(st.env > 0.0, "it re-attacks from the current level, not silence -- no click");
+    assert_eq!(st.target_env, 0.0, "the drag first ramps the envelope DOWN toward silence");
+    assert!(st.pending_attack.is_some(), "with a fresh attack queued to launch at the bottom");
+    assert!(st.env > 0.0, "the dip starts from the current level, not an instant jump -- no click");
   }
 
   #[test]

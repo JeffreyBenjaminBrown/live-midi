@@ -275,11 +275,13 @@ together:
   finds a fingered source via =held= and a drone source via =sustain_key(P)=, and either
   way the voice ends up fingered at the drag cell, which is what lets it survive a later
   exit. Its timbre, gain, and factored pulse all continue across the move.
-- The drag retriggers the pluck at its onset, so each drag lands a rhythmic accent
-  (Jeff's request). =rehome_to_cell= re-aims the envelope at the attack peak while the
-  voice is still at the old pitch =P=, and the glide then carries it to =Q=. The re-attack
-  lifts from the voice's current level rather than from silence, so it swells up with no
-  click.
+- The drag retriggers the pluck at its onset with a dip-then-attack, so each drag lands a
+  punchy accent (Jeff's request). =rehome_to_cell= ramps the envelope DOWN to silence over
+  ~2 ms while the voice is still at the old pitch =P=, and the engine then launches a fresh
+  ~3 ms attack to the peak, which =VoiceState::pending_attack= carries between the two
+  stages so the voice is not reaped at zero. The glide carries the pitch to =Q= meanwhile.
+  The dip avoids the click a hard reset-to-silence would make, and the full silence-to-peak
+  attack gives the accent real bite.
 - =held= re-files the cell under =Q= if the note was fingered. This step is the
   bridge: code that skips it makes releasing look up the pitch the note used to be.
 - =sustained= re-files =P= as =Q= too, which =note_moved= does, or a clear would miss

@@ -104,6 +104,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
     );
     vs.insert(VoiceSource::Fingered { xy: cell }, VoiceState {
       id,
+      pending_attack: None,
       freq: freq_for_pitch(abs_pitch, state.fund, state.edo),
       freq_target: 0.0,
       glide_per_sample: 1.0,
