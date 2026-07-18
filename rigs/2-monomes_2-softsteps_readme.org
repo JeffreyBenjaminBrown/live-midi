@@ -6,7 +6,8 @@ grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry the controls that would otherwise cost grid cells --
 sustain, the factored pulse, and edit-delete (the factored pulse and
 edit-delete are ALSO on each grid, upper right; hands and feet drive the same
-state). No drums, no EX-P pedals: see "what is deliberately NOT here."
+state). The two EX-P expression pedals are each grid's volume (see "the EX-P
+volume pedals"). No drums: see "what is deliberately NOT here."
 
 Background + every design decision behind this layout: =TODO/many/1_vision.org=
 (Jeff's original ask), =TODO/many/2_discussion.org= (the settled answers -- long,
@@ -97,6 +98,9 @@ Here's how to see what's connected:
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
   releasing). See "OSS: sustain + edit-delete".
+- EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
+  grid, each a simple linear volume: heel silent, toe unity, slewed. See
+  "the EX-P volume pedals".
 
 * usage
 
@@ -234,6 +238,28 @@ rate, and shape. The factored pulse is a fixed unipolar triangle in =[0,1]= --
 always full swing, no depth knob -- driven by the fixed base tempo and a grid's
 tempo factor. Both can be on the same note at once, which is exactly when
 you'd need to tell them apart by name.
+
+* the EX-P volume pedals
+
+The two M-Audio EX-P expression pedals are per-grid volume: MPC-20 channel 1
+drives grid A (LOM), channel 2 grid B (RNM) -- swap the =monome= values in the
+rig if the cabling turns out the other way round. They reach the runtime via
+the MPC-20 -> host bridge (=tools/pedals/bridge.py=, run it on the HOST; if
+its "MPC-20 pedals" port is missing the rig prints a red note at startup and
+plays on without them). Not the SoftSteps' own EX-P jacks -- that CC is still
+deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
+
+- *Linear.* The pedal's reliable ~1..119 CC travel maps straight to an
+  amplitude factor 0..1: full heel = silent, full toe = unity. No taper.
+- *Live and future.* It rescales the grid's sounding voices (drones included)
+  and every note struck later, multiplying below the waveform strip's timbre
+  amplitude and the synth master volume.
+- *Slewed.* Each voice glides toward the pedal position with a ~20 ms time
+  constant, per sample, so sweeps sound smooth instead of zipper-stepping at
+  CC rate.
+- *Absolute and safe.* The position is absolute, so a pedal parked at 0
+  recovers; and until a pedal's first CC it contributes unity, so an
+  unplugged pedal never mutes its grid.
 
 * LEDs
 
@@ -406,13 +432,12 @@ and plays on regardless.
 * what is deliberately NOT here
 
 - No drumkit. Neither SoftStep plays samples in this rig.
-- No EX-P expression pedals -- deferred (=TODO/many/2_discussion.org= 1a);
-  the reader (=expression_pedals.rs=) exists but nothing in this rig consumes
-  it.
 - No distortion, slide, mono, erase, needs-holding, or feet-accrete toggles --
   all exist in the library (reused by =2-monomes_kmss-drums=) but none are
   bound in this rig. Sustain here is the reduced clear+momentary-accrete pair
-  only (see "OSS: sustain").
+  only (see "OSS: sustain + edit-delete").
+  (The EX-P pedals used to be on this list -- deferred by 2_discussion 1a --
+  but they are volume pedals now; see "the EX-P volume pedals".)
 - No tap tempo *pedal*. It was retired (Jeff never tapped), and the base tempo
   is seeded at 1 Hz so nothing waits on a tap. The factored-pulse controls
   live on the newer SoftStep per the vision's "use the softsteps instead of

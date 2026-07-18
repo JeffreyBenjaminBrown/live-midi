@@ -119,6 +119,11 @@ scale (1a's list) -- plus the mis-trimmed pedal (the MIN thumbwheel) to fix in
 hardware first. Nothing else about the vision depends on this, so it blocks
 nothing.
 
+UPDATE 2026-07-18: the job is decided and built -- each EX-P is a per-grid
+LINEAR volume pedal (=[[expression_pedals]]= in the rig: channel 1 -> grid a,
+channel 2 -> grid b), via the MPC-20 bridge as chosen here. Slewed in the
+engine so sweeps don't zipper; unity until a pedal first moves.
+
 ** DONE 1b. with two softsteps, the code cannot tell which board a press came from
 This is the one hard blocker in the whole vision, and it's structural.
 

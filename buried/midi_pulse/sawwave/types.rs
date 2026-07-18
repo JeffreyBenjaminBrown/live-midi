@@ -192,6 +192,15 @@ pub struct VoiceState {
   // Deliberately separate from the note's timbre AM.
   pub factored_pulse_freq:   f32,
   pub factored_pulse_phase:  f32,
+  // The grid volume pedal (the surfaces runtime's EX-P expression pedals): an
+  // ABSOLUTE multiplier in [0,1] on top of `timbre.gain`. `grid_gain` chases
+  // `grid_gain_target` per sample (`voices::GAIN_SLEW_SECS`), so a sweeping pedal
+  // is smooth rather than stepping at CC rate (zipper). Absolute rather than
+  // ratio-composed like the volume fader, because a pedal at 0 must be
+  // recoverable and a ratio from 0 is not. Both 1.0 wherever pedals don't exist
+  // -- behavior unchanged for every other runtime.
+  pub grid_gain:        f32,
+  pub grid_gain_target: f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
   // `am_phase`/`fm_phase` belong to the absolute (Hz-rate) modulators,
