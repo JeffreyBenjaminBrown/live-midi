@@ -58,44 +58,8 @@ Retired the tap pedal from the rig. A rig with no tap source now runs at a fixed
 1 Hz base, so the factor pedals still have something to multiply. The =1 dance,
 the per-grid factors, and the window all still work; the window shows 60.0 BPM.
 
-** TODO does =1 need debouncing too? (I left it alone)
-You said "maybe not =1", so I left the =1/Unity pedals on the old =Standard=
-mode, NOT on =Settle=. My reason: the =1 dance needs two quick presses within
-400 ms to turn cycling off, and a 150 ms settle window would swallow the second
-press. If =1 is also bouncing on you, tell me and I will give it its own gentler
-guard (say, a short fixed gap that still admits the double-tap). Right now it has
-only the 100 ms =debounce_ms= min-gap that every pad has.
-
-** TODO drum pads: keep watching through the amplitude window? (not changed)
-Your mid-flight note said a drum pad should keep monitoring until its
-amplitude-adjust window has passed, rather than releasing the instant the foot
-lifts. Today a drum pad DOES release early if you lift inside the window. I did
-not change this, because no rig uses drum pads right now and it is a real
-behavior change. Say the word and I will make a =Standard= pad ignore an early
-lift until its attack window closes.
-
-** TODO config: per-rig, and the meter's config in the meter's folder
-You asked for the debounce to be a per-rig parameter, and for the meter's config
-to live in the meter's own folder. I did NOT do this yet, because it trades away
-something the current design deliberately guarantees: the meter and the runtime
-read the ONE shared =rigs/softstep.toml=, so the meter always shows exactly what
-the runtime will act on. Splitting the params per-rig, and giving the meter its
-own copy in =tools/softstep/meter/=, lets the two drift apart silently -- the
-kind of "one fact in two places" bug you have had me chase before. For now I put
-=factor_settle_ms= in the shared file. Which do you want:
-- (a) keep the single shared file (what I did), or
-- (b) split per-rig and give the meter its own config, accepting the drift?
-
-** TODO is kind-derived debounce enough, or do you want a per-pad override?
-You said "whether a pad debounces should be a property of the pad." I derive it
-from the pad's KIND: a factor pedal settles, everything else does not. If you
-want to override a single specific pad in the rig TOML (force one pad to settle,
-or one not to), that is an extra per-window field I have not added. Tell me if
-kind-derived is enough.
-
-** TODO one wording check: "the sustain and edit pads on the other monome"
-This line confused me. Sustain and edit are monome CELLS in the current rig
-(clean button presses, no pressure, no stuck sensors), while a stuck sensor is a
-SOFTSTEP thing. I assumed you meant the softstep accrete pedals, which stay on
-=Standard= plus the 25 ms de-stick. Confirm that is what you meant, or point me
-at the pads you had in mind.
+** TODO five decisions still need you
+Five decisions remain, and I could not make them on my own. I wrote them up in
+=hey-jeff.org=, in complete sentences and with a glossary. The five decisions
+cover the =1 pedal, the drum pads, where the debounce settings should live,
+whether a per-pad override is wanted, and one wording check.
