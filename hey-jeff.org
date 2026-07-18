@@ -60,10 +60,16 @@ file, and that is what I did. The second path splits the settings so that each
 rig carries its own, and it gives the meter its own configuration in its own
 folder. The second path accepts that the two configurations can drift apart.
 
-** TODO you're right to hesitate
+** DONE kept one config, added a headline to each rig that uses it
 Let's keep one config for the softstep,
 and just add a note (as a top-level headline) to every config that uses it,
 explaining that it's relevant.
+
+I kept the single shared =rigs/softstep.toml=. I added a top-level headline,
+"shared SoftStep parameters (softstep.toml)", to each of the three rigs that use
+a SoftStep: =2-monomes_2-softsteps=, =2-monomes_kmss-drums=, and =kmss-drumkit=.
+Each headline explains that the board reads its detection and pressure parameters
+from that shared file.
 
 * Question 4: is a per-kind rule enough, or do you want a per-pad override?
 You said that whether a pad debounces should be a property of the pad. I built

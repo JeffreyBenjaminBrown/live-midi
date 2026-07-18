@@ -13,11 +13,18 @@ Reference doc for this rig: [[file:2-monomes_2-softsteps_readme.org]]
 See also softstep.toml (the shared SoftStep detection & pressure parameters).
 *** PARAM id = "2-monomes_2-softsteps"
 *** PARAM title = "Two monomes + two SoftSteps"
+** shared SoftStep parameters (softstep.toml)
+This rig drives at least one SoftStep board. Every board reads its detection and
+pressure parameters from the shared file rigs/softstep.toml, not from this rig
+file. That shared file holds the onset and release thresholds, the attack window,
+the pressure scaling, the contact-bounce and settle debounce guards, and the
+de-stick window. Every rig that uses a SoftStep reads the same file, and the
+meter reads it too, so one edit there reaches all of them at once.
 ** TABLE surfaces # TODO : this is a dumb name for a diverse collection
 ===========================================================================
 FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 46-EDO play
 surface, and two SoftStep boards that carry every control that would
-otherwise cost grid cells: sustain, tap tempo, and the pulse.
+otherwise cost grid cells: sustain and the factored pulse.
 Each grid keeps only two overlays -- a 4-cell waveform strip (top-left) and
 a 3x2 scroll pad (bottom-right). Everything else on the grid is a note.
 Launch under pw-jack so the synth shares the card via PipeWire:
@@ -37,7 +44,9 @@ edit-mode note to a new pitch reuses this, so 'r' retunes the drag feel live.
 Jeff's starting value; slow enough to hear it move, fast enough not to smear
 the rhythm.
 *** PARAM tap_tempo_window_ms = 2000
-Tap tempo: two taps at most this far apart set the ONE global tempo.
+Currently unused: this rig retired its tap pedal, so it has no tap source and
+runs at a fixed 1 Hz base tempo. The value stays here for any future rig that
+re-adds tapping. Two taps at most this far apart would set the one global tempo.
 ** ELEM tunings
 *** PARAM id = "main"
 *** PARAM edo = 46
@@ -139,10 +148,11 @@ GRID B = RNM, the RIGHT / newer monome. Varibright.
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
 are NOT stable, so nothing here names one.
-*** old softstep: sustain + tap
+*** old softstep: sustain
 Sustain is momentary only: hold to accrete, release to stop. Two controls per
 grid (clear + accrete) rather than the on-grid four -- needs_holding and erase
-stay in the library, just unbound here.
+stay in the library, just unbound here. The tap pedal that once sat here was
+retired; the base tempo is now a fixed 1 Hz.
 Left buttons drive the left grid, right buttons the right grid.
 **** ELEM softsteps
 ***** PARAM id = "old"
@@ -182,7 +192,7 @@ The OLDER board, nearer Jeff. Not rotated, so its printed labels read
 # source, the runtime fixes the base tempo at 1 Hz (see rig_has_tap_source /
 # PolyrhythmState::set_fixed_tempo), so the x2 / /2 / ... pedals still have a base to
 # multiply. Pedals 3, 6, 7, 8, 9, 0 on this board are now free.
-*** new softstep: the pulse, 5 controls per grid
+*** new softstep: the factored pulse, 5 controls per grid
 Each grid gets x2, x3, /2, /3 and =1. The far/near split follows Jeff's rule for
 the ambiguous middle column: nearer = left grid, farther = right grid.
 What a multiplier acts on depends on that grid's edit state -- with no note in
