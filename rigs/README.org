@@ -344,7 +344,7 @@ Built-in unbundled window kinds:
 - ~mono_toggle~
 - ~softstep_accretes_toggle~
 - ~tap_tempo_pad~
-- ~edit_delete_button~
+- ~editmode_control~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -594,7 +594,7 @@ Built-in softstep window kinds:
 - ~accrete_control~
 - ~tap_tempo_pedal~
 - ~pulse_factor_pedal~
-- ~edit_delete_pedal~
+- ~editmode_control~ (the pedal form)
 
 All but the drumkit bind ONE pedal each to a control that would otherwise cost grid
 cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
@@ -631,14 +631,25 @@ with no note in edit mode it moves the grid's tempo factor (exactly as the on-gr
 notes in edit mode the multipliers retune those notes. ~unity~ is the ~=1~ switch
 and never retunes edit-mode notes.
 
-An ~edit_delete_pedal~ (one pedal, a ~monome~ with an ~edo_note_grid~, at most one
-per monome) deletes -- silences and ends, by the ordinary release ramp -- every
-DRONE at an edited pitch on that monome's grid. The pitches leave the grid's
-sustain bank and edit mode empties, so the grid plays again immediately. A
-fingered voice at an edited pitch does NOT end (a finger's voice is the finger's
-to end): it only loses its edit/sustain reasons, so it ends on the ordinary
-release when the finger lifts. The on-grid ~edit_delete_button~ (single cell, at
-most one per monome, dim at rest / bright while pressed) is the same control on
+An ~editmode_control~ pedal (one pedal, a ~monome~ with an ~edo_note_grid~, at
+most one of each ~control~ per monome) drives that monome's EDIT MODE in bulk,
+symmetric with the ~accrete_control~ sustain pedals:
+
+- ~control = "clear"~: key-down removes every pitch from edit mode. Each voice
+  then rings on iff it still has another reason -- a finger, or the sustain
+  bank -- and an edit-only drone ends by the ordinary release ramp. Each clear
+  removes only its OWN reason (the sustain clear likewise spares edited
+  drones), so a note both sustained and edited survives either clear alone;
+  the full kill is both clears.
+- ~control = "accrete"~: a ONE-SHOT that puts every voice currently sounding on
+  the grid -- every fingered voice and every sustained voice -- into edit mode.
+  One-shot rather than a hold: the moment anything is edited the grid becomes
+  a pitch-picker, so a "notes played while held" phase cannot exist. (The
+  sustain accrete is symmetric in what it captures: it takes every fingered
+  AND every edit-mode voice.)
+
+The on-grid ~editmode_control~ window (single cell, ~control~ field, at most one
+of each per monome, dim at rest / bright while pressed) is the same control on
 the grid itself.
 
 Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
@@ -646,7 +657,8 @@ the same device (including across kinds -- a pedal that is both a drum and a cle
 button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
 global, so there is one); two pedals giving the same monome the same ~factor~
 (different monomes may of course share a tempo factor -- that is the point of
-per-monome tempo factors); two ~edit_delete_pedal~ windows for one monome; and a
+per-monome tempo factors); two same-~control~ ~editmode_control~ windows for one
+monome; and a
 ~monome~ that is unknown or has no ~edo_note_grid~.
 
 Pedals are addressed by their printed label (1..9, then 0). On start, the

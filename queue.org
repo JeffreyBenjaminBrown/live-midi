@@ -1,119 +1,52 @@
-* DONE add relative AM and FM
-Currently, the per-timbre am and fm frequencies
-(the 'timbres' element in the rig)
-are absolute hz values -- they disregard the voice's pitch.
-Let's rename them:
-  am_depth -> abs_am_depth
-  am_hz -> abs_am_hz
-  fm_depth -> abs_fm_depth
-  fm_hz -> abs_fm_hz
-And then let's add new relative equivalents:
-  am_depth -> rel_am_depth
-  am_hz -> rel_am_freq
-  fm_depth -> rel_fm_depth
-  fm_hz -> rel_fm_freq
+* DONE accrete-editmode pedals like accrete-sustain
+("accrete-editmode" is not a typo; it makes the binding clearer.
+"accrete-edit-mode" could read as ((accrete edit) mode).)
 
-These will be independent parameters --
-they can both apply to the same voice.
-(It's expected that abs will be slow and relative fast,
-but nothing enforces that.)
+Currently the outside lower pads on the older monome clear the sustained set,
+and the inner ones accrete into it.
+Let's have the top row do the same for edit mode:
+The outer ones clear edit mode from every voice
+(with the usual implications for ending voices that have no other reason to continue),
+and the inner ones add every voice into it.
 
-Relative frequencies are relative to the voice's pitch:
-0 means off, 1 means sweep all the way from 2*freq to 0*freq,
-etc. Note that the synths supposedly permit through-zero FM;
-this will actually make that reachable.
-** DONE claude: built (2026-07-18). Choices where the spec was loose:
-- Renames as specified, except =fm_depth_cents= kept its unit:
-  it is now =abs_fm_depth_cents= (not =abs_fm_depth=), matching the
-  units-in-names convention that just renamed am_freq to am_hz.
-  (=am_shape= keeps its name -- it morphs only the abs tremolo's LFO;
-  the rel AM's LFO is a plain sine.)
-- Semantics of the new pair (independent of abs; both multiply in):
-  - =rel_am_freq= / =rel_fm_freq=: LFO rate as a unitless multiple of the
-    voice's pitch (1 = audio-rate at the pitch). 0 = off; default 1.0,
-    inert while the depth is 0 (mirroring the abs defaults).
-  - =rel_fm_depth=: *linear* FM, peak deviation as a multiple of the
-    voice's pitch -- 1 sweeps 2f..0, and > 1 goes through zero (the
-    oscillator core already ran backward; now it's reachable). Validated
-    >= 0, deliberately unbounded above.
-  - =rel_am_depth=: 0..=1 like the abs depth (amplitude has no pitch to
-    be relative to; the *rate* is what's relative).
-  - Rates track the voice's *current* (glided) unmodulated pitch -- no
-    FM-feedback loop.
-- Audio-rate rel AM/FM makes sidebands: give the =cpal_synth= sink
-  =oversample = 4= or they alias (the oversampling path existed for
-  exactly this). The shipped rigs' rel params default to off, so nothing
-  sounds different until you set them.
-- The looper's on-grid timbre editor still edits only the abs pair
-  (same reasoning as the am_hz rename commit: its rows are a separate,
-  non-rig-facing cluster).
-- Renamed keys everywhere they appear: rig.rs (+ validation, tests),
-  both shipped rigs, the mock, rigs/README.org, both readmes' mentions,
-  and the historical notes that the previous rename commit also kept
-  current. All tests pass (631).
+Let's also make them symmetric in what they target:
+Accrete-sustain should add every fingered voice and every edit-mode voice,
+and accrete-editmode should add every fingered voice and every sustained voice.
+** DONE claude: built (2026-07-18). Bindings: OSS top row 6/0 = clear editmode
+(outer), 7/9 = accrete-editmode (inner), mirroring the bottom row's 1/5 + 2/4.
+Choices where the spec was loose -- none seemed worth stopping for, but read
+the first two, they change behavior you already had:
+- *Accrete-editmode is a ONE-SHOT, not a momentary hold.* The sustain accrete
+  can capture "notes played while held" because notes still play while it is
+  live. Edit mode can't: the moment ANY note is edited, the grid becomes a
+  pitch-picker (every press drags instead of playing), so a hold-to-add phase
+  has nothing to add. Key-down captures everything sounding at that moment.
+- *The clears are now symmetric, which CHANGES the sustain clear.* Each clear
+  removes only its own reason: sustain-clear no longer empties edit mode (the
+  old panic-button coupling), and editmode-clear does not touch the sustain
+  bank. A note both sustained and edited survives either clear alone --
+  audibly, so the old silent "dancing ghost" cannot recur -- and dies to the
+  two clears together. This also replaces yesterday's edit-delete semantics
+  (which un-sustained as a side effect); the (12,0) button is now the
+  editmode clear.
+- *Capture happens at the stomp.* Both accretes capture what is fingered /
+  sustained / edited AT that moment (sustain-accrete additionally keeps
+  capturing notes fingered while held, as before). A note that enters edit
+  mode DURING a live sustain-accrete hold does not auto-join the bank, nor
+  vice versa; stomp again if you want it.
+- *Naming:* the rig kinds are =editmode_control= with =control = "clear" |
+  "accrete"= (pedal and on-grid forms), mirroring =accrete_control=;
+  yesterday's =edit_delete_*= kinds are gone. The erase pedal (unbound in
+  this rig) still erases fingered notes only -- extending it to edited ones
+  seemed out of scope; say the word.
+* TODO refactor and investigate with an eye to safety
+Could any names be clearer?
+Could the code and/or documentation be better organized? Deduplicated?
+Are there too many entry points for learning about things?
+Please idnetify and fix all such holes on your own.
 
-* debounce SS pads
-I need signals from the SS pads massively debounced.
-Currently when I press x2 I can easily get something that sounds like x(2^10).
-Once a pad sends a single event, don't accept another positive-pressure event from that pad
-until the signals from it have not varied for at least 150 ms.
-A zero-pressure event should still be counted immediately (e.g. releasing the sustain pedal).
-
-Sofstep signals are currently debounced in a way
-designed for drum samples. It never worked very well.
-For the timing controls (x2, /2, etc -- but maybe not =1)
-I need a more aggressive debounce.
-Let's say 150 ms. Also there's no need to update to increase amplitude
-if the pressure rises.
-
-The sustain and edit pads on the other monome are idempotent.
-Therefore they don't need debouncing.
-They do, however, need to treat a stuck sensor as silent.
-Let's assume that after 25 ms of no signal
-(which implies 3 reads spaced 10 ms apart at the same value)
-the foot has left the pad.
-
-I never use the set-tempo pad.
-Let's remove it, and fix the tempo at 1 Hz.
-
-Whether a pad debounces should be a property of the pad.
-It should also be a per-rig parameter (and also, therefore,
-configurable for the meter, and the config for the meter
-should be in the same folder as the meter itself).
-
-In all this I'm only thinking about rust code;
-no need to duplicate these changes to the python.
-
-* response (Claude, 2026-07-18)
-I split this into what I was sure of and what needs your call. The acute part is
-done and committed; the rest is below, with the genuine forks marked TODO for you.
-
-** DONE the aggressive debounce for the timing pedals
-The decoder now has a per-pad debounce mode. The timing pedals (=x2=, =x3=,
-=/2=, =/3=) use a new =Settle= mode. A pad fires once, emits no amplitude revise,
-and then accepts no further fire until two conditions both hold. The first
-condition is that at least =factor_settle_ms= (150) has passed since the fire.
-The second condition is that the pad has been inactive, meaning its sum-of-4 has
-stayed below the release threshold, for at least =factor_release_ms= (25). A
-bouncing single stomp keeps re-crossing the release threshold, which restarts the
-inactivity clock, so the second condition is never met mid-stomp and one stomp is
-exactly one event. After a long hold the pad re-arms about 25 ms after the foot
-lifts rather than 150 ms later, so quick repeats stay responsive. This replaced an
-earlier steady-for-150-ms rule, per your note in =hey-jeff.org=.
-
-Everything else (drum pads, the accrete pedals) keeps the old =Standard= mode.
-
-** DONE the 25 ms stuck-sensor rule already holds
-The de-stick (=silence_to_zero_ms=) is already 25 ms for every pad, so a sensor
-with no reading for 25 ms already reads zero. Nothing to change there.
-
-** DONE remove the set-tempo pad, fix the tempo at 1 Hz
-Retired the tap pedal from the rig. A rig with no tap source now runs at a fixed
-1 Hz base, so the factor pedals still have something to multiply. The =1 dance,
-the per-grid factors, and the window all still work; the window shows 60.0 BPM.
-
-** TODO five decisions still need you
-Five decisions remain, and I could not make them on my own. I wrote them up in
-=hey-jeff.org=, in complete sentences and with a glossary. The five decisions
-cover the =1 pedal, the drum pads, where the debounce settings should live,
-whether a per-pad override is wanted, and one wording check.
+Are the types awkward?
+Are there any implicit concepts that could be usefully reified?
+These are higher-risk questions, so rather than immediately fixing,
+please merely assess and report back in an org-file, 'could-be-better.org',
+including a section on the dangers of each potential improvement.

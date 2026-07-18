@@ -14,6 +14,18 @@ pw-jack cargo run --bin midi_pulse \
 | Old SS              |                 |           |                 |               |
 | clear edits         | _               | tap tempo | _               | clear edits   |
 | clear sustain       | accrete sustain | _         | accrete sustain | clear sustain |
+* Should the =1 pedal also get the Settle debounce?
+Claude wrote (roughly):
+
+The =1 pedals use the Standard debounce, not
+the new Settle debounce. I made this choice for a specific reason. The double-tap
+dance needs two quick presses in a row, and the Settle window would swallow the
+second press before it could register. The =1 pedals still have the ordinary
+min-gap guard that every pad shares.
+
+I need you to tell me whether the =1 pedals bounce when you press them. If they
+do bounce, then I will design a gentler guard for them. That gentler guard would
+still let the double-tap dance work.
 * do timbre experiments
 Equalize volume across the four base timbres.
 How does volume interact with range?
@@ -211,6 +223,90 @@ to move it there (immediately? next pass?).
 * Store tap-pulsed note set.
 * Retrieve tap-pulsed note set incrementally.
 * DONE
+** DONE add relative AM and FM
+Currently, the per-timbre am and fm frequencies
+(the 'timbres' element in the rig)
+are absolute hz values -- they disregard the voice's pitch.
+Let's rename them:
+  am_depth -> abs_am_depth
+  am_hz -> abs_am_hz
+  fm_depth -> abs_fm_depth
+  fm_hz -> abs_fm_hz
+And then let's add new relative equivalents:
+  am_depth -> rel_am_depth
+  am_hz -> rel_am_freq
+  fm_depth -> rel_fm_depth
+  fm_hz -> rel_fm_freq
+
+These will be independent parameters --
+they can both apply to the same voice.
+(It's expected that abs will be slow and relative fast,
+but nothing enforces that.)
+
+Relative frequencies are relative to the voice's pitch:
+0 means off, 1 means sweep all the way from 2*freq to 0*freq,
+etc. Note that the synths supposedly permit through-zero FM;
+this will actually make that reachable.
+*** DONE claude: built (2026-07-18). Choices where the spec was loose:
+- Renames as specified, except =fm_depth_cents= kept its unit:
+  it is now =abs_fm_depth_cents= (not =abs_fm_depth=), matching the
+  units-in-names convention that just renamed am_freq to am_hz.
+  (=am_shape= keeps its name -- it morphs only the abs tremolo's LFO;
+  the rel AM's LFO is a plain sine.)
+- Semantics of the new pair (independent of abs; both multiply in):
+  - =rel_am_freq= / =rel_fm_freq=: LFO rate as a unitless multiple of the
+    voice's pitch (1 = audio-rate at the pitch). 0 = off; default 1.0,
+    inert while the depth is 0 (mirroring the abs defaults).
+  - =rel_fm_depth=: *linear* FM, peak deviation as a multiple of the
+    voice's pitch -- 1 sweeps 2f..0, and > 1 goes through zero (the
+    oscillator core already ran backward; now it's reachable). Validated
+    >= 0, deliberately unbounded above.
+  - =rel_am_depth=: 0..=1 like the abs depth (amplitude has no pitch to
+    be relative to; the *rate* is what's relative).
+  - Rates track the voice's *current* (glided) unmodulated pitch -- no
+    FM-feedback loop.
+- Audio-rate rel AM/FM makes sidebands: give the =cpal_synth= sink
+  =oversample = 4= or they alias (the oversampling path existed for
+  exactly this). The shipped rigs' rel params default to off, so nothing
+  sounds different until you set them.
+- The looper's on-grid timbre editor still edits only the abs pair
+  (same reasoning as the am_hz rename commit: its rows are a separate,
+  non-rig-facing cluster).
+- Renamed keys everywhere they appear: rig.rs (+ validation, tests),
+  both shipped rigs, the mock, rigs/README.org, both readmes' mentions,
+  and the historical notes that the previous rename commit also kept
+  current. All tests pass (631).
+** DONE debounce SS pads
+I need signals from the SS pads massively debounced.
+Currently when I press x2 I can easily get something that sounds like x(2^10).
+Once a pad sends a single event, don't accept another positive-pressure event from that pad
+until the signals from it have not varied for at least 150 ms.
+A zero-pressure event should still be counted immediately (e.g. releasing the sustain pedal).
+
+Sofstep signals are currently debounced in a way
+designed for drum samples. It never worked very well.
+For the timing controls (x2, /2, etc -- but maybe not =1)
+I need a more aggressive debounce.
+Let's say 150 ms. Also there's no need to update to increase amplitude
+if the pressure rises.
+
+The sustain and edit pads on the other monome are idempotent.
+Therefore they don't need debouncing.
+They do, however, need to treat a stuck sensor as silent.
+Let's assume that after 25 ms of no signal
+(which implies 3 reads spaced 10 ms apart at the same value)
+the foot has left the pad.
+
+I never use the set-tempo pad.
+Let's remove it, and fix the tempo at 1 Hz.
+
+Whether a pad debounces should be a property of the pad.
+It should also be a per-rig parameter (and also, therefore,
+configurable for the meter, and the config for the meter
+should be in the same folder as the meter itself).
+
+In all this I'm only thinking about rust code;
+no need to duplicate these changes to the python.
 ** DONE BUG : exit edit mode kills fingered voice after drag
 If I press a monomekey to start a voice,
 put it in edit mode, then take it out of edit mode,

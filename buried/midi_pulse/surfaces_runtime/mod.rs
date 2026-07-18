@@ -44,8 +44,8 @@ use std::time::{Duration, Instant};
 use rosc::{decoder, OscPacket, OscType};
 
 use midi_pulse::rig::{
-  load_named_rig, AccreteControlKind, AmShapeFamilyRig, MonomeWindowRig, PulseFactorRig, Rig,
-  SinkRig, SoftstepWindowRig, WaveformChoice,
+  load_named_rig, AccreteControlKind, AmShapeFamilyRig, EditmodeControlKind, MonomeWindowRig,
+  PulseFactorRig, Rig, SinkRig, SoftstepWindowRig, WaveformChoice,
 };
 use midi_pulse::device_assign::assign_selected_devices;
 use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
@@ -297,9 +297,10 @@ struct GridSettings {
   feet_accrete_rect: [i32; 4],
   /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
   poly_rect: [i32; 4],
-  /// The edit-delete button's cell, `NO_RECT` when absent: a momentary button
-  /// whose key-down deletes this grid's edit-mode voices.
-  edit_delete_rect: [i32; 4],
+  /// The editmode_control buttons' cells, `NO_RECT` when absent: clear empties
+  /// this grid's edit mode, accrete fills it with every sounding voice.
+  editmode_clear_rect: [i32; 4],
+  editmode_accrete_rect: [i32; 4],
 }
 
 struct Settings {
@@ -512,16 +513,20 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
         _ => None,
       })
       .unwrap_or(NO_RECT);
-    let edit_delete_rect = rig
-      .monome_windows
-      .iter()
-      .find_map(|w| match w {
-        MonomeWindowRig::EditDeleteButton { monome, rect, .. } if monome == monome_id => {
-          Some(*rect)
-        }
-        _ => None,
-      })
-      .unwrap_or(NO_RECT);
+    let editmode_rect_on = |wanted: EditmodeControlKind| {
+      rig
+        .monome_windows
+        .iter()
+        .find_map(|w| match w {
+          MonomeWindowRig::EditmodeControl { monome, rect, control, .. }
+            if monome == monome_id && *control == wanted =>
+          {
+            Some(*rect)
+          }
+          _ => None,
+        })
+        .unwrap_or(NO_RECT)
+    };
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       select: monome_cfg.select.clone(),
@@ -542,7 +547,8 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
       mono_rect,
       feet_accrete_rect,
       poly_rect,
-      edit_delete_rect,
+      editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
+      editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
     });
   }
 
@@ -1072,8 +1078,10 @@ fn run(
       mono_rect: g.mono_rect,
       feet_accrete_rect: g.feet_accrete_rect,
       poly_rect: g.poly_rect,
-      edit_delete_rect: g.edit_delete_rect,
-      edit_delete_down: false,
+      editmode_clear_rect: g.editmode_clear_rect,
+      editmode_accrete_rect: g.editmode_accrete_rect,
+      editmode_clear_down: false,
+      editmode_accrete_down: false,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -1180,10 +1188,12 @@ struct GridThread {
   feet_accrete_rect: [i32; 4],
   /// The polyrhythm pad's rect on this grid (`NO_RECT` if absent).
   poly_rect: [i32; 4],
-  /// The edit-delete button's cell (`NO_RECT` if absent), and whether it is
-  /// physically down right now (it lights while pressed, like accrete's clear).
-  edit_delete_rect: [i32; 4],
-  edit_delete_down: bool,
+  /// The editmode_control buttons' cells (`NO_RECT` if absent), and whether each
+  /// is physically down right now (they light while pressed, like accrete's clear).
+  editmode_clear_rect: [i32; 4],
+  editmode_accrete_rect: [i32; 4],
+  editmode_clear_down: bool,
+  editmode_accrete_down: bool,
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -1330,8 +1340,9 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.slide_rect, &rt.slide_on));
     buttons.push(toggle(rt.mono_rect, &rt.mono_on));
     buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
-    // The edit-delete button: dim at rest (findable), bright while pressed.
-    buttons.push((rt.edit_delete_rect, button_level(rt.edit_delete_down)));
+    // The editmode buttons: dim at rest (findable), bright while pressed.
+    buttons.push((rt.editmode_clear_rect, button_level(rt.editmode_clear_down)));
+    buttons.push((rt.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
     if rt.poly_rect != NO_RECT {
       // The pad's six cells, all per-THIS-grid state: the tempo-factor cells show
       // which way this grid's tempo factor leans; =1 shows this grid's
@@ -1510,16 +1521,29 @@ fn handle_key(
     }
     return;
   }
-  // The edit-delete button: key-down deletes -- silences and ends -- every voice in
-  // edit mode on THIS grid, through the same `delete_edited` the softstep pedal
-  // runs. Key-up only douses the LED (lit while pressed, like accrete's clear).
-  if in_overlay(rt.edit_delete_rect, cell) {
-    rt.edit_delete_down = press;
-    if press {
-      let (release_secs, sample_rate) = rt.sink.release_params();
-      delete_edited(rt.grid_index, &rt.edit, &rt.accrete, &rt.voices, release_secs, sample_rate);
+  // The editmode buttons, through the same `editmode_press` the softstep pedals
+  // run: clear empties THIS grid's edit mode (edit-only drones ring out; sustained
+  // and fingered voices keep their other reasons), accrete puts every sounding
+  // voice into it. Key-down only; key-up douses the LED.
+  for (rect, down_flag, control) in [
+    (rt.editmode_clear_rect, 0, EditmodeControlKind::Clear),
+    (rt.editmode_accrete_rect, 1, EditmodeControlKind::Accrete),
+  ] {
+    if in_overlay(rect, cell) {
+      if down_flag == 0 {
+        rt.editmode_clear_down = press;
+      } else {
+        rt.editmode_accrete_down = press;
+      }
+      if press {
+        let (release_secs, sample_rate) = rt.sink.release_params();
+        editmode_press(
+          rt.grid_index, control, &rt.edit, &rt.accrete, &rt.held_all, &rt.voices,
+          release_secs, sample_rate,
+        );
+      }
+      return;
     }
-    return;
   }
   // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only. The tap sets the
   // GLOBAL tempo; the tempo-factor buttons and the =1 factored-pulse switch act on
@@ -1552,7 +1576,15 @@ fn handle_key(
   if in_overlay(rt.clear_rect, cell) {
     if press {
       rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_clear();
-      rt.sink.release_sustained();
+      // Clear removes only the SUSTAIN reason (symmetric with editmode clear): a
+      // drone whose pitch is in edit mode keeps ringing -- audibly, so it is not
+      // the old silent "dancing ghost" -- until editmode clear (or its exit
+      // gesture) takes that reason too.
+      let edited: HashSet<i32> = rt.edit.lock().unwrap_or_else(|e| e.into_inner())
+        [rt.grid_index]
+        .pitches()
+        .collect();
+      rt.sink.release_sustained(&edited);
     } else {
       rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_clear();
     }
@@ -1785,20 +1817,31 @@ fn publish_held(
   }
 }
 
-/// The accreting condition just turned on for this grid's bank: add the notes
-/// currently held ON THIS GRID to its sustained set. Snapshot the held registry
-/// first, then feed the bank -- two short, non-nested locks.
+/// The accreting condition just turned on for this grid's bank: add every voice
+/// sounding on this grid -- the notes currently held AND the pitches in edit mode
+/// (queue.org: "accrete-sustain should add every fingered voice and every
+/// edit-mode voice"; an edited drone is a sounding voice like any other). Snapshot
+/// each registry first, then feed the bank -- short, non-nested locks.
 fn capture_grid_held(rt: &GridThread) {
-  capture_grid_held_into(&rt.held_all, &rt.accrete, rt.grid_index);
+  capture_grid_held_into(&rt.held_all, &rt.accrete, &rt.edit, rt.grid_index);
 }
 
 /// `capture_grid_held` for callers that aren't a grid thread (the pedal hook).
 fn capture_grid_held_into(
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  edit: &Arc<Mutex<Vec<edit::EditState>>>,
   grid: usize,
 ) {
-  let snapshot = held_pitches(held_all, grid);
+  let mut snapshot = held_pitches(held_all, grid);
+  snapshot.extend(
+    edit
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .get(grid)
+      .map(|e| e.pitches().collect::<Vec<i32>>())
+      .unwrap_or_default(),
+  );
   let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
   if let Some(bank) = banks.get_mut(grid) {
     bank.capture_held(snapshot);
@@ -1932,19 +1975,24 @@ fn drive_accrete(
     }
   }
   if button == AccreteControlKind::Clear && down {
-    synth::release_sustained_voices(voices, grid, release_secs, sample_rate);
-    // Clear silences this grid's drones -- including any note being edited, since
-    // edit mode sustains through this same bank. Leaving those in edit mode strands
-    // them: silent notes still dancing, still forcing every press to drag. Jeff hit
-    // exactly that ("sustain two, edit one, clear both -> a dancing ghost that won't
-    // go away and blocks all sound").
-    //
-    // Clear is the panic button: it must leave the grid playable. Nothing needs
-    // releasing here -- the voices are already going.
-    edit.lock().unwrap_or_else(|e| e.into_inner())[grid].clear();
+    // Clear removes only the SUSTAIN reason (symmetric with editmode clear,
+    // queue.org "accrete-editmode pedals like accrete-sustain"): a drone whose
+    // pitch is in edit mode keeps ringing. This supersedes the old panic-button
+    // coupling that also emptied edit mode -- that fix existed because clear used
+    // to silence edited drones too, stranding SILENT notes in edit mode ("a
+    // dancing ghost that won't go away"). Spared drones stay audible, so they are
+    // not ghosts, and both the exit gesture and the editmode clear can still
+    // dismiss them; the full kill is the two clears together.
+    let edited: HashSet<i32> = edit
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .get(grid)
+      .map(|e| e.pitches().collect())
+      .unwrap_or_default();
+    synth::release_sustained_voices(voices, grid, &edited, release_secs, sample_rate);
   }
   if activated.accrete {
-    capture_grid_held_into(held_all, accrete, grid);
+    capture_grid_held_into(held_all, accrete, edit, grid);
   }
   if activated.erase {
     // A needs-holding flip can activate a physically-held ERASE button.
@@ -1960,7 +2008,7 @@ enum PedalAction {
   Accrete { grid: usize, control: AccreteControlKind },
   Tap,
   FactoredPulse { grid: usize, factor: TempoFactorButton },
-  EditDelete { grid: usize },
+  Editmode { grid: usize, control: EditmodeControlKind },
 }
 
 /// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
@@ -1989,8 +2037,8 @@ fn rig_pedal_actions(
           (*pedal, PedalAction::FactoredPulse { grid, factor })
         })
       }
-      SoftstepWindowRig::EditDeletePedal { pedal, monome, .. } => {
-        grid_of(monome).map(|grid| (*pedal, PedalAction::EditDelete { grid }))
+      SoftstepWindowRig::EditmodeControl { pedal, monome, control, .. } => {
+        grid_of(monome).map(|grid| (*pedal, PedalAction::Editmode { grid, control: *control }))
       }
       SoftstepWindowRig::Drumkit { .. } => None,
     };
@@ -2105,17 +2153,15 @@ fn expression_pedal_loop(
   }
 }
 
-/// The edit-delete control on `grid`, from EITHER surface -- a softstep pedal or
-/// the grid's own button run exactly this. Delete = silence and end, by the
-/// ordinary release ramp, exactly how every voice ends: every DRONE at an edited
-/// pitch on this grid rings out, those pitches leave the grid's sustain bank (a
-/// deleted note must not keep painting as sustained or re-drone on the next
-/// touch), and edit mode is left empty, so the grid plays again immediately. A
-/// FINGERED voice at an edited pitch does not end -- a finger's voice is the
-/// finger's to end (the exit gesture's rule) -- it only loses its edit/sustain
-/// reasons here, so it ends on the ordinary release when the finger lifts. One
-/// lock at a time, per the module's rule.
-fn delete_edited(
+/// The editmode `clear` control on `grid`, from EITHER surface -- a softstep pedal
+/// or the grid's own button run exactly this. Every pitch leaves edit mode; each
+/// voice then rings on iff it still has another reason -- a finger, or the sustain
+/// bank -- and an edit-only drone ends by the ordinary release ramp. Symmetric
+/// with the sustain accrete's clear: each clear removes only its OWN reason, so a
+/// note both edited and sustained survives either clear alone and dies to both
+/// (the full-kill combo is the two clears together). One lock at a time, per the
+/// module's rule.
+fn editmode_clear(
   grid: usize,
   edit: &Arc<Mutex<Vec<edit::EditState>>>,
   accrete: &Arc<Mutex<Vec<AccreteState>>>,
@@ -2133,15 +2179,63 @@ fn delete_edited(
   if edited.is_empty() {
     return;
   }
-  {
-    let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(bank) = banks.get_mut(grid) {
-      for &pitch in &edited {
-        bank.drop_pitch(pitch);
-      }
-    }
+  let sustained: HashSet<i32> = {
+    let banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+    banks.get(grid).map(|b| b.sustained_pitches().collect()).unwrap_or_default()
+  };
+  // Only the drones whose SOLE reason was edit mode end; a sustained drone keeps
+  // ringing (its bank membership is untouched), and a fingered voice was never a
+  // drone at all.
+  let dying: HashSet<i32> = edited.difference(&sustained).copied().collect();
+  synth::end_drones_at(voices, grid, &dying, release_secs, sample_rate);
+}
+
+/// The editmode `accrete` control on `grid`: a ONE-SHOT that puts every voice
+/// currently sounding on this grid -- every fingered voice and every sustained
+/// voice -- into edit mode. One-shot rather than a hold, unlike the sustain
+/// accrete: the moment anything is edited the grid becomes a pitch-picker (every
+/// press drags instead of playing), so a "capture notes played while held" phase
+/// cannot exist for edit mode. Nothing needs doing at the voice level: fingered
+/// voices keep their fingers, sustained voices keep their drones, and being
+/// edited is simply one more reason to ring.
+fn editmode_accrete(
+  grid: usize,
+  edit: &Arc<Mutex<Vec<edit::EditState>>>,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+) {
+  let fingered = held_pitches(held_all, grid);
+  let sustained: Vec<i32> = {
+    let banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+    banks.get(grid).map(|b| b.sustained_pitches().collect()).unwrap_or_default()
+  };
+  let mut states = edit.lock().unwrap_or_else(|e| e.into_inner());
+  let Some(e) = states.get_mut(grid) else { return };
+  for pitch in fingered.into_iter().chain(sustained) {
+    e.enter(pitch);
   }
-  synth::end_edited_drones(voices, grid, &edited, release_secs, sample_rate);
+}
+
+/// Dispatch one editmode_control press (shared by the pedal hook and the on-grid
+/// buttons, so hands and feet cannot diverge). Key-down only; key-up is the
+/// caller's LED business.
+#[allow(clippy::too_many_arguments)]
+fn editmode_press(
+  grid: usize,
+  control: EditmodeControlKind,
+  edit: &Arc<Mutex<Vec<edit::EditState>>>,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  voices: &Arc<Mutex<VoiceMap>>,
+  release_secs: f32,
+  sample_rate: f32,
+) {
+  match control {
+    EditmodeControlKind::Clear => {
+      editmode_clear(grid, edit, accrete, voices, release_secs, sample_rate);
+    }
+    EditmodeControlKind::Accrete => editmode_accrete(grid, edit, accrete, held_all),
+  }
 }
 
 /// A tempo-factor press on `grid`, from EITHER surface -- a softstep pedal or the
@@ -2229,10 +2323,12 @@ fn rig_pedal_hook(
         }
         true
       }
-      PedalAction::EditDelete { grid } => {
+      PedalAction::Editmode { grid, control } => {
         if down {
-          // Shared with the on-grid edit-delete button (`delete_edited`).
-          delete_edited(grid, &edit, &accrete, &voices, release_secs, sample_rate);
+          // Shared with the on-grid editmode buttons (`editmode_press`).
+          editmode_press(
+            grid, control, &edit, &accrete, &held_all, &voices, release_secs, sample_rate,
+          );
         }
         true
       }
@@ -2877,7 +2973,8 @@ mod tests {
       mono_rect: NO_RECT,
       feet_accrete_rect: NO_RECT,
       poly_rect: NO_RECT,
-      edit_delete_rect: NO_RECT,
+      editmode_clear_rect: NO_RECT,
+      editmode_accrete_rect: NO_RECT,
     }
   }
 
@@ -3156,9 +3253,9 @@ mod tests {
       assert_eq!(factors, want, "monome {monome} needs all five factored-pulse controls");
     }
 
-    // The grids carry ONLY these overlays (the factored-pulse pad and edit-delete
-    // button came back / arrived by request after 2_discussion 2f pared the grids
-    // down); everything else is a note.
+    // The grids carry ONLY these overlays (the factored-pulse pad and the
+    // editmode-clear button came back / arrived by request after 2_discussion 2f
+    // pared the grids down); everything else is a note.
     let kinds: Vec<&str> = rig.monome_windows.iter().map(|w| w.kind_name()).collect();
     assert_eq!(
       kinds,
@@ -3167,36 +3264,47 @@ mod tests {
         "waveform_selector",
         "edo_shift_pad",
         "tap_tempo_pad",
-        "edit_delete_button",
+        "editmode_control",
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
         "tap_tempo_pad",
-        "edit_delete_button"
+        "editmode_control"
       ],
       "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
     );
 
-    // The edit-delete controls: OSS pedal 7 -> grid a, pedal 9 -> grid b (left
-    // pedal, left grid), and each grid's own button at (12,0), beside the pad's x3.
-    let deletes: Vec<(u8, &str)> = rig
+    // The editmode controls mirror the sustain row one row up (queue.org): OSS
+    // outer pedals 6/0 clear, inner pedals 7/9 accrete, left pedals to the left
+    // grid -- exactly the bottom row's 1/2 + 4/5 shape -- plus each grid's own
+    // clear button at (12,0), beside the pad's x3.
+    use midi_pulse::rig::EditmodeControlKind as Em;
+    let mut editmodes: Vec<(u8, &str, Em)> = rig
       .softstep_windows
       .iter()
       .filter_map(|w| match w {
-        SoftstepWindowRig::EditDeletePedal { pedal, monome, softstep, .. } => {
-          assert_eq!(softstep, "old", "edit-delete lives on the old board");
-          Some((*pedal, monome.as_str()))
+        SoftstepWindowRig::EditmodeControl { pedal, monome, softstep, control, .. } => {
+          assert_eq!(softstep, "old", "editmode controls live on the old board");
+          Some((*pedal, monome.as_str(), *control))
         }
         _ => None,
       })
       .collect();
-    assert_eq!(deletes, [(7, "a"), (9, "b")]);
+    editmodes.sort();
+    assert_eq!(
+      editmodes,
+      [(0, "b", Em::Clear), (6, "a", Em::Clear), (7, "a", Em::Accrete), (9, "b", Em::Accrete)],
+    );
     for monome in ["a", "b"] {
       let rect = rig.monome_windows.iter().find_map(|w| match w {
-        MonomeWindowRig::EditDeleteButton { monome: m, rect, .. } if m == monome => Some(*rect),
+        MonomeWindowRig::EditmodeControl { monome: m, rect, control, .. }
+          if m == monome && *control == Em::Clear =>
+        {
+          Some(*rect)
+        }
         _ => None,
       });
-      assert_eq!(rect, Some([12, 0, 12, 0]), "monome {monome}'s edit-delete button");
+      assert_eq!(rect, Some([12, 0, 12, 0]), "monome {monome}'s editmode-clear button");
     }
 
     // The EX-P volume pedals: MPC-20 channel 1 -> grid a, channel 2 -> grid b,
@@ -3263,11 +3371,17 @@ mod tests {
       at("old", 5),
       Some(PedalAction::Accrete { grid: 1, control: AccreteControlKind::Clear }),
     );
-    // Edit-delete: pedal 7 -> the left grid, pedal 9 -> the right (left/right rule).
-    assert_eq!(at("old", 7), Some(PedalAction::EditDelete { grid: 0 }));
-    assert_eq!(at("old", 9), Some(PedalAction::EditDelete { grid: 1 }));
-    // Pedal 8 held the retired tap tempo; it and the other gaps are free.
-    for free in [3, 6, 8, 0] {
+    // Editmode controls, mirroring the sustain row: outer pedals (6/0) clear,
+    // inner (7/9) accrete, left pedals to the left grid.
+    {
+      use midi_pulse::rig::EditmodeControlKind as Em;
+      assert_eq!(at("old", 6), Some(PedalAction::Editmode { grid: 0, control: Em::Clear }));
+      assert_eq!(at("old", 7), Some(PedalAction::Editmode { grid: 0, control: Em::Accrete }));
+      assert_eq!(at("old", 9), Some(PedalAction::Editmode { grid: 1, control: Em::Accrete }));
+      assert_eq!(at("old", 0), Some(PedalAction::Editmode { grid: 1, control: Em::Clear }));
+    }
+    // Pedal 8 held the retired tap tempo; it and pedal 3 are free.
+    for free in [3, 8] {
       assert_eq!(at("old", free), None, "old pedal {free} is deliberately unbound");
     }
 
@@ -3402,7 +3516,12 @@ mod tests {
   }
 
   #[test]
-  fn clearing_a_bank_dismisses_that_grids_edit_mode() {
+  fn sustain_clear_spares_edited_drones_and_editmode_clear_then_ends_them() {
+    // The symmetric model (queue.org "accrete-editmode pedals like
+    // accrete-sustain"): each clear removes only its OWN reason. Sustain-clear
+    // flushes the bank but a drone whose pitch is in edit mode keeps ringing --
+    // audibly, so it is not the old silent "dancing ghost" -- and the editmode
+    // clear then takes the last reason and ends it. Both clears = the full kill.
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary(), AccreteState::new_momentary()]));
@@ -3410,8 +3529,7 @@ mod tests {
     let edit: Arc<Mutex<Vec<edit::EditState>>> =
       Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
 
-    // Two notes, both sustained on grid 0 (Jeff: "press two buttons, sustain them
-    // both"), and one of them put into edit mode.
+    // Two notes, both sustained on grid 0, one of them also in edit mode.
     let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
@@ -3419,27 +3537,88 @@ mod tests {
       accrete.lock().unwrap()[0].sustain_pitch(pitch);
     }
     edit.lock().unwrap()[0].enter(20);
-    assert!(edit.lock().unwrap()[0].any());
 
-    // Clear that grid's bank.
+    // Sustain-clear: the bank flushes; only the sustain-only drone ends.
     assert!(drive_accrete(
       0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
     ));
-
-    // The drones are going...
-    let v = voices.lock().unwrap();
-    for (src, state) in v.iter() {
-      if matches!(src, VoiceSource::Accreted { chord, .. } if *chord == synth::SUSTAIN_BASE) {
-        assert!(state.target_env <= 0.0, "clear should be releasing this drone");
-      }
+    let drone = |pitch| VoiceSource::Accreted { chord: synth::SUSTAIN_BASE, pitch };
+    {
+      let v = voices.lock().unwrap();
+      assert_eq!(v[&drone(10)].target_env, 0.0, "the sustain-only drone releases");
+      assert!(v[&drone(20)].target_env > 0.0, "the edited drone keeps ringing");
     }
+    assert!(accrete.lock().unwrap()[0].sustained_pitches().next().is_none(), "the set flushed");
+    assert!(edit.lock().unwrap()[0].is_editing(20), "clear does not touch edit mode");
+
+    // Editmode-clear takes the drone's last reason: now it ends, and the grid plays.
+    editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
+    assert_eq!(voices.lock().unwrap()[&drone(20)].target_env, 0.0, "no reason left: it ends");
+    assert!(!edit.lock().unwrap()[0].any(), "edit mode empties");
+  }
+
+  #[test]
+  fn editmode_clear_spares_sustained_drones() {
+    // The mirror: editmode-clear removes only the EDIT reason. An edited pitch
+    // still in the sustain bank keeps its drone.
+    use crate::types::{Timbre, VoiceSource};
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new(vec![edit::EditState::new()]));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 1])));
+    // Pitch 10: edited only. Pitch 20: edited AND sustained.
+    for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
+      a.note_on(cell, pitch, Timbre::default(), None);
+      a.sustain_note(cell, pitch);
+      edit.lock().unwrap()[0].enter(pitch);
+    }
+    accrete.lock().unwrap()[0].sustain_pitch(20);
+
+    editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
+    let drone = |pitch| VoiceSource::Accreted { chord: synth::SUSTAIN_BASE, pitch };
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&drone(10)].target_env, 0.0, "the edit-only drone ends");
+    assert!(v[&drone(20)].target_env > 0.0, "the sustained drone keeps its other reason");
     drop(v);
-    // ...and, the point: nothing is left dancing, so the grid plays again.
+    assert!(!edit.lock().unwrap()[0].any(), "edit mode empties either way");
     assert!(
-      !edit.lock().unwrap()[0].any(),
-      "clear silenced the notes; leaving one in edit mode strands the grid",
+      accrete.lock().unwrap()[0].sustained_pitches().eq([20]),
+      "the sustain bank is untouched",
     );
-    assert!(accrete.lock().unwrap()[0].sustained_pitches().next().is_none());
+  }
+
+  #[test]
+  fn editmode_accrete_captures_fingered_and_sustained_voices() {
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::from([((1, 1), 10)])]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new(vec![edit::EditState::new()]));
+    accrete.lock().unwrap()[0].sustain_pitch(20);
+
+    editmode_accrete(0, &edit, &accrete, &held_all);
+    let e = edit.lock().unwrap();
+    assert!(e[0].is_editing(10), "the fingered voice enters edit mode");
+    assert!(e[0].is_editing(20), "the sustained voice too");
+    assert_eq!(e[0].pitches().count(), 2, "and nothing else");
+  }
+
+  #[test]
+  fn sustain_accrete_activation_captures_edited_voices_too() {
+    // queue.org: "accrete-sustain should add every fingered voice and every
+    // edit-mode voice". Pitch 10 is fingered, pitch 20 rings only via edit mode;
+    // stomping accrete captures both into the sustain bank.
+    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let held_all = Arc::new(Mutex::new(vec![HashMap::from([((1, 1), 10)])]));
+    let edit: Arc<Mutex<Vec<edit::EditState>>> =
+      Arc::new(Mutex::new(vec![edit::EditState::new()]));
+    edit.lock().unwrap()[0].enter(20);
+
+    assert!(accrete.lock().unwrap()[0].press_accrete(), "activation edge");
+    capture_grid_held_into(&held_all, &accrete, &edit, 0);
+    let banks = accrete.lock().unwrap();
+    let captured: HashSet<i32> = banks[0].sustained_pitches().collect();
+    assert_eq!(captured, [10, 20].into(), "fingered AND edited voices join the bank");
   }
 
   /// Jeff: "a global clear will now clear even the ones that started sustaining
@@ -3474,21 +3653,18 @@ mod tests {
     );
   }
 
-  /// Clear is per-bank, so it must not dismiss the OTHER grid's edit mode.
+  /// Editmode-clear is per-grid, so it must not dismiss the OTHER grid's edit mode.
   #[test]
-  fn clearing_one_bank_leaves_the_other_grids_edit_mode_alone() {
+  fn editmode_clear_leaves_the_other_grids_edit_mode_alone() {
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary(), AccreteState::new_momentary()]));
-    let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let edit: Arc<Mutex<Vec<edit::EditState>>> =
       Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
     edit.lock().unwrap()[0].enter(10);
     edit.lock().unwrap()[1].enter(20);
 
-    drive_accrete(
-      0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
-    );
-    assert!(!edit.lock().unwrap()[0].any(), "grid 0 cleared");
+    editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
+    assert!(!edit.lock().unwrap()[0].any(), "grid 0's edit mode cleared");
     assert!(edit.lock().unwrap()[1].any(), "grid 1's edit mode is its own business");
   }
 

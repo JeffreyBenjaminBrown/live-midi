@@ -153,9 +153,9 @@ impl EditState {
   }
 
   /// Drop every pitch -- the vision's "a button somewhere to clear edit mode from
-  /// all notes", now the edit-delete control (`delete_edited`: a softstep pedal
-  /// and/or an on-grid button). The caller silences whatever that leaves with no
-  /// reason to ring; this only empties the set.
+  /// all notes", now the editmode clear (`editmode_clear`: a softstep pedal and/or
+  /// an on-grid button). The caller silences whatever that leaves with no reason
+  /// to ring; this only empties the set.
   pub fn clear(&mut self) {
     self.pitches.clear();
   }

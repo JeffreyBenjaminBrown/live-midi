@@ -434,10 +434,12 @@ impl SurfaceSink {
   }
 
   /// This bank's accrete 'clear': ramp THIS grid's sustained voices to silence over
-  /// the sink's release time. The other grid's drones and all fingered voices are
-  /// untouched (accrete banks are per-monome).
-  pub fn release_sustained(&mut self) {
-    release_sustained_voices(&self.voices, self.grid, self.release_secs, self.sample_rate);
+  /// the sink's release time -- except drones at the `keep` pitches, which still
+  /// have another reason to ring (edit mode; the clear removes only the sustain
+  /// reason). The other grid's drones and all fingered voices are untouched
+  /// (accrete banks are per-monome).
+  pub fn release_sustained(&mut self, keep: &HashSet<i32>) {
+    release_sustained_voices(&self.voices, self.grid, keep, self.release_secs, self.sample_rate);
   }
 
   /// This sink's release timing, for callers that end voices through the free
@@ -488,27 +490,26 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
   }
 }
 
-/// The edit-delete control's voice half: delete -- silence and end, by the ordinary
-/// release ramp, exactly how every voice ends -- each DRONE of `grid` at an edited
-/// pitch. Fingered voices are deliberately not here: a finger's voice is the
-/// finger's to end (the rule the exit gesture already lives by), so a held note
-/// merely loses its edit/sustain reasons and ends on the ordinary release when the
-/// finger lifts. The caller empties the edit set and the sustain-bank entries;
-/// this touches only the voices.
-pub fn end_edited_drones(
+/// End -- silence, by the ordinary release ramp, exactly how every voice ends --
+/// each DRONE of `grid` at one of `pitches`. The bulk-clear controls' voice half:
+/// the caller works out WHICH drones lost their last reason (editmode clear passes
+/// edited-minus-sustained) and empties its own set; this touches only the voices.
+/// Fingered voices are deliberately not here: a finger's voice is the finger's to
+/// end (the rule the exit gesture lives by).
+pub fn end_drones_at(
   voices: &Arc<Mutex<VoiceMap>>,
   grid: usize,
-  edited: &HashSet<i32>,
+  pitches: &HashSet<i32>,
   release_secs: f32,
   sample_rate: f32,
 ) {
-  if edited.is_empty() {
+  if pitches.is_empty() {
     return;
   }
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
     if matches!(src, VoiceSource::Accreted { chord, pitch }
-         if *chord == SUSTAIN_BASE + grid && edited.contains(pitch))
+         if *chord == SUSTAIN_BASE + grid && pitches.contains(pitch))
     {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (release_secs * sample_rate);
@@ -517,17 +518,20 @@ pub fn end_edited_drones(
 }
 
 /// Ramp one grid's sustained voices to silence -- that bank's accrete 'clear', in a
-/// form the feet-accrete pedal hook can call without owning a sink.
+/// form the feet-accrete pedal hook can call without owning a sink. Drones at the
+/// `keep` pitches survive: they still have another reason to ring (edit mode), and
+/// the clear removes only the sustain reason.
 pub fn release_sustained_voices(
   voices: &Arc<Mutex<VoiceMap>>,
   grid: usize,
+  keep: &HashSet<i32>,
   release_secs: f32,
   sample_rate: f32,
 ) {
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    if let VoiceSource::Accreted { chord, .. } = src {
-      if *chord == SUSTAIN_BASE + grid {
+    if let VoiceSource::Accreted { chord, pitch } = src {
+      if *chord == SUSTAIN_BASE + grid && !keep.contains(pitch) {
         state.target_env = 0.0;
         state.ramp_per_sample = state.env / (release_secs * sample_rate);
       }
@@ -718,10 +722,10 @@ mod tests {
   }
 
   #[test]
-  fn end_edited_drones_releases_edited_drones_and_spares_every_finger() {
-    // Grid 0 has: a drone at edited pitch 20, a fingered voice at edited pitch 30,
-    // a fingered voice at unedited pitch 40, and a drone at unedited pitch 50.
-    // Grid 1 has a drone at pitch 20 too (edited pitches are per-grid).
+  fn end_drones_at_releases_named_drones_and_spares_every_finger() {
+    // Grid 0 has: a drone at pitch 20 (to end), a fingered voice at pitch 30
+    // (named but fingered), a fingered voice at pitch 40, and a drone at pitch 50.
+    // Grid 1 has a drone at pitch 20 too (grids are independent).
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
@@ -734,19 +738,35 @@ mod tests {
     b.note_on((0, 0), 20, Timbre::default(), None);
     b.sustain_note((0, 0), 20);
 
-    let edited: HashSet<i32> = [20, 30].into();
-    end_edited_drones(&voices, 0, &edited, 0.05, 48000.0);
+    let pitches: HashSet<i32> = [20, 30].into();
+    end_drones_at(&voices, 0, &pitches, 0.05, 48000.0);
 
     let v = voices.lock().unwrap();
     let ended = |src: &VoiceSource| v[src].target_env == 0.0;
-    assert!(ended(&sustain_key(0, 20)), "the edited drone rings out");
+    assert!(ended(&sustain_key(0, 20)), "the named drone rings out");
     assert!(
       !ended(&voice_key(0, (1, 0))),
-      "the finger holding an edited pitch keeps sounding -- a finger's voice is the finger's to end",
+      "a finger at a named pitch keeps sounding -- a finger's voice is the finger's to end",
     );
-    assert!(!ended(&voice_key(0, (2, 0))), "an unedited finger keeps sounding");
-    assert!(!ended(&sustain_key(0, 50)), "an unedited drone keeps sounding");
+    assert!(!ended(&voice_key(0, (2, 0))), "an unnamed finger keeps sounding");
+    assert!(!ended(&sustain_key(0, 50)), "an unnamed drone keeps sounding");
     assert!(!ended(&sustain_key(1, 20)), "the OTHER grid's drone at 20 is untouched");
+  }
+
+  #[test]
+  fn release_sustained_spares_the_keep_set() {
+    // The symmetric sustain-clear: drones at kept (edited) pitches survive.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((0, 0), 20, Timbre::default(), None);
+    a.sustain_note((0, 0), 20);
+    a.note_on((1, 0), 30, Timbre::default(), None);
+    a.sustain_note((1, 0), 30);
+    let keep: HashSet<i32> = [30].into();
+    a.release_sustained(&keep);
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&sustain_key(0, 20)].target_env, 0.0, "the unkept drone rings out");
+    assert_eq!(v[&sustain_key(0, 30)].target_env, 1.0, "the kept (edited) drone survives");
   }
 
   #[test]
@@ -829,7 +849,7 @@ mod tests {
     b.note_on((5, 5), 33, Timbre::default(), None);
     b.sustain_note((5, 5), 33);
     a.note_on((6, 6), 40, Timbre::default(), None); // a still-fingered note
-    a.release_sustained();
+    a.release_sustained(&HashSet::new());
     let v = voices.lock().unwrap();
     assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(0.0), "grid a drone released");
     assert_eq!(v.get(&sustain_key(1, 33)).map(|s| s.target_env), Some(1.0), "grid b drone keeps ringing (banks are per-monome)");

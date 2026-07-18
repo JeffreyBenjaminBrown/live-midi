@@ -24,9 +24,9 @@ meter reads it too, so one edit there reaches all of them at once.
 ===========================================================================
 FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 46-EDO play
 surface, and two SoftStep boards that carry the controls that would
-otherwise cost grid cells: sustain, the factored pulse, and edit-delete.
+otherwise cost grid cells: sustain, the factored pulse, and edit mode.
 Each grid keeps four overlays -- a 4-cell waveform strip (top-left), an
-edit-delete button at (12,0), a 3x2 factored-pulse pad (top-right, doubling
+editmode-clear button at (12,0), a 3x2 factored-pulse pad (top-right, doubling
 the NSS pedals), and a 3x2 scroll pad (bottom-right). Everything else on the
 grid is a note.
 Launch under pw-jack so the synth shares the card via PipeWire:
@@ -159,16 +159,16 @@ The six-button block from the kmss rig, back by request: | x3 x2 tap | over
 | /3 /2 =1 |. The factor buttons and =1 act on the same per-grid state as the
 NSS pedals (either surface works, hands or feet). The tap cell blinks the base
 tempo -- seeded at 1 Hz, so tapping is possible here but never necessary.
-**** ELEM monome_windows              # grid A: edit-delete button
-***** PARAM id = "edit-delete-btn-a"
+**** ELEM monome_windows              # grid A: editmode-clear button
+***** PARAM id = "editmode-clear-btn-a"
 ***** PARAM monome = "a"
-***** PARAM kind = "edit_delete_button"
+***** PARAM kind = "editmode_control"
 ***** PARAM rect = [12, 0, 12, 0]
-Just left of the factored-pulse pad's x3. Key-down deletes -- silences and
-ends, the ordinary voice ending -- every edited drone on this grid, and
-leaves edit mode empty. A fingered note does not end; it just leaves edit
-mode (and the sustain bank) and ends when the finger lifts. Same job as OSS
-pedal 7. Dim at rest, bright while pressed.
+***** PARAM control = "clear"
+Just left of the factored-pulse pad's x3. Key-down removes every pitch from
+edit mode; each voice then rings on iff it still has another reason (a
+finger, or the sustain bank), and an edit-only drone ends by the ordinary
+release. Same job as OSS pedal 6. Dim at rest, bright while pressed.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -201,24 +201,29 @@ GRID B = RNM, the RIGHT / newer monome. Varibright.
 ***** PARAM kind = "tap_tempo_pad"
 ***** PARAM rect = [13, 0, 15, 1]
 Same six-button block as grid A's, driving grid B's own factor and switch.
-**** ELEM monome_windows              # grid B: edit-delete button
-***** PARAM id = "edit-delete-btn-b"
+**** ELEM monome_windows              # grid B: editmode-clear button
+***** PARAM id = "editmode-clear-btn-b"
 ***** PARAM monome = "b"
-***** PARAM kind = "edit_delete_button"
+***** PARAM kind = "editmode_control"
 ***** PARAM rect = [12, 0, 12, 0]
-Grid B's twin of grid A's edit-delete button (same job as OSS pedal 9).
+***** PARAM control = "clear"
+Grid B's twin of grid A's editmode-clear button (same job as OSS pedal 0).
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
 are NOT stable, so nothing here names one.
-*** old softstep: sustain + edit-delete
-Sustain is momentary only: hold to accrete, release to stop. Two controls per
-grid (clear + accrete) rather than the on-grid four -- needs_holding and erase
-stay in the library, just unbound here. The tap pedal that once sat here was
-retired; the base tempo is a seeded 1 Hz. Each grid also gets an edit-delete
-pedal (7 for A, 9 for B): stomp to delete that grid's edited drones (fingered
-notes just leave edit mode, ending when their finger lifts).
+*** old softstep: sustain (bottom row) + edit mode (top row)
+Two symmetric rows, one concept each. Bottom row = the SUSTAIN bank: outer
+pedals (1/5) clear it, inner pedals (2/4) accrete into it, momentary only
+(hold to add, release to stop adding). Top row = EDIT MODE, same shape:
+outer pedals (6/0) clear it, inner pedals (7/9) accrete into it (a one-shot:
+every sounding voice enters edit mode). The accretes are symmetric in what
+they capture, too: sustain-accrete takes every fingered AND every edit-mode
+voice; editmode-accrete takes every fingered AND every sustained voice. Each
+clear removes only its own reason -- a note both sustained and edited
+survives either clear alone; both clears kill everything.
 Left buttons drive the left grid, right buttons the right grid.
+The tap pedal that once sat here was retired; the base tempo is a seeded 1 Hz.
 **** ELEM softsteps
 ***** PARAM id = "old"
 The OLDER board, nearer Jeff. Not rotated, so its printed labels read
@@ -253,25 +258,47 @@ The OLDER board, nearer Jeff. Not rotated, so its printed labels read
 ***** PARAM pedal = 5
 ***** PARAM monome = "b"
 ***** PARAM control = "clear"
-**** ELEM softstep_windows            # pedal 7: delete grid A's edit-mode voices
-***** PARAM id = "edit-delete-a"
+**** ELEM softstep_windows            # pedal 6 (outer): clear grid A's edit mode
+***** PARAM id = "editmode-clear-a"
 ***** PARAM softstep = "old"
-***** PARAM kind = "edit_delete_pedal"
+***** PARAM kind = "editmode_control"
+***** PARAM pedal = 6
+***** PARAM monome = "a"
+***** PARAM control = "clear"
+The top row mirrors the sustain row below it, one concept up: outer pedals
+clear EDIT MODE, inner pedals accrete into it. Clear removes only the edit
+reason: each voice rings on iff a finger or the sustain bank still holds it,
+and an edit-only drone ends by the ordinary release. (Symmetrically, the
+sustain clear no longer touches edit mode -- the full kill is both clears.)
+**** ELEM softstep_windows            # pedal 7 (inner): accrete grid A into edit mode
+***** PARAM id = "editmode-accrete-a"
+***** PARAM softstep = "old"
+***** PARAM kind = "editmode_control"
 ***** PARAM pedal = 7
 ***** PARAM monome = "a"
-Delete = silence and end, the ordinary voice ending: every edited drone on
-grid A rings out and edit mode empties; a fingered note just leaves edit mode
-and ends when the finger lifts. Same job as the on-grid button at (12,0).
-**** ELEM softstep_windows            # pedal 9: delete grid B's edit-mode voices
-***** PARAM id = "edit-delete-b"
+***** PARAM control = "accrete"
+A one-shot, not a hold: key-down puts every voice sounding on grid A -- every
+fingered voice and every sustained voice -- into edit mode. (A hold-to-add
+phase can't exist here: the moment anything is edited, the grid becomes a
+pitch-picker, so there are no new notes to capture.)
+**** ELEM softstep_windows            # pedal 9 (inner): accrete grid B into edit mode
+***** PARAM id = "editmode-accrete-b"
 ***** PARAM softstep = "old"
-***** PARAM kind = "edit_delete_pedal"
+***** PARAM kind = "editmode_control"
 ***** PARAM pedal = 9
 ***** PARAM monome = "b"
+***** PARAM control = "accrete"
+**** ELEM softstep_windows            # pedal 0 (outer): clear grid B's edit mode
+***** PARAM id = "editmode-clear-b"
+***** PARAM softstep = "old"
+***** PARAM kind = "editmode_control"
+***** PARAM pedal = 0
+***** PARAM monome = "b"
+***** PARAM control = "clear"
 # The tap-tempo pedal was retired: Jeff never used it to set a tempo. The runtime
 # seeds the base tempo at 1 Hz (PolyrhythmState::set_fixed_tempo), so the x2 / /2 /
 # ... controls always have a base to multiply; the grid pads' tap cells can retap
-# it. Pedals 3, 6, 8, 0 on this board are now free.
+# it. Pedals 3 and 8 on this board are now free.
 *** new softstep: the factored pulse, 5 controls per grid
 Each grid gets x2, x3, /2, /3 and =1. The far/near split follows Jeff's rule for
 the ambiguous middle column: nearer = left grid, farther = right grid.
