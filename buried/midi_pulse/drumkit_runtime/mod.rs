@@ -528,8 +528,8 @@ fn print_device_summary(
   params: SoftstepParams,
 ) {
   println!(
-    "  device {device_id:?} pedal map (tether, pressure-sensitive, debounce {} ms, de-stick {} ms):",
-    params.debounce_ms, params.silence_to_zero_ms,
+    "  device {device_id:?} pedal map (tether, pressure-sensitive, quiet {} ms, de-stick {} ms):",
+    params.factor_release_ms, params.silence_to_zero_ms,
   );
   // Print in printed-label order 1..9, then 0, skipping unmapped pedals.
   for label in (1..=9).chain(std::iter::once(0)) {

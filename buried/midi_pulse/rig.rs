@@ -1164,9 +1164,6 @@ fn default_pressure_full_scale() -> u16 {
 fn default_gain_db_range() -> f32 {
   20.0
 }
-fn default_debounce_ms() -> u64 {
-  100
-}
 fn default_silence_to_zero_ms() -> u64 {
   25
 }
@@ -1204,22 +1201,19 @@ pub struct SoftstepParams {
   /// dB between the softest (pressure 0.0) and hardest (pressure 1.0) hit.
   #[serde(default = "default_gain_db_range")]
   pub gain_db_range: f32,
-  /// Minimum gap between two hits on the SAME pad (contact-bounce guard); 0 = off.
-  #[serde(default = "default_debounce_ms")]
-  pub debounce_ms: u64,
   /// A sensor with no CC for this long reads 0 (de-stick); 0 = off.
   #[serde(default = "default_silence_to_zero_ms")]
   pub silence_to_zero_ms: u64,
-  /// For a momentary TIMING pedal (the tempo-factor pedals), the minimum time from a fire
-  /// until it may fire again. This caps how fast deliberate repeats can land. Only pads the
-  /// runtime marks `Settle` use it (see `DebounceMode::Settle`); drum and held pedals
-  /// ignore it and use `debounce_ms`.
+  /// For a momentary TIMING pedal on `Settle` (the tempo-factor pedals), the minimum time
+  /// from a fire until it may fire again. This caps how fast deliberate repeats can land.
+  /// Only `Settle` pads use it (see `DebounceMode::Settle`).
   #[serde(default = "default_factor_settle_ms")]
   pub factor_settle_ms: u64,
-  /// For a TIMING pedal, the minimum time the pad must be inactive (sum below `off_sum`)
-  /// before it may fire again. This is the second half of the `Settle` re-arm rule: a
-  /// bouncing single stomp keeps re-activating the pad and so never stays inactive this
-  /// long, which is what collapses one stomp to one event.
+  /// How long a pad's sum must stay quiet before it may fire again. BOTH debounce modes
+  /// use it: it is `Standard`'s quiet gate (the sum must hold steady this long, released,
+  /// before a new hit is accepted -- a bounce keeps changing and so never re-arms), and
+  /// the inactivity half of `Settle`'s re-arm rule. Named `factor_release_ms` for its
+  /// original Settle-only role.
   #[serde(default = "default_factor_release_ms")]
   pub factor_release_ms: u64,
   /// Sum-of-4 at or above which a strike counts as HARD rather than light -- the
@@ -1247,7 +1241,6 @@ impl Default for SoftstepParams {
       attack_ms: default_attack_ms(),
       pressure_full_scale: default_pressure_full_scale(),
       gain_db_range: default_gain_db_range(),
-      debounce_ms: default_debounce_ms(),
       silence_to_zero_ms: default_silence_to_zero_ms(),
       factor_settle_ms: default_factor_settle_ms(),
       factor_release_ms: default_factor_release_ms(),
@@ -2494,8 +2487,8 @@ mod tests {
 
   #[test]
   fn softstep_params_parse_and_default() {
-    // A missing file -> defaults (debounce is now 100 ms).
-    assert_eq!(SoftstepParams::default().debounce_ms, 100, "default debounce");
+    // A missing file -> defaults.
+    assert_eq!(SoftstepParams::default().factor_release_ms, 25, "default quiet window");
     assert_eq!(SoftstepParams::default().on_sum, 20);
     // The shipped softstep.toml parses and every field is present.
     let params = load_softstep_params().expect("rigs/softstep.toml parses");
@@ -2503,7 +2496,7 @@ mod tests {
     // Partial files fill in defaults; unknown keys are rejected.
     let partial: SoftstepParams = toml::from_str("on_sum = 7").unwrap();
     assert_eq!(partial.on_sum, 7);
-    assert_eq!(partial.debounce_ms, 100, "unset key uses the default");
+    assert_eq!(partial.factor_release_ms, 25, "unset key uses the default");
     assert!(toml::from_str::<SoftstepParams>("bogus = 1").is_err(), "unknown key rejected");
   }
 
