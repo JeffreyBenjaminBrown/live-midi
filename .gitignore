@@ -20,3 +20,4 @@ __pycache__/
 my-dot-claude/
 target/
 /tools/softstep/meter/logs/
+/softstep_meter.log

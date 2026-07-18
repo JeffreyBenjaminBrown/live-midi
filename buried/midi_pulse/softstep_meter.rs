@@ -18,6 +18,19 @@
 //! OWN pressure (pad, ditto, ditto repeats the ORIGINAL, not the ditto -- see
 //! `resolve_fire`, which mirrors `drumkit_runtime::mod::resolve_fire`).
 //!
+//! Pedal treatment (live-switchable): the meter applies ONE debounce treatment to every
+//! pad, so you can stomp a pad and feel each policy. `standard` is the everyday
+//! fire-on-onset behaviour; `settle` is the aggressive two-condition guard the timing
+//! pedals use in the real rig. Type a number (or the name) + Enter to switch, per the
+//! banner. It starts on `standard`, which is what most real pads use.
+//!
+//! Transcript (ON by default): every FIRE/revise/release plus each treatment switch is
+//! appended to `softstep_meter.log` with a millisecond timestamp. The on-screen log keeps
+//! only the last 8 lines and is wiped on every redraw, so this is the only way to review a
+//! run afterwards -- and the way to tell a genuine too-close pair of hits from a
+//! double-fire, by their gap. Set `SOFTSTEP_METER_NO_LOG` to turn it off, or
+//! `SOFTSTEP_METER_LOG=<path>` to write it elsewhere.
+//!
 //! Restores standalone mode on exit -- Ctrl-C (via `tether::arm`'s signal thread) or
 //! `q` + Enter (via `TetherSession`'s `Drop`) -- exactly like the drumkit runtime.
 //!
@@ -27,9 +40,9 @@
 //! Set SOFTSTEP_METER_SILENT=1 for a silent meter. Launch under `pw-jack` so that
 //! sample shares the sound card via PipeWire.
 
-// `set_debounce_by_label` / `DebounceMode::Settle` are used by the drumkit runtime to
-// give timing pedals an aggressive settle debounce; the meter shares this decoder verbatim
-// but shows every pad raw, so it never sets a per-pad mode -- hence the allow.
+// The meter now uses the debounce controls (the treatment toggle drives
+// `set_all_debounce`), but it still leaves other decoder internals (`is_hard`, the
+// per-label `set_debounce_by_label`) unexercised, so the allow stays.
 #[path = "drumkit_runtime/decode.rs"]
 #[allow(dead_code)]
 mod decode;
@@ -41,7 +54,8 @@ mod decode;
 mod tether;
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead, Write};
+use std::fs::File;
+use std::io::{self, BufRead, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -52,7 +66,9 @@ use midir::{MidiInput, MidiInputPort};
 use midi_pulse::midi;
 use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
-use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecoder, NUM_PADS};
+use decode::{
+  collect_control_changes, gain_from_pressure, DebounceMode, DrumEvent, TetherDecoder, NUM_PADS,
+};
 
 /// Printed label -> base CC of that pad's 4 sensors, in printed-board order (1..9,
 /// then 0). Mirrors decode.rs's private `SLOT_LABEL` / the Python meter's
@@ -89,6 +105,64 @@ const AUDITION_SAMPLE: &str = "snare.wav";
 // --------------------------------------------------------------------------------
 // Pure, hardware-free logic (unit tested below).
 // --------------------------------------------------------------------------------
+
+/// A debounce treatment the meter applies to every pad at once, so you can stomp a pad
+/// and feel each policy. Mirrors `decode::DebounceMode`, but as a small user-facing menu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Treatment {
+  /// The everyday fire-on-onset behaviour, with the attack window and the min-gap guard.
+  Standard,
+  /// The aggressive two-condition guard the timing pedals use in the real rig.
+  Settle,
+}
+
+/// Every treatment, in the order the banner lists them. A treatment's 1-based position
+/// here is the number key that selects it, so adding one here adds its banner entry and
+/// its key with no other change.
+const TREATMENTS: [Treatment; 2] = [Treatment::Standard, Treatment::Settle];
+
+impl Treatment {
+  fn name(self) -> &'static str {
+    match self {
+      Treatment::Standard => "standard",
+      Treatment::Settle => "settle",
+    }
+  }
+
+  /// The number key that selects this treatment: its 1-based position in `TREATMENTS`.
+  fn key(self) -> char {
+    let i = TREATMENTS.iter().position(|&t| t == self).unwrap_or(0);
+    char::from(b'1' + i as u8)
+  }
+
+  /// The decoder debounce mode for this treatment, filled from softstep.toml.
+  fn mode(self, params: &SoftstepParams) -> DebounceMode {
+    match self {
+      Treatment::Standard => DebounceMode::Standard,
+      Treatment::Settle => DebounceMode::Settle {
+        since_fire: Duration::from_millis(params.factor_settle_ms),
+        quiet: Duration::from_millis(params.factor_release_ms),
+      },
+    }
+  }
+
+  /// Parse a typed line into a treatment. It accepts the number key or the full name, in
+  /// any case; anything else (including `q`) returns `None`.
+  fn from_input(line: &str) -> Option<Treatment> {
+    let s = line.trim().to_ascii_lowercase();
+    TREATMENTS.iter().copied().find(|t| s == t.key().to_string() || s == t.name())
+  }
+}
+
+/// The one-line banner: which treatment is live, and the key for each. Reads, e.g.,
+/// `pedal treatment (current: SETTLE):  press 1 + Enter for standard,  press 2 + ...`.
+fn treatment_banner(current: Treatment) -> String {
+  let opts: Vec<String> = TREATMENTS
+    .iter()
+    .map(|&t| format!("press {} + Enter for {}", t.key(), t.name()))
+    .collect();
+  format!("pedal treatment (current: {}):  {}", current.name().to_uppercase(), opts.join(",  "))
+}
 
 /// What a pad does when struck. The meter has no per-pad sample bank (unlike the
 /// drumkit); a "hit" is identified by its printed label only.
@@ -307,6 +381,103 @@ fn present_boards() -> Vec<(&'static str, &'static str)> {
     .collect()
 }
 
+/// The on-disk cap: 1 MB, which is ~17k events -- far more than any real diagnostic run.
+/// Past it the transcript keeps the most RECENT lines (nearest whatever you are chasing)
+/// and drops the oldest, so a long session never grows the file without bound.
+const LOG_CAP_BYTES: u64 = 1_000_000;
+
+/// A timestamped transcript of hit events, so a run can be reviewed after the fact -- the
+/// on-screen log keeps only the last 8 lines and is wiped on every redraw, so nothing
+/// survives the session without this. ON by default; `SOFTSTEP_METER_NO_LOG` disables it
+/// (see `from_env`). Every line is prefixed with milliseconds since the meter started,
+/// which is what makes a too-close pair of hits (the phasing you can hear) visible as a
+/// small gap. Capped at `LOG_CAP_BYTES`, keeping the tail. Cloneable: each board's poll
+/// thread and the stdin thread hold a handle onto the one shared file.
+#[derive(Clone)]
+struct Logger {
+  inner: Arc<Mutex<LogInner>>,
+  epoch: Instant,
+}
+
+/// The open file plus a mirror of its current lines and byte total, so the log can be
+/// trimmed to its tail (on hitting the cap) without re-reading the disk.
+struct LogInner {
+  file: File,
+  lines: VecDeque<String>,
+  bytes: u64,
+}
+
+/// Drop oldest lines until the retained bytes fit the cap, keeping the tail. Trims only
+/// once actually over `cap`, and then all the way to `cap / 2`, so appends between trims
+/// stay O(1) (amortised) rather than trimming on every line at the ceiling. Returns whether
+/// it removed anything, i.e. whether the caller must rewrite the file from `lines`. Pure.
+fn trim_to_cap(lines: &mut VecDeque<String>, bytes: &mut u64, cap: u64) -> bool {
+  if *bytes <= cap {
+    return false;
+  }
+  while *bytes > cap / 2 {
+    match lines.pop_front() {
+      Some(front) => *bytes -= front.len() as u64,
+      None => break,
+    }
+  }
+  true
+}
+
+impl Logger {
+  /// Open (truncating) the transcript. ON by default, to `softstep_meter.log` in the
+  /// working directory. `SOFTSTEP_METER_NO_LOG` turns it off; `SOFTSTEP_METER_LOG=<path>`
+  /// relocates it (an empty value or `"1"` keeps the default name). Returns `None` when
+  /// disabled or when the file cannot be opened -- logging is best-effort and never stops
+  /// the meter.
+  fn from_env(epoch: Instant) -> Option<Logger> {
+    if std::env::var_os("SOFTSTEP_METER_NO_LOG").is_some() {
+      println!("  transcript: OFF (SOFTSTEP_METER_NO_LOG set)");
+      return None;
+    }
+    let path = match std::env::var("SOFTSTEP_METER_LOG") {
+      Ok(v) if !v.is_empty() && v != "1" => v,
+      _ => "softstep_meter.log".to_string(),
+    };
+    match File::create(&path) {
+      Ok(file) => {
+        println!(
+          "  transcript: logging every hit to {path:?} (capped at 1 MB, keeps the tail; \
+           SOFTSTEP_METER_NO_LOG disables; SOFTSTEP_METER_LOG=<path> relocates)"
+        );
+        let inner = LogInner { file, lines: VecDeque::new(), bytes: 0 };
+        Some(Logger { inner: Arc::new(Mutex::new(inner)), epoch })
+      }
+      Err(e) => {
+        eprintln!("  transcript: could not open {path:?}: {e} -- continuing without a log");
+        None
+      }
+    }
+  }
+
+  /// Append one timestamped line, then flush so a transcript survives a `kill`. When the
+  /// file passes the 1 MB cap, drop the oldest lines and rewrite it from the retained tail.
+  /// Best-effort: any I/O error is swallowed rather than crashing the meter.
+  fn line(&self, msg: &str) {
+    let ms = self.epoch.elapsed().as_secs_f64() * 1000.0;
+    let text = format!("{ms:>10.1}ms  {msg}\n");
+    let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+    let g = &mut *guard;
+    let _ = g.file.write_all(text.as_bytes());
+    g.bytes += text.len() as u64;
+    g.lines.push_back(text);
+    if trim_to_cap(&mut g.lines, &mut g.bytes, LOG_CAP_BYTES) {
+      // Rewrite the whole file from the retained tail, so on disk it never exceeds the cap.
+      let _ = g.file.set_len(0);
+      let _ = g.file.seek(SeekFrom::Start(0));
+      for l in &g.lines {
+        let _ = g.file.write_all(l.as_bytes());
+      }
+    }
+    let _ = g.file.flush();
+  }
+}
+
 /// One board's live meter: its display state, its poll thread, and the MIDI connection
 /// kept alive for the run.
 struct Board {
@@ -314,6 +485,8 @@ struct Board {
   state: Arc<Mutex<MeterState>>,
   stop: Arc<AtomicBool>,
   poll: thread::JoinHandle<()>,
+  /// The board's live decoder, so the treatment toggle can re-arm every pad on it.
+  decoder: Arc<Mutex<TetherDecoder>>,
   _conn: midir::MidiInputConnection<()>,
 }
 
@@ -325,6 +498,7 @@ fn start_board(
   label: &str,
   params: SoftstepParams,
   audio_on: bool,
+  logger: Option<Logger>,
   session: &tether::TetherSession,
 ) -> Result<Board, String> {
   session.enter(substring).map_err(|e| format!("tether {label}: {e}"))?;
@@ -371,16 +545,18 @@ fn start_board(
 
   let stop = Arc::new(AtomicBool::new(false));
   let poll = {
+    let decoder = Arc::clone(&decoder);
     let state = Arc::clone(&state);
     let stop = Arc::clone(&stop);
+    let board = label.to_string();
     thread::Builder::new()
       .name(format!("softstep-meter-poll-{substring}"))
-      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on))
+      .spawn(move || run_poll_loop(decoder, state, stop, params.gain_db_range, audio_on, board, logger))
       .map_err(|e| e.to_string())?
   };
 
   println!("  bound {label}: {port_name:?}");
-  Ok(Board { label: label.to_string(), state, stop, poll, _conn: conn })
+  Ok(Board { label: label.to_string(), state, stop, poll, decoder, _conn: conn })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -419,7 +595,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     println!("  audio audition OFF (SOFTSTEP_METER_SILENT set): silent meter.");
   }
-  println!("  keys: q + Enter quits (Ctrl-C also restores standalone mode)\n");
+  // A transcript (opt-in via SOFTSTEP_METER_LOG) with one timestamped line per event, so a
+  // run can be reviewed afterwards -- the on-screen log is wiped on every redraw.
+  let epoch = Instant::now();
+  let logger = Logger::from_env(epoch);
+  println!("  keys: a treatment number, or q, + Enter (Ctrl-C also restores standalone mode)\n");
 
   // Arm Ctrl-C/SIGTERM restoration FIRST, before any MIDI/poll thread spawns, so the
   // signal block is inherited by all of them. One session covers every board.
@@ -427,7 +607,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let mut boards: Vec<Board> = Vec::new();
   for (substring, label) in &targets {
-    match start_board(substring, label, params, audio_on, &session) {
+    match start_board(substring, label, params, audio_on, logger.clone(), &session) {
       Ok(board) => boards.push(board),
       Err(e) => eprintln!("  skipped a board: {e}"),
     }
@@ -438,15 +618,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   println!();
 
   let quit = Arc::new(AtomicBool::new(false));
+  // The live treatment, shared by the stdin thread (writes) and the draw loop (reads). It
+  // starts on `standard`, which is what every decoder is already built with.
+  let treatment = Arc::new(Mutex::new(Treatment::Standard));
+  if let Some(log) = &logger {
+    log.line("TREATMENT -> standard (initial)");
+  }
   {
     let quit = Arc::clone(&quit);
+    let treatment = Arc::clone(&treatment);
+    let logger = logger.clone();
+    // Each board's decoder, so a treatment switch re-arms every pad on every board.
+    let decoders: Vec<Arc<Mutex<TetherDecoder>>> =
+      boards.iter().map(|b| Arc::clone(&b.decoder)).collect();
     thread::spawn(move || {
       let stdin = io::stdin();
       for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
-        if matches!(line.trim(), "q" | "Q" | "quit") {
+        let cmd = line.trim();
+        if matches!(cmd, "q" | "Q" | "quit") {
           quit.store(true, Ordering::SeqCst);
           break;
+        }
+        if let Some(t) = Treatment::from_input(cmd) {
+          *treatment.lock().unwrap_or_else(|e| e.into_inner()) = t;
+          let mode = t.mode(&params);
+          for dec in &decoders {
+            dec.lock().unwrap_or_else(|e| e.into_inner()).set_all_debounce(mode);
+          }
+          if let Some(log) = &logger {
+            log.line(&format!("TREATMENT -> {}", t.name()));
+          }
         }
       }
     });
@@ -454,7 +656,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let start = Instant::now();
   while !quit.load(Ordering::SeqCst) {
-    draw(&boards, start, params, audio_on);
+    let current = *treatment.lock().unwrap_or_else(|e| e.into_inner());
+    draw(&boards, start, params, audio_on, current);
     thread::sleep(DRAW_TICK);
   }
 
@@ -482,6 +685,8 @@ fn run_poll_loop(
   stop: Arc<AtomicBool>,
   db_range: f32,
   audio_on: bool,
+  board: String,
+  logger: Option<Logger>,
 ) {
   let mut events: Vec<DrumEvent> = Vec::with_capacity(8);
   while !stop.load(Ordering::Relaxed) {
@@ -498,6 +703,11 @@ fn run_poll_loop(
     for event in &events {
       match *event {
         DrumEvent::Fire { label, pressure, .. } => {
+          // The transcript's most important line: a FIRE with its timestamp, so a
+          // too-close pair (the phasing you can hear) shows up as a small gap.
+          if let Some(log) = &logger {
+            log.line(&format!("{board:>18}  FIRE     pad {label}  pressure {pressure:.3}"));
+          }
           // Every detected hit brings its pad to the top of the two-pad meter and
           // advances that pad's running count (ditto no-ops included -- the pad WAS
           // struck), before we resolve ditto / message / audition below.
@@ -526,6 +736,9 @@ fn run_poll_loop(
           }
         }
         DrumEvent::Revise { label, pressure, .. } => {
+          if let Some(log) = &logger {
+            log.line(&format!("{board:>18}  revise   pad {label}  pressure {pressure:.3}"));
+          }
           let kind = pad_kind(label);
           let last_hit = st.last_hit;
           if let Some(gain) = resolve_revise(kind, &last_hit, pressure, db_range) {
@@ -533,7 +746,13 @@ fn run_poll_loop(
             st.pads[label as usize].last_gain = gain;
           }
         }
-        DrumEvent::Release { .. } => {} // one-shot display; the drumkit's samples ignore this too
+        DrumEvent::Release { label } => {
+          // One-shot display (the drumkit's samples ignore Release too); logged only so a
+          // transcript shows the full press/lift envelope in Standard mode.
+          if let Some(log) = &logger {
+            log.line(&format!("{board:>18}  release  pad {label}"));
+          }
+        }
       }
     }
   }
@@ -543,7 +762,7 @@ fn run_poll_loop(
 /// Every connected board gets its own labelled section; within each, the two
 /// most-recently-struck pads, newest first, each as four sensor bars then their sum
 /// bar, with the top pad's running hit-count, its last-hit line, and its event log.
-fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool) {
+fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool, treatment: Treatment) {
   let now = Instant::now();
   let now_secs = now.duration_since(start).as_secs_f64();
   let silence = Duration::from_millis(params.silence_to_zero_ms);
@@ -552,6 +771,7 @@ fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool
     String::new(),
     "  SoftStep pressure meter (Rust) -- the last two pads struck, newest on top;".to_string(),
     "  each shows its 4 sensors then their sum -- bar (peak-hold |), value, recent max; pad 3 = ditto.".to_string(),
+    format!("  {}", treatment_banner(treatment)),
     "  keys: q + Enter quits (Ctrl-C also restores standalone mode)".to_string(),
   ];
 
@@ -885,6 +1105,72 @@ mod tests {
     sensors[3] = 42;
     let last_seen: [Option<Instant>; 40] = [None; 40]; // never seen, but silence=0 disables de-stick
     assert_eq!(interp_shadow(&sensors, &last_seen, 3, now0, Duration::ZERO), 42);
+  }
+
+  // ---- pedal treatment toggle ----
+
+  #[test]
+  fn treatment_from_input_accepts_a_number_or_a_name_in_any_case() {
+    assert_eq!(Treatment::from_input("1"), Some(Treatment::Standard));
+    assert_eq!(Treatment::from_input("2"), Some(Treatment::Settle));
+    assert_eq!(Treatment::from_input("standard"), Some(Treatment::Standard));
+    assert_eq!(Treatment::from_input("  SETTLE  "), Some(Treatment::Settle), "trims and lowercases");
+    assert_eq!(Treatment::from_input("q"), None, "quit is not a treatment");
+    assert_eq!(Treatment::from_input("3"), None, "there is no third treatment yet");
+    assert_eq!(Treatment::from_input(""), None);
+  }
+
+  #[test]
+  fn treatment_keys_follow_their_position_and_round_trip() {
+    assert_eq!(Treatment::Standard.key(), '1');
+    assert_eq!(Treatment::Settle.key(), '2');
+    for &t in &TREATMENTS {
+      assert_eq!(Treatment::from_input(&t.key().to_string()), Some(t), "{t:?} round-trips via its key");
+    }
+  }
+
+  #[test]
+  fn treatment_maps_to_the_matching_decoder_mode() {
+    let params =
+      SoftstepParams { factor_settle_ms: 150, factor_release_ms: 25, ..SoftstepParams::default() };
+    assert_eq!(Treatment::Standard.mode(&params), DebounceMode::Standard);
+    assert_eq!(
+      Treatment::Settle.mode(&params),
+      DebounceMode::Settle {
+        since_fire: Duration::from_millis(150),
+        quiet: Duration::from_millis(25),
+      },
+    );
+  }
+
+  #[test]
+  fn trim_to_cap_leaves_a_short_log_alone() {
+    let mut lines: VecDeque<String> = ["a\n", "b\n", "c\n"].iter().map(|s| s.to_string()).collect();
+    let mut bytes = 6;
+    assert!(!trim_to_cap(&mut lines, &mut bytes, 1000), "under the cap: no trim");
+    assert_eq!(lines.len(), 3);
+    assert_eq!(bytes, 6);
+  }
+
+  #[test]
+  fn trim_to_cap_drops_the_oldest_and_keeps_the_tail_under_half() {
+    // 100 four-byte lines "000\n".."099\n" = 400 bytes; a 100-byte cap trims to <= 50.
+    let mut lines: VecDeque<String> = (0..100u32).map(|i| format!("{i:03}\n")).collect();
+    let mut bytes = 400;
+    assert!(trim_to_cap(&mut lines, &mut bytes, 100), "over the cap trims");
+    assert!(bytes <= 50, "trims down to at most cap/2: {bytes}");
+    assert_eq!(bytes as usize, lines.iter().map(|s| s.len()).sum::<usize>(), "byte total stays consistent");
+    assert_eq!(lines.back().map(String::as_str), Some("099\n"), "keeps the newest line");
+    let oldest_kept: u32 = lines.front().unwrap().trim().parse().unwrap();
+    assert!(oldest_kept > 80, "the retained lines are the tail, not the head: oldest kept = {oldest_kept}");
+  }
+
+  #[test]
+  fn the_banner_names_the_current_treatment_and_every_key() {
+    let b = treatment_banner(Treatment::Settle);
+    assert!(b.contains("current: SETTLE"), "shows the live treatment: {b}");
+    assert!(b.contains("press 1 + Enter for standard"), "lists standard's key: {b}");
+    assert!(b.contains("press 2 + Enter for settle"), "lists settle's key: {b}");
   }
 
   #[test]
