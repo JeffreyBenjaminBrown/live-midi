@@ -349,12 +349,11 @@ sustained notes, so the LED cannot tell you which kind you are chasing. Both are
 Jeff's calls ("I'll understand").
 
 ** editing a note's factored pulse
-With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= pedals
-retune those notes' factored-pulse rate directly and leave the grid's tempo
-factor alone. With no note in edit mode, the same pedals move the tempo factor
-as usual. This edit duty is the PEDALS' only: the multipliers on the grid's
-upper-right pad always move the grid's tempo factor, edit mode or not -- the
-pad is a factor control, per the ask that brought it back.
+With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= --
+pedals and the matching buttons on its upper-right pad alike, they run the
+same code -- retune those notes' factored-pulse rate directly and leave the
+grid's tempo factor alone. With no note in edit mode, the same controls move
+the tempo factor as usual.
 
 - It applies to every edited note on that grid at once.
 - It multiplies, so notes whose factored pulse already runs at different rates

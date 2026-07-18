@@ -1442,20 +1442,25 @@ fn handle_key(
   }
   // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only. The tap sets the
   // GLOBAL tempo; the tempo-factor buttons and the =1 factored-pulse switch act on
-  // THIS grid.
+  // THIS grid, through the same `factored_pulse_press` as the softstep pedals --
+  // so a multiplier retunes this grid's edit-mode notes exactly as a pedal would.
   if in_overlay(rt.poly_rect, cell) {
     if press {
       let (dx, dy) = (cell.0 - rt.poly_rect[0], cell.1 - rt.poly_rect[1]);
-      let now = Instant::now();
-      let mut p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
-      match (dx, dy) {
-        (2, 0) => p.tap(now, rt.tap_window),
-        (0, 0) => p.press(rt.grid_index, TempoFactorButton::Times3, now),
-        (1, 0) => p.press(rt.grid_index, TempoFactorButton::Times2, now),
-        (0, 1) => p.press(rt.grid_index, TempoFactorButton::Div3, now),
-        (1, 1) => p.press(rt.grid_index, TempoFactorButton::Div2, now),
-        (2, 1) => p.press(rt.grid_index, TempoFactorButton::Unity, now),
-        _ => {}
+      let factor = match (dx, dy) {
+        (2, 0) => {
+          rt.poly.lock().unwrap_or_else(|e| e.into_inner()).tap(Instant::now(), rt.tap_window);
+          None
+        }
+        (0, 0) => Some(TempoFactorButton::Times3),
+        (1, 0) => Some(TempoFactorButton::Times2),
+        (0, 1) => Some(TempoFactorButton::Div3),
+        (1, 1) => Some(TempoFactorButton::Div2),
+        (2, 1) => Some(TempoFactorButton::Unity),
+        _ => None,
+      };
+      if let Some(factor) = factor {
+        factored_pulse_press(rt.grid_index, factor, &rt.poly, &rt.edit, &rt.held_all, &rt.voices);
       }
     }
     return;
@@ -1923,6 +1928,49 @@ fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
   }
 }
 
+/// A tempo-factor press on `grid`, from EITHER surface -- a softstep pedal or the
+/// grid's own upper-right pad run exactly this, so hands and feet cannot diverge.
+/// What a multiplier acts on depends on the grid's edit state (1_vision "per-voice
+/// slow AM edit"): with notes in edit mode it retunes THOSE NOTES, leaving the
+/// grid's tempo factor alone; with none it moves the tempo factor.
+///
+/// =1 is never an edit control -- Jeff: "the only edit controls are (*) and (/),
+/// not (=)" -- so it always goes to the tempo-factor/switch dance.
+fn factored_pulse_press(
+  grid: usize,
+  factor: TempoFactorButton,
+  poly: &Arc<Mutex<PolyrhythmState>>,
+  edit: &Arc<Mutex<Vec<edit::EditState>>>,
+  held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
+  voices: &Arc<Mutex<VoiceMap>>,
+) {
+  let edited: HashSet<i32> = edit
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .get(grid)
+    .map(|e| e.pitches().collect())
+    .unwrap_or_default();
+  match tempo_factor_ratio(factor) {
+    Some(ratio) if !edited.is_empty() => {
+      // Multiply, don't set: "slower ones continue to be slower than faster
+      // ones". Applies to ALL edited notes at once -- the deliberate
+      // asymmetry against a pitch drag, which moves only the nearest (2d).
+      // `held` is needed because a fingered voice is keyed by its CELL, not
+      // its pitch; only a drone is keyed by pitch.
+      let held: HashMap<(i32, i32), i32> = held_all
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(grid)
+        .cloned()
+        .unwrap_or_default();
+      synth::scale_factored_pulse_rate(voices, grid, ratio, &edited, &held);
+    }
+    _ => {
+      poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
+    }
+  }
+}
+
 /// The hook for rig-declared pedal bindings: sustain, tap tempo, and the factored pulse.
 ///
 /// Unconditional, unlike the feet-accrete mirror -- no on-grid toggle gates it. Keyed
@@ -1959,38 +2007,9 @@ fn rig_pedal_hook(
       }
       PedalAction::FactoredPulse { grid, factor } => {
         if down {
-          // What a multiplier acts on depends on this grid's edit state (1_vision
-          // "per-voice slow AM edit"): with notes in edit mode it retunes THOSE
-          // NOTES, leaving the grid's tempo factor alone; with none it moves the
-          // tempo factor, exactly as the on-grid pad does.
-          //
-          // =1 is never an edit control -- Jeff: "the only edit controls are (*) and
-          // (/), not (=)" -- so it always goes to the tempo-factor/switch dance.
-          let edited: HashSet<i32> = edit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(grid)
-            .map(|e| e.pitches().collect())
-            .unwrap_or_default();
-          match tempo_factor_ratio(factor) {
-            Some(ratio) if !edited.is_empty() => {
-              // Multiply, don't set: "slower ones continue to be slower than faster
-              // ones". Applies to ALL edited notes at once -- the deliberate
-              // asymmetry against a pitch drag, which moves only the nearest (2d).
-              // `held` is needed because a fingered voice is keyed by its CELL, not
-              // its pitch; only a drone is keyed by pitch.
-              let held: HashMap<(i32, i32), i32> = held_all
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(grid)
-                .cloned()
-                .unwrap_or_default();
-              synth::scale_factored_pulse_rate(&voices, grid, ratio, &edited, &held);
-            }
-            _ => {
-              poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
-            }
-          }
+          // Shared with the on-grid pad's factor cells: edit-mode retune vs
+          // tempo-factor move, decided in one place (`factored_pulse_press`).
+          factored_pulse_press(grid, factor, &poly, &edit, &held_all, &voices);
         }
         true
       }
