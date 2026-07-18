@@ -118,6 +118,8 @@ impl SawNoteSink {
         sustain_env: self.sustain_env,
         decay_per_sample: self.decay_per_sample,
         timbre,
+        grid_gain: 1.0,
+        grid_gain_target: 1.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,

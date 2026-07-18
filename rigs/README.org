@@ -344,6 +344,7 @@ Built-in unbundled window kinds:
 - ~mono_toggle~
 - ~softstep_accretes_toggle~
 - ~tap_tempo_pad~
+- ~edit_delete_button~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -593,8 +594,9 @@ Built-in softstep window kinds:
 - ~accrete_control~
 - ~tap_tempo_pedal~
 - ~pulse_factor_pedal~
+- ~edit_delete_pedal~
 
-The last three bind ONE pedal each to a control that would otherwise cost grid
+All but the drumkit bind ONE pedal each to a control that would otherwise cost grid
 cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
 mirror, which hardcodes pedals 1/2/3 + 8/9/0 and only acts while an on-grid toggle
 is on. Every binding is stated in the rig rather than buried in the runtime:
@@ -625,15 +627,27 @@ factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
 
 A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
 with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
-~tap_tempo_pad~ does), and with notes in edit mode the multipliers retune those
-notes. ~unity~ is the ~=1~ switch and never retunes edit-mode notes.
+~tap_tempo_pad~'s factor cells do -- pad and pedal run the same code), and with
+notes in edit mode the multipliers retune those notes. ~unity~ is the ~=1~ switch
+and never retunes edit-mode notes.
+
+An ~edit_delete_pedal~ (one pedal, a ~monome~ with an ~edo_note_grid~, at most one
+per monome) deletes -- silences and ends, by the ordinary release ramp -- every
+DRONE at an edited pitch on that monome's grid. The pitches leave the grid's
+sustain bank and edit mode empties, so the grid plays again immediately. A
+fingered voice at an edited pitch does NOT end (a finger's voice is the finger's
+to end): it only loses its edit/sustain reasons, so it ends on the ordinary
+release when the finger lifts. The on-grid ~edit_delete_button~ (single cell, at
+most one per monome, dim at rest / bright while pressed) is the same control on
+the grid itself.
 
 Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
 the same device (including across kinds -- a pedal that is both a drum and a clear
 button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
 global, so there is one); two pedals giving the same monome the same ~factor~
 (different monomes may of course share a tempo factor -- that is the point of
-per-monome tempo factors); and a ~monome~ that is unknown or has no ~edo_note_grid~.
+per-monome tempo factors); two ~edit_delete_pedal~ windows for one monome; and a
+~monome~ that is unknown or has no ~edo_note_grid~.
 
 Pedals are addressed by their printed label (1..9, then 0). On start, the
 runtime puts the device into *tether (hosted) mode* via SysEx sent over ALSA
@@ -647,6 +661,37 @@ that pressure, not a fixed loudness. (Standalone mode -- Program Changes only,
 no velocity, lossy on simultaneous presses -- is why tether mode is used at
 all.) See [[../../../learnings/keith-mcmillen-softstep.org]] for the device
 protocol.
+
+* Expression pedals (EX-P volume)
+
+An optional top-level ~[[expression_pedals]]~ array (surfaces runtime) binds the
+M-Audio EX-P expression pedals as simple LINEAR volume pedals, one per monome.
+The pedals reach the runtime via the MPC-20 -> host bridge
+(~tools/pedals/bridge.py~, which must be running on the HOST; both pedals send
+CC 21, one per MIDI channel) -- NOT via the SoftSteps' own EX-P jacks, whose CC
+the decoder deliberately drops.
+
+#+begin_src toml
+[[expression_pedals]]
+channel = 1   # MPC-20 MIDI channel, 1 or 2
+monome = "a"  # whose grid volume this pedal drives; must have an edo_note_grid
+
+[[expression_pedals]]
+channel = 2
+monome = "b"
+#+end_src
+
+The pedal's reliable ~1..119 CC travel maps linearly to an amplitude factor
+0..1: full heel = silent, full toe = unity. It applies to the grid's sounding
+voices AND its future notes, multiplying below the timbre amplitude and the
+volume fader, and the engine slews each voice toward the pedal (~20 ms time
+constant, per sample), so sweeps are smooth rather than zipper-stepping at CC
+rate. The position is absolute (a pedal parked at 0 recovers), and until a
+pedal's first CC it contributes unity -- an unplugged pedal never mutes its
+grid. If the bridge's "MPC-20 pedals" port is missing at startup, the runtime
+prints a red note and plays on without them. Rejected at load: a channel
+outside 1..2, the same channel or the same monome claimed twice, and a monome
+with no ~edo_note_grid~.
 
 * Optional display
 

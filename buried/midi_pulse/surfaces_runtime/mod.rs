@@ -282,6 +282,9 @@ struct GridSettings {
   feet_accrete_rect: [i32; 4],
   /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
   poly_rect: [i32; 4],
+  /// The edit-delete button's cell, `NO_RECT` when absent: a momentary button
+  /// whose key-down deletes this grid's edit-mode voices.
+  edit_delete_rect: [i32; 4],
 }
 
 struct Settings {
@@ -334,6 +337,9 @@ struct Settings {
   /// startup red report of components that couldn't load stays on screen instead of
   /// scrolling away under key echoes as you play.
   echo_input: bool,
+  /// The EX-P volume pedals (`[[expression_pedals]]`), resolved to
+  /// `(pedal index = MPC-20 channel - 1, grid index)`.
+  expression_pedals: Vec<(usize, usize)>,
 }
 
 fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -491,6 +497,16 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let edit_delete_rect = rig
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowRig::EditDeleteButton { monome, rect, .. } if monome == monome_id => {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       select: monome_cfg.select.clone(),
@@ -511,6 +527,7 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
       mono_rect,
       feet_accrete_rect,
       poly_rect,
+      edit_delete_rect,
     });
   }
 
@@ -523,6 +540,19 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
 
   // The `[surfaces]` table (trail knobs); absent -> defaults, so unchanged behaviour.
   let surfaces = rig.surfaces.unwrap_or_default();
+
+  // The EX-P volume pedals, by grid index (= position in `grids`). Validation
+  // already pinned channel to 1|2 and the monome to a play grid.
+  let expression_pedals = rig
+    .expression_pedals
+    .iter()
+    .filter_map(|p| {
+      grids
+        .iter()
+        .position(|g| g.monome_id == p.monome)
+        .map(|grid| (p.channel as usize - 1, grid))
+    })
+    .collect();
 
   Ok(Settings {
     grids,
@@ -557,6 +587,7 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
     slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
     tap_window: Duration::from_millis(surfaces.tap_tempo_window_ms),
     echo_input: rig.echo_input,
+    expression_pedals,
   })
 }
 
@@ -838,6 +869,17 @@ fn run(
   if plan.any_grid() && !no_audio {
     pulse_window::spawn(Arc::clone(&poly), num_grids);
   }
+  // The EX-P volume pedals' per-grid gains: unity until a pedal first moves. The
+  // pedal thread writes them (and re-aims sounding voices); note-ons read them
+  // through each grid's SurfaceSink. `no_audio` gates the thread like the cpal
+  // stream -- a headless/mock run must not open MIDI connections.
+  let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; num_grids]));
+  if !s.expression_pedals.is_empty() && !no_audio {
+    let map = s.expression_pedals.clone();
+    let voices_for_pedals = Arc::clone(&voices);
+    let gains = Arc::clone(&pedal_gains);
+    thread::spawn(move || expression_pedal_loop(map, voices_for_pedals, gains));
+  }
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -1011,6 +1053,8 @@ fn run(
       mono_rect: g.mono_rect,
       feet_accrete_rect: g.feet_accrete_rect,
       poly_rect: g.poly_rect,
+      edit_delete_rect: g.edit_delete_rect,
+      edit_delete_down: false,
       grid_w: s.grid_w,
       grid_h: s.grid_h,
       x_step: s.x_step,
@@ -1051,6 +1095,7 @@ fn run(
         s.release,
         s.sustain_level,
         s.decay_secs,
+        Arc::clone(&pedal_gains),
       ),
     };
     handles.push(thread::spawn(move || grid_thread(rt)));
@@ -1116,6 +1161,10 @@ struct GridThread {
   feet_accrete_rect: [i32; 4],
   /// The polyrhythm pad's rect on this grid (`NO_RECT` if absent).
   poly_rect: [i32; 4],
+  /// The edit-delete button's cell (`NO_RECT` if absent), and whether it is
+  /// physically down right now (it lights while pressed, like accrete's clear).
+  edit_delete_rect: [i32; 4],
+  edit_delete_down: bool,
   grid_w: i32,
   grid_h: i32,
   x_step: i32,
@@ -1262,6 +1311,8 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.slide_rect, &rt.slide_on));
     buttons.push(toggle(rt.mono_rect, &rt.mono_on));
     buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
+    // The edit-delete button: dim at rest (findable), bright while pressed.
+    buttons.push((rt.edit_delete_rect, button_level(rt.edit_delete_down)));
     if rt.poly_rect != NO_RECT {
       // The pad's six cells, all per-THIS-grid state: the tempo-factor cells show
       // which way this grid's tempo factor leans; =1 shows this grid's
@@ -1437,6 +1488,17 @@ fn handle_key(
   if in_overlay(rt.feet_accrete_rect, cell) {
     if press {
       let _ = rt.feet_accrete_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
+    }
+    return;
+  }
+  // The edit-delete button: key-down deletes -- silences and ends -- every voice in
+  // edit mode on THIS grid, through the same `delete_edited` the softstep pedal
+  // runs. Key-up only douses the LED (lit while pressed, like accrete's clear).
+  if in_overlay(rt.edit_delete_rect, cell) {
+    rt.edit_delete_down = press;
+    if press {
+      let (release_secs, sample_rate) = rt.sink.release_params();
+      delete_edited(rt.grid_index, &rt.edit, &rt.accrete, &rt.voices, release_secs, sample_rate);
     }
     return;
   }
@@ -1879,6 +1941,7 @@ enum PedalAction {
   Accrete { grid: usize, control: AccreteControlKind },
   Tap,
   FactoredPulse { grid: usize, factor: TempoFactorButton },
+  EditDelete { grid: usize },
 }
 
 /// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
@@ -1907,6 +1970,9 @@ fn rig_pedal_actions(
           (*pedal, PedalAction::FactoredPulse { grid, factor })
         })
       }
+      SoftstepWindowRig::EditDeletePedal { pedal, monome, .. } => {
+        grid_of(monome).map(|grid| (*pedal, PedalAction::EditDelete { grid }))
+      }
       SoftstepWindowRig::Drumkit { .. } => None,
     };
     if let Some((pedal, action)) = action {
@@ -1926,6 +1992,88 @@ fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
     TempoFactorButton::Div3 => Some(1.0 / 3.0),
     TempoFactorButton::Unity => None,
   }
+}
+
+/// The EX-P volume-pedal thread: poll the MPC-20 bridge reader (~100 Hz) and aim
+/// each mapped grid at its pedal's position. Linear: the pedal's reliable ~1..119
+/// CC travel normalizes to an amplitude factor 0..1 (full heel = silent, full toe
+/// = unity; `expression_pedals::normalize`). The per-sample slew that keeps a
+/// sweep from zippering lives in the engine (`voices::GAIN_SLEW_SECS`) -- this
+/// thread only moves TARGETS: the shared per-grid gain (for future note-ons) and
+/// every sounding voice's `grid_gain_target`. A pedal that has never moved
+/// contributes unity, so an unplugged pedal cannot mute its grid. A missing
+/// bridge is a red report, not an error: the instrument plays on without pedals,
+/// like any other absent gear.
+fn expression_pedal_loop(
+  map: Vec<(usize, usize)>,
+  voices: Arc<Mutex<VoiceMap>>,
+  pedal_gains: Arc<Mutex<Vec<f32>>>,
+) {
+  use midi_pulse::expression_pedals::{PedalReader, DEFAULT_PORT, NUM_PEDALS};
+  let reader = match PedalReader::connect(DEFAULT_PORT) {
+    Ok(r) => r,
+    Err(e) => {
+      eprintln!("\x1b[1;31mexpression pedals skipped: {e}\x1b[0m");
+      return;
+    }
+  };
+  println!("expression pedals: connected to {:?}", reader.port_name());
+  let mut last = [f32::NAN; NUM_PEDALS];
+  while !STOP.load(Ordering::SeqCst) {
+    let pedals = reader.pedals();
+    for &(pedal, grid) in &map {
+      let p = pedals[pedal];
+      // No CC yet = no position to trust; keep unity rather than muting the grid.
+      if p.updates == 0 || last[pedal] == p.norm {
+        continue;
+      }
+      last[pedal] = p.norm;
+      if let Some(g) = pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).get_mut(grid) {
+        *g = p.norm;
+      }
+      synth::set_grid_pedal_gain(&voices, grid, p.norm);
+    }
+    thread::sleep(Duration::from_millis(10));
+  }
+}
+
+/// The edit-delete control on `grid`, from EITHER surface -- a softstep pedal or
+/// the grid's own button run exactly this. Delete = silence and end, by the
+/// ordinary release ramp, exactly how every voice ends: every DRONE at an edited
+/// pitch on this grid rings out, those pitches leave the grid's sustain bank (a
+/// deleted note must not keep painting as sustained or re-drone on the next
+/// touch), and edit mode is left empty, so the grid plays again immediately. A
+/// FINGERED voice at an edited pitch does not end -- a finger's voice is the
+/// finger's to end (the exit gesture's rule) -- it only loses its edit/sustain
+/// reasons here, so it ends on the ordinary release when the finger lifts. One
+/// lock at a time, per the module's rule.
+fn delete_edited(
+  grid: usize,
+  edit: &Arc<Mutex<Vec<edit::EditState>>>,
+  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  voices: &Arc<Mutex<VoiceMap>>,
+  release_secs: f32,
+  sample_rate: f32,
+) {
+  let edited: HashSet<i32> = {
+    let mut states = edit.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(e) = states.get_mut(grid) else { return };
+    let pitches: HashSet<i32> = e.pitches().collect();
+    e.clear();
+    pitches
+  };
+  if edited.is_empty() {
+    return;
+  }
+  {
+    let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(bank) = banks.get_mut(grid) {
+      for &pitch in &edited {
+        bank.drop_pitch(pitch);
+      }
+    }
+  }
+  synth::end_edited_drones(voices, grid, &edited, release_secs, sample_rate);
 }
 
 /// A tempo-factor press on `grid`, from EITHER surface -- a softstep pedal or the
@@ -2010,6 +2158,13 @@ fn rig_pedal_hook(
           // Shared with the on-grid pad's factor cells: edit-mode retune vs
           // tempo-factor move, decided in one place (`factored_pulse_press`).
           factored_pulse_press(grid, factor, &poly, &edit, &held_all, &voices);
+        }
+        true
+      }
+      PedalAction::EditDelete { grid } => {
+        if down {
+          // Shared with the on-grid edit-delete button (`delete_edited`).
+          delete_edited(grid, &edit, &accrete, &voices, release_secs, sample_rate);
         }
         true
       }
@@ -2654,6 +2809,7 @@ mod tests {
       mono_rect: NO_RECT,
       feet_accrete_rect: NO_RECT,
       poly_rect: NO_RECT,
+      edit_delete_rect: NO_RECT,
     }
   }
 
@@ -2932,8 +3088,9 @@ mod tests {
       assert_eq!(factors, want, "monome {monome} needs all five factored-pulse controls");
     }
 
-    // The grids carry ONLY the three overlays (the factored-pulse pad came back by
-    // request after 2_discussion 2f pared the grids down); everything else is a note.
+    // The grids carry ONLY these overlays (the factored-pulse pad and edit-delete
+    // button came back / arrived by request after 2_discussion 2f pared the grids
+    // down); everything else is a note.
     let kinds: Vec<&str> = rig.monome_windows.iter().map(|w| w.kind_name()).collect();
     assert_eq!(
       kinds,
@@ -2942,13 +3099,45 @@ mod tests {
         "waveform_selector",
         "edo_shift_pad",
         "tap_tempo_pad",
+        "edit_delete_button",
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
-        "tap_tempo_pad"
+        "tap_tempo_pad",
+        "edit_delete_button"
       ],
       "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
     );
+
+    // The edit-delete controls: OSS pedal 7 -> grid a, pedal 9 -> grid b (left
+    // pedal, left grid), and each grid's own button at (12,0), beside the pad's x3.
+    let deletes: Vec<(u8, &str)> = rig
+      .softstep_windows
+      .iter()
+      .filter_map(|w| match w {
+        SoftstepWindowRig::EditDeletePedal { pedal, monome, softstep, .. } => {
+          assert_eq!(softstep, "old", "edit-delete lives on the old board");
+          Some((*pedal, monome.as_str()))
+        }
+        _ => None,
+      })
+      .collect();
+    assert_eq!(deletes, [(7, "a"), (9, "b")]);
+    for monome in ["a", "b"] {
+      let rect = rig.monome_windows.iter().find_map(|w| match w {
+        MonomeWindowRig::EditDeleteButton { monome: m, rect, .. } if m == monome => Some(*rect),
+        _ => None,
+      });
+      assert_eq!(rect, Some([12, 0, 12, 0]), "monome {monome}'s edit-delete button");
+    }
+
+    // The EX-P volume pedals: MPC-20 channel 1 -> grid a, channel 2 -> grid b,
+    // resolving to pedal indices 0/1 on grid indices 0/1.
+    let pedals: Vec<(u8, &str)> =
+      rig.expression_pedals.iter().map(|p| (p.channel, p.monome.as_str())).collect();
+    assert_eq!(pedals, [(1, "a"), (2, "b")]);
+    let s = resolve_settings(&rig).expect("resolves");
+    assert_eq!(s.expression_pedals, [(0, 0), (1, 1)]);
 
     // And it must resolve, not merely parse.
     resolve_settings(&rig).expect("the shipped rig resolves to Settings");
@@ -2989,8 +3178,11 @@ mod tests {
       at("old", 5),
       Some(PedalAction::Accrete { grid: 1, control: AccreteControlKind::Clear }),
     );
-    // Pedal 8 held the retired tap tempo; it and the other gaps are now all free.
-    for free in [3, 6, 7, 8, 9, 0] {
+    // Edit-delete: pedal 7 -> the left grid, pedal 9 -> the right (left/right rule).
+    assert_eq!(at("old", 7), Some(PedalAction::EditDelete { grid: 0 }));
+    assert_eq!(at("old", 9), Some(PedalAction::EditDelete { grid: 1 }));
+    // Pedal 8 held the retired tap tempo; it and the other gaps are free.
+    for free in [3, 6, 8, 0] {
       assert_eq!(at("old", free), None, "old pedal {free} is deliberately unbound");
     }
 
@@ -3097,7 +3289,7 @@ mod tests {
 
     // A finger goes down: a voice sounds, and held_all carries it (what the grid
     // thread publishes on note-on, and what the pedal hook reads).
-    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     sink.note_on((3, 3), 20, Timbre::default(), None);
     held_all.lock().unwrap()[0].insert((3, 3), 20);
 
@@ -3135,7 +3327,7 @@ mod tests {
 
     // Two notes, both sustained on grid 0 (Jeff: "press two buttons, sustain them
     // both"), and one of them put into edit mode.
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
@@ -3393,8 +3585,8 @@ mod tests {
     feet_on[1].store(true, Ordering::Relaxed);
     assert!(hook("feet", 0, true), "pedal 0 = grid 1's accrete, now consumed");
     hook("feet", 0, false);
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
-    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     a.note_on((5, 5), 20, Timbre::default(), None);
     a.sustain_note((5, 5), 20);
     b.note_on((6, 6), 31, Timbre::default(), None);
