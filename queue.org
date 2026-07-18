@@ -39,7 +39,11 @@ the first two, they change behavior you already had:
   yesterday's =edit_delete_*= kinds are gone. The erase pedal (unbound in
   this rig) still erases fingered notes only -- extending it to edited ones
   seemed out of scope; say the word.
-* TODO merge branch 2 into this
+* DONE merge branch 2 into this
+** DONE claude (2026-07-18): merged clean, no conflicts (branch 2 had already
+merged this line, so its drag-retrigger work -- the pluck re-strike and the
+dip-to-silence two-stage accent, VoiceState.pending_attack -- applied on top
+without touching our editmode/pedal changes). Full suite green (697 tests).
 * DONE refactor and investigate with an eye to safety
 Could any names be clearer?
 Could the code and/or documentation be better organized? Deduplicated?

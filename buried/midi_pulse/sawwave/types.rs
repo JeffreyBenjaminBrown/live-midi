@@ -171,6 +171,13 @@ pub struct VoiceState {
   pub env:             f32,
   pub target_env:      f32,
   pub ramp_per_sample: f32,
+  // A drag's two-stage retrigger. While `Some(attack_ramp)`, this voice is ramping DOWN
+  // to silence (its `target_env` is 0), and the instant `env` reaches 0 the engine
+  // launches an attack toward the peak at `attack_ramp` INSTEAD of reaping the voice --
+  // so a drag dips to silence then re-strikes. `None` for every other voice; nothing
+  // else changes. Cleared on release (note_off), so a finger lifting mid-dip does not
+  // re-strike.
+  pub pending_attack:  Option<f32>,
   // The pluck decay (see above): the level the envelope settles at after the
   // attack peak, and the per-full-rate-sample retention of the distance to it.
   pub sustain_env:     f32,

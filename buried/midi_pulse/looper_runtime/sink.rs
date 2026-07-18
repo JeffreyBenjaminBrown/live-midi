@@ -107,6 +107,7 @@ impl SawNoteSink {
       voice_key(pitch),
       VoiceState {
         id,
+        pending_attack: None,
         freq: freq_for_pitch(pitch, self.fund, self.edo),
         freq_target: 0.0,
         glide_per_sample: 1.0,
