@@ -204,7 +204,7 @@ ambiguous middle column, here applied per grid.
 Terminology trap: this is called the factored pulse, never "slow AM" and never
 just "the pulse" (to avoid clobbering, say, PWM, or some other future use of
 that word). "Slow AM" already names a different, separate mechanism -- the
-timbre tremolo (=[[timbres]] am_depth= / =am_freq= / =am_shape=), which morphs
+timbre tremolo (=[[timbres]] am_depth= / =am_hz= / =am_shape=), which morphs
 a note's amplitude as part of its waveform, with its own configurable depth,
 rate, and shape. The factored pulse is a fixed unipolar triangle in =[0,1]= --
 always full swing, no depth knob -- driven by the fixed base tempo and a grid's

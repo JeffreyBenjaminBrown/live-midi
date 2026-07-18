@@ -572,8 +572,8 @@ fn resolve_timbre_slots(rig: &Rig) -> [TimbreSlot; SELECTOR_CELLS] {
         WaveformChoice::Saw => Waveform::Saw,
       },
       amplitude: t.amplitude,
-      am: Am { depth: t.am_depth, freq: t.am_freq, shape: t.am_shape },
-      fm: Fm { depth_cents: t.fm_depth_cents, freq: t.fm_freq },
+      am: Am { depth: t.am_depth, freq: t.am_hz, shape: t.am_shape },
+      fm: Fm { depth_cents: t.fm_depth_cents, freq: t.fm_hz },
     };
   }
   slots

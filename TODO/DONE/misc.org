@@ -184,8 +184,8 @@ They should all be commented to indicate reasonable value range.
 ** [Claude] done -- a top-level =[[timbres]]= array of exactly four entries
 The waveform strip's four cells now select configurable *timbres*, not bare
 waveforms. Each entry: =waveform= (accepts your spellings: sin, tri, square,
-saw), =amplitude= (default 1.0), and per-timbre =am_depth= / =am_freq= /
-=am_shape= / =fm_depth_cents= / =fm_freq=, all defaulting to off. The
+saw), =amplitude= (default 1.0), and per-timbre =am_depth= / =am_hz= /
+=am_shape= / =fm_depth_cents= / =fm_hz=, all defaulting to off. The
 surfaces toml ships with the four plain waveforms and a comment block giving
 each parameter's reasonable range, so nothing sounds different until you
 edit values. Volume-fader moves now rescale sounding notes by *ratio*, so a

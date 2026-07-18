@@ -48,11 +48,15 @@ per-voice edit gesture uses.
 *** PARAM y_step = 1
 *** PARAM fundamental_hz = 80
 ** timbres
-*** ELEM timbres
----------------------------------------------------------------------------
 The four selectable timbres behind each grid's waveform strip, left to right.
----------------------------------------------------------------------------
+*** ELEM timbres
 **** PARAM waveform = "sin"
+**** PARAM amplitude = 1.0     # > 1 can clip
+**** PARAM am_depth = 0.0      # 0 = off, 1 dips to silence
+**** PARAM am_hz = 1.0
+**** PARAM am_shape = 0.0      # 0 smooth .. 1 near-square
+**** PARAM fm_depth_cents = 0.0
+**** PARAM fm_hz = 1.0
 *** ELEM timbres
 **** PARAM waveform = "tri"
 *** ELEM timbres
