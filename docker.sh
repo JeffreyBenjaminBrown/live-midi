@@ -37,6 +37,16 @@ fi
 ROOT=/home/ubuntu/host
 CONTAINER_NAME="midi-$WT_NAME"
 
+# The audition samples for softstep_meter (and the drumkit rigs) live in the
+# drum-samples/ submodule, cloned over SSH. A fresh worktree does not populate
+# submodules automatically, and the container cannot clone (it has no SSH), so do it
+# here on the HOST, which can. `update --init` clones it if missing and checks out the
+# commit this superproject pins if it is already there, so it covers both cases.
+# Best-effort: a failure here (offline, key not loaded) only costs the meter's audio,
+# so it must never stop the container from launching.
+git -C "$WT_TOP" submodule update --init drum-samples \
+  || echo "warning: could not update the drum-samples submodule; the meter's audition will be silent." >&2
+
 # CLAUDE_CONFIG_DIR is baked into the image as $ROOT/my-dot-claude, but the
 # config now lives one level down inside the worktree, so override it here. It
 # sits inside the read-write worktree mount, so each worktree keeps its own
