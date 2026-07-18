@@ -276,21 +276,36 @@ An optional top-level ~[[timbres]]~ array (exactly four entries when present)
 defines what each cell of a ~waveform_selector~ strip selects, left to right.
 Absent, the strip selects the plain four waveforms -- identical behavior. Each
 entry has a ~waveform~ ("sin"/"sine", "tri"/"triangle", "square", "saw") plus
-numeric parameters, all optional and (except ~amplitude~, default 1.0) "off":
+numeric parameters, all optional and (except ~amplitude~, default 1.0) "off".
+
+The modulators come in two independent families that may both run on one voice:
+~abs_*~ rates are a fixed Hz, disregarding the voice's pitch; ~rel_*~ rates (and
+the rel FM depth) are unitless *multiples of the voice's pitch*, so they track
+transposes and glides. The expectation is abs slow (tremolo/vibrato) and rel
+fast (ring-mod / FM sidebands), but nothing enforces that.
 
 #+begin_src toml
 [[timbres]]
 waveform = "saw"
-amplitude = 0.8        # per-timbre gain below the volume fader; 0..1 typical
-am_depth = 0.4         # tremolo depth 0..1 (0 = off)
-am_hz = 3.0            # tremolo Hz, ~0.1..10
-am_shape = 0.2         # LFO morph 0..1 (0 smooth .. 1 near-square)
-fm_depth_cents = 12.0  # vibrato cents (~5..50 subtle; 0 = off)
-fm_hz = 5.5            # vibrato Hz, ~0.1..10
+amplitude = 0.8            # per-timbre gain below the volume fader; 0..1 typical
+abs_am_depth = 0.4         # tremolo depth 0..1 (0 = off)
+abs_am_hz = 3.0            # tremolo Hz, ~0.1..10
+am_shape = 0.2             # abs LFO morph 0..1 (0 smooth .. 1 near-square)
+abs_fm_depth_cents = 12.0  # vibrato cents (~5..50 subtle; 0 = off)
+abs_fm_hz = 5.5            # vibrato Hz, ~0.1..10
+rel_am_depth = 0.5         # pitch-rate tremolo depth 0..1 (0 = off)
+rel_am_freq = 1.0          # x voice pitch (0 = off; 1 = ring-mod at the pitch)
+rel_fm_depth = 1.2         # x voice pitch: 1 sweeps 2f..0, > 1 goes THROUGH ZERO
+rel_fm_freq = 0.5          # x voice pitch (0 = off)
 #+end_src
 
-The tremolo's LFO wave family comes from the instrument-wide ~[am]~ table. Notes
-snapshot their timbre at note-on (radio semantics).
+The abs tremolo's LFO wave family comes from the instrument-wide ~[am]~ table
+(the rel AM's LFO is a plain sine). The abs FM is exponential (cents -- it can
+never reach 0 Hz); the rel FM is *linear*, which is what makes through-zero FM
+reachable: at ~rel_fm_depth > 1~ the carrier crosses 0 Hz and the oscillator
+runs backward. Audio-rate rel AM/FM manufactures sidebands; give the
+~cpal_synth~ sink ~oversample = 4~ or so, or they alias. Notes snapshot their
+timbre at note-on (radio semantics).
 
 * Monome windows
 

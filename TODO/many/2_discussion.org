@@ -262,7 +262,7 @@ genuinely separate mechanisms exist today, deliberately kept apart:
 | called    | *polyrhythm pulse* / *amplitude cycling* / *tempo AM* | *slow AM* (=sawwave/types.rs:67,79=)             |
 | shape     | fixed unipolar triangle, hardcoded                    | morphable, sin->square or tri->square            |
 | depth     | always full, [0,1]                                    | =depth= param, multiplier in =[1-depth, 1]=      |
-| config    | =tap_tempo_pad= window + =[surfaces]=                 | =[[timbres]] am_depth/am_hz/am_shape= + =[am]=   |
+| config    | =tap_tempo_pad= window + =[surfaces]=                 | =[[timbres]] abs_am_depth/abs_am_hz/am_shape= + =[am]= |
 | per-voice | =tempo_am_freq= / =tempo_am_phase=                    | =Am { depth, freq, shape }= + =am_phase=         |
 
 The code says so out loud: =types.rs:150= "Deliberately separate from the note's

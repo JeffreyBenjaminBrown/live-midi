@@ -14,8 +14,8 @@ Does this problem affect more than the monome?
   Permissions matter -- it needs access to audio (or at least midi,
   but I think both are bundled in the 'audio' group).
 * The host system is running NixOS.
-  I have copied (I would like to symlink, but Docker)
-  the system's NixOS configuration to the folder host-nix-config-copy/.
+  (A copy of the system's NixOS configuration used to live in
+  host-nix-config-copy/; it was deleted as stale.)
 * USAGE
 ** connections
    To make this audible, in QJackCtl connect

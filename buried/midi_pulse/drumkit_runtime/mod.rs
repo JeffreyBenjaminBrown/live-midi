@@ -24,11 +24,12 @@ use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
 use midi_pulse::midi;
 use midi_pulse::rig::{
-  drum_samples_dir, load_softstep_params, Rig, SinkRig, SoftstepParams, SoftstepWindowRig,
+  drum_samples_dir, load_softstep_params, PulseFactorRig, Rig, SinkRig, SoftstepParams,
+  SoftstepWindowRig,
 };
 
 use audio::{Sampler, Trigger, VoiceId};
-use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecoder};
+use decode::{collect_control_changes, gain_from_pressure, DebounceMode, DrumEvent, TetherDecoder};
 use samples::DrumSample;
 
 /// A host runtime's tap on the pedal stream, called with `(softstep id, printed
@@ -243,6 +244,23 @@ pub fn start_with_hook(
     rig.softsteps.len()
   );
 
+  // Timing pedals (the tempo-factor pedals, but NOT the =1/Unity switch, which has its
+  // own double-tap dance a settle window would fight) get the aggressive settle debounce,
+  // so one stomp is one event instead of x2 heard as x2^10 (see `DebounceMode::Settle`).
+  // Keyed by (softstep id, printed label), like the pedal map.
+  let settle_mode = DebounceMode::Settle {
+    since_fire: Duration::from_millis(params.factor_settle_ms),
+    quiet: Duration::from_millis(params.factor_release_ms),
+  };
+  let mut settle_pads: HashMap<String, Vec<u8>> = HashMap::new();
+  for window in &rig.softstep_windows {
+    if let SoftstepWindowRig::PulseFactorPedal { softstep, pedal, factor, .. } = window {
+      if !matches!(factor, PulseFactorRig::Unity) {
+        settle_pads.entry(softstep.clone()).or_default().push(*pedal);
+      }
+    }
+  }
+
   // 4. Per device: spawn the poll/fire timer and connect the MIDI input. Connections
   // and timers are held alive for the run.
   let mut connections: Vec<MidiInputConnection<()>> = Vec::new();
@@ -252,6 +270,12 @@ pub fn start_with_hook(
     print_device_summary(&device_id, &pedal_map, params);
 
     let decoder = Arc::new(Mutex::new(TetherDecoder::new(params)));
+    if let Some(labels) = settle_pads.get(&device_id) {
+      let mut d = decoder.lock().unwrap_or_else(|e| e.into_inner());
+      for &label in labels {
+        d.set_debounce_by_label(label, settle_mode);
+      }
+    }
 
     // Timer thread: fire hits whose attack window has elapsed. It owns the pad map
     // and sample triggers; the MIDI callback only feeds sensor readings in.

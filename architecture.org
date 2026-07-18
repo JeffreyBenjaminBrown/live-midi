@@ -33,7 +33,8 @@
       and /dev/snd.
 
 ** Host system
-   NixOS. Copies of the host's Nix config live in host-nix-config-copy/.
+   NixOS. (A snapshot of the host's Nix config used to live in
+   host-nix-config-copy/; it was deleted as stale.)
    - PipeWire is the audio server (PulseAudio disabled).
    - JACK bridge is enabled (48kHz, quantum 512).
    - ALSA sequencer is disabled; raw /dev/snd device access is used instead.
@@ -81,8 +82,7 @@
      monome grid-synth OSC tests, and the softstep / pedals / synth / pitch-theory
      Python scripts.
    - learnings/           : notes on Docker+MIDI+NixOS integration.
-   - host-nix-config-copy/: snapshots of NixOS audio/package config.
    - Cargo.toml           : workspace manifest (buried, edo_surface, tools).
    - docker.sh            : container launch command.
-   - orientation.org      : original project overview.
-   - TODO.org             : feature roadmap.
+   - ORIENTATION.org      : the map of the repo (start there).
+   - TODO.org, TODO/      : feature roadmap and per-feature design dirs.

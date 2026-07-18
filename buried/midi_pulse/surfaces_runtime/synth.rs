@@ -198,6 +198,8 @@ impl SurfaceSink {
         timbre,
         am_phase: 0.0,
         fm_phase: 0.0,
+        rel_am_phase: 0.0,
+        rel_fm_phase: 0.0,
       },
     );
   }

@@ -53,7 +53,7 @@ use midi_pulse::monome::{self, DeviceInfo};
 use midi_pulse::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
-use crate::types::{Am, AmShapeFamily, Fm, Timbre, VoiceMap, Waveform};
+use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Timbre, VoiceMap, Waveform};
 use crate::voices::{Distortion, Makeup};
 
 use accrete::AccreteState;
@@ -89,6 +89,8 @@ pub(crate) struct TimbreSlot {
   amplitude: f32,
   am: Am,
   fm: Fm,
+  rel_am: RelAm,
+  rel_fm: RelFm,
 }
 
 /// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
@@ -192,6 +194,8 @@ fn default_timbre_slots() -> [TimbreSlot; SELECTOR_CELLS] {
     amplitude: 1.0,
     am: Am::default(),
     fm: Fm::default(),
+    rel_am: RelAm::default(),
+    rel_fm: RelFm::default(),
   };
   [
     plain(Waveform::Sine),
@@ -572,8 +576,10 @@ fn resolve_timbre_slots(rig: &Rig) -> [TimbreSlot; SELECTOR_CELLS] {
         WaveformChoice::Saw => Waveform::Saw,
       },
       amplitude: t.amplitude,
-      am: Am { depth: t.am_depth, freq: t.am_hz, shape: t.am_shape },
-      fm: Fm { depth_cents: t.fm_depth_cents, freq: t.fm_hz },
+      am: Am { depth: t.abs_am_depth, freq: t.abs_am_hz, shape: t.am_shape },
+      fm: Fm { depth_cents: t.abs_fm_depth_cents, freq: t.abs_fm_hz },
+      rel_am: RelAm { depth: t.rel_am_depth, freq: t.rel_am_freq },
+      rel_fm: RelFm { depth: t.rel_fm_depth, freq: t.rel_fm_freq },
     };
   }
   slots
@@ -805,8 +811,16 @@ fn run(
   let feet_accrete_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
-  // both grids' pads.
-  let poly = Arc::new(Mutex::new(PolyrhythmState::new(num_grids)));
+  // both grids' pads. A rig with no tap source (no tap pedal, no on-grid tap pad) gets a
+  // fixed 1 Hz base instead, so its tempo-factor pedals still have something to multiply
+  // (2-monomes_2-softsteps retired its tap pedal: Jeff never set a tempo with it).
+  let poly = {
+    let mut p = PolyrhythmState::new(num_grids);
+    if !rig_has_tap_source(rig) {
+      p.set_fixed_tempo(1.0, Instant::now());
+    }
+    Arc::new(Mutex::new(p))
+  };
   // The on-screen factored-pulse window (phase 9, `TODO/many/3_plan.org`): the =1
   // LED and the tap cell's blink moved off the grid onto the feet, so this is the
   // only place left to see the factored-pulse state. Skipped entirely on a
@@ -1557,8 +1571,14 @@ fn handle_key(
     rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
     let gain = current_gain(&rt.gains, rt.grid_index);
-    let timbre =
-      Timbre { waveform: slot.waveform, gain: slot.amplitude * gain, am: slot.am, fm: slot.fm };
+    let timbre = Timbre {
+      waveform: slot.waveform,
+      gain: slot.amplitude * gain,
+      am: slot.am,
+      fm: slot.fm,
+      rel_am: slot.rel_am,
+      rel_fm: slot.rel_fm,
+    };
     // Slide: while on, glide into this note -- legato from the voice mono just
     // cut, or, with no stolen voice, by re-triggering the nearest recently-
     // released pitch (consuming it as a source); otherwise a plain note.
@@ -1856,6 +1876,14 @@ enum PedalAction {
 /// Build the (device, pedal) -> action map from the rig. `grid_of` maps a monome id
 /// to its play-grid index; a pedal naming a monome that is not a play grid (or is
 /// absent) is dropped, so the rig loads around missing gear like everything else.
+/// Does this rig offer any way to tap the tempo -- a softstep tap pedal or an on-grid tap
+/// pad? A rig with none runs at a fixed base tempo instead of waiting for a tap that can
+/// never come (see `PolyrhythmState::set_fixed_tempo`).
+fn rig_has_tap_source(rig: &Rig) -> bool {
+  rig.softstep_windows.iter().any(|w| matches!(w, SoftstepWindowRig::TapTempoPedal { .. }))
+    || rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. }))
+}
+
 fn rig_pedal_actions(
   rig: &Rig,
   grid_of: impl Fn(&str) -> Option<usize>,
@@ -2841,7 +2869,8 @@ mod tests {
       "left buttons drive the left grid, right buttons the right",
     );
 
-    // Exactly one tap pedal (the tempo is global), on the old board.
+    // No tap pedal: Jeff retired it (he never set a tempo with it), so the rig has no tap
+    // source and the runtime fixes the base tempo at 1 Hz for the factor pedals to multiply.
     let taps: Vec<u8> = rig
       .softstep_windows
       .iter()
@@ -2850,7 +2879,8 @@ mod tests {
         _ => None,
       })
       .collect();
-    assert_eq!(taps, [8]);
+    assert!(taps.is_empty(), "the tap pedal was retired: {taps:?}");
+    assert!(!rig_has_tap_source(&rig), "no tap pedal and no on-grid tap pad -> fixed tempo");
 
     // Each grid gets a full set of five factored-pulse controls, all on the new board.
     for monome in ["a", "b"] {
@@ -2933,8 +2963,8 @@ mod tests {
       at("old", 5),
       Some(PedalAction::Accrete { grid: 1, control: AccreteControlKind::Clear }),
     );
-    assert_eq!(at("old", 8), Some(PedalAction::Tap));
-    for free in [3, 6, 7, 9, 0] {
+    // Pedal 8 held the retired tap tempo; it and the other gaps are now all free.
+    for free in [3, 6, 7, 8, 9, 0] {
       assert_eq!(at("old", free), None, "old pedal {free} is deliberately unbound");
     }
 
@@ -2979,7 +3009,7 @@ mod tests {
     );
     assert!(actions.get(&("old".to_string(), 5)).is_none(), "b's clear is dropped");
     assert!(actions.get(&("new".to_string(), 1)).is_none(), "b's x2 is dropped");
-    assert_eq!(actions.get(&("old".to_string(), 8)), Some(&PedalAction::Tap), "tap is global");
+    assert!(actions.get(&("old".to_string(), 8)).is_none(), "pedal 8 is free (tap retired)");
   }
 
   /// The bug Jeff hit on the hardware: the shipped rig binds accrete and clear but no
@@ -3239,7 +3269,7 @@ mod tests {
     .expect("read mock org");
     // The rig is `.org` now: PARAM values still contain the `key = value` text these
     // replaces target, but an INJECTED field must be its own PARAM headline at the
-    // timbre's depth (slot 2 = square, so its fm_depth_cents lands in timbres[2]).
+    // timbre's depth (slot 2 = square, so the fields land in timbres[2]).
     //
     // Each replacement must actually apply. A bare `str::replace` no-ops silently when
     // the mock rig's value drifts, leaving the test asserting a value that nothing set
@@ -3252,7 +3282,9 @@ mod tests {
     let edited = must_replace(&edited, "edo = 46", "edo = 41");
     let edited = must_replace(&edited, "x_step = 9", "x_step = 7");
     let edited = must_replace(
-      &edited, WAVE_SQUARE, "waveform = \"square\"\n*** PARAM fm_depth_cents = 25.0",
+      &edited,
+      WAVE_SQUARE,
+      "waveform = \"square\"\n*** PARAM abs_fm_depth_cents = 25.0\n*** PARAM rel_fm_depth = 1.5",
     );
     let edited = must_replace(&edited, "slide_duration_ms = 100", "slide_duration_ms = 250");
     let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
@@ -3264,6 +3296,7 @@ mod tests {
     assert_eq!(p.edo, 41);
     assert_eq!(p.x_step, 7);
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
+    assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
   }
 

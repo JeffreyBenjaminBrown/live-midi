@@ -17,7 +17,8 @@ use crate::consts::AMPLITUDE;
 use crate::consts::RELEASE_SECS;
 use crate::pitch::freq_for_pitch;
 use crate::types::{
-  Am, AmShapeFamily, ChordId, Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState, Waveform,
+  Am, AmShapeFamily, ChordId, RelAm, RelFm, Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState,
+  Waveform,
 };
 
 pub fn triangle(phase: f32) -> f32 {
@@ -181,6 +182,32 @@ pub fn fm_factor(depth_cents: f32, fm_phase: f32) -> f32 {
     return 1.0;
   }
   2.0_f32.powf(depth_cents * (std::f32::consts::TAU * fm_phase).sin() / 1200.0)
+}
+
+/// The *relative* AM multiplier in [1-depth, 1]: a plain-sine LFO (no shape morph)
+/// whose rate is `rel.freq * <voice pitch>` -- the caller advances `phase` at that
+/// rate. Same depth semantics as `am_multiplier`; off (1.0) at depth 0 *or* freq 0
+/// (a 0-rate LFO would otherwise freeze mid-dip as a constant attenuation).
+pub fn rel_am_multiplier(rel: RelAm, phase: f32) -> f32 {
+  if rel.depth <= 0.0 || rel.freq <= 0.0 {
+    return 1.0;
+  }
+  let unipolar = ((std::f32::consts::TAU * phase).sin() + 1.0) * 0.5; // 0..1
+  1.0 - rel.depth * (1.0 - unipolar)
+}
+
+/// The *relative* (linear, pitch-scaled) FM carrier-frequency multiplier:
+/// `1 + depth * sin(2*pi*phase)`, the LFO running at `rel.freq * <voice pitch>`
+/// (the caller advances `phase`). Unlike the exponential `fm_factor`, this is
+/// linear FM: depth 1 sweeps the carrier from 2*f to 0*f, and depth > 1 drives the
+/// multiplier *negative* -- through-zero FM, which the oscillator core supports (a
+/// negative increment runs the phase backward, band-limited on |dt|). Off (1.0) at
+/// depth 0 or freq 0.
+pub fn rel_fm_factor(rel: RelFm, phase: f32) -> f32 {
+  if rel.depth == 0.0 || rel.freq <= 0.0 {
+    return 1.0;
+  }
+  1.0 + rel.depth * (std::f32::consts::TAU * phase).sin()
 }
 
 /// A global saturating distortion applied to the *summed* voice mix (not per voice):
@@ -460,19 +487,35 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     } else {
       1.0
     };
-    // Advance the per-voice AM/FM LFOs (by `frac` of a full-rate step).
+    // Advance the per-voice AM/FM LFOs (by `frac` of a full-rate step). The absolute
+    // pair runs at a fixed Hz; the relative pair at a multiple of the voice's own
+    // frequency (v.freq -- the *unmodulated* pitch, so there is no FM feedback loop,
+    // and a glide carries the LFO rates with it). Relative rates can be audio-rate,
+    // so wrap with rem_euclid rather than a single subtract.
     v.am_phase += v.timbre.am.freq * frac / sample_rate;
     if v.am_phase >= 1.0 { v.am_phase -= 1.0; }
     v.fm_phase += v.timbre.fm.freq * frac / sample_rate;
     if v.fm_phase >= 1.0 { v.fm_phase -= 1.0; }
+    v.rel_am_phase = (v.rel_am_phase + v.timbre.rel_am.freq * v.freq * frac / sample_rate)
+      .rem_euclid(1.0);
+    v.rel_fm_phase = (v.rel_fm_phase + v.timbre.rel_fm.freq * v.freq * frac / sample_rate)
+      .rem_euclid(1.0);
     // FM modulates the carrier increment; PolyBLEP band-limits at this same dt -- the
-    // per-sub-sample increment, so it stays correct at whatever rate we step.
-    let dt = v.freq * fm_factor(v.timbre.fm.depth_cents, v.fm_phase) * frac / sample_rate;
+    // per-sub-sample increment, so it stays correct at whatever rate we step. The two
+    // modulators compose multiplicatively: the exponential (absolute) factor offsets
+    // the pitch, the linear (relative) factor then scales it -- and only the linear
+    // one can take dt through zero.
+    let dt = v.freq
+      * fm_factor(v.timbre.fm.depth_cents, v.fm_phase)
+      * rel_fm_factor(v.timbre.rel_fm, v.rel_fm_phase)
+      * frac
+      / sample_rate;
     // Through-zero: rem_euclid keeps phase in [0,1) even for a negative dt (a
     // "negative-frequency" voice runs backward -- for a sine, exactly a 180-degree
     // phase flip, as a through-zero FM oscillator should) or a |dt| > 1.
     v.phase = (v.phase + dt).rem_euclid(1.0);
-    let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase);
+    let amm = am_multiplier(v.timbre.am, shape_family, v.am_phase)
+      * rel_am_multiplier(v.timbre.rel_am, v.rel_am_phase);
     let wf_norm = waveform_norm(v.timbre.waveform);
     // `b` is this voice's instantaneous amplitude coefficient -- everything but the
     // oscillator. Since `osc * wf_norm` has RMS 1/sqrt(3) for *every* waveform, the
@@ -726,6 +769,8 @@ pub fn spawn_accretion_voice(
     timbre: Timbre::default(),
     am_phase: 0.0,
     fm_phase: 0.0,
+    rel_am_phase: 0.0,
+    rel_fm_phase: 0.0,
   });
 }
 
@@ -776,7 +821,7 @@ mod tests {
     let v = VoiceState {
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0,
       target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let data = render_voice(v, 1024, sr);
     let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
@@ -794,7 +839,7 @@ mod tests {
       target_env: 0.0,
       ramp_per_sample: 1.0 / (RELEASE_SECS * sr),
       sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -825,7 +870,7 @@ mod tests {
     let sr = 48000.0;
     let mk = |gain: f32| VoiceState {
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0,
+      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let peak = |g: f32| render_voice(mk(g), 1024, sr).iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
     let (full, half) = (peak(1.0), peak(0.5));
@@ -841,8 +886,8 @@ mod tests {
     let rms = |waveform: Waveform| {
       let v = VoiceState {
         id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-        timbre: Timbre { waveform, gain: 1.0, am: Am::default(), fm: Fm::default() },
-        am_phase: 0.0, fm_phase: 0.0,
+        timbre: Timbre { waveform, ..Timbre::default() },
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       };
       let data = render_voice(v, sr as usize, sr); // ~1 s = many whole periods
       (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
@@ -921,6 +966,94 @@ mod tests {
   }
 
   #[test]
+  fn rel_am_multiplier_spans_floor_to_one_and_zero_rate_is_off() {
+    let rel = RelAm { depth: 0.8, freq: 1.0 };
+    let top = rel_am_multiplier(rel, 0.25); // sine peak
+    let bot = rel_am_multiplier(rel, 0.75); // sine trough
+    assert!((top - 1.0).abs() < 1e-3, "top={top}");
+    assert!((bot - 0.2).abs() < 1e-3, "bot={bot} (1-depth)");
+    assert_eq!(rel_am_multiplier(RelAm { depth: 0.0, freq: 1.0 }, 0.75), 1.0);
+    // freq 0 = off, NOT a frozen LFO holding a constant attenuation.
+    assert_eq!(rel_am_multiplier(RelAm { depth: 0.8, freq: 0.0 }, 0.75), 1.0);
+  }
+
+  #[test]
+  fn rel_fm_factor_is_linear_and_goes_through_zero_past_depth_one() {
+    // depth 1 sweeps the carrier from 2*f (LFO peak) to 0*f (trough)...
+    let unit = RelFm { depth: 1.0, freq: 1.0 };
+    assert!((rel_fm_factor(unit, 0.25) - 2.0).abs() < 1e-3);
+    assert!(rel_fm_factor(unit, 0.75).abs() < 1e-3);
+    // ...and depth > 1 drives the multiplier NEGATIVE: through-zero FM.
+    let deep = RelFm { depth: 1.5, freq: 1.0 };
+    assert!((rel_fm_factor(deep, 0.75) - -0.5).abs() < 1e-3);
+    // Off at depth 0 or rate 0.
+    assert_eq!(rel_fm_factor(RelFm { depth: 0.0, freq: 1.0 }, 0.75), 1.0);
+    assert_eq!(rel_fm_factor(RelFm { depth: 1.5, freq: 0.0 }, 0.75), 1.0);
+  }
+
+  #[test]
+  fn rel_lfo_rates_scale_with_the_voices_pitch() {
+    // Same timbre, two pitches: after the same number of samples the rel LFO
+    // phases must sit at rate x freq x t (mod 1) -- the octave-up voice's LFOs
+    // run exactly twice as fast. The absolute pair advances identically for both.
+    let sr = 48000.0;
+    let run = |freq: f32| {
+      let mut voices: VoiceMap = HashMap::new();
+      voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+        timbre: Timbre {
+          rel_am: RelAm { depth: 0.5, freq: 0.25 },
+          rel_fm: RelFm { depth: 0.5, freq: 0.125 },
+          ..Timbre::default()
+        },
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
+      });
+      let mut data = vec![0.0_f32; 480]; // 10 ms
+      render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+      *voices.values().next().unwrap()
+    };
+    let (lo, hi) = (run(100.0), run(200.0));
+    let t = 480.0 / sr;
+    assert!((lo.rel_am_phase - 0.25 * 100.0 * t).abs() < 1e-3, "{}", lo.rel_am_phase);
+    assert!((lo.rel_fm_phase - 0.125 * 100.0 * t).abs() < 1e-3, "{}", lo.rel_fm_phase);
+    assert!((hi.rel_am_phase - 2.0 * lo.rel_am_phase).abs() < 1e-3);
+    assert!((hi.rel_fm_phase - 2.0 * lo.rel_fm_phase).abs() < 1e-3);
+    // The absolute LFOs (defaults: 1 Hz) ignore pitch: both voices advance alike.
+    assert!((lo.am_phase - t).abs() < 1e-4);
+    assert_eq!(lo.am_phase, hi.am_phase);
+    assert_eq!(lo.fm_phase, hi.fm_phase);
+  }
+
+  #[test]
+  fn through_zero_rel_fm_renders_bounded_and_differs_from_flat() {
+    // A sine at 300 Hz with rel_fm_depth 2: the carrier sweeps -300..+900 Hz,
+    // crossing zero twice per LFO cycle. It must render (bounded, nonzero) and
+    // actually differ from the unmodulated voice.
+    let sr = 48000.0;
+    let render = |depth: f32| {
+      let mut voices: VoiceMap = HashMap::new();
+      voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        id: 0, freq: 300.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+        timbre: Timbre {
+          waveform: Waveform::Sine,
+          rel_fm: RelFm { depth, freq: 0.05 }, // 15 Hz LFO on the 300 Hz voice
+          ..Timbre::default()
+        },
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
+      });
+      let mut data = vec![0.0_f32; 4800];
+      render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+      data
+    };
+    let flat = render(0.0);
+    let thru = render(2.0);
+    assert!(thru.iter().all(|x| x.abs() <= 1.0));
+    assert!(thru.iter().any(|x| x.abs() > 0.1), "the modulated voice still sounds");
+    let diff: f32 = flat.iter().zip(&thru).map(|(a, b)| (a - b).abs()).sum();
+    assert!(diff > 1.0, "through-zero FM must change the waveform, diff={diff}");
+  }
+
+  #[test]
   fn full_depth_am_lowers_average_energy() {
     let sr = 48000.0;
     let rms = |depth: f32| {
@@ -928,10 +1061,11 @@ mod tests {
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
         id: 0, freq: 1000.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
-          waveform: Waveform::Sine, gain: 1.0,
-          am: Am { depth, freq: 50.0, shape: 0.0 }, fm: Fm::default(),
+          waveform: Waveform::Sine,
+          am: Am { depth, freq: 50.0, shape: 0.0 },
+          ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::SinToSquare);
@@ -956,10 +1090,8 @@ mod tests {
         VoiceSource::Fingered { xy: (0, 0) },
         VoiceState {
           id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-          timbre: Timbre {
-            waveform: Waveform::Sine, gain: 1.0, am: Am::default(), fm: Fm::default(),
-          },
-          am_phase: 0.0, fm_phase: 0.0,
+          timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
         },
       );
       let mut data = vec![0.0_f32; 4800];
@@ -985,7 +1117,7 @@ mod tests {
       let v = VoiceState {
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       };
       render_voice(v, 1024, sr)
     };
@@ -1005,7 +1137,7 @@ mod tests {
     let v = VoiceState {
       id: 0, freq: -220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Saw, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1051,7 +1183,7 @@ mod tests {
       ramp_per_sample: 1.0 / (0.003 * sr),
       sustain_env, decay_per_sample,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1090,7 +1222,7 @@ mod tests {
       target_env: 0.5,
       ramp_per_sample: 0.5 / (0.05 * sr),
       sustain_env: 0.5, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Accreted { chord: 0, pitch: 10 }, v);
@@ -1113,7 +1245,7 @@ mod tests {
       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1166,7 +1298,7 @@ mod tests {
       id: 0, freq: 220.0, freq_target: 440.0, glide_per_sample: glide, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0,
       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1227,7 +1359,7 @@ mod tests {
       voices.insert(VoiceSource::Fingered { xy: (i as i32, 0) }, VoiceState {
         id: i as u64, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: i as f32 * 0.137, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       });
     }
     voices
@@ -1382,7 +1514,7 @@ mod tests {
       factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: sustain, decay_per_sample: (-1.0 / (decay_secs * sample_rate)).exp(),
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
     });
     voices
   }
@@ -1617,7 +1749,7 @@ mod tests {
       (VoiceSource::Fingered { xy }, VoiceState {
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       })
     };
     let render = |sources: &[(VoiceSource, VoiceState)], distortion, dirty: fn(&VoiceSource) -> bool| {
@@ -1656,10 +1788,11 @@ mod tests {
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
         id: 0, freq: 300.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
-          waveform: Waveform::Sine, gain: 1.0, am: Am::default(),
+          waveform: Waveform::Sine,
           fm: Fm { depth_cents, freq: 6.0 },
+          ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());

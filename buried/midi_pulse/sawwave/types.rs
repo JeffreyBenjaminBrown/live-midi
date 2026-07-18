@@ -76,9 +76,10 @@ impl Default for Waveform {
   fn default() -> Self { Waveform::Triangle }
 }
 
-// Slow amplitude modulation (tremolo). `depth` in [0,1] is the modulation depth:
-// the carrier is multiplied by a unipolar wave in [1-depth, 1], so depth 0 = no
-// AM and depth 1 = dips to silence. `freq` is the LFO rate (Hz). `shape` in [0,1]
+// *Absolute* amplitude modulation (tremolo). `depth` in [0,1] is the modulation
+// depth: the carrier is multiplied by a unipolar wave in [1-depth, 1], so depth 0 =
+// no AM and depth 1 = dips to silence. `freq` is the LFO rate in Hz -- fixed,
+// disregarding the voice's pitch (hence "absolute"; cf. `RelAm`). `shape` in [0,1]
 // morphs the LFO wave within the rig-level `AmShapeFamily`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Am { pub depth: f32, pub freq: f32, pub shape: f32 }
@@ -87,13 +88,40 @@ impl Default for Am {
   fn default() -> Self { Am { depth: 0.0, freq: 1.0, shape: 0.0 } }
 }
 
-// Slow frequency modulation (vibrato), driven by a sine. `depth_cents` is the peak
-// pitch deviation in cents; `freq` is the LFO rate (Hz). depth 0 = no FM.
+// *Absolute* frequency modulation (vibrato), driven by a sine. `depth_cents` is the
+// peak pitch deviation in cents; `freq` is the LFO rate in Hz -- fixed, disregarding
+// the voice's pitch (cf. `RelFm`). depth 0 = no FM. Exponential (a pitch offset), so
+// it can never push the carrier below 0 Hz.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fm { pub depth_cents: f32, pub freq: f32 }
 
 impl Default for Fm {
   fn default() -> Self { Fm { depth_cents: 0.0, freq: 1.0 } }
+}
+
+// *Relative* amplitude modulation: a second, independent AM whose sine LFO runs at
+// `freq * <voice pitch>` Hz (freq is a unitless multiple of the voice's frequency; it
+// tracks glides/retunes). `depth` in [0,1] as in `Am`. freq 0 = off, as is depth 0.
+// A voice can carry this *and* the absolute `Am` at once (typically abs slow, rel
+// fast -- at audio rates this is ring-mod territory; give the sink `oversample`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RelAm { pub depth: f32, pub freq: f32 }
+
+impl Default for RelAm {
+  fn default() -> Self { RelAm { depth: 0.0, freq: 1.0 } }
+}
+
+// *Relative* frequency modulation: a second, independent FM, *linear* and scaled by
+// the voice's pitch. The sine LFO runs at `freq * <voice pitch>` Hz (freq unitless,
+// like `RelAm`), and `depth` is the peak deviation as a multiple of the voice's
+// frequency: depth 1 sweeps the carrier all the way from 2*f down to 0*f, and depth
+// > 1 pushes it *below zero* -- true through-zero FM (the oscillator core runs
+// backward; see `voices::osc`). freq 0 = off, as is depth 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RelFm { pub depth: f32, pub freq: f32 }
+
+impl Default for RelFm {
+  fn default() -> Self { RelFm { depth: 0.0, freq: 1.0 } }
 }
 
 // The instrument-wide choice of AM-shape morph family ([D 3c]: rig-level, one
@@ -109,13 +137,22 @@ impl Default for AmShapeFamily {
 pub struct Timbre {
   pub waveform: Waveform,
   pub gain:     f32,   // linear per-voice gain; 1.0 = unity
-  pub am:       Am,
-  pub fm:       Fm,
+  pub am:       Am,    // absolute (Hz-rate) tremolo
+  pub fm:       Fm,    // absolute (Hz-rate, cents-depth) vibrato
+  pub rel_am:   RelAm, // pitch-relative AM, independent of `am`
+  pub rel_fm:   RelFm, // pitch-relative linear FM, independent of `fm`
 }
 
 impl Default for Timbre {
   fn default() -> Self {
-    Timbre { waveform: Waveform::Triangle, gain: 1.0, am: Am::default(), fm: Fm::default() }
+    Timbre {
+      waveform: Waveform::Triangle,
+      gain: 1.0,
+      am: Am::default(),
+      fm: Fm::default(),
+      rel_am: RelAm::default(),
+      rel_fm: RelFm::default(),
+    }
   }
 }
 
@@ -157,9 +194,13 @@ pub struct VoiceState {
   pub factored_pulse_phase:  f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
+  // `am_phase`/`fm_phase` belong to the absolute (Hz-rate) modulators,
+  // `rel_am_phase`/`rel_fm_phase` to the pitch-relative ones.
   pub timbre:          Timbre,
   pub am_phase:        f32,
   pub fm_phase:        f32,
+  pub rel_am_phase:    f32,
+  pub rel_fm_phase:    f32,
 }
 
 pub type VoiceMap = HashMap<VoiceSource, VoiceState>;
