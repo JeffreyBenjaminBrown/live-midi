@@ -167,6 +167,11 @@ $ pwd
 ** to connect the pedals
 On *host*:
 nix-shell -p 'python3.withPackages(p: [p.pyusb p.python-rtmidi])' libusb1 \
+  --run 'sudo python3 code/python/pedals/bridge.py
+** DONE pedal bridge -- plan archived to [[file:TODO/DONE/pedal-usb-bridge.org]]
+Shipped + verified: =code/python/pedals/bridge.py= (host USB -> virtual ALSA-seq port
+"MPC-20 pedals") and the Rust reader =midi_pulse::expression_pedals= (+ =pedal_monitor= bin,
+which showed both pedals live in the container).
   --run 'sudo python3 tools/pedals/bridge.py
 ** TODO/DONE/pedal-usb-bridge.org (bridge plan, now DONE/archived)
 ** ask for commits

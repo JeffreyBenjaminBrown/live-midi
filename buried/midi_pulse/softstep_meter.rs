@@ -8,9 +8,12 @@
 //!
 //!   cargo run --bin softstep_meter
 //!
-//! Displays a live pressure bar per pad (sum of its 4 sensors, 0..508) with a
-//! peak-hold marker, and on every detected hit shows the pad, resolved pressure and
-//! gain. Pad 3 ("the gap between the feet", mirroring rigs/kmss-drumkit.toml) is
+//! Displays, for the two most-recently-struck pads (newest on top), each of that pad's
+//! 4 pressure sensors AND their sum as its own live bar (0..127 per sensor, 0..508 for
+//! the sum) with a peak-hold marker; the top pad also shows a running count of hits
+//! since it reached the top (kept as it slides to second). On every detected hit it
+//! shows the pad, resolved pressure and gain. Pad 3 ("the gap between the feet",
+//! mirroring rigs/kmss-drumkit.toml) is
 //! wired as DITTO: struck, it repeats the last REAL pad's hit at the ditto press's
 //! OWN pressure (pad, ditto, ditto repeats the ORIGINAL, not the ditto -- see
 //! `resolve_fire`, which mirrors `drumkit_runtime::mod::resolve_fire`).
@@ -18,11 +21,11 @@
 //! Restores standalone mode on exit -- Ctrl-C (via `tether::arm`'s signal thread) or
 //! `q` + Enter (via `TetherSession`'s `Drop`) -- exactly like the drumkit runtime.
 //!
-//! Optional audio audition (off by default): set SOFTSTEP_METER_AUDIO=1 to play
-//! drum-samples/snare.wav via `pw-play` at the resolved gain on every hit -- one
-//! reference sample for every pad, since this is a touch/pressure meter, not the
-//! kit (mirrors the Python meter's `audition-sample`). Launch under `pw-jack` if you
-//! want that sample to share the sound card via PipeWire.
+//! Audio audition (ON by default): plays drum-samples/snare.wav via `pw-play` at the
+//! resolved gain on every hit -- one reference sample for every pad, since this is a
+//! touch/pressure meter, not the kit (mirrors the Python meter's `audition-sample`).
+//! Set SOFTSTEP_METER_SILENT=1 for a silent meter. Launch under `pw-jack` so that
+//! sample shares the sound card via PipeWire.
 
 #[path = "drumkit_runtime/decode.rs"]
 mod decode;
@@ -58,15 +61,24 @@ use decode::{collect_control_changes, gain_from_pressure, DrumEvent, TetherDecod
 const LABEL_BASE: [(u8, u8); NUM_PADS] =
   [(1, 44), (2, 52), (3, 60), (4, 68), (5, 76), (6, 40), (7, 48), (8, 56), (9, 64), (0, 72)];
 
+/// The base CC of pad `label`'s first sensor (its 4 sensors are `base..=base+3`).
+/// `label` is a printed pad label 0..9, always present in `LABEL_BASE`.
+fn label_base(label: u8) -> u8 {
+  LABEL_BASE.iter().find(|(l, _)| *l == label).map(|(_, b)| *b).unwrap_or(40)
+}
+
 /// The pad wired as ditto, mirroring rigs/kmss-drumkit.toml's pedal 3 ("the gap
 /// between the feet"): struck, it repeats the last REAL pad's hit at ITS OWN
 /// pressure.
 const DITTO_LABEL: u8 = 3;
 
 const SUM_MAX: f32 = 508.0;
+const SENSOR_MAX: f32 = 127.0; // one sensor's full scale (four of these sum to SUM_MAX)
 const BAR_WIDTH: usize = 44;
 const PEAK_HOLD_SECS: f64 = 0.6;
-const PEAK_DECAY_STEP: u16 = 24;
+const PEAK_DECAY_STEP: u16 = 24; // per-tick peak fall for the 0..508 sum bar
+const SENSOR_PEAK_DECAY_STEP: u16 = 6; // the same fall rate scaled to a 0..127 sensor bar
+const RECENT_PADS_SHOWN: usize = 2; // how many recently-struck pads meter at once
 const DRAW_TICK: Duration = Duration::from_millis(30);
 const AUDITION_SAMPLE: &str = "snare.wav";
 
@@ -144,25 +156,27 @@ fn resolve_revise(kind: PadKind, last: &Option<LastHit>, pressure: f32, db_range
 /// value and the time (seconds, any consistent monotonic origin) it was last set to
 /// a fresh high. Mirrors the Python meter's `hold_peak`: the peak snaps to a fresh
 /// high immediately (resetting its hold timer); otherwise, once it has sat unbeaten
-/// for `PEAK_HOLD_SECS`, it falls `PEAK_DECAY_STEP` per redraw tick -- the hold
-/// timer is deliberately NOT reset while decaying, so once the hold elapses the peak
-/// keeps falling every tick until `current` catches up (or it reaches 0).
-fn peak_hold_tick(current: u16, pv: u16, pt: f64, now: f64) -> (u16, f64) {
+/// for `PEAK_HOLD_SECS`, it falls `decay_step` per redraw tick -- the hold timer is
+/// deliberately NOT reset while decaying, so once the hold elapses the peak keeps
+/// falling every tick until `current` catches up (or it reaches 0). `decay_step`
+/// scales with the bar's full range (see `PEAK_DECAY_STEP` / `SENSOR_PEAK_DECAY_STEP`).
+fn peak_hold_tick(current: u16, pv: u16, pt: f64, now: f64, decay_step: u16) -> (u16, f64) {
   if current >= pv {
     (current, now)
   } else if now - pt > PEAK_HOLD_SECS {
-    (pv.saturating_sub(PEAK_DECAY_STEP), pt)
+    (pv.saturating_sub(decay_step), pt)
   } else {
     (pv, pt)
   }
 }
 
-/// Render one pad's bar: `#` filled 0..fill, `-` elsewhere, with a `|` peak-hold
-/// marker overlaid at the peak's column (if in range). Mirrors the Python meter's
-/// bar (`BARW`=44, `SUM_MAX`=508).
-fn render_bar(sum: u16, peak: u16) -> String {
-  let fill = ((sum as f32 / SUM_MAX) * BAR_WIDTH as f32) as usize;
-  let peak_col = ((peak as f32 / SUM_MAX) * BAR_WIDTH as f32) as usize;
+/// Render one bar: `#` filled 0..fill, `-` elsewhere, with a `|` peak-hold marker
+/// overlaid at the peak's column (if in range). `max` is the bar's full-scale value
+/// (`SUM_MAX` for a pad's sum, `SENSOR_MAX` for a single sensor). Mirrors the Python
+/// meter's bar (`BARW`=44).
+fn render_bar(value: u16, peak: u16, max: f32) -> String {
+  let fill = ((value as f32 / max) * BAR_WIDTH as f32) as usize;
+  let peak_col = ((peak as f32 / max) * BAR_WIDTH as f32) as usize;
   let mut bar = vec!['-'; BAR_WIDTH];
   for c in bar.iter_mut().take(fill.min(BAR_WIDTH)) {
     *c = '#';
@@ -171,6 +185,33 @@ fn render_bar(sum: u16, peak: u16) -> String {
     bar[peak_col] = '|';
   }
   bar.into_iter().collect()
+}
+
+/// The pads shown as full 4-sensor meters: the last `RECENT_PADS_SHOWN` distinct pads
+/// struck, newest first. `count` is how many hits the pad has detected since it last
+/// reached the top -- reset to 1 the instant it becomes newest, bumped on each further
+/// hit while it stays on top, and *kept* as it slides to second (a different pad
+/// displacing it never touches its count).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RecentPad {
+  label: u8,
+  count: u32,
+}
+
+/// Record a detected hit on `label` into the recent-pads list (front = newest, the
+/// invariant the display relies on). Already on top -> its count bumps; otherwise it
+/// jumps to the front with a fresh count of 1, the old top slides to second keeping its
+/// own count, and the list is capped at `RECENT_PADS_SHOWN`. Pure -- unit-tested below.
+fn note_hit(recent: &mut Vec<RecentPad>, label: u8) {
+  if let Some(front) = recent.first_mut() {
+    if front.label == label {
+      front.count += 1;
+      return;
+    }
+  }
+  recent.retain(|p| p.label != label);
+  recent.insert(0, RecentPad { label, count: 1 });
+  recent.truncate(RECENT_PADS_SHOWN);
 }
 
 /// A sensor's INTERPRETED value for the display shadow: its raw reading, or 0 once
@@ -211,7 +252,10 @@ impl Default for PadDisplay {
 struct MeterState {
   sensors: [u8; 40],                    // raw last value per CC 40..79 (display shadow only)
   last_seen: [Option<Instant>; 40],     // when each sensor last got a CC (display shadow only)
-  pads: [PadDisplay; NUM_PADS],         // indexed by printed label (0..9)
+  sensor_peak_val: [u16; 40],           // per-sensor peak-hold value (one bar each)
+  sensor_peak_t: [f64; 40],             // per-sensor peak-hold timer, seconds
+  pads: [PadDisplay; NUM_PADS],         // per-pad sum peak-hold + last pressure/gain, by label
+  recent_pads: Vec<RecentPad>,          // last two pads struck, newest first (what the meter draws)
   last_hit: Option<LastHit>,            // for ditto resolution (`resolve_fire`)
   recent: String,                       // last hit line, like the Python meter's `recent`
   messages: VecDeque<String>,           // recent event log, newest last (last 8, like Python)
@@ -222,7 +266,10 @@ impl MeterState {
     MeterState {
       sensors: [0; 40],
       last_seen: [None; 40],
+      sensor_peak_val: [0; 40],
+      sensor_peak_t: [0.0; 40],
       pads: [PadDisplay::default(); NUM_PADS],
+      recent_pads: Vec::new(),
       last_hit: None,
       recent: "(strike a pad)".to_string(),
       messages: VecDeque::new(),
@@ -334,7 +381,7 @@ fn start_board(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let params = load_softstep_params()?;
-  let audio_on = std::env::var_os("SOFTSTEP_METER_AUDIO").is_some();
+  let audio_on = std::env::var_os("SOFTSTEP_METER_SILENT").is_none();
 
   // With an argument, meter just the board whose port name contains it (the old
   // behaviour). With none, meter EVERY connected board -- which is what a two-board
@@ -364,9 +411,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   );
   println!("  pad {DITTO_LABEL} is DITTO (mirrors rigs/kmss-drumkit.toml pedal 3, the gap between the feet)");
   if audio_on {
-    println!("  audio audition ON: plays drum-samples/{AUDITION_SAMPLE} via `pw-play` at the resolved gain");
+    println!("  audio audition ON (default): plays drum-samples/{AUDITION_SAMPLE} via `pw-play` at the resolved gain on each hit. Set SOFTSTEP_METER_SILENT=1 to silence.");
   } else {
-    println!("  audio audition OFF (silent meter). Set SOFTSTEP_METER_AUDIO=1 to hear hits.");
+    println!("  audio audition OFF (SOFTSTEP_METER_SILENT set): silent meter.");
   }
   println!("  keys: q + Enter quits (Ctrl-C also restores standalone mode)\n");
 
@@ -403,7 +450,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let start = Instant::now();
   while !quit.load(Ordering::SeqCst) {
-    draw(&boards, start, params);
+    draw(&boards, start, params, audio_on);
     thread::sleep(DRAW_TICK);
   }
 
@@ -447,6 +494,10 @@ fn run_poll_loop(
     for event in &events {
       match *event {
         DrumEvent::Fire { label, pressure, .. } => {
+          // Every detected hit brings its pad to the top of the two-pad meter and
+          // advances that pad's running count (ditto no-ops included -- the pad WAS
+          // struck), before we resolve ditto / message / audition below.
+          note_hit(&mut st.recent_pads, label);
           let kind = pad_kind(label);
           match resolve_fire(kind, label, &mut st.last_hit, pressure, db_range) {
             Some((src, gain)) => {
@@ -484,16 +535,19 @@ fn run_poll_loop(
   }
 }
 
-/// Redraw the whole screen in place (ANSI clear + cursor-home, like the Python
-/// meter), one line per pad in printed-label order (1..9, then 0).
-fn draw(boards: &[Board], start: Instant, params: SoftstepParams) {
+/// Redraw the whole screen in place (ANSI clear + cursor-home, like the Python meter).
+/// Every connected board gets its own labelled section; within each, the two
+/// most-recently-struck pads, newest first, each as four sensor bars then their sum
+/// bar, with the top pad's running hit-count, its last-hit line, and its event log.
+fn draw(boards: &[Board], start: Instant, params: SoftstepParams, audio_on: bool) {
   let now = Instant::now();
   let now_secs = now.duration_since(start).as_secs_f64();
   let silence = Duration::from_millis(params.silence_to_zero_ms);
 
   let mut lines = vec![
     String::new(),
-    "  SoftStep pressure meter (Rust) -- strike a pad: bar=pressure, peak-hold marked; pad 3=ditto".to_string(),
+    "  SoftStep pressure meter (Rust) -- the last two pads struck, newest on top;".to_string(),
+    "  each shows its 4 sensors then their sum -- bar (peak-hold |), value, recent max; pad 3 = ditto.".to_string(),
     "  keys: q + Enter quits (Ctrl-C also restores standalone mode)".to_string(),
   ];
 
@@ -505,18 +559,42 @@ fn draw(boards: &[Board], start: Instant, params: SoftstepParams) {
       lines.push(format!("  == {} ==", board.label));
     }
     let mut st = board.state.lock().unwrap_or_else(|e| e.into_inner());
-    for &(label, base) in LABEL_BASE.iter() {
-      let idx0 = (base - 40) as usize;
-      let sum: u16 = (0..4).map(|k| interp_shadow(&st.sensors, &st.last_seen, idx0 + k, now, silence)).sum();
-      let pad = &mut st.pads[label as usize];
-      let (pv, pt) = peak_hold_tick(sum, pad.peak_val, pad.peak_t, now_secs);
-      pad.peak_val = pv;
-      pad.peak_t = pt;
-      let bar = render_bar(sum, pv);
-      let pressure_s = if pad.last_pressure > 0.0 { format!("p={:.2}", pad.last_pressure) } else { "      ".to_string() };
-      let ditto = if label == DITTO_LABEL { "*" } else { " " };
-      lines.push(format!("  pad {label:<2}{ditto}[{bar}] {sum:3}  {pressure_s}  gain {:.2}", pad.last_gain));
+
+    if st.recent_pads.is_empty() {
+      lines.push("  (strike a pad -- the two most-recently-struck pads meter here)".to_string());
+      lines.push(String::new());
+    } else {
+      // Clone the short recent list so we can mutate the peak-hold state it points into.
+      let recent = st.recent_pads.clone();
+      for (pos, rp) in recent.iter().enumerate() {
+        let which = if pos == 0 { "newest" } else { "previous" };
+        let ditto = if rp.label == DITTO_LABEL { " *ditto" } else { "" };
+        lines.push(format!("  pad {} ({}){}  --  hits since top: {}", rp.label, which, ditto, rp.count));
+        let idx0 = (label_base(rp.label) - 40) as usize;
+        // Each of the pad's 4 sensors as its own 0..127 bar.
+        for k in 0..4 {
+          let idx = idx0 + k;
+          let v = interp_shadow(&st.sensors, &st.last_seen, idx, now, silence);
+          let (pv, pt) =
+            peak_hold_tick(v, st.sensor_peak_val[idx], st.sensor_peak_t[idx], now_secs, SENSOR_PEAK_DECAY_STEP);
+          st.sensor_peak_val[idx] = pv;
+          st.sensor_peak_t[idx] = pt;
+          let bar = render_bar(v, pv, SENSOR_MAX);
+          lines.push(format!("    {:<4}[{}] {:3}  max {:3}", format!("s{}", k + 1), bar, v, pv));
+        }
+        // Their sum as the 0..508 bar the meter used to show alone (with pressure + gain).
+        let sum: u16 = (0..4).map(|k| interp_shadow(&st.sensors, &st.last_seen, idx0 + k, now, silence)).sum();
+        let pad = &mut st.pads[rp.label as usize];
+        let (pv, pt) = peak_hold_tick(sum, pad.peak_val, pad.peak_t, now_secs, PEAK_DECAY_STEP);
+        pad.peak_val = pv;
+        pad.peak_t = pt;
+        let bar = render_bar(sum, pv, SUM_MAX);
+        let pressure_s = if pad.last_pressure > 0.0 { format!("p={:.2}", pad.last_pressure) } else { "      ".to_string() };
+        lines.push(format!("    {:<4}[{}] {:3}  max {:3}  {}  gain {:.2}", "sum", bar, sum, pv, pressure_s, pad.last_gain));
+        lines.push(String::new());
+      }
     }
+
     lines.push(format!("  last hit: {}", st.recent));
     for m in &st.messages {
       lines.push(format!("    {m}"));
@@ -533,7 +611,7 @@ fn draw(boards: &[Board], start: Instant, params: SoftstepParams) {
     params.pressure_full_scale,
     params.gain_db_range,
     params.silence_to_zero_ms,
-    if std::env::var_os("SOFTSTEP_METER_AUDIO").is_some() { "on" } else { "off" },
+    if audio_on { "on" } else { "off" },
   ));
   lines.push(String::new());
 
@@ -663,47 +741,124 @@ mod tests {
     // At rest (sum=0, peak=0) the bar is all dashes except column 0, which the peak
     // marker ('|') still occupies -- matching the Python meter's `bar[pk]='|'` when
     // `pk` is 0 (an idle peak-hold reads as column 0, not "no marker").
-    let empty = render_bar(0, 0);
+    let empty = render_bar(0, 0, SUM_MAX);
     assert_eq!(empty, format!("|{}", "-".repeat(BAR_WIDTH - 1)), "silent pad: no fill, peak marker at column 0");
-    let full = render_bar(508, 508);
+    let full = render_bar(508, 508, SUM_MAX);
     assert_eq!(full.chars().filter(|&c| c == '#').count(), BAR_WIDTH, "max sum fills the whole bar");
-    let half = render_bar(254, 254); // half of 508
+    let half = render_bar(254, 254, SUM_MAX); // half of 508
     let fill_count = half.chars().filter(|&c| c == '#' || c == '|').count();
     assert!(fill_count >= BAR_WIDTH / 2 - 1 && fill_count <= BAR_WIDTH / 2 + 1, "roughly half-filled: {half:?}");
   }
 
   #[test]
+  fn render_bar_uses_its_max_so_a_single_sensor_fills_at_127() {
+    // A sensor bar is the same shape as the sum bar, just full-scaled to 127 not 508.
+    let full = render_bar(127, 127, SENSOR_MAX);
+    assert_eq!(full.chars().filter(|&c| c == '#').count(), BAR_WIDTH, "a maxed sensor fills its whole bar");
+    let half = render_bar(64, 64, SENSOR_MAX);
+    let fill_count = half.chars().filter(|&c| c == '#' || c == '|').count();
+    assert!(fill_count >= BAR_WIDTH / 2 - 1 && fill_count <= BAR_WIDTH / 2 + 1, "half a sensor ~ half a bar: {half:?}");
+    // The same raw value reads much fuller on the sensor scale than on the sum scale.
+    let on_sensor = render_bar(100, 100, SENSOR_MAX).chars().filter(|&c| c == '#').count();
+    let on_sum = render_bar(100, 100, SUM_MAX).chars().filter(|&c| c == '#').count();
+    assert!(on_sensor > on_sum, "100 fills more of a 127-scale bar ({on_sensor}) than a 508-scale bar ({on_sum})");
+  }
+
+  #[test]
   fn render_bar_peak_marker_sits_ahead_of_a_decayed_current_value() {
-    let bar = render_bar(50, 300); // current has fallen well below the held peak
+    let bar = render_bar(50, 300, SUM_MAX); // current has fallen well below the held peak
     let peak_col = ((300.0f32 / SUM_MAX) * BAR_WIDTH as f32) as usize;
     assert_eq!(bar.chars().nth(peak_col), Some('|'), "peak marker at its own column: {bar:?}");
   }
 
   #[test]
   fn peak_hold_snaps_up_immediately_to_a_fresh_high() {
-    let (pv, pt) = peak_hold_tick(300, 100, 0.0, 0.05);
+    let (pv, pt) = peak_hold_tick(300, 100, 0.0, 0.05, PEAK_DECAY_STEP);
     assert_eq!(pv, 300, "a fresh high snaps the peak up immediately");
     assert_eq!(pt, 0.05, "and resets the hold clock to now");
   }
 
   #[test]
   fn peak_hold_sits_flat_until_the_hold_elapses_then_decays_every_tick() {
-    let (pv, pt) = peak_hold_tick(0, 300, 0.0, 0.1); // well within the 0.6s hold
+    let (pv, pt) = peak_hold_tick(0, 300, 0.0, 0.1, PEAK_DECAY_STEP); // well within the 0.6s hold
     assert_eq!((pv, pt), (300, 0.0), "held peak sits flat inside the hold window");
 
-    let (pv2, pt2) = peak_hold_tick(0, 300, 0.0, 0.7); // past the hold
+    let (pv2, pt2) = peak_hold_tick(0, 300, 0.0, 0.7, PEAK_DECAY_STEP); // past the hold
     assert_eq!(pv2, 300 - PEAK_DECAY_STEP, "decays by one step once the hold elapses");
     assert_eq!(pt2, 0.0, "the hold clock is NOT reset while decaying (mirrors the Python meter)");
 
     // A further tick without a fresh high keeps decaying (pt never advanced).
-    let (pv3, _) = peak_hold_tick(0, pv2, pt2, 0.75);
+    let (pv3, _) = peak_hold_tick(0, pv2, pt2, 0.75, PEAK_DECAY_STEP);
     assert_eq!(pv3, 300 - 2 * PEAK_DECAY_STEP);
   }
 
   #[test]
+  fn peak_hold_decay_step_scales_with_the_bar() {
+    // A 0..127 sensor bar falls by the smaller SENSOR_PEAK_DECAY_STEP, not the sum's step.
+    let (pv, _) = peak_hold_tick(0, 100, 0.0, 0.7, SENSOR_PEAK_DECAY_STEP);
+    assert_eq!(pv, 100 - SENSOR_PEAK_DECAY_STEP, "a sensor bar decays by its own, smaller step");
+  }
+
+  #[test]
   fn peak_hold_never_underflows_below_zero() {
-    let (pv, _) = peak_hold_tick(0, 10, 0.0, 10.0); // way past the hold, small peak
+    let (pv, _) = peak_hold_tick(0, 10, 0.0, 10.0, PEAK_DECAY_STEP); // way past the hold, small peak
     assert_eq!(pv, 0, "saturating_sub floors at 0, never wraps");
+  }
+
+  // ---- recent-pads bookkeeping (the two-pad meter + running hit count) ----
+
+  fn labels(recent: &[RecentPad]) -> Vec<u8> {
+    recent.iter().map(|p| p.label).collect()
+  }
+
+  #[test]
+  fn note_hit_first_press_puts_the_pad_on_top_with_a_fresh_count() {
+    let mut r = Vec::new();
+    note_hit(&mut r, 5);
+    assert_eq!(r.len(), 1);
+    assert_eq!((r[0].label, r[0].count), (5, 1), "a first press starts its count at 1");
+  }
+
+  #[test]
+  fn note_hit_bumps_the_count_while_the_same_pad_stays_on_top() {
+    let mut r = Vec::new();
+    note_hit(&mut r, 5);
+    note_hit(&mut r, 5);
+    note_hit(&mut r, 5);
+    assert_eq!(r.len(), 1, "re-striking the top pad does not add a row");
+    assert_eq!(r[0].count, 3, "each hit on the top pad advances its running count");
+  }
+
+  #[test]
+  fn note_hit_a_new_pad_takes_the_top_and_the_old_top_keeps_its_count_at_second() {
+    let mut r = Vec::new();
+    note_hit(&mut r, 5); // 5 -> top
+    note_hit(&mut r, 5); // 5 count 2
+    note_hit(&mut r, 7); // 7 -> top; 5 slides to second, keeping count 2
+    assert_eq!(labels(&r), vec![7, 5], "newest on top");
+    assert_eq!((r[0].label, r[0].count), (7, 1), "the new top starts fresh at 1");
+    assert_eq!((r[1].label, r[1].count), (5, 2), "the demoted pad keeps its count");
+  }
+
+  #[test]
+  fn note_hit_shows_only_the_two_most_recently_struck_pads() {
+    let mut r = Vec::new();
+    note_hit(&mut r, 1);
+    note_hit(&mut r, 2);
+    note_hit(&mut r, 3); // pad 1 falls off the bottom
+    assert_eq!(labels(&r), vec![3, 2], "only the two newest distinct pads remain");
+  }
+
+  #[test]
+  fn note_hit_re_striking_the_second_pad_promotes_it_with_a_fresh_count() {
+    let mut r = Vec::new();
+    note_hit(&mut r, 5); // top 5
+    note_hit(&mut r, 7); // top 7, second 5
+    note_hit(&mut r, 7); // top 7 count 2, second 5
+    note_hit(&mut r, 5); // 5 was at second -> back to top with a FRESH count; 7 demotes keeping 2
+    assert_eq!(labels(&r), vec![5, 7]);
+    assert_eq!(r[0].count, 1, "returning to the top resets the count to 1");
+    assert_eq!(r[1].count, 2, "the pad it displaced keeps the count it had on top");
   }
 
   #[test]
