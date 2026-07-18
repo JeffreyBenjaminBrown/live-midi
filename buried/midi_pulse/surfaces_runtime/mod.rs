@@ -337,6 +337,9 @@ struct Settings {
   /// startup red report of components that couldn't load stays on screen instead of
   /// scrolling away under key echoes as you play.
   echo_input: bool,
+  /// The EX-P volume pedals (`[[expression_pedals]]`), resolved to
+  /// `(pedal index = MPC-20 channel - 1, grid index)`.
+  expression_pedals: Vec<(usize, usize)>,
 }
 
 fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -538,6 +541,19 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
   // The `[surfaces]` table (trail knobs); absent -> defaults, so unchanged behaviour.
   let surfaces = rig.surfaces.unwrap_or_default();
 
+  // The EX-P volume pedals, by grid index (= position in `grids`). Validation
+  // already pinned channel to 1|2 and the monome to a play grid.
+  let expression_pedals = rig
+    .expression_pedals
+    .iter()
+    .filter_map(|p| {
+      grids
+        .iter()
+        .position(|g| g.monome_id == p.monome)
+        .map(|grid| (p.channel as usize - 1, grid))
+    })
+    .collect();
+
   Ok(Settings {
     grids,
     size,
@@ -571,6 +587,7 @@ fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
     slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
     tap_window: Duration::from_millis(surfaces.tap_tempo_window_ms),
     echo_input: rig.echo_input,
+    expression_pedals,
   })
 }
 
@@ -852,6 +869,17 @@ fn run(
   if plan.any_grid() && !no_audio {
     pulse_window::spawn(Arc::clone(&poly), num_grids);
   }
+  // The EX-P volume pedals' per-grid gains: unity until a pedal first moves. The
+  // pedal thread writes them (and re-aims sounding voices); note-ons read them
+  // through each grid's SurfaceSink. `no_audio` gates the thread like the cpal
+  // stream -- a headless/mock run must not open MIDI connections.
+  let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; num_grids]));
+  if !s.expression_pedals.is_empty() && !no_audio {
+    let map = s.expression_pedals.clone();
+    let voices_for_pedals = Arc::clone(&voices);
+    let gains = Arc::clone(&pedal_gains);
+    thread::spawn(move || expression_pedal_loop(map, voices_for_pedals, gains));
+  }
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -1067,6 +1095,7 @@ fn run(
         s.release,
         s.sustain_level,
         s.decay_secs,
+        Arc::clone(&pedal_gains),
       ),
     };
     handles.push(thread::spawn(move || grid_thread(rt)));
@@ -1962,6 +1991,49 @@ fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
     TempoFactorButton::Div2 => Some(0.5),
     TempoFactorButton::Div3 => Some(1.0 / 3.0),
     TempoFactorButton::Unity => None,
+  }
+}
+
+/// The EX-P volume-pedal thread: poll the MPC-20 bridge reader (~100 Hz) and aim
+/// each mapped grid at its pedal's position. Linear: the pedal's reliable ~1..119
+/// CC travel normalizes to an amplitude factor 0..1 (full heel = silent, full toe
+/// = unity; `expression_pedals::normalize`). The per-sample slew that keeps a
+/// sweep from zippering lives in the engine (`voices::GAIN_SLEW_SECS`) -- this
+/// thread only moves TARGETS: the shared per-grid gain (for future note-ons) and
+/// every sounding voice's `grid_gain_target`. A pedal that has never moved
+/// contributes unity, so an unplugged pedal cannot mute its grid. A missing
+/// bridge is a red report, not an error: the instrument plays on without pedals,
+/// like any other absent gear.
+fn expression_pedal_loop(
+  map: Vec<(usize, usize)>,
+  voices: Arc<Mutex<VoiceMap>>,
+  pedal_gains: Arc<Mutex<Vec<f32>>>,
+) {
+  use midi_pulse::expression_pedals::{PedalReader, DEFAULT_PORT, NUM_PEDALS};
+  let reader = match PedalReader::connect(DEFAULT_PORT) {
+    Ok(r) => r,
+    Err(e) => {
+      eprintln!("\x1b[1;31mexpression pedals skipped: {e}\x1b[0m");
+      return;
+    }
+  };
+  println!("expression pedals: connected to {:?}", reader.port_name());
+  let mut last = [f32::NAN; NUM_PEDALS];
+  while !STOP.load(Ordering::SeqCst) {
+    let pedals = reader.pedals();
+    for &(pedal, grid) in &map {
+      let p = pedals[pedal];
+      // No CC yet = no position to trust; keep unity rather than muting the grid.
+      if p.updates == 0 || last[pedal] == p.norm {
+        continue;
+      }
+      last[pedal] = p.norm;
+      if let Some(g) = pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).get_mut(grid) {
+        *g = p.norm;
+      }
+      synth::set_grid_pedal_gain(&voices, grid, p.norm);
+    }
+    thread::sleep(Duration::from_millis(10));
   }
 }
 
@@ -3059,6 +3131,14 @@ mod tests {
       assert_eq!(rect, Some([12, 0, 12, 0]), "monome {monome}'s edit-delete button");
     }
 
+    // The EX-P volume pedals: MPC-20 channel 1 -> grid a, channel 2 -> grid b,
+    // resolving to pedal indices 0/1 on grid indices 0/1.
+    let pedals: Vec<(u8, &str)> =
+      rig.expression_pedals.iter().map(|p| (p.channel, p.monome.as_str())).collect();
+    assert_eq!(pedals, [(1, "a"), (2, "b")]);
+    let s = resolve_settings(&rig).expect("resolves");
+    assert_eq!(s.expression_pedals, [(0, 0), (1, 1)]);
+
     // And it must resolve, not merely parse.
     resolve_settings(&rig).expect("the shipped rig resolves to Settings");
   }
@@ -3209,7 +3289,7 @@ mod tests {
 
     // A finger goes down: a voice sounds, and held_all carries it (what the grid
     // thread publishes on note-on, and what the pedal hook reads).
-    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     sink.note_on((3, 3), 20, Timbre::default(), None);
     held_all.lock().unwrap()[0].insert((3, 3), 20);
 
@@ -3247,7 +3327,7 @@ mod tests {
 
     // Two notes, both sustained on grid 0 (Jeff: "press two buttons, sustain them
     // both"), and one of them put into edit mode.
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
@@ -3505,8 +3585,8 @@ mod tests {
     feet_on[1].store(true, Ordering::Relaxed);
     assert!(hook("feet", 0, true), "pedal 0 = grid 1's accrete, now consumed");
     hook("feet", 0, false);
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
-    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5);
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
     a.note_on((5, 5), 20, Timbre::default(), None);
     a.sustain_note((5, 5), 20);
     b.note_on((6, 6), 31, Timbre::default(), None);

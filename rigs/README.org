@@ -662,6 +662,37 @@ no velocity, lossy on simultaneous presses -- is why tether mode is used at
 all.) See [[../../../learnings/keith-mcmillen-softstep.org]] for the device
 protocol.
 
+* Expression pedals (EX-P volume)
+
+An optional top-level ~[[expression_pedals]]~ array (surfaces runtime) binds the
+M-Audio EX-P expression pedals as simple LINEAR volume pedals, one per monome.
+The pedals reach the runtime via the MPC-20 -> host bridge
+(~tools/pedals/bridge.py~, which must be running on the HOST; both pedals send
+CC 21, one per MIDI channel) -- NOT via the SoftSteps' own EX-P jacks, whose CC
+the decoder deliberately drops.
+
+#+begin_src toml
+[[expression_pedals]]
+channel = 1   # MPC-20 MIDI channel, 1 or 2
+monome = "a"  # whose grid volume this pedal drives; must have an edo_note_grid
+
+[[expression_pedals]]
+channel = 2
+monome = "b"
+#+end_src
+
+The pedal's reliable ~1..119 CC travel maps linearly to an amplitude factor
+0..1: full heel = silent, full toe = unity. It applies to the grid's sounding
+voices AND its future notes, multiplying below the timbre amplitude and the
+volume fader, and the engine slews each voice toward the pedal (~20 ms time
+constant, per sample), so sweeps are smooth rather than zipper-stepping at CC
+rate. The position is absolute (a pedal parked at 0 recovers), and until a
+pedal's first CC it contributes unity -- an unplugged pedal never mutes its
+grid. If the bridge's "MPC-20 pedals" port is missing at startup, the runtime
+prints a red note and plays on without them. Rejected at load: a channel
+outside 1..2, the same channel or the same monome claimed twice, and a monome
+with no ~edo_note_grid~.
+
 * Optional display
 
 #+begin_src toml

@@ -113,6 +113,8 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       ramp_per_sample: 1.0 / (state.audio.attack_secs * state.sample_rate),
       sustain_env, decay_per_sample,
       timbre: crate::types::Timbre::default(),
+      grid_gain: 1.0,
+      grid_gain_target: 1.0,
       am_phase: 0.0,
       fm_phase: 0.0,
       rel_am_phase: 0.0,

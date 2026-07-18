@@ -46,6 +46,10 @@ pub struct Rig {
   /// present there must be exactly four entries.
   #[serde(default)]
   pub timbres: Vec<TimbreRig>,
+  /// The EX-P expression pedals (surfaces runtime), each bound as a LINEAR volume
+  /// pedal for one monome's grid. Absent = no pedals, behavior unchanged.
+  #[serde(default)]
+  pub expression_pedals: Vec<ExpressionPedalRig>,
   /// Echo each fingered note to the terminal (`press grid=.. x=.. y=.. f=.. Hz`).
   /// Off by default so a startup warning -- e.g. the surfaces runtime's red report of
   /// components that could not load for missing gear -- stays on screen instead of
@@ -113,6 +117,23 @@ pub struct TimbreRig {
 
 fn default_timbre_amplitude() -> f32 {
   1.0
+}
+
+/// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
+/// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
+/// deliberately drops) bound as a simple LINEAR volume for one monome's grid: the
+/// pedal's reliable ~1..119 CC travel maps to an amplitude factor 0..1 (full heel =
+/// silent, full toe = unity), applied to that grid's sounding and future voices and
+/// slewed in the engine (`voices::GAIN_SLEW_SECS`) so sweeps don't zipper. Until a
+/// pedal first moves it contributes unity, so an unplugged pedal never mutes a grid.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExpressionPedalRig {
+  /// The MPC-20 MIDI channel this pedal arrives on: 1 or 2 (both pedals send CC 21,
+  /// one per channel).
+  pub channel: u8,
+  /// The monome whose grid volume this pedal drives. Must have an `edo_note_grid`.
+  pub monome: String,
 }
 
 fn default_timbre_freq() -> f32 {
@@ -1676,9 +1697,42 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_single_cell_toggles(rig)?;
   validate_tap_tempo_pads(rig)?;
   validate_timbres(rig)?;
+  validate_expression_pedals(rig)?;
   validate_looper(rig)?;
   validate_softsteps(rig)?;
 
+  Ok(())
+}
+
+/// The `[[expression_pedals]]` bindings: channel 1 or 2, each channel and each
+/// monome claimed at most once, and the monome must be a play grid (it has voices
+/// to fade).
+fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
+  let mut channels: HashSet<u8> = HashSet::new();
+  let mut monomes: HashSet<&str> = HashSet::new();
+  for p in &rig.expression_pedals {
+    if !(1..=2).contains(&p.channel) {
+      return Err(format!(
+        "expression pedal channel must be 1 or 2 (the MPC-20's two channels), got {}",
+        p.channel,
+      ));
+    }
+    if !channels.insert(p.channel) {
+      return Err(format!("two expression pedals declare channel {}", p.channel));
+    }
+    let has_grid = rig.monome_windows.iter().any(
+      |w| matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if *m == p.monome),
+    );
+    if !has_grid {
+      return Err(format!(
+        "expression pedal (channel {}) targets monome {:?}, which has no edo_note_grid",
+        p.channel, p.monome,
+      ));
+    }
+    if !monomes.insert(p.monome.as_str()) {
+      return Err(format!("monome {:?} has two expression pedals", p.monome));
+    }
+  }
   Ok(())
 }
 
@@ -4001,6 +4055,40 @@ rel_fm_freq = 2.0
     // rel_fm_depth > 1 is legal: that is the through-zero region.
     assert_eq!(rig.timbres[3].rel_fm_depth, 1.5);
     assert_eq!(rig.timbres[3].rel_fm_freq, 2.0);
+  }
+
+  // ---- [[expression_pedals]] (the EX-P volume pedals) ----
+
+  const EXPRESSION_PEDALS: &str = r#"
+[[expression_pedals]]
+channel = 1
+monome = "a"
+[[expression_pedals]]
+channel = 2
+monome = "b"
+"#;
+
+  #[test]
+  fn expression_pedals_parse_and_default_to_none() {
+    let rig = parse_rig(&format!("{SURFACES_MIN}{EXPRESSION_PEDALS}")).expect("two pedals validate");
+    assert_eq!(rig.expression_pedals.len(), 2);
+    assert_eq!(rig.expression_pedals[0].channel, 1);
+    assert_eq!(rig.expression_pedals[1].monome, "b");
+    // Absent = empty: rigs without pedals are untouched.
+    let rig = parse_rig(SURFACES_MIN).expect("no pedals is fine");
+    assert!(rig.expression_pedals.is_empty());
+  }
+
+  #[test]
+  fn expression_pedals_reject_bad_channels_and_double_claims() {
+    let bad = |s: &str, contains: &str| {
+      let err = parse_rig(&format!("{SURFACES_MIN}{s}")).expect_err("must fail");
+      assert!(err.contains(contains), "{err}");
+    };
+    bad(&EXPRESSION_PEDALS.replace("channel = 2", "channel = 3"), "1 or 2");
+    bad(&EXPRESSION_PEDALS.replace("channel = 2", "channel = 1"), "two expression pedals");
+    bad(&EXPRESSION_PEDALS.replace("monome = \"b\"", "monome = \"a\""), "two expression pedals");
+    bad(&EXPRESSION_PEDALS.replace("monome = \"b\"", "monome = \"nope\""), "no edo_note_grid");
   }
 
   #[test]
