@@ -14,6 +14,8 @@ pressure_full_scale = 460   # pad sum-of-4 (0..508) that maps to full pressure (
 gain_db_range       = 20.0  # dB between the softest (pressure 0) and hardest (pressure 1) hit
 debounce_ms         = 100   # min gap between two hits on the SAME pad (contact-bounce guard); 0 = off
 silence_to_zero_ms  = 25    # a sensor with no CC for this long reads 0 (de-stick); 0 = off
+factor_settle_ms    = 150   # timing pedals (x2, /2, ...): minimum time from a fire until it may fire again
+factor_release_ms   = 25    # timing pedals: minimum time inactive (sum < off_sum) before it may fire again
 
 # Sum-of-4 at or above which a strike counts as HARD rather than light, so one pad can
 # serve two related purposes (tap lightly for one, stomp for the other). A raw sum, like

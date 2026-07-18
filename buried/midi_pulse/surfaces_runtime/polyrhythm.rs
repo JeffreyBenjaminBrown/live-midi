@@ -101,6 +101,18 @@ impl PolyrhythmState {
     }
   }
 
+  /// Seed a FIXED base tempo, for a rig with no way to tap (no tap pedal and no
+  /// on-grid tap pad). Without this the base would stay `None` and the tempo-factor
+  /// pedals would have nothing to multiply, so no factored pulse could ever run. The
+  /// phase anchor is `now`, so the on-screen blinker pulses at this rate from bring-up.
+  /// Tapping, where a rig offers it, still overrides this later.
+  pub fn set_fixed_tempo(&mut self, hz: f32, now: Instant) {
+    if hz > 0.0 {
+      self.tapped_period = Some(Duration::from_secs_f32(1.0 / hz));
+      self.anchor = Some(now);
+    }
+  }
+
   /// A press of the tap button at `now`, under the rolling `window`. Defines the
   /// global tapped tempo only -- no grid's cycling turns on.
   pub fn tap(&mut self, now: Instant, window: Duration) {
@@ -257,6 +269,21 @@ mod tests {
 
   fn two_grids() -> PolyrhythmState {
     PolyrhythmState::new(2)
+  }
+
+  #[test]
+  fn a_fixed_tempo_gives_the_factor_pedals_a_base_with_no_tapping() {
+    // A rig with no tap source seeds a fixed 1 Hz base, so the tempo-factor pedals still
+    // have something to multiply and the blinker still pulses.
+    let t0 = Instant::now();
+    let mut p = two_grids();
+    p.set_fixed_tempo(1.0, t0);
+    assert!((p.tapped_hz().unwrap() - 1.0).abs() < 1e-4, "base is a fixed 1 Hz");
+    // x2 on grid 0 -> its applied tempo is 2 Hz; grid 1 is independent at 1 Hz.
+    p.press(0, TempoFactorButton::Times2, t0);
+    assert!((p.applied_hz(0).unwrap() - 2.0).abs() < 1e-4, "x2 over the fixed base = 2 Hz");
+    assert!((p.applied_hz(1).unwrap() - 1.0).abs() < 1e-4, "the other grid stays at the base");
+    assert!(p.tap_blink(t0 + MS(10)), "the blinker runs off the fixed base");
   }
 
   #[test]

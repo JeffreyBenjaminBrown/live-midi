@@ -1170,6 +1170,12 @@ fn default_debounce_ms() -> u64 {
 fn default_silence_to_zero_ms() -> u64 {
   25
 }
+fn default_factor_settle_ms() -> u64 {
+  150
+}
+fn default_factor_release_ms() -> u64 {
+  25
+}
 
 fn default_pressure_threshold_sum() -> u16 {
   200
@@ -1204,6 +1210,18 @@ pub struct SoftstepParams {
   /// A sensor with no CC for this long reads 0 (de-stick); 0 = off.
   #[serde(default = "default_silence_to_zero_ms")]
   pub silence_to_zero_ms: u64,
+  /// For a momentary TIMING pedal (the tempo-factor pedals), the minimum time from a fire
+  /// until it may fire again. This caps how fast deliberate repeats can land. Only pads the
+  /// runtime marks `Settle` use it (see `DebounceMode::Settle`); drum and held pedals
+  /// ignore it and use `debounce_ms`.
+  #[serde(default = "default_factor_settle_ms")]
+  pub factor_settle_ms: u64,
+  /// For a TIMING pedal, the minimum time the pad must be inactive (sum below `off_sum`)
+  /// before it may fire again. This is the second half of the `Settle` re-arm rule: a
+  /// bouncing single stomp keeps re-activating the pad and so never stays inactive this
+  /// long, which is what collapses one stomp to one event.
+  #[serde(default = "default_factor_release_ms")]
+  pub factor_release_ms: u64,
   /// Sum-of-4 at or above which a strike counts as HARD rather than light -- the
   /// "one pad, two purposes" trick (tap lightly for one job, stomp for another).
   ///
@@ -1231,6 +1249,8 @@ impl Default for SoftstepParams {
       gain_db_range: default_gain_db_range(),
       debounce_ms: default_debounce_ms(),
       silence_to_zero_ms: default_silence_to_zero_ms(),
+      factor_settle_ms: default_factor_settle_ms(),
+      factor_release_ms: default_factor_release_ms(),
       pressure_threshold_sum: default_pressure_threshold_sum(),
     }
   }

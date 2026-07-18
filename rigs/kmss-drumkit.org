@@ -9,6 +9,13 @@ into the exact same rig as the old .toml did. Format reference (C-c C-o to follo
 See also softstep.toml (the shared SoftStep detection & velocity parameters).
 ** PARAM id = "kmss-drumkit"
 ** PARAM title = "KMSS Drumkit"
+** shared SoftStep parameters (softstep.toml)
+This rig drives at least one SoftStep board. Every board reads its detection and
+pressure parameters from the shared file rigs/softstep.toml, not from this rig
+file. That shared file holds the onset and release thresholds, the attack window,
+the pressure scaling, the contact-bounce and settle debounce guards, and the
+de-stick window. Every rig that uses a SoftStep reads the same file, and the
+meter reads it too, so one edit there reaches all of them at once.
 ** ELEM softsteps
 A simple drumkit on the Keith McMillen SoftStep (KMSS). Each pedal fires a
 one-shot drum sample, PRESSURE-SENSITIVE: on start the runtime switches the KMSS

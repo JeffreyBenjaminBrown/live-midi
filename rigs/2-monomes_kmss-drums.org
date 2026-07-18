@@ -11,6 +11,13 @@ exact same rig as the old .toml did. Format reference (C-c C-o to follow):
 See also softstep.toml (the shared SoftStep detection & velocity parameters).
 ** PARAM id = "2-monomes_kmss-drums"
 ** PARAM title = "Two monomes + KMSS drums"
+** shared SoftStep parameters (softstep.toml)
+This rig drives at least one SoftStep board. Every board reads its detection and
+pressure parameters from the shared file rigs/softstep.toml, not from this rig
+file. That shared file holds the onset and release thresholds, the attack window,
+the pressure scaling, the contact-bounce and settle debounce guards, and the
+de-stick window. Every rig that uses a SoftStep reads the same file, and the
+meter reads it too, so one edit there reaches all of them at once.
 ** TABLE surfaces
 ===========================================================================
 THREE SURFACES AT ONCE (see rigs/2-monomes_kmss-drums.org):

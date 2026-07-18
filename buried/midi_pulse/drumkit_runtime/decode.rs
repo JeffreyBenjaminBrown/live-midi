@@ -50,7 +50,9 @@ pub enum DrumEvent {
   /// `Revise{hard:true}`, exactly as the loudness does.
   Revise { label: u8, pressure: f32, hard: bool },
   /// The pad's pressure fell below the off threshold (or de-sticked to zero): the
-  /// foot lifted. One-shot samples ignore this; the feet-accrete mirror needs it
+  /// foot lifted. A lift INSIDE the attack window is held until the window closes (the pad
+  /// keeps watching for a late peak), so the Release lands at window close, not at the
+  /// instant of the lift. One-shot samples ignore this; the feet-accrete mirror needs it
   /// (holding a pedal = holding the accrete button). A debounce-suppressed press
   /// releases without ever having Fired -- consumers must tolerate an unpaired
   /// Release.
@@ -87,6 +89,32 @@ fn pressure_from_peak(peak: u16, full_scale: u16) -> f32 {
   (peak as f32 / full_scale.max(1) as f32).clamp(0.0, 1.0)
 }
 
+/// How a pad guards against contact bounce, chosen per pad (see `set_debounce_by_label`).
+///
+/// The pad KIND picks the mode: momentary TIMING pedals (the tempo-factor x2/x3/div2/div3
+/// pedals) want `Settle`; drum pads and HELD pedals (accrete) want `Standard`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DebounceMode {
+  /// Fire on onset, watch the attack window for a higher peak (`Revise`), re-arm on
+  /// release, and suppress a re-press within the decoder's `debounce` min-gap. Right for
+  /// drum pads (a fast double-tap is two real hits) and for HELD pedals like accrete
+  /// (every genuine press counts, and lifting must register at once).
+  Standard,
+  /// Settle debounce for a momentary TIMING pedal (the tempo-factor pedals). Fire once on
+  /// onset, emit no `Revise`, then accept no further fire until BOTH conditions hold:
+  /// at least `since_fire` has passed since that fire, AND the pad has been inactive (sum
+  /// below `off_sum`) for at least `quiet`.
+  ///
+  /// A single stomp on a bare fire-on-onset pad reads as many presses -- its sum dips and
+  /// re-crosses the threshold as the foot rocks, so `x2` is heard as `x2^10`. The `quiet`
+  /// condition kills that, because each dip-and-rise re-activates the pad and restarts the
+  /// inactivity clock, so a bouncing press never re-arms mid-stomp. The `since_fire`
+  /// condition caps how fast deliberate repeats can land. Jeff tuned this to be no more
+  /// aggressive than it must: after a long hold the pad re-arms `quiet` after the foot
+  /// lifts, not `since_fire` later, so quick repeats (x2, x2 = x4) stay responsive.
+  Settle { since_fire: Duration, quiet: Duration },
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PadState {
   Idle,
@@ -94,6 +122,11 @@ enum PadState {
   /// is the highest peak already emitted (Fire, then any Revises); we ramp up only when a
   /// strictly higher peak arrives -- comparing raw peaks, not a quantized velocity.
   Watching { onset: Instant, peak: u16, sent_peak: u16 },
+  /// `DebounceMode::Settle` hold after a fire: emit nothing until the pad may re-arm.
+  /// `inactive_since` is when the sum last fell below `off_sum` (or `None` while the pad
+  /// is active); any activity resets it. Re-arm to `Idle` only once `since_fire` has
+  /// passed since the fire (via `last_fire`) AND the pad has been inactive for `quiet`.
+  Settling { inactive_since: Option<Instant>, since_fire: Duration, quiet: Duration },
   Held,
 }
 
@@ -119,6 +152,9 @@ pub struct TetherDecoder {
   last_seen: [Option<Instant>; 40],
   /// When each pad last fired, for the debounce gate (`None` = never).
   last_fire: [Option<Instant>; NUM_PADS],
+  /// Per-pad bounce guard (index = slot). Every pad starts `Standard`; the runtime
+  /// switches the timing pedals to `Settle` from the rig via `set_debounce_by_label`.
+  debounce_mode: [DebounceMode; NUM_PADS],
 }
 
 impl TetherDecoder {
@@ -136,6 +172,16 @@ impl TetherDecoder {
       silence: Duration::from_millis(params.silence_to_zero_ms),
       last_seen: [None; 40],
       last_fire: [None; NUM_PADS],
+      debounce_mode: [DebounceMode::Standard; NUM_PADS],
+    }
+  }
+
+  /// Set one pad's bounce guard by its printed label (1..9, then 0 -- the same labels
+  /// `[[softstep_windows]]` uses in its `pedal` field). An unknown label is ignored, so
+  /// a rig that names a pedal this board does not have is harmless.
+  pub fn set_debounce_by_label(&mut self, label: u8, mode: DebounceMode) {
+    if let Some(slot) = SLOT_LABEL.iter().position(|&l| l == label) {
+      self.debounce_mode[slot] = mode;
     }
   }
 
@@ -173,14 +219,34 @@ impl TetherDecoder {
             let hard = is_hard(sum, self.pressure_threshold_sum);
             out.push(DrumEvent::Fire { label, pressure, hard });
             self.last_fire[slot] = Some(now);
-            PadState::Watching { onset: now, peak: sum, sent_peak: sum }
+            match self.debounce_mode[slot] {
+              // Timing pedal: no attack watch, no Revise -- go straight to settling and
+              // stay mute until it may re-arm (see `DebounceMode::Settle`). The pad is
+              // active at the fire, so the inactivity clock has not started.
+              DebounceMode::Settle { since_fire, quiet } => {
+                PadState::Settling { inactive_since: None, since_fire, quiet }
+              }
+              DebounceMode::Standard => PadState::Watching { onset: now, peak: sum, sent_peak: sum },
+            }
           }
         }
         PadState::Idle => PadState::Idle,
-        // Released (or de-sticked to 0) before the window closed: the voice plays out.
-        PadState::Watching { .. } if sum < self.off_sum => {
-          out.push(DrumEvent::Release { label });
-          PadState::Idle
+        // Settling (a fired timing pedal): emit nothing. Re-arm only once BOTH hold: at
+        // least `since_fire` has passed since the fire, AND the pad has been inactive
+        // (sum below off_sum) for `quiet`. Any activity restarts the inactivity clock, so
+        // a bouncing single stomp -- which keeps re-crossing off_sum -- never re-arms.
+        PadState::Settling { inactive_since, since_fire, quiet } => {
+          let inactive_since =
+            if sum < self.off_sum { inactive_since.or(Some(now)) } else { None };
+          let fired_long_ago =
+            matches!(self.last_fire[slot], Some(t) if now.duration_since(t) >= since_fire);
+          let quiet_enough =
+            matches!(inactive_since, Some(t) if now.duration_since(t) >= quiet);
+          if fired_long_ago && quiet_enough {
+            PadState::Idle
+          } else {
+            PadState::Settling { inactive_since, since_fire, quiet }
+          }
         }
         PadState::Watching { onset, peak, sent_peak } => {
           let peak = peak.max(sum);
@@ -193,8 +259,18 @@ impl TetherDecoder {
           } else {
             sent_peak
           };
+          // Keep watching until the window closes, even if the foot has already lifted
+          // (Jeff: a pad "should keep watching until its amplitude window has passed").
+          // The device scans only every ~10 ms, so a real strike's peak can land AFTER an
+          // early lift; holding the window open catches it instead of dropping it. Only
+          // once the window closes do we act on the lift: release if already down, else Held.
           if now.duration_since(onset) >= self.attack {
-            PadState::Held // window closed; final pressure locked in
+            if sum < self.off_sum {
+              out.push(DrumEvent::Release { label });
+              PadState::Idle
+            } else {
+              PadState::Held // window closed; final pressure locked in
+            }
           } else {
             PadState::Watching { onset, peak, sent_peak }
           }
@@ -450,17 +526,21 @@ mod tests {
     d.on_cc(44, 100, t0);
     d.poll(t0, &mut ev);
     assert_eq!(fires(&ev).len(), 1, "first hit fires");
-    // Release, then re-press ~10 ms after the first hit (inside the debounce window).
+    // Lift, and poll past the amplitude window so the pad re-arms to Idle (a lift inside the
+    // window is now held until the window closes -- see `a_release_event_follows_the_foot_lifting`).
     d.on_cc(44, 0, t0 + Duration::from_millis(2));
     d.poll(t0 + Duration::from_millis(2), &mut ev);
-    let onset2 = t0 + Duration::from_millis(10);
+    d.poll(t0 + ATTACK + Duration::from_millis(1), &mut ev);
+    // Re-press ~20 ms after the first hit: past the window, but inside the 50 ms debounce.
+    let onset2 = t0 + Duration::from_millis(20);
     d.on_cc(44, 100, onset2);
     ev.clear();
     d.poll(onset2, &mut ev);
     assert!(fires(&ev).is_empty(), "a re-press within debounce is suppressed");
-    // Release, then re-press well past the debounce window from the first hit.
+    // Lift and re-arm again, then re-press well past the debounce window from the first hit.
     d.on_cc(44, 0, onset2 + Duration::from_millis(2));
     d.poll(onset2 + Duration::from_millis(2), &mut ev);
+    d.poll(onset2 + ATTACK + Duration::from_millis(1), &mut ev);
     let onset3 = t0 + Duration::from_millis(120);
     d.on_cc(44, 100, onset3);
     ev.clear();
@@ -471,6 +551,118 @@ mod tests {
     ev.clear();
     d.poll(onset3, &mut ev);
     assert_eq!(fires(&ev).len(), 1, "debounce is per-pad");
+  }
+
+  // ---- Settle debounce for timing pedals (DebounceMode::Settle) ----
+
+  const SINCE_FIRE: Duration = Duration::from_millis(150);
+  const QUIET: Duration = Duration::from_millis(25);
+  fn settle() -> DebounceMode {
+    DebounceMode::Settle { since_fire: SINCE_FIRE, quiet: QUIET }
+  }
+
+  /// Drive one sensor of a pad to `val` at `t`, then poll, returning the events.
+  fn feed(d: &mut TetherDecoder, cc: u8, val: u8, t: Instant) -> Vec<DrumEvent> {
+    d.on_cc(cc, val, t);
+    let mut ev = Vec::new();
+    d.poll(t, &mut ev);
+    ev
+  }
+
+  #[test]
+  fn a_settle_pad_fires_once_through_a_bouncing_press() {
+    // The x2 -> x(2^10) bug: one physical stomp whose sum rocks up and down. A Standard
+    // pad would re-fire on every up-crossing; a Settle pad fires exactly once, because the
+    // sum keeps re-crossing off_sum so it is never inactive for 25 ms straight (and it is
+    // never 150 ms past the fire either).
+    let mut d = decoder(0, 0);
+    d.set_debounce_by_label(1, settle()); // base 44 = label 1
+    let t0 = Instant::now();
+    let mut fires_seen = 0;
+    for (i, &v) in [80u8, 5, 90, 3, 100, 0, 70, 4, 88, 2, 95, 6, 77].iter().enumerate() {
+      let ev = feed(&mut d, 44, v, t0 + Duration::from_millis(i as u64 * 2));
+      fires_seen += fires(&ev).len();
+    }
+    assert_eq!(fires_seen, 1, "a bouncing single press fires exactly once under Settle");
+  }
+
+  #[test]
+  fn a_settle_pad_does_not_retrigger_while_held_steady() {
+    let mut d = decoder(0, 0);
+    d.set_debounce_by_label(1, settle());
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "fires on onset");
+    // Held down well past 150 ms: still no second fire, because the pad never goes inactive
+    // (the inactivity clock never starts), so the quiet condition can never be met.
+    let mut later = Vec::new();
+    for ms in [200u64, 400, 800] {
+      let mut ev = Vec::new();
+      d.poll(t0 + Duration::from_millis(ms), &mut ev);
+      later.extend(ev);
+    }
+    assert!(fires(&later).is_empty(), "a held Settle pad never repeats: {later:?}");
+    assert!(revises(&later).is_empty(), "Settle emits no Revise: {later:?}");
+  }
+
+  #[test]
+  fn a_settle_pad_needs_both_time_since_fire_and_a_quiet_release_to_re_arm() {
+    let mut d = decoder(0, 0);
+    d.set_debounce_by_label(1, settle());
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "first stomp fires");
+    // Release, then stomp again at 50 ms. The pad has been quiet long enough by then, but
+    // it has NOT been 150 ms since the fire, so the stomp is swallowed.
+    d.on_cc(44, 0, t0 + Duration::from_millis(10));
+    d.poll(t0 + Duration::from_millis(10), &mut Vec::new());
+    assert!(
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(50))).is_empty(),
+      "a stomp before 150 ms since the fire is suppressed",
+    );
+    // Now let BOTH conditions come true: past 150 ms since the fire, and inactive for more
+    // than 25 ms. Then a fresh stomp fires.
+    d.on_cc(44, 0, t0 + Duration::from_millis(60));
+    d.poll(t0 + Duration::from_millis(60), &mut Vec::new()); // start the inactivity clock
+    d.poll(t0 + Duration::from_millis(200), &mut Vec::new()); // >150 since fire, quiet 140 ms
+    assert_eq!(
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(210))).len(),
+      1,
+      "re-arms once both conditions hold",
+    );
+  }
+
+  #[test]
+  fn a_settle_pad_re_arms_soon_after_a_long_hold_ends() {
+    // Jeff's less-aggressive rule: after a long hold the since-fire condition is already
+    // met, so the pad re-arms shortly (~25 ms) after the foot lifts, NOT 150 ms later.
+    let mut d = decoder(0, 0);
+    d.set_debounce_by_label(1, settle());
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "stomp fires");
+    d.poll(t0 + Duration::from_millis(300), &mut Vec::new()); // held well past since_fire
+    // Lift, then let the 25 ms quiet window pass -- only ~30 ms, far less than 150 ms.
+    d.on_cc(44, 0, t0 + Duration::from_millis(300));
+    d.poll(t0 + Duration::from_millis(300), &mut Vec::new()); // inactivity starts
+    d.poll(t0 + Duration::from_millis(330), &mut Vec::new()); // quiet 30 ms -> re-arm
+    assert_eq!(
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(340))).len(),
+      1,
+      "re-arms ~25 ms after the lift, not 150 ms later",
+    );
+  }
+
+  #[test]
+  fn settle_is_per_pad_and_leaves_standard_pads_alone() {
+    // Only label 1 is Settle; label 3 stays Standard and behaves as before.
+    let mut d = decoder(0, 0);
+    d.set_debounce_by_label(1, settle());
+    let t0 = Instant::now();
+    // Standard pad (label 3, base 60): fires, then a higher peak Revises within the window.
+    assert_eq!(fires(&feed(&mut d, 60, 60, t0)).len(), 1, "standard pad fires");
+    d.on_cc(60, 127, t0 + Duration::from_millis(5));
+    d.on_cc(61, 127, t0 + Duration::from_millis(5));
+    let mut ev = Vec::new();
+    d.poll(t0 + Duration::from_millis(5), &mut ev);
+    assert!(!revises(&ev).is_empty(), "a standard pad still Revises to a higher peak");
   }
 
   #[test]
@@ -486,9 +678,10 @@ mod tests {
 
   #[test]
   fn a_release_event_follows_the_foot_lifting() {
-    // Fire on press; a Release fires once the pad's sum falls below the off
-    // threshold -- whether that happens during the attack window or after it. The
-    // feet-accrete mirror relies on this down/up pairing (sensor base 44 = label 1).
+    // Fire on press; a Release follows once the foot lifts. A lift INSIDE the attack window
+    // is held until the window closes (the pad keeps watching for a late peak), so the
+    // Release lands at window close, not at the instant of the lift. The feet-accrete
+    // mirror relies on this down/up pairing (sensor base 44 = label 1).
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
     let mut ev = Vec::new();
@@ -500,7 +693,7 @@ mod tests {
     d.on_cc(44, 100, t0 + ATTACK * 2);
     d.poll(t0 + ATTACK * 2, &mut ev);
     assert!(!ev.iter().any(|e| matches!(e, DrumEvent::Release { .. })), "held: no Release");
-    // Lift the foot (sum to zero): a Release for the same label.
+    // Lift the foot (sum to zero) well past the window: a Release for the same label.
     ev.clear();
     d.on_cc(44, 0, t0 + ATTACK * 3);
     d.poll(t0 + ATTACK * 3, &mut ev);
@@ -508,17 +701,49 @@ mod tests {
       ev.iter().any(|e| matches!(e, DrumEvent::Release { label: 1 })),
       "the lift emits a Release: {ev:?}",
     );
-    // A quick tap released DURING the window also pairs Fire with Release.
+    // A quick tap that lifts DURING the window: the Release waits for the window to close.
+    let onset = t0 + ATTACK * 5;
+    d.on_cc(44, 100, onset);
     ev.clear();
-    d.on_cc(44, 100, t0 + ATTACK * 5);
-    d.poll(t0 + ATTACK * 5, &mut ev);
-    d.on_cc(44, 0, t0 + ATTACK * 5 + Duration::from_millis(2));
-    d.poll(t0 + ATTACK * 5 + Duration::from_millis(2), &mut ev);
-    assert!(ev.iter().any(|e| matches!(e, DrumEvent::Fire { label: 1, .. })));
+    d.poll(onset, &mut ev);
+    assert!(ev.iter().any(|e| matches!(e, DrumEvent::Fire { label: 1, .. })), "the tap fires");
+    // Lift 2 ms in; a poll now must NOT release yet -- the window is still open.
+    d.on_cc(44, 0, onset + Duration::from_millis(2));
+    ev.clear();
+    d.poll(onset + Duration::from_millis(2), &mut ev);
+    assert!(
+      !ev.iter().any(|e| matches!(e, DrumEvent::Release { .. })),
+      "an in-window lift does not release until the window closes: {ev:?}",
+    );
+    // A poll after the window closes finally emits the Release.
+    ev.clear();
+    d.poll(onset + ATTACK + Duration::from_millis(1), &mut ev);
     assert!(
       ev.iter().any(|e| matches!(e, DrumEvent::Release { label: 1 })),
-      "an in-window lift also emits a Release: {ev:?}",
+      "the Release lands once the window closes: {ev:?}",
     );
+  }
+
+  #[test]
+  fn a_late_peak_after_an_early_dip_revises_instead_of_refiring() {
+    // The reason a pad keeps watching through the window: the device scans only every
+    // ~10 ms, so a strike's true peak can land AFTER the sum has already dipped. That late
+    // peak must ramp the SAME voice (a Revise), not start a second one. Before this change
+    // the early dip re-armed the pad, and the late peak read as a fresh Fire.
+    let mut d = decoder(0, 0);
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 30, t0)).len(), 1, "onset fires light");
+    // The sum dips below off_sum early (a bounce, or the start of a lift), still in window.
+    let ev = feed(&mut d, 44, 0, t0 + Duration::from_millis(2));
+    assert!(ev.is_empty(), "the dip alone emits nothing: {ev:?}");
+    // A late, higher peak lands within the window: it Revises the same voice, no second Fire.
+    let mut ev = Vec::new();
+    d.on_cc(44, 120, t0 + Duration::from_millis(8));
+    d.on_cc(45, 120, t0 + Duration::from_millis(8));
+    d.on_cc(46, 90, t0 + Duration::from_millis(8));
+    d.poll(t0 + Duration::from_millis(8), &mut ev);
+    assert!(fires(&ev).is_empty(), "the late peak does not re-fire: {ev:?}");
+    assert!(!revises(&ev).is_empty(), "the late peak revises the voice up: {ev:?}");
   }
 
   #[test]
