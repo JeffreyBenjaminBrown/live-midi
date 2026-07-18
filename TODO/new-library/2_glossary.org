@@ -91,6 +91,15 @@ changes home when it is dragged.
 ** fingered voice
 A voice with a finger on its home.
 
+*** TODO jeff speaking: This feels glib.
+It sounds from the definition of 'home' like a sustained voice also has one.
+Therefore a sustained voice could also have a finger on its home.
+That should not make it a fingered voice.
+
+This observation has no practical implications yet.
+I don't yet have reason to believe anything is wrong in the code's behavior.
+I also don't know how to make the definition more precise yet.
+
 ** sustained voice
 A voice in the sustained set, which keeps sounding with no finger on it.
 

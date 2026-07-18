@@ -1,0 +1,8 @@
+* debounce SS pads
+I need signals from the SS pads massively debounced.
+Currently when I press x2 I can easily get something that sounds like x(2^10).
+Once a pad sends a single event, don't accept another positive-pressure event from that pad
+until the signals from it have not varied for at least 150 ms.
+A zero-pressure event should still be counted immediately (e.g. releasing the sustain pedal).
+
+Let's make this
