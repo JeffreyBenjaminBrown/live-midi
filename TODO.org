@@ -1,4 +1,3 @@
-* TODO queue.org
 * response (in org-format because it's long)
 I added a few TODO items to TODO/new-library/2_glossary.org;
 please (have the smallest mind you're completely confident in)
