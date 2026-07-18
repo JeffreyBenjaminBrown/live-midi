@@ -288,6 +288,29 @@ mod tests {
   }
 
   #[test]
+  fn retapping_the_base_preserves_each_grids_exponents() {
+    // Jeff's invariant: a grid's tempo is base x 2^x x 3^y with per-grid integer
+    // x, y, and changing the BASE (a retap) must not touch anyone's x or y --
+    // only the two factor buttons move them (and =1's zero-to-unity, which is a
+    // press on that grid, not a base change).
+    let t0 = Instant::now();
+    let mut p = two_grids();
+    p.set_fixed_tempo(1.0, t0);
+    p.press(0, TempoFactorButton::Times2, t0); // grid 0: 2^1
+    p.press(1, TempoFactorButton::Div3, t0); // grid 1: 3^-1
+    assert_eq!(p.tempo_factor_exponents(0), (1, 0));
+    assert_eq!(p.tempo_factor_exponents(1), (0, -1));
+    // Retap the base to 2 Hz: both grids' exponents survive, so their applied
+    // tempos scale together.
+    p.tap(t0, WINDOW);
+    p.tap(t0 + MS(500), WINDOW);
+    assert_eq!(p.tempo_factor_exponents(0), (1, 0), "grid 0's x, y survive the retap");
+    assert_eq!(p.tempo_factor_exponents(1), (0, -1), "grid 1's too");
+    assert!((p.applied_hz(0).unwrap() - 4.0).abs() < 1e-4, "2 Hz base x 2^1");
+    assert!((p.applied_hz(1).unwrap() - 2.0 / 3.0).abs() < 1e-4, "2 Hz base x 3^-1");
+  }
+
+  #[test]
   fn two_taps_within_the_window_set_the_tempo_for_both_grids() {
     let t0 = Instant::now();
     let mut p = two_grids();
