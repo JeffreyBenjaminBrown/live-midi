@@ -25,9 +25,10 @@ meter reads it too, so one edit there reaches all of them at once.
 FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 46-EDO play
 surface, and two SoftStep boards that carry the controls that would
 otherwise cost grid cells: sustain and the factored pulse.
-Each grid keeps three overlays -- a 4-cell waveform strip (top-left), a 3x2
-factored-pulse pad (top-right, doubling the NSS pedals), and a 3x2 scroll
-pad (bottom-right). Everything else on the grid is a note.
+Each grid keeps four overlays -- a 4-cell waveform strip (top-left), an
+edit-delete button at (12,0), a 3x2 factored-pulse pad (top-right, doubling
+the NSS pedals), and a 3x2 scroll pad (bottom-right). Everything else on the
+grid is a note.
 Launch under pw-jack so the synth shares the card via PipeWire:
 pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
 ===========================================================================
@@ -134,6 +135,15 @@ The six-button block from the kmss rig, back by request: | x3 x2 tap | over
 | /3 /2 =1 |. The factor buttons and =1 act on the same per-grid state as the
 NSS pedals (either surface works, hands or feet). The tap cell blinks the base
 tempo -- seeded at 1 Hz, so tapping is possible here but never necessary.
+**** ELEM monome_windows              # grid A: edit-delete button
+***** PARAM id = "edit-delete-btn-a"
+***** PARAM monome = "a"
+***** PARAM kind = "edit_delete_button"
+***** PARAM rect = [12, 0, 12, 0]
+Just left of the factored-pulse pad's x3. Key-down deletes -- silences and
+ends, the ordinary voice ending -- every voice in edit mode on this grid, and
+leaves edit mode empty. Same job as OSS pedal 7. Dim at rest, bright while
+pressed.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -166,15 +176,22 @@ GRID B = RNM, the RIGHT / newer monome. Varibright.
 ***** PARAM kind = "tap_tempo_pad"
 ***** PARAM rect = [13, 0, 15, 1]
 Same six-button block as grid A's, driving grid B's own factor and switch.
+**** ELEM monome_windows              # grid B: edit-delete button
+***** PARAM id = "edit-delete-btn-b"
+***** PARAM monome = "b"
+***** PARAM kind = "edit_delete_button"
+***** PARAM rect = [12, 0, 12, 0]
+Grid B's twin of grid A's edit-delete button (same job as OSS pedal 9).
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
 are NOT stable, so nothing here names one.
-*** old softstep: sustain
+*** old softstep: sustain + edit-delete
 Sustain is momentary only: hold to accrete, release to stop. Two controls per
 grid (clear + accrete) rather than the on-grid four -- needs_holding and erase
 stay in the library, just unbound here. The tap pedal that once sat here was
-retired; the base tempo is now a fixed 1 Hz.
+retired; the base tempo is a seeded 1 Hz. Each grid also gets an edit-delete
+pedal (7 for A, 9 for B): stomp to delete every voice in edit mode on that grid.
 Left buttons drive the left grid, right buttons the right grid.
 **** ELEM softsteps
 ***** PARAM id = "old"
@@ -210,10 +227,25 @@ The OLDER board, nearer Jeff. Not rotated, so its printed labels read
 ***** PARAM pedal = 5
 ***** PARAM monome = "b"
 ***** PARAM control = "clear"
-# The tap-tempo pedal was retired: Jeff never used it to set a tempo. With no tap
-# source, the runtime fixes the base tempo at 1 Hz (see rig_has_tap_source /
-# PolyrhythmState::set_fixed_tempo), so the x2 / /2 / ... pedals still have a base to
-# multiply. Pedals 3, 6, 7, 8, 9, 0 on this board are now free.
+**** ELEM softstep_windows            # pedal 7: delete grid A's edit-mode voices
+***** PARAM id = "edit-delete-a"
+***** PARAM softstep = "old"
+***** PARAM kind = "edit_delete_pedal"
+***** PARAM pedal = 7
+***** PARAM monome = "a"
+Delete = silence and end, the ordinary voice ending: every voice in edit mode
+on grid A rings out, and edit mode empties. Same job as the on-grid button at
+(12,0).
+**** ELEM softstep_windows            # pedal 9: delete grid B's edit-mode voices
+***** PARAM id = "edit-delete-b"
+***** PARAM softstep = "old"
+***** PARAM kind = "edit_delete_pedal"
+***** PARAM pedal = 9
+***** PARAM monome = "b"
+# The tap-tempo pedal was retired: Jeff never used it to set a tempo. The runtime
+# seeds the base tempo at 1 Hz (PolyrhythmState::set_fixed_tempo), so the x2 / /2 /
+# ... controls always have a base to multiply; the grid pads' tap cells can retap
+# it. Pedals 3, 6, 8, 0 on this board are now free.
 *** new softstep: the factored pulse, 5 controls per grid
 Each grid gets x2, x3, /2, /3 and =1. The far/near split follows Jeff's rule for
 the ambiguous middle column: nearer = left grid, farther = right grid.

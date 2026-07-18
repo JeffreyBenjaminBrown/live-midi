@@ -773,6 +773,16 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
   },
+  // A single-cell momentary button (surfaces runtime): key-down deletes -- silences
+  // and ends, by the ordinary release ramp -- every voice in edit mode on this
+  // monome's grid, dropping those pitches from its sustain bank and leaving edit
+  // mode empty (the grid plays again immediately). The same job as an
+  // `edit_delete_pedal`, on-grid.
+  EditDeleteButton {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // The 3x2 polyrhythm pad (surfaces runtime), by convention in the top-right:
   //   | x3 | x2 | tap |
   //   | /3 | /2 | =1  |
@@ -970,6 +980,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { id, .. }
       | MonomeWindowRig::MonoToggle { id, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { id, .. }
+      | MonomeWindowRig::EditDeleteButton { id, .. }
       | MonomeWindowRig::TapTempoPad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
@@ -1004,6 +1015,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { monome, .. }
       | MonomeWindowRig::MonoToggle { monome, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { monome, .. }
+      | MonomeWindowRig::EditDeleteButton { monome, .. }
       | MonomeWindowRig::TapTempoPad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
@@ -1038,6 +1050,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { rect, .. }
       | MonomeWindowRig::MonoToggle { rect, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { rect, .. }
+      | MonomeWindowRig::EditDeleteButton { rect, .. }
       | MonomeWindowRig::TapTempoPad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
@@ -1073,6 +1086,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
       MonomeWindowRig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
+      MonomeWindowRig::EditDeleteButton { .. } => "edit_delete_button",
       MonomeWindowRig::TapTempoPad { .. } => "tap_tempo_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
@@ -1313,6 +1327,17 @@ pub enum SoftstepWindowRig {
     monome: String,
     factor: PulseFactorRig,
   },
+  /// One pedal that deletes -- silences and ends, by the ordinary release ramp --
+  /// every voice in edit mode on one monome's grid, dropping those pitches from its
+  /// sustain bank and leaving edit mode empty (the grid plays again immediately).
+  /// The same job as an on-grid `edit_delete_button`.
+  EditDeletePedal {
+    id: String,
+    softstep: String,
+    pedal: u8,
+    /// The monome whose edited voices this deletes. Must have an `edo_note_grid`.
+    monome: String,
+  },
 }
 
 /// A pulse-factor pedal's job. The exponent factors are what the on-grid polyrhythm
@@ -1339,7 +1364,8 @@ impl SoftstepWindowRig {
       SoftstepWindowRig::Drumkit { id, .. }
       | SoftstepWindowRig::AccreteControl { id, .. }
       | SoftstepWindowRig::TapTempoPedal { id, .. }
-      | SoftstepWindowRig::PulseFactorPedal { id, .. } => id,
+      | SoftstepWindowRig::PulseFactorPedal { id, .. }
+      | SoftstepWindowRig::EditDeletePedal { id, .. } => id,
     }
   }
 
@@ -1348,7 +1374,8 @@ impl SoftstepWindowRig {
       SoftstepWindowRig::Drumkit { softstep, .. }
       | SoftstepWindowRig::AccreteControl { softstep, .. }
       | SoftstepWindowRig::TapTempoPedal { softstep, .. }
-      | SoftstepWindowRig::PulseFactorPedal { softstep, .. } => softstep,
+      | SoftstepWindowRig::PulseFactorPedal { softstep, .. }
+      | SoftstepWindowRig::EditDeletePedal { softstep, .. } => softstep,
     }
   }
 
@@ -1359,6 +1386,7 @@ impl SoftstepWindowRig {
       SoftstepWindowRig::AccreteControl { .. } => "accrete_control",
       SoftstepWindowRig::TapTempoPedal { .. } => "tap_tempo_pedal",
       SoftstepWindowRig::PulseFactorPedal { .. } => "pulse_factor_pedal",
+      SoftstepWindowRig::EditDeletePedal { .. } => "edit_delete_pedal",
     }
   }
 
@@ -1369,7 +1397,8 @@ impl SoftstepWindowRig {
       SoftstepWindowRig::Drumkit { pads, .. } => pads.iter().map(|p| p.pedal).collect(),
       SoftstepWindowRig::AccreteControl { pedal, .. }
       | SoftstepWindowRig::TapTempoPedal { pedal, .. }
-      | SoftstepWindowRig::PulseFactorPedal { pedal, .. } => vec![*pedal],
+      | SoftstepWindowRig::PulseFactorPedal { pedal, .. }
+      | SoftstepWindowRig::EditDeletePedal { pedal, .. } => vec![*pedal],
     }
   }
 }
@@ -1738,12 +1767,12 @@ fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
-/// The single-cell global toggles (`distortion_toggle`, `slide_toggle`,
-/// `mono_toggle`): each is one cell on a monome that has an `edo_note_grid`, at most
-/// one of each kind per monome (a second would be a redundant twin of the same
-/// global switch).
+/// The single-cell per-monome buttons (`distortion_toggle`, `slide_toggle`,
+/// `mono_toggle`, ..., plus the momentary `edit_delete_button`): each is one cell on
+/// a monome that has an `edo_note_grid`, at most one of each kind per monome (a
+/// second would be a redundant twin of the same control).
 fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
-  // (kind label, id, monome, rect) for every toggle window.
+  // (kind label, id, monome, rect) for every such window.
   let toggles = rig.monome_windows.iter().filter_map(|w| match w {
     MonomeWindowRig::DistortionToggle { id, monome, rect } => {
       Some(("distortion_toggle", id, monome, *rect))
@@ -1756,6 +1785,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     }
     MonomeWindowRig::SoftstepAccretesToggle { id, monome, rect } => {
       Some(("softstep_accretes_toggle", id, monome, *rect))
+    }
+    MonomeWindowRig::EditDeleteButton { id, monome, rect } => {
+      Some(("edit_delete_button", id, monome, *rect))
     }
     _ => None,
   });
@@ -1991,6 +2023,7 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
   // no defined behavior, and the old check only looked at drumkit pads.
   let mut tap_pedal: Option<(&str, u8)> = None;
   let mut factor_claims: HashSet<(&str, PulseFactorRig)> = HashSet::new();
+  let mut edit_delete_claims: HashSet<&str> = HashSet::new();
   let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
   // A pedal that drives a grid's accrete bank or pulse needs that grid to be a play
   // surface; the same requirement the on-grid accrete_control / tap_tempo_pad carry.
@@ -2058,6 +2091,20 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
           ));
         }
       }
+      SoftstepWindowRig::EditDeletePedal { id, monome, .. } => {
+        require_ref("softstep_window.monome", monome, &monome_ids)?;
+        if !play_grid_monomes.contains(monome.as_str()) {
+          return Err(format!(
+            "edit_delete_pedal window {id:?} targets monome {monome:?}, which has no edo_note_grid",
+          ));
+        }
+        // One per monome: a second would be a redundant twin of the same button.
+        if !edit_delete_claims.insert(monome.as_str()) {
+          return Err(format!(
+            "monome {monome:?} has two edit_delete_pedal windows ({id:?} is the second)",
+          ));
+        }
+      }
       SoftstepWindowRig::Drumkit { .. } => {}
     }
     match window {
@@ -2119,10 +2166,11 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
         }
       }
       // The single-pedal kinds are fully checked above (pedal range, one owner per
-      // pedal, monome refs, tap uniqueness, per-monome factor uniqueness).
+      // pedal, monome refs, tap uniqueness, per-monome factor/delete uniqueness).
       SoftstepWindowRig::AccreteControl { .. }
       | SoftstepWindowRig::TapTempoPedal { .. }
-      | SoftstepWindowRig::PulseFactorPedal { .. } => {}
+      | SoftstepWindowRig::PulseFactorPedal { .. }
+      | SoftstepWindowRig::EditDeletePedal { .. } => {}
     }
   }
 
