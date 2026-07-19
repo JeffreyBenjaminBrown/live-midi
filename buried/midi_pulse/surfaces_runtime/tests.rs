@@ -741,7 +741,7 @@
     }
     // The voice is now a drone, still sounding.
     let v = voices.lock().unwrap();
-    let drone_key = VoiceSource::Accreted { chord: synth::SUSTAIN_BASE, pitch: 20 };
+    let drone_key = VoiceSource::SurfaceDrone { grid: 0, pitch: 20 };
     assert!(v.contains_key(&drone_key), "the voice moved to the sustain register");
     assert!(v[&drone_key].target_env > 0.0, "and it is still sounding after the lift");
   }
@@ -773,7 +773,7 @@
     assert!(drive_accrete(
       0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
     ));
-    let drone = |pitch| VoiceSource::Accreted { chord: synth::SUSTAIN_BASE, pitch };
+    let drone = |pitch| VoiceSource::SurfaceDrone { grid: 0, pitch };
     {
       let v = voices.lock().unwrap();
       assert_eq!(v[&drone(10)].target_env, 0.0, "the sustain-only drone releases");
@@ -807,7 +807,7 @@
     accrete.lock().unwrap()[0].sustain_pitch(20);
 
     editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
-    let drone = |pitch| VoiceSource::Accreted { chord: synth::SUSTAIN_BASE, pitch };
+    let drone = |pitch| VoiceSource::SurfaceDrone { grid: 0, pitch };
     let v = voices.lock().unwrap();
     assert_eq!(v[&drone(10)].target_env, 0.0, "the edit-only drone ends");
     assert!(v[&drone(20)].target_env > 0.0, "the sustained drone keeps its other reason");
@@ -1099,11 +1099,8 @@
     hook("feet", 8, false);
     let v = voices.lock().unwrap();
     for (src, state) in v.iter() {
-      let VoiceSource::Accreted { chord, .. } = src else { continue };
-      if *chord < synth::SUSTAIN_BASE {
-        continue; // a fingered voice, not a drone
-      }
-      match chord - synth::SUSTAIN_BASE {
+      let VoiceSource::SurfaceDrone { grid, .. } = src else { continue };
+      match *grid {
         0 => assert_eq!(state.target_env, 1.0, "grid 0's drone keeps ringing"),
         1 => assert_eq!(state.target_env, 0.0, "grid 1's drone released by its clear"),
         g => panic!("unexpected sustained voice for grid {g}"),
