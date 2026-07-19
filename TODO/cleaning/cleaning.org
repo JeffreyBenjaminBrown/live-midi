@@ -60,6 +60,9 @@ worth it to tidy what exists. If done: derive-on-demand first (a pure
 function =reasons(grid, pitch)= used by every check), migrate checks one at a
 time, only then consider making it the owner.
 
+*** TODO big bang seems better
+but push back if you disagree.
+
 ** 2. A real key type for surface voices
 =synth.rs= packs everything into =VoiceSource::Accreted=: fingered voices as
 ={chord: grid, pitch: y*256+x}=, drones as ={chord: 0x100+grid}=, retired
@@ -82,6 +85,11 @@ improvement -- moving the remaining raw-offset matches in mod.rs behind
 synth.rs helper predicates (=is_grid_voice(src, grid)= etc.) -- gets ~80% of
 the clarity with none of the engine churn, and IS safe enough to just do.
 
+*** TODO Splitting the engine actually seems fine.
+Realistically, I won't use those earlier synths again;
+instead I'll ask to have features from them integrated into the newest.
+So we can do the principled thing without needing generics.
+
 ** 3. surfaces_runtime/mod.rs is a 3.7k-line god-module
 It holds: settings resolution, bring-up planning, thread spawning, the key
 dispatcher, LED painting, the pedal hook, the polyrhythm pad, the editmode
@@ -102,6 +110,10 @@ Verdict: do it opportunistically -- when a lull in feature work coincides
 with worktree 2 being merged -- and move ONLY tests out first (tests are
 half the file, conflict least, and their extraction is mechanical).
 
+*** TODO let's do it
+I'll keep the other branches stable while you do,
+or at worst add only simple features.
+
 ** 4. GridThread is a ~45-field god-struct
 Every overlay rect, every shared handle, every knob, flat. Adding a control
 means +2 fields in three places (struct, resolve, ctor) -- we did exactly
@@ -118,6 +130,11 @@ Dangers:
 Verdict: cheap and safe for the RECTS specifically (an =OverlayRects= struct
 + one resolve helper would have absorbed all three of this week's +2-field
 dances); leave the rest flat.
+
+*** TODO I'd prefer dividing it as much as one would do if coding from first principles.
+
+If that means more clones, whatever;
+performance has never been a problem.
 
 ** 5. Two volume mechanisms with different composition rules
 Per-grid loudness is the product of: timbre-slot amplitude x volume-fader
@@ -137,6 +154,14 @@ Verdict: leave the mechanisms; the improvement worth having is a short
 =learnings/volume-chain.org= documenting the whole chain in one place
 (cheap, zero risk) rather than a type.
 
+*** TODO I don't think the type would go wrong.
+It sounds like you're saying some volume factors are
+logarithmic factors to add in log space,
+while others are proportions to multiply in logarithmic space,
+yes? If so, types does seem like the natural way to do it,
+and again I don't think that's complex enough to go sideways.
+Besides, if it did I would run into it fast.
+
 ** 6. Rig-facing names that have drifted from the concepts
 - =tap_tempo_pad= is, in the current instrument, the FACTORED-PULSE pad; its
   readme needs a "terminology trap" note to explain the mismatch. Honest
@@ -145,11 +170,18 @@ Verdict: leave the mechanisms; the improvement worth having is a short
 - =[surfaces]= the table (your own "# TODO: this is a dumb name" in the rig):
   it is the grab-bag of instrument-wide scalars -- trail, slide, tap window.
   =[instrument]=? =[feel]=? Naming is yours to pick; mechanically trivial.
+  - TODO Can it be divided? The names in the divided table
+    could then be more useful.
 - =softstep_accretes_toggle= is the legacy hardcoded mirror, superseded in
   spirit by rig-declared =accrete_control= pedals; still referenced by the
   kmss rig.
+  - TODO Are you saying we should just stop referencing it?
 - =buried/= itself: ALL the live code lives there; the name actively
   misdirects (ORIENTATION now says so, but the name still says the opposite).
+  - TODO That's fine -- buried doesn't mean dead, just not being maintained.
+    Although anything we're still using in the latest rig
+    should not be buried. Buried things can refer on nonburied things,
+    but the reverse feels unnatural.
 
 Dangers:
 - Every one of these is a find/replace across code + rigs + readmes + DONE
@@ -158,6 +190,7 @@ Dangers:
   silently-broken rig ("unknown field" at load, loud but annoying
   mid-session). Renaming =buried/= additionally invalidates every path in
   every doc and the etags/build caches.
+
 Verdict: batch them into one deliberate "rename day" commit made when the
 worktrees are level, ideally by you (the names should be yours); none is
 worth doing piecemeal.
@@ -175,3 +208,6 @@ generated or replaced by a pointer.
 Danger: pointer-chasing costs readers something too -- your readmes are good
 BECAUSE they repeat with context. I would only de-duplicate parameter tables
 and defaults, never the prose.
+*** TODO I really like replacing duplication with pointers.
+Those pointers should be emacs-style relative links,
+to make them followable quickly.
