@@ -173,6 +173,16 @@ edit mode -- pure DESELECTION: an edited note is always sustained (edited ⊆
 sustained), so this ends NO voice; it only drops the selection. Silence an
 edited note by taking its sustain (the sustain clear / toggle / erase), which
 ends AND deselects it. Same job as OSS pedal 6. Dim at rest, bright while pressed.
+**** ELEM monome_windows              # grid A: chord-storage block
+***** PARAM id = "chords-a"
+***** PARAM monome = "a"
+***** PARAM kind = "chord_block"
+***** PARAM rect = [5, 0, 9, 1]
+Slots 1..5 (top row) over ARM + slots 6..9 (bottom row, arm at the left).
+Arm (the flashing cell) then press a slot to save every voice this grid is
+sounding; a disarmed slot press toggles the stored chord on (lit solid) and
+off. Centered-ish in the free span, with the bigger gap kept next to the
+editmode-clear at (12,0). See TODO/chord-storage-v2/.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -212,6 +222,12 @@ Same six-button block as grid A's, driving grid B's own factor and switch.
 ***** PARAM rect = [12, 0, 12, 0]
 ***** PARAM control = "clear"
 Grid B's twin of grid A's editmode-clear button (same job as OSS pedal 0).
+**** ELEM monome_windows              # grid B: chord-storage block
+***** PARAM id = "chords-b"
+***** PARAM monome = "b"
+***** PARAM kind = "chord_block"
+***** PARAM rect = [5, 0, 9, 1]
+Grid B's twin of grid A's chord block; its nine slots are its own.
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and

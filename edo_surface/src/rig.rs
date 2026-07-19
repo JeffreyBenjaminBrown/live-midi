@@ -877,6 +877,16 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
     control: AccreteControlKind,
   },
+  // The chord-storage block (surfaces runtime; TODO/chord-storage-v2): a 5x2
+  // compound overlaid on the edo grid. Top row = slots 1..5, bottom row = the ARM
+  // button then slots 6..9. Arm + slot press saves every voice the monome is
+  // sounding into that slot; a disarmed slot press toggles the stored chord on
+  // (recall) and off. Each monome's nine slots are independent of the other's.
+  ChordBlock {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // ---- Looper windows (see 6_plan.org). ----
   // The 3x2 shift pad overlaid on the lower-right of the edo grid.
   EdoShiftPad {
@@ -1047,6 +1057,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { id, .. }
       | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
+      | MonomeWindowRig::ChordBlock { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
       | MonomeWindowRig::LoopControl { id, .. }
@@ -1081,6 +1092,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { monome, .. }
       | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
+      | MonomeWindowRig::ChordBlock { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
       | MonomeWindowRig::LoopControl { monome, .. }
@@ -1115,6 +1127,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { rect, .. }
       | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
+      | MonomeWindowRig::ChordBlock { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
       | MonomeWindowRig::LoopControl { rect, .. }
@@ -1150,6 +1163,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
+      MonomeWindowRig::ChordBlock { .. } => "chord_block",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
       MonomeWindowRig::LoopControl { .. } => "loop_control",
@@ -1752,6 +1766,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_accrete_controls(rig)?;
   validate_single_cell_toggles(rig)?;
   validate_factored_pulse_pads(rig)?;
+  validate_chord_blocks(rig)?;
   validate_timbres(rig)?;
   validate_expression_pedals(rig)?;
   validate_looper(rig)?;
@@ -1891,6 +1906,49 @@ fn validate_factored_pulse_pads(rig: &Rig) -> Result<(), String> {
     if !seen.insert(monome.as_str()) {
       return Err(format!(
         "monome {monome:?} declares more than one factored_pulse_pad (window {id:?})"
+      ));
+    }
+  }
+  Ok(())
+}
+
+/// A `chord_block` is exactly 5x2 cells on a monome that has an `edo_note_grid`,
+/// at most one per monome (its ten sub-cells are the fixed slots 1..5 over
+/// arm + slots 6..9 layout).
+fn validate_chord_blocks(rig: &Rig) -> Result<(), String> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::ChordBlock { id, monome, rect } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x1 - x0 != 4 || y1 - y0 != 1 {
+      return Err(format!(
+        "chord_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 5x2 cells",
+      ));
+    }
+    let has_edo_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_edo_grid {
+      return Err(format!(
+        "chord_block window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = rig
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "chord_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!(
+        "monome {monome:?} declares more than one chord_block (window {id:?})"
       ));
     }
   }
@@ -4253,6 +4311,56 @@ rect = [13, 0, 15, 1]
     let err = parse_rig(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
       .expect_err("a 3x3 pad should fail");
     assert!(err.contains("exactly 3x2"), "{err}");
+  }
+
+  #[test]
+  fn chord_block_must_be_five_by_two_on_a_play_grid_at_most_once() {
+    let block = r#"
+[[monome_windows]]
+id = "chords-a"
+monome = "a"
+kind = "chord_block"
+rect = [5, 0, 9, 1]
+"#;
+    let rig = parse_rig(&format!("{SURFACES_MIN}{block}")).expect("a 5x2 block validates");
+    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::ChordBlock { .. })));
+
+    // Wrong shape.
+    let err = parse_rig(&format!(
+      "{SURFACES_MIN}{}",
+      block.replace("rect = [5, 0, 9, 1]", "rect = [5, 0, 8, 1]"),
+    ))
+    .expect_err("a 4x2 block should fail");
+    assert!(err.contains("exactly 5x2"), "{err}");
+
+    // No edo_note_grid on that monome: a third, grid-less monome "c".
+    let gridless = r#"
+[[monomes]]
+id = "c"
+listen_port = 9002
+prefix = "/c"
+select.size = [16, 16]
+"#;
+    let err = parse_rig(&format!(
+      "{SURFACES_MIN}{gridless}{}",
+      block.replace("monome = \"a\"", "monome = \"c\""),
+    ))
+    .expect_err("a block on a grid-less monome should fail");
+    assert!(err.contains("needs an edo_note_grid"), "{err}");
+
+    // Two blocks on one monome.
+    let twin = block.replace("chords-a", "chords-a2").replace("rect = [5, 0, 9, 1]", "rect = [5, 2, 9, 3]");
+    let err = parse_rig(&format!("{SURFACES_MIN}{block}{twin}"))
+      .expect_err("two blocks on one monome should fail");
+    assert!(err.contains("more than one chord_block"), "{err}");
+
+    // Off the grid.
+    let err = parse_rig(&format!(
+      "{SURFACES_MIN}{}",
+      block.replace("rect = [5, 0, 9, 1]", "rect = [12, 0, 16, 1]"),
+    ))
+    .expect_err("a block past the right edge should fail");
+    assert!(err.contains("must fit"), "{err}");
   }
 
   #[test]

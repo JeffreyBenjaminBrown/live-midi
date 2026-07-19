@@ -206,6 +206,7 @@
         poly_rect: NO_RECT,
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
+        chord_rect: NO_RECT,
       },
     }
   }
@@ -487,7 +488,8 @@
 
     // The grids carry ONLY these overlays (the factored-pulse pad and the
     // editmode-clear button came back / arrived by request after 2_discussion 2f
-    // pared the grids down); everything else is a note.
+    // pared the grids down; the chord block is TODO/chord-storage-v2); everything
+    // else is a note.
     let kinds: Vec<&str> = rig.monome_windows.iter().map(|w| w.kind_name()).collect();
     assert_eq!(
       kinds,
@@ -497,11 +499,13 @@
         "edo_shift_pad",
         "factored_pulse_pad",
         "editmode_control",
+        "chord_block",
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
         "factored_pulse_pad",
-        "editmode_control"
+        "editmode_control",
+        "chord_block"
       ],
       "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
     );

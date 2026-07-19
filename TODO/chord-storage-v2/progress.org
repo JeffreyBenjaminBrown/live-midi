@@ -1,0 +1,13 @@
+#+title: chord storage v2 -- progress
+
+Journal of the build, one entry per plan commit (see =3_plan.org= "commit
+order"). Deviations from the plan land here; the plan stays as written.
+
+* DONE 1. rig plumbing
+=MonomeWindowRig::ChordBlock { id, monome, rect }= ("chord_block"), validated
+exactly 5x2 / fits the grid / needs an =edo_note_grid= / at most one per
+monome (=validate_chord_blocks=, mirroring the pad's validator).
+=Overlays.chord_rect= resolved in =resolve_settings=. Both grids of
+=2-monomes_2-softsteps.org= carry the block at =[5, 0, 9, 1]=. Tests: the
+four validation rejections + the rig-pinning window-kind list updated.
+=cargo test --workspace=: 703 passed, 0 failed.
