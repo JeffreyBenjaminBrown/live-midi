@@ -379,16 +379,20 @@ overwrites it, and saving SILENCE changes nothing (disarms, slot untouched)
 Each voice is saved whole: pitch (a mid-glide save stores the glide's
 target), full timbre (mutations included), its settled loudness with the
 pedal's state baked in, its factored pulse as a FACTOR against the base
-tempo, and its phases RELATIVE to the chord's timesetter -- the voice
-furthest through its cycle (ties to the lowest pitch). Not saved, on
+tempo, and its phases as of the start of the BASE CYCLE -- the
+longest-period (lowest) voice's cycle. The save instant is rewound to that
+cycle's start, oscillators and pulses alike (one coherent instant), so a
+recall replays everything exactly as it sounded relative to the base cycle.
+Not saved, on
 purpose: the envelope (a recall re-strikes), edit/sustain membership (a
 recall never flips the grid into a pitch-picker), cells or the scroll
 register, and anything that is grid state rather than voice state.
 
 ** recalling
 A slot press while DISARMED is a toggle: on = the stored chord sounds (slot
-lit solid; each voice starts at its stored relative phase, striking through
-the normal attack -- the save-instant waveform configuration reproduced); off
+lit solid; the base voice starts at phase 0 and every other voice where it
+stood at the base cycle's start, striking through the normal attack -- the
+chord replayed from the top of its base cycle); off
 = its voices end by the ordinary release. An empty slot is inert and stays
 dim. Restart a chord by toggling off then on -- the brief dip is just the
 release and attack ramps (accepted by Jeff). Different slots layer freely,

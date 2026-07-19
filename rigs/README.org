@@ -533,7 +533,8 @@ press into a SAVE: every voice that monome is currently sounding -- fingered,
 sustained, and chord-layer voices alike, but never release tails -- is
 snapshotted into the slot (pitch, full timbre, settled loudness with the
 pedal baked in, factored pulse as a factor of the base tempo, and oscillator/
-pulse phases relative to the chord's timesetter), then storage disarms.
+pulse phases as of the start of the chord's BASE CYCLE -- its longest-period
+voice's cycle, from whose top a recall replays), then storage disarms.
 Saving silence disarms without touching the slot, so slots can be overwritten
 but never emptied. A DISARMED slot press is a toggle: on recalls the chord
 (voices re-strike at their stored relative phases, exempt from the volume

@@ -126,6 +126,19 @@ on-disk atomic round trip, garbage/version rejection, unknown-waveform drop.
 - =2-monomes_kmss-drums= is unaffected in behavior (no chord block -> the
   widened clear is a no-op there), so its readme is untouched.
 
+* DONE 9. correction: the base cycle (queues/branch-2.org)
+Jeff corrected the phase scheme post-landing: "longest phase -> longest
+period". =snapshot= now anchors on the LONGEST-PERIOD (lowest-pitch) voice
+and REWINDS the save instant to the start of that base cycle (=dt =
+phase_B / freq_B=), storing every oscillator phase -- and every pulse phase,
+same =dt=, one coherent instant -- as of then. The base stores exactly 0
+(special-cased so float rounding cannot wrap it to ~1); frequencies derive
+from the stored pitches (what a recall replays), not mid-glide live freqs;
+the separate pulse-reference fallback rule is gone. Old state files reload
+fine (same fields, phases are phases) but were written under the old
+anchoring; resave to re-anchor. Tests rewritten around an exact-octave pair.
+=cargo test --workspace=: 734 passed, 0 failed.
+
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's
   shared LFO phases (advanced at the new timbre's rates) for the fade's

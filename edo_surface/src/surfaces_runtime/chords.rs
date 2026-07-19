@@ -36,16 +36,19 @@ pub struct StoredVoice {
   /// live one.
   pub fader_gain: f32,
   pub pedal_gain: f32,
-  /// Oscillator phase RELATIVE to the chord's timesetter, in [0,1). The timesetter
-  /// itself stores 0 and every recall starts it there, reproducing the save-instant
-  /// waveform configuration (Jeff's phase reconsideration in 2_discussion).
+  /// Oscillator phase at the start of the BASE CYCLE, in [0,1). The base is the
+  /// chord's longest-period (lowest-frequency) voice; a recall replays the ensemble
+  /// from the most recent start of its cycle -- the base begins at exactly 0, and
+  /// every other voice begins wherever it was, in its own cycle AND relative to the
+  /// base cycle, at that instant (queues/branch-2.org correction: "longest phase ->
+  /// longest period"; "everything sounds the same relative to the base cycle").
   pub osc_phase: f32,
   /// The factored pulse as a FACTOR against the base tempo at save time (rate /
   /// base); recall multiplies by the base at recall, so a retapped tempo carries
   /// chords along. 0 = no pulse, and a recall cannot start one.
   pub pulse_factor: f32,
-  /// Pulse phase relative to the chord's pulse reference, in [0,1); 0 for unpulsed
-  /// voices.
+  /// Pulse phase at the start of the base cycle (the SAME time anchor as
+  /// `osc_phase` -- one coherent instant), in [0,1); 0 for unpulsed voices.
   pub pulse_phase: f32,
 }
 
@@ -196,61 +199,64 @@ impl ChordLayer {
   }
 }
 
-/// Build a [`StoredChord`] from the captured voices' live states (2_discussion "the
-/// timesetter"). `parts` is every captured voice as (current pitch, its `VoiceState`
-/// snapshot); `base_hz` is the base tempo at save time (pulse rates store as factors
-/// against it; a non-positive base stores every pulse as 0 -- unreachable, since the
-/// runtime always seeds a base).
+/// Build a [`StoredChord`] from the captured voices' live states. `parts` is every
+/// captured voice as (current pitch, its `VoiceState` snapshot); `base_hz` is the
+/// base tempo at save time (pulse rates store as factors against it; a non-positive
+/// base stores every pulse as 0 -- unreachable, since the runtime always seeds a
+/// base); `fund`/`edo` are the tuning, for the pitch -> frequency map.
 ///
-/// Timesetter = the voice furthest through its cycle (largest oscillator phase);
-/// ties -> lowest pitch -> first captured. The pulse reference is the timesetter if
-/// it pulses, else the pulsed voice chosen by the same rule over pulse phases.
-/// Envelope state is deliberately not read: a recall re-strikes. The pedal component
-/// reads `grid_gain_target` (the settled aim), not the mid-slew `grid_gain`.
-pub fn snapshot(parts: &[(i32, VoiceState)], base_hz: f32) -> StoredChord {
+/// *The base cycle* (queues/branch-2.org correction, superseding 2_discussion's
+/// largest-phase timesetter): the base is the LONGEST-PERIOD voice -- the lowest
+/// pitch (ties: the largest phase, then first captured; the caller feeds `parts`
+/// pitch-sorted, so this is deterministic). A recall replays the ensemble from the
+/// most recent START of the base's cycle: rewind the save instant by `dt =
+/// phase_B / freq_B` seconds, and store each voice's phase (and each pulse's
+/// phase -- the same `dt`, one coherent instant) as of then. The base therefore
+/// stores exactly 0, and every other voice stores where it was both in its own
+/// cycle and relative to the base cycle -- so everything sounds the same relative
+/// to the base cycle, which is the guarantee Jeff asked for.
+///
+/// Frequencies come from the stored PITCH (what a recall will sound), not the
+/// possibly-mid-glide live `freq`. Envelope state is deliberately not read: a
+/// recall re-strikes. The pedal component reads `grid_gain_target` (the settled
+/// aim), not the mid-slew `grid_gain`.
+pub fn snapshot(parts: &[(i32, VoiceState)], base_hz: f32, fund: f64, edo: i32) -> StoredChord {
   if parts.is_empty() {
     return StoredChord::default();
   }
-  let best_by = |phase_of: &dyn Fn(&VoiceState) -> f32, only_pulsed: bool| -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for (i, (pitch, state)) in parts.iter().enumerate() {
-      if only_pulsed && state.factored_pulse_freq <= 0.0 {
-        continue;
-      }
-      best = match best {
-        None => Some(i),
-        Some(b) => {
-          let (bp, bs) = (&parts[b].0, &parts[b].1);
-          let better = phase_of(state) > phase_of(bs)
-            || (phase_of(state) == phase_of(bs) && pitch < bp);
-          if better { Some(i) } else { Some(b) }
-        }
-      };
-    }
-    best
-  };
-  let timesetter = best_by(&|s: &VoiceState| s.phase, false).expect("parts is non-empty");
-  let osc_zero = parts[timesetter].1.phase;
-  let pulse_ref = if parts[timesetter].1.factored_pulse_freq > 0.0 {
-    Some(timesetter)
-  } else {
-    best_by(&|s: &VoiceState| s.factored_pulse_phase, true)
-  };
-  let pulse_zero = pulse_ref.map(|i| parts[i].1.factored_pulse_phase).unwrap_or(0.0);
+  let freq = |p: i32| crate::pitch::freq_for_pitch(p, fund, edo);
+  let base = parts
+    .iter()
+    .enumerate()
+    .min_by(|(_, (pa, sa)), (_, (pb, sb))| {
+      pa.cmp(pb).then(sb.phase.total_cmp(&sa.phase))
+    })
+    .map(|(i, _)| i)
+    .expect("parts is non-empty");
+  let (base_pitch, base_state) = &parts[base];
+  // The rewind to the base cycle's start, in seconds.
+  let dt = base_state.phase / freq(*base_pitch);
 
   let voices = parts
     .iter()
-    .map(|(pitch, state)| {
+    .enumerate()
+    .map(|(i, (pitch, state))| {
       let pulsed = state.factored_pulse_freq > 0.0 && base_hz > 0.0;
       StoredVoice {
         pitch: *pitch,
         timbre: state.timbre,
         fader_gain: state.fader_gain,
         pedal_gain: state.grid_gain_target,
-        osc_phase: (state.phase - osc_zero).rem_euclid(1.0),
+        // Exactly 0 for the base itself (not `x - x` through floats, which could
+        // round to a hair below 0 and wrap to ~1).
+        osc_phase: if i == base {
+          0.0
+        } else {
+          (state.phase - dt * freq(*pitch)).rem_euclid(1.0)
+        },
         pulse_factor: if pulsed { state.factored_pulse_freq / base_hz } else { 0.0 },
         pulse_phase: if pulsed {
-          (state.factored_pulse_phase - pulse_zero).rem_euclid(1.0)
+          (state.factored_pulse_phase - dt * state.factored_pulse_freq).rem_euclid(1.0)
         } else {
           0.0
         },
@@ -314,40 +320,64 @@ mod tests {
     assert_eq!(arm_cell(RECT), (5, 1));
   }
 
+  // Tuning for the snapshot tests: fund 100 Hz, 12-EDO, so pitch 0 = 100 Hz and
+  // pitch 12 = 200 Hz -- an exact octave makes the rewind math legible.
+  const FUND: f64 = 100.0;
+  const EDO: i32 = 12;
+
   #[test]
-  fn snapshot_picks_the_furthest_phase_as_timesetter_and_stores_relative_phases() {
-    // Voice at phase 0.75 is furthest -> timesetter (stores 0); the 0.25 voice
-    // stores 0.5 relative (0.25 - 0.75 mod 1).
-    let parts = vec![(10, state(0.25, 0.0, 0.0)), (20, state(0.75, 0.0, 0.0))];
-    let chord = snapshot(&parts, 1.0);
-    assert_eq!(chord.voices[1].osc_phase, 0.0, "the timesetter starts at 0");
-    assert_eq!(chord.voices[0].osc_phase, 0.5, "relative phase preserved");
+  fn snapshot_rewinds_everything_to_the_start_of_the_longest_period_voices_cycle() {
+    // The BASE is the lowest pitch (longest period), NOT the furthest phase
+    // (queues/branch-2.org correction). Base: pitch 0 at phase 0.25 -> the save
+    // instant rewinds by dt = 0.25 / 100 Hz. The octave voice (200 Hz, phase 0.9)
+    // rewinds by dt * 200 = 0.5 of its own cycle: it stores 0.4 -- where it was,
+    // in itself and relative to the base cycle, when the base cycle began.
+    let parts = vec![(0, state(0.25, 0.0, 0.0)), (12, state(0.9, 0.0, 0.0))];
+    let chord = snapshot(&parts, 1.0, FUND, EDO);
+    assert_eq!(chord.voices[0].osc_phase, 0.0, "the base cycle starts at exactly 0");
+    assert!((chord.voices[1].osc_phase - 0.4).abs() < 1e-6, "rewound in TIME, not rotated");
   }
 
   #[test]
-  fn snapshot_breaks_phase_ties_toward_the_lowest_pitch() {
-    let parts = vec![(20, state(0.5, 0.0, 0.0)), (10, state(0.5, 0.0, 0.0))];
-    let chord = snapshot(&parts, 1.0);
-    assert_eq!(chord.voices[1].osc_phase, 0.0, "pitch 10 wins the tie");
-    assert_eq!(chord.voices[0].osc_phase, 0.0, "same phase -> same relative offset");
+  fn a_base_already_at_its_cycle_start_leaves_every_phase_as_saved() {
+    // dt = 0: the save instant IS the base cycle's start, so every voice stores
+    // exactly the phase it was saved at.
+    let parts = vec![(0, state(0.0, 0.0, 0.0)), (7, state(0.33, 0.0, 0.0)), (12, state(0.8, 0.0, 0.0))];
+    let chord = snapshot(&parts, 1.0, FUND, EDO);
+    assert_eq!(chord.voices[0].osc_phase, 0.0);
+    assert_eq!(chord.voices[1].osc_phase, 0.33);
+    assert_eq!(chord.voices[2].osc_phase, 0.8);
   }
 
   #[test]
-  fn snapshot_stores_pulse_factors_against_the_base_and_relative_pulse_phases() {
-    // Base 2 Hz: a 3 Hz pulse stores factor 1.5. The timesetter (phase 0.9) is
-    // unpulsed, so the pulse reference falls to the pulsed voice with the largest
-    // pulse phase (0.6): it stores pulse_phase 0, the other 0.2 - 0.6 = 0.6 mod 1.
+  fn snapshot_breaks_lowest_pitch_ties_toward_the_largest_phase() {
+    // Two voices at the base pitch: the one further through its cycle is the base
+    // (deterministic), and the co-pitched voice keeps its spacing -- rewound by the
+    // same dt, at the same frequency, the 0.5 gap survives as 0.5.
+    let parts = vec![(0, state(0.2, 0.0, 0.0)), (0, state(0.7, 0.0, 0.0)), (12, state(0.1, 0.0, 0.0))];
+    let chord = snapshot(&parts, 1.0, FUND, EDO);
+    assert_eq!(chord.voices[1].osc_phase, 0.0, "the furthest-phase co-pitch is the base");
+    assert!((chord.voices[0].osc_phase - 0.5).abs() < 1e-6, "its twin keeps the 0.5 gap");
+  }
+
+  #[test]
+  fn snapshot_stores_pulse_factors_against_the_tempo_and_pulse_phases_at_the_same_anchor() {
+    // Base tempo 2 Hz: a 3 Hz pulse stores factor 1.5, a 4 Hz one factor 2. The
+    // pulses rewind by the SAME dt as the oscillators -- one coherent instant, no
+    // separate pulse reference. Base voice: pitch 0 (100 Hz) at phase 0.5 -> dt =
+    // 5 ms. The 3 Hz pulse rewinds 0.015 cycles (0.6 -> 0.585); the 4 Hz one 0.02
+    // (0.2 -> 0.18).
     let parts = vec![
-      (10, state(0.9, 0.0, 0.0)),   // timesetter, unpulsed
-      (20, state(0.1, 3.0, 0.6)),   // pulse reference
-      (30, state(0.2, 4.0, 0.2)),
+      (0, state(0.5, 0.0, 0.0)),    // the base, unpulsed -- no fallback needed
+      (12, state(0.1, 3.0, 0.6)),
+      (24, state(0.2, 4.0, 0.2)),
     ];
-    let chord = snapshot(&parts, 2.0);
+    let chord = snapshot(&parts, 2.0, FUND, EDO);
     assert_eq!(chord.voices[0].pulse_factor, 0.0, "unpulsed stays unpulsed");
     assert_eq!(chord.voices[1].pulse_factor, 1.5);
     assert_eq!(chord.voices[2].pulse_factor, 2.0);
-    assert_eq!(chord.voices[1].pulse_phase, 0.0, "the pulse reference starts at 0");
-    assert!((chord.voices[2].pulse_phase - 0.6).abs() < 1e-6, "relative pulse phase");
+    assert!((chord.voices[1].pulse_phase - 0.585).abs() < 1e-6, "rewound by the shared dt");
+    assert!((chord.voices[2].pulse_phase - 0.18).abs() < 1e-6);
   }
 
   #[test]
@@ -356,7 +386,7 @@ mod tests {
     s.grid_gain = 0.4; // mid-slew
     s.grid_gain_target = 0.7; // the settled aim
     s.fader_gain = 0.9;
-    let chord = snapshot(&[(10, s)], 1.0);
+    let chord = snapshot(&[(10, s)], 1.0, FUND, EDO);
     assert_eq!(chord.voices[0].pedal_gain, 0.7);
     assert_eq!(chord.voices[0].fader_gain, 0.9);
   }

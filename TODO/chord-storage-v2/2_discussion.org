@@ -45,6 +45,16 @@ phase 0". Interpretations, all reversible one-liners if I guessed wrong:
   the *save-instant offsets* reproduces the exact waveform configuration you
   froze, which then evolves exactly as it would have. That is a real,
   audible thing for close intervals and beating pairs; worth storing.
+
+Round 3 (queues/branch-2.org): SUPERSEDED in part -- Jeff corrected "longest
+phase" to "longest period". The base is the lowest-frequency voice, and a
+recall replays the ensemble from the most recent START of the base's cycle:
+the save instant is rewound by =dt = phase/freq= of the base, each voice
+(and each pulse -- the same =dt=, one coherent instant, which also dissolves
+the separate pulse-reference rule below) storing its phase as of then. The
+base begins at exactly 0; everything else begins where it stood, in its own
+cycle and relative to the base cycle. The attack-is-the-slew and
+carrier-only points above stand.
 - Carrier phase only. The timbre modulators (abs AM/FM LFOs, rel AM/FM)
   restart at recall exactly as they do at any note-on; their phases are not
   part of the stored picture.

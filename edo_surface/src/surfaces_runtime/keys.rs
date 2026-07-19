@@ -446,7 +446,7 @@ fn chord_save(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize)
   // Deterministic slot order (and deterministic timesetter tie-breaks): the held
   // and live registries iterate in arbitrary hash order.
   parts.sort_by_key(|(pitch, _)| *pitch);
-  let chord = chords::snapshot(&parts, base_hz);
+  let chord = chords::snapshot(&parts, base_hz, rt.tuning.fund, rt.tuning.edo);
   let file = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     rings[rt.grid_index].chord.save(slot, chord);
