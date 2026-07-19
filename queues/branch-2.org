@@ -1,1 +1,12 @@
 * ONGOING TODO/chord-storage-v2
+** correction in my earlier request : longest phase -> longest period
+Each voice at frequency higher than the base (longest) cycle
+has its phase recorded
+relative to the base cycle, as well as its own position in its own cycle. It
+resumes (after the attack slew) at both of those. This way I can guarantee that
+everything sounds the same relative to the base cycle.
+
+Unusually, the base cycle starts at phase=0,
+rather than wherever in that cycle we were when save happened.
+All the others begin wherever they were relative to it and in themselves
+when they were saved.
