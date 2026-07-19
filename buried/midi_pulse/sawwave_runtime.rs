@@ -105,8 +105,8 @@ struct RuntimeSettings {
   sustain_level: f32,
   decay_secs: f32,
   windows: Vec<Window>,
-  /// Echo each fingered note to stderr (`[surfaces].echo_input` / top-level
-  /// `echo_input`). Off by default; see the rig field's doc.
+  /// Echo each fingered note to stderr (top-level rig `echo_input`). Off by
+  /// default; see the rig field's doc.
   echo_input: bool,
 }
 

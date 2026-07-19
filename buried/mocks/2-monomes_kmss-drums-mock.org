@@ -8,7 +8,7 @@ into the exact same rig as the old .toml did. Format reference (C-c C-o to follo
 ** PARAM version = 1
 ** PARAM id = "2-monomes_kmss-drums-mock"
 ** PARAM title = "Two monomes + KMSS drums (mock grids)"
-** TABLE surfaces
+** about the rig
 ---------------------------------------------------------------------------
 Headless mock of the surfaces runtime: two mock 16x16 grids with the scroll
 pads, self-control waveform strips, and the accrete (sustain) button trios, driven with MIDI_PULSE_NO_AUDIO (no
@@ -18,16 +18,19 @@ no way to satisfy. This still exercises the two-grid discovery/bind, LED
 output, and press routing -- the device layer the pure tests can't. The runtime
 is still selected as "surfaces" (two edo grids on distinct monomes).
 ---------------------------------------------------------------------------
+** TABLE trail
 Shared recent-note trail -- mirror the real rig so mock play matches it.
-*** PARAM trail_clobber_radius = 27
+*** PARAM clobber_radius = 27
 1/27 of an octave (~44 cents); bigger = tighter
-*** PARAM trails_max = 9
-*** PARAM slide_candidate_window_ms = 1000
+*** PARAM max = 9
+** TABLE slide
+*** PARAM candidate_window_ms = 1000
 Slide (the slide_toggle windows): a new note may glide from a note released
 within this many ms...
-*** PARAM slide_duration_ms = 100
+*** PARAM duration_ms = 100
 ...taking this long to arrive at the new pitch.
-*** PARAM tap_tempo_window_ms = 2000
+** TABLE tap_tempo
+*** PARAM window_ms = 2000
 Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
 ** ELEM tunings
 *** PARAM id = "main"
@@ -139,7 +142,7 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM rect = [0, 1, 0, 1]
 ** ELEM monome_windows
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
-nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+nearest recently-released pitch and glides it into the new one. Knobs: [slide].
 *** PARAM id = "slide-a"
 *** PARAM monome = "a"
 *** PARAM kind = "slide_toggle"
@@ -163,7 +166,7 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+[tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
 =1 starts this grid's cycling (keeping the factor), snaps to unity on a second
 press, and stops on a fast double-tap. Notes struck while a tempo is applied and
@@ -235,7 +238,7 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM rect = [0, 1, 0, 1]
 ** ELEM monome_windows
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
-nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+nearest recently-released pitch and glides it into the new one. Knobs: [slide].
 *** PARAM id = "slide-b"
 *** PARAM monome = "b"
 *** PARAM kind = "slide_toggle"
@@ -259,7 +262,7 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+[tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
 =1 starts this grid's cycling (keeping the factor), snaps to unity on a second
 press, and stops on a fast double-tap. Notes struck while a tempo is applied and

@@ -1,5 +1,5 @@
   use super::*;
-  use midi_pulse::rig::{load_named_rig, SurfacesRig};
+  use midi_pulse::rig::{load_named_rig, SlideRig, TapTempoRig, TrailRig};
 
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
@@ -20,7 +20,7 @@
   #[test]
   fn trail_dedups_by_class_and_suppresses_neighbours() {
     let edo = 58;
-    // The `[surfaces]` defaults: 1/27 octave (58/27 ~= 2.1, so classes within 2 steps are
+    // The `[trail]` defaults: 1/27 octave (58/27 ~= 2.1, so classes within 2 steps are
     // neighbours) and up to 7 distinct classes.
     let clobber = 27;
     let trails_max = 7;
@@ -114,13 +114,9 @@
         *distortion_makeup_slew_ms = 42.0;
       }
     }
-    rig.surfaces = Some(SurfacesRig {
-      trail_clobber_radius: 13,
-      trails_max: 3,
-      slide_candidate_window_ms: 777,
-      tap_tempo_window_ms: 1234,
-      slide_duration_ms: 55,
-    });
+    rig.trail = Some(TrailRig { clobber_radius: 13, max: 3 });
+    rig.slide = Some(SlideRig { candidate_window_ms: 777, duration_ms: 55 });
+    rig.tap_tempo = Some(TapTempoRig { window_ms: 1234 });
 
     let s = resolve_settings(&rig).expect("resolves without hardware");
     assert_eq!(s.distortion, Distortion { scale: 0.37, shape: 4.25 });
@@ -162,19 +158,24 @@
   }
 
   #[test]
-  fn surfaces_defaults_when_table_absent() {
-    // Omitting `[surfaces]` changes nothing: the built-in defaults reach `Settings`.
-    // Built by REMOVING the table from a real surfaces rig, rather than leaning on
-    // some other rig happening not to declare one (which a rig edit could undo).
+  fn surfaces_defaults_when_tables_absent() {
+    // Omitting `[trail]` / `[slide]` / `[tap_tempo]` changes nothing: the built-in
+    // defaults reach `Settings`. Built by REMOVING the tables from a real surfaces
+    // rig, rather than leaning on some other rig happening not to declare them
+    // (which a rig edit could undo).
     let mut rig = load_named_rig("2-monomes_kmss-drums").expect("rig loads");
-    rig.surfaces = None;
+    rig.trail = None;
+    rig.slide = None;
+    rig.tap_tempo = None;
     let s = resolve_settings(&rig).expect("resolves without hardware");
-    let d = SurfacesRig::default();
-    assert_eq!((d.trail_clobber_radius, d.trails_max), (27, 7), "the code's own defaults");
-    assert_eq!(s.trail_clobber_radius, d.trail_clobber_radius);
-    assert_eq!(s.trails_max, d.trails_max);
-    assert_eq!(s.slide_window, Duration::from_millis(d.slide_candidate_window_ms));
-    assert_eq!(s.tap_window, Duration::from_millis(d.tap_tempo_window_ms));
+    let d_trail = TrailRig::default();
+    let d_slide = SlideRig::default();
+    let d_tap_tempo = TapTempoRig::default();
+    assert_eq!((d_trail.clobber_radius, d_trail.max), (27, 7), "the code's own defaults");
+    assert_eq!(s.trail_clobber_radius, d_trail.clobber_radius);
+    assert_eq!(s.trails_max, d_trail.max);
+    assert_eq!(s.slide_window, Duration::from_millis(d_slide.candidate_window_ms));
+    assert_eq!(s.tap_window, Duration::from_millis(d_tap_tempo.window_ms));
   }
 
   /// A minimal self-controlling grid for the `plan_bringup` tests: `id`'s selector
@@ -1009,7 +1010,7 @@
       WAVE_SQUARE,
       "waveform = \"square\"\n*** PARAM abs_fm_depth_cents = 25.0\n*** PARAM rel_fm_depth = 1.5",
     );
-    let edited = must_replace(&edited, "slide_duration_ms = 100", "slide_duration_ms = 250");
+    let edited = must_replace(&edited, "duration_ms = 100", "duration_ms = 250");
     // "Add" an expression pedal with a non-default taper: the pedal thread re-reads
     // Live every poll, so the curve_* knobs are exactly as live as the rest.
     let edited = format!(

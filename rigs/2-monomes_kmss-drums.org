@@ -18,7 +18,7 @@ file. That shared file holds the onset and release thresholds, the attack window
 the pressure scaling, the contact-bounce and settle debounce guards, and the
 de-stick window. Every rig that uses a SoftStep reads the same file, and the
 meter reads it too, so one edit there reaches all of them at once.
-** TABLE surfaces
+** about the rig
 ===========================================================================
 THREE SURFACES AT ONCE (see rigs/2-monomes_kmss-drums.org):
 - two 16x16 monome grids, each a full 46-EDO play surface with its own
@@ -32,20 +32,24 @@ the other), each in its grid's currently-selected waveform.
 Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
 pw-jack cargo run --bin midi_pulse -- 2-monomes_kmss-drums
 ===========================================================================
+** TABLE trail
 Shared recent-note trail (the dim backdrop of the last few played pitch classes).
-*** PARAM trail_clobber_radius = 27
+*** PARAM clobber_radius = 27
 Clobber radius as a divisor of the octave: a played note clears any trailed class
-within edo/trail_clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents);
+within edo/clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents);
 bigger = tighter = fewer potential neighbors to clobber.
-*** PARAM trails_max = 9
+*** PARAM max = 9
 How many distinct pitch classes the trail keeps at once (newest first).
-*** PARAM slide_candidate_window_ms = 1000
-Slide (the slide_toggle windows): a new note may glide from a note released
-within this many ms...
-*** PARAM slide_duration_ms = 100
+** TABLE slide
+Timing knobs for the slide_toggle windows.
+*** PARAM candidate_window_ms = 1000
+A new note may glide from a note released within this many ms...
+*** PARAM duration_ms = 100
 ...taking this long to arrive at the new pitch.
-*** PARAM tap_tempo_window_ms = 2000
-Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
+** TABLE tap_tempo
+Pairing window for the tap_tempo_pad.
+*** PARAM window_ms = 2000
+Two taps at most this far apart set the tempo.
 ** ELEM tunings
 *** PARAM id = "main"
 *** PARAM edo = 46
@@ -212,7 +216,7 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM rect = [0, 1, 0, 1]
 ** ELEM monome_windows              # grid A: slide toggle
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
-nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+nearest recently-released pitch and glides it into the new one. Knobs: [slide].
 *** PARAM id = "slide-a"
 *** PARAM monome = "a"
 *** PARAM kind = "slide_toggle"
@@ -236,7 +240,7 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows              # grid A: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+[tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
 =1 starts this grid's cycling (keeping the factor), snaps to unity on a second
 press, and stops on a fast double-tap. Notes struck while a tempo is applied and
@@ -311,7 +315,7 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM rect = [0, 1, 0, 1]
 ** ELEM monome_windows              # grid B: slide toggle
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
-nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+nearest recently-released pitch and glides it into the new one. Knobs: [slide].
 *** PARAM id = "slide-b"
 *** PARAM monome = "b"
 *** PARAM kind = "slide_toggle"
@@ -335,7 +339,7 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows              # grid B: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+[tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
 =1 starts this grid's cycling (keeping the factor), snaps to unity on a second
 press, and stops on a fast double-tap. Notes struck while a tempo is applied and

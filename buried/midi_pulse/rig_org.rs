@@ -328,23 +328,23 @@ A grouping headline; its ELEM child attaches to the root.
 
   #[test]
   fn nested_tables_and_grouping_are_transparent() {
-    // [surfaces] as a TABLE, its knobs under a transparent grouping headline.
+    // [trail] as a TABLE, its knobs under a transparent grouping headline.
     let org = r#"
 * rig
 ** PARAM version = 1
 ** PARAM id = "r"
 ** PARAM title = "R"
-** TABLE surfaces
+** TABLE trail
 The shared trail knobs.
 *** the knobs
-A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
-**** PARAM trails_max = 5
-**** PARAM trail_clobber_radius = 20
+A grouping headline inside the TABLE: its PARAMs still land in [trail].
+**** PARAM max = 5
+**** PARAM clobber_radius = 20
 "#;
     let rig = parse_org_rig(org).expect("parses");
-    let s = rig.surfaces.expect("surfaces table present");
-    assert_eq!(s.trails_max, 5);
-    assert_eq!(s.trail_clobber_radius, 20);
+    let s = rig.trail.expect("trail table present");
+    assert_eq!(s.max, 5);
+    assert_eq!(s.clobber_radius, 20);
   }
 
   #[test]
@@ -449,9 +449,9 @@ A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
 *** PARAM listen_port = 9000       # must be unique across monomes
 *** PARAM prefix = "/256-1-cable"
 *** PARAM select.size = [16, 16]   # a dotted key, an inline array, and a note
-** TABLE surfaces                  # the shared trail knobs
-*** PARAM trails_max = 5           # 1.0 = full scale (an '=' inside the comment)
-*** PARAM trail_clobber_radius = 20#no space before the hash
+** TABLE trail                     # the shared trail knobs
+*** PARAM max = 5                  # 1.0 = full scale (an '=' inside the comment)
+*** PARAM clobber_radius = 20#no space before the hash
 "#;
     let plain = r#"
 * rig
@@ -463,16 +463,16 @@ A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
 *** PARAM listen_port = 9000
 *** PARAM prefix = "/256-1-cable"
 *** PARAM select.size = [16, 16]
-** TABLE surfaces
-*** PARAM trails_max = 5
-*** PARAM trail_clobber_radius = 20
+** TABLE trail
+*** PARAM max = 5
+*** PARAM clobber_radius = 20
 "#;
     let a = parse_org_rig(commented).expect("comments parse");
     let b = parse_org_rig(plain).expect("the uncommented twin parses");
     assert_eq!(a, b, "a `#` comment cannot change the rig it annotates");
     assert_eq!(a.monomes[0].prefix, "/256-1-cable");
-    let s = a.surfaces.expect("TABLE surfaces survived its comment");
-    assert_eq!((s.trails_max, s.trail_clobber_radius), (5, 20));
+    let s = a.trail.expect("TABLE trail survived its comment");
+    assert_eq!((s.max, s.clobber_radius), (5, 20));
   }
 
   #[test]
@@ -512,25 +512,25 @@ A grouping headline inside the TABLE: its PARAMs still land in [surfaces].
 ** PARAM version = 1
 ** PARAM id = "r"
 ** PARAM title = "R"
-** TABLE surfaces
-*** PARAM trails_max = 5
-*** # PARAM trail_clobber_radius = 20
+** TABLE trail
+*** PARAM max = 5
+*** # PARAM clobber_radius = 20
 "#;
     let rig = parse_org_rig(missing_param).expect("parses; the commented PARAM is absent");
-    let s = rig.surfaces.expect("surfaces present");
-    assert_eq!(s.trails_max, 5);
-    assert_eq!(s.trail_clobber_radius, 27, "the commented-out key fell back to its default");
+    let s = rig.trail.expect("trail present");
+    assert_eq!(s.max, 5);
+    assert_eq!(s.clobber_radius, 27, "the commented-out key fell back to its default");
 
     let orphaned = r#"
 * rig
 ** PARAM version = 1
 ** PARAM id = "r"
 ** PARAM title = "R"
-** # TABLE surfaces
-*** PARAM trails_max = 5
+** # TABLE trail
+*** PARAM max = 5
 "#;
     let err = parse_org_rig(orphaned).expect_err("orphaned children are rejected, not ignored");
-    assert!(err.contains("trails_max"), "the error names the orphan: {err}");
+    assert!(err.contains("max"), "the error names the orphan: {err}");
   }
 
   #[test]

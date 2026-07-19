@@ -139,16 +139,16 @@ pub(super) struct Settings {
   /// Lag on the applied makeup (cpal_synth `distortion_makeup_slew_ms`). 0 = exact.
   pub(super) distortion_makeup_slew_secs: f32,
   pub(super) has_drums: bool,
-  /// Trail clobber radius as a divisor of the octave (`[surfaces].trail_clobber_radius`):
+  /// Trail clobber radius as a divisor of the octave (`[trail].clobber_radius`):
   /// a played note clears trailed classes within `edo / this` steps of it.
   pub(super) trail_clobber_radius: i32,
-  /// Max distinct pitch classes in the shared trail (`[surfaces].trails_max`).
+  /// Max distinct pitch classes in the shared trail (`[trail].max`).
   pub(super) trails_max: usize,
-  /// The slide feature's knobs (`[surfaces]`): how recently a note must have been
+  /// The slide feature's knobs (`[slide]`): how recently a note must have been
   /// released to be a slide source, and how long the glide takes.
   pub(super) slide_window: Duration,
   pub(super) slide_duration_secs: f32,
-  /// The tap-tempo pairing window (`[surfaces].tap_tempo_window_ms`).
+  /// The tap-tempo pairing window (`[tap_tempo].window_ms`).
   pub(super) tap_window: Duration,
   /// Echo each fingered note to stderr (top-level `echo_input`). Off by default so the
   /// startup red report of components that couldn't load stays on screen instead of
@@ -363,8 +363,11 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     .and_then(|m| m.select.size)
     .unwrap_or([16, 16]);
 
-  // The `[surfaces]` table (trail knobs); absent -> defaults, so unchanged behaviour.
-  let surfaces = rig.surfaces.unwrap_or_default();
+  // The `[trail]` / `[slide]` / `[tap_tempo]` tables; each absent -> its own
+  // defaults, so unchanged behaviour.
+  let trail = rig.trail.unwrap_or_default();
+  let slide = rig.slide.unwrap_or_default();
+  let tap_tempo = rig.tap_tempo.unwrap_or_default();
 
   // The EX-P volume pedals, by grid index (= position in `grids`). Validation
   // already pinned channel to 1|2, the monome to a play grid, and the curve
@@ -410,11 +413,11 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     distortion_auto_makeup: *distortion_auto_makeup,
     distortion_makeup_slew_secs: *distortion_makeup_slew_ms / 1000.0,
     has_drums: !rig.softstep_windows.is_empty(),
-    trail_clobber_radius: surfaces.trail_clobber_radius,
-    trails_max: surfaces.trails_max,
-    slide_window: Duration::from_millis(surfaces.slide_candidate_window_ms),
-    slide_duration_secs: surfaces.slide_duration_ms as f32 / 1000.0,
-    tap_window: Duration::from_millis(surfaces.tap_tempo_window_ms),
+    trail_clobber_radius: trail.clobber_radius,
+    trails_max: trail.max,
+    slide_window: Duration::from_millis(slide.candidate_window_ms),
+    slide_duration_secs: slide.duration_ms as f32 / 1000.0,
+    tap_window: Duration::from_millis(tap_tempo.window_ms),
     echo_input: rig.echo_input,
     expression_pedals,
   })

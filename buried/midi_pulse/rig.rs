@@ -36,10 +36,18 @@ pub struct Rig {
   /// it is the rig-level morph family the per-note `am.shape` value sweeps within.
   #[serde(default)]
   pub am: Option<AmRig>,
-  /// Surfaces-runtime settings (the shared recent-note trail). Absent for non-surfaces
-  /// rigs; the surfaces runtime falls back to `SurfacesRig::default`.
+  /// `[trail]` table: the surfaces runtime's shared recent-note trail. Absent for
+  /// non-surfaces rigs; the surfaces runtime falls back to `TrailRig::default`.
   #[serde(default)]
-  pub surfaces: Option<SurfacesRig>,
+  pub trail: Option<TrailRig>,
+  /// `[slide]` table: the slide feature's timing knobs (surfaces runtime). Absent
+  /// falls back to `SlideRig::default`.
+  #[serde(default)]
+  pub slide: Option<SlideRig>,
+  /// `[tap_tempo]` table: the tap-tempo pairing window (surfaces runtime). Absent
+  /// falls back to `TapTempoRig::default`.
+  #[serde(default)]
+  pub tap_tempo: Option<TapTempoRig>,
   /// The four selectable timbres behind a `waveform_selector` strip, left to right
   /// (surfaces runtime). Absent = the plain four waveforms (sine / triangle /
   /// square / saw, everything else off) -- exactly the pre-timbres behavior. When
@@ -376,44 +384,30 @@ fn default_trail_clobber_radius() -> i32 {
   27
 }
 
-fn default_trails_max() -> usize {
+fn default_trail_max() -> usize {
   7
 }
 
-/// `[surfaces]` table: instrument-wide settings for the surfaces runtime's shared
+/// `[trail]` table: instrument-wide settings for the surfaces runtime's shared
 /// recent-note trail (the dim backdrop of the last few played pitch classes). A missing
 /// table -- or any missing field -- uses these defaults, so behaviour is unchanged for
 /// rigs that don't declare it.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
-pub struct SurfacesRig {
+pub struct TrailRig {
   /// Trail clobber radius, as a *divisor of the octave*: playing a note clears any
-  /// trailed pitch-class within `edo / trail_clobber_radius` steps of it, so close
+  /// trailed pitch-class within `edo / clobber_radius` steps of it, so close
   /// pitches never crowd the backdrop. Bigger value = tighter radius (clears fewer);
   /// the default 27 is 1/27 of an octave (~44 cents).
-  pub trail_clobber_radius: i32,
+  pub clobber_radius: i32,
   /// The most *distinct* pitch classes the shared trail keeps at once (newest first);
   /// older ones drop off the end. Default 7.
-  pub trails_max: usize,
-  /// The slide feature's candidate window, in ms: a new note may slide from a note
-  /// released no longer ago than this. Default 1000.
-  pub slide_candidate_window_ms: u64,
-  /// The tap-tempo pairing window, in ms: two taps at most this far apart set the
-  /// tapped tempo (rolling window). Default 2000.
-  pub tap_tempo_window_ms: u64,
-  /// How long a slide takes to reach the new pitch, in ms. Default 100.
-  pub slide_duration_ms: u64,
+  pub max: usize,
 }
 
-impl Default for SurfacesRig {
+impl Default for TrailRig {
   fn default() -> Self {
-    Self {
-      trail_clobber_radius: default_trail_clobber_radius(),
-      trails_max: default_trails_max(),
-      slide_candidate_window_ms: default_slide_candidate_window_ms(),
-      tap_tempo_window_ms: default_tap_tempo_window_ms(),
-      slide_duration_ms: default_slide_duration_ms(),
-    }
+    Self { clobber_radius: default_trail_clobber_radius(), max: default_trail_max() }
   }
 }
 
@@ -421,12 +415,49 @@ fn default_slide_candidate_window_ms() -> u64 {
   1000
 }
 
+fn default_slide_duration_ms() -> u64 {
+  100
+}
+
+/// `[slide]` table: the slide feature's timing knobs (surfaces runtime). A missing
+/// table -- or any missing field -- uses these defaults.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct SlideRig {
+  /// The slide feature's candidate window, in ms: a new note may slide from a note
+  /// released no longer ago than this. Default 1000.
+  pub candidate_window_ms: u64,
+  /// How long a slide takes to reach the new pitch, in ms. Default 100.
+  pub duration_ms: u64,
+}
+
+impl Default for SlideRig {
+  fn default() -> Self {
+    Self {
+      candidate_window_ms: default_slide_candidate_window_ms(),
+      duration_ms: default_slide_duration_ms(),
+    }
+  }
+}
+
 fn default_tap_tempo_window_ms() -> u64 {
   2000
 }
 
-fn default_slide_duration_ms() -> u64 {
-  100
+/// `[tap_tempo]` table: the tap-tempo pairing window (surfaces runtime). A missing
+/// table -- or a missing field -- uses this default.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct TapTempoRig {
+  /// The tap-tempo pairing window, in ms: two taps at most this far apart set the
+  /// tapped tempo (rolling window). Default 2000.
+  pub window_ms: u64,
+}
+
+impl Default for TapTempoRig {
+  fn default() -> Self {
+    Self { window_ms: default_tap_tempo_window_ms() }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -800,7 +831,7 @@ pub enum MonomeWindowRig {
   },
   // A single-cell on/off toggle for the slide feature (surfaces runtime): while on,
   // a new note re-triggers the nearest recently-released pitch and glides it into
-  // the new one. Window/candidate knobs live in the `[surfaces]` table.
+  // the new one. Window/candidate knobs live in the `[slide]` table.
   SlideToggle {
     id: String,
     monome: String,
@@ -827,7 +858,7 @@ pub enum MonomeWindowRig {
   // The 3x2 polyrhythm pad (surfaces runtime), by convention in the top-right:
   //   | x3 | x2 | tap |
   //   | /3 | /2 | =1  |
-  // Tap twice within [surfaces].tap_tempo_window_ms to set the tapped tempo; the
+  // Tap twice within [tap_tempo].window_ms to set the tapped tempo; the
   // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
   // applied pulse with a unipolar triangle at that tempo. See TODO/misc.org
   // "polyrhythm interface".
@@ -1347,7 +1378,7 @@ pub enum SoftstepWindowRig {
     control: AccreteControlKind,
   },
   /// The pedal that taps the ONE global tempo. Two taps within
-  /// `[surfaces].tap_tempo_window_ms` define it; tapping only defines it, and starts
+  /// `[tap_tempo].window_ms` define it; tapping only defines it, and starts
   /// nothing.
   TapTempoPedal { id: String, softstep: String, pedal: u8 },
   /// One pedal nudging one monome's pulse. What it acts on depends on that monome's
@@ -4200,10 +4231,10 @@ rect = [1, 2, 1, 2]
     let rig = parse_rig(&format!("{SURFACES_MIN}{toggles}")).expect("both toggles validate");
     assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::SlideToggle { .. })));
     assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::MonoToggle { .. })));
-    // The [surfaces] slide knobs default sensibly.
-    let surfaces = rig.surfaces.unwrap_or_default();
-    assert_eq!(surfaces.slide_candidate_window_ms, 1000);
-    assert_eq!(surfaces.slide_duration_ms, 100);
+    // The [slide] knobs default sensibly.
+    let slide = rig.slide.unwrap_or_default();
+    assert_eq!(slide.candidate_window_ms, 1000);
+    assert_eq!(slide.duration_ms, 100);
     // A 2-cell slide toggle fails like any single-cell toggle.
     let err = parse_rig(&format!(
       "{SURFACES_MIN}{}",
@@ -4224,7 +4255,7 @@ rect = [13, 0, 15, 1]
 "#;
     let rig = parse_rig(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
     assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. })));
-    assert_eq!(rig.surfaces.unwrap_or_default().tap_tempo_window_ms, 2000, "default window");
+    assert_eq!(rig.tap_tempo.unwrap_or_default().window_ms, 2000, "default window");
     let err = parse_rig(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
       .expect_err("a 3x3 pad should fail");
     assert!(err.contains("exactly 3x2"), "{err}");

@@ -612,8 +612,8 @@ struct Tuning {
   grid_h: i32,
 }
 
-/// The instrument-wide scalar knobs (`[surfaces]` + which grid this one's overlays
-/// control), refreshed alongside `Tuning` on a hot reload.
+/// The instrument-wide scalar knobs (`[trail]` / `[slide]` / `[tap_tempo]` + which
+/// grid this one's overlays control), refreshed alongside `Tuning` on a hot reload.
 #[derive(Clone, Copy)]
 struct Knobs {
   /// Trail clobber radius as a divisor of the octave (see `Settings`).

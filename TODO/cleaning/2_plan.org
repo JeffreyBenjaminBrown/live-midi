@@ -59,13 +59,17 @@ depend on live, never the reverse. Rough split: the surfaces runtime, sawwave
 engine, rig loader/org parser, drumkit+softstep, expression pedals, monome +
 mock, device_assign move OUT; the looper/piano/un-12 runtimes and their bins
 stay buried (depending on the live crate).
-*** TODO [jeff] what should the unburied home be called?
+*** ONGOING [jeff] what should the unburied home be called?
 The obvious candidates: promote it INTO =edo_surface/= (the successor crate
 finally succeeds -- my mild favorite, since the name already exists and the
 crate is nearly empty), or a fresh top-level dir (=synth/=? =live/=?
 =instrument/=?). Also: should the legacy runtimes stay a separate crate in
 =buried/= (cleanest dependency arrow) or move wholesale and only the DIR name
 change? Your call; everything else in this phase is mechanical.
+**** TODO
+Promoting it into edo_surface,
+and keeping the legacy runtimes separate,
+seem good.
 ** 8. Rename day + rig-facing cleanups [blocked on approvals above]
 One deliberate commit, worktrees level, executing whichever of these you've
 green-lit in 1_vision.org: =tap_tempo_pad= -> =factored_pulse_pad=; the
@@ -74,10 +78,37 @@ green-lit in 1_vision.org: =tap_tempo_pad= -> =factored_pulse_pad=; the
 bindings). Plus vision 7's pointer-dedup: the window-kind semantics that
 readmes duplicate normatively get emacs-followable =[[file:...]]= links to
 rigs/README.org instead (prose explanations stay).
-*** TODO [jeff] confirm the two names
+*** TODO [jeff] retiring softstep_accretes_toggle needs a pedal decision
+Checked =rigs/2-monomes_kmss-drums.org= before touching anything: its =drumkit=
+softstep window already claims all ten KMSS pedals on the rig's one softstep
+board ("feet") -- 1 snare, 2 kick, 3 ditto, 4 hat, 5 open_hat, 6 high_tom, 7
+low_tom, 8 wood_block, 9 cowbell, 0 crash. The =softstep_accretes_toggle=
+mirror needs exactly six of those same pedals -- 1/2/3 for grid A's clear /
+needs_holding / accrete, 8/9/0 for grid B's -- and only works because it is
+GATED by an on-grid toggle per grid, so the pedal plays a sample when the
+toggle is off and mirrors accrete when it's on. An explicit, unconditional
+=accrete_control= pedal binding on those six pedals would collide with the
+drumkit's claim on the very same pedals (=validate_softsteps= rejects a pedal
+claimed by more than one window), and there are no free pedals to rebind onto
+instead (the only pedals the mirror doesn't already touch -- 4/5/6/7 -- are
+themselves claimed by the hat/tom drum pads). Per the plan's instruction, left
+untouched rather than improvised: the code (=softstep_accretes_toggle= kind,
+=feet_accrete_*= machinery) and the rig are unchanged. Options:
+- Keep =softstep_accretes_toggle= as it is. It is the only mechanism today's
+  single 10-pedal board has for making the same six pedals serve both drums
+  and the accrete mirror; retiring it costs real pedal real estate.
+- Free six pedals for explicit =accrete_control= bindings by moving those drum
+  pads elsewhere -- a second SoftStep board, or consolidating some pads (e.g.
+  more =ditto= pedals) -- a gear/rig decision, not a code one.
+- A third kind: an explicit but *gated* pedal binding, where the rig states
+  both the =accrete_control= target AND which on-grid toggle arms it, keeping
+  the double-duty gate but replacing the hardcoded 1/2/3 + 8/9/0 mapping with
+  a rig-declared one. More code than deleting the kind -- only worth it if the
+  hardcoded mapping itself, not just its unconditionality, is what should go.
+*** ONGOING [jeff] confirm the two names
 =factored_pulse_pad= for the pad, and =[trail]=/=[slide]=/=[tap_tempo]= for
 the divided table -- or supply your own; the mechanics are ready either way.
-
+**** TODO perfect
 * progress
 - [2026-07-19] Phases written; 1_vision.org annotated (two ONGOING questions
   answered with TODO responses; directives marked DONE). Beginning phase 1.
@@ -137,3 +168,75 @@ the divided table -- or supply your own; the mechanics are ready either way.
   - Two non-test-build dead_code warnings remain for =EditState= exit/moved/clear (plan
     mandates the state machine keep them) and the any/pitches/ring::any query helpers,
     now exercised only by their unit tests; the =cargo test= build is clean.
+- [2026-07-19] Phase 8a done (A + B + C of the approved slice; the
+  =tap_tempo_pad -> factored_pulse_pad= rename stayed out, per its own
+  =ONGOING=). Suite green (=cargo test --workspace=: edo_surface 33, midi_pulse
+  lib 124, midi_pulse bin 483, softstep_meter 62 -- 0 failures; counts unchanged
+  from the phase-6 baseline except the rig/rig_org tests adapted in place).
+  - *A (=[surfaces]= divided, "Yes!").* =SurfacesRig= replaced by three structs
+    (=TrailRig= {clobber_radius, max}, =SlideRig= {candidate_window_ms,
+    duration_ms}, =TapTempoRig= {window_ms}), each its own optional top-level
+    =Rig= field (=trail=/=slide=/=tap_tempo=) -- no =[surfaces]= grab-bag left,
+    so the old flat keys are now unknown-field errors (=deny_unknown_fields=
+    on the new structs; =Rig= itself already denies unknown top-level keys).
+    Every default kept identical (27 / 7 / 1000 / 100 / 2000). Updated:
+    =surfaces_runtime/settings.rs= (=resolve_settings= now reads three
+    =.unwrap_or_default()=s instead of one), doc comments in mod.rs/keys.rs/
+    settings.rs/sawwave_runtime.rs that named =[surfaces].*=; the rig.rs parse
+    tests (=slide_and_mono_toggles_validate_like_distortion=,
+    =tap_tempo_pad_must_be_three_by_two=) and rig_org.rs's TABLE-surfaces tests
+    (=nested_tables_and_grouping_are_transparent=,
+    =hash_comments_on_load_bearing_headlines=,
+    =a_leading_hash_comments_the_whole_headline_out=) adapted to
+    =TABLE trail=/=clobber_radius=/=max=; surfaces_runtime/tests.rs's rig-
+    construction and reload fixtures rewired to the three structs/tables
+    (=surfaces_defaults_when_table_absent= renamed
+    =surfaces_defaults_when_tables_absent=, now clearing and re-defaulting all
+    three). Rigs: =2-monomes_2-softsteps.org= (its own "# TODO: this is a dumb
+    name" resolved -- deleted, replaced by =TABLE trail=/=slide=/=tap_tempo=,
+    each with its own doc body) and =2-monomes_kmss-drums.org= divided the
+    same way; =buried/mocks/2-monomes_kmss-drums-mock.org= likewise (its
+    softstep_accretes_toggle windows untouched, see B). rigs/README.org's
+    =* Surfaces= section grew three subheadings (one per table, each with its
+    toml snippet + field docs) instead of one; its =tap_tempo_pad=/
+    =slide_toggle= prose in "Monome windows" updated to the new key paths.
+    Both per-rig readmes' =[surfaces]=/flat-key mentions (glossary, LEDs,
+    "slide and mono") repointed to =trail.*=/=slide.*=/=tap_tempo.*=.
+  - *B (=softstep_accretes_toggle=, conditional) -- the conflict branch.*
+    Inspected =rigs/2-monomes_kmss-drums.org= first, per the plan's
+    condition: its one =drumkit= softstep window already claims all ten KMSS
+    pedals (1 snare / 2 kick / 3 ditto / 4 hat / 5 open_hat / 6 high_tom /
+    7 low_tom / 8 wood_block / 9 cowbell / 0 crash) on the rig's only softstep
+    board ("feet"), and the =softstep_accretes_toggle= mirror needs exactly
+    six of those same pedals (1/2/3 + 8/9/0), working only because the
+    on-grid toggle GATES which job a press does. An explicit, unconditional
+    =accrete_control= binding on those pedals would collide with the
+    drumkit's claim (=validate_softsteps= rejects a pedal claimed by more
+    than one window), and no pedal is free to rebind onto instead (4/5/6/7
+    are themselves claimed by the hats/toms). This is the "pedals genuinely
+    conflict" branch: left the code (=softstep_accretes_toggle= kind,
+    =feet_accrete_*= machinery in hooks.rs/mod.rs/keys.rs/settings.rs) and
+    both rigs' =softstep_accretes_toggle= windows untouched, and added
+    =TODO/cleaning/2_plan.org= phase 8's "*** TODO [jeff] retiring
+    softstep_accretes_toggle needs a pedal decision" laying out the pedal
+    math and three options (keep it; free six pedals by moving drum pads
+    elsewhere; add a third, rig-declared-but-gated pedal kind).
+  - *C (pointer-dedup, vision 7).* Replaced the two clearest normative
+    duplicates of rigs/README.org window-kind specs with emacs =[[file:...]]=
+    links, keeping the contextual prose: =2-monomes_kmss-drums_readme.org='s
+    "* polyrhythm" section (the tap window / per-grid factor / =1= double-tap
+    dance / pulse mechanics / blink display -- previously restated in full,
+    now a link to =rigs/README.org= "Monome windows" plus the two rig-
+    specific facts: the rect table and "shared tap, independent factors");
+    =2-monomes_2-softsteps_readme.org='s "NSS: the factored pulse" =1='s
+    double-tap-dance and edit-mode-retune bullets (now a link to "SoftStep
+    (KMSS)", keeping the concrete NSS-pedal walkthrough). Also linked the
+    kmss-drums readme's "trail" glossary bullet to =rigs/README.org=
+    "Surfaces" for the parameter names/ranges, keeping its LED-behaviour
+    prose. Left alone (contextual, not normative, or already pointing
+    elsewhere): the slide/mono mechanics section (ties/legato/accrete-
+    interaction detail README doesn't have), the feet-accrete prose (rig-
+    specific pedal numbers), the distortion section (a sink parameter, not a
+    window kind -- out of this phase's stated scope), and the softsteps
+    readme's own trail/LEDs mention (already a cross-readme pointer to the
+    kmss-drums readme's fuller "LEDs" section).

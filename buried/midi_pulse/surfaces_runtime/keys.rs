@@ -638,7 +638,7 @@ pub(super) fn set_volume(rt: &GridThread, pressed_x: i32) {
 /// `trails_max` *distinct* classes, newest first. Playing a note first clears its own
 /// class (dedup -- so hammering one note, in any octave, never floods or erases the
 /// trail) and every trailed class within `edo / clobber_radius` steps of it (neighbour
-/// suppression), then adds it at the front. Both knobs come from the `[surfaces]` table.
+/// suppression), then adds it at the front. Both knobs come from the `[trail]` table.
 pub(super) fn push_trail(
   trail: &Arc<Mutex<VecDeque<i32>>>,
   class: i32,

@@ -473,9 +473,9 @@ level fast (=k = 0.5= costs ~5 dB on a *single* note), which the compensation no
 A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
 (single cell, at most one of each per monome, dim/bright LED). All are
 per-grid switches, like the distortion toggle. Slide: a new note on that grid
-re-triggers the nearest pitch released within ~slide_candidate_window_ms~ and
-glides it into the new pitch over ~slide_duration_ms~ (both optional in the
-~[surfaces]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
+re-triggers the nearest pitch released within ~slide.candidate_window_ms~ and
+glides it into the new pitch over ~slide.duration_ms~ (both optional in the
+~[slide]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
 other fingered notes -- its own grid's switch (and with that grid's slide on,
 the new note *steals* the cut note's voice and glides it over -- true legato,
 no attack re-trigger).
@@ -486,7 +486,7 @@ monome, both, or neither (see the rig's .org).
 
 A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
 per monome, on a monome with an ~edo_note_grid~): tap twice within
-~[surfaces].tap_tempo_window_ms~ (default 2000) to redefine the ONE global tapped
+~[tap_tempo].window_ms~ (default 2000) to redefine the ONE global tapped
 tempo (redefining it starts nothing; the surfaces runtime seeds the base at 1 Hz
 on bring-up, so a tempo always exists and tapping is optional -- it overrides the
 seed). Each monome scales the base into its own
@@ -801,23 +801,47 @@ sink = "midi"
 * Surfaces
 
 The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
-[[./2-monomes_kmss-drums_readme.org]]) reads one optional table of instrument-wide
-scalars for the shared *recent-note trail* -- the dim backdrop of the last few played
-pitch classes:
+[[./2-monomes_kmss-drums_readme.org]]) reads three small, independent, optional
+tables of instrument-wide scalars. Each table -- and each field within it -- is
+optional; a missing one falls back to its default, so behaviour is unchanged for
+rigs that don't declare it. Only the surfaces runtime consults them.
+
+** ~[trail]~
+
+The shared *recent-note trail* -- the dim backdrop of the last few played pitch
+classes:
 
 #+begin_src toml
-[surfaces]
-trail_clobber_radius = 27  # clear trailed classes within edo/this steps of a played note
-trails_max = 9             # keep at most this many distinct classes (newest first)
+[trail]
+clobber_radius = 27  # clear trailed classes within edo/this steps of a played note
+max = 9              # keep at most this many distinct classes (newest first)
 #+end_src
 
-- ~trail_clobber_radius~ is a *divisor of the octave*: a played note clears any trailed
-  class within ~edo / trail_clobber_radius~ steps of it, so close pitches never crowd the
+- ~clobber_radius~ is a *divisor of the octave*: a played note clears any trailed
+  class within ~edo / clobber_radius~ steps of it, so close pitches never crowd the
   backdrop. Bigger = tighter; ~27~ is 1/27 of an octave (~44 cents). Default ~27~.
-- ~trails_max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
+- ~max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
 
-The whole table (and each field) is optional; omitting it uses the defaults, so behaviour
-is unchanged for rigs that don't declare it. Only the surfaces runtime consults it.
+** ~[slide]~
+
+Timing knobs for the ~slide_toggle~ windows (see "Monome windows" above): how
+recently a released note may still be slid from, and how long the glide takes.
+
+#+begin_src toml
+[slide]
+candidate_window_ms = 1000  # a note released within this long ago is a slide source
+duration_ms = 100           # how long the glide takes to reach the new pitch
+#+end_src
+
+** ~[tap_tempo]~
+
+The tap-tempo pairing window shared by the ~tap_tempo_pad~ / ~tap_tempo_pedal~
+windows (see "Monome windows" and "SoftStep (KMSS)" above):
+
+#+begin_src toml
+[tap_tempo]
+window_ms = 2000  # two taps at most this far apart set the tapped tempo
+#+end_src
 
 ** Robustness to missing gear
 

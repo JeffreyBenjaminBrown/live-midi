@@ -20,7 +20,7 @@ file. That shared file holds the onset and release thresholds, the attack window
 the pressure scaling, the contact-bounce and settle debounce guards, and the
 de-stick window. Every rig that uses a SoftStep reads the same file, and the
 meter reads it too, so one edit there reaches all of them at once.
-** TABLE surfaces # TODO : this is a dumb name for a diverse collection
+** about the rig
 ===========================================================================
 FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 46-EDO play
 surface, and two SoftStep boards that carry the controls that would
@@ -32,20 +32,23 @@ grid is a note.
 Launch under pw-jack so the synth shares the card via PipeWire:
 pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
 ===========================================================================
+** TABLE trail
 Shared recent-note trail (the dim backdrop of the last few played pitch classes).
-*** PARAM trail_clobber_radius = 27
+*** PARAM clobber_radius = 27
 Clobber radius as a divisor of the octave: a played note clears any trailed class
-within edo/trail_clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents).
-*** PARAM trails_max = 9
+within edo/clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents).
+*** PARAM max = 9
 At most this many distinct pitch classes in the trail (newest first).
-*** PARAM slide_candidate_window_ms = 1000
+** TABLE slide
+*** PARAM candidate_window_ms = 1000
 Slide: a released note stays a slide source for this long.
-*** PARAM slide_duration_ms = 100
+*** PARAM duration_ms = 100
 How long a glide takes. ALSO the per-voice pitch-edit drag time: dragging an
 edit-mode note to a new pitch reuses this, so 'r' retunes the drag feel live.
 Jeff's starting value; slow enough to hear it move, fast enough not to smear
 the rhythm.
-*** PARAM tap_tempo_window_ms = 2000
+** TABLE tap_tempo
+*** PARAM window_ms = 2000
 Two taps at most this far apart on a pad's tap cell set the one global tempo.
 The base is seeded at 1 Hz, so tapping is optional: the tap pedal was retired
 (Jeff never tapped), and the on-grid pads' tap cells are the only tap source.
