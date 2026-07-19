@@ -1,0 +1,59 @@
+* chord storage
+Something *like* this was implemented earlier in the code,
+with at least roughly the same name, but this will be cooler.
+** the idea
+Currently we have three reasons a voice might be sounding:
+- It's under a finger.
+- It's in the sustained set.
+- It's been released but has not reached zero volume yet.
+
+This will add a fourth: It's from a chord slot.
+Saving to a chord slot saves every voice that monome is currently sounding:
+fingers, sustained, and (perhaps surprisingly)
+any other chord that might be sounding.
+Modifying via edit mode the pitch of a chord sounding due to chord storage
+does not change the chord stored at the slot it came from.
+(I expect to sometimes recall a chord from storage,
+mutate it, and store to a new slot.)
+** some relevant context
+The task queue currently being executed in branch 2
+(see worktrees/3/queues/branch-3.org for its current progress)
+includes the task
+"Entering edit mode should just add the voice to the sustained set."
+That simplifies some of this, I think.
+** data
+The stored chord stores everything about the voice --
+amplitude (taking the pedal's state into account when it was saved,
+and when it's recalled it ignores the pedal's current state),
+timbre, polyrhytm pulse, etc. Oh except not phase.
+Actually maybe there are other things it doesn't make sense to store;
+tell me if you see any.
+** UI
+*** arm storage
+There's a toggle button to arm storage. That changes the meaning of a press to
+a chord slot: pressing the chord slot writes everything to that slot and disarms.
+When it's disarmed, pressing a chord slot recalls the chord,
+with each voice starting from phase 0.
+*** editability
+Notes in a chord can be edited by putting them into edit mode.
+This includes even timbre.
+(This should extend to all notes in edit mode: Switching timbre should apply,
+somehow smoothing out the transition to avoid glitches,
+to any note in edit mode, regardless of its reason for existing.)
+*** layout
+In the top two rows, between the timbre picker and the tempo widget,
+let's have two rows of five buttons.
+(This will make it easy to mirror onto a sofstep if I decide I want to.)
+The bottom left one is to arm storage.
+Each monome's chord storage is independent of the other's.
+*** changes to the accrete/edit pedals
+Putting everything into edit mode, and taking everything out of it,
+both remain important.
+Adding fingered notes to the sustained set is also important.
+Clearing sustain while leaving the chord ringing seems unlikely.
+So I guess the four leftmost buttons on the older softstep should be:
+
+| remove all from edit mode | apply edit mode to all    |
+| end all sustain and chord | add fingered to sustained |
+
+and the four on the right side should (like they do today) mirror the left.
