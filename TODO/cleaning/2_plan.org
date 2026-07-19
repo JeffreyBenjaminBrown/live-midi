@@ -105,6 +105,14 @@ untouched rather than improvised: the code (=softstep_accretes_toggle= kind,
   the double-duty gate but replacing the hardcoded 1/2/3 + 8/9/0 mapping with
   a rig-declared one. More code than deleting the kind -- only worth it if the
   hardcoded mapping itself, not just its unconditionality, is what should go.
+**** TODO Let's use the other kmss.
+If that other kmss is already free, great.
+If not, I imagine it's because that rig is using it for polyrhythm tempo stuff.
+In that case let's just ditch that usage
+(the monome keys for it are easier for me anyway)
+to free up that kmss for the sustain
+(which is much more important to have underfoot).
+That is, one kmss will be all drums, and the other for the 6 pedals you need.
 *** DONE [jeff] confirm the two names
 =factored_pulse_pad= for the pad, and =[trail]=/=[slide]=/=[tap_tempo]= for
 the divided table -- or supply your own; the mechanics are ready either way.
