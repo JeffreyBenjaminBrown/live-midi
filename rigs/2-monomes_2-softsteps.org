@@ -169,9 +169,10 @@ tempo -- seeded at 1 Hz, so tapping is possible here but never necessary.
 ***** PARAM rect = [12, 0, 12, 0]
 ***** PARAM control = "clear"
 Just left of the factored-pulse pad's x3. Key-down removes every pitch from
-edit mode; each voice then rings on iff it still has another reason (a
-finger, or the sustain bank), and an edit-only drone ends by the ordinary
-release. Same job as OSS pedal 6. Dim at rest, bright while pressed.
+edit mode -- pure DESELECTION: an edited note is always sustained (edited ⊆
+sustained), so this ends NO voice; it only drops the selection. Silence an
+edited note by taking its sustain (the sustain clear / toggle / erase), which
+ends AND deselects it. Same job as OSS pedal 6. Dim at rest, bright while pressed.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -216,15 +217,18 @@ Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
 are NOT stable, so nothing here names one.
 *** old softstep: sustain (bottom row) + edit mode (top row)
-Two symmetric rows, one concept each. Bottom row = the SUSTAIN bank: outer
-pedals (1/5) clear it, inner pedals (2/4) accrete into it, momentary only
-(hold to add, release to stop adding). Top row = EDIT MODE, same shape:
-outer pedals (6/0) clear it, inner pedals (7/9) accrete into it (a one-shot:
-every sounding voice enters edit mode). The accretes are symmetric in what
-they capture, too: sustain-accrete takes every fingered AND every edit-mode
-voice; editmode-accrete takes every fingered AND every sustained voice. Each
-clear removes only its own reason -- a note both sustained and edited
-survives either clear alone; both clears kill everything.
+Two rows. Bottom row = the SUSTAIN bank: outer pedals (1/5) clear it, inner
+pedals (2/4) accrete into it, momentary only (hold to add, release to stop
+adding). Top row = EDIT MODE, same button shape: outer pedals (6/0) clear it,
+inner pedals (7/9) accrete into it (a one-shot: every sounding voice enters
+edit mode). The accretes capture the same voices: sustain-accrete takes every
+fingered AND every edit-mode voice; editmode-accrete takes every fingered AND
+every sustained voice (sustaining any it finds only fingered). But the two
+CLEARS are NOT symmetric: edit is a selection over the sustained voices, not a
+reason to ring (edited ⊆ sustained). The sustain clear ends every fingerless
+drone -- edited or not -- and deselects it; the edit clear only deselects and
+silences nothing. (This supersedes the earlier symmetric-clears design, where
+each clear removed only its own reason and the full kill was both together.)
 Left buttons drive the left grid, right buttons the right grid.
 The tap pedal that once sat here was retired; the base tempo is a seeded 1 Hz.
 **** ELEM softsteps
@@ -268,11 +272,11 @@ The OLDER board, nearer Jeff. Not rotated, so its printed labels read
 ***** PARAM pedal = 6
 ***** PARAM monome = "a"
 ***** PARAM control = "clear"
-The top row mirrors the sustain row below it, one concept up: outer pedals
-clear EDIT MODE, inner pedals accrete into it. Clear removes only the edit
-reason: each voice rings on iff a finger or the sustain bank still holds it,
-and an edit-only drone ends by the ordinary release. (Symmetrically, the
-sustain clear no longer touches edit mode -- the full kill is both clears.)
+The top row sits above the sustain row: outer pedals clear EDIT MODE, inner
+pedals accrete into it. The edit clear is pure DESELECTION -- every cleared
+note is still sustained (edited ⊆ sustained), so it ends NO voice; it only
+drops the selection. To silence an edited note, take its sustain (the sustain
+clear ends AND deselects it). This supersedes the old symmetric clears.
 **** ELEM softstep_windows            # pedal 7 (inner): accrete grid A into edit mode
 ***** PARAM id = "editmode-accrete-a"
 ***** PARAM softstep = "old"

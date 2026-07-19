@@ -752,12 +752,13 @@
   }
 
   #[test]
-  fn sustain_clear_spares_edited_drones_and_editmode_clear_then_ends_them() {
-    // The symmetric model (queue.org "accrete-editmode pedals like
-    // accrete-sustain"): each clear removes only its OWN reason. Sustain-clear
-    // flushes the bank but a drone whose pitch is in edit mode keeps ringing --
-    // audibly, so it is not the old silent "dancing ghost" -- and the editmode
-    // clear then takes the last reason and ends it. Both clears = the full kill.
+  fn sustain_clear_ends_and_deselects_edited_drones() {
+    // SUPERSEDES `sustain_clear_spares_edited_drones_and_editmode_clear_then_ends_them`.
+    // The old symmetric model spared an edited drone from the sustain clear and needed
+    // BOTH clears to kill it. The branch-3 model (queue item 4) makes Sustain the only
+    // life-support reason and edited ⊆ sustained: the sustain clear ends EVERY fingerless
+    // drone -- edited or not -- and cascades the edit removal, so nothing silent stays
+    // selected. It is the whole kill on its own now.
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let ring = Arc::new(Mutex::new(vec![
@@ -776,37 +777,36 @@
     {
       let mut r = ring.lock().unwrap();
       let gr = &mut r[0];
-      gr.edit.enter(20, &mut gr.store);
+      gr.edit.enter(20, &mut gr.store); // also (re)asserts Sustain(20); the invariant
     }
 
-    // Sustain-clear: the bank flushes; only the sustain-only drone ends.
+    // Sustain-clear: the bank flushes and BOTH drones end -- the edited one is not spared.
     assert!(drive_accrete(
       0, AccreteControlKind::Clear, true, &ring, &held_all, &voices, 0.05, 48000.0,
     ));
     let drone = |pitch| VoiceSource::SurfaceDrone { grid: 0, pitch };
     {
       let v = voices.lock().unwrap();
-      assert_eq!(v[&drone(10)].target_env, 0.0, "the sustain-only drone releases");
-      assert!(v[&drone(20)].target_env > 0.0, "the edited drone keeps ringing");
+      assert_eq!(v[&drone(10)].target_env, 0.0, "the plain drone releases");
+      assert_eq!(v[&drone(20)].target_env, 0.0, "the edited drone releases too -- no longer spared");
     }
-    assert!(ring.lock().unwrap()[0].store.iter(Reason::Sustain).next().is_none(), "the set flushed");
-    assert!(ring.lock().unwrap()[0].store.has(Reason::Edit, 20), "clear does not touch edit mode");
-
-    // Editmode-clear takes the drone's last reason: now it ends, and the grid plays.
-    editmode_clear(0, &ring, &voices, 0.05, 48000.0);
-    assert_eq!(voices.lock().unwrap()[&drone(20)].target_env, 0.0, "no reason left: it ends");
-    assert!(!ring.lock().unwrap()[0].store.any(Reason::Edit), "edit mode empties");
+    let r = ring.lock().unwrap();
+    assert!(r[0].store.iter(Reason::Sustain).next().is_none(), "the sustain set flushed");
+    assert!(!r[0].store.any(Reason::Edit), "and the edit selection cascaded away: no silent ghost");
   }
 
   #[test]
-  fn editmode_clear_spares_sustained_drones() {
-    // The mirror: editmode-clear removes only the EDIT reason. An edited pitch
-    // still in the sustain bank keeps its drone.
+  fn editmode_clear_ends_nothing_and_only_deselects() {
+    // SUPERSEDES `editmode_clear_spares_sustained_drones`. Editmode-clear is now pure
+    // deselection (branch-3 queue item 4): every edited note is still sustained (edited ⊆
+    // sustained), so the clear silences NO voice -- both drones keep ringing -- and only
+    // the edit set empties. The old test asserted an "edit-only drone" ended here; that
+    // state no longer exists, because entering edit mode sustains the note.
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 1])), Arc::new(Mutex::new(vec![1.0; 1])));
-    // Pitch 10: edited only. Pitch 20: edited AND sustained.
+    // Both edited (so both sustained, via `enter`). They are fingerless drones.
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
@@ -814,23 +814,26 @@
       let gr = &mut r[0];
       gr.edit.enter(pitch, &mut gr.store);
     }
-    ring.lock().unwrap()[0].store.add(Reason::Sustain, 20);
 
-    editmode_clear(0, &ring, &voices, 0.05, 48000.0);
+    editmode_clear(0, &ring);
     let drone = |pitch| VoiceSource::SurfaceDrone { grid: 0, pitch };
-    let v = voices.lock().unwrap();
-    assert_eq!(v[&drone(10)].target_env, 0.0, "the edit-only drone ends");
-    assert!(v[&drone(20)].target_env > 0.0, "the sustained drone keeps its other reason");
-    drop(v);
-    assert!(!ring.lock().unwrap()[0].store.any(Reason::Edit), "edit mode empties either way");
-    assert!(
-      ring.lock().unwrap()[0].store.iter(Reason::Sustain).eq([20]),
-      "the sustain bank is untouched",
-    );
+    {
+      let v = voices.lock().unwrap();
+      assert!(v[&drone(10)].target_env > 0.0, "still sustained -> keeps ringing");
+      assert!(v[&drone(20)].target_env > 0.0, "still sustained -> keeps ringing");
+    }
+    let r = ring.lock().unwrap();
+    assert!(!r[0].store.any(Reason::Edit), "the edit selection empties");
+    let mut sustained: Vec<i32> = r[0].store.iter(Reason::Sustain).collect();
+    sustained.sort();
+    assert_eq!(sustained, [10, 20], "the sustain bank is untouched -- both notes still droning");
   }
 
   #[test]
-  fn editmode_accrete_captures_fingered_and_sustained_voices() {
+  fn editmode_accrete_captures_and_sustains_fingered_and_sustained_voices() {
+    // Editmode-accrete puts every sounding voice into edit mode; because entering edit
+    // mode implies sustaining (edited ⊆ sustained, branch-3 queue item 4), a fingered-only
+    // voice becomes sustained too.
     let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::from([((1, 1), 10)])]));
     ring.lock().unwrap()[0].store.add(Reason::Sustain, 20);
@@ -840,6 +843,7 @@
     assert!(r[0].store.has(Reason::Edit, 10), "the fingered voice enters edit mode");
     assert!(r[0].store.has(Reason::Edit, 20), "the sustained voice too");
     assert_eq!(r[0].store.iter(Reason::Edit).count(), 2, "and nothing else");
+    assert!(r[0].store.has(Reason::Sustain, 10), "the fingered-only voice is now sustained (edit implies sustain)");
   }
 
   #[test]
@@ -896,7 +900,6 @@
   /// Editmode-clear is per-grid, so it must not dismiss the OTHER grid's edit mode.
   #[test]
   fn editmode_clear_leaves_the_other_grids_edit_mode_alone() {
-    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let ring = Arc::new(Mutex::new(vec![
       GridRing::new(AccreteState::new_momentary()),
       GridRing::new(AccreteState::new_momentary()),
@@ -908,7 +911,7 @@
       b[0].edit.enter(20, &mut b[0].store);
     }
 
-    editmode_clear(0, &ring, &voices, 0.05, 48000.0);
+    editmode_clear(0, &ring);
     assert!(!ring.lock().unwrap()[0].store.any(Reason::Edit), "grid 0's edit mode cleared");
     assert!(ring.lock().unwrap()[1].store.any(Reason::Edit), "grid 1's edit mode is its own business");
   }

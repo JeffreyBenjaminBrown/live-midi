@@ -99,12 +99,13 @@ pub(super) fn drive_accrete(
   sample_rate: f32,
 ) -> bool {
   let mut activated = accrete::Activated::default();
-  // A sustain clear removes only the SUSTAIN reason (symmetric with editmode clear,
-  // queue.org "accrete-editmode pedals like accrete-sustain"): a drone whose pitch is
-  // in edit mode keeps ringing (audibly -- not the old silent "dancing ghost"), a
-  // fingered pitch's finger is untouched, and only the reason-less drones end. The one
-  // `remove_reason` call replaces the old flush + edited-keep-set dance. The finger
-  // multiset is snapshotted before the ring lock (no nested locks).
+  // A sustain clear removes the SUSTAIN reason from every sustained pitch (branch-3 queue
+  // item 4). Sustain is the only life-support reason now, so this ends every drone a
+  // finger is not holding -- INCLUDING an edited-and-sustained one, which it also
+  // deselects (`remove_sustain` cascades edit membership away: the invariant edited ⊆
+  // sustained, and nothing silent may stay selected). This supersedes the old symmetric
+  // model where a clear spared edited drones. The finger multiset is snapshotted before
+  // the ring lock (no nested locks).
   let held_for_clear = if button == AccreteControlKind::Clear && down {
     held_pitches(held_all, grid)
   } else {
@@ -119,9 +120,7 @@ pub(super) fn drive_accrete(
       (AccreteControlKind::Clear, true) => {
         gr.accrete.press_clear();
         let all: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
-        gr.store.remove_reason(Reason::Sustain, all, |p| {
-          held_for_clear.iter().filter(|&&h| h == p).count()
-        })
+        gr.store.remove_sustain(all, |p| held_for_clear.iter().filter(|&&h| h == p).count())
       }
       (AccreteControlKind::Clear, false) => {
         gr.accrete.release_clear();
@@ -223,41 +222,30 @@ pub(super) fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
   }
 }
 
-/// The editmode `clear` control on `grid`, from EITHER surface -- a softstep pedal
-/// or the grid's own button run exactly this. Every pitch leaves edit mode; each
-/// voice then rings on iff it still has another reason -- a finger, or the sustain
-/// bank -- and an edit-only drone ends by the ordinary release ramp. Symmetric
-/// with the sustain accrete's clear: each clear removes only its OWN reason, so a
-/// note both edited and sustained survives either clear alone and dies to both
-/// (the full-kill combo is the two clears together). One lock at a time, per the
-/// module's rule.
-pub(super) fn editmode_clear(
-  grid: usize,
-  ring: &Arc<Mutex<Vec<GridRing>>>,
-  voices: &Arc<Mutex<VoiceMap>>,
-  release_secs: f32,
-  sample_rate: f32,
-) {
-  // Remove the EDIT reason from every edited pitch and end exactly the drones with no
-  // remaining reason -- a sustained drone keeps ringing (its bank membership is
-  // untouched), and a fingered voice was never a drone. One `remove_reason` call.
-  let ended: Vec<i32> = {
-    let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(gr) = rings.get_mut(grid) else { return };
-    let edited: Vec<i32> = gr.store.iter(Reason::Edit).collect();
-    gr.store.remove_reason(Reason::Edit, edited, |_| 0)
-  };
-  synth::end_drones_at(voices, grid, &ended.into_iter().collect(), release_secs, sample_rate);
+/// The editmode `clear` control on `grid`, from EITHER surface -- a softstep pedal or
+/// the grid's own button run exactly this. Pure DESELECTION (branch-3 queue item 4):
+/// every pitch leaves edit mode, but each is still sustained (edited ⊆ sustained), so
+/// this ENDS NO VOICE. It is the many-note twin of the exit gesture, and like it, it
+/// silences nothing.
+///
+/// This supersedes the old symmetric-clears model, where the editmode clear ended an
+/// edit-only drone and the "full kill" was both clears together. Now the sustain clear
+/// alone ends (and deselects) an edited note, and the editmode clear only deselects.
+pub(super) fn editmode_clear(grid: usize, ring: &Arc<Mutex<Vec<GridRing>>>) {
+  let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+  let Some(gr) = rings.get_mut(grid) else { return };
+  gr.edit.clear(&mut gr.store);
 }
 
-/// The editmode `accrete` control on `grid`: a ONE-SHOT that puts every voice
-/// currently sounding on this grid -- every fingered voice and every sustained
-/// voice -- into edit mode. One-shot rather than a hold, unlike the sustain
-/// accrete: the moment anything is edited the grid becomes a pitch-picker (every
-/// press drags instead of playing), so a "capture notes played while held" phase
-/// cannot exist for edit mode. Nothing needs doing at the voice level: fingered
-/// voices keep their fingers, sustained voices keep their drones, and being
-/// edited is simply one more reason to ring.
+/// The editmode `accrete` control on `grid`: a ONE-SHOT that puts every voice currently
+/// sounding on this grid -- every fingered voice and every sustained voice -- into edit
+/// mode. One-shot rather than a hold, unlike the sustain accrete: the moment anything is
+/// edited the grid becomes a pitch-picker (every press drags instead of playing), so a
+/// "capture notes played while held" phase cannot exist for edit mode.
+///
+/// `edit.enter` also sustains each pitch (edited ⊆ sustained), so a fingered-only voice
+/// becomes sustained too and drones after its finger lifts. Nothing needs doing at the
+/// voice level: fingered voices keep their fingers, sustained voices keep their drones.
 pub(super) fn editmode_accrete(
   grid: usize,
   ring: &Arc<Mutex<Vec<GridRing>>>,
@@ -273,21 +261,17 @@ pub(super) fn editmode_accrete(
 }
 
 /// Dispatch one editmode_control press (shared by the pedal hook and the on-grid
-/// buttons, so hands and feet cannot diverge). Key-down only; key-up is the
-/// caller's LED business.
+/// buttons, so hands and feet cannot diverge). Key-down only; key-up is the caller's LED
+/// business. Neither branch ends a voice now (branch-3 queue item 4: clear is pure
+/// deselection, accrete only adds membership), so no voices / release params are needed.
 pub(super) fn editmode_press(
   grid: usize,
   control: EditmodeControlKind,
   ring: &Arc<Mutex<Vec<GridRing>>>,
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
-  voices: &Arc<Mutex<VoiceMap>>,
-  release_secs: f32,
-  sample_rate: f32,
 ) {
   match control {
-    EditmodeControlKind::Clear => {
-      editmode_clear(grid, ring, voices, release_secs, sample_rate);
-    }
+    EditmodeControlKind::Clear => editmode_clear(grid, ring),
     EditmodeControlKind::Accrete => editmode_accrete(grid, ring, held_all),
   }
 }
@@ -406,7 +390,7 @@ pub(super) fn rig_pedal_hook(
       PedalAction::Editmode { grid, control } => {
         if down {
           // Shared with the on-grid editmode buttons (`editmode_press`).
-          editmode_press(grid, control, &ring, &held_all, &voices, release_secs, sample_rate);
+          editmode_press(grid, control, &ring, &held_all);
         }
         true
       }
@@ -436,8 +420,13 @@ mod tests {
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Pitch 10 is in edit mode; pitch 20 is not. Both ring as drones (sustained,
-    // fingerless) -- the shape `set_factored_pulse_rate_at` selects by pitch.
-    ring.lock().unwrap_or_else(|e| e.into_inner())[0].store.add(Reason::Edit, 10);
+    // fingerless) -- the shape `set_factored_pulse_rate_at` selects by pitch. Editing 10
+    // implies sustaining it (edited ⊆ sustained), so add both reasons.
+    {
+      let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+      rings[0].store.add(Reason::Sustain, 10);
+      rings[0].store.add(Reason::Edit, 10);
+    }
     let mut sink = synth::SurfaceSink::new(
       0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
       Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
@@ -488,7 +477,12 @@ mod tests {
     let ring = Arc::new(Mutex::new(vec![GridRing::new(accrete::AccreteState::new())]));
     let held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>> = Arc::new(Mutex::new(vec![HashMap::new()]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    ring.lock().unwrap_or_else(|e| e.into_inner())[0].store.add(Reason::Edit, 10);
+    {
+      // Edited implies sustained (edited ⊆ sustained): add both reasons.
+      let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+      rings[0].store.add(Reason::Sustain, 10);
+      rings[0].store.add(Reason::Edit, 10);
+    }
     let mut sink = synth::SurfaceSink::new(
       0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
       Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),

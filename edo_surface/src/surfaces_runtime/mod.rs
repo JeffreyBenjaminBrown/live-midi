@@ -790,17 +790,12 @@ fn grid_thread(mut rt: GridThread) {
       }
     }
     let mut sounding_classes = union_sounding(&rt.shared.sounding);
+    // `sustained_classes` (from `accrete_view`) is the union of every grid's SUSTAINED
+    // pitch classes, painted bright on both grids -- they are all audible. An edited note
+    // is always sustained too (edited ⊆ sustained, branch-3 queue item 4), so it is
+    // already in this set and needs no separate union: this supersedes the old code that
+    // unioned the edit set in by hand because edit was its own, non-sustained reason.
     sounding_classes.extend(sustained_classes);
-    // An edited note RINGS -- that is the whole point -- so it paints bright like any
-    // other sounding note, on both grids. Edit mode is its own reason to sound, so it
-    // is not in anyone's sustained set to be picked up above; it has to be unioned in
-    // here or an edited drone would go silent-looking while still audible.
-    {
-      let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-      for gr in rings.iter() {
-        sounding_classes.extend(gr.store.iter(Reason::Edit).map(|p| p.rem_euclid(rt.tuning.edo)));
-      }
-    }
     let trail_classes = trail_set(&rt.shared.trail);
 
     // The diamond dance (edit-mode) and the square dance (sustained), plus the
@@ -825,10 +820,12 @@ fn grid_thread(mut rt: GridThread) {
       }
     }
     // The square dance: the same rule, but for sustained pitches, at the diagonal
-    // neighbours, T/8 out of phase with the diamond -- a pitch that is both edited
-    // and sustained shows all 8 positions circling together (queue item 3). Shares
-    // `cells_for_pitch` and `dance_cells` with the diamond above, so it gets the
-    // same at-most-two-images and clobber/yield compositing for free.
+    // neighbours, T/8 out of phase with the diamond. Because an edited note is always
+    // sustained (edited ⊆ sustained, branch-3 queue item 4), EVERY edited note also
+    // square-dances -- the 8-position circle is now the normal look of an edited note,
+    // not the rare edited-and-separately-sustained case it used to be. Shares
+    // `cells_for_pitch` and `dance_cells` with the diamond above, so it gets the same
+    // at-most-two-images and clobber/yield compositing for free.
     for pitch in sustained.iter().copied() {
       for (x, y) in cells_for_pitch(&rt, register, pitch) {
         dance_cells.insert(dance::diagonal_cell((x, y), elapsed));

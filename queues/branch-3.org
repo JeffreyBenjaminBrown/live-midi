@@ -137,10 +137,37 @@ sustained notes (verified, no change needed). Tests: 9 new (dance.rs: turn order
 diagonal-cell grid coords, shared clock, T/8-interleave, 8-position circle; grid.rs:
 square-dance compositing + a both-dances two-cell case). =cargo test --workspace=:
 687 passed, 0 failed.
-* Entering edit mode should just add the voice to the sustained set.
+* DONE Entering edit mode should just add the voice to the sustained set.
 Exiting its sustain (by ending sustain monome-globally or just for that voice)
 should end the voice, but exiting edit mode (again globally or locally) should not.
+** DONE claude: edit is now a selection over sustained voices, not a reason to ring
+New invariant edited ⊆ sustained. =RingStore= keeps both sets, but only Sustain
+(+ derived finger count) is life-support: =remove_reason= is gone, replaced by
+=remove_sustain= (life-support removal, cascades edit membership away) and
+=discard_sustain= (erase-style, same cascade). =EditState::enter= now adds BOTH
+reasons, so an edited-while-only-fingered voice becomes sustained and drones on
+its own. Exit-edit / editmode clear are pure DESELECTION and end NO voice;
+removing sustain (per-note toggle-off, erase, or the grid-wide sustain clear)
+ends the voice unless a finger holds it AND deselects it (no silent "dancing
+ghost"). Because an edited note is always sustained, it always square-dances too
+-- the 8-point circle is now the normal look of an edited note.
+This SUPERSEDES the recent symmetric-clears design: the old "sustain-clear spares
+edited drones", "editmode-clear ends edit-only drones", and "the full kill is
+both clears" behaviours are gone (their tests were rewritten to pin the new
+rules; incident comments kept). =editmode_clear=/=editmode_press= lost their
+voices/release args (they end nothing). Judgment call (spec-directed, per item
+5): the sustain cascade to edit is UNCONDITIONAL, so a still-fingered edited note
+under a sustain clear keeps sounding but is deselected. Docs updated: README
+=accrete_control=/=editmode_control=, the 2-monomes rig inline comments, and the
+2-monomes readme (edit section, clears, dances). =cargo test --workspace=: 692
+passed, 0 failed.
 * Retrigger should not reset the phase of a voice.
 That should apply to both retrigger for pitch-drag and retrigger at the same pitch.
+* pitch drag should not clobber a sustained voice or another edit-mode voice
+If multiple notes are in edit mode, and one of the keys representing one of them
+is pressed (again), currently what happens is that the nearest voice
+also in edit mode is dragged to the pressed pitch, reducing the number of voices.
+That should not be. Drag should only apply when the pitch pressed is not the pitch
+of any voice in the editing set or the sustain set.
 * The TODO item remaining in TODO/cleaning/2_plan.org
 I just added it.

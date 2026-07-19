@@ -16,6 +16,16 @@
 //! a factored-pulse change (`polyrhythm`) applies to ALL of them at once. So "in edit
 //! mode" denotes a different selection depending on which parameter you touch.
 //!
+//! *Edit is a selection, and it implies sustain (branch-3 queue item 4).* Being in edit
+//! mode is no longer a reason a note rings; it is the selection the multipliers / `=1` /
+//! drag / dances act on. To keep an edited note audible, `enter` puts it in the sustain
+//! set too, so the invariant edited ⊆ sustained holds: an edited note is always
+//! sustained. Leaving edit mode (`exit`, `clear`) is therefore pure deselection and ends
+//! nothing; losing sustain (`RingStore::remove_sustain`) is what ends a voice, and it
+//! cascades the edit removal so nothing silent can stay selected. This supersedes the
+//! earlier model where edit was a third life-support reason and the two clears were
+//! symmetric.
+//!
 //! Edit mode is a property of the PITCH, not of a voice or a cell, so it survives
 //! retriggering (`2_discussion` 4h) and it follows the note when the note moves.
 //! Nothing here is octave-duplicated or mirrored across grids -- unlike every other
@@ -133,15 +143,21 @@ impl EditState {
     }
   }
 
-  /// Start editing `pitch`. Being edited is itself a reason the note rings, so it
-  /// keeps sounding once the finger lifts (`1_vision`) without this state having to
-  /// reach into anyone else's bookkeeping.
+  /// Start editing `pitch`. Editing IMPLIES sustaining (branch-3 queue item 4: the
+  /// invariant edited ⊆ sustained), so this adds the pitch to BOTH sets. A note that was
+  /// only fingered thereby becomes sustained -- its finger lift no longer ends it, it
+  /// drones, exactly as before, but now via the sustain reason rather than via edit
+  /// being its own life-support. This supersedes the old model where edit was a third
+  /// reason to ring.
   pub fn enter(&self, pitch: i32, store: &mut RingStore) {
+    store.add(Reason::Sustain, pitch);
     store.add(Reason::Edit, pitch);
   }
 
-  /// Stop editing `pitch`. Whether it then falls silent is the caller's to work out:
-  /// a finger or a sustain is its own reason to keep ringing.
+  /// Stop editing `pitch` -- pure DESELECTION. It keeps ringing: it is still sustained
+  /// (edited ⊆ sustained), so leaving edit mode ends no voice. (Contrast removing
+  /// sustain, `RingStore::remove_sustain`, which cascades the edit removal and can end
+  /// the voice.)
   pub fn exit(&self, pitch: i32, store: &mut RingStore) {
     store.discard(Reason::Edit, pitch);
   }
@@ -156,10 +172,12 @@ impl EditState {
     }
   }
 
-  /// Drop every pitch -- the vision's "a button somewhere to clear edit mode from
-  /// all notes", now the editmode clear (`editmode_clear`: a softstep pedal and/or
-  /// an on-grid button). The caller silences whatever that leaves with no reason
-  /// to ring; this only empties the set.
+  /// Drop every pitch from the edit SELECTION -- the vision's "a button somewhere to
+  /// clear edit mode from all notes", now the editmode clear (`editmode_clear`: a
+  /// softstep pedal and/or an on-grid button). Pure deselection: every cleared note is
+  /// still sustained (edited ⊆ sustained), so this ends NO voice -- the editmode clear
+  /// silences nothing. (This supersedes the old model, where an edit-only drone ended
+  /// here.)
   pub fn clear(&self, store: &mut RingStore) {
     for pitch in store.iter(Reason::Edit).collect::<Vec<_>>() {
       store.discard(Reason::Edit, pitch);
@@ -311,6 +329,47 @@ mod tests {
     assert!(!e.any(&store));
   }
 
+  // ---- edit implies sustain (branch-3 queue item 4) ----
+
+  /// Entering edit mode on a note that was only FINGERED makes it sustained, so its
+  /// finger lift no longer ends it -- it drones, as before, but now via the sustain
+  /// reason. The invariant is edited ⊆ sustained.
+  #[test]
+  fn entering_edit_sustains_a_fingered_only_note() {
+    let e = EditState::new();
+    let mut store = RingStore::new();
+    // Nothing sustained yet -- the note is fingered only (not in the store at all).
+    assert!(!store.has(Reason::Sustain, 20));
+    e.enter(20, &mut store);
+    assert!(e.is_editing(20, &store), "it is being edited");
+    assert!(store.has(Reason::Sustain, 20), "and now sustained: it will drone after the finger lifts");
+  }
+
+  /// Exiting edit is pure deselection: the note stays sustained, so it goes on droning.
+  /// Leaving edit mode ends nothing.
+  #[test]
+  fn exiting_edit_leaves_the_note_sustained_and_droning() {
+    let e = EditState::new();
+    let mut store = RingStore::new();
+    e.enter(20, &mut store);
+    e.exit(20, &mut store);
+    assert!(!e.is_editing(20, &store), "no longer selected");
+    assert!(store.has(Reason::Sustain, 20), "still sustained -- exiting edit ended nothing");
+  }
+
+  /// The editmode clear is the same: every pitch leaves the selection, but each stays
+  /// sustained, so the clear silences nothing.
+  #[test]
+  fn clearing_edit_mode_leaves_every_note_sustained() {
+    let e = EditState::new();
+    let mut store = RingStore::new();
+    e.enter(10, &mut store);
+    e.enter(20, &mut store);
+    e.clear(&mut store);
+    assert!(!e.any(&store), "nothing selected");
+    assert!(store.has(Reason::Sustain, 10) && store.has(Reason::Sustain, 20), "both still sustained");
+  }
+
   // ---- the sustain trigger (press ABOVE a note), mirror of the edit one ----
 
   /// Jeff's idea: the cell below a note toggles editing it, so the cell above toggles
@@ -400,15 +459,17 @@ mod tests {
 
   // ---- no inescapable state ----
 
-  /// Jeff's repro: "press two buttons, sustain them both, put one into edit mode,
-  /// then clear both. Now I have a dancing ghost that won't go away and blocks all
-  /// sound."
+  /// Jeff's original repro (historical): "press two buttons, sustain them both, put one
+  /// into edit mode, then clear both. Now I have a dancing ghost that won't go away and
+  /// blocks all sound." Back then `clear` silenced the drones but knew nothing about
+  /// edit mode, so the pitch was left edited with no voice -- still dancing, `any()` true
+  /// so every press dragged, and the exit gesture required the note to be SOUNDING, which
+  /// the clear had just made false.
   ///
-  /// `clear` silences the drones but knows nothing about edit mode, so the pitch was
-  /// left edited with no voice. It kept dancing; `any()` stayed true so every press
-  /// dragged instead of playing; and the exit gesture required the note to be
-  /// SOUNDING -- which the clear had just made false. The one way out was the one
-  /// thing the bug disabled.
+  /// The branch-3 model closes that off at the source (edited ⊆ sustained; losing sustain
+  /// cascades the edit removal, so nothing silent stays selected). But `classify` still
+  /// checks exit FIRST, before it looks at audibility, so the escape hatch is guaranteed
+  /// by construction even if some future path re-created a silent-edited pitch.
   #[test]
   fn a_silenced_note_can_still_be_dismissed_from_edit_mode() {
     let e = EditState::new();

@@ -19,8 +19,11 @@
 //! - *erase* (misc.org "erase button"): the same hold-or-toggle shape as *accrete*,
 //!   under the same *needs_holding*, but it REMOVES pressed pitches from the sustained
 //!   set -- each keeps sounding until its own finger lifts (the runtime's ordinary
-//!   release, which no longer sustains it). Entering the erasing condition also erases
-//!   the notes already held on this grid. When both conditions are live, erase wins.
+//!   release, which no longer sustains it). Removing sustain also drops any edit
+//!   selection on the pitch (`RingStore::discard_sustain`: the invariant edited ⊆
+//!   sustained, and nothing silent may stay selected). Entering the erasing condition
+//!   also erases the notes already held on this grid. When both conditions are live,
+//!   erase wins.
 //!
 //! Nothing else ever leaves the set except through `press_clear` (un-toggling accrete
 //! mode stops *additions* only). Retriggering a sustaining pitch does not touch the set
@@ -119,9 +122,10 @@ impl AccreteState {
   }
 
   /// Key-down on *clear*: light the LED. Flushing the sustained set is no longer done
-  /// here -- the caller runs `RingStore::remove_reason(Sustain, all sustained)`, which
-  /// both empties the set and reports which drones to end (sparing edited and fingered
-  /// pitches). This method keeps only the condition-machine's LED bookkeeping.
+  /// here -- the caller runs `RingStore::remove_sustain(all sustained)`, which empties the
+  /// set (cascading edit membership away), reports which drones to end (sparing only
+  /// fingered pitches), and thereby ends an edited-and-sustained note like any other.
+  /// This method keeps only the condition-machine's LED bookkeeping.
   pub fn press_clear(&mut self) {
     self.clear_count += 1;
   }
@@ -188,7 +192,7 @@ impl AccreteState {
   /// is the shared store's.
   pub fn note_played(&mut self, pitch: i32, store: &mut RingStore) {
     if self.erasing() {
-      store.discard(Reason::Sustain, pitch);
+      store.discard_sustain(pitch);
     } else if self.accreting() {
       store.add(Reason::Sustain, pitch);
     }
@@ -209,7 +213,7 @@ impl AccreteState {
   /// erasing condition turns on (they keep sounding under their fingers).
   pub fn erase_held<I: IntoIterator<Item = i32>>(&mut self, held: I, store: &mut RingStore) {
     for pitch in held {
-      store.discard(Reason::Sustain, pitch);
+      store.discard_sustain(pitch);
     }
   }
 
@@ -220,7 +224,7 @@ impl AccreteState {
   /// the accreting condition holds at release time (joining the set on the spot).
   pub fn note_released_sustains(&mut self, pitch: i32, store: &mut RingStore) -> bool {
     if self.erasing() {
-      store.discard(Reason::Sustain, pitch);
+      store.discard_sustain(pitch);
       return false;
     }
     if self.accreting() {
@@ -354,9 +358,9 @@ mod tests {
   #[test]
   fn clear_flushes_but_does_not_stop_accretion() {
     // Moved/adapted (cleaning phase 6): flushing the set is no longer `press_clear`'s
-    // job -- the caller runs `remove_reason(Sustain, all)`, which is what empties it.
-    // The assertions' meaning is unchanged: clear lights, the set flushes, and accrete
-    // mode survives the clear.
+    // job -- the caller runs `remove_sustain(all)`, which is what empties it. The
+    // assertions' meaning is unchanged: clear lights, the set flushes, and accrete mode
+    // survives the clear.
     let mut s = AccreteState::new();
     let mut store = RingStore::new();
     s.press_accrete(); // toggle mode on
@@ -364,7 +368,7 @@ mod tests {
     assert_eq!(sustained_len(&store), 1);
     s.press_clear();
     assert!(s.clear_lit(), "clear lights while pressed");
-    store.remove_reason(Sustain, store.iter(Sustain).collect::<Vec<_>>(), |_| 0);
+    store.remove_sustain(store.iter(Sustain).collect::<Vec<_>>(), |_| 0);
     assert_eq!(sustained_len(&store), 0, "the set is flushed");
     s.release_clear();
     assert!(!s.clear_lit(), "clear goes dark on key-up");
@@ -424,7 +428,7 @@ mod tests {
     assert!(banks[0].note_released_sustains(30, &mut stores[0]), "bank 0 sustains its own note");
     assert!(!banks[1].note_released_sustains(30, &mut stores[1]), "bank 1 does not follow suit");
     banks[1].press_clear();
-    stores[1].remove_reason(Sustain, stores[1].iter(Sustain).collect::<Vec<_>>(), |_| 0);
+    stores[1].remove_sustain(stores[1].iter(Sustain).collect::<Vec<_>>(), |_| 0);
     assert!(banks[0].note_released_sustains(30, &mut stores[0]), "bank 1's clear leaves bank 0 ringing");
     assert!(!banks[1].accrete_lit(), "bank 1 never entered accrete mode");
   }
@@ -616,15 +620,15 @@ mod tests {
 
   #[test]
   fn clear_still_flushes_a_momentary_bank() {
-    // Adapted (cleaning phase 6): the flush is `remove_reason(Sustain, all)`, which is
-    // what the clear button now runs; the assertion (clear empties the set) is unchanged.
+    // Adapted (cleaning phase 6): the flush is `remove_sustain(all)`, which is what the
+    // clear button now runs; the assertion (clear empties the set) is unchanged.
     let mut a = AccreteState::new_momentary();
     let mut store = RingStore::new();
     a.press_accrete();
     a.note_played(40, &mut store);
     a.release_accrete();
     a.press_clear();
-    store.remove_reason(Sustain, store.iter(Sustain).collect::<Vec<_>>(), |_| 0);
+    store.remove_sustain(store.iter(Sustain).collect::<Vec<_>>(), |_| 0);
     assert!(store.iter(Sustain).next().is_none(), "clear empties the set");
   }
 }

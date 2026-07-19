@@ -396,7 +396,10 @@ control = "clear"            # or "needs_holding", "accrete", "erase"
 #+end_src
 
 - ~clear~ (key-down; lit while pressed) silences and flushes this bank's sustained
-  notes.
+  notes. Sustain is the only reason a fingerless note rings, so this ends every drone
+  no finger is holding -- including one that is also in edit mode, which it deselects
+  in the same breath (an edited note is always sustained; nothing silent stays
+  selected). See the ~editmode_control~ section.
 - ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ and
   ~erase~ must be *held* or are themselves toggles.
 - ~accrete~: while the accreting condition is live (button held, or accrete mode
@@ -405,9 +408,9 @@ control = "clear"            # or "needs_holding", "accrete", "erase"
   lift, until ~clear~. Lit while the condition is live, dim otherwise.
 - ~erase~ (optional): accrete's mirror image, under the same ~needs_holding~ rule.
   While the erasing condition is live, pitches pressed on this grid -- plus those
-  already held when it went live -- LEAVE the sustained set; each keeps sounding
-  until its own finger lifts. With accrete and erase both live, erase wins. Lit
-  while the condition is live.
+  already held when it went live -- LEAVE the sustained set (and, with it, any edit
+  selection: nothing silent stays selected); each keeps sounding until its own finger
+  lifts. With accrete and erase both live, erase wins. Lit while the condition is live.
 
 Sustained notes paint like any sounding note (bright octave-equivalents on both
 grids) and follow the volume fader of the grid they came from. Re-fingering a
@@ -645,21 +648,24 @@ paragraph above. The lone press that snaps an already-cycling grid's tempo facto
 back to unity is neither -- it leaves edit-mode notes alone.
 
 An ~editmode_control~ pedal (one pedal, a ~monome~ with an ~edo_note_grid~, at
-most one of each ~control~ per monome) drives that monome's EDIT MODE in bulk,
-symmetric with the ~accrete_control~ sustain pedals:
+most one of each ~control~ per monome) drives that monome's EDIT MODE in bulk.
+Edit mode is a SELECTION over the sustained voices, not a reason a note rings:
+an edited note is always also sustained (edited ⊆ sustained), so the two clears
+are NOT symmetric.
 
-- ~control = "clear"~: key-down removes every pitch from edit mode. Each voice
-  then rings on iff it still has another reason -- a finger, or the sustain
-  bank -- and an edit-only drone ends by the ordinary release ramp. Each clear
-  removes only its OWN reason (the sustain clear likewise spares edited
-  drones), so a note both sustained and edited survives either clear alone;
-  the full kill is both clears.
+- ~control = "clear"~: key-down removes every pitch from edit mode -- pure
+  DESELECTION. Every cleared note is still sustained, so this ends NO voice; it
+  only stops the selection (the multipliers / ~=1~ / drag / dances). To actually
+  silence an edited note, take its sustain (the sustain clear, the per-note
+  sustain toggle, or erase), which ends it AND deselects it. (This supersedes the
+  earlier symmetric-clears design, where an edit-only drone ended here and the
+  "full kill" was both clears together.)
 - ~control = "accrete"~: a ONE-SHOT that puts every voice currently sounding on
   the grid -- every fingered voice and every sustained voice -- into edit mode.
-  One-shot rather than a hold: the moment anything is edited the grid becomes
-  a pitch-picker, so a "notes played while held" phase cannot exist. (The
-  sustain accrete is symmetric in what it captures: it takes every fingered
-  AND every edit-mode voice.)
+  One-shot rather than a hold: the moment anything is edited the grid becomes a
+  pitch-picker, so a "notes played while held" phase cannot exist. A fingered-only
+  voice it selects becomes sustained too (edit implies sustain), so it drones once
+  its finger lifts.
 
 The on-grid ~editmode_control~ window (single cell, ~control~ field, at most one
 of each per monome, dim at rest / bright while pressed) is the same control on

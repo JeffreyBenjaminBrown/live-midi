@@ -76,10 +76,11 @@ pub(super) fn handle_key(
     }
     return;
   }
-  // The editmode buttons, through the same `editmode_press` the softstep pedals
-  // run: clear empties THIS grid's edit mode (edit-only drones ring out; sustained
-  // and fingered voices keep their other reasons), accrete puts every sounding
-  // voice into it. Key-down only; key-up douses the LED.
+  // The editmode buttons, through the same `editmode_press` the softstep pedals run:
+  // clear empties THIS grid's edit SELECTION (branch-3 queue item 4: pure deselection --
+  // every cleared note stays sustained, so nothing is silenced), accrete puts every
+  // sounding voice into edit mode (sustaining any that were only fingered). Neither ends
+  // a voice, so no release params are needed. Key-down only; key-up douses the LED.
   for (rect, down_flag, control) in [
     (rt.overlays.editmode_clear_rect, 0, EditmodeControlKind::Clear),
     (rt.overlays.editmode_accrete_rect, 1, EditmodeControlKind::Accrete),
@@ -91,12 +92,7 @@ pub(super) fn handle_key(
         rt.editmode_accrete_down = press;
       }
       if press {
-        let (release_secs, sample_rate) = rt.sink.release_params();
-        editmode_press(
-          rt.grid_index, control,
-          &rt.shared.ring, &rt.shared.held_all, &rt.shared.voices,
-          release_secs, sample_rate,
-        );
+        editmode_press(rt.grid_index, control, &rt.shared.ring, &rt.shared.held_all);
       }
       return;
     }
@@ -136,17 +132,17 @@ pub(super) fn handle_key(
   if in_overlay(rt.overlays.clear_rect, cell) {
     if press {
       // Sustain clear removes the SUSTAIN reason from every sustained pitch and ends
-      // exactly the drones that had no other reason -- edited drones keep ringing
-      // (audibly, so it is not the old silent "dancing ghost") until editmode clear
-      // (or the exit gesture) takes that reason too, and a fingered pitch's finger is
-      // never touched. One `remove_reason` call replaces the old flush + keep-set
-      // dance.
+      // exactly the drones no finger holds (branch-3 queue item 4). Sustain is the only
+      // life-support reason, so this ends an edited-and-sustained note too, deselecting
+      // it in the same breath (`remove_sustain` cascades edit membership away -- nothing
+      // silent may stay selected). A fingered pitch's finger is never touched. This
+      // supersedes the old model where a sustain clear spared edited drones.
       let ended = {
         let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
         let gr = &mut rings[rt.grid_index];
         gr.accrete.press_clear();
         let all: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
-        gr.store.remove_reason(Reason::Sustain, all, |p| finger_count(held, p))
+        gr.store.remove_sustain(all, |p| finger_count(held, p))
       };
       let (release_secs, sample_rate) = rt.sink.release_params();
       synth::end_drones_at(
@@ -331,18 +327,16 @@ pub(super) fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i
     rt.sink.note_off(cell);
     return;
   };
-  // A note rings without a finger for either of two independent reasons: it is
-  // sustained (pedal, or the per-note button), or it is being edited. Either keeps it.
-  // One ring lock answers both, and `note_released_sustains` writes through to the
-  // store (joining/leaving the sustained set per the accrete condition).
-  let (sustains, editing) = {
+  // A note rings without a finger only if it is sustained (pedal, per-note button, or
+  // -- since editing implies sustaining, edited ⊆ sustained -- because it is being
+  // edited). So the single sustained check answers it; `note_released_sustains` writes
+  // through to the store (joining/leaving the sustained set per the accrete condition).
+  let sustains = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let gr = &mut rings[rt.grid_index];
-    let sustains = gr.accrete.note_released_sustains(pitch, &mut gr.store);
-    let editing = gr.store.has(Reason::Edit, pitch);
-    (sustains, editing)
+    gr.accrete.note_released_sustains(pitch, &mut gr.store)
   };
-  if sustains || editing {
+  if sustains {
     rt.sink.sustain_note(cell, pitch);
   } else {
     rt.sink.note_off(cell);
@@ -492,14 +486,14 @@ pub(super) fn handle_edit_press(
 
   // Decide under the ring lock, act after it drops: the voice touches below happen
   // after the lock, and this module's rule is no nested locks. One lock now covers
-  // sustain and edit both (they share the store), so there is no ordering to get
-  // wrong. A note rings for any of three independent reasons -- a finger on it, a
-  // sustain, or being edited -- and both triggers ask only "is it audible", so all
-  // three count in `is_sounding`.
+  // sustain and edit both (they share the store), so there is no ordering to get wrong.
+  // A note is audible if a finger holds it or it is sustained; an edited note is always
+  // sustained too (edited ⊆ sustained), so those two cover `is_sounding`.
   enum Act {
     Play,
-    Entered,
-    Exited(i32),
+    // Enter edit / exit edit / editmode nothing: silent, and ends no voice (branch-3
+    // queue item 4). The store mutation already happened under the lock.
+    Silent,
     Sustain(i32, bool),
     Dragged(i32, i32),
   }
@@ -507,24 +501,26 @@ pub(super) fn handle_edit_press(
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let gr = &mut rings[rt.grid_index];
     let sustained: HashSet<i32> = gr.store.iter(Reason::Sustain).collect();
-    let editing: HashSet<i32> = gr.store.iter(Reason::Edit).collect();
-    let is_sounding = |p: i32| {
-      held.values().any(|h| *h == p) || sustained.contains(&p) || editing.contains(&p)
-    };
+    let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
     match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, &gr.store) {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
+        // Entering edit mode also SUSTAINS the pitch (edited ⊆ sustained): a
+        // fingered-only note becomes a drone when its finger lifts. Nothing to do at the
+        // voice level now -- it is still under its finger or already droning.
         gr.edit.enter(pitch, &mut gr.store);
-        Act::Entered
+        Act::Silent
       }
-      // The edit reason is removed by `remove_reason` in the act below, so it can end
-      // exactly the reason-less drone in the same breath.
-      edit::Press::ExitEdit { pitch } => Act::Exited(pitch),
+      edit::Press::ExitEdit { pitch } => {
+        // Pure deselection: drop only the edit membership. The note stays sustained, so
+        // it keeps ringing -- leaving edit mode ends no voice.
+        gr.edit.exit(pitch, &mut gr.store);
+        Act::Silent
+      }
       edit::Press::ToggleSustain { pitch } => Act::Sustain(pitch, !sustained.contains(&pitch)),
       edit::Press::Drag { from, to } => {
-        // A drag re-files the pitch in BOTH reason sets at once (the note may be
-        // sustained, edited, or both), so a clear can't miss it under the old name and
-        // the trail keeps up.
+        // A drag re-files the pitch in BOTH reason sets at once (an edited note is also
+        // sustained), so a clear can't miss it under the old name and the trail keeps up.
         gr.store.note_moved(from, to);
         Act::Dragged(from, to)
       }
@@ -534,23 +530,8 @@ pub(super) fn handle_edit_press(
   let (release_secs, sample_rate) = rt.sink.release_params();
   match act {
     Act::Play => return true,
-    // Entering needs nothing else: being edited is itself a reason to ring, so the
-    // note simply keeps sounding when the finger lifts (`release_cell` asks).
-    Act::Entered => {}
-    Act::Exited(pitch) => {
-      // Take away the EDIT reason and end the drone iff nothing else holds the pitch up
-      // -- a sustain, or a finger (a finger has its own voice, so a fingered pitch's
-      // finger is never ended here). `end_drones_at` only touches drones, so "exit
-      // while still holding the note" is naturally a no-op: that note has a finger, no
-      // drone. This is the exit-edit half of the one `remove_reason` operation.
-      let ended = {
-        let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        rings[rt.grid_index].store.remove_reason(Reason::Edit, [pitch], |p| finger_count(held, p))
-      };
-      synth::end_drones_at(
-        &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
-      );
-    }
+    // Enter, exit, and the editmode clear all end nothing (branch-3 queue item 4).
+    Act::Silent => {}
     Act::Sustain(pitch, on) => {
       if on {
         // Switching sustain ON starts nothing at the voice level: a fingered note has
@@ -560,11 +541,13 @@ pub(super) fn handle_edit_press(
           .store
           .add(Reason::Sustain, pitch);
       } else {
-        // The mirror of leaving edit mode: remove the SUSTAIN reason, end the drone iff
-        // nothing else (edit, or a finger) still holds it.
+        // Remove the SUSTAIN reason and end the drone iff no finger still holds it. This
+        // also deselects the pitch (`remove_sustain` cascades edit membership away:
+        // nothing silent may stay selected), so toggling sustain off an edited note ends
+        // AND deselects it.
         let ended = {
           let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-          rings[rt.grid_index].store.remove_reason(Reason::Sustain, [pitch], |p| finger_count(held, p))
+          rings[rt.grid_index].store.remove_sustain([pitch], |p| finger_count(held, p))
         };
         synth::end_drones_at(
           &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
@@ -597,7 +580,7 @@ pub(super) fn handle_edit_press(
 
 /// How many held cells sound exactly `pitch` right now -- the derived FINGER count
 /// (never stored in the ring). Two colliding cells finger one pitch, so this is a
-/// count, not a boolean: `remove_reason` uses it to spare a pitch a finger still holds.
+/// count, not a boolean: `remove_sustain` uses it to spare a pitch a finger still holds.
 pub(super) fn finger_count(held: &HashMap<(i32, i32), i32>, pitch: i32) -> usize {
   held.values().filter(|&&p| p == pitch).count()
 }

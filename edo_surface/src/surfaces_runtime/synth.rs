@@ -807,10 +807,11 @@ mod tests {
   }
 
   // The old `release_sustained_spares_the_keep_set` test is gone with the function it
-  // covered (cleaning phase 6): the sustain-clear now runs `RingStore::remove_reason`,
-  // whose keep-set behaviour (spare edited/fingered pitches) is pinned in ring.rs
-  // (`the_doubly_held_matrix`, `remove_reason_returns_only_the_reason_less_pitches`),
-  // and the drone-ending half is `end_drones_at` above.
+  // covered (cleaning phase 6): the sustain-clear now runs `RingStore::remove_sustain`,
+  // whose life-support behaviour (spare only fingered pitches, cascade edit away) is
+  // pinned in ring.rs (`the_doubly_held_matrix`,
+  // `remove_sustain_returns_the_fingerless_pitches_and_cascades_edit`), and the
+  // drone-ending half is `end_drones_at` above.
 
   #[test]
   fn sustaining_the_same_pitch_twice_releases_the_second_finger_voice() {
