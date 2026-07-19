@@ -11,3 +11,25 @@ monome (=validate_chord_blocks=, mirroring the pad's validator).
 =2-monomes_2-softsteps.org= carry the block at =[5, 0, 9, 1]=. Tests: the
 four validation rejections + the rig-pinning window-kind list updated.
 =cargo test --workspace=: 703 passed, 0 failed.
+
+* DONE 2. the chord layer: save / recall / toggle / basic LEDs
+- =chords.rs=: =ChordLayer= (9 slots, arm, live-voice registry, active flags) on
+  =GridRing= (same single lock); =StoredChord=/=StoredVoice=; the pure
+  =snapshot= (timesetter = largest osc phase, ties to lowest pitch; pulse
+  reference falls back to the pulsed voice by the same rule; factors against
+  the save-time base tempo; pedal read from =grid_gain_target=, the settled
+  aim); =block_cell=/=slot_cell=/=arm_cell= mapping.
+- =VoiceSource::SurfaceChord { grid, seq }=: NOT matched by the pedal/fader
+  walks, so chord voices are volume-untouchable outside edit mode *by
+  construction* (the round-2 amplitude ruling costs zero code).
+- =synth.rs=: =spawn_chord_voice= (stored phases/gains, factor x current base,
+  envelope re-strikes) + =end_chord_voices=.
+- =keys.rs=: block routing (key-down only) + =chord_save= (fingered +
+  sustained drones + live chord voices; tails excluded by construction; parts
+  sorted by pitch for deterministic slots) + =chord_toggle=.
+- =paint.rs chord_view=: block idles DIM, active slot BRIGHT, arm flashes on
+  the dance clock (150 ms half-period -- Jeff's "can sync with the dances");
+  live chord pitch classes reflect bright on BOTH grids (pulled into commit 2
+  from planned commit 4 -- a recalled chord you cannot see was too odd to
+  leave for later).
+=cargo test --workspace=: 716 passed, 0 failed.

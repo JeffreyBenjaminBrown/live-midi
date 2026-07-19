@@ -46,6 +46,7 @@
 use std::collections::HashSet;
 
 use super::accrete::AccreteState;
+use super::chords::ChordLayer;
 use super::edit::EditState;
 
 /// A stored pitch set. Only [`Reason::Sustain`] keeps a note alive; [`Reason::Edit`] is
@@ -165,19 +166,28 @@ impl RingStore {
   }
 }
 
-/// One grid's ring: its accrete state machine, its edit state machine, and the shared
-/// store both point at -- all three under one lock in the runtime's `Vec<GridRing>`.
+/// One grid's ring: its accrete state machine, its edit state machine, the shared
+/// store both point at, and its chord layer (chord-storage-v2) -- all under one lock
+/// in the runtime's `Vec<GridRing>`. The chord layer rides the same lock so the edit
+/// gestures (which consult both the piano layer's store and the chord registry) can
+/// never see the two disagree.
 #[derive(Default)]
 pub struct GridRing {
   pub accrete: AccreteState,
   pub edit: EditState,
   pub store: RingStore,
+  pub chord: ChordLayer,
 }
 
 impl GridRing {
   /// A grid ring around an already-configured accrete bank (switchable or momentary).
   pub fn new(accrete: AccreteState) -> Self {
-    GridRing { accrete, edit: EditState::new(), store: RingStore::new() }
+    GridRing {
+      accrete,
+      edit: EditState::new(),
+      store: RingStore::new(),
+      chord: ChordLayer::new(),
+    }
   }
 }
 

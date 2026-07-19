@@ -6,12 +6,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::monome;
 
-use super::grid::{button_level, volume_cells, ButtonOverlay, BRIGHT, DIM};
+use super::grid::{button_level, volume_cells, ButtonOverlay, BRIGHT, DIM, OFF};
 use super::ring::Reason;
-use super::GridThread;
+use super::{chords, dance, GridThread, NO_RECT};
 
 /// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the
 /// union of every grid's sustained pitch classes (which paint bright on every
@@ -28,6 +29,44 @@ pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>
   let mut classes = HashSet::new();
   for gr in rings.iter() {
     classes.extend(gr.store.classes(Reason::Sustain, rt.tuning.edo));
+  }
+  (buttons, classes)
+}
+
+/// One lock: this grid's chord-block LED view plus the union of every grid's live
+/// chord-voice pitch classes (chord voices are sounding notes, so they reflect
+/// bright on every grid exactly like the sustained classes).
+///
+/// The block's language (2_discussion "LEDs"): every cell idles DIM (empty and
+/// occupied slots look alike -- empty slots are inert), an ACTIVE slot is solid
+/// BRIGHT, and while storage is armed the ARM cell flashes on the dance clock's
+/// 150 ms half-period (Jeff: "say 100 ms ... can sync with the dances if that
+/// makes for cleaner code").
+pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverlay>, HashSet<i32>) {
+  let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+  let mut classes = HashSet::new();
+  for gr in rings.iter() {
+    classes.extend(gr.chord.live_pitches().map(|p| p.rem_euclid(rt.tuning.edo)));
+  }
+  let rect = rt.overlays.chord_rect;
+  let mut buttons = Vec::new();
+  if rect != NO_RECT {
+    let layer = &rings[rt.grid_index].chord;
+    let (ax, ay) = chords::arm_cell(rect);
+    let arm_level = if layer.armed {
+      if dance::flash_on(elapsed) {
+        BRIGHT
+      } else {
+        OFF
+      }
+    } else {
+      DIM
+    };
+    buttons.push(([ax, ay, ax, ay], arm_level));
+    for slot in 0..chords::SLOTS {
+      let (x, y) = chords::slot_cell(rect, slot);
+      buttons.push(([x, y, x, y], if layer.active[slot] { BRIGHT } else { DIM }));
+    }
   }
   (buttons, classes)
 }

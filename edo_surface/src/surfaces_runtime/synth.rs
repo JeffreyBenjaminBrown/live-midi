@@ -162,6 +162,12 @@ fn voice_key(grid: usize, cell: (i32, i32)) -> VoiceSource {
   VoiceSource::SurfaceFinger { grid, cell }
 }
 
+/// A chord-layer voice's key: per grid and the recall's seq (see the chord layer's
+/// registry for its pitch/slot/edit flag).
+pub(super) fn chord_key(grid: usize, seq: u64) -> VoiceSource {
+  VoiceSource::SurfaceChord { grid, seq }
+}
+
 /// The key of a *sustained* voice: per source grid and absolute pitch (the accrete
 /// set is keyed the same way).
 fn sustain_key(grid: usize, pitch: i32) -> VoiceSource {
@@ -553,6 +559,52 @@ impl SurfaceSink {
     (self.release_secs, self.sample_rate)
   }
 
+  /// Recall one stored chord voice (chord-storage-v2): spawn it under
+  /// `chord_key(grid, seq)` exactly as saved -- its own timbre and settled
+  /// fader/pedal components, its oscillator starting at the stored RELATIVE phase,
+  /// its factored pulse at `pulse_factor * base_hz` (0 stays 0: a recall cannot
+  /// start a pulse) from the stored relative pulse phase. The envelope re-strikes
+  /// (attack + pluck from the top): a recall is a played chord, not a resumed one,
+  /// and starting from env 0 is what makes an arbitrary start phase click-free.
+  /// The pedal/fader components are the SAVED ones, not the grid's current --
+  /// chord voices are exempt from both walks by key (see `VoiceSource`).
+  pub fn spawn_chord_voice(&mut self, seq: u64, v: &super::chords::StoredVoice, base_hz: f32) {
+    let id = self.next_id;
+    self.next_id += 1;
+    let pulse_hz = if v.pulse_factor > 0.0 && base_hz > 0.0 {
+      v.pulse_factor * base_hz
+    } else {
+      0.0
+    };
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    voices.insert(
+      chord_key(self.grid, seq),
+      VoiceState {
+        id,
+        freq: freq_for_pitch(v.pitch, self.fund, self.edo),
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
+        factored_pulse_freq: pulse_hz,
+        factored_pulse_phase: v.pulse_phase,
+        phase: v.osc_phase,
+        env: 0.0,
+        target_env: 1.0,
+        ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        pending_attack: None,
+        sustain_env: self.sustain_env,
+        decay_per_sample: self.decay_per_sample,
+        timbre: v.timbre,
+        fader_gain: v.fader_gain,
+        grid_gain: v.pedal_gain,
+        grid_gain_target: v.pedal_gain,
+        am_phase: 0.0,
+        fm_phase: 0.0,
+        rel_am_phase: 0.0,
+        rel_fm_phase: 0.0,
+      },
+    );
+  }
+
   /// A manual retrigger of a sustaining pitch: cut THIS grid's drone at `pitch` so
   /// the incoming strike replaces it instead of doubling it (misc.org "retriggering
   /// a sustaining note replaces it"). The dying voice is re-keyed under a unique
@@ -605,6 +657,30 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
     };
     if voice_grid == grid {
       state.grid_gain_target = gain;
+    }
+  }
+}
+
+/// End -- by the ordinary release ramp -- the chord-layer voices of `grid` named by
+/// `seqs` (a slot toggling OFF, or the widened clear's "and chord" half). The chord
+/// layer has already unregistered them; the ramping voices are reaped by the render
+/// at silence, like any release tail.
+pub fn end_chord_voices(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  seqs: &[u64],
+  release_secs: f32,
+  sample_rate: f32,
+) {
+  if seqs.is_empty() {
+    return;
+  }
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for seq in seqs {
+    if let Some(state) = voices.get_mut(&chord_key(grid, *seq)) {
+      state.target_env = 0.0;
+      state.ramp_per_sample = state.env / (release_secs * sample_rate);
+      state.pending_attack = None;
     }
   }
 }
@@ -1021,6 +1097,91 @@ mod tests {
     let v = voices.lock().unwrap();
     assert_eq!(v[&voice_key(0, (3, 4))].fader_gain, 0.5, "recovers from zero");
     assert_eq!(v[&voice_key(0, (3, 4))].timbre.gain, 0.8, "slot amplitude untouched throughout");
+  }
+
+  // ---- the chord layer's voices (chord-storage-v2) ----
+
+  #[test]
+  fn spawn_chord_voice_recreates_the_saved_voice_and_restrikes_the_envelope() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let stored = StoredVoice {
+      pitch: 20,
+      timbre: Timbre { waveform: Waveform::Saw, gain: 0.8, ..Timbre::default() },
+      fader_gain: 0.5,
+      pedal_gain: 0.25,
+      osc_phase: 0.4,
+      pulse_factor: 1.5,
+      pulse_phase: 0.3,
+    };
+    a.spawn_chord_voice(7, &stored, 2.0);
+    let v = voices.lock().unwrap();
+    let s = &v[&chord_key(0, 7)];
+    assert_eq!(s.freq, freq_for_pitch(20, 80.0, 58));
+    assert_eq!(s.phase, 0.4, "starts at the stored relative phase");
+    assert_eq!(s.env, 0.0, "the envelope re-strikes from silence");
+    assert_eq!(s.target_env, 1.0);
+    assert_eq!(s.timbre.gain, 0.8, "the SAVED timbre, not the grid's");
+    assert_eq!(s.fader_gain, 0.5, "the SAVED fader component");
+    assert_eq!((s.grid_gain, s.grid_gain_target), (0.25, 0.25), "the SAVED pedal, settled");
+    assert_eq!(s.factored_pulse_freq, 3.0, "factor 1.5 x base 2 Hz");
+    assert_eq!(s.factored_pulse_phase, 0.3);
+  }
+
+  #[test]
+  fn spawn_chord_voice_with_no_pulse_factor_stays_unpulsed() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let stored = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    a.spawn_chord_voice(1, &stored, 2.0);
+    assert_eq!(voices.lock().unwrap()[&chord_key(0, 1)].factored_pulse_freq, 0.0);
+  }
+
+  #[test]
+  fn chord_voices_are_exempt_from_the_pedal_and_fader_walks() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let stored = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 0.5, pedal_gain: 0.25,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    a.spawn_chord_voice(3, &stored, 1.0);
+    a.note_on((0, 0), 30, Timbre::default(), None);
+    set_grid_pedal_gain(&voices, 0, 0.9);
+    set_grid_fader_gain(&voices, 0, 0.9);
+    let v = voices.lock().unwrap();
+    let chord = &v[&chord_key(0, 3)];
+    assert_eq!(chord.grid_gain_target, 0.25, "the pedal walk never touches a chord voice");
+    assert_eq!(chord.fader_gain, 0.5, "nor the fader walk");
+    let finger = &v[&voice_key(0, (0, 0))];
+    assert_eq!(finger.grid_gain_target, 0.9, "the piano layer still follows both");
+    assert_eq!(finger.fader_gain, 0.9);
+  }
+
+  #[test]
+  fn end_chord_voices_ramps_only_the_named_seqs_on_the_named_grid() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let mut b = sink(1, &voices);
+    let stored = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    a.spawn_chord_voice(1, &stored, 1.0);
+    a.spawn_chord_voice(2, &stored, 1.0);
+    b.spawn_chord_voice(1, &stored, 1.0); // same seq, other grid
+    end_chord_voices(&voices, 0, &[1], 0.05, 48000.0);
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&chord_key(0, 1)].target_env, 0.0, "the named voice ramps out");
+    assert_eq!(v[&chord_key(0, 2)].target_env, 1.0, "an unnamed seq keeps ringing");
+    assert_eq!(v[&chord_key(1, 1)].target_env, 1.0, "the other grid's seq 1 is untouched");
   }
 
   // ---- glide_voice_to: the per-voice pitch edit primitive ----

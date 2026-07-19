@@ -24,6 +24,7 @@
 
 mod accrete;
 pub mod audio;
+mod chords;
 mod dance;
 mod edit;
 mod grid;
@@ -709,7 +710,13 @@ fn grid_thread(mut rt: GridThread) {
     // trail (dim), through the current register.
     let selector_slot = current_slot(&rt.shared.selected, rt.knobs.controls_index);
     let volume_col = volume_active_col(&rt);
+    let elapsed = rt.started.elapsed();
     let (mut buttons, sustained_classes) = accrete_view(&rt);
+    // The chord block's cells (arm + 9 slots) and every grid's live chord pitches
+    // (they are sounding notes, so they reflect bright on both grids like the
+    // sustained classes).
+    let (chord_buttons, chord_classes) = chord_view(&rt, elapsed);
+    buttons.extend(chord_buttons);
     let toggle = |rect, on: &[AtomicBool]| (rect, button_level(on[rt.grid_index].load(Ordering::Relaxed)));
     buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
@@ -757,13 +764,13 @@ fn grid_thread(mut rt: GridThread) {
     // already in this set and needs no separate union: this supersedes the old code that
     // unioned the edit set in by hand because edit was its own, non-sustained reason.
     sounding_classes.extend(sustained_classes);
+    sounding_classes.extend(chord_classes);
     let trail_classes = trail_set(&rt.shared.trail);
 
     // The diamond dance (edit-mode) and the square dance (sustained), plus the
     // off-screen indicator. All three read THIS grid's edit set and its own
     // sustained pitches: local, never mirrored from the other grid and never
     // octave-duplicated, unlike everything else painted here.
-    let elapsed = rt.started.elapsed();
     // Snapshot both under one lock, then draw: the pedal hook writes these too
     // (`clear`).
     let (edited, sustained): (Vec<i32>, Vec<i32>) = {

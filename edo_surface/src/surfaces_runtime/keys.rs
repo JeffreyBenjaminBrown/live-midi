@@ -12,8 +12,9 @@ use std::time::Instant;
 use crate::edo_play::{register_delta, shift_for_cell, step_for_cell};
 use crate::rig::EditmodeControlKind;
 
-use crate::types::Timbre;
+use crate::types::{Timbre, VoiceSource, VoiceState};
 
+use super::chords;
 use super::grid::{slot_for_selector_cell, volume_cells, volume_gain_for_pos};
 use super::hooks::{editmode_press, factored_pulse_press};
 use super::paint::publish_sounding;
@@ -88,6 +89,16 @@ pub(super) fn handle_key(
       }
       return;
     }
+  }
+  // The chord block (chord-storage-v2): arm + 9 slots, key-down only (a "toggle"
+  // monomekey ignores key-up). While ARMED, a slot press saves every voice this
+  // grid is sounding and disarms; disarmed, a slot press toggles the stored chord
+  // on (recall) and off.
+  if in_overlay(rt.overlays.chord_rect, cell) {
+    if press {
+      chord_block_press(rt, held, cell);
+    }
+    return;
   }
   // The polyrhythm pad: | x3 x2 tap | /3 /2 =1 |, key-down only. The tap sets the
   // GLOBAL tempo; the tempo-factor buttons and the =1 factored-pulse switch act on
@@ -315,6 +326,123 @@ pub(super) fn handle_key(
   }
   publish_held(&rt.shared.held_all, rt.grid_index, held);
   publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
+}
+
+/// A key-down inside the chord block: the arm toggle, a save (armed), or a recall
+/// toggle (disarmed). Decisions happen under the ring lock; voices are touched
+/// after it drops (the module's no-nested-locks rule).
+pub(super) fn chord_block_press(
+  rt: &mut GridThread,
+  held: &HashMap<(i32, i32), i32>,
+  cell: (i32, i32),
+) {
+  let Some(hit) = chords::block_cell(rt.overlays.chord_rect, cell) else {
+    return;
+  };
+  match hit {
+    chords::BlockCell::Arm => {
+      let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+      let layer = &mut rings[rt.grid_index].chord;
+      layer.armed = !layer.armed;
+    }
+    chords::BlockCell::Slot(slot) => {
+      let armed = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .chord
+        .armed;
+      if armed {
+        chord_save(rt, held, slot);
+      } else {
+        chord_toggle(rt, slot);
+      }
+    }
+  }
+}
+
+/// Save "every voice this monome is currently sounding" (1_vision) into `slot`:
+/// fingered voices, sustained drones, and live chord voices -- release tails
+/// excluded by construction (none of the three registries name them). Each input is
+/// snapshotted under its own lock, sequentially. An empty capture only disarms.
+fn chord_save(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize) {
+  let (sustained, live): (Vec<i32>, Vec<(u64, i32)>) = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &rings[rt.grid_index];
+    (
+      gr.store.iter(Reason::Sustain).collect(),
+      gr.chord.live.iter().map(|(s, v)| (*s, v.pitch)).collect(),
+    )
+  };
+  let base_hz = rt
+    .shared
+    .poly
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .tapped_hz()
+    .unwrap_or(0.0);
+  let mut parts: Vec<(i32, VoiceState)> = {
+    let voices = rt.shared.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let grid = rt.grid_index;
+    let mut parts = Vec::new();
+    for (c, pitch) in held {
+      if let Some(s) = voices.get(&VoiceSource::SurfaceFinger { grid, cell: *c }) {
+        parts.push((*pitch, *s));
+      }
+    }
+    // A sustained pitch still under a finger has no drone voice -- its finger voice
+    // was captured above; the lookup simply misses.
+    for pitch in sustained {
+      if let Some(s) = voices.get(&VoiceSource::SurfaceDrone { grid, pitch }) {
+        parts.push((pitch, *s));
+      }
+    }
+    for (seq, pitch) in live {
+      if let Some(s) = voices.get(&VoiceSource::SurfaceChord { grid, seq }) {
+        parts.push((pitch, *s));
+      }
+    }
+    parts
+  };
+  // Deterministic slot order (and deterministic timesetter tie-breaks): the held
+  // and live registries iterate in arbitrary hash order.
+  parts.sort_by_key(|(pitch, _)| *pitch);
+  let chord = chords::snapshot(&parts, base_hz);
+  let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+  rings[rt.grid_index].chord.save(slot, chord);
+}
+
+/// Toggle `slot`: OFF ends its recall's voices (release ramp); ON spawns the stored
+/// chord's voices at the current base tempo (an empty slot is inert).
+fn chord_toggle(rt: &mut GridThread, slot: usize) {
+  let base_hz = rt
+    .shared
+    .poly
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .tapped_hz()
+    .unwrap_or(0.0);
+  enum Act {
+    Spawn(Vec<(u64, chords::StoredVoice)>),
+    End(Vec<u64>),
+  }
+  let act = {
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let layer = &mut rings[rt.grid_index].chord;
+    if layer.active[slot] {
+      Act::End(layer.end_recall(slot))
+    } else {
+      Act::Spawn(layer.begin_recall(slot))
+    }
+  };
+  match act {
+    Act::Spawn(list) => {
+      for (seq, v) in &list {
+        rt.sink.spawn_chord_voice(*seq, v, base_hz);
+      }
+    }
+    Act::End(seqs) => {
+      let (release_secs, sample_rate) = rt.sink.release_params();
+      synth::end_chord_voices(&rt.shared.voices, rt.grid_index, &seqs, release_secs, sample_rate);
+    }
+  }
 }
 
 /// The one release path (finger up, or a mono cut): a note in the sustained set --
