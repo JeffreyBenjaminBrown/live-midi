@@ -21,8 +21,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::pitch::freq_for_pitch;
-use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
+use crate::types::{Timbre, TimbreXfade, VoiceId, VoiceMap, VoiceSource, VoiceState};
 use crate::voices::pluck_envelope;
+
+/// How long the edit-mode timbre switch's equal-power crossfade takes.
+pub const TIMBRE_XFADE_SECS: f32 = 0.05;
 
 /// Aim every voice belonging to `grid` -- fingered and sustained (drone) alike -- at
 /// fader gain `gain`, in place. Drives the *live* volume control: a volume strip sets
@@ -320,6 +323,7 @@ impl SurfaceSink {
         fm_phase: 0.0,
         rel_am_phase: 0.0,
         rel_fm_phase: 0.0,
+        timbre_xfade: None,
       },
     );
   }
@@ -627,6 +631,7 @@ impl SurfaceSink {
         fm_phase: 0.0,
         rel_am_phase: 0.0,
         rel_fm_phase: 0.0,
+        timbre_xfade: None,
       },
     );
   }
@@ -683,6 +688,48 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
     };
     if voice_grid == grid {
       state.grid_gain_target = gain;
+    }
+  }
+}
+
+/// Re-timbre one grid's EDIT-MODE voices in place, crossfaded (the vision's
+/// "switching timbre should apply ... to any note in edit mode, regardless of its
+/// reason for existing"). Selection is exactly the pulse controls': the edited piano
+/// pitches (fingered voices via `held`'s cell keys, drones by pitch) plus the
+/// edit-flagged chord voices by key. Each selected voice whose timbre differs gets
+/// the new timbre immediately and a [`TimbreXfade`] blending the old one out over
+/// `TIMBRE_XFADE_SECS` -- no retrigger, no phase reset, no envelope event. The
+/// grid's own (future-note) timbre is deliberately NOT touched here: the strip's
+/// radio stays put, per Jeff ("yes, no visible indicator").
+pub fn retimbre_voices(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  edited: &HashSet<i32>,
+  held: &HashMap<(i32, i32), i32>,
+  chord_keys: &HashSet<VoiceSource>,
+  timbre: Timbre,
+  sample_rate: f32,
+) {
+  if edited.is_empty() && chord_keys.is_empty() {
+    return;
+  }
+  let cells: HashSet<VoiceSource> = held
+    .iter()
+    .filter(|(_, pitch)| edited.contains(pitch))
+    .map(|(cell, _)| voice_key(grid, *cell))
+    .collect();
+  let step = 1.0 / (TIMBRE_XFADE_SECS * sample_rate).max(1.0);
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    let wanted = cells.contains(src)
+      || chord_keys.contains(src)
+      || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
+                  if *g == grid && edited.contains(pitch));
+    if wanted && state.timbre != timbre {
+      // A press mid-crossfade restarts the fade from the current target -- the
+      // half-faded old-old timbre is dropped rather than chained.
+      state.timbre_xfade = Some(TimbreXfade { from: state.timbre, progress: 0.0, step });
+      state.timbre = timbre;
     }
   }
 }
@@ -1253,6 +1300,59 @@ mod tests {
     let g = voices.lock().unwrap();
     assert_eq!(g[&chord_key(0, 1)].factored_pulse_freq, 0.0, "flagged: stopped");
     assert_eq!(g[&chord_key(0, 2)].factored_pulse_freq, 3.0, "unflagged: still pulsing");
+  }
+
+  #[test]
+  fn retimbre_voices_swaps_and_crossfades_exactly_the_edit_selection() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    // Grid 0: an edited fingered voice (pitch 10 at (1,1)), an edited drone (20), a
+    // non-edited fingered voice (30 at (3,3)); plus an edit-flagged chord voice and
+    // an unflagged one.
+    a.note_on((1, 1), 10, Timbre::default(), None);
+    a.note_on((2, 2), 20, Timbre::default(), None);
+    a.sustain_note((2, 2), 20);
+    a.note_on((3, 3), 30, Timbre::default(), None);
+    let sv = StoredVoice {
+      pitch: 40, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    a.spawn_chord_voice(1, &sv, 1.0);
+    a.spawn_chord_voice(2, &sv, 1.0);
+    let edited: HashSet<i32> = [10, 20].into_iter().collect();
+    let held: HashMap<(i32, i32), i32> = [((1, 1), 10), ((3, 3), 30)].into_iter().collect();
+    let flagged: HashSet<VoiceSource> = [chord_key(0, 1)].into_iter().collect();
+    let new = Timbre { waveform: Waveform::Saw, gain: 0.5, ..Timbre::default() };
+
+    retimbre_voices(&voices, 0, &edited, &held, &flagged, new, 48000.0);
+
+    let v = voices.lock().unwrap();
+    for key in [voice_key(0, (1, 1)), sustain_key(0, 20), chord_key(0, 1)] {
+      let s = &v[&key];
+      assert_eq!(s.timbre.waveform, Waveform::Saw, "{key:?} got the new timbre");
+      let x = s.timbre_xfade.expect("and a crossfade out of the old one");
+      assert_eq!(x.from.waveform, Waveform::Triangle);
+      assert_eq!(x.progress, 0.0);
+    }
+    for key in [voice_key(0, (3, 3)), chord_key(0, 2)] {
+      let s = &v[&key];
+      assert_eq!(s.timbre.waveform, Waveform::Triangle, "{key:?} is not selected: untouched");
+      assert!(s.timbre_xfade.is_none());
+    }
+  }
+
+  #[test]
+  fn retimbre_to_the_same_timbre_starts_no_fade() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((1, 1), 10, Timbre::default(), None);
+    retimbre_voices(
+      &voices, 0, &[10].into_iter().collect(),
+      &[((1, 1), 10)].into_iter().collect::<HashMap<_, _>>(),
+      &HashSet::new(), Timbre::default(), 48000.0,
+    );
+    assert!(voices.lock().unwrap()[&voice_key(0, (1, 1))].timbre_xfade.is_none());
   }
 
   // ---- glide_voice_to: the per-voice pitch edit primitive ----

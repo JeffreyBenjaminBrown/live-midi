@@ -70,3 +70,23 @@ four validation rejections + the rig-pinning window-kind list updated.
 - (Block LEDs and the bright cross-grid reflection had already landed in
   commit 2.)
 =cargo test --workspace=: 724 passed, 0 failed.
+
+* DONE 5. the edit-mode timbre switch (engine crossfade)
+- =VoiceState= gained =timbre_xfade: Option<TimbreXfade>= (old timbre +
+  progress + step): the render, only when =Some=, computes the OLD timbre's
+  sample at the same oscillator phase and equal-power blends it out over
+  =TIMBRE_XFADE_SECS= (50 ms). The old timbre's modulators read the shared LFO
+  phases (advanced at the new timbre's rates) -- accepted approximation for the
+  fade's duration, noted in the type's doc. =None= costs the render nothing;
+  the other runtimes are untouched behaviorally (their constructors gained the
+  field, mostly via mechanical edits).
+- =synth::retimbre_voices=: same selection as the pulse controls (edited piano
+  pitches + edit-flagged chord voice keys); swaps =timbre= immediately, no
+  retrigger / phase reset / envelope event; same-timbre presses start no fade;
+  a press mid-fade restarts from the current target.
+- keys.rs selector press: with the CONTROLLED grid's edit selection non-empty,
+  the press retimbres the selection instead of moving the radio (no visible
+  indicator -- Jeff's "yes"); otherwise the radio behaves exactly as before.
+- Engine test pins: audible -> silent fade with no step discontinuity, and the
+  fade state clears itself.
+=cargo test --workspace=: 727 passed, 0 failed.

@@ -260,6 +260,23 @@ pub struct VoiceState {
   pub fm_phase:        f32,
   pub rel_am_phase:    f32,
   pub rel_fm_phase:    f32,
+  // A live timbre SWAP in progress (the surfaces runtime's edit-mode timbre
+  // switch, chord-storage-v2): `timbre` is already the NEW timbre; the render
+  // equal-power blends the old one out over the fade. `None` -- the overwhelmingly
+  // common case -- costs the render nothing.
+  pub timbre_xfade:    Option<TimbreXfade>,
+}
+
+// The old-timbre half of a live timbre swap: rendered alongside the voice's (new)
+// `timbre` at the same oscillator phase and blended out equal-power as `progress`
+// walks 0 -> 1 by `step` per full-rate sample. The old timbre's LFOs read the
+// voice's shared modulator phases (advanced at the NEW timbre's rates) -- a
+// deliberate approximation for the few tens of ms the fade lasts.
+#[derive(Debug, Clone, Copy)]
+pub struct TimbreXfade {
+  pub from:     Timbre,
+  pub progress: f32,
+  pub step:     f32,
 }
 
 pub type VoiceMap = HashMap<VoiceSource, VoiceState>;

@@ -126,6 +126,7 @@ impl SawNoteSink {
         fm_phase: 0.0,
         rel_am_phase: 0.0,
         rel_fm_phase: 0.0,
+        timbre_xfade: None,
       },
     );
   }

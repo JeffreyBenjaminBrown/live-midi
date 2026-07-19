@@ -32,10 +32,55 @@ pub(super) fn handle_key(
   cell: (i32, i32),
   press: bool,
 ) {
-  // Selector: a press sets the *controlled* grid's timbre slot (radio; future notes).
+  // Selector: a press sets the *controlled* grid's timbre slot (radio; future
+  // notes) -- UNLESS that grid has an edit selection, in which case the press
+  // re-timbres the selected voices instead (both layers, crossfaded) and the radio
+  // stays put, exactly as the factored-pulse multipliers leave the tempo factor
+  // alone in edit mode. No visible indicator, per Jeff: the lit cell keeps showing
+  // the future-note timbre (moot while edit mode blocks new notes anyway).
   if let Some(slot) = slot_for_selector_cell(rt.overlays.selector_rect, cell) {
     if press {
-      set_slot(&rt.shared.selected, rt.knobs.controls_index, slot);
+      let target = rt.knobs.controls_index;
+      let (edited, chord_keys): (HashSet<i32>, HashSet<VoiceSource>) = {
+        let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+        match rings.get(target) {
+          Some(gr) => (
+            gr.store.iter(Reason::Edit).collect(),
+            gr.chord
+              .live
+              .iter()
+              .filter(|(_, v)| v.edited)
+              .map(|(seq, _)| VoiceSource::SurfaceChord { grid: target, seq: *seq })
+              .collect(),
+          ),
+          None => Default::default(),
+        }
+      };
+      if edited.is_empty() && chord_keys.is_empty() {
+        set_slot(&rt.shared.selected, target, slot);
+      } else {
+        let ts = rt.timbres[slot];
+        let timbre = Timbre {
+          waveform: ts.waveform,
+          gain: ts.amplitude,
+          am: ts.am,
+          fm: ts.fm,
+          rel_am: ts.rel_am,
+          rel_fm: ts.rel_fm,
+        };
+        let held_target: HashMap<(i32, i32), i32> = rt
+          .shared
+          .held_all
+          .lock()
+          .unwrap_or_else(|e| e.into_inner())
+          .get(target)
+          .cloned()
+          .unwrap_or_default();
+        let (_, sample_rate) = rt.sink.release_params();
+        synth::retimbre_voices(
+          &rt.shared.voices, target, &edited, &held_target, &chord_keys, timbre, sample_rate,
+        );
+      }
     }
     return;
   }
