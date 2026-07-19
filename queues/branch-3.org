@@ -1,5 +1,5 @@
 These are ordered; please start from the top.
-* Fast =1 on monome does not work.
+* ONGOING (Jeff's turn) : Fast =1 on monome does not work.
 There *is* need to debounce that signal on the kmss,
 but there is no apparent need to debounce on the monome.
 Somehow the monome just knows; maybe its software is better than the KMSS's,
@@ -28,38 +28,38 @@ changes membership (mod.rs:687,734) -- a same-state dedup (a stuck/echoing devic
 duplicate down without a between up gets dropped), not a time debounce, so per the
 instructions above I left it alone. Concrete guesses instead, each pointing at code:
 
-1. The pressed-set (mod.rs:687,734) can swallow a genuine second press if the
-   release between the two downs is lost or arrives out of order (UDP has no
-   ordering guarantee): `pressed.insert(cell)` on the second `s=1` sees the cell
-   already marked pressed and drops it silently, so `handle_key`/=1 never fires.
-   This path is monome-only -- the KMSS's presses go through
-   `drumkit_runtime`'s own `TetherDecoder` and `hooks::rig_pedal_hook`, a
-   completely different route that doesn't share this HashSet.
+*** The pressed-set (mod.rs:687,734) can swallow a genuine second press if the
+  release between the two downs is lost or arrives out of order (UDP has no
+  ordering guarantee): `pressed.insert(cell)` on the second `s=1` sees the cell
+  already marked pressed and drops it silently, so `handle_key`/=1 never fires.
+  This path is monome-only -- the KMSS's presses go through
+  `drumkit_runtime`'s own `TetherDecoder` and `hooks::rig_pedal_hook`, a
+  completely different route that doesn't share this HashSet.
 
-2. The =1 double-tap detector only arms once cycling is already ON
-   (`surfaces_runtime/polyrhythm.rs::press`, ~135-166: `last_unity = None` at line
-   150, `UNITY_DOUBLE_TAP` = 400ms at line 52). From a COLD (off) button, two fast
-   presses land as "on" then "snap to unity", NOT "off" -- a third fast press is
-   needed (see test `the_double_tap_window_applies_only_while_cycling_is_on`). A
-   fast double-press from cold can look exactly like "the second press did
-   nothing" since the LED just stays lit. Note this logic is shared verbatim with
-   the KMSS pedal (both call `hooks::factored_pulse_press` -> `poly.press`), so
-   alone it can't explain a monome-only difference, but may still be what's
-   actually happening either way.
+*** The =1 double-tap detector only arms once cycling is already ON
+  (`surfaces_runtime/polyrhythm.rs::press`, ~135-166: `last_unity = None` at line
+  150, `UNITY_DOUBLE_TAP` = 400ms at line 52). From a COLD (off) button, two fast
+  presses land as "on" then "snap to unity", NOT "off" -- a third fast press is
+  needed (see test `the_double_tap_window_applies_only_while_cycling_is_on`). A
+  fast double-press from cold can look exactly like "the second press did
+  nothing" since the LED just stays lit. Note this logic is shared verbatim with
+  the KMSS pedal (both call `hooks::factored_pulse_press` -> `poly.press`), so
+  alone it can't explain a monome-only difference, but may still be what's
+  actually happening either way.
 
-3. The grid thread reads at most one OSC packet per loop iteration, then always
-   repaints (multiple mutex locks + LED sends, plus a monobright grid's DIM_PULSE
-   fake-dim flashing over the same socket) before reading again
-   (`surfaces_runtime/mod.rs::grid_thread`, recv at ~684-694, repaint at
-   ~745-860+). Shouldn't cost anywhere near 400ms, but it is the one
-   monome-specific source of jitter between "packet received" and "loop reads
-   again" -- worth timestamping real /grid/key events to rule out before
-   dismissing.
+*** The grid thread reads at most one OSC packet per loop iteration, then always
+  repaints (multiple mutex locks + LED sends, plus a monobright grid's DIM_PULSE
+  fake-dim flashing over the same socket) before reading again
+  (`surfaces_runtime/mod.rs::grid_thread`, recv at ~684-694, repaint at
+  ~745-860+). Shouldn't cost anywhere near 400ms, but it is the one
+  monome-specific source of jitter between "packet received" and "loop reads
+  again" -- worth timestamping real /grid/key events to rule out before
+  dismissing.
 
-4. serialosc or the grid's own firmware could coalesce two very fast presses of
-   one button into a single down/up pair before `edo_surface` ever sees a second
-   OSC message -- entirely outside this code, and the asymmetry the online-research
-   sidequest above is meant to chase.
+*** serialosc or the grid's own firmware could coalesce two very fast presses of
+  one button into a single down/up pair before `edo_surface` ever sees a second
+  OSC message -- entirely outside this code, and the asymmetry the online-research
+  sidequest above is meant to chase.
 
 I'd start with (1): log every /grid/key OSC event (x, y, down/up, timestamp) for
 the =1 cell and see whether a fast double-press actually produces two clean
@@ -68,7 +68,7 @@ down/up/down edges, or whether the second down is missing.
 Not "better firmware" vs "worse firmware" -- the two devices hand us different kinds
 of signal in the first place.
 
-Monome: grid buttons are discrete conductive-rubber-dome switches, scanned AND
+*** Monome: grid buttons are discrete conductive-rubber-dome switches, scanned AND
 debounced by the grid's own firmware. The one monome firmware ever open-sourced
 (monome/mk, the classic kit) shows this concretely: =button.c='s =buttonCheck()=
 keeps a per-button debounce counter (24 scan cycles before accepting a release; a
@@ -77,8 +77,7 @@ Grepping "debounc" across all of =libmonome= and =serialosc= -- the entire host
 driver chain between the USB device and our OSC socket -- finds nothing: there is
 no host-side debounce step being skipped, because by the time =/grid/key= reaches
 us the bounce is already gone.
-
-KMSS: tether mode is not switch closures -- each pad is 4 continuous piezoresistive
+*** KMSS: tether mode is not switch closures -- each pad is 4 continuous piezoresistive
 pressure sensors (Kesumo/KMI patent US9546921B2) streamed as raw, unfiltered 0..127
 CC values every ~10ms. KMI's own hysteresis (onThresh/offThresh) lives in the
 PC-side Editor app, which we bypass to read the tether stream directly for velocity
@@ -90,145 +89,8 @@ Couldn't confirm the CURRENT grid generation's firmware source (monome/iii ships
 binary releases only); the debounce evidence above is from monome's classic open
 kit firmware, but the architecture -- debounce on-device, dumb relay on the host --
 matches monome's own docs/forum mentions of reflashing debounce behavior for grids.
-
-- [[https://github.com/monome/mk/blob/master/firmware/default/button.c][monome/mk: button.c, firmware-level debounce counter]]
-- [[https://github.com/monome/serialosc][serialosc]] / [[https://github.com/monome/libmonome][libmonome]] source (no debounce code in either)
-- [[https://patents.google.com/patent/US9546921B2][Kesumo/KMI patent US9546921B2: piezoresistive pads under SoftStep pads]]
-- [[https://github.com/Muse-Kinetics/softstep_editor][KMI SoftStep Editor source: onThresh/offThresh live in the host app, not firmware]]
-* DONE =1 should affect the voices in edit mode
-If a voice is in edit mode, the factor modifiers like (*2) affect it,
-but entering and exiting polyrhythm pulse mode via =1 does not.
-It should.
-** DONE claude: =1's on/off now reaches edit-mode voices
-=PolyrhythmState::press= now returns =Option<bool>= (switch turned on / off / no
-change); =hooks::factored_pulse_press= uses only that signal, never the
-multiplier path, to SET an edit grid's edit-mode voices' factored-pulse rate via
-the new =synth::set_factored_pulse_rate_at= -- the applied tempo on, 0 off.
-Scope note: the lone unity-snap (=None=: cycling stays on, exponents just
-zeroed) does NOT re-rate edited voices even though the applied tempo changed --
-only real on/off transitions do; multipliers keep their own in-place retune.
-Setting the rate to 0 steps the render's amplitude multiplier straight to 1
-(not wherever the triangle wave sat) -- a real, accepted click, flagged in a
-comment at =set_factored_pulse_rate_at='s doc. =cargo test --workspace=: 678
-passed, 0 failed.
-* DONE make sustain visible, via a square dance, which interacts with the diamond dance
-The square dance will be just like the diamond dance,
-but at the node's diagonal neighbors instead of its adjacent ones.
-The square dance should have the same frequency as the diamond dance,
-but be 45 degrees out of phase. That way, if both apply to a voice
-(because it's simultaneously in edit mode and being sustained)
-I'll see what looks like roughly one thing circling it.
-
-Like the diamond dance, the square dance should only apply to voices
-at the right pitch in the same octave -- so at most two images,
-sometimes one, and sometimes (specifically,
-when that register is not currently shown on the grid) none.
-** DONE claude: the square dance, diagonal and 45deg out of phase
-=surfaces_runtime/dance.rs= gained =DIAGONALS= (NW/SW/SE/NE), =SQUARE_OFFSET_MS=
-(=CORNER_MS/2=, i.e. T/8), and =diagonal_at=/=diagonal_cell=, built on the diamond's
-own =corner_at= clock/modulus so both dances stay in lockstep. =grid_thread= (mod.rs)
-now also reads THIS grid's =Reason::Sustain= pitches (same =RingStore= bank the
-sustained-class reflection folds into classes, but here pitch-exact/register-aware
-via the existing =cells_for_pitch=) and inserts their =diagonal_cell= into the SAME
-=dance_cells= set the diamond writes to -- so =levels_for_grid='s existing compositing
-rule (dance clobbers a dim trail, yields/skips a bright note) applies to the square
-dance for free, unchanged. The off-screen scroll-pad-corner flash already covered
-sustained notes (verified, no change needed). Tests: 9 new (dance.rs: turn order,
-diagonal-cell grid coords, shared clock, T/8-interleave, 8-position circle; grid.rs:
-square-dance compositing + a both-dances two-cell case). =cargo test --workspace=:
-687 passed, 0 failed.
-* DONE Entering edit mode should just add the voice to the sustained set.
-Exiting its sustain (by ending sustain monome-globally or just for that voice)
-should end the voice, but exiting edit mode (again globally or locally) should not.
-** DONE claude: edit is now a selection over sustained voices, not a reason to ring
-New invariant edited ⊆ sustained. =RingStore= keeps both sets, but only Sustain
-(+ derived finger count) is life-support: =remove_reason= is gone, replaced by
-=remove_sustain= (life-support removal, cascades edit membership away) and
-=discard_sustain= (erase-style, same cascade). =EditState::enter= now adds BOTH
-reasons, so an edited-while-only-fingered voice becomes sustained and drones on
-its own. Exit-edit / editmode clear are pure DESELECTION and end NO voice;
-removing sustain (per-note toggle-off, erase, or the grid-wide sustain clear)
-ends the voice unless a finger holds it AND deselects it (no silent "dancing
-ghost"). Because an edited note is always sustained, it always square-dances too
--- the 8-point circle is now the normal look of an edited note.
-This SUPERSEDES the recent symmetric-clears design: the old "sustain-clear spares
-edited drones", "editmode-clear ends edit-only drones", and "the full kill is
-both clears" behaviours are gone (their tests were rewritten to pin the new
-rules; incident comments kept). =editmode_clear=/=editmode_press= lost their
-voices/release args (they end nothing). Judgment call (spec-directed, per item
-5): the sustain cascade to edit is UNCONDITIONAL, so a still-fingered edited note
-under a sustain clear keeps sounding but is deselected. Docs updated: README
-=accrete_control=/=editmode_control=, the 2-monomes rig inline comments, and the
-2-monomes readme (edit section, clears, dances). =cargo test --workspace=: 692
-passed, 0 failed.
-* DONE Retrigger should not reset the phase of a voice.
-That should apply to both retrigger for pitch-drag and retrigger at the same pitch.
-** DONE claude: retriggers now continue the oscillator's phase instead of restarting it
-Same-pitch retrigger (keys.rs: a press on an already-sustained pitch) was the only
-real reset site: =cut_sustained= moved the old drone aside and the following
-=note_on= always wrote =phase: 0.0=, so the waveform restarted every retrigger.
-=cut_sustained= now returns the cut voice's phase (=None= if none was cut), and a
-new =note_on_with_phase= (=note_on= is now just that with phase 0) carries it into
-the replacing strike, computed before the single atomic insert so there's no window
-where the audio thread could render the fresh voice at the wrong phase. The
-pitch-drag paths needed no fix: =voices.rs='s pending_attack dip-then-attack
-relaunch mutates env/target_env/ramp_per_sample on the SAME =VoiceState= and never
-touches =phase=, and =rehome_to_cell=/=note_on_legato= remove-and-reinsert that same
-struct too -- all three already carried phase through; pinned with tests rather
-than changed. =note_on_gliding= (the slide feature's note-onset) is a genuinely
-fresh voice, not a retrigger, so it correctly keeps phase 0 -- confirmed, not
-touched. Scope: only the oscillator =phase=; the AM/FM LFO phases keep their
-documented "per-voice retrigger resets to 0" semantics, per the item's explicit
-naming of "the phase" (oscillator) and because a reset there is a slow modulator
-restart, not a click. Tests: 4 new (same-pitch retrigger carries phase forward,
-plain note_on still starts at 0, plus two pin/confirm tests for the pending_attack
-relaunch and rehome_to_cell). =cargo test --workspace=: 696 passed, 0 failed.
-* DONE pitch drag should not clobber a sustained voice or another edit-mode voice
-If multiple notes are in edit mode, and one of the keys representing one of them
-is pressed (again), currently what happens is that the nearest voice
-also in edit mode is dragged to the pressed pitch, reducing the number of voices.
-That should not be. Drag should only apply when the pitch pressed is not the pitch
-of any voice in the editing set or the sustain set.
-** DONE claude: drag now needs a genuinely free pitch
-=EditState::classify= gained a =sustained: impl Fn(i32) -> bool= parameter alongside
-=sounding=; the retrigger arm now checks =sustained(pressed_pitch)= instead of
-=self.is_editing(pressed_pitch, store)=. One check covers both sets on purpose: queue
-item 4's invariant (edited ⊆ sustained) means every edited pitch is already sustained,
-so "the editing set or the sustain set" IS the sustain set as long as that invariant
-holds -- a comment at the call site and in classify's own doc spells this out so the
-union intent survives if the invariant is ever relaxed. Only when the pressed pitch is
-free of both does the nearest-edited drag still fire; the exit/enter/sustain-toggle
-trigger arms keep their existing priority above all of this, unchanged. keys.rs's call
-site already had a =sustained= =HashSet= built for =is_sounding=; it just gained a
-second closure over the same set. The retrigger PATH needed no wiring: falling through
-to =Press::Play= lands in the same ordinary note-on code (=cut_sustained= +
-=note_on_with_phase=) that already retriggers a sustained pitch outside edit mode, so a
-sustained-but-unedited pitch pressed while editing now cuts and replaces that voice
-exactly like any other retrigger, continuing its phase (queue item 5) -- verified by
-reading the fall-through path, not by adding new code. Tests: 3 new (a sustained-but-
-unedited pitch retriggers rather than drags; a genuinely free pitch still drags the
-nearest edited note; the exit trigger still outranks the broadened retrigger check).
-=cargo test --workspace=: 699 passed, 0 failed.
-* DONE The TODO item remaining in TODO/cleaning/2_plan.org
-I just added it.
-** DONE claude: second KMSS carries the sustain pedals; softstep_accretes_toggle retired
-Per Jeff's nested answer ("let's use the other kmss"): =rigs/2-monomes_kmss-drums.org=
-gained a second =[[softsteps]]= board (id ="sustain"=, ="SoftStep"= vs the drum board's
-="SSCOM"=) carrying six unconditional =accrete_control= pedals mirroring the old
-hardcoded 1/2/3 = grid A clear/needs_holding/accrete, 8/9/0 = grid B's -- muscle memory
-preserved, no on-grid toggle gate. Deleted end to end:
-=MonomeWindowRig::SoftstepAccretesToggle= (rig.rs), =Overlays.feet_accrete_rect=,
-=feet_accrete_on=, the keys.rs toggle branch, and =hooks::{feet_accrete_button,
-feet_accrete_hook}=; the generic =accrete_control= pedal machinery (=drive_accrete=,
-=rig_pedal_hook=) stays and now runs unconditionally in the drums rig too. The
-per-grid-bank pedal-hook test was adapted (not deleted) to drive the explicit
-=rig_pedal_hook= path instead of the retired mirror. Bonus fix, needed to make the
-"drums still play with the sustain board unplugged" promise actually true:
-=drumkit_runtime::start_with_hook= used to hard-fail bring-up if ANY declared SoftStep
-board (not just the whole subsystem) wasn't physically present -- latent since the
-2-softsteps rig, newly load-bearing once kmss-drums got a second board. Now each
-declared board is checked independently (=softsteps_present_among=, pure + tested) and
-a missing one is skipped with a warning rather than killing every board's bring-up.
-Docs updated (rigs/README.org, the kmss-drums readme + mock rig notes); TODO/cleaning
-/2_plan.org's pedal-decision heading marked DONE. =cargo test --workspace=: 702 passed,
-0 failed.
+*** references
+**** [[https://github.com/monome/mk/blob/master/firmware/default/button.c][monome/mk: button.c, firmware-level debounce counter]]
+**** [[https://github.com/monome/serialosc][serialosc]] / [[https://github.com/monome/libmonome][libmonome]] source (no debounce code in either)
+**** [[https://patents.google.com/patent/US9546921B2][Kesumo/KMI patent US9546921B2: piezoresistive pads under SoftStep pads]]
+**** [[https://github.com/Muse-Kinetics/softstep_editor][KMI SoftStep Editor source: onThresh/offThresh live in the host app, not firmware]]
