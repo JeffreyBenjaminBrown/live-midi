@@ -344,6 +344,7 @@ Built-in unbundled window kinds:
 - ~mono_toggle~
 - ~factored_pulse_pad~
 - ~editmode_control~
+- ~chord_block~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -513,6 +514,39 @@ retune those in place. The tap cell displays the tempo whether or not cycling
 is on: it blinks at 10% duty at the base tempo -- unfactored, so both grids' tap
 cells blink together and no tempo-factor button moves them -- fully lit against
 black.
+
+A ~chord_block~ (surfaces runtime; TODO/chord-storage-v2) is a 5x2 block of
+chord-storage controls -- slots 1..5 on the top row, the ARM button then slots
+6..9 on the bottom -- at most one per monome, on a monome with an
+~edo_note_grid~; each monome's nine slots are independent.
+
+#+begin_src toml
+[[monome_windows]]
+id = "chords-a"
+monome = "a"
+kind = "chord_block"
+rect = [5, 0, 9, 1]   # exactly 5x2; bottom-left cell = arm
+#+end_src
+
+ARM (key-down toggles; the cell flashes while armed) changes the next slot
+press into a SAVE: every voice that monome is currently sounding -- fingered,
+sustained, and chord-layer voices alike, but never release tails -- is
+snapshotted into the slot (pitch, full timbre, settled loudness with the
+pedal baked in, factored pulse as a factor of the base tempo, and oscillator/
+pulse phases relative to the chord's timesetter), then storage disarms.
+Saving silence disarms without touching the slot, so slots can be overwritten
+but never emptied. A DISARMED slot press is a toggle: on recalls the chord
+(voices re-strike at their stored relative phases, exempt from the volume
+pedal, coexisting with fingered/sustained voices even at the same pitch), off
+ends them by the ordinary release; empty slots are inert. Recalled voices are
+reachable through edit mode (which is also the one route the pedal can take
+to them), and the ~accrete_control~ ~clear~ on such a monome widens to "end
+all sustain and chord" -- it also ends every chord voice and untoggles the
+slots. Slots persist per rig id under =state/chord-slots/= (atomic writes on
+every save; toggles and arming are not persisted). LEDs: the block idles dim,
+an active slot is bright, the arm cell flashes while armed. The full player's
+reference: [[./2-monomes_2-softsteps_readme.org]] "chord storage" and "chord
+voices in edit mode".
 
 The bundled 12-EDO offset/root board is:
 

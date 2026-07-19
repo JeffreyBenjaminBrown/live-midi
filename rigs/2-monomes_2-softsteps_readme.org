@@ -2,7 +2,8 @@
 #+date: 2026-07-17
 
 The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
-grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
+grids, each a full 46-EDO play surface with nine chord-storage slots (see
+"chord storage"), and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry the controls that would otherwise cost grid cells --
 sustain, the factored pulse, and edit mode (the factored pulse and the
 editmode clear are ALSO on each grid, upper right; hands and feet drive the
@@ -12,7 +13,8 @@ volume pedals"). No drums: see "what is deliberately NOT here."
 Background + every design decision behind this layout: =TODO/many/1_vision.org=
 (Jeff's original ask), =TODO/many/2_discussion.org= (the settled answers -- long,
 but the rig's own inline comments summarise most of it), =TODO/many/3_plan.org=
-(the build plan), =TODO/many/progress.org=.
+(the build plan), =TODO/many/progress.org=. Chord storage has its own design
+dir: =TODO/chord-storage-v2/=.
 
 * startup
 
@@ -97,7 +99,16 @@ Here's how to see what's connected:
 - sustain (accrete) -- each grid has its own bank of sustained notes. Here
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
-  releasing). See "OSS: two rows".
+  releasing). See "OSS: two rows". The clear is widened to "end all sustain
+  and chord" -- see "chord storage".
+- chord storage -- each grid's nine slots of saved voice snapshots, on the
+  5x2 block at =[5,0,9,1]= (arm + 9 slots). Arm-then-press saves everything
+  the grid is sounding; a disarmed slot press toggles the stored chord on
+  and off. Slots persist across restarts. See "chord storage".
+- chord voice -- a voice recalled from a chord slot: a third layer beside
+  fingered and sustained voices, any number per pitch, each with its own
+  saved timbre / loudness / pulse. Exempt from the pedal and the sustain
+  bank; reachable only through edit mode. See "chord voices in edit mode".
 - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
   grid, each a volume pedal: heel silent, toe unity, fader-law taper
   (exponential + linear splice), slewed. See "the EX-P volume pedals".
@@ -129,20 +140,22 @@ four overlays drawn on top -- nothing else lives on either grid; sustain
 lives on a SoftStep instead:
 
 #+begin_example
-  col: 0   1   2   3   4   5  ...        12    13    14    15
-  row 0  [SIN TRI SQR SAW]  .   .   .   CLR    x3    x2    tap   <- editmode-clear + factored-pulse pad
-  row 1    .   .   .   .   .   .          .    /3    /2    =1    <- factored-pulse pad
+  col: 0   1   2   3   4   5   6   7   8   9  10  11   12    13    14    15
+  row 0  [SIN TRI SQR SAW] . [c1  c2  c3  c4  c5]  .   .   CLR    x3    x2   tap
+  row 1    .   .   .   .   . [ARM c6  c7  c8  c9]  .   .    .     /3    /2   =1
    ...                        (46-EDO play cells)
-  row 13   .   .   .   .   .   .          .     .     .     .
-  row 14   .   .   .   .   .   .          .   8vaDN   UP  8vaUP  <- scroll pad
-  row 15   .   .   .   .   .   .          .   LEFT   DOWN RIGHT  <- scroll pad
+  row 13   .   .   .   .   .   .   .   .   .   .   .   .    .      .     .    .
+  row 14   .   .   .   .   .   .   .   .   .   .   .   .    .   8vaDN   UP  8vaUP
+  row 15   .   .   .   .   .   .   .   .   .   .   .   .    .   LEFT  DOWN  RIGHT
 #+end_example
 
-- The waveform strip (=[0,0,3,0]=), the editmode-clear button (=[12,0]=), the
-  factored-pulse pad (=[13,0,15,1]=), and the scroll pad (=[13,14,15,15]=)
-  occlude the play grid: pressing them re-timbres, clears edit mode, moves
-  the factored pulse, or scrolls rather than sounding a note. Every other
-  cell on both grids is an ordinary 46-EDO play cell.
+- The waveform strip (=[0,0,3,0]=), the chord block (=[5,0,9,1]= -- slots 1..5
+  over ARM + slots 6..9; see "chord storage"), the editmode-clear button
+  (=[12,0]=), the factored-pulse pad (=[13,0,15,1]=), and the scroll pad
+  (=[13,14,15,15]=) occlude the play grid: pressing them re-timbres, saves or
+  recalls a chord, clears edit mode, moves the factored pulse, or scrolls
+  rather than sounding a note. Every other cell on both grids is an ordinary
+  46-EDO play cell.
 - The editmode-clear button ((12,0), just left of the pad's =x3=; dim at
   rest, bright while pressed) removes every pitch from edit mode on its own
   grid -- pure DESELECTION: an edited note is always sustained (edited ⊆
@@ -192,26 +205,34 @@ held" to capture.
 
 The two accretes capture the same voices: sustain-accrete captures every
 fingered AND every edit-mode voice; editmode-accrete captures every fingered
-AND every sustained voice. But the two CLEARS are NOT symmetric. Edit mode is
-a SELECTION over the sustained voices, not a reason a note rings: an edited
-note is always sustained too (edited ⊆ sustained). So the SUSTAIN clear ends
-every fingerless drone -- edited or not -- and deselects it in the same
-breath; the EDIT clear only deselects, and silences nothing. (This supersedes
-the earlier symmetric-clears design, where each clear removed only its own
-reason, a doubly-held note survived either clear alone, and the full kill was
-both clears together. The old silent "dancing ghost" cannot recur either:
-nothing silent may stay selected.)
+AND every sustained voice (and every CHORD voice -- see "chord storage"). But
+the two CLEARS are NOT symmetric. Edit mode is a SELECTION over the sustained
+voices, not a reason a note rings: an edited note is always sustained too
+(edited ⊆ sustained). So the SUSTAIN clear ends every fingerless drone --
+edited or not -- and deselects it in the same breath; the EDIT clear only
+deselects, and silences nothing. (This supersedes the earlier
+symmetric-clears design, where each clear removed only its own reason, a
+doubly-held note survived either clear alone, and the full kill was both
+clears together. The old silent "dancing ghost" cannot recur either: nothing
+silent may stay selected.)
 
-| pedal | row    | job                                   |
-|-------+--------+---------------------------------------|
-|     1 | bottom | clear grid A's sustain (LOM)          |
-|     2 | bottom | accrete-sustain grid A (momentary)    |
-|     4 | bottom | accrete-sustain grid B (momentary)    |
-|     5 | bottom | clear grid B's sustain (RNM)          |
-|     6 | top    | clear grid A's edit mode              |
-|     7 | top    | accrete-editmode grid A (one-shot)    |
-|     9 | top    | accrete-editmode grid B (one-shot)    |
-|     0 | top    | clear grid B's edit mode              |
+The bottom-row clears are WIDENED by chord storage (chord-storage-v2): pedal
+1 / 5 is "end all sustain and chord" -- it also ends every chord-layer voice
+on its grid (edited or not; being selected shields nothing from this pedal)
+and untoggles the chord slots, so the block's LEDs agree with the silence.
+Slot CONTENTS survive; only the sound ends. (Jeff: "clearing sustain while
+leaving the chord ringing seems unlikely", so one pedal does both.)
+
+| pedal | row    | job                                     |
+|-------+--------+-----------------------------------------|
+|     1 | bottom | end grid A's sustain AND chord (LOM)    |
+|     2 | bottom | accrete-sustain grid A (momentary)      |
+|     4 | bottom | accrete-sustain grid B (momentary)      |
+|     5 | bottom | end grid B's sustain AND chord (RNM)    |
+|     6 | top    | clear grid A's edit mode                |
+|     7 | top    | accrete-editmode grid A (one-shot)      |
+|     9 | top    | accrete-editmode grid B (one-shot)      |
+|     0 | top    | clear grid B's edit mode                |
 
 Pedals 3 and 8 are free. Left buttons drive the left grid, right
 buttons the right grid, matching Jeff's left/right principle. Pedal 8 once held
@@ -303,10 +324,14 @@ deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
 Play-grid LEDs follow the usual =surfaces_runtime= rules (shared with the
 =2-monomes_kmss-drums= rig -- see its readme's "LEDs" section for the full
 detail): held notes light bright, reflected across both grids under each
-grid's own scroll register; a shared recent-note trail (up to =trail.max= 9
+grid's own scroll register -- CHORD-layer voices included, they are sounding
+notes; a shared recent-note trail (up to =trail.max= 9
 pitch classes) lights dim; the waveform strip shows the selected waveform
 bright, the rest dim; the scroll pad's arrows are dim, its octave corners
-dark, and it fully occludes the play grid beneath it. On top of that, a grid's
+dark, and it fully occludes the play grid beneath it. The chord block idles
+DIM all over (occupied and empty slots look alike -- empty ones are inert),
+an active slot is solid BRIGHT, and the ARM cell flashes ~150 ms on/off
+while storage is armed. On top of that, a grid's
 own edit-mode and sustained notes each get a local marker -- the diamond and
 square dances -- and an off-screen indicator on the scroll pad's octave
 corners; see "per-voice edit" below ("the diamond dance", "the square dance",
@@ -336,6 +361,56 @@ it skipped for a missing dependency, then plays on.
   either board to set it.
 - If nothing is connected, the run errors out rather than idling.
 
+* chord storage
+Each grid carries nine chord slots -- the 5x2 block at =[5,0,9,1]= (slots 1..5
+over ARM + slots 6..9, arm at the bottom-left), independent per monome. Full
+design history: =TODO/chord-storage-v2/= (=1_vision=, =2_discussion= -- the
+settled answers -- and =3_plan=).
+
+** saving
+Press ARM (it flashes ~150 ms on/off), then press a slot: everything this
+grid is currently sounding -- fingered notes, sustained drones, and other
+ringing chords -- is saved into that slot, and storage disarms. Release tails
+are not "sounding" for this purpose. Arming is sticky (playing notes neither
+saves nor disarms; press ARM again to cancel), saving over a slot simply
+overwrites it, and saving SILENCE changes nothing (disarms, slot untouched)
+-- so a slot can be overwritten but never emptied.
+
+Each voice is saved whole: pitch (a mid-glide save stores the glide's
+target), full timbre (mutations included), its settled loudness with the
+pedal's state baked in, its factored pulse as a FACTOR against the base
+tempo, and its phases RELATIVE to the chord's timesetter -- the voice
+furthest through its cycle (ties to the lowest pitch). Not saved, on
+purpose: the envelope (a recall re-strikes), edit/sustain membership (a
+recall never flips the grid into a pitch-picker), cells or the scroll
+register, and anything that is grid state rather than voice state.
+
+** recalling
+A slot press while DISARMED is a toggle: on = the stored chord sounds (slot
+lit solid; each voice starts at its stored relative phase, striking through
+the normal attack -- the save-instant waveform configuration reproduced); off
+= its voices end by the ordinary release. An empty slot is inert and stays
+dim. Restart a chord by toggling off then on -- the brief dip is just the
+release and attack ramps (accepted by Jeff). Different slots layer freely,
+and pulse factors re-apply against the base tempo AT RECALL, so a retapped
+tempo carries recalled chords with it.
+
+Recalled voices are the CHORD LAYER: a third kind of voice beside fingered
+and sustained ones ("piano keys" vs "carefully designed multi-voice scenes"
+-- Jeff). They coexist with the piano layer even at the same pitch, are
+exempt from the volume pedal and untouchable outside edit mode, never join
+the sustain bank (the sustain pedal and the sustain handle ignore them), and
+mutating them never writes back to the slot -- recall, mutate, save to a NEW
+slot is the intended loop. To reach into one, use edit mode: see "chord
+voices in edit mode" below.
+
+** persistence
+Slots survive restarts: every save atomically rewrites
+=state/chord-slots/<rig id>.toml= (gitignored), loaded at bring-up. Toggles
+and arming are not persisted -- a restart comes up silent with contents
+intact. A missing or unparsable file is a red line and empty slots, never a
+refusal to start.
+
 * per-voice edit
 Sometimes you want to change ONE already-sounding note. Accrete it (so your hands
 are free), then edit it in place: it keeps ringing and simply moves.
@@ -353,6 +428,12 @@ pitch one microtone away" -- so they don't move when the tuning changes.
 Sustain here is the same sustain the pedals give, just aimed at one note: it joins
 the same set, paints the same, and a clear flushes it like any other -- including
 notes that never went near a pedal.
+
+The handles work on CHORD voices too: the edit handle toggles a chord voice's
+edit mode like anyone else's (and where both layers sound the same pitch, one
+press takes both). The SUSTAIN handle, though, acts on the piano layer only --
+above a pitch only a chord voice sounds, it is consumed but does nothing
+("it's already ringing, after all"). See "chord voices in edit mode".
 
 A cell with sounding notes on both sides (two notes one cell apart, straddling it)
 is ambiguous. Edit wins. That case is rare enough not to matter often, but it is
@@ -372,7 +453,9 @@ Entering edit mode SUSTAINS the note. So an edited note keeps sounding whether o
 a finger stays on it -- lift your finger and it goes on ringing. It rings because it is
 sustained, not because it is edited: edit mode is a SELECTION over the sustained
 voices (the thing the multipliers, =1, drag, and dances act on), never a reason a note
-sounds. An edited note is therefore ALWAYS sustained (edited ⊆ sustained). Two things
+sounds. An edited note is therefore ALWAYS sustained (edited ⊆ sustained). (One
+carve-out: a CHORD voice entering edit mode gains no sustain -- it already rings on
+its chord reason; see "chord voices in edit mode".) Two things
 follow, and they are the whole point of the redesign:
 - *Leaving edit mode ends nothing.* The note is still sustained, so exiting -- whether
   the one-note gesture or the mass clear -- just drops the selection; it keeps droning.
@@ -506,6 +589,42 @@ is NOT a switch flip and does none of this: it moves the tempo factor (so a
 notes' current rate alone, same as any other exponent change. Only an actual
 entry into or exit from cycling touches them.
 
+** chord voices in edit mode
+Edit mode is the ONE way to reach into a ringing chord (chord-storage-v2).
+The gestures are the same; the differences all come from a chord voice
+already ringing on its own reason:
+
+- *Entering adds no sustain.* A chord voice in edit mode carries an edit FLAG
+  of its own -- it never joins the sustain bank (its timbre can differ, and
+  intermingling the layers "would be jarring" -- Jeff). Exiting, the
+  editmode clear, and the sustain clear behave accordingly: exit and the
+  edit clear end nothing (as ever); the widened sustain clear ends it via
+  its CHORD reason, selected or not.
+- *One press, both layers.* The edit handle under a pitch takes every voice
+  sounding it -- the piano-layer note AND the chord voices -- into (or out
+  of) the selection together. "Apply edit mode to all" (OSS 7/9) includes
+  every chord voice; the edit clear (6/0) deselects them too.
+- *Drags glide chord voices in place.* A drag moves every edited voice at
+  the nearest edited pitch: the piano voice re-homes onto your finger as
+  usual; chord voices glide to the new pitch but STAY chord voices --
+  releasing the drag finger releases nothing of theirs. Mutations never
+  write back to the slot.
+- *The multipliers and =1 reach them* exactly as they reach any edited note
+  (per-voice: two chord voices at one pitch can be selected separately by
+  history, though the handle flags them together).
+- *The timbre switch.* With anything in edit mode, a waveform-strip press
+  re-timbres the SELECTION -- both layers, full timbre slot, crossfaded over
+  ~50 ms, no retrigger -- and leaves the grid's future-note timbre (and the
+  strip's radio) alone, exactly as the multipliers leave the tempo factor
+  alone. No visible indicator: Jeff's call.
+- *The pedal pickup.* A chord voice's loudness is frozen at its saved value
+  -- the EX-P never touches it -- UNTIL it is in edit mode: then each pedal
+  CC snaps it (slewed) to the pedal-implied volume, and leaving edit mode
+  freezes whatever it last adopted. The EX-P sends nothing untouched, so
+  merely being in edit mode changes no one's volume.
+- *It dances the diamond* like any edited note (and never the square -- it
+  is not sustained), and off-screen chord voices flash the octave corners.
+
 * the on-screen window
 Born when the factored-pulse controls left the grid for the feet (a pedal has no
 display); kept now that the upper-right pads are back, as the at-a-glance numeric
@@ -527,7 +646,7 @@ and plays on regardless.
 - No distortion, slide, mono, erase, needs-holding, or feet-accrete toggles --
   all exist in the library (reused by =2-monomes_kmss-drums=) but none are
   bound in this rig. Sustain here is the reduced clear+momentary-accrete pair
-  only (see "OSS: two symmetric rows").
+  only (see "OSS: two rows").
   (The EX-P pedals used to be on this list -- deferred by 2_discussion 1a --
   but they are volume pedals now; see "the EX-P volume pedals".)
 - No tap tempo *pedal*. It was retired (Jeff never tapped), and the base tempo

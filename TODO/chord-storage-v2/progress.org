@@ -114,3 +114,36 @@ Missing file = first run; unreadable/unparsable = one red line + empty slots
 (headless/mock) runs neither read nor write. Tests: field-exact round trip,
 on-disk atomic round trip, garbage/version rejection, unknown-waveform drop.
 =cargo test --workspace=: 733 passed, 0 failed.
+
+* DONE 8. docs
+- =rigs/2-monomes_2-softsteps_readme.org=: layout diagram + overlay list grew
+  the chord block; new "chord storage" section (saving / recalling /
+  persistence, the layer model) and "chord voices in edit mode" subsection
+  (the seven behavioral deltas); "OSS: two rows" documents the widened
+  clears + updated pedal table; LED section, glossary, and the intro updated.
+- =rigs/README.org=: =chord_block= in the kind list + a full section (shape,
+  validation, save/recall semantics, persistence, cross-links).
+- =2-monomes_kmss-drums= is unaffected in behavior (no chord block -> the
+  widened clear is a no-op there), so its readme is untouched.
+
+* what's imperfect about what's done
+- The timbre crossfade renders the OLD timbre's modulators off the voice's
+  shared LFO phases (advanced at the new timbre's rates) for the fade's
+  ~50 ms -- documented at =TimbreXfade=; inaudible in practice, but not
+  sample-exact.
+- =1 cycling ON while a chord voice is edited SETS its pulse rate (like any
+  edited note), which can start a pulse on a chord voice that was saved
+  without one -- consistent with the =1 rules for piano-layer notes, but
+  worth knowing next to "a recall cannot start a pulse".
+- Stopping cycling via =1 still steps an edited voice's pulse amplitude to 1
+  (the pre-existing accepted click), chord voices included.
+- The chord block's save writes the whole state file on the grid thread
+  (~a ms of file I/O on a save gesture); fine in practice, noted for honesty.
+
+* choices determining the future
+- Chord voices are per-VOICE state everywhere (registry + flags), so a future
+  "select one of two chord voices at a pitch" gesture has somewhere to stand.
+- The persistence file is versioned (=version = 1=) and keyed by monome id,
+  so both schema evolution and monome renames have clean paths.
+- =drive_accrete= is now the single clear implementation for hands and feet;
+  future accrete-control changes should land there once.
