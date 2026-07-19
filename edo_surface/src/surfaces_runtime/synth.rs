@@ -692,6 +692,25 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
   }
 }
 
+/// Aim the named CHORD-layer voices at expression-pedal volume `gain` -- the pedal
+/// pickup for chord voices in edit mode (`pedal_volume::apply_pedal_gain` computes
+/// the keys; only edit-flagged voices are ever named). The per-sample slew smooths
+/// the jump exactly as for the piano layer. Every unnamed chord voice keeps its
+/// frozen save-time (or last-adopted) pedal component -- the exemption is the
+/// default (`set_grid_pedal_gain` skips the `SurfaceChord` variant entirely).
+pub fn set_chord_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, keys: &[VoiceSource], gain: f32) {
+  if !gain.is_finite() || keys.is_empty() {
+    return;
+  }
+  let gain = gain.clamp(0.0, 1.0);
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for key in keys {
+    if let Some(state) = voices.get_mut(key) {
+      state.grid_gain_target = gain;
+    }
+  }
+}
+
 /// Re-timbre one grid's EDIT-MODE voices in place, crossfaded (the vision's
 /// "switching timbre should apply ... to any note in edit mode, regardless of its
 /// reason for existing"). Selection is exactly the pulse controls': the edited piano

@@ -90,3 +90,14 @@ four validation rejections + the rig-pinning window-kind list updated.
 - Engine test pins: audible -> silent fade with no step discontinuity, and the
   fade state clears itself.
 =cargo test --workspace=: 727 passed, 0 failed.
+
+* DONE 6. the pedal pickup for edited chord voices
+=pedal_volume::apply_pedal_gain= (factored out of the poll loop, so it is
+testable without MIDI): one pedal reading now also aims the grid's
+EDIT-FLAGGED chord voices' =grid_gain_target= at the live pedal gain
+(=synth::set_chord_pedal_gain=; the engine slew smooths the jump). Unflagged
+chord voices keep their frozen component -- the exemption stays the default,
+by voice-key construction. Leaving edit mode freezes whatever was last
+adopted (the voice simply stops matching). The pedal thread's spawn moved
+below the ring's creation to borrow it.
+=cargo test --workspace=: 728 passed, 0 failed.

@@ -287,12 +287,6 @@ fn run(
   // through each grid's SurfaceSink. `no_audio` gates the thread like the cpal
   // stream -- a headless/mock run must not open MIDI connections.
   let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; num_grids]));
-  if !s.expression_pedals.is_empty() && !no_audio {
-    let live_for_pedals = Arc::clone(&live);
-    let voices_for_pedals = Arc::clone(&voices);
-    let gains = Arc::clone(&pedal_gains);
-    thread::spawn(move || expression_pedal_loop(live_for_pedals, voices_for_pedals, gains));
-  }
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -364,6 +358,20 @@ fn run(
       .collect(),
   ));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
+
+  // The EX-P volume-pedal thread (spawned here rather than beside `pedal_gains`
+  // above because it now also reads the ring: a pedal CC reaches a grid's
+  // edit-flagged CHORD voices -- the pedal pickup, chord-storage-v2). `no_audio`
+  // gates it like the cpal stream -- a headless/mock run must not open MIDI.
+  if !s.expression_pedals.is_empty() && !no_audio {
+    let live_for_pedals = Arc::clone(&live);
+    let voices_for_pedals = Arc::clone(&voices);
+    let ring_for_pedals = Arc::clone(&ring);
+    let gains = Arc::clone(&pedal_gains);
+    thread::spawn(move || {
+      expression_pedal_loop(live_for_pedals, voices_for_pedals, ring_for_pedals, gains)
+    });
+  }
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone

@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use crate::expression_pedals::NUM_PEDALS;
 
-use crate::types::VoiceMap;
+use crate::types::{VoiceMap, VoiceSource};
 
+use super::ring::GridRing;
 use super::synth;
 use super::{Live, STOP};
 
@@ -65,9 +66,45 @@ impl PedalVolumeCurve {
 /// immediately -- a curve tweak is audible without moving the pedal. (A rig that
 /// STARTS with no pedals never spawns this thread; adding the first pedal needs a
 /// restart, like any other bound resource.)
+/// Apply one pedal reading to its grid: the shared per-grid gain (future note-ons),
+/// every sounding piano-layer voice's target -- and, the one place the pedal
+/// reaches the CHORD layer, the grid's EDIT-FLAGGED chord voices (2_discussion
+/// "amplitude": "a chord note in edit mode jumps to the pedal-implied volume the
+/// moment the pedal sends a signal; outside of edit mode, the chord notes' volumes
+/// are untouchable"). The engine's per-sample slew smooths the jump; leaving edit
+/// mode simply stops the voice matching here, freezing whatever it last adopted.
+pub(super) fn apply_pedal_gain(
+  voices: &Arc<Mutex<VoiceMap>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
+  pedal_gains: &Arc<Mutex<Vec<f32>>>,
+  grid: usize,
+  gain: f32,
+) {
+  if let Some(g) = pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).get_mut(grid) {
+    *g = gain;
+  }
+  synth::set_grid_pedal_gain(voices, grid, gain);
+  let chord_keys: Vec<VoiceSource> = {
+    let rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings
+      .get(grid)
+      .map(|gr| {
+        gr.chord
+          .live
+          .iter()
+          .filter(|(_, v)| v.edited)
+          .map(|(seq, _)| VoiceSource::SurfaceChord { grid, seq: *seq })
+          .collect()
+      })
+      .unwrap_or_default()
+  };
+  synth::set_chord_pedal_gain(voices, &chord_keys, gain);
+}
+
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
+  ring: Arc<Mutex<Vec<GridRing>>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
 ) {
   use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
@@ -96,12 +133,60 @@ pub(super) fn expression_pedal_loop(
         continue;
       }
       last[pedal] = p.norm;
-      let gain = curve.gain(p.norm);
-      if let Some(g) = pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).get_mut(grid) {
-        *g = gain;
-      }
-      synth::set_grid_pedal_gain(&voices, grid, gain);
+      apply_pedal_gain(&voices, &ring, &pedal_gains, grid, curve.gain(p.norm));
     }
     thread::sleep(Duration::from_millis(10));
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::surfaces_runtime::accrete::AccreteState;
+  use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+  use crate::types::Timbre;
+  use std::collections::HashMap;
+
+  /// The pedal pickup (2_discussion "amplitude"): one pedal reading re-aims the
+  /// piano layer and the EDIT-FLAGGED chord voices; an unflagged chord voice keeps
+  /// its frozen save-time pedal component -- untouchable outside edit mode.
+  #[test]
+  fn a_pedal_reading_reaches_edited_chord_voices_and_no_others() {
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new())]));
+    let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32]));
+    let mut sink = synth::SurfaceSink::new(
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      Arc::clone(&pedal_gains), Arc::new(Mutex::new(vec![1.0])),
+    );
+    sink.note_on((0, 0), 30, Timbre::default(), None);
+    let sv = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 0.6,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    let spawned = {
+      let mut rings = ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![sv, sv] });
+      rings[0].chord.begin_recall(0)
+    };
+    for (seq, v) in &spawned {
+      sink.spawn_chord_voice(*seq, v, 1.0);
+    }
+    ring.lock().unwrap()[0].chord.live.get_mut(&spawned[0].0).unwrap().edited = true;
+
+    apply_pedal_gain(&voices, &ring, &pedal_gains, 0, 0.25);
+
+    assert_eq!(pedal_gains.lock().unwrap()[0], 0.25, "future note-ons see the pedal");
+    let v = voices.lock().unwrap();
+    let target = |src: VoiceSource| v[&src].grid_gain_target;
+    assert_eq!(target(VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) }), 0.25, "piano layer follows");
+    assert_eq!(
+      target(VoiceSource::SurfaceChord { grid: 0, seq: spawned[0].0 }), 0.25,
+      "the edit-flagged chord voice picks the pedal up",
+    );
+    assert_eq!(
+      target(VoiceSource::SurfaceChord { grid: 0, seq: spawned[1].0 }), 0.6,
+      "the unflagged chord voice keeps its frozen save-time component",
+    );
   }
 }
