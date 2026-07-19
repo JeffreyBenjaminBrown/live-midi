@@ -81,3 +81,4 @@ the divided table -- or supply your own; the mechanics are ready either way.
 * progress
 - [2026-07-19] Phases written; 1_vision.org annotated (two ONGOING questions
   answered with TODO responses; directives marked DONE). Beginning phase 1.
+- [2026-07-19] Phase 1 done: mod.rs tests -> tests.rs (1392 lines moved), suite green.
