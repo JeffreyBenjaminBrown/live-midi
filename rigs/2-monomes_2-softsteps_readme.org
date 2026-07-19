@@ -436,10 +436,26 @@ the tempo factor as usual.
   click.
 - A note struck while that grid's factored pulse was off has none, and
   multiplying cannot start one.
-- ~=1~ is never an edit control -- only the multipliers are.
+- ~=1~ is never an edit control -- only the multipliers *retune* edit-mode notes
+  this way. But flipping the ~=1~ switch itself does reach them too, differently:
+  see below.
 
-Note the one asymmetry with cycling: turning a grid's factored pulse off never
-retroactively touches sounding notes; only the multipliers reach them.
+*** =1 on/off vs edit-mode notes
+Turning a grid's cycling ON or OFF with ~=1~ SETS (rather than multiplies) the
+factored-pulse rate of every note currently in edit mode on that grid: ON sets
+it to the grid's newly-applied tempo (even a note struck with no pulse starts
+pulsing, mid-note -- the phase free-runs regardless of the rate, so this is just
+a slope change, like the multipliers' own retune), OFF sets it to 0 (silencing
+it -- a real amplitude step, since the render treats rate 0 as "no pulse" rather
+than "wherever the triangle wave was"; accepted, because =1 off should actually
+be heard to stop). Every other sounding note -- not in edit mode -- is untouched,
+exactly as before.
+
+The lone press that snaps an already-cycling grid's tempo factor back to unity
+is NOT a switch flip and does none of this: it moves the tempo factor (so a
+*future* note picks up the new rate at its own onset) but leaves edit-mode
+notes' current rate alone, same as any other exponent change. Only an actual
+entry into or exit from cycling touches them.
 
 * the on-screen window
 Born when the factored-pulse controls left the grid for the feet (a pedal has no

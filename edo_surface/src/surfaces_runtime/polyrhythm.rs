@@ -33,15 +33,30 @@
 //! third, fast, to stop. Cycling starts off. The LED shows the switch: bright
 //! while this grid's cycling is on.
 //!
+//! `press` reports which of the three happened: `Some(true)` for a cycling
+//! OFF -> ON press, `Some(false)` for the fast double-tap that turns cycling
+//! OFF, `None` for a factor-button press or the lone unity-snap (exponents
+//! zeroed, cycling stays on -- neither an entry nor an exit). The caller
+//! (`hooks::factored_pulse_press`) uses exactly that signal to start/stop this
+//! grid's EDIT-MODE voices' factored pulse (queue item "=1 should affect the
+//! voices in edit mode"): only `Some(_)` touches them. In particular the
+//! unity-snap does NOT re-rate edited voices even though it changes the applied
+//! tempo -- Jeff's item is about entering/exiting cycling, and re-rating on
+//! every exponent change is the multipliers' job (`synth::scale_factored_pulse_rate`).
+//!
 //! *Effect.* Each note struck while its grid's cycling is on (and a tempo
 //! exists) gets a unipolar-triangle amplitude factored pulse in [0,1] at that
 //! grid's applied tempo *at its onset* (the engine's
 //! `factored_pulse_freq`/`factored_pulse_phase`). That onset rate is the note's
-//! rate for life UNLESS it is put into per-voice edit mode, whose multipliers
-//! retune sounding notes in place (`synth::scale_factored_pulse_rate`). Turning a
-//! grid's cycling off never retroactively touches sounding notes -- only the
-//! multipliers do (Jeff, `2_discussion` 2e), which also dodges the amplitude step
-//! that snapping a live factored pulse to none would make.
+//! rate for life UNLESS it is put into per-voice edit mode: then either the
+//! multipliers retune it in place (`synth::scale_factored_pulse_rate`), or a =1
+//! on/off transition sets it outright, starting or stopping the pulse
+//! (`synth::set_factored_pulse_rate_at`, driven by `hooks::factored_pulse_press`
+//! off the `press` return above). Setting the rate to 0 on an OFF transition
+//! steps the render's amplitude multiplier straight to 1 (see
+//! `sawwave::voices::render_block`'s factored-pulse branch) rather than easing
+//! from wherever the triangle wave sat -- a real, accepted click, the trade
+//! Jeff's ask makes.
 
 use std::time::{Duration, Instant};
 
@@ -132,15 +147,20 @@ impl PolyrhythmState {
   /// A tempo-factor-button press on `grid`'s pad at `now`. The four direction
   /// buttons nudge that grid's exponents; `=1` drives the grid's factored-pulse
   /// switch and, once cycling is on, zeroes the exponents. See the module docs.
-  pub fn press(&mut self, grid: usize, button: TempoFactorButton, now: Instant) {
+  ///
+  /// Returns whether this press flipped the =1 switch: `Some(true)` on a
+  /// cycling OFF -> ON press, `Some(false)` on the fast double-tap that turns
+  /// cycling OFF, `None` for a factor-button press or the lone unity-snap
+  /// (zeroes the exponents but leaves cycling on -- not an entry or an exit).
+  pub fn press(&mut self, grid: usize, button: TempoFactorButton, now: Instant) -> Option<bool> {
     let Some(g) = self.grids.get_mut(grid) else {
-      return;
+      return None;
     };
     match button {
-      TempoFactorButton::Times2 => g.two_exp += 1,
-      TempoFactorButton::Div2 => g.two_exp -= 1,
-      TempoFactorButton::Times3 => g.three_exp += 1,
-      TempoFactorButton::Div3 => g.three_exp -= 1,
+      TempoFactorButton::Times2 => { g.two_exp += 1; None }
+      TempoFactorButton::Div2 => { g.two_exp -= 1; None }
+      TempoFactorButton::Times3 => { g.three_exp += 1; None }
+      TempoFactorButton::Div3 => { g.three_exp -= 1; None }
       TempoFactorButton::Unity if !g.factored_pulse_on => {
         // Cycling was off: this press ONLY switches it on, keeping the tempo
         // factor you dialled in. `last_unity = None` so the next press -- however
@@ -148,6 +168,7 @@ impl PolyrhythmState {
         // that would switch cycling straight back off.
         g.factored_pulse_on = true;
         g.last_unity = None;
+        Some(true)
       }
       TempoFactorButton::Unity => {
         let doubled = g
@@ -159,10 +180,12 @@ impl PolyrhythmState {
           // just starts again.
           g.factored_pulse_on = false;
           g.last_unity = None;
+          Some(false)
         } else {
           g.two_exp = 0;
           g.three_exp = 0;
           g.last_unity = Some(now);
+          None
         }
       }
     }
@@ -393,7 +416,8 @@ mod tests {
     assert_eq!(p.factored_pulse_hz(0), None, "cycling starts off");
 
     // Press 1: switch cycling on, WITHOUT snapping the tempo factor to unity.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1000));
+    let switched = p.press(0, TempoFactorButton::Unity, t0 + MS(1000));
+    assert_eq!(switched, Some(true), "the on/off switch reports a switch-ON");
     let hz = p.factored_pulse_hz(0).expect("the first press turns cycling on");
     assert!((hz - 6.0).abs() < 1e-4, "the x3 tempo factor survives the switch-on: {hz}");
     assert!(p.tempo_factor_lit(0, TempoFactorButton::Unity), "=1 lights while cycling is on");
@@ -402,14 +426,16 @@ mod tests {
 
     // Press 2, only 100 ms later: snaps to unity and KEEPS cycling. The switch-on
     // press must not have armed the double-tap detector.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1100));
+    let switched = p.press(0, TempoFactorButton::Unity, t0 + MS(1100));
+    assert_eq!(switched, None, "the unity-snap is neither an entry nor an exit");
     let hz = p.factored_pulse_hz(0).expect("still cycling after the second press");
     assert!((hz - 2.0).abs() < 1e-4, "the second press snaps to unity: {hz}");
     assert!(!p.tempo_factor_lit(0, TempoFactorButton::Times3), "exponents zeroed");
 
     // Press 3, 100 ms after THAT: now both presses were made while cycling, so the
     // 400 ms double-tap applies and cycling stops.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1200));
+    let switched = p.press(0, TempoFactorButton::Unity, t0 + MS(1200));
+    assert_eq!(switched, Some(false), "the on/off switch reports a switch-OFF");
     assert_eq!(p.factored_pulse_hz(0), None, "a fast press after a unity press stops cycling");
     assert!(!p.tempo_factor_lit(0, TempoFactorButton::Unity));
     assert!(p.applied_hz(0).is_some(), "the tempo itself survives (still displayed)");
@@ -426,22 +452,51 @@ mod tests {
     p.tap(t0 + MS(500), WINDOW);
 
     // From cold, two presses 10 ms apart: on, then unity. NOT off.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1000));
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1010));
+    assert_eq!(p.press(0, TempoFactorButton::Unity, t0 + MS(1000)), Some(true));
+    assert_eq!(p.press(0, TempoFactorButton::Unity, t0 + MS(1010)), None, "a lone unity-snap");
     assert!(p.factored_pulse_hz(0).is_some(), "a fast pair from cold leaves cycling ON");
 
     // A third, also 10 ms on: now its partner was an on-grid press, so it stops.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1020));
+    assert_eq!(p.press(0, TempoFactorButton::Unity, t0 + MS(1020)), Some(false));
     assert_eq!(p.factored_pulse_hz(0), None, "two on-grid presses inside 400 ms stop cycling");
 
     // A press right after the stop restarts it -- it cannot pair with the stop.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(1030));
+    assert_eq!(p.press(0, TempoFactorButton::Unity, t0 + MS(1030)), Some(true));
     assert!(p.factored_pulse_hz(0).is_some(), "a press while off always turns cycling on");
 
     // Slow presses while cycling never stop it; each is a lone tap.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(3000));
-    p.press(0, TempoFactorButton::Unity, t0 + MS(5000));
+    assert_eq!(p.press(0, TempoFactorButton::Unity, t0 + MS(3000)), None);
+    assert_eq!(p.press(0, TempoFactorButton::Unity, t0 + MS(5000)), None);
     assert!(p.factored_pulse_hz(0).is_some(), "SLOW presses are lone taps: still cycling");
+  }
+
+  /// Every factor-button press -- the four directions, in any state -- reports
+  /// `None`: only `=1`'s on/off transitions are a switch flip, so only they may
+  /// start/stop an edit-mode voice's factored pulse (`hooks::factored_pulse_press`).
+  #[test]
+  fn factor_buttons_never_report_a_switch_change() {
+    let t0 = Instant::now();
+    let mut p = two_grids();
+    p.tap(t0, WINDOW);
+    p.tap(t0 + MS(1000), WINDOW);
+    for button in [
+      TempoFactorButton::Times2,
+      TempoFactorButton::Div2,
+      TempoFactorButton::Times3,
+      TempoFactorButton::Div3,
+    ] {
+      assert_eq!(p.press(0, button, t0 + MS(1100)), None, "{button:?} is never a switch change");
+    }
+    // Still true once cycling is on.
+    p.press(0, TempoFactorButton::Unity, t0 + MS(1200));
+    for button in [
+      TempoFactorButton::Times2,
+      TempoFactorButton::Div2,
+      TempoFactorButton::Times3,
+      TempoFactorButton::Div3,
+    ] {
+      assert_eq!(p.press(0, button, t0 + MS(1300)), None, "{button:?} while cycling is on");
+    }
   }
 
   #[test]
@@ -455,7 +510,8 @@ mod tests {
     p.press(0, TempoFactorButton::Times2, t0 + MS(1300));
     assert!((p.applied_hz(0).unwrap() - 6.0).abs() < 1e-5, "x3 then x2");
     // A lone (slow) press while cycling: back to the tapped tempo, still cycling.
-    p.press(0, TempoFactorButton::Unity, t0 + MS(3000));
+    let switched = p.press(0, TempoFactorButton::Unity, t0 + MS(3000));
+    assert_eq!(switched, None, "zeroing the exponents is not a switch change");
     assert!((p.applied_hz(0).unwrap() - 1.0).abs() < 1e-6, "=1 zeroes the exponents");
     assert!(p.factored_pulse_hz(0).is_some(), "and leaves cycling on");
   }

@@ -107,6 +107,56 @@ pub fn scale_factored_pulse_rate(
   }
 }
 
+/// SET the factored-pulse RATE of one grid's edit-mode voices, in place -- the
+/// `=1` switch's counterpart to `scale_factored_pulse_rate`'s multiply
+/// (`hooks::factored_pulse_press`, driven off `PolyrhythmState::press`'s on/off
+/// report). Same selection mechanics: `edited` is the grid's edit-mode
+/// PITCHES, and `held` -- this grid's live cell -> pitch map -- is how a
+/// *fingered* voice's pitch is found (it is keyed by cell, not pitch).
+///
+/// Unlike the multiplier this SETS rather than multiplies, and `hz == 0.0` is a
+/// legal target: cycling turning OFF must actually stop an edit-mode voice's
+/// pulse, not merely decline to touch it (`scale_factored_pulse_rate`'s "zero
+/// stays zero" rule is deliberately not repeated here).
+///
+/// Setting a stopped voice (`factored_pulse_freq == 0.0`) to a nonzero `hz`
+/// starts its pulse mid-note. `factored_pulse_phase` free-runs regardless of
+/// `factored_pulse_freq` (see the engine's render), so this is just a slope
+/// change from wherever the phase already sits -- the same reasoning that
+/// makes `scale_factored_pulse_rate` safe on a running pulse.
+///
+/// Setting to 0.0 stops it, but the render treats `factored_pulse_freq == 0.0`
+/// as amplitude multiplier 1.0 (no pulse), not "wherever the triangle wave
+/// currently sits" -- so this step, unlike a rate change, CAN click. Jeff's ask
+/// (=1 off actually silences an edit-mode voice's pulse) accepts that trade.
+pub fn set_factored_pulse_rate_at(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  edited: &HashSet<i32>,
+  held: &HashMap<(i32, i32), i32>,
+  hz: f32,
+) {
+  if !hz.is_finite() || hz < 0.0 || edited.is_empty() {
+    return;
+  }
+  // The fingered voices whose pitch is being edited, by their cell keys (same
+  // lookup as `scale_factored_pulse_rate`).
+  let cells: HashSet<VoiceSource> = held
+    .iter()
+    .filter(|(_, pitch)| edited.contains(pitch))
+    .map(|(cell, _)| voice_key(grid, *cell))
+    .collect();
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    let wanted = cells.contains(src)
+      || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
+                  if *g == grid && edited.contains(pitch));
+    if wanted {
+      state.factored_pulse_freq = hz;
+    }
+  }
+}
+
 /// A fingered voice's key: per grid and the cell it was struck on.
 fn voice_key(grid: usize, cell: (i32, i32)) -> VoiceSource {
   VoiceSource::SurfaceFinger { grid, cell }
@@ -1079,6 +1129,99 @@ mod tests {
     scale_factored_pulse_rate(&v, 0, 0.0, &all_edited(), &held());
     scale_factored_pulse_rate(&v, 0, f32::NAN, &all_edited(), &held());
     scale_factored_pulse_rate(&v, 0, -1.0, &all_edited(), &held());
+    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
+  }
+
+  // ---- set_factored_pulse_rate_at: =1's start/stop of an edit-mode voice's pulse ----
+
+  /// The headline behavior: unlike the multiplier, SETTING reaches an un-pulsed
+  /// voice (0.0 -> nonzero starts it) as well as a pulsing one (nonzero -> 0.0
+  /// stops it).
+  #[test]
+  fn setting_the_factored_pulse_rate_can_start_or_stop_an_unpulsed_voice() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), None); // struck with cycling off: no pulse
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 6.0);
+    assert_eq!(
+      v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 6.0,
+      "=1 turning cycling ON starts the edit-mode voice's pulse",
+    );
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 0.0);
+    assert_eq!(
+      v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 0.0,
+      "=1 turning cycling OFF stops it again",
+    );
+  }
+
+  #[test]
+  fn setting_the_factored_pulse_rate_touches_only_the_wanted_pitches() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    a.note_on((2, 2), 20, Timbre::default(), Some(3.0));
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 9.0);
+    let g = v.lock().unwrap();
+    assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 9.0, "the edited note is SET");
+    assert_eq!(g[&voice_key(0, (2, 2))].factored_pulse_freq, 3.0, "the other note is untouched");
+  }
+
+  #[test]
+  fn setting_the_factored_pulse_rate_keeps_the_phase() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), None);
+    v.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().factored_pulse_phase = 0.61;
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), 5.0);
+    assert_eq!(
+      v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_phase, 0.61,
+      "starting a pulse mid-note is a slope change: the phase does not jump",
+    );
+  }
+
+  #[test]
+  fn setting_the_factored_pulse_rate_reaches_this_grids_sustained_drones() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), None);
+    a.sustain_note((1, 1), 10);
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 4.0);
+    let g = v.lock().unwrap();
+    assert!(
+      g.values().any(|s| s.factored_pulse_freq == 4.0),
+      "the drone's factored pulse was set",
+    );
+  }
+
+  #[test]
+  fn setting_one_grids_factored_pulse_leaves_the_other_grid_alone() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    let mut b = sink(1, &v);
+    a.note_on((1, 1), 10, Timbre::default(), None);
+    b.note_on((1, 1), 10, Timbre::default(), None);
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), 4.0);
+    let g = v.lock().unwrap();
+    assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 4.0);
+    assert_eq!(g[&voice_key(1, (1, 1))].factored_pulse_freq, 0.0, "grid 1 untouched");
+  }
+
+  #[test]
+  fn setting_the_factored_pulse_rate_with_no_edited_pitches_is_a_noop() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    set_factored_pulse_rate_at(&v, 0, &HashSet::new(), &held(), 9.0);
+    assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
+  }
+
+  #[test]
+  fn a_nonsense_hz_is_ignored_rather_than_wrecking_the_voice() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), f32::NAN);
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), -1.0);
     assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
   }
 

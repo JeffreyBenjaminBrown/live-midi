@@ -95,10 +95,22 @@ matches monome's own docs/forum mentions of reflashing debounce behavior for gri
 - [[https://github.com/monome/serialosc][serialosc]] / [[https://github.com/monome/libmonome][libmonome]] source (no debounce code in either)
 - [[https://patents.google.com/patent/US9546921B2][Kesumo/KMI patent US9546921B2: piezoresistive pads under SoftStep pads]]
 - [[https://github.com/Muse-Kinetics/softstep_editor][KMI SoftStep Editor source: onThresh/offThresh live in the host app, not firmware]]
-* =1 should affect the voices in edit mode
+* DONE =1 should affect the voices in edit mode
 If a voice is in edit mode, the factor modifiers like (*2) affect it,
 but entering and exiting polyrhythm pulse mode via =1 does not.
 It should.
+** DONE claude: =1's on/off now reaches edit-mode voices
+=PolyrhythmState::press= now returns =Option<bool>= (switch turned on / off / no
+change); =hooks::factored_pulse_press= uses only that signal, never the
+multiplier path, to SET an edit grid's edit-mode voices' factored-pulse rate via
+the new =synth::set_factored_pulse_rate_at= -- the applied tempo on, 0 off.
+Scope note: the lone unity-snap (=None=: cycling stays on, exponents just
+zeroed) does NOT re-rate edited voices even though the applied tempo changed --
+only real on/off transitions do; multipliers keep their own in-place retune.
+Setting the rate to 0 steps the render's amplitude multiplier straight to 1
+(not wherever the triangle wave sat) -- a real, accepted click, flagged in a
+comment at =set_factored_pulse_rate_at='s doc. =cargo test --workspace=: 678
+passed, 0 failed.
 * make sustain visible, via a square dance, which interacts with the diamond dance
 The square dance will be just like the diamond dance,
 but at the node's diagonal neighbors instead of its adjacent ones.

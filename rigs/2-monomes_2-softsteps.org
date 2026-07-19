@@ -307,7 +307,11 @@ Each grid gets x2, x3, /2, /3 and =1. The far/near split follows Jeff's rule for
 the ambiguous middle column: nearer = left grid, farther = right grid.
 What a multiplier acts on depends on that grid's edit state -- with no note in
 edit mode it moves the GRID's factor; with notes in edit mode it retunes THOSE
-NOTES. =1 never retunes edit-mode notes; only the multipliers do.
+NOTES. =1 never *retunes* edit-mode notes that way, but flipping its on/off
+switch SETS their factored-pulse rate directly (the grid's applied tempo when
+=1 turns cycling on, 0 when it turns cycling off); the lone press that snaps an
+already-cycling grid's tempo factor to unity is neither an on nor an off and
+leaves edit-mode notes alone (see the readme's "=1 on/off vs edit-mode notes").
 **** ELEM softsteps
 ***** PARAM id = "new"
 The NEWER board, farther from Jeff and physically ROTATED 180 degrees. The code

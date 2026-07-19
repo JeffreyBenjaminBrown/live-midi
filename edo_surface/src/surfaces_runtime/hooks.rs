@@ -299,7 +299,13 @@ pub(super) fn editmode_press(
 /// grid's tempo factor alone; with none it moves the tempo factor.
 ///
 /// =1 is never an edit control -- Jeff: "the only edit controls are (*) and (/),
-/// not (=)" -- so it always goes to the tempo-factor/switch dance.
+/// not (=)" -- so it always goes to the tempo-factor/switch dance. But an on/off
+/// transition of that switch (queue item "=1 should affect the voices in edit
+/// mode") DOES reach this grid's edit-mode voices, distinctly from a multiplier's
+/// retune: it SETS their factored-pulse rate to this grid's applied tempo (cycling
+/// turned ON) or to 0 (turned OFF), via `synth::set_factored_pulse_rate_at`. The
+/// lone unity-snap (`PolyrhythmState::press` returns `None`) does not -- see the
+/// polyrhythm module docs.
 pub(super) fn factored_pulse_press(
   grid: usize,
   factor: TempoFactorButton,
@@ -330,7 +336,28 @@ pub(super) fn factored_pulse_press(
       synth::scale_factored_pulse_rate(voices, grid, ratio, &edited, &held);
     }
     _ => {
-      poly.lock().unwrap_or_else(|e| e.into_inner()).press(grid, factor, Instant::now());
+      // Snapshot the switch transition under the polyrhythm lock (computing the
+      // target Hz there too, while `grid`'s state is still in hand), then drop
+      // it before touching voices -- the module's no-nested-locks rule.
+      let hz: Option<f32> = {
+        let mut p = poly.lock().unwrap_or_else(|e| e.into_inner());
+        p.press(grid, factor, Instant::now())
+          .map(|turned_on| if turned_on { p.applied_hz(grid).unwrap_or(0.0) } else { 0.0 })
+      };
+      // `hz` is `Some` only for =1's own on/off transitions (every factor
+      // button, and the lone unity-snap, report `None` -- see
+      // `PolyrhythmState::press`), so a multiplier press never lands here.
+      if let Some(hz) = hz {
+        if !edited.is_empty() {
+          let held: HashMap<(i32, i32), i32> = held_all
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(grid)
+            .cloned()
+            .unwrap_or_default();
+          synth::set_factored_pulse_rate_at(voices, grid, &edited, &held, hz);
+        }
+      }
     }
   }
 }
@@ -385,4 +412,92 @@ pub(super) fn rig_pedal_hook(
       }
     }
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::types::{Timbre, VoiceSource};
+
+  /// `factored_pulse_press` end to end: the =1 dance (queue item "=1 should
+  /// affect the voices in edit mode") over a real `PolyrhythmState` + `GridRing`
+  /// + voice map, wired exactly as the runtime wires them. Covers the whole
+  /// three-press story (`polyrhythm.rs`'s own tests cover the switch alone):
+  /// cold press turns cycling ON and starts the edit-mode drone's pulse at the
+  /// grid's applied tempo; the immediate lone unity-snap leaves it alone even
+  /// though it zeroes the exponents; the fast double-tap after THAT turns
+  /// cycling OFF and stops the pulse. A non-edited drone never moves.
+  #[test]
+  fn unity_starts_and_stops_the_pulse_on_edit_mode_voices_only() {
+    let poly = Arc::new(Mutex::new(PolyrhythmState::new(1)));
+    poly.lock().unwrap().set_fixed_tempo(5.0, Instant::now()); // 5 Hz base, unity factor
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(accrete::AccreteState::new())]));
+    let held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>> = Arc::new(Mutex::new(vec![HashMap::new()]));
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+
+    // Pitch 10 is in edit mode; pitch 20 is not. Both ring as drones (sustained,
+    // fingerless) -- the shape `set_factored_pulse_rate_at` selects by pitch.
+    ring.lock().unwrap_or_else(|e| e.into_inner())[0].store.add(Reason::Edit, 10);
+    let mut sink = synth::SurfaceSink::new(
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
+    );
+    sink.note_on((0, 0), 10, Timbre::default(), None); // edited: struck with cycling off
+    sink.sustain_note((0, 0), 10);
+    sink.note_on((1, 1), 20, Timbre::default(), Some(7.0)); // not edited: its own onset rate
+    sink.sustain_note((1, 1), 20);
+
+    let edited_freq = || {
+      voices.lock().unwrap()[&VoiceSource::SurfaceDrone { grid: 0, pitch: 10 }].factored_pulse_freq
+    };
+    let other_freq = || {
+      voices.lock().unwrap()[&VoiceSource::SurfaceDrone { grid: 0, pitch: 20 }].factored_pulse_freq
+    };
+    assert_eq!(edited_freq(), 0.0, "struck while cycling was off: no pulse yet");
+
+    // Press 1: cycling OFF -> ON. The edit-mode drone picks up the grid's
+    // applied tempo; the non-edited drone keeps whatever it was struck with.
+    factored_pulse_press(0, TempoFactorButton::Unity, &poly, &ring, &held_all, &voices);
+    let hz = poly.lock().unwrap().applied_hz(0).expect("the runtime always seeds a base tempo");
+    assert!((edited_freq() - hz).abs() < 1e-4, "the edit-mode voice starts pulsing at =1's applied tempo");
+    assert_eq!(other_freq(), 7.0, "a non-edited voice keeps its onset rate");
+
+    // Press 2, immediately after: the lone unity-snap (cycling already on, no
+    // double-tap partner yet). It zeroes this grid's exponents -- a no-op here,
+    // since there were none -- but it is NOT an on/off transition, so it must
+    // not touch the edit-mode voice.
+    factored_pulse_press(0, TempoFactorButton::Unity, &poly, &ring, &held_all, &voices);
+    assert!((edited_freq() - hz).abs() < 1e-4, "the unity-snap does not re-rate edit-mode voices");
+
+    // Press 3, fast on that one's heels: both presses landed while cycling was
+    // on, so the double-tap fires and cycling turns OFF. The edit-mode voice's
+    // pulse stops; the non-edited voice is still untouched.
+    factored_pulse_press(0, TempoFactorButton::Unity, &poly, &ring, &held_all, &voices);
+    assert_eq!(poly.lock().unwrap().factored_pulse_hz(0), None, "cycling is off");
+    assert_eq!(edited_freq(), 0.0, "=1's fast double-tap stops the edit-mode voice's pulse");
+    assert_eq!(other_freq(), 7.0, "still untouched throughout");
+  }
+
+  /// A multiplier press still only ever retunes (never sets/starts/stops) an
+  /// edit-mode voice, and never touches a non-edited one -- the =1 change must
+  /// not have blurred this line.
+  #[test]
+  fn a_multiplier_press_still_only_retunes_edited_voices_in_place() {
+    let poly = Arc::new(Mutex::new(PolyrhythmState::new(1)));
+    poly.lock().unwrap().set_fixed_tempo(1.0, Instant::now());
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(accrete::AccreteState::new())]));
+    let held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>> = Arc::new(Mutex::new(vec![HashMap::new()]));
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    ring.lock().unwrap_or_else(|e| e.into_inner())[0].store.add(Reason::Edit, 10);
+    let mut sink = synth::SurfaceSink::new(
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
+    );
+    sink.note_on((0, 0), 10, Timbre::default(), None); // no pulse: x2 must not start one
+    sink.sustain_note((0, 0), 10);
+
+    factored_pulse_press(0, TempoFactorButton::Times2, &poly, &ring, &held_all, &voices);
+    let freq = voices.lock().unwrap()[&VoiceSource::SurfaceDrone { grid: 0, pitch: 10 }].factored_pulse_freq;
+    assert_eq!(freq, 0.0, "multiplying zero still cannot start a pulse -- unlike =1");
+  }
 }

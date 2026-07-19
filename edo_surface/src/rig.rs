@@ -1385,7 +1385,12 @@ pub enum SoftstepWindowRig {
   /// One pedal nudging one monome's pulse. What it acts on depends on that monome's
   /// edit state: with no note in edit mode it moves the GRID's factor (as the on-grid
   /// polyrhythm pad does); with notes in edit mode the multipliers retune *those
-  /// notes*. `Unity` is the =1 switch and never retunes edit-mode notes.
+  /// notes* in place. `Unity` is the =1 switch: it never *retunes* edit-mode notes
+  /// that way, but an on/off transition of the switch itself SETS their
+  /// factored-pulse rate directly -- the grid's applied tempo on, 0 off
+  /// (`surfaces_runtime::hooks::factored_pulse_press`); the lone press that snaps
+  /// an already-cycling grid's tempo factor to unity is neither and leaves them
+  /// alone.
   PulseFactorPedal {
     id: String,
     softstep: String,

@@ -502,9 +502,16 @@ never counts as half of that double-tap, so from cold you can tap on, tap to uni
 (however fast), then double-tap off. While a grid's cycling is on, every note
 struck on it carries a factored pulse -- a unipolar triangle (1 at the cycle
 start, 0 at the half-cycle, back to 1) -- at that grid's applied tempo (fixed at
-onset). The tap cell displays the tempo whether or not cycling is on: it blinks
-at 10% duty at the base tempo -- unfactored, so both grids' tap cells blink
-together and no tempo-factor button moves them -- fully lit against black.
+onset). Turning cycling on/off ALSO starts/stops the factored pulse on that
+grid's EDIT-MODE voices, live (at the applied tempo, or silenced): =1 flipping
+the switch acts on already-sounding edited notes, not just future ones. Every
+other sounding note's rate stays fixed at onset as before; and the lone press
+that snaps an already-cycling grid's tempo factor to unity -- not a switch
+flip -- does not touch edit-mode notes either, only the x2/x3//2//3 multipliers
+retune those in place. The tap cell displays the tempo whether or not cycling
+is on: it blinks at 10% duty at the base tempo -- unfactored, so both grids' tap
+cells blink together and no tempo-factor button moves them -- fully lit against
+black.
 
 The bundled 12-EDO offset/root board is:
 
@@ -630,8 +637,12 @@ factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
 A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
 with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
 ~factored_pulse_pad~'s factor cells do -- pad and pedal run the same code), and with
-notes in edit mode the multipliers retune those notes. ~unity~ is the ~=1~ switch
-and never retunes edit-mode notes.
+notes in edit mode the multipliers retune those notes in place. ~unity~ is the ~=1~
+switch: it never *retunes* edit-mode notes the way the multipliers do, but an
+on/off transition of the switch itself starts or stops their factored pulse
+outright (this grid's applied tempo, or 0) -- see the ~factored_pulse_pad~
+paragraph above. The lone press that snaps an already-cycling grid's tempo factor
+back to unity is neither -- it leaves edit-mode notes alone.
 
 An ~editmode_control~ pedal (one pedal, a ~monome~ with an ~edo_note_grid~, at
 most one of each ~control~ per monome) drives that monome's EDIT MODE in bulk,
