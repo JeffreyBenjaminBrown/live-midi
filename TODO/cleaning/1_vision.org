@@ -60,9 +60,9 @@ worth it to tidy what exists. If done: derive-on-demand first (a pure
 function =reasons(grid, pitch)= used by every check), migrate checks one at a
 time, only then consider making it the owner.
 
-*** ONGOING big bang seems better
+*** DONE big bang seems better
 but push back if you disagree.
-**** TODO [claude] mostly agree; one carve-out, and I'm proceeding on it
+**** DONE [claude] mostly agree; one carve-out, and I'm proceeding on it
 Big bang for the SUSTAIN and EDIT reasons: a =ring= module owns them, with the
 one operation "remove reason R from pitches P, end what drops to zero" -- the
 symmetric-clears model becomes true by construction. The carve-out: FINGERS
@@ -164,14 +164,14 @@ Verdict: leave the mechanisms; the improvement worth having is a short
 =learnings/volume-chain.org= documenting the whole chain in one place
 (cheap, zero risk) rather than a type.
 
-*** ONGOING I don't think the type would go wrong.
+*** DONE I don't think the type would go wrong.
 It sounds like you're saying some volume factors are
 logarithmic factors to add in log space,
 while others are proportions to multiply in logarithmic space,
 yes? If so, types does seem like the natural way to do it,
 and again I don't think that's complex enough to go sideways.
 Besides, if it did I would run into it fast.
-**** TODO [claude] not quite -- and the type fix is even simpler than that
+**** DONE [claude] not quite -- and the type fix is even simpler than that
 Every factor is a plain linear-amplitude multiplier; nothing lives in log
 space at composition time (the fader's POSITIONS are log-spaced and the pedal
 curve is exponential, but both emit a linear gain before composing). The real
@@ -193,16 +193,17 @@ a future fourth factor is one more field. Doing exactly that (plan phase 5).
   =[instrument]=? =[feel]=? Naming is yours to pick; mechanically trivial.
   - ONGOING Can it be divided? The names in the divided table
     could then be more useful.
-    - TODO [claude] yes, cleanly, and it names itself: =[trail]=
+    - DONE [claude] yes, cleanly, and it names itself: =[trail]=
       (clobber_radius, max -- today's trail_clobber_radius/trails_max),
       =[slide]= (candidate_window_ms, duration_ms), =[tap_tempo]=
       (window_ms). Three tiny tables, no grab-bag left. Wire-in is trivial;
       awaiting your yes (rig-facing keys change). Plan phase 8 (rename day).
+      - DONE Yes!
 - =softstep_accretes_toggle= is the legacy hardcoded mirror, superseded in
   spirit by rig-declared =accrete_control= pedals; still referenced by the
   kmss rig.
-  - ONGOING Are you saying we should just stop referencing it?
-    - TODO [claude] yes: rebind the kmss rig's feet-accrete mirroring as
+  - DONE Are you saying we should just stop referencing it?
+    - DONE [claude] yes: rebind the kmss rig's feet-accrete mirroring as
       explicit =accrete_control= / =editmode_control= pedal bindings (the
       modern, rig-stated form), drop the =softstep_accretes_toggle= windows
       from that rig, then delete the kind from the code. Loses one behavior:
