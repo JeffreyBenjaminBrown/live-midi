@@ -1,5 +1,5 @@
 * ONGOING TODO/chord-storage-v2
-** TODO exit edit mode should not delete the voice
+** ONGOING exit edit mode should not delete the voice
 At least for the voice-specific gesture that is not currently the case.
 The voice must have bee added to the sustained set when it was sustained, I think.
 So there's already the gesture 'remove from sustained set'
@@ -11,6 +11,134 @@ We don't need that concept to exist.
 If it enters sustain via sustain or via edit,
 globally (from the sofstep) or locally (from the monome),
 its reason for existence is sustain.
+*** TODO claude: cannot reproduce on this build -- I think your instrument predates the fix; please restart and retest
+Your diagnosis is exactly right -- and it is exactly what branch-3 queue item 4
+("entering edit mode should just add the voice to the sustained set") already
+abolished, in commit =0fe1e25=, which is merged here and predates all of chord
+storage. In the current code =Reason::Edit= is a pure SELECTION: =enter= adds
+Sustain+Edit, the per-voice exit and both editmode clears only discard Edit,
+and the complete list of voice-ending paths (grepped and pinned) is the
+sustain-toggle-off, erase, the widened clears, chord toggle-off, and the
+ordinary finger release -- the exit gesture reaches none of them.
+
+I could not reproduce the deletion. To be sure it stays that way I built the
+first =GridThread= test harness (tests.rs =test_grid_thread=, over the real
+rig's grid A) and pinned your exact sequence end to end through the real
+=handle_key=: strike -> handle-press (enter edit; the store gains Sustain AND
+Edit) -> lift (it drones) -> handle-press again (exit). The drone keeps
+ringing, still sustained; only the sustain toggle above then ends it
+(=the_per_voice_exit_gesture_ends_no_voice=).
+
+What you describe is the exact PRE-merge behavior (edit as its own
+life-support reason, exit = last reason gone = voice dies). So my best guess
+is the instrument you played was a binary from before that merge -- a
+long-lived =pw-jack cargo run= session, or a run from another worktree.
+Please restart it from =worktrees/2= and retest. If it STILL reproduces,
+tell me the exact finger sequence (which grid; entered edit via the handle or
+pedal 7; was the note fingered or already droning; any drag in between; which
+gesture was the exit) and I will chase it with the new harness.
+*** DONE I think the previous sentence can be true even for voices recalled from storage.
+The fact that they came from storage is not relevant --
+they can be ended via the kill-sustain controls,
+so they might as well just be considered sustained.
+Maybe the only distinction we will ever need is
+'fingered | playing while not fingered';
+how something got to be playing while not fingered
+does not need to be remembered.
+**** DONE claude speaking: I agree with the principle -- but it overturns two of your own round-2 rulings, and you should re-rule them explicitly
+(Both re-rulings arrived inline below and are implemented; also confirmed in
+the CLI when our edits to this file kept clobbering each other.)
+Yes, mostly. "Chord" as a REASON TO RING can die exactly the way "edit" did:
+the ring model collapses to fingered | sustained, and chord membership
+(the seq -> slot registry) survives only as BOOKKEEPING -- the slot
+toggle-off and the slot LED genuinely need to know which voices came from
+which slot, so that much provenance stays; it just stops mattering to
+life-support, the way edit membership became a selection that ends nothing.
+What this buys, all of which I like:
+
+- The edit carve-out disappears: edited ⊆ sustained becomes universal again,
+  and the two-layer selection union in the key handler shrinks.
+- A per-voice kill for ONE chord voice appears for free -- the sustain
+  toggle above it ends it, which round 2 noted was missing (today only the
+  widened clear can end a chord voice, wholesale).
+- Erase, the clears, and capture all become uniform: "every voice sounding
+  without a finger" with no special cases.
+
+But two behaviors you ruled the OTHER way in 2_discussion round 2 are
+overturned by this, and they should be re-ruled on purpose, not by
+accident:
+
+1. *The pedal.* Sustained voices follow the EX-P live; your round-2
+   amplitude ruling made chord voices "untouchable outside of edit mode",
+   loudness frozen as saved. If they are just sustained, the first pedal
+   move after a recall re-aims them like everything else -- that is the
+   "pedal pickup for all" option you steered away from. Which wins: the
+   frozen saved loudness, or the uniform pedal?
+   DONE : The uniform pedal.
+   (claude: implemented. `set_grid_pedal_gain` matches chord voices, so a CC
+   re-aims them like every other voice; a recall still starts at the SAVED
+   loudness and holds it until the pedal next moves, since the EX-P sends
+   nothing untouched. The edit-only pickup machinery is deleted.)
+2. *Same-pitch coexistence.* Your "Otherwise." ruling: chord voices are
+   scenes, not piano keys -- two chord voices may share a pitch, a finger
+   at that pitch never swallows them, and re-fingering never mangles the
+   scene. The PIANO sustain machinery is the opposite by design:
+   one-voice-per-pitch (the sustain set is a pitch set; re-fingering a
+   sustained pitch cuts and replaces its drone). Making chord voices
+   literally sustained either re-introduces the swallowing you rejected, or
+   requires rebuilding sustain to be per-VOICE rather than per-pitch -- a
+   real refactor of the ring/accrete architecture (worth doing if you want
+   it, but it is cleaning-phase-sized, not a patch).
+   DONE : Re-fingering a sustained or chord pitch should retrigger it
+   in the envelope sense but not in the polyrhythm pulse sense.
+   That's what happens if a finger lands on a preexisting chord voice.
+   In the reverse situation, though, both voices should coexist.
+   Edit and sustain instructions in that case apply to both voices.
+   (claude: implemented. A finger on a chord pitch RESTRIKES the chord
+   voices there -- the drag-style dip-then-attack on the same voice; pitch,
+   timbre, loudness, oscillator, and pulse all continue; no new voice, and
+   the release does nothing. The sustained-pitch retrigger, which already
+   continued the oscillator, now continues the factored pulse too -- old
+   rate AND phase, not the grid's onset pulse; a pulseless drone stays
+   pulseless. Recall-onto-fingered still coexists, and the edit/sustain
+   gestures already took both voices at a pitch. Pinned by
+   =a_finger_on_a_chord_pitch_restrikes_the_chord_voice_instead_of_playing=
+   and the rewritten retrigger tests.)
+
+There is a cheap middle path that honors "how it got here does not need to
+be remembered" at the CONTROL level without the refactor: keep chord voices
+seq-keyed (so scenes still stack and never swallow), but make every
+kill-sustain control reach them uniformly -- the sustain toggle above a
+chord voice ends it, erase ends chord voices at the erased pitches, clears
+already do -- and drop the edit carve-out. From the player's seat the
+distinction is then gone; under the hood the registry remains as slot
+bookkeeping. The one thing the middle path does NOT unify is the pedal
+(question 1 still needs your ruling either way).
+
+Tell me: (a) pedal -- frozen or uniform? (b) same-pitch -- keep the
+never-swallow scenes (middle path), or true per-voice sustain (refactor)?
+Then I will implement whichever shape you pick.
+*** DONE (jeff speaking) actually maybe not
+Each chord button has to be able to toggle off
+the specific voices it brought forth.
+And yet global end sustain should still end chords too,
+and local end sustain should also end a chord voice there --
+for those controls, the origin doesn't matter.
+**** DONE claude: implemented exactly this shape
+The seq -> slot registry stays (the slot toggle and its LED need the
+provenance), and the kill-sustain controls are origin-blind: the GLOBAL
+end-sustain already ended chords (the widened clear), and the LOCAL one now
+does too -- =ChordLayer::end_at_pitch= + the sustain handle's kill direction
+end every chord voice at that pitch, from any slot, untoggling a slot this
+empties (no solid LED over silence). The ON direction (sustaining a
+fingered, unsustained note) touches no chord voice, and the accrete
+CAPTURES still ignore them -- they capture, they don't kill. With your
+uniform-pedal and retrigger answers above, the only remaining chord-voice
+distinctions are the ones the slot buttons themselves need. Pinned through
+the real key handler
+(=the_local_end_sustain_also_ends_chord_voices_at_its_pitch=) plus unit
+tests; docs updated in both readmes. =cargo test --workspace=: 740 passed,
+0 failed.
 ** DONE correction in my earlier request : longest phase -> longest period
 Each voice at frequency higher than the base (longest) cycle
 has its phase recorded
