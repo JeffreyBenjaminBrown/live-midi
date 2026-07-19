@@ -23,7 +23,7 @@ On recall, the timesetter begins at phase 0,
 and all others at whatever they should be relative to the timesetter,
 with appropriate slewing to avoid clicks.
 
-* DONE (probably) the model: a chord is a bag of voice snapshots, not a pitch set
+* DONE the model: a chord is a bag of voice snapshots, not a pitch set
 This shapes everything downstream, so stating it explicitly. The current
 stored reasons live in =RingStore= (=surfaces_runtime/ring.rs=) as per-grid
 *pitch sets* -- a pitch is sustained or not. A chord slot cannot work that
@@ -43,7 +43,7 @@ machinery (=sawwave/state.rs=: =chords=, =emitting_chord=,
 "emitting chord" concept; v2 shares neither. I'd leave it entirely untouched
 -- v2 is new code in =surfaces_runtime=.
 
-* TODO sequencing: this builds on a branch-3 task that is not done yet
+* ONGOING sequencing: this builds on a branch-3 task that is not done yet
 The vision says the prerequisite ("Entering edit mode should just add the
 voice to the sustained set") is in "the task queue currently being executed
 in branch 2 (see worktrees/3/queues/branch-3.org ...)". Two things:
@@ -62,7 +62,9 @@ branch builds this, or should I implement the edit-mode change myself as step
 one here? I need to know where that work will live to avoid a collision with
 worktree 3.
 
-* DONE (probably) a save captures fingered + sustained + chord voices -- not release tails
+** TODO It's implemented there and merged here now.
+
+* DONE a save captures fingered + sustained + chord voices -- not release tails
 "Every voice that monome is currently sounding" read literally would also
 capture reason three: released voices still ramping to zero. I'll exclude
 them -- a dying tail snapshotted into a slot would resurrect at some arbitrary
@@ -71,7 +73,7 @@ chord you have the sustain pedal under your foot. So: fingered, sustained,
 and chord-reason voices, exactly as your list says; ramping tails are not
 "sounding" for this purpose.
 
-* TODO amplitude: what exactly is stored, and does the pedal reach a recalled voice LATER?
+* ONGOING amplitude: what exactly is stored, and does the pedal reach a recalled voice LATER?
 A live voice's loudness is a product: timbre slot gain x the EX-P pedal gain
 x the envelope (attack / pluck decay / release), all per-voice in the synth.
 I read the vision as: store the *settled product* of timbre gain and pedal
@@ -103,7 +105,16 @@ Which do you want? (If 2, note one consequence: recalling with the pedal at
 heel and then twitching it will duck the chord toward silence -- correct
 under the rule, but worth knowing.)
 
-* TODO recall: does re-pressing a sounding slot stack, restart, or stop it -- and how does ONE chord stop?
+** TODO
+A chord note in edit mode jumps to the pedal-implied volume
+the moment the pedal sends a signal. (The ex-p signal seems pretty robust
+to not having a foot on it -- it won't send a signal if I'm not touching it,
+which is good, and means that chord notes in edit mode would
+not have their ampiltude affected.)
+
+Outside of edit mode, the chord notes' volumes are untouchable.
+
+* ONGOING recall: does re-pressing a sounding slot stack, restart, or stop it -- and how does ONE chord stop?
 Unspecified, and it decides how the instrument feels:
 
 - My recommendation: a slot press *restarts* its own chord -- if voices from
@@ -123,7 +134,20 @@ Unspecified, and it decides how the instrument feels:
 Also: pressing an *empty* slot while disarmed does nothing (no flash, no
 error) -- fine?
 
-* TODO pitch collisions: a chord voice vs a finger at the same pitch
+** TODO
+Chord slots are toggles.
+Pressing one turns it on, lights it up solid.
+(When write-to-slot is armed, the button that armed it flashes,
+slow enough to see -- say 100 ms on, 100 ms off.
+Can sync with the dances if that makes for cleaner code.)
+
+So a chord can be turned off by untoggling it.
+As usual, a 'toggle' monomekey ignores key-up signals.
+
+Restarting the chord at a new phase is possible,
+if one accepts (I do) a brief silence while untoggling it before the restart.
+
+* ONGOING pitch collisions: a chord voice vs a finger at the same pitch
 Today, re-fingering a pitch that is sustaining "cuts the old drone and the
 new note replaces it; the pitch stays in the set, so releasing the new finger
 re-drones it" (readme). The natural extension, which I recommend:
@@ -141,7 +165,26 @@ model everywhere (LED reflection, edit handles, the held map) for a case
 that mostly produces phase-doubling. Confirm the swallow rule, or say
 otherwise.
 
-* DONE (probably) editing a chord voice re-homes it: chord reason -> sustained
+** TODO Good question. Otherwise.
+The analogy in my head is that fingered and sustained voices
+are like the keys of a piano. Sustained chords are not like that;
+they are complicated multi-voice scenes that were carefully designed
+in a way the player has probably later forgotten about,
+and therefore does not want to mangle.
+Also their timbre can differ from that of fingered and sustained voices,
+so intermingling them would be jarring.
+
+This implies some moderately tricky interactions --
+maybe more than I've thought of.
+If the user presses the edit key under a chord voice,
+it should usually enter edit mode.
+If there is a sustained or fingered voice at the same key,
+they both enter edit mode.
+
+Pressing the add-to-sustain key above a chord slot does nothing.
+(It's already ringing, after all.)
+
+* ONGOING (probably) editing a chord voice re-homes it: chord reason -> sustained
 The vision's edit rules meet the branch-3 rule ("entering edit mode adds the
 voice to the sustained set; exiting sustain ends the voice") in a corner
 worth deciding deliberately: if a chord voice enters edit mode, it gains a
@@ -164,7 +207,13 @@ sustain toggle (cell above) on a chord voice converts it, so toggling
 sustain *off* then ends it (per branch-3's rule) instead of leaving a
 chord-reason drone. I think that is the predictable reading of the gesture.
 
-* DONE (probably) recalled voices arrive in NO edit mode, and re-strike their envelope
+** TODO
+I must have mispoken.
+Entering edit mode adds a *fingeed* voice to the sustained set.
+But since chord voices are already ringing and can be different-timbred,
+entering edit mode should not add them to the sustained set.
+
+* DONE recalled voices arrive in NO edit mode, and re-strike their envelope
 Two "what not to store" items important enough to pull out:
 
 - Edit/sustain membership is not stored. If a voice was in edit mode when
@@ -178,26 +227,31 @@ Two "what not to store" items important enough to pull out:
   time -- that's what "playing a chord" means, and storing envelope state
   would make recalls weaker every generation.
 
-* DONE (probably) the rest of "what not to store" (you asked me to look)
-- Oscillator phase -- your call already; also factored-pulse *phase*. Store
+* ONGOING the rest of "what not to store" (you asked me to look)
+** ONGOING Oscillator phase -- your call already; also factored-pulse *phase*. Store
   the pulse *rate* only (the absolute Hz the voice carried, =factored_pulse_freq=),
   restart its phase at recall. Storing absolute Hz also answers "what if the
   base tempo changed since the save": the chord reproduces the rates it was
   saved with, decoupled from the current tempo and factors -- consistent
   with pulses being fixed at onset today. A voice with no pulse stores none;
   recalling cannot start one.
-- Cell / register. Store the pitch, not the cell -- a recall must not care
+*** TODO
+For factored pulse, let's store the factor and phase, but not the tempo.
+(I discussed how to treat factored tempo phase at the top of this doc.)
+If the user speeds up the tempo, chords will be recalled with the same factors,
+but relative to the new tempo.
+** DONE Cell / register. Store the pitch, not the cell -- a recall must not care
   how either grid is scrolled. (Voices in the sink are cell-keyed; chord
   voices will need their own key space. Implementation detail, but it's why
   cells must not be in the data.)
-- A glide in progress. If you save mid-slide, store the *target* pitch, not
+** DONE A glide in progress. If you save mid-slide, store the *target* pitch, not
   the instantaneous one.
-- Per-voice slew state (pedal-gain slew, timbre transitions): store settled
+** DONE Per-voice slew state (pedal-gain slew, timbre transitions): store settled
   values.
-- Grid state that isn't voice state: scroll register, tempo factor and base
+** DONE Grid state that isn't voice state: scroll register, tempo factor and base
   tempo, mono/slide toggles, edit-mode-active. None of it belongs in a slot.
 
-* TODO timbre switching in edit mode: what does the strip's radio do?
+* DONE timbre switching in edit mode: what does the strip's radio do?
 The parenthetical ("Switching timbre should apply ... to any note in edit
 mode") has a precedent: the factored-pulse multipliers, which in edit mode
 retune the edited notes INSTEAD of moving the grid's tempo factor. I
@@ -219,7 +273,11 @@ stays put, accept the LED silence.
 one voice, phase carried over where the waveforms share the accumulator. It
 will be the plan's business, not this doc's.)
 
-* TODO layout: which five columns? (and: 9 slots, yes?)
+** DONE yes, no visible indicator
+The visible radio button is still the one that applies to new voices
+(even though they can't be created at all while any are in edit mode).
+
+* ONGOING layout: which five columns? (and: 9 slots, yes?)
 Reading the block: 2 rows x 5 = 10 buttons, bottom-left is arm, so *9 chord
 slots* -- which conveniently equals a SoftStep's 10 pedals if you ever mirror
 it. Confirm 9 is intended (and not, say, arm outside the block).
@@ -238,7 +296,11 @@ strip -- but its top-right slot then abuts the editmode-clear at (12,0), and
 only you know your fat-finger risk there. Your call; this also costs 10 more
 play cells per grid, which the vision already accepts.
 
-* DONE (probably) LEDs for the block
+** TODO centered and dimily lit
+That is, dimly lit unless a slot is active (fully lit)
+or write to slot is armed (that button flashes, described above).
+
+* ONGOING LEDs for the block
 Following the house language: arm button dim at rest, bright while armed
 (toggle convention). Slots: dark = empty, dim = occupied, bright = occupied
 and voices from its last recall still ring (voices get tagged with their
@@ -255,6 +317,10 @@ Two small behaviors I'll build unless vetoed:
 - Saving while the grid sounds *nothing* erases the slot. It falls out of
   "save what's sounding" literally, and it's the only erase gesture the
   layout has; without it a slot can never be emptied, only overwritten.
+
+** TODO Yes to most, but there's no need for empty, only overwrite.
+Saving emptiness to a slot should disarm save-to-slot
+but leave the slot unchanged.
 
 * DONE (probably) OSS pedals: only the clears actually change
 Mapping the vision's 2x2 onto the printed labels, left side: 6 = remove all
@@ -277,7 +343,7 @@ so:
   momentary. Chord voices are deliberately NOT captured by this pedal;
   putting a chord's notes into sustain is what saving/editing is for.
 
-* TODO persistence: do slots survive a restart?
+* ONGOING persistence: do slots survive a restart?
 The vision doesn't say. I'll build in-memory slots (empty on every launch)
 unless you want them persisted -- and persistence is a real fork: a file
 format, when to write it (every save? on exit -- which loses on crash?), and
@@ -285,7 +351,10 @@ whether slot contents from a rig with different timbre tables even make
 sense. If you want persistence, say so and I'll spec it in the plan;
 otherwise it's an explicit non-goal.
 
-* DONE (probably) odds and ends
+** TODO ooh I like persistence, yes please
+Use whatever file format you like.
+
+* ONGOING odds and ends
 - Off-screen chord voices join the existing octave-corner flash (it already
   covers edit-mode and sustained notes; a chord voice you can't scroll to
   can't be edited, so the hint matters). Still corners-only, still
@@ -298,3 +367,4 @@ otherwise it's an explicit non-goal.
   slots, its own block -- confirmed, nothing shared but the code.
 - "sofstep" / "polyrhytm" in the vision are typos; I mention them only so
   you know I read closely, not because they obscured anything.
+  TODO : lol nice
