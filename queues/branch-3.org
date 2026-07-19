@@ -64,6 +64,37 @@ instructions above I left it alone. Concrete guesses instead, each pointing at c
 I'd start with (1): log every /grid/key OSC event (x, y, down/up, timestamp) for
 the =1 cell and see whether a fast double-press actually produces two clean
 down/up/down edges, or whether the second down is missing.
+** TODO why the monome doesn't need debouncing but the KMSS does
+Not "better firmware" vs "worse firmware" -- the two devices hand us different kinds
+of signal in the first place.
+
+Monome: grid buttons are discrete conductive-rubber-dome switches, scanned AND
+debounced by the grid's own firmware. The one monome firmware ever open-sourced
+(monome/mk, the classic kit) shows this concretely: =button.c='s =buttonCheck()=
+keeps a per-button debounce counter (24 scan cycles before accepting a release; a
+press is accepted on the very next scan) driven by a hardware timer in =mk.c=.
+Grepping "debounc" across all of =libmonome= and =serialosc= -- the entire host
+driver chain between the USB device and our OSC socket -- finds nothing: there is
+no host-side debounce step being skipped, because by the time =/grid/key= reaches
+us the bounce is already gone.
+
+KMSS: tether mode is not switch closures -- each pad is 4 continuous piezoresistive
+pressure sensors (Kesumo/KMI patent US9546921B2) streamed as raw, unfiltered 0..127
+CC values every ~10ms. KMI's own hysteresis (onThresh/offThresh) lives in the
+PC-side Editor app, which we bypass to read the tether stream directly for velocity
++ concurrency. A stomp's pressure sum wobbles across our onset threshold as the foot
+rocks, so =drumkit_runtime::decode::TetherDecoder='s =DebounceMode= (rig.rs
+~1296-1363) is doing, in software, the job the Editor would otherwise have done.
+
+Couldn't confirm the CURRENT grid generation's firmware source (monome/iii ships
+binary releases only); the debounce evidence above is from monome's classic open
+kit firmware, but the architecture -- debounce on-device, dumb relay on the host --
+matches monome's own docs/forum mentions of reflashing debounce behavior for grids.
+
+- [[https://github.com/monome/mk/blob/master/firmware/default/button.c][monome/mk: button.c, firmware-level debounce counter]]
+- [[https://github.com/monome/serialosc][serialosc]] / [[https://github.com/monome/libmonome][libmonome]] source (no debounce code in either)
+- [[https://patents.google.com/patent/US9546921B2][Kesumo/KMI patent US9546921B2: piezoresistive pads under SoftStep pads]]
+- [[https://github.com/Muse-Kinetics/softstep_editor][KMI SoftStep Editor source: onThresh/offThresh live in the host app, not firmware]]
 * =1 should affect the voices in edit mode
 If a voice is in edit mode, the factor modifiers like (*2) affect it,
 but entering and exiting polyrhythm pulse mode via =1 does not.
