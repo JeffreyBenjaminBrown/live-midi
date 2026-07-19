@@ -1,0 +1,83 @@
+#+title: Cleaning plan
+#+date: 2026-07-19
+
+Executes 1_vision.org with Jeff's answers folded in. Phases are STRICTLY
+SERIAL (each touches files the next rebuilds on); each ends with the full
+workspace suite green and a commit. Phases 1-6 are unblocked; 7-8 hold TODOs
+for Jeff. Mechanical phases go to small subagents; the judgment-heavy ones
+(5, 6) stay with the main session. Deviations get recorded here, per
+when-to-stop.org.
+
+* the phases
+** 1. Extract surfaces_runtime/mod.rs's tests -> tests.rs [unblocked, mechanical]
+=#[cfg(test)] mod tests= (~1.8k lines, half the file) moves to
+=surfaces_runtime/tests.rs= via =#[cfg(test)] mod tests;= + =use super::*=.
+Zero behavior; halves the god-module before the real split.
+** 2. Principled voice keys, no generics [unblocked]
+Per Jeff (vision 2): redesign =VoiceSource= itself rather than genericize.
+Keep the engine-facing truth "the render never reads keys"; the enum gains
+honest variants and the puns die:
+- keep =Fingered { xy }= and =Accreted { chord, pitch }= (sawwave + looper use
+  them literally);
+- add =SurfaceFinger { grid, cell }=, =SurfaceDrone { grid, pitch }=,
+  =SurfaceRetired { grid, seq }=;
+- synth.rs's =voice_key= / =sustain_key= / SUSTAIN_BASE / RETIRED_BASE and the
+  cell-packing arithmetic are deleted; every walk in mod.rs matches the real
+  variants.
+** 3. Split surfaces_runtime/mod.rs at its seams [unblocked]
+After 1+2 the remainder splits into submodules roughly: =settings.rs=
+(resolve + bring-up plan), =paint.rs= (LED painting), =keys.rs= (handle_key +
+overlay dispatch), =hooks.rs= (pedal hook + dispatchers: editmode,
+factored-pulse), =pedal_volume.rs= (curve + thread), =reload.rs= (Live +
+adopt); mod.rs keeps run() + thread spawning + the shared types. Names may
+shift as the seams reveal themselves; that's a how-deviation, recorded here.
+** 4. GridThread from first principles [unblocked]
+Per Jeff (vision 4): full grouping, clones acceptable. Target shape:
+=Overlays= (every rect + the pressed-LED bools), =SharedState= (the Arc'd
+cross-grid handles), =Tuning= (edo/steps/fund/register math inputs),
+=Knobs= (slide/trail/echo scalars), leaving the per-thread machinery (sock,
+prefix, sink, slide candidates) flat. Borrow fights resolved by cloning.
+** 5. Reify the volume chain [unblocked]
+Per the vision-5 response: replace the baked product in =timbre.gain= with
+per-voice COMPONENTS -- slot amplitude, fader gain, pedal gain -- multiplied
+in the render (all linear amplitude). Fader moves become assignment (ratio
+rescale + its never-zero rule die); the pedal keeps its slew but loses its
+special-case framing. Looper/sawwave set the extra components to 1.0 and are
+bit-identical. RMS-pinning tests guard the refactor.
+** 6. Reify reasons-to-ring (the big one) [unblocked, last of the code phases]
+Per the vision-1 response: a =ring= module owns the SUSTAIN and EDIT reason
+sets per grid (absorbing =AccreteState.sustained= and =EditState.pitches=;
+their state machines stay, pointed at the shared store); fingers stay in the
+held map, derived in as a count. One operation -- remove reason R from
+pitches P, end whatever drops to zero -- replaces the five hand-rolled
+checks (exit-edit, sustain-toggle-off, both clears, release_cell). Every
+existing incident test must pass unmodified; new tests pin the multi-finger
+and colliding-cell cases.
+** 7. Unbury the live core [blocked on naming]
+Per vision 6c: code the latest rig uses moves out of =buried/=; buried may
+depend on live, never the reverse. Rough split: the surfaces runtime, sawwave
+engine, rig loader/org parser, drumkit+softstep, expression pedals, monome +
+mock, device_assign move OUT; the looper/piano/un-12 runtimes and their bins
+stay buried (depending on the live crate).
+*** TODO [jeff] what should the unburied home be called?
+The obvious candidates: promote it INTO =edo_surface/= (the successor crate
+finally succeeds -- my mild favorite, since the name already exists and the
+crate is nearly empty), or a fresh top-level dir (=synth/=? =live/=?
+=instrument/=?). Also: should the legacy runtimes stay a separate crate in
+=buried/= (cleanest dependency arrow) or move wholesale and only the DIR name
+change? Your call; everything else in this phase is mechanical.
+** 8. Rename day + rig-facing cleanups [blocked on approvals above]
+One deliberate commit, worktrees level, executing whichever of these you've
+green-lit in 1_vision.org: =tap_tempo_pad= -> =factored_pulse_pad=; the
+=[surfaces]= table divided into =[trail]= / =[slide]= / =[tap_tempo]=;
+=softstep_accretes_toggle= retired (kmss rig rebound to explicit pedal
+bindings). Plus vision 7's pointer-dedup: the window-kind semantics that
+readmes duplicate normatively get emacs-followable =[[file:...]]= links to
+rigs/README.org instead (prose explanations stay).
+*** TODO [jeff] confirm the two names
+=factored_pulse_pad= for the pad, and =[trail]=/=[slide]=/=[tap_tempo]= for
+the divided table -- or supply your own; the mechanics are ready either way.
+
+* progress
+- [2026-07-19] Phases written; 1_vision.org annotated (two ONGOING questions
+  answered with TODO responses; directives marked DONE). Beginning phase 1.
