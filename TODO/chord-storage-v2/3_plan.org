@@ -1,0 +1,249 @@
+#+title: chord storage v2 -- the plan
+
+Everything here implements =1_vision.org= as settled in =2_discussion.org= (round
+2). File references are to the state of the tree at commit =d16af79=.
+
+* the data model
+
+** the chord layer lives in =GridRing=
+=surfaces_runtime/ring.rs='s =GridRing= (one per monome, all under the one ring
+lock) gains a fourth member, =chord: ChordLayer= (new module
+=surfaces_runtime/chords.rs=):
+
+#+begin_src rust
+pub struct ChordLayer {
+  pub slots: [Option<StoredChord>; 9],
+  pub armed: bool,
+  /// The slot each *live* chord voice came from, its current pitch, and its
+  /// edit flag -- the registry of sounding chord-layer voices. Keys are
+  /// VoiceSource::SurfaceChord.
+  pub live: HashMap<u64 /*seq*/, LiveChordVoice>,   // seq -> {slot, pitch, edited}
+  /// Which slots are toggled ON (lit solid; their voices ring).
+  pub active: [bool; 9],
+  next_seq: u64,
+}
+pub struct StoredChord { pub voices: Vec<StoredVoice> }
+pub struct StoredVoice {
+  pub pitch: i32,
+  pub timbre: Timbre,        // full slot incl. gain -- mutations included
+  pub fader_gain: f32,       // settled components at save time, stored
+  pub pedal_gain: f32,       //   separately, NOT baked into timbre.gain
+  pub osc_phase: f32,        // relative to the chord's timesetter, in [0,1)
+  pub pulse_factor: f32,     // rate / base-tempo-at-save; 0 = no pulse
+  pub pulse_phase: f32,      // relative to the pulse reference, in [0,1)
+}
+#+end_src
+
+Decisions this encodes (all from 2_discussion):
+- reasons stay per *voice* for the chord layer; =RingStore='s pitch sets are
+  untouched (the piano layer);
+- amplitude components stay separate so the render path is identical to a live
+  voice's: recall sets =timbre=, =fader_gain=, =grid_gain(_target) = pedal_gain=
+  and the voice sounds exactly as saved;
+- the pulse stores a factor against the base tempo (recall multiplies by the
+  base at recall -- retapping carries chords along), plus its relative phase.
+
+** the voice key
+=types.rs='s =VoiceSource= gains
+=SurfaceChord { grid: usize, seq: u64 }=. Because =set_grid_pedal_gain= /
+=set_grid_fader_gain= match only =SurfaceFinger= / =SurfaceDrone= and skip the
+rest, chord voices are *automatically exempt* from the pedal and fader -- the
+exemption is the default, and edit-mode pedal pickup is the explicit add-on.
+The render engine never reads keys, so no engine change.
+
+** the timesetter (save side)
+At save, snapshot every captured voice's live =VoiceState=. Timesetter = the
+voice with the largest =phase= in [0,1); ties -> lowest pitch -> stable order.
+Each stored =osc_phase= is =(phase_i - phase_T).rem_euclid(1.0)= (the
+timesetter itself stores 0). Pulse reference = the timesetter if it pulses,
+else the pulsed voice with the largest =factored_pulse_phase= (same
+tie-breaks); each pulsed voice stores its relative pulse phase the same way.
+Recall spawns with those phases directly -- the attack ramp from env 0 IS the
+anti-click slew, so no extra smoothing.
+
+* the window kind: =chord_block=
+
+One compound window (like =loop_display=), not ten windows:
+
+#+begin_src toml
+[[monome_windows]]
+id = "chords-a"
+monome = "a"
+kind = "chord_block"
+rect = [5, 0, 9, 1]     # exactly 5x2; bottom-left cell = arm
+#+end_src
+
+Validation (=rig.rs=, alongside =validate_factored_pulse_pads=): exactly 5x2,
+fits the grid, at most one per monome, monome must carry an =edo_note_grid=.
+Cell map: top row x0..x4 = slots 0..4; bottom row x0 = ARM, x0+1..x4 = slots
+5..8. =Overlays= gains =chord_rect= (NO_RECT when absent); =resolve_settings=
+fills it; both rigs' files get the two ELEMs at =[5, 0, 9, 1]= (2_discussion:
+the off-center spare cells sit toward the timbre strip, keeping the 2-cell gap
+next to the editmode-clear at (12,0)).
+
+* save (arm + slot press), in =handle_key= before the play path
+
+- ARM cell, key-down: =armed = !armed=. Key-up ignored everywhere in the block.
+- Slot cell, key-down, ARMED: capture (below); if the capture is non-empty,
+  write the slot + persist; either way disarm. Saving silence changes nothing.
+- Slot cell, key-down, DISARMED: toggle. ON: recall (below), mark active,
+  unless the slot is empty (then nothing -- stays dim, no toggle). OFF: end
+  that slot's live voices (release ramp), drop them from =live=.
+
+Capture, under the ring lock for the decision + voice-map lock for the read
+(sequentially, never nested): fingered voices (this grid's =held= map:
+cell -> pitch, voice at =voice_key=), sustained drones (=store.iter(Sustain)=
+minus fingered pitches, voice at =sustain_key=), and every live chord voice
+(the registry). Release tails excluded by construction. Per voice store:
+pitch (the held/sustain/registry pitch -- already the drag-updated target, so
+a mid-glide save stores the target for free), =state.timbre=,
+=state.fader_gain=, =state.grid_gain_target= (the settled aim, not the
+mid-slew value), =factored_pulse_freq / base_hz= (0 when unpulsed; base =
+=poly.tapped_hz()=), and the two relative phases per the timesetter rule.
+
+Saving to an ACTIVE slot: overwrite the stored chord, leave its ringing
+voices (just captured) ringing and the LED solid.
+
+* recall (slot toggle ON)
+
+For each =StoredVoice=: seq = =next_seq++=, insert
+=SurfaceChord { grid, seq }= into the voice map with freq from pitch, =phase =
+osc_phase=, env 0 -> attack -> pluck (same params as =SurfaceSink::note_on=),
+=timbre= / =fader_gain= / =grid_gain = grid_gain_target = pedal_gain= stored,
+=factored_pulse_freq = pulse_factor * base_hz_now= (0 stays 0),
+=factored_pulse_phase = pulse_phase=. Register each in =live= with
+=edited: false=. Implemented as a =SurfaceSink= method (it owns the envelope
+params and the id counter); the chord layer only decides.
+
+No interaction with =held=, the sustain set, the trail, or the slide
+candidates. Recalled voices arrive in no edit mode.
+
+* edit-mode integration
+
+The edit selection becomes the union of =RingStore='s edited pitches (piano
+layer; edited ⊆ sustained holds there) and the edit-flagged live chord
+voices. Concretely, in =keys.rs= / =hooks.rs=:
+
+- =handle_edit_press= classification: "a sounding note above/below" now also
+  matches a live chord voice's pitch (feed classify a =is_sounding= /
+  handle-target check that includes registry pitches). One press toggles BOTH
+  layers at that pitch: =edit.enter/exit= for the piano voice when one
+  sounds there, flag/unflag every registry voice at that pitch. Exit wins
+  over drag exactly as today.
+- =ToggleSustain= (cell above): acts on the piano layer only; on a pitch
+  where only chord voices sound it is consumed and inert (the cell is still
+  a handle -- it never falls through to playing a note).
+- Drag: the pressed cell drags the nearest edited *pitch* over the union.
+  The piano voice at that pitch re-homes to the finger (=rehome_to_cell=,
+  exactly today); chord voices at it glide in place (new
+  =glide_chord_voices= on the voice map: recompute freq/glide like
+  =glide_voice_to=, keys unchanged) and their registry pitch is re-filed.
+  If ONLY chord voices are at the pitch, =held= is NOT touched -- the drag
+  finger is a control gesture, and its release must release nothing.
+- Multipliers and ==1=: =scale_factored_pulse_rate= /
+  =set_factored_pulse_rate_at= gain a =chord_keys: &HashSet<VoiceSource>=
+  parameter (the edit-flagged registry voices' keys, snapshotted by
+  =factored_pulse_press= under the ring lock).
+- Timbre switch (the vision's parenthetical): in =handle_key=, a selector
+  press on a grid whose edit selection is non-empty retimbres the edited
+  voices (both layers, same selection as the multipliers) and does NOT move
+  the radio. New =synth::retimbre_voices= sets each voice's timbre through a
+  short crossfade -- =VoiceState= gains =timbre_xfade: Option<XFade>= (old
+  timbre + progress + per-sample step, ~50 ms): the render, only when Some,
+  computes the old-timbre and new-timbre samples and equal-power blends.
+  =None= for every other voice, so the other runtimes pay nothing.
+- Pedal pickup (2_discussion "amplitude"): =expression_pedal_loop= gets the
+  ring handle; on each CC for grid g it additionally aims
+  =grid_gain_target= at the live pedal gain for g's edit-flagged chord
+  voices (the existing per-sample slew smooths the jump). Outside edit mode
+  a chord voice's pedal gain is never touched.
+- The dances: edit-flagged chord voices join the DIAMOND set (by their
+  registry pitch, through =cells_for_pitch=); they are not sustained, so no
+  square dance. Off-screen octave-corner flash: chord pitches (edited or
+  not) join the edited+sustained union.
+
+* the widened clear ("end all sustain and chord")
+
+=drive_accrete= (pedal) and the on-grid clear in =handle_key=: on
+=Clear= key-down, besides =remove_sustain= + =end_drones_at=, ramp every live
+chord voice on that grid (new =end_chord_voices=), clear the registry, and
+untoggle all 9 slots. Rigs with no chord block see no change (empty
+registry). The editmode clear / accrete pedals: =editmode_clear= also
+unflags every registry voice; =editmode_accrete= also flags every registry
+voice (it says "all").
+
+* LEDs
+
+In the repaint loop: the block's 10 cells go into =buttons= --
+- every cell DIM at rest (empty and occupied slots look alike; empty slots
+  are inert);
+- an ACTIVE slot BRIGHT (solid while toggled on);
+- the ARM cell flashes while armed via =dance::flash_on(elapsed)= (150 ms
+  on/off -- Jeff: "say 100 ms... can sync with the dances if that makes for
+  cleaner code"; it does);
+- monobright grid A fakes DIM as everywhere.
+Chord pitches also join the bright cross-grid reflection: =accrete_view= (one
+ring lock already) unions every grid's live-chord pitch classes into the
+same set the sustained classes ride.
+
+* persistence
+
+New module =surfaces_runtime/chords_persist.rs=. File:
+=state/chord-slots/<rig id>.toml= at the repo root (=state/= added to
+=.gitignore=; path resolved like =rig_dir()= resolves =rigs/=). Serde
+=Serialize+Deserialize= mirror structs (the runtime types stay serde-free);
+=toml= is already a dependency. Written atomically (tmp + rename) on every
+successful save-to-slot, keyed by monome id:
+
+#+begin_src toml
+version = 1
+[monomes.a]
+slots = [ { voices = [ { pitch = 12, waveform = "saw", gain = 0.8, ... } ] },
+          ...9 entries, empty table = empty slot... ]
+#+end_src
+
+Loaded once at bring-up into each grid's =ChordLayer=. Toggle/armed state is
+not persisted -- a restart comes up silent with contents intact. A missing
+or unparsable file = empty slots (a parse error prints one red line and
+plays on; it never kills the instrument).
+
+* docs (on landing)
+
+- =rigs/2-monomes_2-softsteps_readme.org=: layout diagram (+chord block),
+  "OSS: two symmetric rows" (pedals 1/5 widen to sustain+chord), per-voice
+  edit (chord voices join the selection; pedal pickup), "what is
+  deliberately NOT here";
+- =rigs/README.org=: =chord_block= section + window-kind list;
+- =2-monomes_kmss-drums= rig readme: unaffected (no chord block there), but
+  the widened clear is a no-op for it -- say so in the commit message.
+
+* tests
+
+Pure-logic tests throughout, no hardware (the house style):
+- rig.rs: chord_block parse + each validation rejection;
+- chords.rs: capture (timesetter choice, relative phases, pulse factors,
+  glide-target pitch, tails excluded, chord voices included), toggle
+  on/off/restart, save-to-active-slot, arm/disarm, save-silence;
+- synth: recall spawns with stored phases/gains; end_chord_voices ramps;
+  retimbre crossfade (engine-level: blend reaches the new timbre, no step);
+- keys: edit press toggles both layers; sustain handle inert on chord-only;
+  drag moves both layers / chord-only drag leaves =held= alone;
+- hooks: widened clear; editmode accrete/clear reach the registry;
+  multipliers + =1 reach edit-flagged chord voices only;
+- persist: round-trip, atomicity (tmp file), unparsable-file recovery;
+- grid/paint: block LED states; chord classes reflect bright; off-screen
+  flash includes chord pitches.
+=cargo test --workspace= green at every commit.
+
+* commit order
+
+1. rig plumbing: kind + validation + Overlays/resolve + the rig ELEMs.
+2. chords.rs (layer, capture, timesetter) + SurfaceChord + recall/toggle in
+   synth + key routing + basic LEDs. The instrument saves and replays chords.
+3. edit-mode integration (selection union, drag, multipliers/=1, dances).
+4. widened clear + editmode pedals + reflection + off-screen flash.
+5. timbre switch in edit mode (engine crossfade) -- separable and the
+   riskiest engine touch, so it lands alone.
+6. pedal pickup for edited chord voices.
+7. persistence.
+8. docs + readme updates.
