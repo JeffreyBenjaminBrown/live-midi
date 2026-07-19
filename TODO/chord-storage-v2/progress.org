@@ -57,3 +57,16 @@ four validation rejections + the rig-pinning window-kind list updated.
 - Edited chord voices join the diamond dance by registry pitch; they never
   square-dance (not sustained) -- correct by construction.
 =cargo test --workspace=: 723 passed, 0 failed.
+
+* DONE 4. the widened clear + off-screen flash
+- The sustain clear is now "end all sustain and chord": =drive_accrete='s Clear
+  arm also runs =ChordLayer::end_all= (every live chord voice ends, edited or
+  not; every slot untoggles; contents survive). The ON-GRID clear button now
+  DELEGATES to =drive_accrete= instead of duplicating it -- one implementation,
+  hands and feet cannot diverge (small unplanned cleanup; the other accrete
+  buttons still have their own arms).
+- The octave-corner off-screen flash includes chord pitches (edited or not),
+  still which-kind-blind.
+- (Block LEDs and the bright cross-grid reflection had already landed in
+  commit 2.)
+=cargo test --workspace=: 724 passed, 0 failed.

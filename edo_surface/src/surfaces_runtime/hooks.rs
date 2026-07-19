@@ -52,7 +52,7 @@ pub(super) fn drive_accrete(
   } else {
     Vec::new()
   };
-  let ended: Vec<i32> = {
+  let (ended, chord_seqs): (Vec<i32>, Vec<u64>) = {
     let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
     let Some(gr) = rings.get_mut(grid) else {
       return false;
@@ -61,38 +61,45 @@ pub(super) fn drive_accrete(
       (AccreteControlKind::Clear, true) => {
         gr.accrete.press_clear();
         let all: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
-        gr.store.remove_sustain(all, |p| held_for_clear.iter().filter(|&&h| h == p).count())
+        let ended =
+          gr.store.remove_sustain(all, |p| held_for_clear.iter().filter(|&&h| h == p).count());
+        // The widened clear (chord-storage-v2 1_vision "end all sustain and chord"):
+        // every live chord voice ends too, edited or not, and every slot untoggles
+        // so the block's LEDs agree with the silence. A rig with no chord block has
+        // an empty registry, so this is a no-op there.
+        (ended, gr.chord.end_all())
       }
       (AccreteControlKind::Clear, false) => {
         gr.accrete.release_clear();
-        Vec::new()
+        (Vec::new(), Vec::new())
       }
       (AccreteControlKind::NeedsHolding, true) => {
         activated = gr.accrete.press_needs_holding();
-        Vec::new()
+        (Vec::new(), Vec::new())
       }
-      (AccreteControlKind::NeedsHolding, false) => Vec::new(),
+      (AccreteControlKind::NeedsHolding, false) => (Vec::new(), Vec::new()),
       (AccreteControlKind::Accrete, true) => {
         activated.accrete = gr.accrete.press_accrete();
-        Vec::new()
+        (Vec::new(), Vec::new())
       }
       (AccreteControlKind::Accrete, false) => {
         gr.accrete.release_accrete();
-        Vec::new()
+        (Vec::new(), Vec::new())
       }
       (AccreteControlKind::Erase, true) => {
         activated.erase = gr.accrete.press_erase();
-        Vec::new()
+        (Vec::new(), Vec::new())
       }
       (AccreteControlKind::Erase, false) => {
         gr.accrete.release_erase();
-        Vec::new()
+        (Vec::new(), Vec::new())
       }
     }
   };
   if !ended.is_empty() {
     synth::end_drones_at(voices, grid, &ended.into_iter().collect(), release_secs, sample_rate);
   }
+  synth::end_chord_voices(voices, grid, &chord_seqs, release_secs, sample_rate);
   if activated.accrete {
     capture_grid_held_into(held_all, ring, grid);
   }
@@ -484,6 +491,63 @@ mod tests {
     factored_pulse_press(0, TempoFactorButton::Times3, &poly, &ring, &held_all, &voices);
     assert_eq!(freq_of(flag_seq), 18.0, "both voices now follow");
     assert_eq!(freq_of(other_seq), 9.0);
+  }
+
+  /// The widened clear ("end all sustain and chord", chord-storage-v2): one Clear
+  /// press ends the sustained drones AND every live chord voice -- edited or not,
+  /// being selected shields nothing from this pedal -- untoggling the slots so the
+  /// LEDs agree with the silence. Slot contents survive.
+  #[test]
+  fn the_clear_ends_chord_voices_and_untoggles_their_slots() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(accrete::AccreteState::new())]));
+    let held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>> =
+      Arc::new(Mutex::new(vec![HashMap::new()]));
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut sink = synth::SurfaceSink::new(
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
+    );
+    // A sustained drone + a recalled chord (one voice edited, one not).
+    {
+      let mut rings = ring.lock().unwrap();
+      rings[0].store.add(Reason::Sustain, 40);
+    }
+    sink.note_on((0, 0), 40, crate::types::Timbre::default(), None);
+    sink.sustain_note((0, 0), 40);
+    let sv = StoredVoice {
+      pitch: 20, timbre: crate::types::Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    let spawned = {
+      let mut rings = ring.lock().unwrap();
+      rings[0].chord.save(2, StoredChord { voices: vec![sv, sv] });
+      let spawned = rings[0].chord.begin_recall(2);
+      spawned
+    };
+    for (seq, v) in &spawned {
+      sink.spawn_chord_voice(*seq, v, 1.0);
+    }
+    ring.lock().unwrap()[0].chord.live.get_mut(&spawned[0].0).unwrap().edited = true;
+
+    drive_accrete(0, AccreteControlKind::Clear, true, &ring, &held_all, &voices, 0.05, 48000.0);
+
+    let v = voices.lock().unwrap();
+    assert_eq!(
+      v[&VoiceSource::SurfaceDrone { grid: 0, pitch: 40 }].target_env, 0.0,
+      "the sustained drone rings out",
+    );
+    for (seq, _) in &spawned {
+      assert_eq!(
+        v[&VoiceSource::SurfaceChord { grid: 0, seq: *seq }].target_env, 0.0,
+        "every chord voice rings out, edited or not",
+      );
+    }
+    drop(v);
+    let rings = ring.lock().unwrap();
+    assert!(rings[0].chord.live.is_empty(), "the registry empties");
+    assert!(!rings[0].chord.active[2], "the slot untoggles");
+    assert!(rings[0].chord.slots[2].is_some(), "the stored chord survives");
   }
 
   /// A multiplier press still only ever retunes (never sets/starts/stops) an

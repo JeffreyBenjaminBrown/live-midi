@@ -773,13 +773,14 @@ fn grid_thread(mut rt: GridThread) {
     // octave-duplicated, unlike everything else painted here.
     // Snapshot both under one lock, then draw: the pedal hook writes these too
     // (`clear`).
-    let (edited, sustained, chord_edited): (Vec<i32>, Vec<i32>, Vec<i32>) = {
+    let (edited, sustained, chord_edited, chord_pitches): (Vec<i32>, Vec<i32>, Vec<i32>, Vec<i32>) = {
       let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
       let gr = &rings[rt.grid_index];
       (
         gr.store.iter(Reason::Edit).collect(),
         gr.store.iter(Reason::Sustain).collect(),
         gr.chord.live.values().filter(|v| v.edited).map(|v| v.pitch).collect(),
+        gr.chord.live_pitches().collect(),
       )
     };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
@@ -813,9 +814,18 @@ fn grid_thread(mut rt: GridThread) {
     ];
     let (lo, hi) = (corners[0].min(corners[1]), corners[0].max(corners[1]));
     let off = if dance::flash_on(elapsed) {
-      // One signal for BOTH edit-mode and sustained notes -- Jeff's call ("in both
-      // cases"), so the LED cannot say which kind you are chasing.
-      dance::off_screen(edited.iter().copied().chain(sustained.iter().copied()), lo, hi)
+      // One signal for edit-mode, sustained, AND chord-layer notes -- Jeff's call
+      // ("in both cases"; the flash stays which-kind-blind). A chord voice you
+      // cannot scroll to cannot be edited, so the hint matters for it too.
+      dance::off_screen(
+        edited
+          .iter()
+          .copied()
+          .chain(sustained.iter().copied())
+          .chain(chord_pitches.iter().copied()),
+        lo,
+        hi,
+      )
     } else {
       dance::OffScreen::default()
     };

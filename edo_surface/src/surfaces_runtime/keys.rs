@@ -10,13 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::edo_play::{register_delta, shift_for_cell, step_for_cell};
-use crate::rig::EditmodeControlKind;
+use crate::rig::{AccreteControlKind, EditmodeControlKind};
 
 use crate::types::{Timbre, VoiceSource, VoiceState};
 
 use super::chords;
 use super::grid::{slot_for_selector_cell, volume_cells, volume_gain_for_pos};
-use super::hooks::{editmode_press, factored_pulse_press};
+use super::hooks::{drive_accrete, editmode_press, factored_pulse_press};
 use super::paint::publish_sounding;
 use super::polyrhythm::TempoFactorButton;
 use super::ring::{GridRing, Reason};
@@ -133,27 +133,24 @@ pub(super) fn handle_key(
   // "two monome-specific accrete banks"). Decisions are made under the accrete lock,
   // voices are touched after it drops (the module's no-nested-locks rule).
   if in_overlay(rt.overlays.clear_rect, cell) {
-    if press {
-      // Sustain clear removes the SUSTAIN reason from every sustained pitch and ends
-      // exactly the drones no finger holds (branch-3 queue item 4). Sustain is the only
-      // life-support reason, so this ends an edited-and-sustained note too, deselecting
-      // it in the same breath (`remove_sustain` cascades edit membership away -- nothing
-      // silent may stay selected). A fingered pitch's finger is never touched. This
-      // supersedes the old model where a sustain clear spared edited drones.
-      let ended = {
-        let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        let gr = &mut rings[rt.grid_index];
-        gr.accrete.press_clear();
-        let all: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
-        gr.store.remove_sustain(all, |p| finger_count(held, p))
-      };
-      let (release_secs, sample_rate) = rt.sink.release_params();
-      synth::end_drones_at(
-        &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
-      );
-    } else {
-      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].accrete.release_clear();
-    }
+    // The sustain clear removes the SUSTAIN reason from every sustained pitch, ends
+    // exactly the drones no finger holds (deselecting them -- `remove_sustain`
+    // cascades edit membership away), and ends every CHORD-layer voice, untoggling
+    // its slots (the widened "end all sustain and chord", chord-storage-v2). Same
+    // code as the pedal: `drive_accrete` is the one implementation, so hands and
+    // feet cannot diverge. (`held` was published to the shared registry by every
+    // path that changes it, so the finger snapshot inside is current.)
+    let (release_secs, sample_rate) = rt.sink.release_params();
+    drive_accrete(
+      rt.grid_index,
+      AccreteControlKind::Clear,
+      press,
+      &rt.shared.ring,
+      &rt.shared.held_all,
+      &rt.shared.voices,
+      release_secs,
+      sample_rate,
+    );
     return;
   }
   if in_overlay(rt.overlays.needs_holding_rect, cell) {
