@@ -16,6 +16,54 @@ with ideas for why my fast double-presses of =1 aren't working on the monome.
 
 While we're at it, make sure we're not debouncing any other monome signals either,
 unless we actually have good reason to.
+** TODO ideas on why fast =1 double-presses fail
+I looked and there is NO time-based debouncing of monome key signals anywhere in
+edo_surface (grepped "debounce"/"dedup" across surfaces_runtime/ and monome.rs).
+The only `DebounceMode` in the codebase (`drumkit_runtime/decode.rs`) is wired
+exclusively to the KMSS's pressure-sensor pads (`rig.rs` ~1296-1363), never a
+monome. The monome key path (`surfaces_runtime/mod.rs::grid_thread`, ~684-736) has
+exactly one piece of state between an OSC `/grid/key` message and `handle_key`: a
+`pressed: HashSet<(i32,i32)>` that calls `handle_key` only when a down/up actually
+changes membership (mod.rs:687,734) -- a same-state dedup (a stuck/echoing device's
+duplicate down without a between up gets dropped), not a time debounce, so per the
+instructions above I left it alone. Concrete guesses instead, each pointing at code:
+
+1. The pressed-set (mod.rs:687,734) can swallow a genuine second press if the
+   release between the two downs is lost or arrives out of order (UDP has no
+   ordering guarantee): `pressed.insert(cell)` on the second `s=1` sees the cell
+   already marked pressed and drops it silently, so `handle_key`/=1 never fires.
+   This path is monome-only -- the KMSS's presses go through
+   `drumkit_runtime`'s own `TetherDecoder` and `hooks::rig_pedal_hook`, a
+   completely different route that doesn't share this HashSet.
+
+2. The =1 double-tap detector only arms once cycling is already ON
+   (`surfaces_runtime/polyrhythm.rs::press`, ~135-166: `last_unity = None` at line
+   150, `UNITY_DOUBLE_TAP` = 400ms at line 52). From a COLD (off) button, two fast
+   presses land as "on" then "snap to unity", NOT "off" -- a third fast press is
+   needed (see test `the_double_tap_window_applies_only_while_cycling_is_on`). A
+   fast double-press from cold can look exactly like "the second press did
+   nothing" since the LED just stays lit. Note this logic is shared verbatim with
+   the KMSS pedal (both call `hooks::factored_pulse_press` -> `poly.press`), so
+   alone it can't explain a monome-only difference, but may still be what's
+   actually happening either way.
+
+3. The grid thread reads at most one OSC packet per loop iteration, then always
+   repaints (multiple mutex locks + LED sends, plus a monobright grid's DIM_PULSE
+   fake-dim flashing over the same socket) before reading again
+   (`surfaces_runtime/mod.rs::grid_thread`, recv at ~684-694, repaint at
+   ~745-860+). Shouldn't cost anywhere near 400ms, but it is the one
+   monome-specific source of jitter between "packet received" and "loop reads
+   again" -- worth timestamping real /grid/key events to rule out before
+   dismissing.
+
+4. serialosc or the grid's own firmware could coalesce two very fast presses of
+   one button into a single down/up pair before `edo_surface` ever sees a second
+   OSC message -- entirely outside this code, and the asymmetry the online-research
+   sidequest above is meant to chase.
+
+I'd start with (1): log every /grid/key OSC event (x, y, down/up, timestamp) for
+the =1 cell and see whether a fast double-press actually produces two clean
+down/up/down edges, or whether the second down is missing.
 * =1 should affect the voices in edit mode
 If a voice is in edit mode, the factor modifiers like (*2) affect it,
 but entering and exiting polyrhythm pulse mode via =1 does not.
