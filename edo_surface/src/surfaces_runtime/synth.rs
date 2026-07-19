@@ -169,6 +169,18 @@ fn voice_key(grid: usize, cell: (i32, i32)) -> VoiceSource {
   VoiceSource::SurfaceFinger { grid, cell }
 }
 
+/// What a cut drone hands the strike that replaces it (queues/branch-2.org:
+/// "re-fingering a sustained or chord pitch should retrigger it in the envelope
+/// sense but not in the polyrhythm pulse sense"): the oscillator phase continues
+/// (branch-3 item 5) and the factored pulse continues -- old RATE and PHASE, not
+/// the grid's onset pulse; a pulseless drone stays pulseless through a retrigger.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CutVoice {
+  pub phase: f32,
+  pub pulse_freq: f32,
+  pub pulse_phase: f32,
+}
+
 /// A chord-layer voice's key: per grid and the recall's seq (see the chord layer's
 /// registry for its pitch/slot/edit flag).
 pub(super) fn chord_key(grid: usize, seq: u64) -> VoiceSource {
@@ -596,8 +608,10 @@ impl SurfaceSink {
   /// start a pulse) from the stored relative pulse phase. The envelope re-strikes
   /// (attack + pluck from the top): a recall is a played chord, not a resumed one,
   /// and starting from env 0 is what makes an arbitrary start phase click-free.
-  /// The pedal/fader components are the SAVED ones, not the grid's current --
-  /// chord voices are exempt from both walks by key (see `VoiceSource`).
+  /// The pedal/fader components are the SAVED ones, not the grid's current -- the
+  /// recall ignores the pedal's present position; the voice then follows the
+  /// pedal's NEXT move like everything else (the pedal walk is uniform), while
+  /// the fader component stays as saved (see `VoiceSource`).
   pub fn spawn_chord_voice(&mut self, seq: u64, v: &super::chords::StoredVoice, base_hz: f32) {
     let id = self.next_id;
     self.next_id += 1;
@@ -653,19 +667,54 @@ impl SurfaceSink {
   /// to `note_on_with_phase` itself. Computed here rather than patched onto the new
   /// voice afterward so there is no window where the fresh voice sits at the wrong
   /// phase for the audio thread to render.
-  pub fn cut_sustained(&mut self, pitch: i32) -> Option<f32> {
+  pub fn cut_sustained(&mut self, pitch: i32) -> Option<CutVoice> {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut state) = voices.remove(&sustain_key(self.grid, pitch)) else {
       return None;
     };
-    let phase = state.phase;
+    let cut = CutVoice {
+      phase: state.phase,
+      pulse_freq: state.factored_pulse_freq,
+      pulse_phase: state.factored_pulse_phase,
+    };
     state.target_env = 0.0;
     state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
     // next_id doubles as the retired-key uniquifier: two cuts never collide.
     let seq = self.next_id;
     self.next_id += 1;
     voices.insert(VoiceSource::SurfaceRetired { grid: self.grid, seq }, state);
-    Some(phase)
+    Some(cut)
+  }
+
+  /// The strike that replaces a just-cut drone: a fresh voice (grid timbre, fresh
+  /// envelope) whose oscillator AND factored pulse CONTINUE the cut voice's --
+  /// retriggered in the envelope sense only (queues/branch-2.org). Contrast
+  /// `note_on`/`note_on_with_phase`, whose pulse is the grid's at onset.
+  pub fn note_on_continuing(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, cut: CutVoice) {
+    self.note_on_with_phase(cell, pitch, timbre, None, cut.phase);
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
+      state.factored_pulse_freq = cut.pulse_freq;
+      state.factored_pulse_phase = cut.pulse_phase;
+    }
+  }
+
+  /// Restrike the named CHORD voices in place -- the envelope-only retrigger a
+  /// finger landing on a chord pitch performs (queues/branch-2.org: "that's what
+  /// happens if a finger lands on a preexisting chord voice"). The same
+  /// dip-then-attack accent as a drag's re-home: ramp to silence over ~2 ms, then a
+  /// full attack. Pitch, timbre, gains, oscillator phase, and the factored pulse's
+  /// rate and phase all simply continue -- it is the same voice, restruck.
+  pub fn restrike_chord_voices(&mut self, seqs: &[u64]) {
+    const DIP_SECS: f32 = 0.002;
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    for seq in seqs {
+      if let Some(state) = voices.get_mut(&chord_key(self.grid, *seq)) {
+        state.target_env = 0.0;
+        state.ramp_per_sample = state.env / (DIP_SECS * self.sample_rate).max(1.0);
+        state.pending_attack = Some(1.0 / (self.attack_secs * self.sample_rate));
+      }
+    }
   }
 }
 
@@ -684,28 +733,14 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
     let voice_grid = match src {
       VoiceSource::SurfaceFinger { grid, .. } => *grid,
       VoiceSource::SurfaceDrone { grid, .. } => *grid,
+      // The pedal is UNIFORM (queues/branch-2.org, superseding the round-2
+      // edit-only pickup): a chord voice keeps its SAVED pedal component from
+      // recall until the pedal next moves -- the EX-P only sends CCs under a
+      // foot -- and then follows it like every other voice on the grid.
+      VoiceSource::SurfaceChord { grid, .. } => *grid,
       _ => continue,
     };
     if voice_grid == grid {
-      state.grid_gain_target = gain;
-    }
-  }
-}
-
-/// Aim the named CHORD-layer voices at expression-pedal volume `gain` -- the pedal
-/// pickup for chord voices in edit mode (`pedal_volume::apply_pedal_gain` computes
-/// the keys; only edit-flagged voices are ever named). The per-sample slew smooths
-/// the jump exactly as for the piano layer. Every unnamed chord voice keeps its
-/// frozen save-time (or last-adopted) pedal component -- the exemption is the
-/// default (`set_grid_pedal_gain` skips the `SurfaceChord` variant entirely).
-pub fn set_chord_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, keys: &[VoiceSource], gain: f32) {
-  if !gain.is_finite() || keys.is_empty() {
-    return;
-  }
-  let gain = gain.clamp(0.0, 1.0);
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for key in keys {
-    if let Some(state) = voices.get_mut(key) {
       state.grid_gain_target = gain;
     }
   }
@@ -1071,36 +1106,79 @@ mod tests {
 
   /// Branch-3 queue item 5: "retrigger should not reset the phase of a voice", pinned
   /// for the same-pitch retrigger -- the exact sequence keys.rs runs (`cut_sustained`
-  /// then a fresh `note_on`) for a press on an already-sustained pitch. Before this
-  /// fix, `note_on` always wrote `phase: 0.0`, so the oscillator restarted every
-  /// retrigger; `cut_sustained` now hands back the outgoing drone's phase and
-  /// `note_on_with_phase` carries it into the replacing strike.
+  /// then `note_on_continuing`) for a press on an already-sustained pitch. The
+  /// retrigger is an ENVELOPE event only: the oscillator's phase continues
+  /// (branch-3 item 5) and so does the factored pulse -- old rate AND phase, not
+  /// the grid's onset pulse (queues/branch-2.org "not in the polyrhythm pulse
+  /// sense").
   #[test]
-  fn retriggering_a_sustained_pitch_carries_the_old_oscillator_phase_forward() {
+  fn retriggering_a_sustained_pitch_continues_its_oscillator_and_its_pulse() {
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.note_on((3, 4), 20, Timbre::default(), Some(3.0)); // pulsing at 3 Hz
     a.sustain_note((3, 4), 20);
-    // Advance the render so the drone's oscillator moves well off phase 0.
+    // Advance the render so the oscillator AND the pulse move well off phase 0.
     {
       let mut v = voices.lock().unwrap();
       let mut data = vec![0.0_f32; 2000];
       crate::voices::render_block(&mut v, &mut data, 1, 48000.0);
     }
-    let old_phase = voices.lock().unwrap()[&sustain_key(0, 20)].phase;
+    let (old_phase, old_pulse_phase) = {
+      let v = voices.lock().unwrap();
+      let s = &v[&sustain_key(0, 20)];
+      (s.phase, s.factored_pulse_phase)
+    };
     assert_ne!(old_phase, 0.0, "the render should have moved the phase off 0");
+    assert_ne!(old_pulse_phase, 0.0, "and the pulse phase too");
 
-    // The retrigger, exactly as keys.rs drives it: cut the drone, thread its phase
-    // into the fresh strike at the same pitch.
-    let cut_phase = a.cut_sustained(20);
-    assert_eq!(cut_phase, Some(old_phase), "cut_sustained reports the outgoing phase");
-    a.note_on_with_phase((3, 4), 20, Timbre::default(), None, cut_phase.unwrap_or(0.0));
+    // The retrigger, exactly as keys.rs drives it: cut the drone, continue both.
+    let cut = a.cut_sustained(20).expect("a drone was cut");
+    assert_eq!(
+      cut,
+      CutVoice { phase: old_phase, pulse_freq: 3.0, pulse_phase: old_pulse_phase },
+      "cut_sustained reports the outgoing oscillator AND pulse state",
+    );
+    a.note_on_continuing((3, 4), 20, Timbre::default(), cut);
 
     let v = voices.lock().unwrap();
     let new_state = &v[&voice_key(0, (3, 4))];
     assert_eq!(new_state.phase, old_phase, "the new strike continues the oscillator's phase");
     assert_ne!(new_state.phase, 0.0, "not reset to 0");
+    assert_eq!(new_state.factored_pulse_freq, 3.0, "the pulse keeps its OLD rate");
+    assert_eq!(new_state.factored_pulse_phase, old_pulse_phase, "and its phase");
     assert_eq!(new_state.env, 0.0, "the envelope still starts fresh -- no click");
+  }
+
+  /// A finger landing on a chord voice's pitch restrikes IT (queues/branch-2.org):
+  /// dip-then-attack on the same voice, everything else continuing.
+  #[test]
+  fn restrike_chord_voices_re_fires_the_envelope_and_nothing_else() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let stored = StoredVoice {
+      pitch: 20, timbre: Timbre { gain: 0.7, ..Timbre::default() }, fader_gain: 0.5,
+      pedal_gain: 0.25, osc_phase: 0.4, pulse_factor: 3.0, pulse_phase: 0.6,
+    };
+    a.spawn_chord_voice(1, &stored, 1.0);
+    {
+      // Mid-note: the envelope settled, the oscillator somewhere in its cycle.
+      let mut v = voices.lock().unwrap();
+      let s = v.get_mut(&chord_key(0, 1)).unwrap();
+      s.env = 0.9;
+      s.target_env = 1.0;
+    }
+    a.restrike_chord_voices(&[1]);
+    let v = voices.lock().unwrap();
+    let s = &v[&chord_key(0, 1)];
+    assert_eq!(s.target_env, 0.0, "dipping toward silence...");
+    assert!(s.pending_attack.is_some(), "...with a full attack armed behind the dip");
+    assert_eq!(s.phase, 0.4, "the oscillator is untouched");
+    assert_eq!(s.factored_pulse_freq, 3.0, "the pulse rate is untouched");
+    assert_eq!(s.factored_pulse_phase, 0.6, "and its phase");
+    assert_eq!(s.timbre.gain, 0.7, "timbre and gains all continue");
+    assert_eq!(s.fader_gain, 0.5);
+    assert_eq!(v.len(), 1, "the SAME voice restruck -- no new voice spawned");
   }
 
   /// `note_on` (no explicit phase) is unaffected: a plain fresh note still starts its
@@ -1235,7 +1313,7 @@ mod tests {
   }
 
   #[test]
-  fn chord_voices_are_exempt_from_the_pedal_and_fader_walks() {
+  fn chord_voices_follow_the_pedal_walk_but_not_the_fader_walk() {
     use super::super::chords::StoredVoice;
     let voices = shared();
     let mut a = sink(0, &voices);
@@ -1249,10 +1327,14 @@ mod tests {
     set_grid_fader_gain(&voices, 0, 0.9);
     let v = voices.lock().unwrap();
     let chord = &v[&chord_key(0, 3)];
-    assert_eq!(chord.grid_gain_target, 0.25, "the pedal walk never touches a chord voice");
-    assert_eq!(chord.fader_gain, 0.5, "nor the fader walk");
+    assert_eq!(
+      chord.grid_gain_target, 0.9,
+      "the pedal is uniform (queues/branch-2.org): a chord voice follows its next move",
+    );
+    assert_eq!(chord.grid_gain, 0.25, "from its SAVED loudness, through the slew");
+    assert_eq!(chord.fader_gain, 0.5, "the fader walk still leaves it alone");
     let finger = &v[&voice_key(0, (0, 0))];
-    assert_eq!(finger.grid_gain_target, 0.9, "the piano layer still follows both");
+    assert_eq!(finger.grid_gain_target, 0.9, "the piano layer follows both");
     assert_eq!(finger.fader_gain, 0.9);
   }
 

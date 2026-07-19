@@ -9,9 +9,8 @@ use std::time::Duration;
 
 use crate::expression_pedals::NUM_PEDALS;
 
-use crate::types::{VoiceMap, VoiceSource};
+use crate::types::VoiceMap;
 
-use super::ring::GridRing;
 use super::synth;
 use super::{Live, STOP};
 
@@ -66,16 +65,14 @@ impl PedalVolumeCurve {
 /// immediately -- a curve tweak is audible without moving the pedal. (A rig that
 /// STARTS with no pedals never spawns this thread; adding the first pedal needs a
 /// restart, like any other bound resource.)
-/// Apply one pedal reading to its grid: the shared per-grid gain (future note-ons),
-/// every sounding piano-layer voice's target -- and, the one place the pedal
-/// reaches the CHORD layer, the grid's EDIT-FLAGGED chord voices (2_discussion
-/// "amplitude": "a chord note in edit mode jumps to the pedal-implied volume the
-/// moment the pedal sends a signal; outside of edit mode, the chord notes' volumes
-/// are untouchable"). The engine's per-sample slew smooths the jump; leaving edit
-/// mode simply stops the voice matching here, freezing whatever it last adopted.
+/// Apply one pedal reading to its grid: the shared per-grid gain (future note-ons)
+/// and every sounding voice's target -- CHORD voices included, since the pedal is
+/// UNIFORM (queues/branch-2.org "the uniform pedal", superseding the round-2
+/// edit-only pickup). A recalled chord still starts at its SAVED loudness and
+/// keeps it until the pedal next moves (the EX-P only sends CCs under a foot);
+/// the engine's per-sample slew smooths every adoption.
 pub(super) fn apply_pedal_gain(
   voices: &Arc<Mutex<VoiceMap>>,
-  ring: &Arc<Mutex<Vec<GridRing>>>,
   pedal_gains: &Arc<Mutex<Vec<f32>>>,
   grid: usize,
   gain: f32,
@@ -84,27 +81,11 @@ pub(super) fn apply_pedal_gain(
     *g = gain;
   }
   synth::set_grid_pedal_gain(voices, grid, gain);
-  let chord_keys: Vec<VoiceSource> = {
-    let rings = ring.lock().unwrap_or_else(|e| e.into_inner());
-    rings
-      .get(grid)
-      .map(|gr| {
-        gr.chord
-          .live
-          .iter()
-          .filter(|(_, v)| v.edited)
-          .map(|(seq, _)| VoiceSource::SurfaceChord { grid, seq: *seq })
-          .collect()
-      })
-      .unwrap_or_default()
-  };
-  synth::set_chord_pedal_gain(voices, &chord_keys, gain);
 }
 
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
-  ring: Arc<Mutex<Vec<GridRing>>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
 ) {
   use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
@@ -133,7 +114,7 @@ pub(super) fn expression_pedal_loop(
         continue;
       }
       last[pedal] = p.norm;
-      apply_pedal_gain(&voices, &ring, &pedal_gains, grid, curve.gain(p.norm));
+      apply_pedal_gain(&voices, &pedal_gains, grid, curve.gain(p.norm));
     }
     thread::sleep(Duration::from_millis(10));
   }
@@ -144,14 +125,16 @@ mod tests {
   use super::*;
   use crate::surfaces_runtime::accrete::AccreteState;
   use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
-  use crate::types::Timbre;
+  use crate::surfaces_runtime::ring::GridRing;
+  use crate::types::{Timbre, VoiceSource};
   use std::collections::HashMap;
 
-  /// The pedal pickup (2_discussion "amplitude"): one pedal reading re-aims the
-  /// piano layer and the EDIT-FLAGGED chord voices; an unflagged chord voice keeps
-  /// its frozen save-time pedal component -- untouchable outside edit mode.
+  /// The UNIFORM pedal (queues/branch-2.org): one pedal reading re-aims every
+  /// voice on the grid, chord voices included -- edited or not. A recalled chord
+  /// spawns at its SAVED pedal component (asserted here as the pre-CC state) and
+  /// adopts the live pedal on the first reading after recall.
   #[test]
-  fn a_pedal_reading_reaches_edited_chord_voices_and_no_others() {
+  fn a_pedal_reading_reaches_every_chord_voice_uniformly() {
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new())]));
     let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32]));
@@ -172,21 +155,25 @@ mod tests {
     for (seq, v) in &spawned {
       sink.spawn_chord_voice(*seq, v, 1.0);
     }
-    ring.lock().unwrap()[0].chord.live.get_mut(&spawned[0].0).unwrap().edited = true;
+    {
+      let v = voices.lock().unwrap();
+      assert_eq!(
+        v[&VoiceSource::SurfaceChord { grid: 0, seq: spawned[0].0 }].grid_gain_target, 0.6,
+        "until the pedal moves, a recalled voice keeps its SAVED loudness",
+      );
+    }
 
-    apply_pedal_gain(&voices, &ring, &pedal_gains, 0, 0.25);
+    apply_pedal_gain(&voices, &pedal_gains, 0, 0.25);
 
     assert_eq!(pedal_gains.lock().unwrap()[0], 0.25, "future note-ons see the pedal");
     let v = voices.lock().unwrap();
     let target = |src: VoiceSource| v[&src].grid_gain_target;
     assert_eq!(target(VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) }), 0.25, "piano layer follows");
-    assert_eq!(
-      target(VoiceSource::SurfaceChord { grid: 0, seq: spawned[0].0 }), 0.25,
-      "the edit-flagged chord voice picks the pedal up",
-    );
-    assert_eq!(
-      target(VoiceSource::SurfaceChord { grid: 0, seq: spawned[1].0 }), 0.6,
-      "the unflagged chord voice keeps its frozen save-time component",
-    );
+    for (seq, _) in &spawned {
+      assert_eq!(
+        target(VoiceSource::SurfaceChord { grid: 0, seq: *seq }), 0.25,
+        "every chord voice follows too -- the pedal is origin-blind",
+      );
+    }
   }
 }

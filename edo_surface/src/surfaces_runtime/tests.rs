@@ -1,6 +1,275 @@
   use super::*;
   use crate::rig::{load_named_rig, SlideRig, TapTempoRig, TrailRig};
 
+  /// A real `GridThread` over the real =2-monomes_2-softsteps= rig's grid A, wired
+  /// to a live voice map, for driving `handle_key` end to end without hardware.
+  /// The socket binds an ephemeral port and nothing is ever sent or received on it;
+  /// the accrete bank is momentary, exactly as `run()` builds it for this rig
+  /// (no needs_holding control is bound anywhere).
+  fn test_grid_thread() -> GridThread {
+    let rig = load_named_rig("2-monomes_2-softsteps").expect("rig loads");
+    let s = resolve_settings(&rig).expect("rig resolves");
+    let num_grids = s.grids.len();
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let live = Arc::new(Live {
+      generation: AtomicU64::new(0),
+      params: Mutex::new(live_params(&s)),
+      makeup: Mutex::new(live_makeup(&s)),
+    });
+    let poly = {
+      let mut p = PolyrhythmState::new(num_grids);
+      p.set_fixed_tempo(1.0, Instant::now());
+      Arc::new(Mutex::new(p))
+    };
+    let shared = Shared {
+      selected: Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids])),
+      sounding: Arc::new(Mutex::new(vec![HashSet::new(); num_grids])),
+      trail: Arc::new(Mutex::new(VecDeque::new())),
+      volume_pos: Arc::new(Mutex::new(vec![0; num_grids])),
+      gains: Arc::new(Mutex::new(vec![1.0; num_grids])),
+      ring: Arc::new(Mutex::new(
+        (0..num_grids).map(|_| GridRing::new(AccreteState::new_momentary())).collect(),
+      )),
+      held_all: Arc::new(Mutex::new(vec![HashMap::new(); num_grids])),
+      distortion_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      mono_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      poly,
+      live,
+      voices: Arc::clone(&voices),
+      persist: None,
+    };
+    let g = &s.grids[0];
+    GridThread {
+      grid_index: 0,
+      sock: UdpSocket::bind(("127.0.0.1", 0)).expect("bind an ephemeral socket"),
+      prefix: g.prefix.clone(),
+      listen_port: 0,
+      device_id: "test".to_string(),
+      device_port: 0,
+      monobright: false,
+      timbres: s.timbres,
+      overlays: g.overlays,
+      editmode_clear_down: false,
+      editmode_accrete_down: false,
+      tuning: Tuning {
+        x_step: s.x_step,
+        y_step: s.y_step,
+        edo: s.edo,
+        fund: s.fund,
+        grid_w: s.grid_w,
+        grid_h: s.grid_h,
+      },
+      knobs: Knobs {
+        trail_clobber_radius: s.trail_clobber_radius,
+        trails_max: s.trails_max,
+        slide_window: s.slide_window,
+        slide_duration_secs: s.slide_duration_secs,
+        tap_window: s.tap_window,
+        echo_input: false,
+        controls_index: 0,
+        volume_controls_index: 0,
+      },
+      shared,
+      slide: SlideCandidates::new(),
+      started: Instant::now(),
+      sink: SurfaceSink::new(
+        0,
+        voices,
+        s.fund,
+        s.edo,
+        48000.0,
+        s.attack,
+        s.release,
+        s.sustain_level,
+        s.decay_secs,
+        Arc::new(Mutex::new(vec![1.0; num_grids])),
+        Arc::new(Mutex::new(vec![1.0; num_grids])),
+      ),
+    }
+  }
+
+  /// queues/branch-2.org "exit edit mode should not delete the voice", pinned as the
+  /// exact hardware sequence through the REAL key handler: strike a note, enter edit
+  /// via the handle below it, lift the finger (the note drones -- entering edit
+  /// SUSTAINED it), then exit via the same handle. The drone must keep ringing: the
+  /// voice's reason for existing is SUSTAIN (however it got there -- pedal or edit
+  /// entry), edit membership is a pure selection, and exit only deselects. Ending
+  /// the voice is the sustain-removal gestures' job (the toggle above, erase, the
+  /// clears), never the exit's.
+  #[test]
+  fn the_per_voice_exit_gesture_ends_no_voice() {
+    use crate::types::VoiceSource;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5); // a plain play cell in this rig (below the chord block)
+    let handle = (5, 6); // the cell directly below it: the edit handle
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+
+    handle_key(&mut rt, &mut register, &mut held, note, true); // strike
+    handle_key(&mut rt, &mut register, &mut held, handle, true); // enter edit
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    {
+      let rings = rt.shared.ring.lock().unwrap();
+      assert!(rings[0].store.has(Reason::Edit, pitch), "the note is selected");
+      assert!(
+        rings[0].store.has(Reason::Sustain, pitch),
+        "and entering edit SUSTAINED it (edited ⊆ sustained)",
+      );
+    }
+    handle_key(&mut rt, &mut register, &mut held, note, false); // lift: it drones
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
+    assert_eq!(
+      rt.shared.voices.lock().unwrap()[&drone].target_env,
+      1.0,
+      "the edited note drones after the finger lifts",
+    );
+
+    handle_key(&mut rt, &mut register, &mut held, handle, true); // exit edit
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    {
+      let rings = rt.shared.ring.lock().unwrap();
+      assert!(!rings[0].store.has(Reason::Edit, pitch), "deselected");
+      assert!(
+        rings[0].store.has(Reason::Sustain, pitch),
+        "but STILL sustained -- its reason for existing is sustain",
+      );
+    }
+    assert_eq!(
+      rt.shared.voices.lock().unwrap()[&drone].target_env,
+      1.0,
+      "exit edit mode does not delete the voice (queues/branch-2.org)",
+    );
+
+    // And the gesture that DOES end it still does: the sustain toggle (cell above).
+    let above = (5, 4);
+    handle_key(&mut rt, &mut register, &mut held, above, true);
+    handle_key(&mut rt, &mut register, &mut held, above, false);
+    assert_eq!(
+      rt.shared.voices.lock().unwrap()[&drone].target_env,
+      0.0,
+      "removing its sustain is what ends it",
+    );
+  }
+
+  /// queues/branch-2.org "for those [kill-sustain] controls, the origin doesn't
+  /// matter": the LOCAL end-sustain (the handle above a note) is origin-blind. The
+  /// full story through the real key handler: recall a chord, layer a finger on the
+  /// same pitch, toggle sustain ON (the chord voice must survive -- only the END
+  /// direction is a kill), lift (the piano note drones beside the chord voice),
+  /// toggle again: OFF ends BOTH the drone and the chord voice at that pitch, and
+  /// the emptied slot untoggles.
+  #[test]
+  fn the_local_end_sustain_also_ends_chord_voices_at_its_pitch() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    use crate::types::{Timbre, VoiceSource};
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (8, 8); // a plain play cell; its pitch is the chord voice's too
+    let handle_above = (8, 7); // the sustain handle: the cell above the note
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+
+    // The finger goes down FIRST, then the recall lands on the fingered pitch --
+    // the direction that COEXISTS ("in the reverse situation, both voices should
+    // coexist"; a finger landing on a preexisting chord voice instead restrikes
+    // it -- see the separate restrike test). Slot 0 = the block's top-left, (5,0).
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![StoredVoice {
+        pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+        osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+      }] });
+    }
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
+    let seq = *rt.shared.ring.lock().unwrap()[0].chord.live.keys().next().expect("recalled");
+    let chord_voice = VoiceSource::SurfaceChord { grid: 0, seq };
+    {
+      let v = rt.shared.voices.lock().unwrap();
+      assert_eq!(v[&chord_voice].target_env, 1.0, "the chord rings beside the finger");
+      assert_eq!(
+        v[&VoiceSource::SurfaceFinger { grid: 0, cell: note }].target_env, 1.0,
+        "recall onto a fingered pitch coexists -- it never swallows the finger",
+      );
+    }
+
+    // Toggling sustain ON for the fingered note spares the chord voice.
+    handle_key(&mut rt, &mut register, &mut held, handle_above, true);
+    handle_key(&mut rt, &mut register, &mut held, handle_above, false);
+    assert!(rt.shared.ring.lock().unwrap()[0].store.has(Reason::Sustain, pitch), "toggled ON");
+    assert_eq!(
+      rt.shared.voices.lock().unwrap()[&chord_voice].target_env, 1.0,
+      "the ON direction touches no chord voice",
+    );
+
+    // Lift: the piano note drones beside the chord voice.
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
+    assert_eq!(rt.shared.voices.lock().unwrap()[&drone].target_env, 1.0, "drone rings");
+
+    // Toggle OFF: the origin-blind kill ends the drone AND the chord voice.
+    handle_key(&mut rt, &mut register, &mut held, handle_above, true);
+    handle_key(&mut rt, &mut register, &mut held, handle_above, false);
+    {
+      let v = rt.shared.voices.lock().unwrap();
+      assert_eq!(v[&drone].target_env, 0.0, "the drone ends");
+      assert_eq!(v[&chord_voice].target_env, 0.0, "and the chord voice ends with it");
+    }
+    let rings = rt.shared.ring.lock().unwrap();
+    assert!(rings[0].chord.live.is_empty(), "the registry is pruned");
+    assert!(!rings[0].chord.active[0], "the emptied slot untoggles");
+    assert!(rings[0].chord.slots[0].is_some(), "the stored chord survives");
+  }
+
+  /// queues/branch-2.org: "re-fingering a sustained or chord pitch should
+  /// retrigger it in the envelope sense but not in the polyrhythm pulse sense.
+  /// That's what happens if a finger lands on a preexisting chord voice." Through
+  /// the real key handler: pressing a chord voice's pitch restrikes IT -- no new
+  /// voice, nothing entered into `held` (the later release releases nothing), the
+  /// pulse untouched.
+  #[test]
+  fn a_finger_on_a_chord_pitch_restrikes_the_chord_voice_instead_of_playing() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    use crate::types::{Timbre, VoiceSource};
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (8, 8);
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![StoredVoice {
+        pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+        osc_phase: 0.3, pulse_factor: 3.0, pulse_phase: 0.6,
+      }] });
+    }
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), true); // recall slot 0
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
+    let seq = *rt.shared.ring.lock().unwrap()[0].chord.live.keys().next().expect("recalled");
+    let chord_voice = VoiceSource::SurfaceChord { grid: 0, seq };
+
+    // The finger lands ON the chord voice's pitch: restrike, not a note-on.
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    {
+      let v = rt.shared.voices.lock().unwrap();
+      let s = &v[&chord_voice];
+      assert_eq!(s.target_env, 0.0, "the chord voice dips...");
+      assert!(s.pending_attack.is_some(), "...into a fresh attack: the envelope retrigger");
+      assert!((s.factored_pulse_freq - 3.0).abs() < 1e-6, "the pulse rate continues");
+      assert_eq!(v.len(), 1, "no new voice spawned for the press");
+    }
+    assert!(held.is_empty(), "the press is a gesture, not a held note");
+    // Its release is inert -- nothing was fingered.
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    assert_eq!(
+      rt.shared.voices.lock().unwrap().len(), 1,
+      "the restruck chord voice sails through the release",
+    );
+  }
+
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());

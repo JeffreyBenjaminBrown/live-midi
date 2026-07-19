@@ -88,10 +88,10 @@ pub enum VoiceSource {
   // chord slot, keyed by an arbitrary per-recall seq -- never by pitch or cell,
   // since chord voices coexist with the piano layer at the same pitch and any
   // number may share one pitch. Its pitch/slot/edit-flag live in the chord
-  // layer's registry (`surfaces_runtime::chords::LiveChordVoice`). Deliberately
-  // NOT matched by the pedal/fader walks (`set_grid_pedal_gain` /
-  // `set_grid_fader_gain`), so a chord voice's volume is untouchable outside
-  // edit mode by construction.
+  // layer's registry (`surfaces_runtime::chords::LiveChordVoice`). The PEDAL walk
+  // (`set_grid_pedal_gain`) matches it -- the pedal is uniform, origin-blind --
+  // but the FADER walk does not: a recalled voice keeps its saved fader
+  // component.
   SurfaceChord { grid: usize, seq: u64 },
 }
 

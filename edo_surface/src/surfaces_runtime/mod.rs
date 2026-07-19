@@ -387,18 +387,15 @@ fn run(
     Some(Arc::new(PersistTarget { path, monome_ids }))
   };
 
-  // The EX-P volume-pedal thread (spawned here rather than beside `pedal_gains`
-  // above because it now also reads the ring: a pedal CC reaches a grid's
-  // edit-flagged CHORD voices -- the pedal pickup, chord-storage-v2). `no_audio`
-  // gates it like the cpal stream -- a headless/mock run must not open MIDI.
+  // The EX-P volume-pedal thread. The pedal is UNIFORM (queues/branch-2.org): a
+  // CC re-aims every voice on the grid, chord voices included, through
+  // `set_grid_pedal_gain` -- so the thread needs no ring access. `no_audio` gates
+  // it like the cpal stream -- a headless/mock run must not open MIDI.
   if !s.expression_pedals.is_empty() && !no_audio {
     let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
-    let ring_for_pedals = Arc::clone(&ring);
     let gains = Arc::clone(&pedal_gains);
-    thread::spawn(move || {
-      expression_pedal_loop(live_for_pedals, voices_for_pedals, ring_for_pedals, gains)
-    });
+    thread::spawn(move || expression_pedal_loop(live_for_pedals, voices_for_pedals, gains));
   }
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed

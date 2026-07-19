@@ -271,6 +271,55 @@ pub(super) fn handle_key(
       publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
       return;
     }
+    // A finger landing on a pitch where CHORD voices ring RESTRIKES them -- the
+    // envelope-only retrigger; pitch, timbre, loudness, oscillator phase, and the
+    // factored pulse all continue -- and spawns NO new voice (queues/branch-2.org:
+    // "re-fingering a sustained or chord pitch should retrigger it in the envelope
+    // sense but not in the polyrhythm pulse sense. That's what happens if a finger
+    // lands on a preexisting chord voice." Only the REVERSE -- a recall landing on
+    // an already-fingered pitch -- coexists). A drone at the same pitch retriggers
+    // too: the finger adopts it exactly as it would with no chord around. Mono
+    // cuts, slide, and the accrete capture are skipped for this press -- it is a
+    // retrigger gesture, not a note-on.
+    let chord_restrike: Vec<u64> = {
+      let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+      rings[rt.grid_index]
+        .chord
+        .live
+        .iter()
+        .filter(|(_, v)| v.pitch == pitch)
+        .map(|(s, _)| *s)
+        .collect()
+    };
+    if !chord_restrike.is_empty() {
+      rt.sink.restrike_chord_voices(&chord_restrike);
+      if let Some(cut) = rt.sink.cut_sustained(pitch) {
+        // The pitch also droned: the drone half of the retrigger. A fresh strike
+        // (grid timbre) the finger owns, its oscillator and pulse continuing; the
+        // pitch keeps its place in the accrete set, so release re-drones it.
+        let slot = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
+        let timbre = Timbre {
+          waveform: slot.waveform,
+          gain: slot.amplitude,
+          am: slot.am,
+          fm: slot.fm,
+          rel_am: slot.rel_am,
+          rel_fm: slot.rel_fm,
+        };
+        rt.sink.note_on_continuing(cell, pitch, timbre, cut);
+        held.insert(cell, pitch);
+        let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let gr = &mut rings[rt.grid_index];
+        gr.accrete.note_played(pitch, &mut gr.store);
+      }
+      push_trail(
+        &rt.shared.trail, pitch.rem_euclid(rt.tuning.edo), rt.tuning.edo,
+        rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
+      );
+      publish_held(&rt.shared.held_all, rt.grid_index, held);
+      publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
+      return;
+    }
     // Mono: a new note cuts this grid's other fingered notes first. With slide on
     // too, the nearest cut note is not released but STOLEN: its voice will glide
     // into the new pitch legato-style, with no attack re-trigger (misc.org "slide
@@ -301,10 +350,12 @@ pub(super) fn handle_key(
     // replacing note re-drones it. After the mono block, so a colliding-pitch
     // drone a mono cut just captured is cut like any other.
     //
-    // `cut_sustained` hands back the outgoing drone's oscillator phase (`None` when
-    // no drone rang here) so the plain-note_on branch below can continue it instead
-    // of restarting at 0 (branch-3 queue item 5: retrigger must not reset phase).
-    let retrigger_phase = rt.sink.cut_sustained(pitch);
+    // `cut_sustained` hands back the outgoing drone's oscillator phase AND its
+    // factored pulse (`None` when no drone rang here) so the plain-note branch
+    // below can CONTINUE both instead of restarting them -- the retrigger is an
+    // envelope event only (branch-3 item 5 for the phase; queues/branch-2.org
+    // for the pulse).
+    let retrigger = rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
     let timbre = Timbre {
       waveform: slot.waveform,
@@ -346,11 +397,13 @@ pub(super) fn handle_key(
         Some(from) => rt.sink.note_on_gliding(
           cell, pitch, from, timbre, rt.knobs.slide_duration_secs, factored_pulse,
         ),
-        // The ordinary retrigger-in-place case: carry the just-cut drone's phase
-        // forward (0.0 when there was none to cut, i.e. an ordinary fresh note).
-        None => rt.sink.note_on_with_phase(
-          cell, pitch, timbre, factored_pulse, retrigger_phase.unwrap_or(0.0),
-        ),
+        // The ordinary retrigger-in-place case: continue the just-cut drone's
+        // oscillator and pulse; with nothing cut, a plain fresh note (phase 0,
+        // the grid's onset pulse).
+        None => match retrigger {
+          Some(cut) => rt.sink.note_on_continuing(cell, pitch, timbre, cut),
+          None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
+        },
       }
     }
     held.insert(cell, pitch);
@@ -680,7 +733,7 @@ pub(super) fn handle_edit_press(
     // Enter edit / exit edit / an inert handle: silent, and ends no voice. Any
     // store / chord-flag mutation already happened under the lock.
     Silent,
-    Sustain(i32, bool),
+    Sustain(i32, bool, Vec<u64>),
     Dragged { from: i32, to: i32, piano_moved: bool, chord_seqs: Vec<u64> },
   }
   let act = {
@@ -730,15 +783,25 @@ pub(super) fn handle_edit_press(
         Act::Silent
       }
       edit::Press::ToggleSustain { pitch } => {
-        // The sustain handle acts on the PIANO layer only. On a pitch where only
-        // chord voices sound it is consumed but inert ("pressing the add-to-sustain
-        // key above a chord voice does nothing -- it's already ringing"): adding a
-        // sustain reason with no voice behind it would sustain nothing and still
-        // paint/square-dance as if it did.
-        if held.values().any(|h| *h == pitch) || sustained.contains(&pitch) {
-          Act::Sustain(pitch, !sustained.contains(&pitch))
+        // The local end-sustain control is ORIGIN-BLIND (queues/branch-2.org:
+        // "local end sustain should also end a chord voice there -- for those
+        // controls, the origin doesn't matter"): toggling a sustained pitch OFF
+        // also ends the chord voices ringing at it, and on a pitch where ONLY
+        // chord voices ring the press ends them (there is no piano voice to
+        // sustain, and "adding sustain" to an already-ringing voice would mean
+        // nothing). Only the ON direction -- a fingered, unsustained pitch --
+        // touches no chord voice. This supersedes the round-2 "does nothing"
+        // ruling for the chord-only case.
+        let has_piano = held.values().any(|h| *h == pitch) || sustained.contains(&pitch);
+        if has_piano && !sustained.contains(&pitch) {
+          Act::Sustain(pitch, true, Vec::new())
         } else {
-          Act::Silent
+          let chord_seqs = gr.chord.end_at_pitch(pitch);
+          if has_piano || !chord_seqs.is_empty() {
+            Act::Sustain(pitch, false, chord_seqs)
+          } else {
+            Act::Silent
+          }
         }
       }
       edit::Press::Drag { from, to } => {
@@ -769,7 +832,7 @@ pub(super) fn handle_edit_press(
     Act::Play => return true,
     // Enter, exit, the editmode clear, and the inert sustain handle all end nothing.
     Act::Silent => {}
-    Act::Sustain(pitch, on) => {
+    Act::Sustain(pitch, on, chord_seqs) => {
       if on {
         // Switching sustain ON starts nothing at the voice level: a fingered note has
         // no drone yet (it gets one when the finger lifts), and a note ringing because
@@ -781,13 +844,19 @@ pub(super) fn handle_edit_press(
         // Remove the SUSTAIN reason and end the drone iff no finger still holds it. This
         // also deselects the pitch (`remove_sustain` cascades edit membership away:
         // nothing silent may stay selected), so toggling sustain off an edited note ends
-        // AND deselects it.
+        // AND deselects it. (A chord-only pitch was never in the set -- the removal is
+        // then a harmless no-op and only the chord half below acts.)
         let ended = {
           let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
           rings[rt.grid_index].store.remove_sustain([pitch], |p| finger_count(held, p))
         };
         synth::end_drones_at(
           &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
+        );
+        // The chord half of the origin-blind local end-sustain: the registry was
+        // already pruned (and emptied slots untoggled) under the ring lock.
+        synth::end_chord_voices(
+          &rt.shared.voices, rt.grid_index, &chord_seqs, release_secs, sample_rate,
         );
       }
     }

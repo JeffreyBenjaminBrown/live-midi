@@ -143,6 +143,42 @@ fine (same fields, phases are phases) but were written under the old
 anchoring; resave to re-anchor. Tests rewritten around an exact-octave pair.
 =cargo test --workspace=: 734 passed, 0 failed.
 
+* DONE 10. origin-blind kills + the uniform pedal (queues/branch-2.org round)
+Jeff's "the only distinction we will ever need is fingered | playing while
+not fingered" landed as two re-rulings, both implemented:
+- *Local end-sustain is origin-blind* ("for those controls, the origin
+  doesn't matter"): the sustain handle's kill direction now also ends every
+  chord voice at its pitch (=ChordLayer::end_at_pitch=), untoggling any slot
+  it empties; the ON direction and the accrete captures still ignore chord
+  voices; the registry survives as slot bookkeeping (the toggle needs it).
+  This supersedes round 2's "the sustain handle does nothing on a chord
+  voice".
+- *The uniform pedal* (supersedes round 2's frozen-outside-edit-mode and
+  commit 6's edit-only pickup, whose machinery is deleted):
+  =set_grid_pedal_gain= matches chord voices, so a CC re-aims them like any
+  voice; a recall still starts at the SAVED loudness and holds it until the
+  pedal next moves.
+Also from this round: a =GridThread= test harness in tests.rs (the first way
+to drive =handle_key= end to end without hardware), which pinned "exit edit
+mode ends no voice" -- the reported deletion was not reproducible on this
+build and matches pre-branch-3 behavior; awaiting Jeff's restart-and-retest.
+
+* DONE 11. envelope-only retriggers (queues/branch-2.org, continued)
+"Re-fingering a sustained or chord pitch should retrigger it in the envelope
+sense but not in the polyrhythm pulse sense":
+- The sustained-pitch retrigger now CONTINUES the cut drone's factored pulse
+  (old rate and phase; a pulseless drone stays pulseless) alongside the
+  oscillator phase it already continued -- =CutVoice= +
+  =note_on_continuing= replace the bare phase hand-back.
+- A finger landing on a chord voice's pitch RESTRIKES it
+  (=restrike_chord_voices=: the drag-style dip-then-attack on the same
+  voice) and spawns no new voice; the press skips mono/slide/accrete and
+  enters nothing into =held=, so its release is inert. Coexistence at a
+  pitch survives only in the reverse direction -- a recall landing on an
+  already-fingered pitch -- exactly as ruled.
+Supersedes round 2's finger/chord full-coexistence in that one direction.
+=cargo test --workspace=: 740 passed, 0 failed.
+
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's
   shared LFO phases (advanced at the new timbre's rates) for the fade's

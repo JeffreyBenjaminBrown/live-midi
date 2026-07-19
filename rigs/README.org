@@ -415,7 +415,9 @@ control = "clear"            # or "needs_holding", "accrete", "erase"
 Sustained notes paint like any sounding note (bright octave-equivalents on both
 grids) and follow the volume fader of the grid they came from. Re-fingering a
 pitch that is sustaining in this grid's bank cuts the old drone and the new note
-replaces it (the pitch stays in the set, so releasing the new finger re-drones it).
+replaces it (the pitch stays in the set, so releasing the new finger re-drones
+it) -- a retrigger in the ENVELOPE sense only: the oscillator's phase and the
+factored pulse (rate and phase alike) continue across it.
 
 A ~distortion_toggle~ is a single-cell on/off for a *per-monome* soft-clip
 distortion (surfaces runtime; at most one per monome, each grid's toggle switching
@@ -537,13 +539,17 @@ pulse phases as of the start of the chord's BASE CYCLE -- its longest-period
 voice's cycle, from whose top a recall replays), then storage disarms.
 Saving silence disarms without touching the slot, so slots can be overwritten
 but never emptied. A DISARMED slot press is a toggle: on recalls the chord
-(voices re-strike at their stored relative phases, exempt from the volume
-pedal, coexisting with fingered/sustained voices even at the same pitch), off
-ends them by the ordinary release; empty slots are inert. Recalled voices are
-reachable through edit mode (which is also the one route the pedal can take
-to them), and the ~accrete_control~ ~clear~ on such a monome widens to "end
-all sustain and chord" -- it also ends every chord voice and untoggles the
-slots. Slots persist per rig id under =state/chord-slots/= (atomic writes on
+(voices re-strike at their stored relative phases and SAVED loudness,
+following the volume pedal from its next move -- the pedal is uniform), off
+ends them by the ordinary release; empty slots are inert. A finger landing on
+a chord voice's pitch RESTRIKES it (envelope only; everything else continues,
+no new voice), while a recall landing on a fingered pitch coexists beside the
+finger. Recalled voices are
+reachable through edit mode, and the kill-sustain controls are origin-blind: the
+~accrete_control~ ~clear~ on such a monome widens to "end all sustain and
+chord" (every chord voice ends, every slot untoggles), and the per-voice
+sustain handle ends the chord voices at its pitch, untoggling a slot it
+empties. Slots persist per rig id under =state/chord-slots/= (atomic writes on
 every save; toggles and arming are not persisted). LEDs: slots idle dim with
 an active slot bright; the arm cell is black until armed, then flashes. The
 full player's

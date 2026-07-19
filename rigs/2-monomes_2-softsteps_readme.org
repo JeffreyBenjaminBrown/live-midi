@@ -107,8 +107,11 @@ Here's how to see what's connected:
   and off. Slots persist across restarts. See "chord storage".
 - chord voice -- a voice recalled from a chord slot: a third layer beside
   fingered and sustained voices, any number per pitch, each with its own
-  saved timbre / loudness / pulse. Exempt from the pedal and the sustain
-  bank; reachable only through edit mode. See "chord voices in edit mode".
+  saved timbre / loudness / pulse. Recalled at its saved loudness (the
+  pedal reaches it from its next move -- the pedal is uniform), never
+  captured into the sustain bank, but the kill-sustain controls
+  end it like any unfingered voice; edit mode is the route to everything
+  else. See "chord voices in edit mode".
 - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
   grid, each a volume pedal: heel silent, toe unity, fader-law taper
   (exponential + linear splice), slewed. See "the EX-P volume pedals".
@@ -403,10 +406,19 @@ tempo carries recalled chords with it.
 
 Recalled voices are the CHORD LAYER: a third kind of voice beside fingered
 and sustained ones ("piano keys" vs "carefully designed multi-voice scenes"
--- Jeff). They coexist with the piano layer even at the same pitch, are
-exempt from the volume pedal and untouchable outside edit mode, never join
-the sustain bank (the sustain pedal and the sustain handle ignore them), and
-mutating them never writes back to the slot -- recall, mutate, save to a NEW
+-- Jeff). They coexist with the piano layer even at the same pitch -- but
+only in one direction: a RECALL landing on an already-fingered pitch sounds
+beside the finger, while a FINGER landing on a preexisting chord voice
+RESTRIKES it instead of playing (the envelope dips and re-attacks; pitch,
+timbre, loudness, and the factored pulse all continue; no new voice, and
+the release does nothing). They start at
+their SAVED loudness (following the volume pedal only from its next move --
+see "the pedal is uniform" below), and never
+join the sustain bank (the sustain PEDAL and the accrete captures ignore
+them). The KILL-sustain controls, though, are origin-blind: the widened
+clears end them wholesale, and the local sustain handle ends the chord
+voices at its pitch (see "per-voice edit"). Mutating them never writes back
+to the slot -- recall, mutate, save to a NEW
 slot is the intended loop. To reach into one, use edit mode: see "chord
 voices in edit mode" below.
 
@@ -437,9 +449,13 @@ notes that never went near a pedal.
 
 The handles work on CHORD voices too: the edit handle toggles a chord voice's
 edit mode like anyone else's (and where both layers sound the same pitch, one
-press takes both). The SUSTAIN handle, though, acts on the piano layer only --
-above a pitch only a chord voice sounds, it is consumed but does nothing
-("it's already ringing, after all"). See "chord voices in edit mode".
+press takes both). The SUSTAIN handle is ORIGIN-BLIND in its kill direction
+("local end sustain should also end a chord voice there -- for those
+controls, the origin doesn't matter"): toggling a sustained pitch OFF also
+ends the chord voices ringing at it, and above a pitch where ONLY chord
+voices ring, the press ends them (a slot this empties untoggles). Only the
+ON direction -- sustaining a fingered, unsustained note -- leaves chord
+voices alone. See "chord voices in edit mode".
 
 A cell with sounding notes on both sides (two notes one cell apart, straddling it)
 is ambiguous. Edit wins. That case is rare enough not to matter often, but it is
@@ -626,11 +642,11 @@ already ringing on its own reason:
   ~50 ms, no retrigger -- and leaves the grid's future-note timbre (and the
   strip's radio) alone, exactly as the multipliers leave the tempo factor
   alone. No visible indicator: Jeff's call.
-- *The pedal pickup.* A chord voice's loudness is frozen at its saved value
-  -- the EX-P never touches it -- UNTIL it is in edit mode: then each pedal
-  CC snaps it (slewed) to the pedal-implied volume, and leaving edit mode
-  freezes whatever it last adopted. The EX-P sends nothing untouched, so
-  merely being in edit mode changes no one's volume.
+- *The pedal is uniform.* (Superseding the earlier edit-only pickup --
+  queues/branch-2.org "the uniform pedal".) A recall starts each voice at
+  its SAVED loudness, and it keeps that loudness until the EX-P next moves
+  -- the pedal sends nothing untouched -- after which the chord voice
+  follows the pedal like every other voice on the grid, edited or not.
 - *It dances the diamond* like any edited note (and never the square -- it
   is not sustained), and off-screen chord voices flash the octave corners.
 

@@ -17,8 +17,8 @@ use crate::consts::AMPLITUDE;
 use crate::consts::RELEASE_SECS;
 use crate::pitch::freq_for_pitch;
 use crate::types::{
-  Am, AmShapeFamily, ChordId, RelAm, RelFm, Timbre, TimbreXfade, VoiceId, VoiceMap, VoiceSource,
-  VoiceState, Waveform,
+  Am, AmShapeFamily, ChordId, RelAm, RelFm, Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState,
+  Waveform,
 };
 
 pub fn triangle(phase: f32) -> f32 {
@@ -853,7 +853,7 @@ pub fn ramp_chord_accretion_to_zero(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::types::Fm;
+  use crate::types::{Fm, TimbreXfade};
   use std::collections::HashMap;
 
   // Render N frames (mono) for a single voice with the given initial state.

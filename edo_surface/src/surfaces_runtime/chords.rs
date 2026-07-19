@@ -198,6 +198,25 @@ impl ChordLayer {
     self.live.clear();
     seqs
   }
+
+  /// The LOCAL end-sustain's chord half (queues/branch-2.org: "local end sustain
+  /// should also end a chord voice there -- for those controls, the origin doesn't
+  /// matter"): unregister every live chord voice at `pitch`, untoggle any slot this
+  /// leaves voiceless (a solid LED over silence would lie), and return the seqs for
+  /// the caller to end. Voices at other pitches -- same slot or not -- are spared.
+  pub fn end_at_pitch(&mut self, pitch: i32) -> Vec<u64> {
+    let seqs: Vec<u64> =
+      self.live.iter().filter(|(_, v)| v.pitch == pitch).map(|(s, _)| *s).collect();
+    for s in &seqs {
+      self.live.remove(s);
+    }
+    for slot in 0..SLOTS {
+      if self.active[slot] && !self.live.values().any(|v| v.slot == slot) {
+        self.active[slot] = false;
+      }
+    }
+    seqs
+  }
 }
 
 /// Build a [`StoredChord`] from the captured voices' live states. `parts` is every
@@ -462,6 +481,26 @@ mod tests {
     let mut layer = ChordLayer::new();
     assert!(layer.begin_recall(3).is_empty());
     assert!(!layer.active[3], "an empty slot never toggles on");
+  }
+
+  #[test]
+  fn end_at_pitch_is_origin_blind_and_untoggles_emptied_slots() {
+    let mut layer = ChordLayer::new();
+    let v = |pitch| StoredVoice {
+      pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    layer.save(0, StoredChord { voices: vec![v(10), v(20)] });
+    layer.save(1, StoredChord { voices: vec![v(10)] });
+    layer.begin_recall(0);
+    layer.begin_recall(1);
+    let ended = layer.end_at_pitch(10);
+    assert_eq!(ended.len(), 2, "voices at pitch 10 from BOTH slots end -- origin-blind");
+    assert!(layer.active[0], "slot 0 keeps its pitch-20 voice and stays lit");
+    assert!(!layer.active[1], "slot 1 was emptied -> untoggled (no solid LED over silence)");
+    assert_eq!(layer.live.len(), 1);
+    assert!(layer.live.values().all(|lv| lv.pitch == 20), "other pitches are spared");
+    assert!(layer.slots[1].is_some(), "the stored chord itself survives");
   }
 
   #[test]
