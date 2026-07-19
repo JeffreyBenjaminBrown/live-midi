@@ -55,6 +55,14 @@ the separate pulse-reference rule below) storing its phase as of then. The
 base begins at exactly 0; everything else begins where it stood, in its own
 cycle and relative to the base cycle. The attack-is-the-slew and
 carrier-only points above stand.
+
+Round 4 (chat): ties between co-pitched longest-period voices go to the
+voice CLOSEST TO ITS CYCLE BOUNDARY in either direction (smallest
+=min(phase, 1 - phase)=) -- and, taking "either direction" at its word, the
+anchor is the base's NEAREST boundary: a base past half-cycle advances
+slightly to the start just ahead instead of rewinding almost a full cycle,
+keeping the stored configuration as close as possible to what was heard at
+the save instant.
 - Carrier phase only. The timbre modulators (abs AM/FM LFOs, rel AM/FM)
   restart at recall exactly as they do at any note-on; their phases are not
   part of the stored picture.

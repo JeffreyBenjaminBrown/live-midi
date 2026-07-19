@@ -134,7 +134,11 @@ phase_B / freq_B=), storing every oscillator phase -- and every pulse phase,
 same =dt=, one coherent instant -- as of then. The base stores exactly 0
 (special-cased so float rounding cannot wrap it to ~1); frequencies derive
 from the stored pitches (what a recall replays), not mid-glide live freqs;
-the separate pulse-reference fallback rule is gone. Old state files reload
+the separate pulse-reference fallback rule is gone. Second refinement (chat):
+ties between co-pitched base candidates go to the voice closest to its cycle
+boundary in either direction, and the anchor is the base's NEAREST boundary
+-- =dt= is signed, so a base past half-cycle ADVANCES to the start just
+ahead rather than rewinding almost a full cycle. Old state files reload
 fine (same fields, phases are phases) but were written under the old
 anchoring; resave to re-anchor. Tests rewritten around an exact-octave pair.
 =cargo test --workspace=: 734 passed, 0 failed.

@@ -38,10 +38,11 @@ pub struct StoredVoice {
   pub pedal_gain: f32,
   /// Oscillator phase at the start of the BASE CYCLE, in [0,1). The base is the
   /// chord's longest-period (lowest-frequency) voice; a recall replays the ensemble
-  /// from the most recent start of its cycle -- the base begins at exactly 0, and
-  /// every other voice begins wherever it was, in its own cycle AND relative to the
-  /// base cycle, at that instant (queues/branch-2.org correction: "longest phase ->
-  /// longest period"; "everything sounds the same relative to the base cycle").
+  /// from the base-cycle boundary NEAREST the save instant (just passed or just
+  /// ahead) -- the base begins at exactly 0, and every other voice begins wherever
+  /// it was, in its own cycle AND relative to the base cycle, at that instant
+  /// (queues/branch-2.org correction: "longest phase -> longest period";
+  /// "everything sounds the same relative to the base cycle").
   pub osc_phase: f32,
   /// The factored pulse as a FACTOR against the base tempo at save time (rate /
   /// base); recall multiplies by the base at recall, so a retapped tempo carries
@@ -207,14 +208,17 @@ impl ChordLayer {
 ///
 /// *The base cycle* (queues/branch-2.org correction, superseding 2_discussion's
 /// largest-phase timesetter): the base is the LONGEST-PERIOD voice -- the lowest
-/// pitch (ties: the largest phase, then first captured; the caller feeds `parts`
-/// pitch-sorted, so this is deterministic). A recall replays the ensemble from the
-/// most recent START of the base's cycle: rewind the save instant by `dt =
-/// phase_B / freq_B` seconds, and store each voice's phase (and each pulse's
-/// phase -- the same `dt`, one coherent instant) as of then. The base therefore
+/// pitch (ties: the voice closest to its cycle boundary in EITHER direction --
+/// smallest `min(phase, 1 - phase)` -- then first captured; the caller feeds
+/// `parts` pitch-sorted, so this is deterministic). A recall replays the ensemble
+/// from the base-cycle boundary NEAREST the save instant -- the start just passed,
+/// or the one just ahead (`dt` below is signed: positive rewinds, negative
+/// advances; the tie rule's "either direction" is what makes the nearest boundary
+/// the right anchor). Each voice's phase (and each pulse's phase -- the same
+/// `dt`, one coherent instant) is stored as of that boundary. The base therefore
 /// stores exactly 0, and every other voice stores where it was both in its own
 /// cycle and relative to the base cycle -- so everything sounds the same relative
-/// to the base cycle, which is the guarantee Jeff asked for.
+/// to the base cycle, as close as possible to how it sounded when saved.
 ///
 /// Frequencies come from the stored PITCH (what a recall will sound), not the
 /// possibly-mid-glide live `freq`. Envelope state is deliberately not read: a
@@ -225,17 +229,20 @@ pub fn snapshot(parts: &[(i32, VoiceState)], base_hz: f32, fund: f64, edo: i32) 
     return StoredChord::default();
   }
   let freq = |p: i32| crate::pitch::freq_for_pitch(p, fund, edo);
+  let boundary_dist = |ph: f32| ph.min(1.0 - ph);
   let base = parts
     .iter()
     .enumerate()
     .min_by(|(_, (pa, sa)), (_, (pb, sb))| {
-      pa.cmp(pb).then(sb.phase.total_cmp(&sa.phase))
+      pa.cmp(pb).then(boundary_dist(sa.phase).total_cmp(&boundary_dist(sb.phase)))
     })
     .map(|(i, _)| i)
     .expect("parts is non-empty");
   let (base_pitch, base_state) = &parts[base];
-  // The rewind to the base cycle's start, in seconds.
-  let dt = base_state.phase / freq(*base_pitch);
+  // The signed shift to the base's NEAREST cycle boundary, in seconds: rewind to
+  // the start just passed (phase <= 0.5), or advance to the one just ahead.
+  let ph = base_state.phase;
+  let dt = (if ph <= 0.5 { ph } else { ph - 1.0 }) / freq(*base_pitch);
 
   let voices = parts
     .iter()
@@ -350,14 +357,26 @@ mod tests {
   }
 
   #[test]
-  fn snapshot_breaks_lowest_pitch_ties_toward_the_largest_phase() {
-    // Two voices at the base pitch: the one further through its cycle is the base
-    // (deterministic), and the co-pitched voice keeps its spacing -- rewound by the
-    // same dt, at the same frequency, the 0.5 gap survives as 0.5.
-    let parts = vec![(0, state(0.2, 0.0, 0.0)), (0, state(0.7, 0.0, 0.0)), (12, state(0.1, 0.0, 0.0))];
+  fn snapshot_breaks_lowest_pitch_ties_toward_the_nearest_cycle_boundary() {
+    // Two voices at the base pitch: phase 0.9 is 0.1 from its boundary (ahead),
+    // phase 0.4 is 0.4 from its own (behind) -- 0.9 wins the tie. And its twin,
+    // shifted by the same dt at the same frequency, keeps the saved 0.5 gap.
+    let parts = vec![(0, state(0.4, 0.0, 0.0)), (0, state(0.9, 0.0, 0.0)), (12, state(0.1, 0.0, 0.0))];
     let chord = snapshot(&parts, 1.0, FUND, EDO);
-    assert_eq!(chord.voices[1].osc_phase, 0.0, "the furthest-phase co-pitch is the base");
+    assert_eq!(chord.voices[1].osc_phase, 0.0, "the boundary-nearest co-pitch is the base");
     assert!((chord.voices[0].osc_phase - 0.5).abs() < 1e-6, "its twin keeps the 0.5 gap");
+  }
+
+  #[test]
+  fn a_base_past_half_cycle_anchors_on_the_boundary_just_ahead() {
+    // Base (pitch 0, 100 Hz) at phase 0.9: the nearest boundary is 0.1 of a cycle
+    // AHEAD, so dt is a small ADVANCE (-0.1 cycles = -1 ms), not a 0.9-cycle
+    // rewind. The octave voice (200 Hz, phase 0.15) advances by 0.2 of its own
+    // cycle: it stores 0.35 -- the configuration at the upcoming base-cycle start.
+    let parts = vec![(0, state(0.9, 0.0, 0.0)), (12, state(0.15, 0.0, 0.0))];
+    let chord = snapshot(&parts, 1.0, FUND, EDO);
+    assert_eq!(chord.voices[0].osc_phase, 0.0, "the base starts at 0 either way");
+    assert!((chord.voices[1].osc_phase - 0.35).abs() < 1e-6, "advanced, not rewound");
   }
 
   #[test]

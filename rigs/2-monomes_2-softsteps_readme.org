@@ -380,8 +380,10 @@ Each voice is saved whole: pitch (a mid-glide save stores the glide's
 target), full timbre (mutations included), its settled loudness with the
 pedal's state baked in, its factored pulse as a FACTOR against the base
 tempo, and its phases as of the start of the BASE CYCLE -- the
-longest-period (lowest) voice's cycle. The save instant is rewound to that
-cycle's start, oscillators and pulses alike (one coherent instant), so a
+longest-period (lowest) voice's cycle. The save instant is shifted to that
+voice's NEAREST cycle boundary (the start just passed or just ahead; ties
+between co-pitched voices go to whoever is closest to a boundary either
+way), oscillators and pulses alike (one coherent instant), so a
 recall replays everything exactly as it sounded relative to the base cycle.
 Not saved, on
 purpose: the envelope (a recall re-strikes), edit/sustain membership (a
