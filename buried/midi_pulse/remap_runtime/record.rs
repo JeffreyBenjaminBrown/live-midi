@@ -1,4 +1,4 @@
-use midi_pulse::midi;
+use edo_surface::midi;
 use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc, Mutex};
 use std::sync::OnceLock;

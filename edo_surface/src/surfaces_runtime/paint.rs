@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 
-use midi_pulse::monome;
+use crate::monome;
 
 use super::grid::{button_level, volume_cells, ButtonOverlay, BRIGHT, DIM};
 use super::ring::Reason;

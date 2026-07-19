@@ -10,8 +10,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use std::sync::{Arc, Mutex};
 
-use crate::types::{AmShapeFamily, VoiceMap};
-use crate::voices::BlockRenderer;
+use edo_surface::types::{AmShapeFamily, VoiceMap};
+use edo_surface::voices::BlockRenderer;
 
 pub struct Audio {
   /// Kept alive for the run; dropping it stops the stream. `None` in the null path

@@ -1,5 +1,5 @@
   use super::*;
-  use midi_pulse::rig::{load_named_rig, SlideRig, TapTempoRig, TrailRig};
+  use crate::rig::{load_named_rig, SlideRig, TapTempoRig, TrailRig};
 
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
@@ -182,7 +182,7 @@
   /// (present iff `has_selector`) re-timbres `controls_index`; no other overlays.
   fn gs(id: &str, controls_index: usize, has_selector: bool) -> GridSettings {
     GridSettings {
-      select: midi_pulse::rig::MonomeSelect {
+      select: crate::rig::MonomeSelect {
         size: Some([16, 16]),
         type_contains: None,
         id_contains: None,
@@ -279,7 +279,7 @@
   /// which the pure tests cannot cover. No hardware, no sound. See MOCK-MONOME.org.
   #[test]
   fn two_grids_run_against_mock_grids() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
@@ -351,7 +351,7 @@
   /// out the whole run.
   #[test]
   fn one_grid_absent_still_runs_the_present_grid() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Only grid "a" exists; the 2-monome mock rig rig wants two.
@@ -392,12 +392,12 @@
   /// grids land left/right) is hardware, and hardware is Jeff's to confirm.
   #[test]
   fn the_two_softstep_rig_loads_and_pins_its_gear() {
-    use midi_pulse::rig::{AccreteControlKind, PulseFactorRig, SoftstepWindowRig};
+    use crate::rig::{AccreteControlKind, PulseFactorRig, SoftstepWindowRig};
     let source = std::fs::read_to_string(
-      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
     )
     .expect("read the shipped rig");
-    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("the shipped rig parses");
+    let rig = crate::rig_org::parse_org_rig(&source).expect("the shipped rig parses");
 
     // Grids pinned by SERIAL, not by enumeration order: every pedal below targets a
     // monome by name, so a replug that swapped them would invert the whole board.
@@ -512,7 +512,7 @@
     // outer pedals 6/0 clear, inner pedals 7/9 accrete, left pedals to the left
     // grid -- exactly the bottom row's 1/2 + 4/5 shape -- plus each grid's own
     // clear button at (12,0), beside the pad's x3.
-    use midi_pulse::rig::EditmodeControlKind as Em;
+    use crate::rig::EditmodeControlKind as Em;
     let mut editmodes: Vec<(u8, &str, Em)> = rig
       .softstep_windows
       .iter()
@@ -576,10 +576,10 @@
   #[test]
   fn the_two_softstep_rigs_pedals_resolve_to_the_right_actions() {
     let source = std::fs::read_to_string(
-      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
     )
     .expect("read the shipped rig");
-    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
     // Grid 0 = "a" = LOM (left/old), grid 1 = "b" = RNM (right/new), as resolve does.
     let actions = rig_pedal_actions(&rig, |m| match m {
       "a" => Some(0),
@@ -608,7 +608,7 @@
     // Editmode controls, mirroring the sustain row: outer pedals (6/0) clear,
     // inner (7/9) accrete, left pedals to the left grid.
     {
-      use midi_pulse::rig::EditmodeControlKind as Em;
+      use crate::rig::EditmodeControlKind as Em;
       assert_eq!(at("old", 6), Some(PedalAction::Editmode { grid: 0, control: Em::Clear }));
       assert_eq!(at("old", 7), Some(PedalAction::Editmode { grid: 0, control: Em::Accrete }));
       assert_eq!(at("old", 9), Some(PedalAction::Editmode { grid: 1, control: Em::Accrete }));
@@ -647,10 +647,10 @@
   #[test]
   fn a_pedal_whose_grid_is_absent_is_dropped() {
     let source = std::fs::read_to_string(
-      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
     )
     .expect("read");
-    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
     // Only grid "a" is present.
     let actions = rig_pedal_actions(&rig, |m| if m == "a" { Some(0) } else { None });
     assert_eq!(
@@ -915,12 +915,12 @@
 
   #[test]
   fn the_two_softstep_rigs_accrete_is_momentary_not_toggle() {
-    use midi_pulse::rig::{AccreteControlKind, SoftstepWindowRig};
+    use crate::rig::{AccreteControlKind, SoftstepWindowRig};
     let source = std::fs::read_to_string(
-      midi_pulse::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
     )
     .expect("read the shipped rig");
-    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
     let s = resolve_settings(&rig).expect("resolves");
 
     // Premise: it really does bind no needs_holding control anywhere.
@@ -961,10 +961,10 @@
   #[test]
   fn the_drums_rigs_accrete_still_toggles() {
     let source = std::fs::read_to_string(
-      midi_pulse::rig::rig_dir().join("2-monomes_kmss-drums.org"),
+      crate::rig::rig_dir().join("2-monomes_kmss-drums.org"),
     )
     .expect("read the drums rig");
-    let rig = midi_pulse::rig_org::parse_org_rig(&source).expect("parses");
+    let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
     let s = resolve_settings(&rig).expect("resolves");
     for grid in &s.grids {
       assert!(
@@ -988,7 +988,7 @@
     };
 
     let source = std::fs::read_to_string(
-      midi_pulse::rig::mock_rig_dir().join("2-monomes_kmss-drums-mock.org"),
+      crate::rig::mock_rig_dir().join("2-monomes_kmss-drums-mock.org"),
     )
     .expect("read mock org");
     // The rig is `.org` now: PARAM values still contain the `key = value` text these
@@ -1017,7 +1017,7 @@
       "{edited}\n** ELEM expression_pedals\n*** PARAM channel = 1\n\
        *** PARAM monome = \"a\"\n*** PARAM curve_remainder_exp_db = 40.0\n",
     );
-    let rig = midi_pulse::rig_org::parse_org_rig(&edited).expect("edited rig parses");
+    let rig = crate::rig_org::parse_org_rig(&edited).expect("edited rig parses");
     adopt_rig(&rig, &live).expect("adopts");
 
     assert_eq!(live.generation.load(Ordering::SeqCst), 1, "generation bumped");
@@ -1147,7 +1147,7 @@
   /// fast =1 double-tap turns the cycling back off.
   #[test]
   fn factored_pulse_pad_blinks_globally_and_the_factored_pulse_switch_is_per_grid() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
@@ -1227,7 +1227,7 @@
   /// and grid a's own clear finally drops it to the dim trail.
   #[test]
   fn accrete_banks_are_per_monome_and_sustain_until_their_own_clear() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
@@ -1314,7 +1314,7 @@
   /// grids' switches are independent, and each turns off from its own grid.
   #[test]
   fn every_toggle_is_per_grid_and_independent() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mock = MockRig::start(0, &[GridSpec::grid_256("a"), GridSpec::grid_256("b")])
@@ -1372,7 +1372,7 @@
   /// note lights bright on the monobright grid through the binary-map path.
   #[test]
   fn monobright_grid_flashes_fake_dim() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Grid 0's id is the classic Series-256 format -> detected monobright; grid 1's is the

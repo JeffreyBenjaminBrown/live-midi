@@ -70,11 +70,17 @@
 ** Source layout
    Sorted by what each thing IS, not by language (rust/python used to be the
    top-level split; it wasn't a question anyone ever asked).
+   - edo_surface/         : the live instrument core (cleaning phase 7 unburied it
+     here). Everything the latest rig runs: the surfaces + drumkit runtimes, the
+     sawwave engine (src/sawwave/), the rig loader/org parser (rig.rs, rig_org.rs),
+     monome + mock, expression pedals, device_assign, the bitmap font. Depends on
+     nothing from buried; buried depends on it.
    - buried/              : the old midi_pulse crate. Still compiles, still runs
-     the looper / piano / un-12 / drums rigs; kept out of the way rather than
-     deleted. Includes edo12n_piano_runtime.rs and edo12n_piano_monome_runtime.rs
-     (the keyboard-offset and monome-offset 72-EDO transformers).
-   - edo_surface/         : the new crate for the current instrument.
+     the looper / piano / un-12 rigs and the dispatch binaries, now DEPENDING ON
+     edo_surface for the live core -- buried refers to live, never the reverse.
+     Kept out of the way rather than deleted. Includes edo12n_piano_runtime.rs and
+     edo12n_piano_monome_runtime.rs (the keyboard-offset and monome-offset 72-EDO
+     transformers).
    - rigs/                : the .org rig definitions, their readmes, and
      softstep.toml.
    - tools/               : meters, probes, bridges, and demos, Rust and Python

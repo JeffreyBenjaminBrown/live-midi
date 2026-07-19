@@ -1,7 +1,10 @@
 # The old midi_pulse crate: buried out of the way (see ../TODO/new-library/1_plan.org
-# for why), but still compiling and still running the looper / piano / un-12 / drums
-# rigs. Its rigs live in ../rigs/, its mock rigs in mocks/, drum samples in
-# ../drum-samples/ (see rig.rs's rig_dir/mock_rig_dir/drum_samples_dir).
+# for why), but still compiling and still running the looper / piano / un-12 rigs and
+# the dispatch binaries. The live core it once held was unburied into the `edo_surface`
+# crate in cleaning phase 7 (the rig loader, surfaces + drumkit runtimes, sawwave
+# engine, monome, expression pedals); this crate now DEPENDS ON edo_surface for those --
+# buried refers to live, never the reverse. Rigs live in ../rigs/, mock rigs in
+# ../edo_surface/mocks/, drum samples in ../drum-samples/.
 
 [package]
 name = "midi_pulse"
@@ -28,6 +31,7 @@ name = "pedal_monitor"
 path = "midi_pulse/pedal_monitor.rs"
 
 [dependencies]
+edo_surface = { path = "../edo_surface" }
 midir = "0.10"
 minifb = "0.27"
 # Pure-Rust TTF rasterizer with anti-aliasing, for the on-screen readouts. No

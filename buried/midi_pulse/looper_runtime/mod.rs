@@ -13,12 +13,12 @@
 //! compute an LED vector (no I/O), then drops it before UDP sends. The audio
 //! thread locks only `voices`. control -> voices is the single, brief nesting.
 
-use midi_pulse::rig::{
+use edo_surface::rig::{
   AmShapeFamilyRig, Rig, LoopControlKind, MonomeWindowRig, RowRangeRig, SinkRig,
   TimbreTarget,
 };
-use crate::types::AmShapeFamily;
-use midi_pulse::monome;
+use edo_surface::types::AmShapeFamily;
+use edo_surface::monome;
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -604,7 +604,7 @@ fn send_diffs(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::rig::load_named_rig;
+  use edo_surface::rig::load_named_rig;
 
   #[test]
   fn timbre_rig_resolves_both_editors() {
@@ -645,7 +645,7 @@ mod tests {
   /// input, the grid threads -- that the pure state tests cannot. See MOCK-MONOME.org.
   #[test]
   fn full_timbre_instrument_runs_against_mock_grids() {
-    use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
+    use edo_surface::mock_monome::{wait_until, GridSpec, MockRig};
 
     let mock = MockRig::start(0, &[GridSpec::grid_256("edo"), GridSpec::grid_256("loops")])
       .expect("start mock rig");

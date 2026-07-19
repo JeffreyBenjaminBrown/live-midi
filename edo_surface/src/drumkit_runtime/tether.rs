@@ -21,7 +21,7 @@
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use midi_pulse::midi;
+use crate::midi;
 
 /// Override the rawmidi port for the mode-switch SysEx. Normally auto-detected from
 /// `amidi -l`; set this if detection picks the wrong device.

@@ -59,7 +59,7 @@ depend on live, never the reverse. Rough split: the surfaces runtime, sawwave
 engine, rig loader/org parser, drumkit+softstep, expression pedals, monome +
 mock, device_assign move OUT; the looper/piano/un-12 runtimes and their bins
 stay buried (depending on the live crate).
-*** ONGOING [jeff] what should the unburied home be called?
+*** DONE [jeff] what should the unburied home be called?
 The obvious candidates: promote it INTO =edo_surface/= (the successor crate
 finally succeeds -- my mild favorite, since the name already exists and the
 crate is nearly empty), or a fresh top-level dir (=synth/=? =live/=?
@@ -241,3 +241,28 @@ the divided table -- or supply your own; the mechanics are ready either way.
     readme's own trail/LEDs mention (already a cross-readme pointer to the
     kmss-drums readme's fuller "LEDs" section).
 - [2026-07-19] Phase 8b: tap_tempo_pad -> factored_pulse_pad (approved "perfect").
+- [2026-07-19] Phase 7 done: unburied the live core into =edo_surface= (Jeff's naming
+  answer -- promote into the existing crate, keep the legacy runtimes separate). MOVED
+  out of =buried/midi_pulse= into =edo_surface/src=: =surfaces_runtime/=, =drumkit_runtime/=,
+  the =sawwave/= engine (mounted flat as =edo_surface::{consts,diagnostics,leds,osc,pitch,
+  state,types,voices,windows}=, exactly as the old bin mounted it), =rig.rs=/=rig_org.rs=,
+  =monome.rs=/=mock_monome.rs=/=monome_brightness.rs=, =device_assign.rs=, =edo_play.rs=,
+  =expression_pedals.rs=, =midi.rs= (drumkit needs it), =bitmap_font.rs= (+ =fonts/=), and
+  the =mocks/= dir (so =mock_rig_dir()='s baked =mocks= path still resolves). STAYED in
+  =buried=: =looper_runtime/=, =remap_runtime/=, =sawwave_runtime.rs=, the piano/un-12/
+  monome-edo runtimes, =mapping.rs=, =monome_window.rs=, =piano_runtime.rs=/
+  =piano_transform.rs=, and ALL four bins (=midi_pulse= dispatch, =mock_monome=,
+  =softstep_meter=, =pedal_monitor=) -- =buried= now =edo_surface = { path = "../edo_surface" }=
+  and refers to the live core (=use edo_surface::rig= etc.); the arrow never points back.
+  Bin invocations unchanged (=--bin midi_pulse -- <rig>=, =--bin mock_monome=,
+  =--bin softstep_meter=, =--bin pedal_monitor=). =tools/= also repointed
+  (=edo_surface::{midi,expression_pedals}=). Traps handled: (1) =rig_dir=/=drum_samples_dir=
+  use =../rigs=/=../drum-samples= and still resolve (=edo_surface/= is one level under root,
+  like =buried/=); =mock_rig_dir= uses a bare =mocks=, so the =mocks/= dir moved with
+  =rig.rs=; the two stale "buried/ is one level under root" comments fixed. (2) No collision
+  with =edo_surface='s existing =tuning=/=voice= modules (33 tests) -- everything coexists.
+  Verify: =cargo test --workspace= 0 failures. Test redistribution: =edo_surface= 473 (was
+  33), =midi_pulse= lib 8, =midi_pulse= bin 159, =softstep_meter= 28. The pre-move total
+  dropped by 34 because the =decode=/=tether= tests, previously compiled into BOTH the
+  =midi_pulse= bin (via =drumkit_runtime=) and the =softstep_meter= bin (via =#[path]=), now
+  compile once in =edo_surface=; no unique test was lost.

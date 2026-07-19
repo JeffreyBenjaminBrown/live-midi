@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use midi_pulse::rig::{
+use crate::rig::{
   AccreteControlKind, EditmodeControlKind, PulseFactorRig, Rig, SoftstepWindowRig,
 };
 

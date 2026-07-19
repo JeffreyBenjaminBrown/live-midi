@@ -1,4 +1,4 @@
-use crate::rig::{InitialMapRig, PianoMappingRig, RemapIdiomRig, TuningRig};
+use edo_surface::rig::{InitialMapRig, PianoMappingRig, RemapIdiomRig, TuningRig};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PianoMapper {

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use midi_pulse::expression_pedals::NUM_PEDALS;
+use crate::expression_pedals::NUM_PEDALS;
 
 use crate::types::VoiceMap;
 
@@ -70,7 +70,7 @@ pub(super) fn expression_pedal_loop(
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
 ) {
-  use midi_pulse::expression_pedals::{PedalReader, DEFAULT_PORT};
+  use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
   let reader = match PedalReader::connect(DEFAULT_PORT) {
     Ok(r) => r,
     Err(e) => {

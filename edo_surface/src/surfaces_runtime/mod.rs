@@ -7,8 +7,8 @@
 //! each otherwise take over the whole app (EDO grid+synth = sawwave, the scroll pad =
 //! looper, the drums = drumkit). This runtime composes them by reusing the already-
 //! shared pure pieces: the sawwave voice/render engine (`crate::{types,voices,pitch}`),
-//! the lib scroll math (`midi_pulse::edo_play`), the two-grid bind
-//! (`midi_pulse::device_assign`), and the drumkit's own bring-up
+//! the lib scroll math (`crate::edo_play`), the two-grid bind
+//! (`crate::device_assign`), and the drumkit's own bring-up
 //! (`crate::drumkit_runtime::start`, consumed -- not forked).
 //!
 //! Voices are keyed by `(grid, cell)` (see `synth`), so the same pitch on both grids
@@ -50,18 +50,18 @@ use std::time::{Duration, Instant};
 
 use rosc::{decoder, OscPacket, OscType};
 
-use midi_pulse::rig::Rig;
-use midi_pulse::device_assign::assign_selected_devices;
-use midi_pulse::edo_play::step_for_cell;
-use midi_pulse::monome::{self, DeviceInfo};
-use midi_pulse::monome_brightness::PulseBrightness;
+use crate::rig::Rig;
+use crate::device_assign::assign_selected_devices;
+use crate::edo_play::step_for_cell;
+use crate::monome::{self, DeviceInfo};
+use crate::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
 use crate::types::VoiceMap;
 
 // Used only by tests.rs (via `use super::*;`); gated so a non-test build doesn't warn.
 #[cfg(test)]
-use midi_pulse::rig::{AccreteControlKind, MonomeWindowRig, SinkRig};
+use crate::rig::{AccreteControlKind, MonomeWindowRig, SinkRig};
 #[cfg(test)]
 use crate::voices::Distortion;
 
@@ -186,7 +186,7 @@ fn run(
     .map_err(|e| format!("bind UDP :{}: {e}", s.grids[0].listen_port))?;
   sock0.set_read_timeout(Some(Duration::from_millis(50)))?;
   let devices = monome::discover_devices_via(&sock0, s.grids[0].listen_port, detector_port);
-  let selects: Vec<midi_pulse::rig::MonomeSelect> =
+  let selects: Vec<crate::rig::MonomeSelect> =
     s.grids.iter().map(|g| g.select.clone()).collect();
   let assigned: Vec<Option<DeviceInfo>> = assign_selected_devices(&devices, &selects);
   let present: Vec<bool> = assigned.iter().map(Option::is_some).collect();

@@ -19,11 +19,11 @@
 //! `paint` overwrites every covered cell and `state.rs` consumes every press inside
 //! the rect (an inert cell eats the press rather than playing a note).
 
-use midi_pulse::rig::TimbreTarget;
+use edo_surface::rig::TimbreTarget;
 
 use super::state::{LEVEL_DIM, LEVEL_FULL, LEVEL_MID, LEVEL_OFF};
 use super::timbre_rows::RowRange;
-use crate::types::{Timbre, Waveform};
+use edo_surface::types::{Timbre, Waveform};
 
 /// One radio change a value row / waveform cell produces. Applied to a `Timbre` --
 /// the live timbre in C3b/C4, a loop note's stored timbre in C7 -- so it stays

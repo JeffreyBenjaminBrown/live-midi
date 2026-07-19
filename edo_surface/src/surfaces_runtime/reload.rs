@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use midi_pulse::expression_pedals::NUM_PEDALS;
-use midi_pulse::rig::{load_named_rig, Rig};
+use crate::expression_pedals::NUM_PEDALS;
+use crate::rig::{load_named_rig, Rig};
 
 use crate::voices::{Distortion, Makeup};
 

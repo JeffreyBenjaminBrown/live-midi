@@ -12,7 +12,7 @@ So this document is mostly a map of where each fact lives and who is allowed to
 change it. The design rationale is in =TODO/many/1_vision.org= and =2_discussion.org=;
 this is the implementation.
 
-The code lives in =buried/midi_pulse/surfaces_runtime/=, where =edit.rs= holds the
+The code lives in =edo_surface/src/surfaces_runtime/=, where =edit.rs= holds the
 pure state machine, =mod.rs= holds the wiring, =synth.rs= owns the voices, =accrete.rs=
 owns sustain, and =dance.rs= computes the LEDs.
 
@@ -23,7 +23,7 @@ here has been two records of "what is ringing" disagreeing with each other.
 
 * the types and data structures
 This section lists everything edit mode touches. The engine defines its own types in
-=buried/midi_pulse/sawwave/types.rs=, and this runtime defines the rest across
+=edo_surface/src/sawwave/types.rs=, and this runtime defines the rest across
 =surfaces_runtime/{synth,edit,accrete,dance}.rs=.
 
 The word "key" is overloaded here, so this document avoids it. In this project a

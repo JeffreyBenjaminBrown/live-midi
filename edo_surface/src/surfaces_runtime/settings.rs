@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use midi_pulse::rig::{
+use crate::rig::{
   AccreteControlKind, AmShapeFamilyRig, EditmodeControlKind, MonomeWindowRig, Rig, SinkRig,
   SoftstepWindowRig, WaveformChoice,
 };
@@ -94,7 +94,7 @@ pub(super) struct GridSettings {
   /// serial (`select.id_contains`) makes the left/right assignment independent of
   /// serialosc's enumeration order -- which matters the moment anything off-grid
   /// (a foot pedal) targets "the left monome" by name.
-  pub(super) select: midi_pulse::rig::MonomeSelect,
+  pub(super) select: crate::rig::MonomeSelect,
   pub(super) listen_port: u16,
   pub(super) prefix: String,
   /// The grid index this grid's waveform selector sets (self if it has no selector).

@@ -10,7 +10,7 @@ sequencer (/dev/snd/seq), so that port appears in the container's `aconnect -l` 
 synth (midir) -- or `aseqdump` -- can read the pedals like any MIDI input.
 
 It forwards RAW MIDI (no rescaling). Normalizing each pedal's raw ~1..120 to a continuous
-0.0..1.0 float happens in the synth reader (midi_pulse::expression_pedals, PEDAL_RAW_BOTTOM/TOP).
+0.0..1.0 float happens in the synth reader (edo_surface::expression_pedals, PEDAL_RAW_BOTTOM/TOP).
 
   *** RUN ON THE HOST *** (the container has no /dev/bus/usb), as root (to take the USB
   interface from snd-usb-audio). The sibling wrapper does the whole dance -- the nix

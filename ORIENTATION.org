@@ -17,10 +17,12 @@ live only in Claude's memory. Follow the links for depth.
   See [[./how-to-parallelize-dev.org]].
 - The project's point: read/write MIDI and audio between container and host.
 - The tree sorts by what a thing IS, not by what language it is written in:
-  =buried/= holds the =midi_pulse= crate -- despite the name, it is where ALL the
-  live instrument code runs today (the surfaces runtime, the looper, piano, un-12
-  and drums rigs); =edo_surface/= is a mostly-empty successor crate that never took
-  over; =rigs/= holds the rigs and their readmes,
+  =edo_surface/= holds the live instrument core -- everything the latest rig runs
+  (the surfaces + drumkit runtimes, the sawwave engine, the rig loader/org parser,
+  monome + mock, expression pedals); =buried/= holds the =midi_pulse= crate, the
+  legacy runtimes that DEPEND ON =edo_surface= (the looper, piano, un-12 rigs and
+  the dispatch binaries) -- buried refers to live, never the reverse; =rigs/= holds
+  the rigs and their readmes,
   and =tools/= holds the meters, probes and bridges, Rust and Python alike. There
   used to be a =code/rust/= and a =code/python/=, which sorted by the one axis nobody
   ever searches on.
@@ -34,12 +36,13 @@ factored pulse, per-voice edit mode, configurable timbres with abs/rel AM+FM.
 - *Canonical reference (read this first):*
   [[./rigs/2-monomes_2-softsteps_readme.org]] -- glossary, usage, layout.
 - Rig: =rigs/2-monomes_2-softsteps.org= (TOML-in-org; heavily commented).
-- Runtime: =buried/midi_pulse/surfaces_runtime/=. =mod.rs= is the shell AND most
+- Runtime: =edo_surface/src/surfaces_runtime/=. =mod.rs= is the shell AND most
   behavior (large; grep for the window kind you care about); pure pieces live in
   =edit.rs= (per-voice edit state), =accrete.rs= (sustain banks),
   =polyrhythm.rs= (tap tempo + factors), =synth.rs= (the (grid,cell)-keyed voice
   driver), =grid.rs=, =slide.rs=. The shared voice/render engine is
-  =buried/midi_pulse/sawwave/= (=types.rs=, =voices.rs=).
+  =edo_surface/src/sawwave/= (=types.rs=, =voices.rs=), mounted flat in
+  =edo_surface/src/lib.rs= as =edo_surface::{types, voices, ...}=.
 - Design history: =TODO/many/= (=1_vision= .. =3_plan=, =progress=); newer
   features are journaled in =queue.org= DONE entries and commit messages.
 

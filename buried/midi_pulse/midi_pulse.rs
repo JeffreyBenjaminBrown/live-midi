@@ -1,18 +1,15 @@
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiOutput};
-use midi_pulse::rig::{self, Rig, PianoMappingRig};
+use edo_surface::rig::{self, Rig, PianoMappingRig};
 use midi_pulse::mapping::PianoMapper;
 use midi_pulse::piano_runtime::PianoRuntime;
-use midi_pulse::midi;
+use edo_surface::midi;
 use std::sync::mpsc;
 use std::{io, thread};
 
-// The shared 5x7 bitmap font (`edo12n_gui`'s original digit glyphs plus the
-// letters/symbols the surfaces pulse window needs); declared at the crate root so
-// both branches of the module tree can reach it via `crate::bitmap_font`.
-#[path = "bitmap_font.rs"]
-mod bitmap_font;
-
+// The live core -- the sawwave engine, the surfaces and drumkit runtimes, the bitmap
+// font -- now lives in the `edo_surface` crate (cleaning phase 7); the runtimes that
+// stay here reach it as `edo_surface::{types, surfaces_runtime, ...}`.
 #[path = "monome_edo_midi_runtime.rs"]
 mod monome_edo_midi_runtime;
 #[path = "edo12n_piano_monome_runtime.rs"]
@@ -20,39 +17,10 @@ mod edo12n_piano_monome_runtime;
 #[path = "edo12n_piano_runtime.rs"]
 mod edo12n_piano_runtime;
 
-#[path = "sawwave/consts.rs"]
-#[allow(dead_code)]
-mod consts;
-#[path = "sawwave/diagnostics.rs"]
-#[allow(dead_code)]
-mod diagnostics;
-#[path = "sawwave/leds.rs"]
-#[allow(dead_code)]
-mod leds;
-#[path = "sawwave/osc.rs"]
-#[allow(dead_code)]
-mod osc;
-#[path = "sawwave/pitch.rs"]
-#[allow(dead_code)]
-mod pitch;
-#[path = "sawwave/state.rs"]
-#[allow(dead_code)]
-mod state;
-#[path = "sawwave/types.rs"]
-#[allow(dead_code)]
-mod types;
-#[path = "sawwave/voices.rs"]
-#[allow(dead_code)]
-mod voices;
-#[path = "sawwave/windows.rs"]
-#[allow(dead_code)]
-mod windows;
 mod sawwave_runtime;
 #[allow(dead_code)]
 mod remap_runtime;
 mod looper_runtime;
-mod drumkit_runtime;
-mod surfaces_runtime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let rig_name = std::env::args().nth(1).ok_or_else(|| {
@@ -64,11 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Two-plus EDO play grids and/or a KMSS drumkit composed in one rig. Leads the
     // dispatch: it is a superset of both the drumkit and sawwave predicates (it can
     // carry softstep windows AND edo grids), so it must be checked before them.
-    surfaces_runtime::run_from_rig(&rig, Some(&rig_name))?;
+    edo_surface::surfaces_runtime::run_from_rig(&rig, Some(&rig_name))?;
   } else if is_drumkit_rig(&rig) {
     // A KMSS drumkit rig is unambiguous (it has softstep_windows and no
     // monome windows), so it can lead the remaining dispatch.
-    drumkit_runtime::run_from_rig(&rig)?;
+    edo_surface::drumkit_runtime::run_from_rig(&rig)?;
   } else if is_remap_rig(&rig) {
     remap_runtime::run_from_rig(&rig)?;
   } else if is_edo12n_monome_config(&rig) {
@@ -95,12 +63,12 @@ fn is_edo12n_display_config(rig: &Rig) -> bool {
   rig.piano.as_ref().is_some_and(|piano| {
     matches!(
       piano.mapping,
-      midi_pulse::rig::PianoMappingRig::TwelveN { .. }
+      edo_surface::rig::PianoMappingRig::TwelveN { .. }
     )
   }) && rig.display.as_ref().is_some_and(|display| {
     matches!(
       display,
-      midi_pulse::rig::DisplayRig::PitchClassGrid { enabled: true, .. }
+      edo_surface::rig::DisplayRig::PitchClassGrid { enabled: true, .. }
     )
   })
 }
@@ -109,12 +77,12 @@ fn is_edo12n_monome_config(rig: &Rig) -> bool {
   rig.piano.as_ref().is_some_and(|piano| {
     matches!(
       piano.mapping,
-      midi_pulse::rig::PianoMappingRig::TwelveN { .. }
+      edo_surface::rig::PianoMappingRig::TwelveN { .. }
     )
   }) && rig.monome_windows.iter().any(|window| {
     matches!(
       window,
-      midi_pulse::rig::MonomeWindowRig::TwelveEdoOffsetBoard { .. }
+      edo_surface::rig::MonomeWindowRig::TwelveEdoOffsetBoard { .. }
     )
   })
 }
@@ -123,12 +91,12 @@ fn is_remap_rig(rig: &Rig) -> bool {
   rig.piano.as_ref().is_some_and(|piano| {
     matches!(
       piano.mapping,
-      midi_pulse::rig::PianoMappingRig::RemappableUn12 { .. }
+      edo_surface::rig::PianoMappingRig::RemappableUn12 { .. }
     )
   }) && rig.monome_windows.iter().any(|window| {
     matches!(
       window,
-      midi_pulse::rig::MonomeWindowRig::RemappableUn12Grid { .. }
+      edo_surface::rig::MonomeWindowRig::RemappableUn12Grid { .. }
     )
   })
 }
@@ -137,11 +105,11 @@ fn is_monome_sawwave_rig(rig: &Rig) -> bool {
   rig
     .monome_windows
     .iter()
-    .any(|window| matches!(window, midi_pulse::rig::MonomeWindowRig::EdoNoteGrid { .. }))
+    .any(|window| matches!(window, edo_surface::rig::MonomeWindowRig::EdoNoteGrid { .. }))
     && rig
       .sinks
       .iter()
-      .any(|sink| matches!(sink, midi_pulse::rig::SinkRig::CpalSynth { .. }))
+      .any(|sink| matches!(sink, edo_surface::rig::SinkRig::CpalSynth { .. }))
 }
 
 /// A standalone KMSS drumkit rig declares at least one `softstep_window` and NO
@@ -156,7 +124,7 @@ fn is_drumkit_rig(rig: &Rig) -> bool {
 /// edo grid on more than one monome (the two play grids), or a `waveform_selector`.
 /// Precise enough that every existing rig keeps its current runtime.
 fn is_surfaces_rig(rig: &Rig) -> bool {
-  use midi_pulse::rig::MonomeWindowRig;
+  use edo_surface::rig::MonomeWindowRig;
   let has_edo_grid = rig
     .monome_windows
     .iter()
@@ -192,7 +160,7 @@ fn is_looper_rig(rig: &Rig) -> bool {
   rig
     .monome_windows
     .iter()
-    .any(|window| matches!(window, midi_pulse::rig::MonomeWindowRig::LoopDisplay { .. }))
+    .any(|window| matches!(window, edo_surface::rig::MonomeWindowRig::LoopDisplay { .. }))
 }
 
 fn print_startup(rig: &Rig) {
@@ -221,8 +189,8 @@ fn is_monome_midi_rig(rig: &Rig) -> bool {
   rig
     .monome_windows
     .iter()
-    .any(|window| matches!(window, midi_pulse::rig::MonomeWindowRig::EdoNoteGrid { .. }))
-    && rig.sinks.iter().any(|sink| matches!(sink, midi_pulse::rig::SinkRig::Midi { .. }))
+    .any(|window| matches!(window, edo_surface::rig::MonomeWindowRig::EdoNoteGrid { .. }))
+    && rig.sinks.iter().any(|sink| matches!(sink, edo_surface::rig::SinkRig::Midi { .. }))
 }
 
 fn run_piano_runtime(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
@@ -280,7 +248,7 @@ mod dispatch_tests {
   //! arm must not change any existing rig's runtime, so we assert the routing of
   //! each real rig family by name.
   use super::*;
-  use midi_pulse::rig::load_named_rig;
+  use edo_surface::rig::load_named_rig;
 
   #[test]
   fn surfaces_rig_routes_to_surfaces_only() {

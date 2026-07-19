@@ -1504,14 +1504,14 @@ pub enum DisplayRig {
 }
 
 pub fn rig_dir() -> PathBuf {
-  // buried/ is one level under the repo root; rigs/ is a top-level sibling.
+  // edo_surface/ is one level under the repo root; rigs/ is a top-level sibling.
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rigs")
 }
 
 /// Top-level folder holding drum-sample WAVs. A `drumkit` window's pads resolve
 /// under here: `drum_samples_dir()/<pad.sample>` (a `sample` may name a subpath).
 pub fn drum_samples_dir() -> PathBuf {
-  // buried/ is one level under the repo root; drum-samples/ is a top-level sibling.
+  // edo_surface/ is one level under the repo root; drum-samples/ is a top-level sibling.
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../drum-samples")
 }
 

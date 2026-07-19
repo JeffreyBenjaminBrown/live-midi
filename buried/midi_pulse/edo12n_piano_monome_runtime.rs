@@ -1,9 +1,10 @@
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
-use midi_pulse::monome;
-use midi_pulse::monome_brightness::PulseBrightness;
-use midi_pulse::rig::Rig;
-use midi_pulse::{midi, piano_transform};
+use edo_surface::monome;
+use edo_surface::monome_brightness::PulseBrightness;
+use edo_surface::rig::Rig;
+use edo_surface::midi;
+use midi_pulse::piano_transform;
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};

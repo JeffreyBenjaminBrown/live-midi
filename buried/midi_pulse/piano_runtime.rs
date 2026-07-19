@@ -1,6 +1,7 @@
-use crate::rig::{PianoRegionActionRig, PianoRegionRig};
+use edo_surface::rig::{PianoRegionActionRig, PianoRegionRig};
 use crate::mapping::PianoMapper;
-use crate::{midi, piano_transform};
+use crate::piano_transform;
+use edo_surface::midi;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

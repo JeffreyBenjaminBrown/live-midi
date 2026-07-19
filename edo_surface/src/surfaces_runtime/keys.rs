@@ -9,8 +9,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use midi_pulse::edo_play::{register_delta, shift_for_cell, step_for_cell};
-use midi_pulse::rig::EditmodeControlKind;
+use crate::edo_play::{register_delta, shift_for_cell, step_for_cell};
+use crate::rig::EditmodeControlKind;
 
 use crate::types::Timbre;
 

@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use super::{GRID_ROWS, GRID_COLS, GRID_ANCHOR, GRID_ROW_STEP,
             WHITE_KEYS, pitch_class_shifts};
-use crate::bitmap_font::{self, GLYPH_H};
+use edo_surface::bitmap_font::{self, GLYPH_H};
 
 pub const CELL_W: usize = 90;
 pub const CELL_H: usize = 75;

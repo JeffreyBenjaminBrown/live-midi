@@ -1,7 +1,7 @@
 use midir::os::unix::VirtualOutput;
 use midir::MidiOutput;
-use midi_pulse::rig::{Rig, MonomeWindowRig};
-use midi_pulse::{midi, monome};
+use edo_surface::rig::{Rig, MonomeWindowRig};
+use edo_surface::{midi, monome};
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};

@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use midi_pulse::edo_play::{shift_for_cell, step_for_cell, Shift};
+use crate::edo_play::{shift_for_cell, step_for_cell, Shift};
 
 use crate::types::MonomeKey;
 

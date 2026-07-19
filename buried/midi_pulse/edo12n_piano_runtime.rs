@@ -6,8 +6,8 @@ mod gui;
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
-use midi_pulse::rig::Rig;
-use midi_pulse::midi;
+use edo_surface::rig::Rig;
+use edo_surface::midi;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, OnceLock};

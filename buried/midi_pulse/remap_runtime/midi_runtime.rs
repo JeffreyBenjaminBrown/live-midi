@@ -1,4 +1,4 @@
-use midi_pulse::midi;
+use edo_surface::midi;
 use std::sync::{Arc, Mutex};
 
 use super::state::{RemappableEdoState, SoundingPitchCounts};

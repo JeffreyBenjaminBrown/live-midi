@@ -29,7 +29,7 @@ pub fn start_null(requested_sample_rate: u32) -> Audio {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn start(
+pub(crate) fn start(
   voices: Arc<Mutex<VoiceMap>>,
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
