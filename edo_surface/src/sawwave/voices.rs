@@ -464,7 +464,11 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
       }
     }
     // A drag's dip-then-attack retrigger: when the down-ramp bottoms out at silence,
-    // launch the attack (toward the peak) instead of reaping the voice.
+    // launch the attack (toward the peak) instead of reaping the voice. This touches
+    // only env/target_env/ramp_per_sample on the SAME `VoiceState` -- never `v.phase`
+    // -- so the oscillator's cycle position free-runs straight through the relaunch
+    // instant (advanced as usual a few lines down) instead of resetting to 0
+    // (branch-3 queue item 5: retrigger must not reset a voice's phase).
     if v.env <= 0.0 {
       if let Some(attack_ramp) = v.pending_attack.take() {
         v.env = 0.0;
@@ -1264,6 +1268,41 @@ mod tests {
     assert!(st.pending_attack.is_none(), "the queued attack has launched");
     assert_eq!(st.target_env, 1.0, "and the envelope now heads for the peak");
     assert!(st.env > 0.0, "climbing back up from silence");
+  }
+
+  /// Branch-3 queue item 5 ("retrigger should not reset the phase of a voice"),
+  /// pinned for the pending_attack drag path specifically: this already held before
+  /// that item, since the relaunch above only ever touches env/target_env/
+  /// ramp_per_sample on the SAME `VoiceState` and never `phase` -- so nothing needed
+  /// fixing here. This test documents/pins that rather than fixing a bug.
+  #[test]
+  fn a_pending_attack_relaunch_does_not_reset_the_oscillator_phase() {
+    let sr = 48000.0;
+    let starting_phase = 0.6123_f32;
+    let v = VoiceState {
+      pending_attack: Some(1.0 / (0.003 * sr)),
+      id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0,
+      phase: starting_phase,
+      // Set up so the very next full-rate sample brings env to exactly 0, launching
+      // the queued attack within the single sample we render below.
+      env: 1e-6, target_env: 0.0, ramp_per_sample: 1.0, sustain_env: 0.35, decay_per_sample: 1.0,
+      timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
+    };
+    let expected_dt = v.freq / sr; // no FM in this timbre: this sample's phase step
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+    let mut data = vec![0.0_f32; 1];
+    render_block(&mut voices, &mut data, 1, sr); // one sample: env hits 0, attack relaunches THIS sample
+    let st = voices.values().next().expect("voice survives the relaunch");
+    assert_eq!(st.target_env, 1.0, "the attack relaunched on this very sample");
+    assert!(st.pending_attack.is_none(), "the queued attack was consumed");
+    let expected_phase = (starting_phase + expected_dt).rem_euclid(1.0);
+    assert!(
+      (st.phase - expected_phase).abs() < 1e-6,
+      "the oscillator continues through the relaunch instant instead of resetting to 0: \
+       got {} want {}", st.phase, expected_phase,
+    );
   }
 
   #[test]

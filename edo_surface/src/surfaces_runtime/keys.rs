@@ -255,7 +255,11 @@ pub(super) fn handle_key(
     // no doubling. The pitch keeps its place in the accrete set, so releasing the
     // replacing note re-drones it. After the mono block, so a colliding-pitch
     // drone a mono cut just captured is cut like any other.
-    rt.sink.cut_sustained(pitch);
+    //
+    // `cut_sustained` hands back the outgoing drone's oscillator phase (`None` when
+    // no drone rang here) so the plain-note_on branch below can continue it instead
+    // of restarting at 0 (branch-3 queue item 5: retrigger must not reset phase).
+    let retrigger_phase = rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
     let timbre = Timbre {
       waveform: slot.waveform,
@@ -297,7 +301,11 @@ pub(super) fn handle_key(
         Some(from) => rt.sink.note_on_gliding(
           cell, pitch, from, timbre, rt.knobs.slide_duration_secs, factored_pulse,
         ),
-        None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
+        // The ordinary retrigger-in-place case: carry the just-cut drone's phase
+        // forward (0.0 when there was none to cut, i.e. an ordinary fresh note).
+        None => rt.sink.note_on_with_phase(
+          cell, pitch, timbre, factored_pulse, retrigger_phase.unwrap_or(0.0),
+        ),
       }
     }
     held.insert(cell, pitch);

@@ -161,8 +161,28 @@ under a sustain clear keeps sounding but is deselected. Docs updated: README
 =accrete_control=/=editmode_control=, the 2-monomes rig inline comments, and the
 2-monomes readme (edit section, clears, dances). =cargo test --workspace=: 692
 passed, 0 failed.
-* Retrigger should not reset the phase of a voice.
+* DONE Retrigger should not reset the phase of a voice.
 That should apply to both retrigger for pitch-drag and retrigger at the same pitch.
+** DONE claude: retriggers now continue the oscillator's phase instead of restarting it
+Same-pitch retrigger (keys.rs: a press on an already-sustained pitch) was the only
+real reset site: =cut_sustained= moved the old drone aside and the following
+=note_on= always wrote =phase: 0.0=, so the waveform restarted every retrigger.
+=cut_sustained= now returns the cut voice's phase (=None= if none was cut), and a
+new =note_on_with_phase= (=note_on= is now just that with phase 0) carries it into
+the replacing strike, computed before the single atomic insert so there's no window
+where the audio thread could render the fresh voice at the wrong phase. The
+pitch-drag paths needed no fix: =voices.rs='s pending_attack dip-then-attack
+relaunch mutates env/target_env/ramp_per_sample on the SAME =VoiceState= and never
+touches =phase=, and =rehome_to_cell=/=note_on_legato= remove-and-reinsert that same
+struct too -- all three already carried phase through; pinned with tests rather
+than changed. =note_on_gliding= (the slide feature's note-onset) is a genuinely
+fresh voice, not a retrigger, so it correctly keeps phase 0 -- confirmed, not
+touched. Scope: only the oscillator =phase=; the AM/FM LFO phases keep their
+documented "per-voice retrigger resets to 0" semantics, per the item's explicit
+naming of "the phase" (oscillator) and because a reset there is a slow modulator
+restart, not a click. Tests: 4 new (same-pitch retrigger carries phase forward,
+plain note_on still starts at 0, plus two pin/confirm tests for the pending_attack
+relaunch and rehome_to_cell). =cargo test --workspace=: 696 passed, 0 failed.
 * pitch drag should not clobber a sustained voice or another edit-mode voice
 If multiple notes are in edit mode, and one of the keys representing one of them
 is pressed (again), currently what happens is that the nearest voice

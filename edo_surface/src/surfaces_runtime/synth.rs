@@ -243,11 +243,41 @@ impl SurfaceSink {
   }
 
   /// Start `cell` sounding `pitch` (an absolute EDO step) with `timbre`. Spawns a
-  /// fresh voice (its AM/FM LFOs retriggered at phase 0); overwrites any existing
-  /// voice for the same cell (a retrigger, though the grid thread debounces
-  /// repeats). `factored_pulse_hz` is the factored pulse at this note's onset (None =
-  /// no factored pulse), fixed for the voice's life.
+  /// fresh voice (its oscillator and AM/FM LFOs all starting at phase 0); overwrites
+  /// any existing voice for the same cell (a retrigger, though the grid thread
+  /// debounces repeats). `factored_pulse_hz` is the factored pulse at this note's
+  /// onset (None = no factored pulse), fixed for the voice's life.
+  ///
+  /// Exactly `note_on_with_phase` with `phase = 0.0` -- see that for the
+  /// phase-continuing variant the same-pitch retrigger path uses.
   pub fn note_on(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, factored_pulse_hz: Option<f32>) {
+    self.note_on_with_phase(cell, pitch, timbre, factored_pulse_hz, 0.0);
+  }
+
+  /// `note_on`, but the fresh voice's OSCILLATOR starts at `phase` instead of 0.
+  ///
+  /// Branch-3 queue item 5 ("retrigger should not reset the phase of a voice"): the
+  /// same-pitch retrigger path in keys.rs -- a press on an already-sustained pitch --
+  /// cuts the ringing drone via `cut_sustained` (which hands back the outgoing
+  /// voice's last phase) and strikes here with that phase, so the waveform continues
+  /// its cycle instead of restarting at 0. The envelope still starts at 0 as ever
+  /// (only the oscillator continues), so there is no click -- just no waveform
+  /// discontinuity either.
+  ///
+  /// Deliberately scoped to the oscillator only: the AM/FM LFO phases
+  /// (`am_phase`/`fm_phase`/`rel_am_phase`/`rel_fm_phase`) keep retriggering at 0, per
+  /// their existing documented "per-voice retrigger" semantics (`VoiceState`'s doc) --
+  /// the queue item names the oscillator phase specifically, and those LFOs are a
+  /// slower, separate modulation layer where a reset is inaudible as a click and was
+  /// never the ask.
+  pub fn note_on_with_phase(
+    &mut self,
+    cell: (i32, i32),
+    pitch: i32,
+    timbre: Timbre,
+    factored_pulse_hz: Option<f32>,
+    phase: f32,
+  ) {
     let id = self.next_id;
     self.next_id += 1;
     let pedal = self.pedal_gain();
@@ -262,7 +292,7 @@ impl SurfaceSink {
         glide_per_sample: 1.0,
         factored_pulse_freq: factored_pulse_hz.unwrap_or(0.0),
         factored_pulse_phase: 0.0,
-        phase: 0.0,
+        phase,
         env: 0.0,
         target_env: 1.0,
         ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
@@ -299,6 +329,13 @@ impl SurfaceSink {
   /// `glide_secs` (the slide feature). The frequency walks multiplicatively, so the
   /// glide is pitch-linear; the engine snaps it onto the target and ends the glide
   /// (`VoiceState::glide_per_sample`). Same pitch = a plain `note_on`.
+  ///
+  /// This always spawns a genuinely NEW `VoiceState` (a fresh cell) rather than
+  /// continuing one already sounding -- it is the slide feature's note-onset, not a
+  /// retrigger of a live voice -- so its oscillator correctly starts at phase 0 like
+  /// any other fresh note; branch-3 queue item 5 (retrigger must not reset phase)
+  /// does not apply here. (`note_on_legato` is the mono+slide sibling that DOES steal
+  /// an existing voice, hence keeps its phase automatically.)
   #[allow(clippy::too_many_arguments)]
   pub fn note_on_gliding(
     &mut self,
@@ -522,19 +559,30 @@ impl SurfaceSink {
   /// retired slot -- freeing the sustain key at once -- and rings out its release
   /// ramp there (the render reaps it at silence). The accrete SET is not this
   /// sink's to touch: the pitch keeps its sustained membership, so releasing the
-  /// replacing note re-drones it. No-op when no drone rings at `pitch` (a pitch
-  /// merely *in the set* while still fingered has no drone voice yet).
-  pub fn cut_sustained(&mut self, pitch: i32) {
+  /// replacing note re-drones it. No-op (returning `None`) when no drone rings at
+  /// `pitch` (a pitch merely *in the set* while still fingered has no drone voice
+  /// yet).
+  ///
+  /// Returns the cut voice's oscillator `phase`, if one was cut: branch-3 queue item
+  /// 5 wants the replacing strike to CONTINUE that phase rather than restart at 0, and
+  /// the caller (keys.rs) is the one place that knows a `note_on` is about to follow
+  /// this cut at the very same pitch -- so it reads the phase back here and passes it
+  /// to `note_on_with_phase` itself. Computed here rather than patched onto the new
+  /// voice afterward so there is no window where the fresh voice sits at the wrong
+  /// phase for the audio thread to render.
+  pub fn cut_sustained(&mut self, pitch: i32) -> Option<f32> {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut state) = voices.remove(&sustain_key(self.grid, pitch)) else {
-      return;
+      return None;
     };
+    let phase = state.phase;
     state.target_env = 0.0;
     state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
     // next_id doubles as the retired-key uniquifier: two cuts never collide.
     let seq = self.next_id;
     self.next_id += 1;
     voices.insert(VoiceSource::SurfaceRetired { grid: self.grid, seq }, state);
+    Some(phase)
   }
 }
 
@@ -851,6 +899,50 @@ mod tests {
     let v = voices.lock().unwrap();
     assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(1.0), "the new drone rings");
     assert_eq!(v.len(), 2, "old tail still fading beside it");
+  }
+
+  /// Branch-3 queue item 5: "retrigger should not reset the phase of a voice", pinned
+  /// for the same-pitch retrigger -- the exact sequence keys.rs runs (`cut_sustained`
+  /// then a fresh `note_on`) for a press on an already-sustained pitch. Before this
+  /// fix, `note_on` always wrote `phase: 0.0`, so the oscillator restarted every
+  /// retrigger; `cut_sustained` now hands back the outgoing drone's phase and
+  /// `note_on_with_phase` carries it into the replacing strike.
+  #[test]
+  fn retriggering_a_sustained_pitch_carries_the_old_oscillator_phase_forward() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.sustain_note((3, 4), 20);
+    // Advance the render so the drone's oscillator moves well off phase 0.
+    {
+      let mut v = voices.lock().unwrap();
+      let mut data = vec![0.0_f32; 2000];
+      crate::voices::render_block(&mut v, &mut data, 1, 48000.0);
+    }
+    let old_phase = voices.lock().unwrap()[&sustain_key(0, 20)].phase;
+    assert_ne!(old_phase, 0.0, "the render should have moved the phase off 0");
+
+    // The retrigger, exactly as keys.rs drives it: cut the drone, thread its phase
+    // into the fresh strike at the same pitch.
+    let cut_phase = a.cut_sustained(20);
+    assert_eq!(cut_phase, Some(old_phase), "cut_sustained reports the outgoing phase");
+    a.note_on_with_phase((3, 4), 20, Timbre::default(), None, cut_phase.unwrap_or(0.0));
+
+    let v = voices.lock().unwrap();
+    let new_state = &v[&voice_key(0, (3, 4))];
+    assert_eq!(new_state.phase, old_phase, "the new strike continues the oscillator's phase");
+    assert_ne!(new_state.phase, 0.0, "not reset to 0");
+    assert_eq!(new_state.env, 0.0, "the envelope still starts fresh -- no click");
+  }
+
+  /// `note_on` (no explicit phase) is unaffected: a plain fresh note still starts its
+  /// oscillator at 0, exactly as before this change.
+  #[test]
+  fn plain_note_on_still_starts_the_oscillator_at_phase_zero() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    assert_eq!(voices.lock().unwrap()[&voice_key(0, (3, 4))].phase, 0.0);
   }
 
   #[test]
@@ -1386,6 +1478,28 @@ mod tests {
     let st = &g[&voice_key(0, (7, 7))];
     assert_eq!(st.factored_pulse_freq, 3.0, "the pulse rate is kept");
     assert_eq!(st.factored_pulse_phase, phase, "and its phase does not jump");
+  }
+
+  /// Branch-3 queue item 5, pinned for the pitch-drag path: `rehome_to_cell` removes
+  /// and reinserts the SAME `VoiceState` (only target_env/ramp_per_sample/
+  /// pending_attack/freq/glide are touched -- see the dip-then-attack test below), so
+  /// the oscillator's `phase` was never reset here even before this item. This test
+  /// documents/pins that rather than fixing a bug.
+  #[test]
+  fn rehoming_preserves_the_oscillator_phase() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    {
+      let mut g = v.lock().unwrap();
+      g.get_mut(&voice_key(0, (3, 3))).unwrap().phase = 0.42;
+    }
+    a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 35, 0.1);
+    let g = v.lock().unwrap();
+    assert_eq!(
+      g[&voice_key(0, (7, 7))].phase, 0.42,
+      "the oscillator continues through a drag's re-home, dip, and pending re-strike",
+    );
   }
 
   /// A drag retriggers the pluck with a dip-then-attack, so each drag lands a punchy accent
