@@ -13,7 +13,7 @@
 //! Unlike the looper's sink, we key our voices with our own honest `VoiceSource`
 //! variants (`SurfaceFinger` / `SurfaceDrone` / `SurfaceRetired`) rather than reusing
 //! `Accreted` as an opaque handle -- the render engine never reads the key either way,
-//! but our own map-walking code (volume rescale, pedal gains, factored-pulse retune,
+//! but our own map-walking code (fader gains, pedal gains, factored-pulse retune,
 //! the bulk clears) gets to match on what a voice actually is instead of re-deriving
 //! it from a chord offset.
 
@@ -24,19 +24,23 @@ use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 use crate::voices::pluck_envelope;
 
-/// Multiply the per-voice gain of every voice belonging to `grid` by `ratio`, in
-/// place. Drives the *live* volume control: a volume strip sets the loudness of
-/// whatever grid it `controls` (its own, in the current rigs), and moving it must
-/// change notes that are already sounding (a fader, not a radio) -- so we walk the
-/// shared map and rescale that grid's voices by new_fader / old_fader. Ratio (not
-/// assignment) because a voice's gain also carries its timbre slot's `amplitude`,
-/// which must survive fader moves. Future note-ons pick up the new fader from the
-/// shared per-grid state; this only touches the ones already in flight. Sustained
-/// (accreted) voices keep following the fader of the grid they came from -- a drone
-/// you can only kill with `clear` should at least obey a volume pedal.
-pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32) {
-  if !ratio.is_finite() {
-    return; // an old fader gain of 0 never happens (the log fader bottoms at -30 dB)
+/// Aim every voice belonging to `grid` -- fingered and sustained (drone) alike -- at
+/// fader gain `gain`, in place. Drives the *live* volume control: a volume strip sets
+/// the loudness of whatever grid it `controls` (its own, in the current rigs), and
+/// moving it must change notes that are already sounding (a fader, not a radio) -- so
+/// we walk the shared map and ASSIGN `fader_gain` on that grid's voices. Plain
+/// assignment, not a ratio: the volume chain is stored components multiplied at
+/// render time (`voices::accumulate_voices`), so the timbre slot's amplitude lives in
+/// `timbre.gain` untouched and the fader is free to land anywhere, including 0 --
+/// a fader parked at the bottom recovers exactly like the pedal does. Future note-ons
+/// pick up the new fader from the shared per-grid state (via `SurfaceSink::note_on`);
+/// this only touches the ones already in flight. Sustained (accreted) voices keep
+/// following the fader of the grid they came from -- a drone you can only kill with
+/// `clear` should at least obey a volume fader. Retired voices (release tails) are
+/// left alone, like `set_grid_pedal_gain` leaves them.
+pub fn set_grid_fader_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+  if !gain.is_finite() {
+    return;
   }
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
@@ -46,7 +50,7 @@ pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32)
       _ => continue,
     };
     if voice_grid == grid {
-      state.timbre.gain *= ratio;
+      state.fader_gain = gain;
     }
   }
 }
@@ -134,6 +138,12 @@ pub struct SurfaceSink {
   /// writes them). A fresh note starts at ITS grid's current pedal volume --
   /// already settled, no slew-in. Unity when the rig has no pedals.
   pedal_gains: Arc<Mutex<Vec<f32>>>,
+  /// The per-grid volume-fader gains -- the SAME shared `Arc` the volume strip's
+  /// `set_volume` (keys.rs) writes into and `set_grid_fader_gain` walks live. A
+  /// fresh note stamps its `fader_gain` from ITS grid's current entry (unity absent
+  /// a fader or before its first move); `set_grid_fader_gain` re-aims voices already
+  /// in flight. Two views of one vec, never two copies.
+  fader_gains: Arc<Mutex<Vec<f32>>>,
 }
 
 impl SurfaceSink {
@@ -149,6 +159,7 @@ impl SurfaceSink {
     sustain_level: f32,
     decay_secs: f32,
     pedal_gains: Arc<Mutex<Vec<f32>>>,
+    fader_gains: Arc<Mutex<Vec<f32>>>,
   ) -> Self {
     let (sustain_env, decay_per_sample) = pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
     SurfaceSink {
@@ -163,6 +174,7 @@ impl SurfaceSink {
       sustain_env,
       decay_per_sample,
       pedal_gains,
+      fader_gains,
     }
   }
 
@@ -170,6 +182,13 @@ impl SurfaceSink {
   /// its first movement).
   fn pedal_gain(&self) -> f32 {
     let gains = self.pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
+    gains.get(self.grid).copied().unwrap_or(1.0)
+  }
+
+  /// This grid's current volume-fader gain (unity absent a fader or before its
+  /// first move).
+  fn fader_gain(&self) -> f32 {
+    let gains = self.fader_gains.lock().unwrap_or_else(|e| e.into_inner());
     gains.get(self.grid).copied().unwrap_or(1.0)
   }
 
@@ -182,6 +201,7 @@ impl SurfaceSink {
     let id = self.next_id;
     self.next_id += 1;
     let pedal = self.pedal_gain();
+    let fader = self.fader_gain();
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     voices.insert(
       voice_key(self.grid, cell),
@@ -199,7 +219,11 @@ impl SurfaceSink {
         pending_attack: None,
         sustain_env: self.sustain_env,
         decay_per_sample: self.decay_per_sample,
+        // `timbre.gain` is the slot's amplitude alone (the caller no longer bakes the
+        // fader into it -- see keys.rs); the fader and pedal are separate, stored
+        // components multiplied in at render time.
         timbre,
+        fader_gain: fader,
         grid_gain: pedal,
         grid_gain_target: pedal,
         am_phase: 0.0,
@@ -477,7 +501,7 @@ impl SurfaceSink {
 /// volume `gain` (absolute, 0..1; NOT a ratio, so a pedal parked at 0 recovers).
 /// Each voice slews there per sample (`voices::GAIN_SLEW_SECS`), which is what
 /// keeps a sweeping pedal free of zipper noise. Retired voices (release tails) are
-/// left alone, like `rescale_grid_gain` leaves them.
+/// left alone, like `set_grid_fader_gain` leaves them.
 pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
   if !gain.is_finite() {
     return;
@@ -558,7 +582,10 @@ mod tests {
   fn sink(grid: usize, voices: &Arc<Mutex<VoiceMap>>) -> SurfaceSink {
     // sustain_level 1.0 = no pluck decay, so target_env assertions stay exact.
     let pedal_gains = Arc::new(Mutex::new(vec![1.0; 2]));
-    SurfaceSink::new(grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, pedal_gains)
+    let fader_gains = Arc::new(Mutex::new(vec![1.0; 2]));
+    SurfaceSink::new(
+      grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, pedal_gains, fader_gains,
+    )
   }
 
   fn count(voices: &Arc<Mutex<VoiceMap>>) -> usize {
@@ -705,9 +732,10 @@ mod tests {
   fn pedal_gain_targets_this_grids_voices_and_note_ons_start_at_it() {
     let voices = shared();
     let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; 2]));
+    let fader_gains = Arc::new(Mutex::new(vec![1.0_f32; 2]));
     let mut a = SurfaceSink::new(
       0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
-      Arc::clone(&pedal_gains),
+      Arc::clone(&pedal_gains), Arc::clone(&fader_gains),
     );
     let mut b = sink(1, &voices);
     a.note_on((0, 0), 20, Timbre::default(), None);
@@ -867,17 +895,42 @@ mod tests {
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
-    // Grid 0's drone carries a timbre-slot amplitude of 0.8 in its gain; the fader
-    // rescale is a ratio, so that factor must survive.
+    // Grid 0's drone carries a timbre-slot amplitude of 0.8; the fader is a separate,
+    // stored component, so a fader move must leave it alone (no more ratio-into-gain).
     a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() }, None);
     a.sustain_note((3, 4), 20);
     b.note_on((3, 4), 20, Timbre::default(), None);
     b.sustain_note((3, 4), 20);
-    rescale_grid_gain(&voices, 0, 0.25);
+    set_grid_fader_gain(&voices, 0, 0.25);
     let v = voices.lock().unwrap();
-    let g0 = v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain).unwrap();
-    assert!((g0 - 0.2).abs() < 1e-6, "grid 0's drone rescaled by the ratio: {g0}");
-    assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.timbre.gain), Some(1.0), "grid 1's drone untouched");
+    assert_eq!(
+      v.get(&sustain_key(0, 20)).map(|s| s.fader_gain), Some(0.25),
+      "grid 0's drone fader assigned",
+    );
+    assert_eq!(
+      v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain), Some(0.8),
+      "the slot amplitude survives the fader move -- it was never baked in",
+    );
+    assert_eq!(
+      v.get(&sustain_key(1, 20)).map(|s| s.fader_gain), Some(1.0),
+      "grid 1's drone untouched",
+    );
+  }
+
+  #[test]
+  fn the_volume_fader_can_reach_zero_and_recover() {
+    // The old ratio-rescale math could never leave the fader at 0 (a ratio FROM zero
+    // is undefined, hence the pedal's separate absolute field); plain assignment has
+    // no such rule -- 0 is just another value.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() }, None);
+    set_grid_fader_gain(&voices, 0, 0.0);
+    assert_eq!(voices.lock().unwrap()[&voice_key(0, (3, 4))].fader_gain, 0.0, "silenced");
+    set_grid_fader_gain(&voices, 0, 0.5);
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&voice_key(0, (3, 4))].fader_gain, 0.5, "recovers from zero");
+    assert_eq!(v[&voice_key(0, (3, 4))].timbre.gain, 0.8, "slot amplitude untouched throughout");
   }
 
   // ---- glide_voice_to: the per-voice pitch edit primitive ----

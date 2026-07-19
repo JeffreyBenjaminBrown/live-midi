@@ -519,6 +519,7 @@ fn run(
         s.sustain_level,
         s.decay_secs,
         Arc::clone(&pedal_gains),
+        Arc::clone(&gains),
       ),
     };
     handles.push(thread::spawn(move || grid_thread(rt)));

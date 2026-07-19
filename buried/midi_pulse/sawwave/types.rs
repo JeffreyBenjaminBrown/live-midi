@@ -160,7 +160,12 @@ impl Default for AmShapeFamily {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timbre {
   pub waveform: Waveform,
-  pub gain:     f32,   // linear per-voice gain; 1.0 = unity
+  // Linear per-voice gain; 1.0 = unity. For the surfaces runtime this is the
+  // timbre SLOT's amplitude alone -- the grid fader and pedal are separate,
+  // stored components (`VoiceState::fader_gain`, `grid_gain`) multiplied in
+  // at render time, not baked in here. Other runtimes (sawwave/looper) have
+  // no fader or pedal, so this is their whole per-voice gain, unchanged.
+  pub gain:     f32,
   pub am:       Am,    // absolute (Hz-rate) tremolo
   pub fm:       Fm,    // absolute (Hz-rate, cents-depth) vibrato
   pub rel_am:   RelAm, // pitch-relative AM, independent of `am`
@@ -223,13 +228,18 @@ pub struct VoiceState {
   // Deliberately separate from the note's timbre AM.
   pub factored_pulse_freq:   f32,
   pub factored_pulse_phase:  f32,
+  // The grid volume fader (the surfaces runtime's on-screen/rig volume strip):
+  // an ABSOLUTE linear gain, assigned wholesale on every fader move
+  // (`synth::set_grid_fader_gain`) -- never ratio-composed, so 0 is a legal,
+  // recoverable value like any other. 1.0 wherever faders don't exist --
+  // behavior unchanged for every other runtime.
+  pub fader_gain:       f32,
   // The grid volume pedal (the surfaces runtime's EX-P expression pedals): an
-  // ABSOLUTE multiplier in [0,1] on top of `timbre.gain`. `grid_gain` chases
-  // `grid_gain_target` per sample (`voices::GAIN_SLEW_SECS`), so a sweeping pedal
-  // is smooth rather than stepping at CC rate (zipper). Absolute rather than
-  // ratio-composed like the volume fader, because a pedal at 0 must be
-  // recoverable and a ratio from 0 is not. Both 1.0 wherever pedals don't exist
-  // -- behavior unchanged for every other runtime.
+  // ABSOLUTE multiplier in [0,1] on top of `timbre.gain` and `fader_gain`.
+  // `grid_gain` chases `grid_gain_target` per sample (`voices::GAIN_SLEW_SECS`),
+  // so a sweeping pedal is smooth rather than stepping at CC rate (zipper).
+  // Both 1.0 wherever pedals don't exist -- behavior unchanged for every other
+  // runtime.
   pub grid_gain:        f32,
   pub grid_gain_target: f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in

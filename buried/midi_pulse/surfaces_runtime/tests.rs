@@ -721,7 +721,7 @@
 
     // A finger goes down: a voice sounds, and held_all carries it (what the grid
     // thread publishes on note-on, and what the pedal hook reads).
-    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     sink.note_on((3, 3), 20, Timbre::default(), None);
     held_all.lock().unwrap()[0].insert((3, 3), 20);
 
@@ -763,7 +763,7 @@
       Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
 
     // Two notes, both sustained on grid 0, one of them also in edit mode.
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
@@ -799,7 +799,7 @@
     let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
     let edit: Arc<Mutex<Vec<edit::EditState>>> =
       Arc::new(Mutex::new(vec![edit::EditState::new()]));
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 1])));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 1])), Arc::new(Mutex::new(vec![1.0; 1])));
     // Pitch 10: edited only. Pitch 20: edited AND sustained.
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
@@ -1090,8 +1090,8 @@
     feet_on[1].store(true, Ordering::Relaxed);
     assert!(hook("feet", 0, true), "pedal 0 = grid 1's accrete, now consumed");
     hook("feet", 0, false);
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
-    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     a.note_on((5, 5), 20, Timbre::default(), None);
     a.sustain_note((5, 5), 20);
     b.note_on((6, 6), 31, Timbre::default(), None);

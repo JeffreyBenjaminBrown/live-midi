@@ -96,3 +96,4 @@ the divided table -- or supply your own; the mechanics are ready either way.
   fights arose (Shared's fields are all Mutex/Atomic, so every access is `&`, never
   `&mut`); no clones were needed beyond the free per-thread `shared.clone()`. Suite
   green (697 passing).
+- [2026-07-19] Phase 5 done: per-voice volume components (slot amplitude / fader_gain / pedal grid_gain) multiply in the render; ratio-rescale replaced by assignment.

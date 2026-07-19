@@ -20,7 +20,7 @@ use super::hooks::{editmode_press, factored_pulse_press};
 use super::paint::publish_sounding;
 use super::polyrhythm::TempoFactorButton;
 use super::settings::{current_slot, set_slot};
-use super::synth::rescale_grid_gain;
+use super::synth::set_grid_fader_gain;
 use super::{edit, GridThread, VOLUME_DB_RANGE};
 
 /// Route one debounced key edge by which overlay (if any) it falls in.
@@ -251,10 +251,13 @@ pub(super) fn handle_key(
     // drone a mono cut just captured is cut like any other.
     rt.sink.cut_sustained(pitch);
     let slot = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
-    let gain = current_gain(&rt.shared.gains, rt.grid_index);
     let timbre = Timbre {
       waveform: slot.waveform,
-      gain: slot.amplitude * gain,
+      // The timbre slot's amplitude alone -- the fader is a separate, stored
+      // component (`VoiceState::fader_gain`), stamped by `SurfaceSink::note_on`
+      // from the shared per-grid fader gain and multiplied in at render time, not
+      // baked in here.
+      gain: slot.amplitude,
       am: slot.am,
       fm: slot.fm,
       rel_am: slot.rel_am,
@@ -273,8 +276,10 @@ pub(super) fn handle_key(
     // grid's applied tempo, and only while its =1 factored-pulse switch is on.
     let factored_pulse =
       rt.shared.poly.lock().unwrap_or_else(|e| e.into_inner()).factored_pulse_hz(rt.grid_index);
-    // The note's gain = the slot's amplitude x the grid's fader; the live fader
-    // rescale is ratio-based, so the slot amplitude survives later fader moves.
+    // The note's gain components: the slot's amplitude (`timbre.gain`, above) and
+    // the grid's fader (`fader_gain`, stamped by `note_on` from the shared per-grid
+    // state) are stored separately and multiplied at render time, so a later fader
+    // move never has to touch this note's slot amplitude.
     // (A stolen legato voice keeps ITS timbre and gain -- it is the same voice.)
     let stole = legato_from
       .map(|from| {
@@ -601,20 +606,15 @@ pub(super) fn set_volume(rt: &GridThread, pressed_x: i32) {
       *slot = pos;
     }
   }
-  let old_gain = {
+  {
     let mut g = rt.shared.gains.lock().unwrap_or_else(|e| e.into_inner());
-    match g.get_mut(target) {
-      Some(slot) => std::mem::replace(slot, gain),
-      None => gain,
+    if let Some(slot) = g.get_mut(target) {
+      *slot = gain;
     }
-  };
-  // Ratio-rescale the sounding voices so each keeps its timbre slot's amplitude.
-  rescale_grid_gain(&rt.shared.voices, target, gain / old_gain);
-}
-
-pub(super) fn current_gain(gains: &Arc<Mutex<Vec<f32>>>, index: usize) -> f32 {
-  let g = gains.lock().unwrap_or_else(|e| e.into_inner());
-  g.get(index).copied().unwrap_or(1.0)
+  }
+  // Assign the sounding voices' fader component directly -- their timbre slot's
+  // amplitude lives in a separate field and is untouched.
+  set_grid_fader_gain(&rt.shared.voices, target, gain);
 }
 
 /// Record a just-pressed pitch class in the shared trail. The trail holds up to
