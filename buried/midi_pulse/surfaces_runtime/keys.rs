@@ -32,15 +32,15 @@ pub(super) fn handle_key(
   press: bool,
 ) {
   // Selector: a press sets the *controlled* grid's timbre slot (radio; future notes).
-  if let Some(slot) = slot_for_selector_cell(rt.selector_rect, cell) {
+  if let Some(slot) = slot_for_selector_cell(rt.overlays.selector_rect, cell) {
     if press {
-      set_slot(&rt.selected, rt.controls_index, slot);
+      set_slot(&rt.shared.selected, rt.knobs.controls_index, slot);
     }
     return;
   }
   // Volume strip: a press sets the *controlled* grid's loudness -- live (rescales its
   // sounding voices) and for its future notes.
-  if in_overlay(rt.volume_rect, cell) {
+  if in_overlay(rt.overlays.volume_rect, cell) {
     if press {
       set_volume(rt, cell.0);
     }
@@ -48,31 +48,31 @@ pub(super) fn handle_key(
   }
   // Distortion toggle: key-down flips THIS grid's switch (the audio callback routes
   // each grid's voices by its own flag); key-up does nothing.
-  if in_overlay(rt.distortion_rect, cell) {
+  if in_overlay(rt.overlays.distortion_rect, cell) {
     if press {
-      let _ = rt.distortion_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
+      let _ = rt.shared.distortion_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
   // Slide toggle: key-down flips THIS grid's switch; key-up does nothing.
-  if in_overlay(rt.slide_rect, cell) {
+  if in_overlay(rt.overlays.slide_rect, cell) {
     if press {
-      let _ = rt.slide_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
+      let _ = rt.shared.slide_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
   // Mono toggle: key-down flips THIS grid's switch; key-up does nothing.
-  if in_overlay(rt.mono_rect, cell) {
+  if in_overlay(rt.overlays.mono_rect, cell) {
     if press {
-      let _ = rt.mono_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
+      let _ = rt.shared.mono_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
   // Feet-accrete toggle: key-down flips THIS grid's switch (does the softstep
   // mirror this monome's accrete bank?); key-up does nothing.
-  if in_overlay(rt.feet_accrete_rect, cell) {
+  if in_overlay(rt.overlays.feet_accrete_rect, cell) {
     if press {
-      let _ = rt.feet_accrete_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
+      let _ = rt.shared.feet_accrete_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
     }
     return;
   }
@@ -81,8 +81,8 @@ pub(super) fn handle_key(
   // and fingered voices keep their other reasons), accrete puts every sounding
   // voice into it. Key-down only; key-up douses the LED.
   for (rect, down_flag, control) in [
-    (rt.editmode_clear_rect, 0, EditmodeControlKind::Clear),
-    (rt.editmode_accrete_rect, 1, EditmodeControlKind::Accrete),
+    (rt.overlays.editmode_clear_rect, 0, EditmodeControlKind::Clear),
+    (rt.overlays.editmode_accrete_rect, 1, EditmodeControlKind::Accrete),
   ] {
     if in_overlay(rect, cell) {
       if down_flag == 0 {
@@ -93,7 +93,8 @@ pub(super) fn handle_key(
       if press {
         let (release_secs, sample_rate) = rt.sink.release_params();
         editmode_press(
-          rt.grid_index, control, &rt.edit, &rt.accrete, &rt.held_all, &rt.voices,
+          rt.grid_index, control,
+          &rt.shared.edit, &rt.shared.accrete, &rt.shared.held_all, &rt.shared.voices,
           release_secs, sample_rate,
         );
       }
@@ -104,12 +105,13 @@ pub(super) fn handle_key(
   // GLOBAL tempo; the tempo-factor buttons and the =1 factored-pulse switch act on
   // THIS grid, through the same `factored_pulse_press` as the softstep pedals --
   // so a multiplier retunes this grid's edit-mode notes exactly as a pedal would.
-  if in_overlay(rt.poly_rect, cell) {
+  if in_overlay(rt.overlays.poly_rect, cell) {
     if press {
-      let (dx, dy) = (cell.0 - rt.poly_rect[0], cell.1 - rt.poly_rect[1]);
+      let (dx, dy) = (cell.0 - rt.overlays.poly_rect[0], cell.1 - rt.overlays.poly_rect[1]);
       let factor = match (dx, dy) {
         (2, 0) => {
-          rt.poly.lock().unwrap_or_else(|e| e.into_inner()).tap(Instant::now(), rt.tap_window);
+          rt.shared.poly.lock().unwrap_or_else(|e| e.into_inner())
+            .tap(Instant::now(), rt.knobs.tap_window);
           None
         }
         (0, 0) => Some(TempoFactorButton::Times3),
@@ -120,7 +122,10 @@ pub(super) fn handle_key(
         _ => None,
       };
       if let Some(factor) = factor {
-        factored_pulse_press(rt.grid_index, factor, &rt.poly, &rt.edit, &rt.held_all, &rt.voices);
+        factored_pulse_press(
+          rt.grid_index, factor,
+          &rt.shared.poly, &rt.shared.edit, &rt.shared.held_all, &rt.shared.voices,
+        );
       }
     }
     return;
@@ -128,26 +133,26 @@ pub(super) fn handle_key(
   // The accrete (sustain) buttons. Each grid's trio acts on ITS OWN bank (misc.org
   // "two monome-specific accrete banks"). Decisions are made under the accrete lock,
   // voices are touched after it drops (the module's no-nested-locks rule).
-  if in_overlay(rt.clear_rect, cell) {
+  if in_overlay(rt.overlays.clear_rect, cell) {
     if press {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_clear();
+      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_clear();
       // Clear removes only the SUSTAIN reason (symmetric with editmode clear): a
       // drone whose pitch is in edit mode keeps ringing -- audibly, so it is not
       // the old silent "dancing ghost" -- until editmode clear (or its exit
       // gesture) takes that reason too.
-      let edited: HashSet<i32> = rt.edit.lock().unwrap_or_else(|e| e.into_inner())
+      let edited: HashSet<i32> = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner())
         [rt.grid_index]
         .pitches()
         .collect();
       rt.sink.release_sustained(&edited);
     } else {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_clear();
+      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_clear();
     }
     return;
   }
-  if in_overlay(rt.needs_holding_rect, cell) {
+  if in_overlay(rt.overlays.needs_holding_rect, cell) {
     if press {
-      let activated = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+      let activated = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
         .press_needs_holding();
       if activated.accrete {
         capture_grid_held(rt);
@@ -158,51 +163,51 @@ pub(super) fn handle_key(
     }
     return;
   }
-  if in_overlay(rt.accrete_rect, cell) {
+  if in_overlay(rt.overlays.accrete_rect, cell) {
     if press {
       let activated =
-        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_accrete();
+        rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_accrete();
       if activated {
         capture_grid_held(rt);
       }
     } else {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_accrete();
+      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_accrete();
     }
     return;
   }
   // The erase button (misc.org "erase button"): accrete's shape under the same
   // needs-holding switch, but pressed pitches LEAVE this grid's sustained set
   // (each keeps sounding until its own finger lifts).
-  if in_overlay(rt.erase_rect, cell) {
+  if in_overlay(rt.overlays.erase_rect, cell) {
     if press {
       let activated =
-        rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_erase();
+        rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_erase();
       if activated {
         erase_grid_held(rt);
       }
     } else {
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_erase();
+      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_erase();
     }
     return;
   }
   // Scroll pad: a press moves THIS grid's play register.
-  if let Some(shift) = shift_for_cell(rt.scroll_rect, cell) {
+  if let Some(shift) = shift_for_cell(rt.overlays.scroll_rect, cell) {
     if press {
-      *register += register_delta(shift, rt.x_step, rt.y_step, rt.edo);
+      *register += register_delta(shift, rt.tuning.x_step, rt.tuning.y_step, rt.tuning.edo);
     }
     return;
   }
   // Otherwise it is an edo play cell -- ignore presses outside the play grid.
-  let [ex0, ey0, ex1, ey1] = rt.edo_rect;
+  let [ex0, ey0, ex1, ey1] = rt.overlays.edo_rect;
   if cell.0 < ex0 || cell.0 > ex1 || cell.1 < ey0 || cell.1 > ey1 {
     return;
   }
   if press {
-    let pitch = step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1);
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, *register, cell.0, cell.1);
     // Optional note echo (`echo_input`, off by default): mirrors the sawwave runtime,
     // but stays quiet unless asked so a startup warning isn't scrolled off screen.
-    if rt.echo_input {
-      let f = rt.fund * 2f64.powf(pitch as f64 / rt.edo as f64);
+    if rt.knobs.echo_input {
+      let f = rt.tuning.fund * 2f64.powf(pitch as f64 / rt.tuning.edo as f64);
       eprintln!("press grid={} x={:>2} y={:>2} f={f:.2} Hz", rt.grid_index, cell.0, cell.1);
     }
     // Per-voice edit mode, BEFORE the play path: this press may be an edit trigger or
@@ -211,8 +216,8 @@ pub(super) fn handle_key(
       // A trigger or a drag: no note sounds, but `held` may have MOVED (a drag
       // re-pitches a finger's voice), so the shared maps still have to be republished
       // or the other grid reflects a pitch that is no longer sounding.
-      publish_held(&rt.held_all, rt.grid_index, held);
-      publish_sounding(&rt.sounding, rt.grid_index, held, rt.edo);
+      publish_held(&rt.shared.held_all, rt.grid_index, held);
+      publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
       return;
     }
     // Mono: a new note cuts this grid's other fingered notes first. With slide on
@@ -222,8 +227,8 @@ pub(super) fn handle_key(
     // the ordinary release path, so accrete still captures them -- and a cut that
     // sustains (accrete) becomes a drone as usual and cannot be stolen.
     let mut legato_from: Option<(i32, i32)> = None;
-    if rt.mono_on[rt.grid_index].load(Ordering::Relaxed) {
-      let slide = rt.slide_on[rt.grid_index].load(Ordering::Relaxed);
+    if rt.shared.mono_on[rt.grid_index].load(Ordering::Relaxed) {
+      let slide = rt.shared.slide_on[rt.grid_index].load(Ordering::Relaxed);
       let mut others: Vec<((i32, i32), i32)> =
         held.iter().filter(|(c, _)| **c != cell).map(|(c, p)| (*c, *p)).collect();
       // The nearest cut pitch is the legato source (with mono playing, the cut is
@@ -245,8 +250,8 @@ pub(super) fn handle_key(
     // replacing note re-drones it. After the mono block, so a colliding-pitch
     // drone a mono cut just captured is cut like any other.
     rt.sink.cut_sustained(pitch);
-    let slot = rt.timbres[current_slot(&rt.selected, rt.grid_index)];
-    let gain = current_gain(&rt.gains, rt.grid_index);
+    let slot = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
+    let gain = current_gain(&rt.shared.gains, rt.grid_index);
     let timbre = Timbre {
       waveform: slot.waveform,
       gain: slot.amplitude * gain,
@@ -258,36 +263,43 @@ pub(super) fn handle_key(
     // Slide: while on, glide into this note -- legato from the voice mono just
     // cut, or, with no stolen voice, by re-triggering the nearest recently-
     // released pitch (consuming it as a source); otherwise a plain note.
-    let source = if legato_from.is_none() && rt.slide_on[rt.grid_index].load(Ordering::Relaxed) {
-      rt.slide.pick(pitch, Instant::now(), rt.slide_window)
+    let slide_on = rt.shared.slide_on[rt.grid_index].load(Ordering::Relaxed);
+    let source = if legato_from.is_none() && slide_on {
+      rt.slide.pick(pitch, Instant::now(), rt.knobs.slide_window)
     } else {
       None
     };
     // The factored pulse at THIS note's onset (fixed for the note's life): this
     // grid's applied tempo, and only while its =1 factored-pulse switch is on.
-    let factored_pulse = rt.poly.lock().unwrap_or_else(|e| e.into_inner()).factored_pulse_hz(rt.grid_index);
+    let factored_pulse =
+      rt.shared.poly.lock().unwrap_or_else(|e| e.into_inner()).factored_pulse_hz(rt.grid_index);
     // The note's gain = the slot's amplitude x the grid's fader; the live fader
     // rescale is ratio-based, so the slot amplitude survives later fader moves.
     // (A stolen legato voice keeps ITS timbre and gain -- it is the same voice.)
     let stole = legato_from
-      .map(|from| rt.sink.note_on_legato(from, cell, pitch, rt.slide_duration_secs, factored_pulse))
+      .map(|from| {
+        rt.sink.note_on_legato(from, cell, pitch, rt.knobs.slide_duration_secs, factored_pulse)
+      })
       .unwrap_or(false);
     if !stole {
       match source {
-        Some(from) => {
-          rt.sink.note_on_gliding(cell, pitch, from, timbre, rt.slide_duration_secs, factored_pulse)
-        }
+        Some(from) => rt.sink.note_on_gliding(
+          cell, pitch, from, timbre, rt.knobs.slide_duration_secs, factored_pulse,
+        ),
         None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
       }
     }
     held.insert(cell, pitch);
-    rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_played(pitch);
-    push_trail(&rt.trail, pitch.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
+    rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_played(pitch);
+    push_trail(
+      &rt.shared.trail, pitch.rem_euclid(rt.tuning.edo), rt.tuning.edo,
+      rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
+    );
   } else {
     release_cell(rt, held, cell);
   }
-  publish_held(&rt.held_all, rt.grid_index, held);
-  publish_sounding(&rt.sounding, rt.grid_index, held, rt.edo);
+  publish_held(&rt.shared.held_all, rt.grid_index, held);
+  publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
 }
 
 /// The one release path (finger up, or a mono cut): a note in the sustained set --
@@ -302,14 +314,15 @@ pub(super) fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i
   };
   // A note rings without a finger for either of two independent reasons: it is
   // sustained (pedal, or the per-note button), or it is being edited. Either keeps it.
-  let sustains = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+  let sustains = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
     .note_released_sustains(pitch);
-  let editing = rt.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].is_editing(pitch);
+  let editing =
+    rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].is_editing(pitch);
   if sustains || editing {
     rt.sink.sustain_note(cell, pitch);
   } else {
     rt.sink.note_off(cell);
-    let mono = rt.mono_on[rt.grid_index].load(Ordering::Relaxed);
+    let mono = rt.shared.mono_on[rt.grid_index].load(Ordering::Relaxed);
     rt.slide.note_released(pitch, Instant::now(), mono);
   }
   held.remove(&cell);
@@ -328,7 +341,7 @@ pub(super) fn cut_for_legato(
   let Some(pitch) = held.get(&cell).copied() else {
     return false;
   };
-  let keep = rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+  let keep = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
     .note_released_sustains(pitch);
   held.remove(&cell);
   if keep {
@@ -357,7 +370,7 @@ pub(super) fn publish_held(
 /// edit-mode voice"; an edited drone is a sounding voice like any other). Snapshot
 /// each registry first, then feed the bank -- short, non-nested locks.
 pub(super) fn capture_grid_held(rt: &GridThread) {
-  capture_grid_held_into(&rt.held_all, &rt.accrete, &rt.edit, rt.grid_index);
+  capture_grid_held_into(&rt.shared.held_all, &rt.shared.accrete, &rt.shared.edit, rt.grid_index);
 }
 
 /// `capture_grid_held` for callers that aren't a grid thread (the pedal hook).
@@ -386,7 +399,7 @@ pub(super) fn capture_grid_held_into(
 /// the notes currently held on this grid leave the sustained set (they keep
 /// sounding under their fingers).
 pub(super) fn erase_grid_held(rt: &GridThread) {
-  erase_grid_held_into(&rt.held_all, &rt.accrete, rt.grid_index);
+  erase_grid_held_into(&rt.shared.held_all, &rt.shared.accrete, rt.grid_index);
 }
 
 pub(super) fn erase_grid_held_into(
@@ -414,11 +427,11 @@ pub(super) fn held_pitches(
 /// current register. Usually one, but a grid can hold the same pitch twice (with
 /// `x_step = 9`, `(x, y)` and `(x+1, y-9)` collide), and Jeff wants both to dance.
 pub(super) fn cells_for_pitch(rt: &GridThread, register: i32, pitch: i32) -> Vec<(i32, i32)> {
-  let [ex0, ey0, ex1, ey1] = rt.edo_rect;
+  let [ex0, ey0, ex1, ey1] = rt.overlays.edo_rect;
   let mut out = vec![];
   for y in ey0..=ey1 {
     for x in ex0..=ex1 {
-      if step_for_cell(rt.x_step, rt.y_step, register, x, y) == pitch {
+      if step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, x, y) == pitch {
         out.push((x, y));
       }
     }
@@ -447,10 +460,10 @@ pub(super) fn handle_edit_press(
   // rather than pitch-defined -- Jeff pinned them to physical position so they don't
   // move when the tuning changes. Press BELOW a note to edit it, ABOVE it to sustain
   // it. A note on the top or bottom row therefore has no trigger cell on that side.
-  let on_grid = |y: i32| y >= rt.edo_rect[1] && y <= rt.edo_rect[3];
+  let on_grid = |y: i32| y >= rt.overlays.edo_rect[1] && y <= rt.overlays.edo_rect[3];
   let neighbour = |dy: i32| {
     on_grid(cell.1 + dy)
-      .then(|| step_for_cell(rt.x_step, rt.y_step, *register, cell.0, cell.1 + dy))
+      .then(|| step_for_cell(rt.tuning.x_step, rt.tuning.y_step, *register, cell.0, cell.1 + dy))
   };
   let edit_target = neighbour(-1); // the note above the pressed cell
   let sustain_target = neighbour(1); // the note below it
@@ -459,7 +472,7 @@ pub(super) fn handle_edit_press(
   // (pedal or per-note button), or being edited. Both triggers ask only "is it
   // audible", so all three count.
   let sustained: HashSet<i32> = {
-    let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+    let banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
     banks[rt.grid_index].sustained_pitches().collect()
   };
 
@@ -473,7 +486,7 @@ pub(super) fn handle_edit_press(
     Dragged(i32, i32),
   }
   let act = {
-    let mut states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+    let mut states = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner());
     let editing: HashSet<i32> = states[rt.grid_index].pitches().collect();
     let is_sounding = |p: i32| {
       held.values().any(|h| *h == p) || sustained.contains(&p) || editing.contains(&p)
@@ -520,7 +533,7 @@ pub(super) fn handle_edit_press(
       }
     }
     Act::Sustain(pitch, on) => {
-      let mut banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+      let mut banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
       if on {
         banks[rt.grid_index].sustain_pitch(pitch);
       } else {
@@ -530,7 +543,7 @@ pub(super) fn handle_edit_press(
       if !on {
         // Same rule as leaving edit mode, and for the same reason: this is about the
         // DRONE, whose reasons are sustained-or-edited. A finger is not one of them.
-        let editing = rt.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        let editing = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
           .is_editing(pitch);
         if !editing {
           rt.sink.cut_sustained(pitch);
@@ -548,7 +561,7 @@ pub(super) fn handle_edit_press(
       // mode used to die, because it stayed a drone that the exit cut while the drag
       // finger -- invisible to `held` -- was still down.
       let old_cell = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);
-      rt.sink.rehome_to_cell(old_cell, from, cell, to, rt.slide_duration_secs);
+      rt.sink.rehome_to_cell(old_cell, from, cell, to, rt.knobs.slide_duration_secs);
       if let Some(oc) = old_cell {
         held.remove(&oc);
       }
@@ -556,8 +569,12 @@ pub(super) fn handle_edit_press(
       // Accrete and the trail both track PITCHES, so a moved voice is re-filed under
       // its new one -- otherwise a clear would miss it, and the trail would keep
       // showing a pitch that is no longer sounding.
-      rt.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_moved(from, to);
-      push_trail(&rt.trail, to.rem_euclid(rt.edo), rt.edo, rt.trail_clobber_radius, rt.trails_max);
+      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .note_moved(from, to);
+      push_trail(
+        &rt.shared.trail, to.rem_euclid(rt.tuning.edo), rt.tuning.edo,
+        rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
+      );
     }
   }
   false
@@ -571,28 +588,28 @@ pub(super) fn in_overlay(rect: [i32; 4], cell: (i32, i32)) -> bool {
 /// Apply a volume-strip press at absolute column `pressed_x`: set the controlled grid's
 /// position + gain and rescale its live voices (the fader is *live*, per Jeff).
 pub(super) fn set_volume(rt: &GridThread, pressed_x: i32) {
-  let cells = volume_cells(rt.volume_rect);
+  let cells = volume_cells(rt.overlays.volume_rect);
   if cells <= 0 {
     return;
   }
-  let pos = (pressed_x - rt.volume_rect[0]).clamp(0, cells - 1);
+  let pos = (pressed_x - rt.overlays.volume_rect[0]).clamp(0, cells - 1);
   let gain = volume_gain_for_pos(pos, cells, VOLUME_DB_RANGE);
-  let target = rt.volume_controls_index;
+  let target = rt.knobs.volume_controls_index;
   {
-    let mut vp = rt.volume_pos.lock().unwrap_or_else(|e| e.into_inner());
+    let mut vp = rt.shared.volume_pos.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(slot) = vp.get_mut(target) {
       *slot = pos;
     }
   }
   let old_gain = {
-    let mut g = rt.gains.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = rt.shared.gains.lock().unwrap_or_else(|e| e.into_inner());
     match g.get_mut(target) {
       Some(slot) => std::mem::replace(slot, gain),
       None => gain,
     }
   };
   // Ratio-rescale the sounding voices so each keeps its timbre slot's amplitude.
-  rescale_grid_gain(&rt.voices, target, gain / old_gain);
+  rescale_grid_gain(&rt.shared.voices, target, gain / old_gain);
 }
 
 pub(super) fn current_gain(gains: &Arc<Mutex<Vec<f32>>>, index: usize) -> f32 {

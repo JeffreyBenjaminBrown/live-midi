@@ -69,18 +69,18 @@
     // toggles -- but NO volume strip (dropped per misc.org "drop the amplitude
     // row": [[timbres]] amplitude replaced it).
     for g in &s.grids {
-      assert_ne!(g.scroll_rect, NO_RECT, "grid {:?} has a scroll pad", g.monome_id);
-      assert_ne!(g.selector_rect, NO_RECT, "grid {:?} has a selector", g.monome_id);
-      assert_eq!(g.volume_rect, NO_RECT, "grid {:?} has no volume strip", g.monome_id);
-      assert_eq!(g.clear_rect, [0, 15, 0, 15], "grid {:?} clear button", g.monome_id);
-      assert_eq!(g.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
-      assert_eq!(g.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
-      assert_eq!(g.erase_rect, [1, 14, 1, 14], "grid {:?} erase button", g.monome_id);
-      assert_eq!(g.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
-      assert_eq!(g.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
-      assert_eq!(g.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
-      assert_eq!(g.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
-      assert_eq!(g.poly_rect, [13, 0, 15, 1], "grid {:?} polyrhythm pad", g.monome_id);
+      assert_ne!(g.overlays.scroll_rect, NO_RECT, "grid {:?} has a scroll pad", g.monome_id);
+      assert_ne!(g.overlays.selector_rect, NO_RECT, "grid {:?} has a selector", g.monome_id);
+      assert_eq!(g.overlays.volume_rect, NO_RECT, "grid {:?} has no volume strip", g.monome_id);
+      assert_eq!(g.overlays.clear_rect, [0, 15, 0, 15], "grid {:?} clear button", g.monome_id);
+      assert_eq!(g.overlays.needs_holding_rect, [1, 15, 1, 15], "grid {:?} needs-holding", g.monome_id);
+      assert_eq!(g.overlays.accrete_rect, [2, 15, 2, 15], "grid {:?} accrete button", g.monome_id);
+      assert_eq!(g.overlays.erase_rect, [1, 14, 1, 14], "grid {:?} erase button", g.monome_id);
+      assert_eq!(g.overlays.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
+      assert_eq!(g.overlays.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
+      assert_eq!(g.overlays.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
+      assert_eq!(g.overlays.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
+      assert_eq!(g.overlays.poly_rect, [13, 0, 15, 1], "grid {:?} polyrhythm pad", g.monome_id);
     }
     // Deliberately NO assertions on tunables here (the distortion curve, the trail,
     // the slide/tap windows). This test pins the rig's *architecture* -- which windows
@@ -189,23 +189,25 @@
       monome_id: id.to_string(),
       listen_port: 9000,
       prefix: format!("/{id}"),
-      edo_rect: [0, 0, 15, 15],
-      scroll_rect: NO_RECT,
-      selector_rect: if has_selector { [0, 0, 3, 0] } else { NO_RECT },
       controls_index,
-      volume_rect: NO_RECT,
       volume_controls_index: controls_index,
-      clear_rect: NO_RECT,
-      needs_holding_rect: NO_RECT,
-      accrete_rect: NO_RECT,
-      erase_rect: NO_RECT,
-      distortion_rect: NO_RECT,
-      slide_rect: NO_RECT,
-      mono_rect: NO_RECT,
-      feet_accrete_rect: NO_RECT,
-      poly_rect: NO_RECT,
-      editmode_clear_rect: NO_RECT,
-      editmode_accrete_rect: NO_RECT,
+      overlays: Overlays {
+        edo_rect: [0, 0, 15, 15],
+        scroll_rect: NO_RECT,
+        selector_rect: if has_selector { [0, 0, 3, 0] } else { NO_RECT },
+        volume_rect: NO_RECT,
+        clear_rect: NO_RECT,
+        needs_holding_rect: NO_RECT,
+        accrete_rect: NO_RECT,
+        erase_rect: NO_RECT,
+        distortion_rect: NO_RECT,
+        slide_rect: NO_RECT,
+        mono_rect: NO_RECT,
+        feet_accrete_rect: NO_RECT,
+        poly_rect: NO_RECT,
+        editmode_clear_rect: NO_RECT,
+        editmode_accrete_rect: NO_RECT,
+      },
     }
   }
 
@@ -918,7 +920,7 @@
       "this rig deliberately binds no needs_holding pedal",
     );
     for grid in &s.grids {
-      assert_eq!(grid.needs_holding_rect, NO_RECT, "nor an on-grid one");
+      assert_eq!(grid.overlays.needs_holding_rect, NO_RECT, "nor an on-grid one");
       assert!(
         !grid_has_needs_holding_control(&rig, grid),
         "so grid {:?} can never leave whatever mode it starts in",

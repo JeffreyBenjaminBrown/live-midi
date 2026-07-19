@@ -321,9 +321,9 @@ fn run(
   let mut volume_pos_init = Vec::with_capacity(num_grids);
   let mut gains_init = Vec::with_capacity(num_grids);
   for g in &s.grids {
-    let cells = volume_cells(g.volume_rect);
+    let cells = volume_cells(g.overlays.volume_rect);
     if cells > 0 {
-      let pos = (VOLUME_DEFAULT_COL - g.volume_rect[0]).clamp(0, cells - 1);
+      let pos = (VOLUME_DEFAULT_COL - g.overlays.volume_rect[0]).clamp(0, cells - 1);
       volume_pos_init.push(pos);
       gains_init.push(volume_gain_for_pos(pos, cells, VOLUME_DB_RANGE));
     } else {
@@ -430,6 +430,36 @@ fn run(
   print_missing_report(&plan.report);
   println!("surfaces running; Ctrl-C to exit.");
 
+  // The tuning inputs are one instrument-wide register geometry, identical for every
+  // grid thread; built once and `Copy`-ed into each `GridThread` below.
+  let tuning = Tuning {
+    x_step: s.x_step,
+    y_step: s.y_step,
+    edo: s.edo,
+    fund: s.fund,
+    grid_w: s.grid_w,
+    grid_h: s.grid_h,
+  };
+  // The Arc'd cross-grid handles, bundled once so each grid thread below just clones
+  // the whole bundle (cheap: it's all `Arc::clone`) instead of naming every field.
+  let shared = Shared {
+    selected: Arc::clone(&selected),
+    sounding: Arc::clone(&sounding),
+    trail: Arc::clone(&trail),
+    volume_pos: Arc::clone(&volume_pos),
+    gains: Arc::clone(&gains),
+    accrete: Arc::clone(&accrete),
+    held_all: Arc::clone(&held_all),
+    distortion_on: Arc::clone(&distortion_on),
+    slide_on: Arc::clone(&slide_on),
+    mono_on: Arc::clone(&mono_on),
+    feet_accrete_on: Arc::clone(&feet_accrete_on),
+    poly: Arc::clone(&poly),
+    edit: Arc::clone(&edit),
+    live: Arc::clone(&live),
+    voices: Arc::clone(&voices),
+  };
+
   // Spawn one key/LED loop per PRESENT grid (absent grids have `None` for both their
   // socket and their device, so they are skipped).
   let mut handles = Vec::with_capacity(num_grids);
@@ -441,8 +471,23 @@ fn run(
     // A cross-controlling waveform selector / volume strip whose TARGET grid is absent
     // can't do anything, so it does not load: its cells revert to plain play cells
     // (and it's named in the red report). Self-controlling strips are untouched.
-    let selector_rect = if plan.drop_selector[grid_index] { NO_RECT } else { g.selector_rect };
-    let volume_rect = if plan.drop_volume[grid_index] { NO_RECT } else { g.volume_rect };
+    let mut overlays = g.overlays;
+    if plan.drop_selector[grid_index] {
+      overlays.selector_rect = NO_RECT;
+    }
+    if plan.drop_volume[grid_index] {
+      overlays.volume_rect = NO_RECT;
+    }
+    let knobs = Knobs {
+      trail_clobber_radius: s.trail_clobber_radius,
+      trails_max: s.trails_max,
+      slide_window: s.slide_window,
+      slide_duration_secs: s.slide_duration_secs,
+      tap_window: s.tap_window,
+      echo_input: s.echo_input,
+      controls_index: g.controls_index,
+      volume_controls_index: g.volume_controls_index,
+    };
     let rt = GridThread {
       grid_index,
       sock,
@@ -454,55 +499,15 @@ fn run(
       // flashing; a varibright grid sends native levels. Keyed on the serial id, which --
       // unlike the type string ("monome 256" for both) -- distinguishes them.
       monobright: is_monobright(&dev.id),
-      edo_rect: g.edo_rect,
-      scroll_rect: g.scroll_rect,
-      selector_rect,
-      controls_index: g.controls_index,
-      volume_rect,
-      volume_controls_index: g.volume_controls_index,
-      clear_rect: g.clear_rect,
-      needs_holding_rect: g.needs_holding_rect,
-      accrete_rect: g.accrete_rect,
-      erase_rect: g.erase_rect,
-      distortion_rect: g.distortion_rect,
-      slide_rect: g.slide_rect,
-      mono_rect: g.mono_rect,
-      feet_accrete_rect: g.feet_accrete_rect,
-      poly_rect: g.poly_rect,
-      editmode_clear_rect: g.editmode_clear_rect,
-      editmode_accrete_rect: g.editmode_accrete_rect,
+      timbres: s.timbres,
+      overlays,
       editmode_clear_down: false,
       editmode_accrete_down: false,
-      grid_w: s.grid_w,
-      grid_h: s.grid_h,
-      x_step: s.x_step,
-      y_step: s.y_step,
-      edo: s.edo,
-      fund: s.fund,
-      echo_input: s.echo_input,
-      trail_clobber_radius: s.trail_clobber_radius,
-      trails_max: s.trails_max,
-      timbres: s.timbres,
-      selected: Arc::clone(&selected),
-      sounding: Arc::clone(&sounding),
-      trail: Arc::clone(&trail),
-      volume_pos: Arc::clone(&volume_pos),
-      gains: Arc::clone(&gains),
-      accrete: Arc::clone(&accrete),
-      held_all: Arc::clone(&held_all),
-      distortion_on: Arc::clone(&distortion_on),
-      slide_on: Arc::clone(&slide_on),
-      mono_on: Arc::clone(&mono_on),
-      feet_accrete_on: Arc::clone(&feet_accrete_on),
-      poly: Arc::clone(&poly),
-      tap_window: s.tap_window,
-      live: Arc::clone(&live),
+      tuning,
+      knobs,
+      shared: shared.clone(),
       slide: SlideCandidates::new(),
-      edit: Arc::clone(&edit),
       started: Instant::now(),
-      slide_window: s.slide_window,
-      slide_duration_secs: s.slide_duration_secs,
-      voices: Arc::clone(&voices),
       sink: SurfaceSink::new(
         grid_index,
         Arc::clone(&voices),
@@ -545,60 +550,14 @@ fn run(
   Ok(())
 }
 
-/// Everything one grid thread owns for the run.
-struct GridThread {
-  grid_index: usize,
-  sock: UdpSocket,
-  prefix: String,
-  listen_port: u16,
-  device_id: String,
-  device_port: u16,
-  /// A monobright grid fakes DIM by flashing; a varibright grid sends native levels.
-  monobright: bool,
-  edo_rect: [i32; 4],
-  scroll_rect: [i32; 4],
-  selector_rect: [i32; 4],
-  /// The grid index this grid's waveform selector re-timbres.
-  controls_index: usize,
-  /// The four selectable timbres (shared instrument-wide table, copied per thread).
-  timbres: [TimbreSlot; SELECTOR_CELLS],
-  volume_rect: [i32; 4],
-  /// The grid index this grid's volume strip sets the loudness of.
-  volume_controls_index: usize,
-  /// The accrete (sustain) buttons' cells on this grid (`NO_RECT` if absent).
-  clear_rect: [i32; 4],
-  needs_holding_rect: [i32; 4],
-  accrete_rect: [i32; 4],
-  erase_rect: [i32; 4],
-  /// The global-distortion toggle's cell on this grid (`NO_RECT` if absent).
-  distortion_rect: [i32; 4],
-  /// The slide / mono toggles' cells on this grid (`NO_RECT` if absent).
-  slide_rect: [i32; 4],
-  mono_rect: [i32; 4],
-  /// The feet-accrete toggle's cell on this grid (`NO_RECT` if absent).
-  feet_accrete_rect: [i32; 4],
-  /// The polyrhythm pad's rect on this grid (`NO_RECT` if absent).
-  poly_rect: [i32; 4],
-  /// The editmode_control buttons' cells (`NO_RECT` if absent), and whether each
-  /// is physically down right now (they light while pressed, like accrete's clear).
-  editmode_clear_rect: [i32; 4],
-  editmode_accrete_rect: [i32; 4],
-  editmode_clear_down: bool,
-  editmode_accrete_down: bool,
-  grid_w: i32,
-  grid_h: i32,
-  x_step: i32,
-  y_step: i32,
-  edo: i32,
-  /// Tuning fundamental (Hz), for the optional `echo_input` note echo.
-  fund: f64,
-  /// Echo each fingered note on this grid to stderr; off unless the rig sets
-  /// `echo_input`. Kept off so a startup warning isn't scrolled away as you play.
-  echo_input: bool,
-  /// Trail clobber radius as a divisor of the octave (see `Settings`).
-  trail_clobber_radius: i32,
-  /// Max distinct pitch classes the shared trail keeps.
-  trails_max: usize,
+/// The Arc'd cross-grid handles every grid thread shares: state behind a `Mutex` or
+/// `AtomicBool`, so every field here is read through `&Shared` alone -- no field ever
+/// needs `&mut Shared` (the interior mutability is the point). `Clone` is a bundle of
+/// Arc clones (free), so a whole `Shared` can be handed to a new thread, or re-cloned
+/// to dodge a borrow fight, without a second thought (cleaning phase 4: "if that means
+/// more clones, whatever").
+#[derive(Clone)]
+struct Shared {
   /// Per-grid selected timbre slot; written by whichever grid's selector controls it.
   selected: Arc<Mutex<Vec<usize>>>,
   /// Per-grid sounding pitch-classes; the union drives cross-grid note reflection.
@@ -625,23 +584,82 @@ struct GridThread {
   feet_accrete_on: Arc<Vec<AtomicBool>>,
   /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
-  tap_window: Duration,
-  /// THIS grid's recently-released notes (slide sources) + the slide knobs.
-  slide: SlideCandidates,
   /// Which of THIS grid's pitches are in per-voice edit mode. Grid-local and
   /// pitch-keyed: never mirrored to the other grid, never octave-duplicated.
   edit: Arc<Mutex<Vec<edit::EditState>>>,
-  /// When this runtime started. The diamond dance's phase is a pure function of
-  /// elapsed time from here, so every dance on the instrument turns in step -- that
-  /// is the whole reason a skipped corner is not allowed to retime its dance.
-  started: Instant,
-  slide_window: Duration,
-  slide_duration_secs: f32,
-  /// The hot-reloadable parameters; refreshed into the fields above when the
+  /// The hot-reloadable parameters; refreshed into `GridThread`'s own fields when the
   /// generation moves (see `refresh_live`).
   live: Arc<Live>,
   /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
+}
+
+/// The tuning inputs, identical across every grid in one run (one instrument-wide
+/// tuning + one register geometry): the register-math step sizes, the EDO, the
+/// fundamental, and the grid's cell dimensions.
+#[derive(Clone, Copy)]
+struct Tuning {
+  x_step: i32,
+  y_step: i32,
+  edo: i32,
+  /// Tuning fundamental (Hz), for the optional `echo_input` note echo.
+  fund: f64,
+  grid_w: i32,
+  grid_h: i32,
+}
+
+/// The instrument-wide scalar knobs (`[surfaces]` + which grid this one's overlays
+/// control), refreshed alongside `Tuning` on a hot reload.
+#[derive(Clone, Copy)]
+struct Knobs {
+  /// Trail clobber radius as a divisor of the octave (see `Settings`).
+  trail_clobber_radius: i32,
+  /// Max distinct pitch classes the shared trail keeps.
+  trails_max: usize,
+  slide_window: Duration,
+  slide_duration_secs: f32,
+  tap_window: Duration,
+  /// Echo each fingered note on this grid to stderr; off unless the rig sets
+  /// `echo_input`. Kept off so a startup warning isn't scrolled away as you play.
+  echo_input: bool,
+  /// The grid index this grid's waveform selector re-timbres.
+  controls_index: usize,
+  /// The grid index this grid's volume strip sets the loudness of.
+  volume_controls_index: usize,
+}
+
+/// Everything one grid thread owns for the run. Grouped from first principles
+/// (cleaning phase 4, `TODO/cleaning/2_plan.org`): `overlays` (this grid's rects,
+/// shared verbatim with `GridSettings`) + the two editmode press-LED bools that have
+/// no settings-side counterpart, `tuning` + `knobs` (the register/rig-scalar inputs,
+/// refreshed together on a hot reload), `shared` (the Arc'd cross-grid handles,
+/// cheaply `Clone`-able), and the genuinely per-thread machinery left flat below.
+struct GridThread {
+  grid_index: usize,
+  sock: UdpSocket,
+  prefix: String,
+  listen_port: u16,
+  device_id: String,
+  device_port: u16,
+  /// A monobright grid fakes DIM by flashing; a varibright grid sends native levels.
+  monobright: bool,
+  /// The four selectable timbres (shared instrument-wide table, copied per thread).
+  timbres: [TimbreSlot; SELECTOR_CELLS],
+  overlays: Overlays,
+  /// Whether each editmode_control button is physically down right now (they light
+  /// while pressed, like accrete's clear). Runtime press state, not a rig setting,
+  /// so it stays out of the `Overlays` shared with `GridSettings`.
+  editmode_clear_down: bool,
+  editmode_accrete_down: bool,
+  tuning: Tuning,
+  knobs: Knobs,
+  shared: Shared,
+  /// THIS grid's recently-released notes (slide sources) + the slide knobs.
+  slide: SlideCandidates,
+  /// When this runtime started. The diamond dance's phase is a pure function of
+  /// elapsed time from here, so every dance on the instrument turns in step -- that
+  /// is the whole reason a skipped corner is not allowed to retime its dance.
+  started: Instant,
   sink: SurfaceSink,
 }
 
@@ -668,11 +686,11 @@ fn grid_thread(mut rt: GridThread) {
   let mut last_quads: Vec<[u8; 8]> = vec![];
   let mut next_pulse = Instant::now() + DIM_PULSE.period;
   let mut buf = [0u8; 2048];
-  let mut live_generation = rt.live.generation.load(Ordering::SeqCst);
+  let mut live_generation = rt.shared.live.generation.load(Ordering::SeqCst);
 
   while !STOP.load(Ordering::SeqCst) {
     // Adopt hot-reloaded parameters ('r'): cheap generation check per iteration.
-    let generation = rt.live.generation.load(Ordering::SeqCst);
+    let generation = rt.shared.live.generation.load(Ordering::SeqCst);
     if generation != live_generation {
       live_generation = generation;
       refresh_live(&mut rt);
@@ -723,18 +741,18 @@ fn grid_thread(mut rt: GridThread) {
     // (its own, in the current rigs); the play cells reflect the union of both grids'
     // sounding classes (bright; sustained notes count -- you hear them) and the shared
     // trail (dim), through the current register.
-    let selector_slot = current_slot(&rt.selected, rt.controls_index);
+    let selector_slot = current_slot(&rt.shared.selected, rt.knobs.controls_index);
     let volume_col = volume_active_col(&rt);
     let (mut buttons, sustained_classes) = accrete_view(&rt);
     let toggle = |rect, on: &[AtomicBool]| (rect, button_level(on[rt.grid_index].load(Ordering::Relaxed)));
-    buttons.push(toggle(rt.distortion_rect, &rt.distortion_on));
-    buttons.push(toggle(rt.slide_rect, &rt.slide_on));
-    buttons.push(toggle(rt.mono_rect, &rt.mono_on));
-    buttons.push(toggle(rt.feet_accrete_rect, &rt.feet_accrete_on));
+    buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
+    buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
+    buttons.push(toggle(rt.overlays.mono_rect, &rt.shared.mono_on));
+    buttons.push(toggle(rt.overlays.feet_accrete_rect, &rt.shared.feet_accrete_on));
     // The editmode buttons: dim at rest (findable), bright while pressed.
-    buttons.push((rt.editmode_clear_rect, button_level(rt.editmode_clear_down)));
-    buttons.push((rt.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
-    if rt.poly_rect != NO_RECT {
+    buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
+    buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
+    if rt.overlays.poly_rect != NO_RECT {
       // The pad's six cells, all per-THIS-grid state: the tempo-factor cells show
       // which way this grid's tempo factor leans; =1 shows this grid's
       // factored-pulse switch (bright while its amplitude cycling is on). The tap
@@ -746,7 +764,7 @@ fn grid_thread(mut rt: GridThread) {
       // unreachable now that the base is seeded at 1 Hz, but kept as a fallback.
       // This same state also answers to the softstep factor pedals, so the pad's
       // LEDs reflect pedal presses and vice versa -- one machine, two surfaces.
-      let p = rt.poly.lock().unwrap_or_else(|e| e.into_inner());
+      let p = rt.shared.poly.lock().unwrap_or_else(|e| e.into_inner());
       let now = Instant::now();
       let tap_level = if p.tapped_hz().is_none() {
         DIM
@@ -763,23 +781,23 @@ fn grid_thread(mut rt: GridThread) {
         (1, 1, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Div2))),
         (2, 1, button_level(p.tempo_factor_lit(rt.grid_index, TempoFactorButton::Unity))),
       ] {
-        let (x, y) = (rt.poly_rect[0] + dx, rt.poly_rect[1] + dy);
+        let (x, y) = (rt.overlays.poly_rect[0] + dx, rt.overlays.poly_rect[1] + dy);
         buttons.push(([x, y, x, y], level));
       }
     }
-    let mut sounding_classes = union_sounding(&rt.sounding);
+    let mut sounding_classes = union_sounding(&rt.shared.sounding);
     sounding_classes.extend(sustained_classes);
     // An edited note RINGS -- that is the whole point -- so it paints bright like any
     // other sounding note, on both grids. Edit mode is its own reason to sound, so it
     // is not in anyone's sustained set to be picked up above; it has to be unioned in
     // here or an edited drone would go silent-looking while still audible.
     {
-      let states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+      let states = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner());
       for state in states.iter() {
-        sounding_classes.extend(state.pitches().map(|p| p.rem_euclid(rt.edo)));
+        sounding_classes.extend(state.pitches().map(|p| p.rem_euclid(rt.tuning.edo)));
       }
     }
-    let trail_classes = trail_set(&rt.trail);
+    let trail_classes = trail_set(&rt.shared.trail);
 
     // The diamond dances and the off-screen indicator. Both read THIS grid's edit set
     // plus its own sustained pitches: local, never mirrored from the other grid and
@@ -787,7 +805,7 @@ fn grid_thread(mut rt: GridThread) {
     let elapsed = rt.started.elapsed();
     // Snapshot under the lock, then draw: the pedal hook writes this too (`clear`).
     let edited: Vec<i32> = {
-      let states = rt.edit.lock().unwrap_or_else(|e| e.into_inner());
+      let states = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner());
       states[rt.grid_index].pitches().collect()
     };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
@@ -800,17 +818,17 @@ fn grid_thread(mut rt: GridThread) {
       }
     }
     // The visible pitch window, for "is that note off-screen".
-    let [ex0, ey0, ex1, ey1] = rt.edo_rect;
+    let [ex0, ey0, ex1, ey1] = rt.overlays.edo_rect;
     let corners = [
-      step_for_cell(rt.x_step, rt.y_step, register, ex0, ey0),
-      step_for_cell(rt.x_step, rt.y_step, register, ex1, ey1),
+      step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, ex0, ey0),
+      step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, ex1, ey1),
     ];
     let (lo, hi) = (corners[0].min(corners[1]), corners[0].max(corners[1]));
     let off = if dance::flash_on(elapsed) {
       // One signal for BOTH edit-mode and sustained notes -- Jeff's call ("in both
       // cases"), so the LED cannot say which kind you are chasing.
       let sustained: Vec<i32> = {
-        let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+        let banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
         banks[rt.grid_index].sustained_pitches().collect()
       };
       dance::off_screen(edited.iter().copied().chain(sustained), lo, hi)
@@ -823,35 +841,36 @@ fn grid_thread(mut rt: GridThread) {
       &trail_classes,
       &dance_cells,
       off,
-      rt.edo_rect,
-      rt.selector_rect,
+      rt.overlays.edo_rect,
+      rt.overlays.selector_rect,
       selector_slot,
-      rt.volume_rect,
+      rt.overlays.volume_rect,
       volume_col,
-      rt.scroll_rect,
+      rt.overlays.scroll_rect,
       &buttons,
       register,
-      rt.x_step,
-      rt.y_step,
-      rt.edo,
-      rt.grid_w,
-      rt.grid_h,
+      rt.tuning.x_step,
+      rt.tuning.y_step,
+      rt.tuning.edo,
+      rt.tuning.grid_w,
+      rt.tuning.grid_h,
     );
 
+    let (grid_w, grid_h) = (rt.tuning.grid_w, rt.tuning.grid_h);
     if rt.monobright {
       // Steady frame with DIM cells dark; briefly pulse them on at ~1/32 duty. The
       // on-frame's transmit time bounds the on-period, so a heavy dim set slows the
       // effective flash into (accepted) flicker.
-      send_binary_frame(&rt.sock, device, &rt.prefix, rt.grid_w, rt.grid_h, &levels, false, &mut last_quads);
+      send_binary_frame(&rt.sock, device, &rt.prefix, grid_w, grid_h, &levels, false, &mut last_quads);
       let now = Instant::now();
       if now >= next_pulse {
-        send_binary_frame(&rt.sock, device, &rt.prefix, rt.grid_w, rt.grid_h, &levels, true, &mut last_quads);
+        send_binary_frame(&rt.sock, device, &rt.prefix, grid_w, grid_h, &levels, true, &mut last_quads);
         thread::sleep(DIM_PULSE.on_time);
-        send_binary_frame(&rt.sock, device, &rt.prefix, rt.grid_w, rt.grid_h, &levels, false, &mut last_quads);
+        send_binary_frame(&rt.sock, device, &rt.prefix, grid_w, grid_h, &levels, false, &mut last_quads);
         next_pulse = now + DIM_PULSE.period;
       }
     } else {
-      send_diffs(&rt.sock, device, &rt.prefix, rt.grid_w, &levels, &mut last_levels);
+      send_diffs(&rt.sock, device, &rt.prefix, grid_w, &levels, &mut last_levels);
     }
   }
 

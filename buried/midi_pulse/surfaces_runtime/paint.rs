@@ -16,17 +16,17 @@ use super::GridThread;
 /// union of every bank's sustained pitch classes (which paint bright on every
 /// grid -- they are all sounding, like the cross-grid note reflection).
 pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
-  let banks = rt.accrete.lock().unwrap_or_else(|e| e.into_inner());
+  let banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
   let s = &banks[rt.grid_index];
   let buttons = vec![
-    (rt.clear_rect, button_level(s.clear_lit())),
-    (rt.needs_holding_rect, button_level(s.needs_holding_lit())),
-    (rt.accrete_rect, button_level(s.accrete_lit())),
-    (rt.erase_rect, button_level(s.erase_lit())),
+    (rt.overlays.clear_rect, button_level(s.clear_lit())),
+    (rt.overlays.needs_holding_rect, button_level(s.needs_holding_lit())),
+    (rt.overlays.accrete_rect, button_level(s.accrete_lit())),
+    (rt.overlays.erase_rect, button_level(s.erase_lit())),
   ];
   let mut classes = HashSet::new();
   for bank in banks.iter() {
-    classes.extend(bank.sustained_classes(rt.edo));
+    classes.extend(bank.sustained_classes(rt.tuning.edo));
   }
   (buttons, classes)
 }
@@ -34,14 +34,14 @@ pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>
 /// The absolute column of the active volume cell this grid should light (the *controlled*
 /// grid's position, shown on this grid's strip), or -1 if this grid has no volume strip.
 pub(super) fn volume_active_col(rt: &GridThread) -> i32 {
-  if volume_cells(rt.volume_rect) <= 0 {
+  if volume_cells(rt.overlays.volume_rect) <= 0 {
     return -1;
   }
   let pos = {
-    let vp = rt.volume_pos.lock().unwrap_or_else(|e| e.into_inner());
-    vp.get(rt.volume_controls_index).copied().unwrap_or(0)
+    let vp = rt.shared.volume_pos.lock().unwrap_or_else(|e| e.into_inner());
+    vp.get(rt.knobs.volume_controls_index).copied().unwrap_or(0)
   };
-  rt.volume_rect[0] + pos
+  rt.overlays.volume_rect[0] + pos
 }
 
 /// Publish grid `index`'s currently-sounding pitch classes (register-independent: the

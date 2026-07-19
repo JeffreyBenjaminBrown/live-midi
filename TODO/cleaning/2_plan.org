@@ -84,3 +84,15 @@ the divided table -- or supply your own; the mechanics are ready either way.
 - [2026-07-19] Phase 1 done: mod.rs tests -> tests.rs (1392 lines moved), suite green.
 - [2026-07-19] Phase 2 done: SurfaceFinger/SurfaceDrone/SurfaceRetired variants replace the key puns; suite green.
 - [2026-07-19] Phase 3 done: mod.rs split into settings/reload/paint/keys/hooks/pedal_volume (+ tests.rs); suite green.
+- [2026-07-19] Phase 4 done: GridThread (57 fields) grouped into =Overlays= (15 rects,
+  now a shared type built once in settings.rs and stored whole in both GridSettings
+  and GridThread -- the "+2 fields in three places" dance collapses to one struct +
+  one resolve site), =Shared= (15 Arc'd cross-grid handles, cheaply Clone), =Tuning=
+  (6 register-geometry fields) and =Knobs= (8 rig-scalar fields), leaving 11 fields
+  flat (grid_index, sock, prefix, listen_port, device_id, device_port, monobright,
+  timbres, sink, slide, started). Deviation: the two editmode press-LED bools stayed
+  flat on GridThread rather than folding into Overlays, since Overlays is shared
+  verbatim with GridSettings and settings has no press-state concept. No borrow
+  fights arose (Shared's fields are all Mutex/Atomic, so every access is `&`, never
+  `&mut`); no clones were needed beyond the free per-thread `shared.clone()`. Suite
+  green (697 passing).

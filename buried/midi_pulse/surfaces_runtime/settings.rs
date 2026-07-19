@@ -53,25 +53,17 @@ pub(super) fn default_timbre_slots() -> [TimbreSlot; SELECTOR_CELLS] {
   ]
 }
 
-/// One play grid's resolved rig: its monome binding + its overlay rects + which
-/// grid its selector re-timbres.
-pub(super) struct GridSettings {
-  pub(super) monome_id: String,
-  /// This grid's FULL device selector, not just its size. A rig that pins grids by
-  /// serial (`select.id_contains`) makes the left/right assignment independent of
-  /// serialosc's enumeration order -- which matters the moment anything off-grid
-  /// (a foot pedal) targets "the left monome" by name.
-  pub(super) select: midi_pulse::rig::MonomeSelect,
-  pub(super) listen_port: u16,
-  pub(super) prefix: String,
+/// Every overlay rect a play grid can carry, `NO_RECT` where absent. Built once per
+/// grid in `resolve_settings` and stored WHOLE in both `GridSettings` (the resolved
+/// rig) and `GridThread` (the running thread) -- so adding a new overlay touches this
+/// struct and its one resolve site, not three separate field lists (cleaning phase 4,
+/// `TODO/cleaning/2_plan.org`).
+#[derive(Clone, Copy)]
+pub(super) struct Overlays {
   pub(super) edo_rect: [i32; 4],
   pub(super) scroll_rect: [i32; 4],
   pub(super) selector_rect: [i32; 4],
-  /// The grid index this grid's waveform selector sets (self if it has no selector).
-  pub(super) controls_index: usize,
   pub(super) volume_rect: [i32; 4],
-  /// The grid index this grid's volume strip sets (self if it has no volume strip).
-  pub(super) volume_controls_index: usize,
   /// The accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
   /// trio (+ optional erase) drives its own per-monome accrete bank.
   pub(super) clear_rect: [i32; 4],
@@ -92,6 +84,24 @@ pub(super) struct GridSettings {
   /// this grid's edit mode, accrete fills it with every sounding voice.
   pub(super) editmode_clear_rect: [i32; 4],
   pub(super) editmode_accrete_rect: [i32; 4],
+}
+
+/// One play grid's resolved rig: its monome binding + its overlay rects + which
+/// grid its selector re-timbres.
+pub(super) struct GridSettings {
+  pub(super) monome_id: String,
+  /// This grid's FULL device selector, not just its size. A rig that pins grids by
+  /// serial (`select.id_contains`) makes the left/right assignment independent of
+  /// serialosc's enumeration order -- which matters the moment anything off-grid
+  /// (a foot pedal) targets "the left monome" by name.
+  pub(super) select: midi_pulse::rig::MonomeSelect,
+  pub(super) listen_port: u16,
+  pub(super) prefix: String,
+  /// The grid index this grid's waveform selector sets (self if it has no selector).
+  pub(super) controls_index: usize,
+  /// The grid index this grid's volume strip sets (self if it has no volume strip).
+  pub(super) volume_controls_index: usize,
+  pub(super) overlays: Overlays,
 }
 
 pub(super) struct Settings {
@@ -318,17 +328,11 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         })
         .unwrap_or(NO_RECT)
     };
-    grids.push(GridSettings {
-      monome_id: monome_id.to_string(),
-      select: monome_cfg.select.clone(),
-      listen_port: monome_cfg.listen_port,
-      prefix: monome_cfg.prefix.clone(),
+    let overlays = Overlays {
       edo_rect,
       scroll_rect,
       selector_rect,
-      controls_index,
       volume_rect,
-      volume_controls_index,
       clear_rect: accrete_rect_on(AccreteControlKind::Clear),
       needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
       accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
@@ -340,6 +344,15 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       poly_rect,
       editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
+    };
+    grids.push(GridSettings {
+      monome_id: monome_id.to_string(),
+      select: monome_cfg.select.clone(),
+      listen_port: monome_cfg.listen_port,
+      prefix: monome_cfg.prefix.clone(),
+      controls_index,
+      volume_controls_index,
+      overlays,
     });
   }
 
@@ -491,7 +504,7 @@ pub(super) fn plan_bringup(
     if !present[i] {
       continue;
     }
-    if g.selector_rect != NO_RECT && !present[g.controls_index] {
+    if g.overlays.selector_rect != NO_RECT && !present[g.controls_index] {
       drop_selector[i] = true;
       report.push(format!(
         "monome {:?}'s waveform selector re-timbres monome {:?}, which is not connected \
@@ -499,7 +512,7 @@ pub(super) fn plan_bringup(
         g.monome_id, grids[g.controls_index].monome_id,
       ));
     }
-    if g.volume_rect != NO_RECT && !present[g.volume_controls_index] {
+    if g.overlays.volume_rect != NO_RECT && !present[g.volume_controls_index] {
       drop_volume[i] = true;
       report.push(format!(
         "monome {:?}'s volume strip sets monome {:?}, which is not connected \
@@ -542,7 +555,7 @@ pub(super) fn print_missing_report(report: &[String]) {
 /// by a rig-declared pedal? If not, the mode is fixed forever at whatever it starts
 /// as, which is why the caller makes such a bank momentary rather than toggling.
 pub(super) fn grid_has_needs_holding_control(rig: &Rig, grid: &GridSettings) -> bool {
-  if grid.needs_holding_rect != NO_RECT {
+  if grid.overlays.needs_holding_rect != NO_RECT {
     return true;
   }
   rig.softstep_windows.iter().any(|w| {

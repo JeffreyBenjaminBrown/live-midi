@@ -126,18 +126,18 @@ pub(super) fn adopt_rig(rig: &Rig, live: &Live) -> Result<(), String> {
 /// cleared (held pitches keep sounding; their classes are recomputed from the raw
 /// pitch on the next publish).
 pub(super) fn refresh_live(rt: &mut GridThread) {
-  let p = *rt.live.params.lock().unwrap_or_else(|e| e.into_inner());
-  if p.edo != rt.edo {
-    rt.trail.lock().unwrap_or_else(|e| e.into_inner()).clear();
+  let p = *rt.shared.live.params.lock().unwrap_or_else(|e| e.into_inner());
+  if p.edo != rt.tuning.edo {
+    rt.shared.trail.lock().unwrap_or_else(|e| e.into_inner()).clear();
   }
-  rt.x_step = p.x_step;
-  rt.y_step = p.y_step;
-  rt.edo = p.edo;
-  rt.trail_clobber_radius = p.trail_clobber_radius;
-  rt.trails_max = p.trails_max;
-  rt.slide_window = p.slide_window;
-  rt.slide_duration_secs = p.slide_duration_secs;
-  rt.tap_window = p.tap_window;
+  rt.tuning.x_step = p.x_step;
+  rt.tuning.y_step = p.y_step;
+  rt.tuning.edo = p.edo;
+  rt.knobs.trail_clobber_radius = p.trail_clobber_radius;
+  rt.knobs.trails_max = p.trails_max;
+  rt.knobs.slide_window = p.slide_window;
+  rt.knobs.slide_duration_secs = p.slide_duration_secs;
+  rt.knobs.tap_window = p.tap_window;
   rt.timbres = p.timbres;
   rt.sink.retune(p.fund, p.edo, p.sustain_level, p.decay_secs);
 }
