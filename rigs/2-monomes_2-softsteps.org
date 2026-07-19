@@ -156,7 +156,7 @@ corners flash when an edit-mode or sustained note is off-screen.
 **** ELEM monome_windows              # grid A: factored-pulse pad
 ***** PARAM id = "poly-a"
 ***** PARAM monome = "a"
-***** PARAM kind = "tap_tempo_pad"
+***** PARAM kind = "factored_pulse_pad"
 ***** PARAM rect = [13, 0, 15, 1]
 The six-button block from the kmss rig, back by request: | x3 x2 tap | over
 | /3 /2 =1 |. The factor buttons and =1 act on the same per-grid state as the
@@ -201,7 +201,7 @@ GRID B = RNM, the RIGHT / newer monome. Varibright.
 **** ELEM monome_windows              # grid B: factored-pulse pad
 ***** PARAM id = "poly-b"
 ***** PARAM monome = "b"
-***** PARAM kind = "tap_tempo_pad"
+***** PARAM kind = "factored_pulse_pad"
 ***** PARAM rect = [13, 0, 15, 1]
 Same six-button block as grid A's, driving grid B's own factor and switch.
 **** ELEM monome_windows              # grid B: editmode-clear button

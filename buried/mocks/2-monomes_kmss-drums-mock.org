@@ -31,7 +31,7 @@ within this many ms...
 ...taking this long to arrive at the new pitch.
 ** TABLE tap_tempo
 *** PARAM window_ms = 2000
-Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
+Tap tempo (the factored_pulse_pad): two taps at most this far apart set the tempo.
 ** ELEM tunings
 *** PARAM id = "main"
 *** PARAM edo = 46
@@ -174,7 +174,7 @@ cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
 separate from any [[timbres]] AM).
 *** PARAM id = "poly-a"
 *** PARAM monome = "a"
-*** PARAM kind = "tap_tempo_pad"
+*** PARAM kind = "factored_pulse_pad"
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM monome_windows
 *** PARAM id = "grid-b"
@@ -270,5 +270,5 @@ cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
 separate from any [[timbres]] AM).
 *** PARAM id = "poly-b"
 *** PARAM monome = "b"
-*** PARAM kind = "tap_tempo_pad"
+*** PARAM kind = "factored_pulse_pad"
 *** PARAM rect = [13, 0, 15, 1]

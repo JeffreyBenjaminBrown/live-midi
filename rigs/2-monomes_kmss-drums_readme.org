@@ -320,7 +320,8 @@ factor buttons and the =1 pulse switch belong to the grid you press them on:
 Full behavior -- the tap-pairing window, the per-grid 2^a x 3^b factor, the
 =1 double-tap dance (start / snap-to-unity / stop), the unipolar-triangle
 pulse, and the tap cell's unfactored blink display -- is the
-~tap_tempo_pad~ window kind's spec, shared verbatim by every rig that has
+~factored_pulse_pad~ window kind's spec (called ~tap_tempo_pad~ until 2026-07),
+shared verbatim by every rig that has
 one: [[file:README.org::*Monome windows][rigs/README.org "Monome windows"]].
 On this rig the tap is shared by both grids (one global tempo) while each
 grid keeps its own factor and cycling switch, so one grid can pulse at, say,

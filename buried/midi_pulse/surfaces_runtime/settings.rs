@@ -310,7 +310,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowRig::TapTempoPad { monome, rect, .. } if monome == monome_id => Some(*rect),
+        MonomeWindowRig::FactoredPulsePad { monome, rect, .. } if monome == monome_id => Some(*rect),
         _ => None,
       })
       .unwrap_or(NO_RECT);

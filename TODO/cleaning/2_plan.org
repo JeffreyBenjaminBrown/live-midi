@@ -105,7 +105,7 @@ untouched rather than improvised: the code (=softstep_accretes_toggle= kind,
   the double-duty gate but replacing the hardcoded 1/2/3 + 8/9/0 mapping with
   a rig-declared one. More code than deleting the kind -- only worth it if the
   hardcoded mapping itself, not just its unconditionality, is what should go.
-*** ONGOING [jeff] confirm the two names
+*** DONE [jeff] confirm the two names
 =factored_pulse_pad= for the pad, and =[trail]=/=[slide]=/=[tap_tempo]= for
 the divided table -- or supply your own; the mechanics are ready either way.
 **** TODO perfect
@@ -240,3 +240,4 @@ the divided table -- or supply your own; the mechanics are ready either way.
     window kind -- out of this phase's stated scope), and the softsteps
     readme's own trail/LEDs mention (already a cross-readme pointer to the
     kmss-drums readme's fuller "LEDs" section).
+- [2026-07-19] Phase 8b: tap_tempo_pad -> factored_pulse_pad (approved "perfect").

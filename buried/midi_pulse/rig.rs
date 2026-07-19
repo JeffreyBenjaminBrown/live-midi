@@ -855,14 +855,15 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
     control: EditmodeControlKind,
   },
-  // The 3x2 polyrhythm pad (surfaces runtime), by convention in the top-right:
+  // The 3x2 factored-pulse pad (surfaces runtime), by convention in the top-right:
   //   | x3 | x2 | tap |
   //   | /3 | /2 | =1  |
   // Tap twice within [tap_tempo].window_ms to set the tapped tempo; the
   // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
-  // applied pulse with a unipolar triangle at that tempo. See TODO/misc.org
-  // "polyrhythm interface".
-  TapTempoPad {
+  // applied pulse with a unipolar triangle at that tempo. Only the tap cell
+  // taps tempo -- the pad as a whole is the factored-pulse control. See
+  // TODO/misc.org "polyrhythm interface".
+  FactoredPulsePad {
     id: String,
     monome: String,
     rect: [i32; 4],
@@ -1053,7 +1054,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::MonoToggle { id, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { id, .. }
       | MonomeWindowRig::EditmodeControl { id, .. }
-      | MonomeWindowRig::TapTempoPad { id, .. }
+      | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
@@ -1088,7 +1089,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::MonoToggle { monome, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { monome, .. }
       | MonomeWindowRig::EditmodeControl { monome, .. }
-      | MonomeWindowRig::TapTempoPad { monome, .. }
+      | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
@@ -1123,7 +1124,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::MonoToggle { rect, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { rect, .. }
       | MonomeWindowRig::EditmodeControl { rect, .. }
-      | MonomeWindowRig::TapTempoPad { rect, .. }
+      | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
@@ -1159,7 +1160,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
       MonomeWindowRig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
-      MonomeWindowRig::TapTempoPad { .. } => "tap_tempo_pad",
+      MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
@@ -1756,7 +1757,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_volume_strips(rig)?;
   validate_accrete_controls(rig)?;
   validate_single_cell_toggles(rig)?;
-  validate_tap_tempo_pads(rig)?;
+  validate_factored_pulse_pads(rig)?;
   validate_timbres(rig)?;
   validate_expression_pedals(rig)?;
   validate_looper(rig)?;
@@ -1859,19 +1860,19 @@ fn validate_timbres(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
-/// A `tap_tempo_pad` is exactly 3x2 cells on a monome that has an `edo_note_grid`,
-/// at most one per monome (its six sub-cells are the fixed x3/x2/tap and /3/2/=1
-/// layout).
-fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
+/// A `factored_pulse_pad` is exactly 3x2 cells on a monome that has an
+/// `edo_note_grid`, at most one per monome (its six sub-cells are the fixed
+/// x3/x2/tap and /3/2/=1 layout).
+fn validate_factored_pulse_pads(rig: &Rig) -> Result<(), String> {
   let mut seen: HashSet<&str> = HashSet::new();
   for window in &rig.monome_windows {
-    let MonomeWindowRig::TapTempoPad { id, monome, rect } = window else {
+    let MonomeWindowRig::FactoredPulsePad { id, monome, rect } = window else {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
     if x1 - x0 != 2 || y1 - y0 != 1 {
       return Err(format!(
-        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
+        "factored_pulse_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
       ));
     }
     let has_edo_grid = rig.monome_windows.iter().any(|w| {
@@ -1879,7 +1880,7 @@ fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
     });
     if !has_edo_grid {
       return Err(format!(
-        "tap_tempo_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+        "factored_pulse_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
     let [gw, gh] = rig
@@ -1890,11 +1891,13 @@ fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
       .unwrap_or([16, 16]);
     if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
       return Err(format!(
-        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+        "factored_pulse_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
       ));
     }
     if !seen.insert(monome.as_str()) {
-      return Err(format!("monome {monome:?} declares more than one tap_tempo_pad (window {id:?})"));
+      return Err(format!(
+        "monome {monome:?} declares more than one factored_pulse_pad (window {id:?})"
+      ));
     }
   }
   Ok(())
@@ -2169,7 +2172,7 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
   let mut editmode_claims: HashSet<(&str, EditmodeControlKind)> = HashSet::new();
   let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
   // A pedal that drives a grid's accrete bank or pulse needs that grid to be a play
-  // surface; the same requirement the on-grid accrete_control / tap_tempo_pad carry.
+  // surface; the same requirement the on-grid accrete_control / factored_pulse_pad carry.
   let play_grid_monomes: HashSet<&str> = rig
     .monome_windows
     .iter()
@@ -4245,16 +4248,16 @@ rect = [1, 2, 1, 2]
   }
 
   #[test]
-  fn tap_tempo_pad_must_be_three_by_two() {
+  fn factored_pulse_pad_must_be_three_by_two() {
     let pad = r#"
 [[monome_windows]]
 id = "poly-a"
 monome = "a"
-kind = "tap_tempo_pad"
+kind = "factored_pulse_pad"
 rect = [13, 0, 15, 1]
 "#;
     let rig = parse_rig(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
-    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. })));
+    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::FactoredPulsePad { .. })));
     assert_eq!(rig.tap_tempo.unwrap_or_default().window_ms, 2000, "default window");
     let err = parse_rig(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
       .expect_err("a 3x3 pad should fail");

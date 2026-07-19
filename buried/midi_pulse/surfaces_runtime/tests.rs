@@ -454,7 +454,7 @@
     // six-button x3/x2/tap over /3//2/=1 block, brought back from the kmss rig).
     for monome in ["a", "b"] {
       let pad = rig.monome_windows.iter().find_map(|w| match w {
-        MonomeWindowRig::TapTempoPad { monome: m, rect, .. } if m == monome => Some(*rect),
+        MonomeWindowRig::FactoredPulsePad { monome: m, rect, .. } if m == monome => Some(*rect),
         _ => None,
       });
       assert_eq!(pad, Some([13, 0, 15, 1]), "monome {monome} has the upper-right pad");
@@ -497,12 +497,12 @@
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
-        "tap_tempo_pad",
+        "factored_pulse_pad",
         "editmode_control",
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
-        "tap_tempo_pad",
+        "factored_pulse_pad",
         "editmode_control"
       ],
       "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
@@ -1146,7 +1146,7 @@
   /// =1 tap turns that grid's cycling on (lit) and resets its tempo factor, and a
   /// fast =1 double-tap turns the cycling back off.
   #[test]
-  fn tap_tempo_pad_blinks_globally_and_the_factored_pulse_switch_is_per_grid() {
+  fn factored_pulse_pad_blinks_globally_and_the_factored_pulse_switch_is_per_grid() {
     use midi_pulse::mock_monome::{wait_until, GridSpec, MockRig};
 
     let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());

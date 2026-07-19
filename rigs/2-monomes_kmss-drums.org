@@ -47,7 +47,7 @@ A new note may glide from a note released within this many ms...
 *** PARAM duration_ms = 100
 ...taking this long to arrive at the new pitch.
 ** TABLE tap_tempo
-Pairing window for the tap_tempo_pad.
+Pairing window for the factored_pulse_pad.
 *** PARAM window_ms = 2000
 Two taps at most this far apart set the tempo.
 ** ELEM tunings
@@ -248,7 +248,7 @@ cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
 separate from any [[timbres]] AM).
 *** PARAM id = "poly-a"
 *** PARAM monome = "a"
-*** PARAM kind = "tap_tempo_pad"
+*** PARAM kind = "factored_pulse_pad"
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM monome_windows              # grid B: 46-EDO play surface
 ---------------------------------------------------------------------------
@@ -347,7 +347,7 @@ cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
 separate from any [[timbres]] AM).
 *** PARAM id = "poly-b"
 *** PARAM monome = "b"
-*** PARAM kind = "tap_tempo_pad"
+*** PARAM kind = "factored_pulse_pad"
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM softsteps
 ---------------------------------------------------------------------------

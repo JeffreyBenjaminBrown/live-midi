@@ -343,7 +343,7 @@ Built-in unbundled window kinds:
 - ~slide_toggle~
 - ~mono_toggle~
 - ~softstep_accretes_toggle~
-- ~tap_tempo_pad~
+- ~factored_pulse_pad~
 - ~editmode_control~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
@@ -484,8 +484,10 @@ KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
 for the other) mirrors g's accrete trio instead of playing samples -- one
 monome, both, or neither (see the rig's .org).
 
-A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
-per monome, on a monome with an ~edo_note_grid~): tap twice within
+A ~factored_pulse_pad~ (called ~tap_tempo_pad~ until 2026-07 -- it is the
+factored-pulse control; only its tap cell taps tempo) is a 3x2 block
+(=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one per monome, on a monome with
+an ~edo_note_grid~): tap twice within
 ~[tap_tempo].window_ms~ (default 2000) to redefine the ONE global tapped
 tempo (redefining it starts nothing; the surfaces runtime seeds the base at 1 Hz
 on bring-up, so a tempo always exists and tapping is optional -- it overrides the
@@ -627,7 +629,7 @@ factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
 
 A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
 with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
-~tap_tempo_pad~'s factor cells do -- pad and pedal run the same code), and with
+~factored_pulse_pad~'s factor cells do -- pad and pedal run the same code), and with
 notes in edit mode the multipliers retune those notes. ~unity~ is the ~=1~ switch
 and never retunes edit-mode notes.
 
@@ -835,7 +837,7 @@ duration_ms = 100           # how long the glide takes to reach the new pitch
 
 ** ~[tap_tempo]~
 
-The tap-tempo pairing window shared by the ~tap_tempo_pad~ / ~tap_tempo_pedal~
+The tap-tempo pairing window shared by the ~factored_pulse_pad~ / ~tap_tempo_pedal~
 windows (see "Monome windows" and "SoftStep (KMSS)" above):
 
 #+begin_src toml
