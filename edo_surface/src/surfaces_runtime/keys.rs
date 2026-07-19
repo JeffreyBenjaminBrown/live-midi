@@ -613,49 +613,95 @@ pub(super) fn handle_edit_press(
   let sustain_target = neighbour(1); // the note below it
 
   // Decide under the ring lock, act after it drops: the voice touches below happen
-  // after the lock, and this module's rule is no nested locks. One lock now covers
-  // sustain and edit both (they share the store), so there is no ordering to get wrong.
-  // A note is audible if a finger holds it or it is sustained; an edited note is always
-  // sustained too (edited ⊆ sustained), so those two cover `is_sounding`.
+  // after the lock, and this module's rule is no nested locks. One lock covers
+  // sustain, edit, AND the chord layer (they share the ring), so there is no
+  // ordering to get wrong. A note is audible if a finger holds it, it is sustained,
+  // or a CHORD-layer voice sounds it (the handles work on chord voices too).
   enum Act {
     Play,
-    // Enter edit / exit edit / editmode nothing: silent, and ends no voice (branch-3
-    // queue item 4). The store mutation already happened under the lock.
+    // Enter edit / exit edit / an inert handle: silent, and ends no voice. Any
+    // store / chord-flag mutation already happened under the lock.
     Silent,
     Sustain(i32, bool),
-    Dragged(i32, i32),
+    Dragged { from: i32, to: i32, piano_moved: bool, chord_seqs: Vec<u64> },
   }
   let act = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let gr = &mut rings[rt.grid_index];
     let sustained: HashSet<i32> = gr.store.iter(Reason::Sustain).collect();
-    let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
+    let chord_pitches: HashSet<i32> = gr.chord.live_pitches().collect();
+    // The full edit SELECTION: the piano layer's edited pitches (⊆ sustained)
+    // unioned with the edit-flagged chord voices' pitches (NOT sustained -- Jeff's
+    // round-2 correction: editing a chord voice adds no sustain reason).
+    let mut edited_union: HashSet<i32> = gr.store.iter(Reason::Edit).collect();
+    edited_union.extend(gr.chord.live.values().filter(|v| v.edited).map(|v| v.pitch));
+    let is_sounding =
+      |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p) || chord_pitches.contains(&p);
     // Branch-3 queue item 6: a press only drags the nearest edited note when the
-    // pressed pitch is free of BOTH the editing set and the sustain set; otherwise it
-    // retriggers. `is_sustained` alone covers both sets, because queue item 4's
-    // invariant (edited ⊆ sustained) means every edited pitch is already in here too.
+    // pressed pitch is free of the editing set and the sustain set; otherwise it
+    // retriggers (classify also consults `edited_union` for the chord half).
     let is_sustained = |p: i32| sustained.contains(&p);
-    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &gr.store) {
+    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union)
+    {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
-        // Entering edit mode also SUSTAINS the pitch (edited ⊆ sustained): a
-        // fingered-only note becomes a drone when its finger lifts. Nothing to do at the
-        // voice level now -- it is still under its finger or already droning.
-        gr.edit.enter(pitch, &mut gr.store);
+        // One press takes BOTH layers at this pitch into the selection (Jeff: "if
+        // there is a sustained or fingered voice at the same key, they both enter
+        // edit mode"). The piano layer enters only when it has a voice here --
+        // `enter` adds a sustain reason, which a voiceless pitch must not get; the
+        // chord voices just flip their flags (no sustain implied).
+        if held.values().any(|h| *h == pitch) || sustained.contains(&pitch) {
+          gr.edit.enter(pitch, &mut gr.store);
+        }
+        for v in gr.chord.live.values_mut() {
+          if v.pitch == pitch {
+            v.edited = true;
+          }
+        }
         Act::Silent
       }
       edit::Press::ExitEdit { pitch } => {
-        // Pure deselection: drop only the edit membership. The note stays sustained, so
-        // it keeps ringing -- leaving edit mode ends no voice.
+        // Pure deselection in both layers: the piano note stays sustained, the chord
+        // voice keeps its chord reason -- leaving edit mode ends no voice.
         gr.edit.exit(pitch, &mut gr.store);
+        for v in gr.chord.live.values_mut() {
+          if v.pitch == pitch {
+            v.edited = false;
+          }
+        }
         Act::Silent
       }
-      edit::Press::ToggleSustain { pitch } => Act::Sustain(pitch, !sustained.contains(&pitch)),
+      edit::Press::ToggleSustain { pitch } => {
+        // The sustain handle acts on the PIANO layer only. On a pitch where only
+        // chord voices sound it is consumed but inert ("pressing the add-to-sustain
+        // key above a chord voice does nothing -- it's already ringing"): adding a
+        // sustain reason with no voice behind it would sustain nothing and still
+        // paint/square-dance as if it did.
+        if held.values().any(|h| *h == pitch) || sustained.contains(&pitch) {
+          Act::Sustain(pitch, !sustained.contains(&pitch))
+        } else {
+          Act::Silent
+        }
+      }
       edit::Press::Drag { from, to } => {
-        // A drag re-files the pitch in BOTH reason sets at once (an edited note is also
-        // sustained), so a clear can't miss it under the old name and the trail keeps up.
-        gr.store.note_moved(from, to);
-        Act::Dragged(from, to)
+        // Move every EDITED voice at the nearest edited pitch, in both layers. The
+        // piano layer re-files the pitch in both reason sets (so a clear can't miss
+        // it under the old name); each edit-flagged chord voice re-files its
+        // registry pitch and glides in place -- a chord voice is never re-homed
+        // onto the drag finger (it stays a chord voice; the press is a control
+        // gesture, and its release must release nothing).
+        let piano_moved = gr.store.has(Reason::Edit, from);
+        if piano_moved {
+          gr.store.note_moved(from, to);
+        }
+        let mut chord_seqs = Vec::new();
+        for (seq, v) in gr.chord.live.iter_mut() {
+          if v.edited && v.pitch == from {
+            v.pitch = to;
+            chord_seqs.push(*seq);
+          }
+        }
+        Act::Dragged { from, to, piano_moved, chord_seqs }
       }
     }
   };
@@ -663,7 +709,7 @@ pub(super) fn handle_edit_press(
   let (release_secs, sample_rate) = rt.sink.release_params();
   match act {
     Act::Play => return true,
-    // Enter, exit, and the editmode clear all end nothing (branch-3 queue item 4).
+    // Enter, exit, the editmode clear, and the inert sustain handle all end nothing.
     Act::Silent => {}
     Act::Sustain(pitch, on) => {
       if on {
@@ -687,21 +733,30 @@ pub(super) fn handle_edit_press(
         );
       }
     }
-    Act::Dragged(from, to) => {
-      // The finger that pressed `cell` now holds this voice, so re-home the voice to
-      // `cell` as a fingered voice. It was either fingered at some old cell, or a
-      // drone (its original finger having lifted while edited). Either way, adopting
-      // it here is what fixes Jeff's bug: a voice dragged and then taken out of edit
-      // mode used to die, because it stayed a drone that the exit cut while the drag
-      // finger -- invisible to `held` -- was still down.
-      let old_cell = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);
-      rt.sink.rehome_to_cell(old_cell, from, cell, to, rt.knobs.slide_duration_secs);
-      if let Some(oc) = old_cell {
-        held.remove(&oc);
+    Act::Dragged { from, to, piano_moved, chord_seqs } => {
+      if piano_moved {
+        // The finger that pressed `cell` now holds the piano-layer voice, so re-home
+        // it to `cell` as a fingered voice. It was either fingered at some old cell,
+        // or a drone (its original finger having lifted while edited). Either way,
+        // adopting it here is what fixes Jeff's bug: a voice dragged and then taken
+        // out of edit mode used to die, because it stayed a drone that the exit cut
+        // while the drag finger -- invisible to `held` -- was still down.
+        let old_cell = held.iter().find(|(_, p)| **p == from).map(|(c, _)| *c);
+        rt.sink.rehome_to_cell(old_cell, from, cell, to, rt.knobs.slide_duration_secs);
+        if let Some(oc) = old_cell {
+          held.remove(&oc);
+        }
+        held.insert(cell, to);
       }
-      held.insert(cell, to);
-      // The store was re-filed under the new pitch during classify; the trail tracks
-      // pitches too, so add the new one or it would keep showing a pitch that moved.
+      // The chord half: glide each moved chord voice in place (key unchanged; the
+      // registry pitch was re-filed under the lock). A chord-only drag touches
+      // `held` not at all -- releasing the drag finger must release nothing.
+      for seq in chord_seqs {
+        rt.sink.glide_chord_voice(seq, to, rt.knobs.slide_duration_secs);
+      }
+      // The registries were re-filed under the new pitch during classify; the trail
+      // tracks pitches too, so add the new one or it would keep showing a pitch
+      // that moved.
       push_trail(
         &rt.shared.trail, to.rem_euclid(rt.tuning.edo), rt.tuning.edo,
         rt.knobs.trail_clobber_radius, rt.knobs.trails_max,

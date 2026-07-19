@@ -773,13 +773,19 @@ fn grid_thread(mut rt: GridThread) {
     // octave-duplicated, unlike everything else painted here.
     // Snapshot both under one lock, then draw: the pedal hook writes these too
     // (`clear`).
-    let (edited, sustained): (Vec<i32>, Vec<i32>) = {
+    let (edited, sustained, chord_edited): (Vec<i32>, Vec<i32>, Vec<i32>) = {
       let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-      let store = &rings[rt.grid_index].store;
-      (store.iter(Reason::Edit).collect(), store.iter(Reason::Sustain).collect())
+      let gr = &rings[rt.grid_index];
+      (
+        gr.store.iter(Reason::Edit).collect(),
+        gr.store.iter(Reason::Sustain).collect(),
+        gr.chord.live.values().filter(|v| v.edited).map(|v| v.pitch).collect(),
+      )
     };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
-    for pitch in edited.iter().copied() {
+    // Edit-flagged CHORD voices diamond-dance like the piano layer's edited notes;
+    // they are not sustained, so they never square-dance (chord-storage-v2).
+    for pitch in edited.iter().copied().chain(chord_edited.iter().copied()) {
       // A pitch can occupy TWO cells on one grid, and Jeff wants both to dance
       // ("sometimes there are two monome buttons representing exactly the same
       // pitch"). So dance every cell that sounds it, not just the first.

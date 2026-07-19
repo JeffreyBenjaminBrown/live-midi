@@ -34,6 +34,8 @@
 //! Nothing here is octave-duplicated or mirrored across grids -- unlike every other
 //! LED rule in this codebase, this one is local.
 
+use std::collections::HashSet;
+
 use super::ring::{Reason, RingStore};
 
 /// What a press on a play grid means, given that grid's edit state.
@@ -79,10 +81,12 @@ impl EditState {
     store.iter(Reason::Edit)
   }
 
-  /// The edited pitch nearest to `target`. Ties go to the LOWER note (`2_discussion`
-  /// 2d), matching the looper's lowest-first rule.
-  pub fn nearest(&self, target: i32, store: &RingStore) -> Option<i32> {
-    store.iter(Reason::Edit).min_by_key(|p| ((p - target).abs(), *p))
+  /// The edited pitch nearest to `target`, over the full edit SELECTION (the piano
+  /// layer's store set unioned with the edit-flagged chord voices' pitches -- the
+  /// caller builds the union). Ties go to the LOWER note (`2_discussion` 2d),
+  /// matching the looper's lowest-first rule.
+  pub fn nearest(&self, target: i32, edited: &HashSet<i32>) -> Option<i32> {
+    edited.iter().copied().min_by_key(|p| ((p - target).abs(), *p))
   }
 
   /// Decide what a press means.
@@ -95,14 +99,16 @@ impl EditState {
   ///   sustaining it).
   ///
   /// Either is `None` when that neighbour is off the play grid. `sounding` says
-  /// whether a pitch is currently audible on this grid, by any reason at all.
-  /// `sustained` says whether a pitch is in the sustain set specifically -- branch-3
-  /// queue item 6 (this one): a press must retrigger, never drag, when it lands on a
-  /// pitch already claimed by ANY voice in the editing set or the sustain set. Passing
-  /// just the sustain set is enough, not a gap: branch-3 queue item 4's invariant is
-  /// edited ⊆ sustained, so "the editing set or the sustain set" IS the sustain set as
-  /// long as that invariant holds (see the retrigger arm below for what to do if it
-  /// ever stops holding).
+  /// whether a pitch is currently audible on this grid, by any reason at all --
+  /// including a CHORD-layer voice (chord-storage-v2: the handles work on chord
+  /// voices too). `sustained` says whether a pitch is in the sustain set
+  /// specifically -- branch-3 queue item 6: a press must retrigger, never drag, when
+  /// it lands on a pitch already claimed by any voice in the editing set or the
+  /// sustain set. `edited` is the full edit SELECTION -- the piano layer's edited
+  /// pitches (⊆ sustained by the branch-3 invariant) unioned with the edit-flagged
+  /// chord voices' pitches (which are NOT sustained: Jeff's round-2 correction) --
+  /// so it drives the exit check, the drag's nearest-note choice, and the half of
+  /// the retrigger guard the sustain set no longer covers.
   ///
   /// Order matters, twice over:
   ///
@@ -125,10 +131,10 @@ impl EditState {
     pressed_pitch: i32,
     sounding: impl Fn(i32) -> bool,
     sustained: impl Fn(i32) -> bool,
-    store: &RingStore,
+    edited: &HashSet<i32>,
   ) -> Press {
     if let Some(above) = edit_target {
-      if self.is_editing(above, store) {
+      if edited.contains(&above) {
         return Press::ExitEdit { pitch: above };
       }
       if sounding(above) {
@@ -148,14 +154,13 @@ impl EditState {
     // two voices into one (branch-3 queue item 6 -- the bug this guard fixes). Edit
     // mode is a property of the pitch, so it survives the retrigger either way.
     //
-    // `sustained(pressed_pitch)` alone covers an edited pressed pitch too, because
-    // `enter` always adds BOTH reasons (queue item 4's invariant, edited ⊆ sustained).
-    // If that invariant is ever relaxed, this needs to become
-    // `self.is_editing(pressed_pitch, store) || sustained(pressed_pitch)` again.
-    if sustained(pressed_pitch) {
+    // The sustain check alone covered an edited pressed pitch while edited ⊆
+    // sustained was the whole story; an edit-flagged CHORD voice's pitch is in
+    // `edited` without being sustained, hence the explicit union here.
+    if sustained(pressed_pitch) || edited.contains(&pressed_pitch) {
       return Press::Play;
     }
-    match self.nearest(pressed_pitch, store) {
+    match self.nearest(pressed_pitch, edited) {
       Some(from) => Press::Drag { from, to: pressed_pitch },
       None => Press::Play,
     }
@@ -218,6 +223,69 @@ mod tests {
     |p| store.has(Reason::Sustain, p)
   }
 
+  /// The edit SELECTION as the real caller (keys.rs) builds it: the store's edited
+  /// pitches -- unioned, in chord tests, with edit-flagged chord voices' pitches
+  /// (none here; the chord-layer union has its own tests).
+  fn edited_of(store: &RingStore) -> HashSet<i32> {
+    store.iter(Reason::Edit).collect()
+  }
+
+  // ---- the chord layer in the selection (chord-storage-v2) ----
+  //
+  // These pass the union set directly, as keys.rs builds it: a chord voice's pitch
+  // can be SOUNDING without any store membership, and EDITED (flagged) without
+  // being sustained.
+
+  /// The handles work on chord voices: a press under a pitch only a chord voice
+  /// sounds enters edit mode for it.
+  #[test]
+  fn pressing_under_a_chord_only_pitch_enters_edit() {
+    let e = EditState::new();
+    let chord_sounds = |p: i32| p == 20;
+    assert_eq!(
+      e.classify(Some(20), None, 21, chord_sounds, |_| false, &HashSet::new()),
+      Press::EnterEdit { pitch: 20 },
+    );
+  }
+
+  /// ...and once flagged (in the union, though never sustained), the same press
+  /// exits -- the exit check runs on the UNION, or a chord-edited note would be
+  /// un-dismissable.
+  #[test]
+  fn the_exit_check_sees_a_chord_edited_pitch() {
+    let e = EditState::new();
+    let edited: HashSet<i32> = [20].into_iter().collect();
+    assert_eq!(
+      e.classify(Some(20), None, 21, |p| p == 20, |_| false, &edited),
+      Press::ExitEdit { pitch: 20 },
+    );
+  }
+
+  /// A chord-only edited pitch drives the pitch-picker: with the store empty, a
+  /// press on a free pitch still drags the nearest (chord) edited note.
+  #[test]
+  fn a_chord_only_selection_still_drags() {
+    let e = EditState::new();
+    let edited: HashSet<i32> = [20].into_iter().collect();
+    assert_eq!(
+      e.classify(None, None, 28, |p| p == 20, |_| false, &edited),
+      Press::Drag { from: 20, to: 28 },
+    );
+  }
+
+  /// The retrigger guard's union half: a press ON a chord-edited pitch (which is
+  /// NOT sustained -- the invariant is the piano layer's) plays/retriggers rather
+  /// than dragging another note onto it.
+  #[test]
+  fn pressing_a_chord_edited_pitch_plays_instead_of_dragging() {
+    let e = EditState::new();
+    let edited: HashSet<i32> = [20, 40].into_iter().collect();
+    assert_eq!(
+      e.classify(None, None, 20, |p| p == 20 || p == 40, |_| false, &edited),
+      Press::Play,
+    );
+  }
+
   /// Nothing sounding, nothing edited: the grid plays. The edited set lives in the
   /// shared store now (cleaning phase 6), so each test builds one and threads it
   /// through -- the assertions are unchanged.
@@ -225,7 +293,7 @@ mod tests {
   fn a_press_with_nothing_edited_is_an_ordinary_note() {
     let e = EditState::new();
     let store = RingStore::new();
-    assert_eq!(e.classify(Some(20), None, 21, |_| false, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(Some(20), None, 21, |_| false, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   /// The trigger only fires under a SOUNDING note; otherwise that cell is just a note.
@@ -233,7 +301,7 @@ mod tests {
   fn the_cell_under_a_silent_note_still_plays() {
     let e = EditState::new();
     let store = RingStore::new();
-    assert_eq!(e.classify(Some(20), None, 21, |p| p == 99, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(Some(20), None, 21, |p| p == 99, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   #[test]
@@ -241,12 +309,12 @@ mod tests {
     let e = EditState::new();
     let mut store = RingStore::new();
     assert_eq!(
-      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::EnterEdit { pitch: 20 },
     );
     e.enter(20, &mut store);
     assert_eq!(
-      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 20 },
     );
   }
@@ -261,7 +329,7 @@ mod tests {
     e.enter(20, &mut store);
     // Cell 21's neighbour above is the edited, sounding note 20. Both rules apply.
     assert_eq!(
-      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 20 },
       "exit wins; the accepted cost is that you cannot drag a note onto its own exit cell",
     );
@@ -275,7 +343,7 @@ mod tests {
     let mut store = RingStore::new();
     e.enter(20, &mut store);
     assert_eq!(
-      e.classify(Some(50), None, 40, |p| p == 20, is_sustained(&store), &store),
+      e.classify(Some(50), None, 40, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 20, to: 40 },
     );
   }
@@ -287,11 +355,11 @@ mod tests {
     e.enter(10, &mut store);
     e.enter(30, &mut store);
     assert_eq!(
-      e.classify(None, None, 28, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 28, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 30, to: 28 },
     );
     assert_eq!(
-      e.classify(None, None, 12, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 12, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 10, to: 12 },
     );
   }
@@ -304,7 +372,7 @@ mod tests {
     e.enter(10, &mut store);
     e.enter(20, &mut store);
     assert_eq!(
-      e.classify(None, None, 15, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 15, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 10, to: 15 },
     );
   }
@@ -321,7 +389,7 @@ mod tests {
     assert!(e.is_editing(35, &store), "the note is still being edited at its new pitch");
     // ...and it can be dragged again from there.
     assert_eq!(
-      e.classify(None, None, 40, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 40, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 35, to: 40 },
     );
   }
@@ -347,7 +415,7 @@ mod tests {
     // The voice is replaced; the pitch is unchanged.
     assert!(e.is_editing(20, &store));
     assert_eq!(
-      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 20 },
     );
   }
@@ -358,10 +426,10 @@ mod tests {
   fn a_press_with_no_cell_above_falls_through_to_play_or_drag() {
     let e = EditState::new();
     let mut store = RingStore::new();
-    assert_eq!(e.classify(None, None, 21, |_| true, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(None, None, 21, |_| true, is_sustained(&store), &edited_of(&store)), Press::Play);
     e.enter(5, &mut store);
     assert_eq!(
-      e.classify(None, None, 21, |_| true, is_sustained(&store), &store),
+      e.classify(None, None, 21, |_| true, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 5, to: 21 },
     );
   }
@@ -434,7 +502,7 @@ mod tests {
     let e = EditState::new();
     let store = RingStore::new();
     assert_eq!(
-      e.classify(None, Some(20), 19, |p| p == 20, is_sustained(&store), &store),
+      e.classify(None, Some(20), 19, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::ToggleSustain { pitch: 20 },
     );
   }
@@ -445,7 +513,7 @@ mod tests {
   fn pressing_above_a_silent_note_is_an_ordinary_press() {
     let e = EditState::new();
     let store = RingStore::new();
-    assert_eq!(e.classify(None, Some(20), 19, |_| false, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(None, Some(20), 19, |_| false, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   /// A note on the bottom row has nothing below it, so nothing to sustain from there
@@ -454,7 +522,7 @@ mod tests {
   fn a_press_with_no_cell_below_cannot_sustain() {
     let e = EditState::new();
     let store = RingStore::new();
-    assert_eq!(e.classify(None, None, 19, |_| true, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(None, None, 19, |_| true, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   /// The ambiguity that has to be decided rather than accidental: a cell with sounding
@@ -465,7 +533,7 @@ mod tests {
     let e = EditState::new();
     let store = RingStore::new();
     assert_eq!(
-      e.classify(Some(21), Some(19), 20, |_| true, is_sustained(&store), &store),
+      e.classify(Some(21), Some(19), 20, |_| true, is_sustained(&store), &edited_of(&store)),
       Press::EnterEdit { pitch: 21 },
       "the note above (edit) wins over the note below (sustain)",
     );
@@ -478,7 +546,7 @@ mod tests {
     let mut store = RingStore::new();
     e.enter(21, &mut store);
     assert_eq!(
-      e.classify(Some(21), Some(19), 20, |_| true, is_sustained(&store), &store),
+      e.classify(Some(21), Some(19), 20, |_| true, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 21 },
     );
   }
@@ -493,7 +561,7 @@ mod tests {
     // Same answer whether or not it is already sustained -- `sounding` is true either
     // way, and the caller knows which.
     assert_eq!(
-      e.classify(None, Some(20), 19, |p| p == 20, is_sustained(&store), &store),
+      e.classify(None, Some(20), 19, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::ToggleSustain { pitch: 20 },
     );
   }
@@ -506,7 +574,7 @@ mod tests {
     let mut store = RingStore::new();
     e.enter(50, &mut store);
     assert_eq!(
-      e.classify(None, Some(20), 19, |p| p == 20 || p == 50, is_sustained(&store), &store),
+      e.classify(None, Some(20), 19, |p| p == 20 || p == 50, is_sustained(&store), &edited_of(&store)),
       Press::ToggleSustain { pitch: 20 },
       "sustain beats the drag fallback",
     );
@@ -533,7 +601,7 @@ mod tests {
     // ...clear happens: the note is silenced, nothing sounds any more.
     let silent = |_: i32| false;
     assert_eq!(
-      e.classify(Some(20), None, 21, silent, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, silent, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 20 },
       "a silent edited note must still be dismissable, or the grid is stuck forever",
     );
@@ -549,12 +617,12 @@ mod tests {
     e.enter(20, &mut store);
     let silent = |_: i32| false;
     assert!(
-      matches!(e.classify(None, None, 40, silent, is_sustained(&store), &store), Press::Drag { .. }),
+      matches!(e.classify(None, None, 40, silent, is_sustained(&store), &edited_of(&store)), Press::Drag { .. }),
       "stuck while edited",
     );
     e.exit(20, &mut store);
     assert_eq!(
-      e.classify(None, None, 40, silent, is_sustained(&store), &store),
+      e.classify(None, None, 40, silent, is_sustained(&store), &edited_of(&store)),
       Press::Play,
       "playable again",
     );
@@ -570,7 +638,7 @@ mod tests {
     e.enter(20, &mut store);
     e.clear(&mut store);
     assert!(!e.any(&store));
-    assert_eq!(e.classify(None, None, 40, |_| false, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(None, None, 40, |_| false, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   /// The general guarantee, not just Jeff's path: whatever silenced it and however it
@@ -582,7 +650,7 @@ mod tests {
       let mut store = RingStore::new();
       e.enter(20, &mut store);
       assert_eq!(
-        e.classify(Some(20), None, 21, |p| sounds && p == 20, is_sustained(&store), &store),
+        e.classify(Some(20), None, 21, |p| sounds && p == 20, is_sustained(&store), &edited_of(&store)),
         Press::ExitEdit { pitch: 20 },
         "sounding={sounds}: must be dismissable",
       );
@@ -595,7 +663,7 @@ mod tests {
   fn the_cell_under_a_silent_unedited_note_is_still_an_ordinary_press() {
     let e = EditState::new();
     let store = RingStore::new();
-    assert_eq!(e.classify(Some(20), None, 21, |_| false, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(Some(20), None, 21, |_| false, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   // ---- retriggering an edited note ----
@@ -611,7 +679,7 @@ mod tests {
     let mut store = RingStore::new();
     e.enter(20, &mut store);
     assert_eq!(
-      e.classify(None, None, 20, |p| p == 20, is_sustained(&store), &store),
+      e.classify(None, None, 20, |p| p == 20, is_sustained(&store), &edited_of(&store)),
       Press::Play,
       "the ordinary note-on path cuts the old voice and replaces it",
     );
@@ -624,7 +692,7 @@ mod tests {
     let e = EditState::new();
     let mut store = RingStore::new();
     e.enter(20, &mut store);
-    e.classify(None, None, 20, |p| p == 20, is_sustained(&store), &store);
+    e.classify(None, None, 20, |p| p == 20, is_sustained(&store), &edited_of(&store));
     assert!(e.is_editing(20, &store), "retriggering must not end the edit");
   }
 
@@ -636,11 +704,11 @@ mod tests {
     let mut store = RingStore::new();
     e.enter(20, &mut store);
     assert_eq!(
-      e.classify(None, None, 21, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 21, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 20, to: 21 },
     );
     assert_eq!(
-      e.classify(None, None, 19, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 19, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 20, to: 19 },
     );
   }
@@ -653,7 +721,7 @@ mod tests {
     let mut store = RingStore::new();
     e.enter(10, &mut store);
     e.enter(20, &mut store);
-    assert_eq!(e.classify(None, None, 20, |_| true, is_sustained(&store), &store), Press::Play);
+    assert_eq!(e.classify(None, None, 20, |_| true, is_sustained(&store), &edited_of(&store)), Press::Play);
   }
 
   /// The triggers still outrank a retrigger: the cell below an edited note is its
@@ -665,7 +733,7 @@ mod tests {
     e.enter(20, &mut store); // the note above the pressed cell
     e.enter(21, &mut store); // and the pressed cell's own pitch
     assert_eq!(
-      e.classify(Some(20), None, 21, |_| true, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, |_| true, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 20 },
       "dismissing must never be shadowed",
     );
@@ -689,7 +757,7 @@ mod tests {
     store.add(Reason::Sustain, 50); // sustained by some OTHER means -- NOT edited
     assert!(!e.is_editing(50, &store), "sanity: 50 is sustained but not edited");
     assert_eq!(
-      e.classify(None, None, 50, |p| p == 20 || p == 50, is_sustained(&store), &store),
+      e.classify(None, None, 50, |p| p == 20 || p == 50, is_sustained(&store), &edited_of(&store)),
       Press::Play,
       "a sustained pitch retriggers instead of dragging the edited note onto it",
     );
@@ -705,7 +773,7 @@ mod tests {
     e.enter(20, &mut store);
     assert!(!store.has(Reason::Sustain, 45), "sanity: 45 is free of both sets");
     assert_eq!(
-      e.classify(None, None, 45, |_| false, is_sustained(&store), &store),
+      e.classify(None, None, 45, |_| false, is_sustained(&store), &edited_of(&store)),
       Press::Drag { from: 20, to: 45 },
     );
   }
@@ -720,7 +788,7 @@ mod tests {
     e.enter(20, &mut store); // the note above the pressed cell
     store.add(Reason::Sustain, 21); // the pressed cell's own pitch: sustained, not edited
     assert_eq!(
-      e.classify(Some(20), None, 21, |_| true, is_sustained(&store), &store),
+      e.classify(Some(20), None, 21, |_| true, is_sustained(&store), &edited_of(&store)),
       Press::ExitEdit { pitch: 20 },
       "dismissing must never be shadowed, even by a sustained-unedited pressed pitch",
     );

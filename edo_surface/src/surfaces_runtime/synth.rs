@@ -83,8 +83,9 @@ pub fn scale_factored_pulse_rate(
   ratio: f32,
   edited: &HashSet<i32>,
   held: &HashMap<(i32, i32), i32>,
+  chord_keys: &HashSet<VoiceSource>,
 ) {
-  if !ratio.is_finite() || ratio <= 0.0 || edited.is_empty() {
+  if !ratio.is_finite() || ratio <= 0.0 || (edited.is_empty() && chord_keys.is_empty()) {
     return;
   }
   // The fingered voices whose pitch is being edited, by their cell keys.
@@ -99,6 +100,7 @@ pub fn scale_factored_pulse_rate(
       continue;
     }
     let wanted = cells.contains(src)
+      || chord_keys.contains(src)
       || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
                   if *g == grid && edited.contains(pitch));
     if wanted {
@@ -134,9 +136,10 @@ pub fn set_factored_pulse_rate_at(
   grid: usize,
   edited: &HashSet<i32>,
   held: &HashMap<(i32, i32), i32>,
+  chord_keys: &HashSet<VoiceSource>,
   hz: f32,
 ) {
-  if !hz.is_finite() || hz < 0.0 || edited.is_empty() {
+  if !hz.is_finite() || hz < 0.0 || (edited.is_empty() && chord_keys.is_empty()) {
     return;
   }
   // The fingered voices whose pitch is being edited, by their cell keys (same
@@ -149,6 +152,7 @@ pub fn set_factored_pulse_rate_at(
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
     let wanted = cells.contains(src)
+      || chord_keys.contains(src)
       || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
                   if *g == grid && edited.contains(pitch));
     if wanted {
@@ -519,6 +523,28 @@ impl SurfaceSink {
       state.glide_per_sample = (target / start).powf(1.0 / samples);
     }
     voices.insert(sustain_key(self.grid, to), state);
+    true
+  }
+
+  /// Glide the chord-layer voice `seq` to `pitch` -- the chord half of a pitch drag.
+  /// The key is unchanged (a dragged chord voice stays a chord voice; it is never
+  /// re-homed onto the drag finger), and like `glide_voice_to` the source is re-read
+  /// from the live `freq`, so repeated and reversed drags re-aim correctly.
+  /// Returns false if no such voice sounds.
+  pub fn glide_chord_voice(&mut self, seq: u64, to: i32, glide_secs: f32) -> bool {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(state) = voices.get_mut(&chord_key(self.grid, seq)) else {
+      return false;
+    };
+    let target = freq_for_pitch(to, self.fund, self.edo);
+    let start = state.freq; // live, mid-glide included
+    if target == start {
+      state.glide_per_sample = 1.0;
+    } else {
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq_target = target;
+      state.glide_per_sample = (target / start).powf(1.0 / samples);
+    }
     true
   }
 
@@ -1184,6 +1210,51 @@ mod tests {
     assert_eq!(v[&chord_key(1, 1)].target_env, 1.0, "the other grid's seq 1 is untouched");
   }
 
+  #[test]
+  fn glide_chord_voice_re_aims_from_the_live_freq_and_keeps_the_key() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let stored = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+    };
+    a.spawn_chord_voice(5, &stored, 1.0);
+    assert!(a.glide_chord_voice(5, 30, 0.1));
+    let g = voices.lock().unwrap();
+    let s = &g[&chord_key(0, 5)];
+    assert_eq!(s.freq, freq_for_pitch(20, 80.0, 58), "starts from where it was");
+    assert_eq!(s.freq_target, freq_for_pitch(30, 80.0, 58), "aimed at the drag target");
+    assert!(s.glide_per_sample > 1.0, "gliding up");
+    assert_eq!(g.len(), 1, "the key is unchanged -- a chord voice stays a chord voice");
+  }
+
+  #[test]
+  fn the_pulse_controls_reach_an_edit_flagged_chord_voice_by_its_key() {
+    use super::super::chords::StoredVoice;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    let pulsed = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 3.0, pulse_phase: 0.0,
+    };
+    a.spawn_chord_voice(1, &pulsed, 1.0); // 3 Hz, edit-flagged below
+    a.spawn_chord_voice(2, &pulsed, 1.0); // 3 Hz, NOT flagged
+    let flagged: HashSet<VoiceSource> = [chord_key(0, 1)].into_iter().collect();
+    // A multiplier doubles only the flagged voice.
+    scale_factored_pulse_rate(&voices, 0, 2.0, &HashSet::new(), &HashMap::new(), &flagged);
+    {
+      let g = voices.lock().unwrap();
+      assert_eq!(g[&chord_key(0, 1)].factored_pulse_freq, 6.0, "flagged: doubled");
+      assert_eq!(g[&chord_key(0, 2)].factored_pulse_freq, 3.0, "unflagged: untouched");
+    }
+    // =1 turning cycling off zeroes only the flagged voice.
+    set_factored_pulse_rate_at(&voices, 0, &HashSet::new(), &HashMap::new(), &flagged, 0.0);
+    let g = voices.lock().unwrap();
+    assert_eq!(g[&chord_key(0, 1)].factored_pulse_freq, 0.0, "flagged: stopped");
+    assert_eq!(g[&chord_key(0, 2)].factored_pulse_freq, 3.0, "unflagged: still pulsing");
+  }
+
   // ---- glide_voice_to: the per-voice pitch edit primitive ----
 
   #[test]
@@ -1291,13 +1362,18 @@ mod tests {
     [10, 20].into_iter().collect()
   }
 
+  /// No edit-flagged chord voices -- the piano-only shape every pre-chord test ran.
+  fn no_chords() -> HashSet<VoiceSource> {
+    HashSet::new()
+  }
+
   #[test]
   fn scaling_the_factored_pulse_multiplies_only_the_wanted_pitches() {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     a.note_on((2, 2), 20, Timbre::default(), Some(3.0));
-    scale_factored_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held(), &no_chords());
     let g = v.lock().unwrap();
     assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 4.0, "the edited note doubles");
     assert_eq!(g[&voice_key(0, (2, 2))].factored_pulse_freq, 3.0, "the other note is untouched");
@@ -1311,7 +1387,7 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(1.0));
     a.note_on((2, 2), 20, Timbre::default(), Some(4.0));
-    scale_factored_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &all_edited(), &held(), &no_chords());
     let g = v.lock().unwrap();
     let slow = g[&voice_key(0, (1, 1))].factored_pulse_freq;
     let fast = g[&voice_key(0, (2, 2))].factored_pulse_freq;
@@ -1327,7 +1403,7 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     v.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().factored_pulse_phase = 0.37;
-    scale_factored_pulse_rate(&v, 0, 3.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 3.0, &all_edited(), &held(), &no_chords());
     assert_eq!(
       v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_phase,
       0.37,
@@ -1342,7 +1418,7 @@ mod tests {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), None);
-    scale_factored_pulse_rate(&v, 0, 4.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 4.0, &all_edited(), &held(), &no_chords());
     assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 0.0);
   }
 
@@ -1353,7 +1429,7 @@ mod tests {
     let mut b = sink(1, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     b.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    scale_factored_pulse_rate(&v, 0, 2.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &all_edited(), &held(), &no_chords());
     let g = v.lock().unwrap();
     assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 4.0);
     assert_eq!(g[&voice_key(1, (1, 1))].factored_pulse_freq, 2.0, "grid 1 untouched");
@@ -1367,7 +1443,7 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     a.sustain_note((1, 1), 10);
-    scale_factored_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held());
+    scale_factored_pulse_rate(&v, 0, 2.0, &[10].into_iter().collect(), &held(), &no_chords());
     let g = v.lock().unwrap();
     assert!(
       g.values().any(|s| s.factored_pulse_freq == 4.0),
@@ -1380,9 +1456,9 @@ mod tests {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    scale_factored_pulse_rate(&v, 0, 0.0, &all_edited(), &held());
-    scale_factored_pulse_rate(&v, 0, f32::NAN, &all_edited(), &held());
-    scale_factored_pulse_rate(&v, 0, -1.0, &all_edited(), &held());
+    scale_factored_pulse_rate(&v, 0, 0.0, &all_edited(), &held(), &no_chords());
+    scale_factored_pulse_rate(&v, 0, f32::NAN, &all_edited(), &held(), &no_chords());
+    scale_factored_pulse_rate(&v, 0, -1.0, &all_edited(), &held(), &no_chords());
     assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
   }
 
@@ -1396,12 +1472,12 @@ mod tests {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), None); // struck with cycling off: no pulse
-    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 6.0);
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), &no_chords(), 6.0);
     assert_eq!(
       v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 6.0,
       "=1 turning cycling ON starts the edit-mode voice's pulse",
     );
-    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 0.0);
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), &no_chords(), 0.0);
     assert_eq!(
       v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 0.0,
       "=1 turning cycling OFF stops it again",
@@ -1414,7 +1490,7 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
     a.note_on((2, 2), 20, Timbre::default(), Some(3.0));
-    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 9.0);
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), &no_chords(), 9.0);
     let g = v.lock().unwrap();
     assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 9.0, "the edited note is SET");
     assert_eq!(g[&voice_key(0, (2, 2))].factored_pulse_freq, 3.0, "the other note is untouched");
@@ -1426,7 +1502,7 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), None);
     v.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().factored_pulse_phase = 0.61;
-    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), 5.0);
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), &no_chords(), 5.0);
     assert_eq!(
       v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_phase, 0.61,
       "starting a pulse mid-note is a slope change: the phase does not jump",
@@ -1439,7 +1515,7 @@ mod tests {
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), None);
     a.sustain_note((1, 1), 10);
-    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), 4.0);
+    set_factored_pulse_rate_at(&v, 0, &[10].into_iter().collect(), &held(), &no_chords(), 4.0);
     let g = v.lock().unwrap();
     assert!(
       g.values().any(|s| s.factored_pulse_freq == 4.0),
@@ -1454,7 +1530,7 @@ mod tests {
     let mut b = sink(1, &v);
     a.note_on((1, 1), 10, Timbre::default(), None);
     b.note_on((1, 1), 10, Timbre::default(), None);
-    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), 4.0);
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), &no_chords(), 4.0);
     let g = v.lock().unwrap();
     assert_eq!(g[&voice_key(0, (1, 1))].factored_pulse_freq, 4.0);
     assert_eq!(g[&voice_key(1, (1, 1))].factored_pulse_freq, 0.0, "grid 1 untouched");
@@ -1465,7 +1541,7 @@ mod tests {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    set_factored_pulse_rate_at(&v, 0, &HashSet::new(), &held(), 9.0);
+    set_factored_pulse_rate_at(&v, 0, &HashSet::new(), &held(), &no_chords(), 9.0);
     assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
   }
 
@@ -1474,8 +1550,8 @@ mod tests {
     let v = shared();
     let mut a = sink(0, &v);
     a.note_on((1, 1), 10, Timbre::default(), Some(2.0));
-    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), f32::NAN);
-    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), -1.0);
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), &no_chords(), f32::NAN);
+    set_factored_pulse_rate_at(&v, 0, &all_edited(), &held(), &no_chords(), -1.0);
     assert_eq!(v.lock().unwrap()[&voice_key(0, (1, 1))].factored_pulse_freq, 2.0);
   }
 

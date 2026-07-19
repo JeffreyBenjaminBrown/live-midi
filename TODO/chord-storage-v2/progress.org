@@ -33,3 +33,27 @@ four validation rejections + the rig-pinning window-kind list updated.
   from planned commit 4 -- a recalled chord you cannot see was too odd to
   leave for later).
 =cargo test --workspace=: 716 passed, 0 failed.
+
+* DONE 3. edit-mode integration: the two-layer selection
+- =classify= now takes the edit SELECTION as a set (piano store-edited ∪
+  edit-flagged chord pitches) instead of the store: the exit check, the drag's
+  nearest-note choice, and the retrigger guard all run on the union (the guard
+  gained the explicit =|| edited.contains= half, since chord-edited pitches are
+  NOT sustained). Its 35 test call sites adapted mechanically via an
+  =edited_of(&store)= helper.
+- =handle_edit_press=: one press toggles BOTH layers at a pitch (piano
+  =enter/exit= only when a piano voice sounds there -- =enter= adds a sustain
+  reason a voiceless pitch must not get; chord voices flip their per-voice
+  flags). The sustain handle is consumed-but-inert on a chord-only pitch. A
+  drag moves every edited voice at the nearest edited pitch: the piano voice
+  re-homes onto the drag finger as before; chord voices glide IN PLACE
+  (=glide_chord_voice=, key unchanged) and re-file their registry pitch -- a
+  chord-only drag leaves =held= untouched, so releasing the drag finger
+  releases nothing.
+- =factored_pulse_press= snapshots the chord half as VOICE KEYS (per voice,
+  not per pitch); =scale_factored_pulse_rate= / =set_factored_pulse_rate_at=
+  gained a =chord_keys= parameter. =editmode_clear= / =editmode_accrete=
+  unflag / flag every live chord voice ("all" means all).
+- Edited chord voices join the diamond dance by registry pitch; they never
+  square-dance (not sustained) -- correct by construction.
+=cargo test --workspace=: 723 passed, 0 failed.

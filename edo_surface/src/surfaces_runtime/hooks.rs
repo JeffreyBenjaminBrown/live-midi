@@ -14,7 +14,7 @@ use crate::rig::{
 };
 
 use crate::drumkit_runtime;
-use crate::types::VoiceMap;
+use crate::types::{VoiceMap, VoiceSource};
 
 use super::accrete;
 use super::keys::{capture_grid_held_into, erase_grid_held_into, held_pitches};
@@ -176,6 +176,11 @@ pub(super) fn editmode_clear(grid: usize, ring: &Arc<Mutex<Vec<GridRing>>>) {
   let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
   let Some(gr) = rings.get_mut(grid) else { return };
   gr.edit.clear(&mut gr.store);
+  // The chord layer's half of the selection: unflag every live chord voice. Pure
+  // deselection there too -- a chord voice keeps ringing on its chord reason.
+  for v in gr.chord.live.values_mut() {
+    v.edited = false;
+  }
 }
 
 /// The editmode `accrete` control on `grid`: a ONE-SHOT that puts every voice currently
@@ -198,6 +203,11 @@ pub(super) fn editmode_accrete(
   let sustained: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
   for pitch in fingered.into_iter().chain(sustained) {
     gr.edit.enter(pitch, &mut gr.store);
+  }
+  // "Apply edit mode to all" says ALL: every live chord voice joins the selection
+  // too -- by its own flag, gaining no sustain reason (chord-storage-v2).
+  for v in gr.chord.live.values_mut() {
+    v.edited = true;
   }
 }
 
@@ -239,14 +249,27 @@ pub(super) fn factored_pulse_press(
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: &Arc<Mutex<VoiceMap>>,
 ) {
-  let edited: HashSet<i32> = ring
-    .lock()
-    .unwrap_or_else(|e| e.into_inner())
-    .get(grid)
-    .map(|gr| gr.store.iter(Reason::Edit).collect())
-    .unwrap_or_default();
+  // The edit selection's two halves, snapshotted under one ring lock: the piano
+  // layer's edited pitches, and the edit-flagged chord voices as their VOICE KEYS
+  // (a chord voice is selected per voice, not per pitch -- two voices at one pitch
+  // may differ in flag).
+  let (edited, chord_keys): (HashSet<i32>, HashSet<VoiceSource>) = {
+    let rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+    match rings.get(grid) {
+      Some(gr) => (
+        gr.store.iter(Reason::Edit).collect(),
+        gr.chord
+          .live
+          .iter()
+          .filter(|(_, v)| v.edited)
+          .map(|(seq, _)| VoiceSource::SurfaceChord { grid, seq: *seq })
+          .collect(),
+      ),
+      None => Default::default(),
+    }
+  };
   match tempo_factor_ratio(factor) {
-    Some(ratio) if !edited.is_empty() => {
+    Some(ratio) if !edited.is_empty() || !chord_keys.is_empty() => {
       // Multiply, don't set: "slower ones continue to be slower than faster
       // ones". Applies to ALL edited notes at once -- the deliberate
       // asymmetry against a pitch drag, which moves only the nearest (2d).
@@ -258,7 +281,7 @@ pub(super) fn factored_pulse_press(
         .get(grid)
         .cloned()
         .unwrap_or_default();
-      synth::scale_factored_pulse_rate(voices, grid, ratio, &edited, &held);
+      synth::scale_factored_pulse_rate(voices, grid, ratio, &edited, &held, &chord_keys);
     }
     _ => {
       // Snapshot the switch transition under the polyrhythm lock (computing the
@@ -273,14 +296,14 @@ pub(super) fn factored_pulse_press(
       // button, and the lone unity-snap, report `None` -- see
       // `PolyrhythmState::press`), so a multiplier press never lands here.
       if let Some(hz) = hz {
-        if !edited.is_empty() {
+        if !edited.is_empty() || !chord_keys.is_empty() {
           let held: HashMap<(i32, i32), i32> = held_all
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(grid)
             .cloned()
             .unwrap_or_default();
-          synth::set_factored_pulse_rate_at(voices, grid, &edited, &held, hz);
+          synth::set_factored_pulse_rate_at(voices, grid, &edited, &held, &chord_keys, hz);
         }
       }
     }
@@ -406,6 +429,61 @@ mod tests {
     assert_eq!(poly.lock().unwrap().factored_pulse_hz(0), None, "cycling is off");
     assert_eq!(edited_freq(), 0.0, "=1's fast double-tap stops the edit-mode voice's pulse");
     assert_eq!(other_freq(), 7.0, "still untouched throughout");
+  }
+
+  /// The chord layer joins the selection (chord-storage-v2): an edit-flagged chord
+  /// voice follows the multipliers and =1 exactly as a piano-layer edited note does,
+  /// an unflagged one never moves, and the editmode accrete/clear controls flip the
+  /// flags in bulk.
+  #[test]
+  fn the_factored_pulse_controls_reach_edit_flagged_chord_voices() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    let poly = Arc::new(Mutex::new(PolyrhythmState::new(1)));
+    poly.lock().unwrap().set_fixed_tempo(1.0, Instant::now());
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(accrete::AccreteState::new())]));
+    let held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>> =
+      Arc::new(Mutex::new(vec![HashMap::new()]));
+    let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut sink = synth::SurfaceSink::new(
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
+    );
+    // Two pulsed chord voices from one slot; flag only the first.
+    let sv = StoredVoice {
+      pitch: 20, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+      osc_phase: 0.0, pulse_factor: 3.0, pulse_phase: 0.0,
+    };
+    let spawned = {
+      let mut rings = ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![sv, sv] });
+      rings[0].chord.begin_recall(0)
+    };
+    for (seq, v) in &spawned {
+      sink.spawn_chord_voice(*seq, v, 1.0); // 3 Hz each
+    }
+    let (flag_seq, other_seq) = (spawned[0].0, spawned[1].0);
+    ring.lock().unwrap()[0].chord.live.get_mut(&flag_seq).unwrap().edited = true;
+    let freq_of = |seq: u64| {
+      voices.lock().unwrap()[&VoiceSource::SurfaceChord { grid: 0, seq }].factored_pulse_freq
+    };
+
+    // x2 doubles the flagged chord voice only.
+    factored_pulse_press(0, TempoFactorButton::Times2, &poly, &ring, &held_all, &voices);
+    assert_eq!(freq_of(flag_seq), 6.0, "the edit-flagged chord voice doubles");
+    assert_eq!(freq_of(other_seq), 3.0, "the unflagged one is untouched");
+
+    // The editmode CLEAR unflags it: a further multiplier no longer reaches it.
+    editmode_clear(0, &ring);
+    assert!(!ring.lock().unwrap()[0].chord.live[&flag_seq].edited);
+    factored_pulse_press(0, TempoFactorButton::Times2, &poly, &ring, &held_all, &voices);
+    assert_eq!(freq_of(flag_seq), 6.0, "unflagged now: the multiplier passes it by");
+
+    // The editmode ACCRETE flags every live chord voice ("apply edit mode to all").
+    editmode_accrete(0, &ring, &held_all);
+    assert!(ring.lock().unwrap()[0].chord.live.values().all(|v| v.edited));
+    factored_pulse_press(0, TempoFactorButton::Times3, &poly, &ring, &held_all, &voices);
+    assert_eq!(freq_of(flag_seq), 18.0, "both voices now follow");
+    assert_eq!(freq_of(other_seq), 9.0);
   }
 
   /// A multiplier press still only ever retunes (never sets/starts/stops) an
