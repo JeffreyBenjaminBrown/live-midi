@@ -544,8 +544,9 @@ reachable through edit mode (which is also the one route the pedal can take
 to them), and the ~accrete_control~ ~clear~ on such a monome widens to "end
 all sustain and chord" -- it also ends every chord voice and untoggles the
 slots. Slots persist per rig id under =state/chord-slots/= (atomic writes on
-every save; toggles and arming are not persisted). LEDs: the block idles dim,
-an active slot is bright, the arm cell flashes while armed. The full player's
+every save; toggles and arming are not persisted). LEDs: slots idle dim with
+an active slot bright; the arm cell is black until armed, then flashes. The
+full player's
 reference: [[./2-monomes_2-softsteps_readme.org]] "chord storage" and "chord
 voices in edit mode".
 

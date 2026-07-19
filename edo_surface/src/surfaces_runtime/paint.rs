@@ -37,11 +37,11 @@ pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>
 /// chord-voice pitch classes (chord voices are sounding notes, so they reflect
 /// bright on every grid exactly like the sustained classes).
 ///
-/// The block's language (2_discussion "LEDs"): every cell idles DIM (empty and
-/// occupied slots look alike -- empty slots are inert), an ACTIVE slot is solid
-/// BRIGHT, and while storage is armed the ARM cell flashes on the dance clock's
-/// 150 ms half-period (Jeff: "say 100 ms ... can sync with the dances if that
-/// makes for cleaner code").
+/// The block's language (2_discussion "LEDs" + the black-arm refinement): SLOTS
+/// idle DIM (empty and occupied look alike -- empty slots are inert) and an
+/// ACTIVE slot is solid BRIGHT; the ARM cell is BLACK until armed, then flashes
+/// on the dance clock's 150 ms half-period (Jeff: "say 100 ms ... can sync with
+/// the dances if that makes for cleaner code").
 pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverlay>, HashSet<i32>) {
   let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
   let mut classes = HashSet::new();
@@ -60,7 +60,9 @@ pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverl
         OFF
       }
     } else {
-      DIM
+      // Black at rest (unlike the slots' resting dim): the arm cell only ever
+      // shows "armed", so its idle state carries no information worth a glow.
+      OFF
     };
     buttons.push(([ax, ay, ax, ay], arm_level));
     for slot in 0..chords::SLOTS {

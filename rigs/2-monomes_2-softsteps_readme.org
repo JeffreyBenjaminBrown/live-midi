@@ -328,10 +328,10 @@ grid's own scroll register -- CHORD-layer voices included, they are sounding
 notes; a shared recent-note trail (up to =trail.max= 9
 pitch classes) lights dim; the waveform strip shows the selected waveform
 bright, the rest dim; the scroll pad's arrows are dim, its octave corners
-dark, and it fully occludes the play grid beneath it. The chord block idles
-DIM all over (occupied and empty slots look alike -- empty ones are inert),
-an active slot is solid BRIGHT, and the ARM cell flashes ~150 ms on/off
-while storage is armed. On top of that, a grid's
+dark, and it fully occludes the play grid beneath it. The chord block's
+SLOTS idle DIM (occupied and empty look alike -- empty ones are inert) and
+an active slot is solid BRIGHT; the ARM cell is BLACK until armed, then
+flashes ~150 ms on/off. On top of that, a grid's
 own edit-mode and sustained notes each get a local marker -- the diamond and
 square dances -- and an off-screen indicator on the scroll pad's octave
 corners; see "per-voice edit" below ("the diamond dance", "the square dance",
