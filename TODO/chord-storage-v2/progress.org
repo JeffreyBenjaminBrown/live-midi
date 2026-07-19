@@ -101,3 +101,16 @@ by voice-key construction. Leaving edit mode freezes whatever was last
 adopted (the voice simply stops matching). The pedal thread's spawn moved
 below the ring's creation to borrow it.
 =cargo test --workspace=: 728 passed, 0 failed.
+
+* DONE 7. persistence
+=chords_persist.rs=: TOML file per rig id at =state/chord-slots/<rig id>.toml=
+(gitignored; path resolved like =rig_dir()=), version field, full timbre
+params embedded, monomes keyed by id (BTreeMap for stable diffs). Written
+ATOMICALLY (tmp + rename) on every save-to-slot -- the whole file, all grids,
+snapshotted under the ring lock and written after it drops; loaded once at
+bring-up (a restored count is printed). Toggle/armed state not persisted.
+Missing file = first run; unreadable/unparsable = one red line + empty slots
+(never fatal); an unknown waveform drops that voice, not the file. =no_audio=
+(headless/mock) runs neither read nor write. Tests: field-exact round trip,
+on-disk atomic round trip, garbage/version rejection, unknown-waveform drop.
+=cargo test --workspace=: 733 passed, 0 failed.

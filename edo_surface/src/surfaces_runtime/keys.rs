@@ -447,8 +447,24 @@ fn chord_save(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize)
   // and live registries iterate in arbitrary hash order.
   parts.sort_by_key(|(pitch, _)| *pitch);
   let chord = chords::snapshot(&parts, base_hz);
-  let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-  rings[rt.grid_index].chord.save(slot, chord);
+  let file = {
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings[rt.grid_index].chord.save(slot, chord);
+    // Persist on every save (crash loses nothing): snapshot every grid's slots
+    // under the same lock, write the file after it drops.
+    rt.shared.persist.as_ref().map(|p| {
+      let all: super::chords_persist::AllSlots = p
+        .monome_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), rings[i].chord.slots.to_vec()))
+        .collect();
+      (Arc::clone(p), all)
+    })
+  };
+  if let Some((p, all)) = file {
+    super::chords_persist::save(&p.path, &all);
+  }
 }
 
 /// Toggle `slot`: OFF ends its recall's voices (release ramp); ON spawns the stored

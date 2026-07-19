@@ -25,6 +25,7 @@
 mod accrete;
 pub mod audio;
 mod chords;
+mod chords_persist;
 mod dance;
 mod edit;
 mod grid;
@@ -44,6 +45,7 @@ mod synth;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::io::BufRead;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -359,6 +361,32 @@ fn run(
   ));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
 
+  // Chord-slot persistence (chord-storage-v2): load this rig's state file into the
+  // chord layers, and hand every grid thread the write target (a save-to-slot
+  // rewrites the whole file). `no_audio` gates it like every other real resource --
+  // headless/mock runs must not read or write state on disk.
+  let persist: Option<Arc<PersistTarget>> = if no_audio {
+    None
+  } else {
+    let path = chords_persist::path_for(&rig.id);
+    let loaded = chords_persist::load(&path);
+    let monome_ids: Vec<String> = s.grids.iter().map(|g| g.monome_id.clone()).collect();
+    if !loaded.is_empty() {
+      let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+      let mut restored = 0;
+      for (i, id) in monome_ids.iter().enumerate() {
+        if let Some(slots) = loaded.get(id) {
+          for (slot, stored) in slots.iter().enumerate().take(chords::SLOTS) {
+            rings[i].chord.slots[slot] = stored.clone();
+            restored += usize::from(stored.is_some());
+          }
+        }
+      }
+      println!("chord slots: restored {restored} from {}", path.display());
+    }
+    Some(Arc::new(PersistTarget { path, monome_ids }))
+  };
+
   // The EX-P volume-pedal thread (spawned here rather than beside `pedal_gains`
   // above because it now also reads the ring: a pedal CC reaches a grid's
   // edit-flagged CHORD voices -- the pedal pickup, chord-storage-v2). `no_audio`
@@ -434,6 +462,7 @@ fn run(
     poly: Arc::clone(&poly),
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
+    persist,
   };
 
   // Spawn one key/LED loop per PRESENT grid (absent grids have `None` for both their
@@ -567,6 +596,15 @@ struct Shared {
   live: Arc<Live>,
   /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
+  /// Chord-slot persistence target (`None` on headless/mock runs): a save-to-slot
+  /// rewrites the whole state file for this rig.
+  persist: Option<Arc<PersistTarget>>,
+}
+
+/// Where (and for which monomes, in grid-index order) the chord slots persist.
+struct PersistTarget {
+  path: PathBuf,
+  monome_ids: Vec<String>,
 }
 
 /// The tuning inputs, identical across every grid in one run (one instrument-wide
