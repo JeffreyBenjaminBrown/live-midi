@@ -253,12 +253,6 @@ fn run(
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   let mono_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
-  // Feet accrete, one switch per grid: while grid g's toggle is on, the KMSS pedal
-  // triple mapped to grid g acts as that grid's accrete trio instead of playing
-  // samples (see the pedal hook below) -- the softstep can mirror one monome, both,
-  // or neither.
-  let feet_accrete_on: Arc<Vec<AtomicBool>> =
-    Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
@@ -373,51 +367,23 @@ fn run(
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
   // mode on drop. We own the signal handling, so the tether session is unarmed. The
-  // pedal hook is the feet-accrete mirror: pedals 1/2/3 drive the older (monobright)
-  // grid's accrete bank and 8/9/0 the other's (Jeff's mapping, misc.org "feet
-  // accrete"), each triple only while its grid's toggle is on.
+  // pedal hook drives every rig-declared `accrete_control` / `tap_tempo_pedal` /
+  // `pulse_factor_pedal` / `editmode_control` softstep window (`rig_pedal_actions`);
+  // a rig with none of those (e.g. the standalone drumkit rig) gets an empty map, so
+  // every pedal simply drums.
   let drums = if plan.drums {
-    // Which present grid is the older (monobright) one? Its accrete trio maps to pedals
-    // 1/2/3, the other grid's to 8/9/0 (the feet-accrete mirror). A grid that's absent
-    // never turns its feet toggle on, so its triple simply keeps drumming.
-    let older = assigned
-      .iter()
-      .position(|d| d.as_ref().is_some_and(|d| is_monobright(&d.id)))
-      .unwrap_or(0);
-    let other = (0..num_grids).find(|g| *g != older).unwrap_or(older);
-    // The mirror binds the FIRST declared board. With one softstep (every rig that
-    // uses this hook today) that is simply "the softstep"; naming it keeps a second
-    // board from mirroring the same pedals onto the same banks.
-    let mirror_board = rig.softsteps.first().map(|s| s.id.clone()).unwrap_or_default();
-    // A rig that declares its pedal bindings explicitly gets exactly those, and the
-    // feet-accrete mirror stays out of the way: the two disagree about what a pedal
-    // means (the mirror hardcodes 1/2/3 + 8/9/0 and needs an on-grid toggle), so
-    // running both would make a pedal's job depend on which hook saw it first.
     let actions = rig_pedal_actions(rig, |m| s.grids.iter().position(|g| g.monome_id == m));
-    let hook = if actions.is_empty() {
-      feet_accrete_hook(
-        mirror_board,
-        Arc::clone(&feet_accrete_on),
-        [older, other],
-        Arc::clone(&ring),
-        Arc::clone(&held_all),
-        Arc::clone(&voices),
-        s.release,
-        audio.sample_rate,
-      )
-    } else {
-      println!("surfaces: {} rig-declared pedal binding(s)", actions.len());
-      rig_pedal_hook(
-        actions,
-        Arc::clone(&ring),
-        Arc::clone(&held_all),
-        Arc::clone(&voices),
-        Arc::clone(&poly),
-        s.tap_window,
-        s.release,
-        audio.sample_rate,
-      )
-    };
+    println!("surfaces: {} rig-declared pedal binding(s)", actions.len());
+    let hook = rig_pedal_hook(
+      actions,
+      Arc::clone(&ring),
+      Arc::clone(&held_all),
+      Arc::clone(&voices),
+      Arc::clone(&poly),
+      s.tap_window,
+      s.release,
+      audio.sample_rate,
+    );
     Some(drumkit_runtime::start_with_hook(
       rig,
       drumkit_runtime::tether::session(),
@@ -456,7 +422,6 @@ fn run(
     distortion_on: Arc::clone(&distortion_on),
     slide_on: Arc::clone(&slide_on),
     mono_on: Arc::clone(&mono_on),
-    feet_accrete_on: Arc::clone(&feet_accrete_on),
     poly: Arc::clone(&poly),
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
@@ -586,9 +551,6 @@ struct Shared {
   /// The per-grid slide / mono switches (this grid uses element `grid_index`).
   slide_on: Arc<Vec<AtomicBool>>,
   mono_on: Arc<Vec<AtomicBool>>,
-  /// The per-grid feet-accrete switches; this grid's toggle flips (and its LED
-  /// shows) element `grid_index` -- "the softstep accretes for THIS monome".
-  feet_accrete_on: Arc<Vec<AtomicBool>>,
   /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
   /// The hot-reloadable parameters; refreshed into `GridThread`'s own fields when the
@@ -752,7 +714,6 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
     buttons.push(toggle(rt.overlays.mono_rect, &rt.shared.mono_on));
-    buttons.push(toggle(rt.overlays.feet_accrete_rect, &rt.shared.feet_accrete_on));
     // The editmode buttons: dim at rest (findable), bright while pressed.
     buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
     buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));

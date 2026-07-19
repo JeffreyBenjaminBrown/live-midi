@@ -1,10 +1,11 @@
-//! The pedal hooks: the legacy feet-accrete mirror (`feet_accrete_hook`) and the
-//! rig-declared pedal bindings (`rig_pedal_actions` / `rig_pedal_hook`), plus the
-//! dispatchers shared with the on-grid buttons -- accrete (`drive_accrete`),
-//! editmode (`editmode_press`), and the factored pulse (`factored_pulse_press`).
+//! The pedal hooks: the rig-declared pedal bindings (`rig_pedal_actions` /
+//! `rig_pedal_hook`), plus the dispatchers shared with the on-grid buttons -- accrete
+//! (`drive_accrete`), editmode (`editmode_press`), and the factored pulse
+//! (`factored_pulse_press`). The old gated `softstep_accretes_toggle` mirror (a hook
+//! keyed on an on-grid toggle, hardcoding pedals 1/2/3 + 8/9/0) was retired 2026-07 --
+//! see TODO/cleaning/2_plan.org; rig-declared `accrete_control` pedals replace it.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,72 +22,12 @@ use super::polyrhythm::{PolyrhythmState, TempoFactorButton};
 use super::ring::{GridRing, Reason};
 use super::synth;
 
-/// Which accrete button a KMSS pedal mirrors, and for which pedal TRIPLE (0 =
-/// pedals 1/2/3, 1 = pedals 8/9/0). Jeff's mapping (misc.org "feet accrete" + "two
-/// monome-specific accrete banks"): the older (monobright) grid's bank -> 1/2/3,
-/// the other grid's -> 8/9/0, each triple in the on-grid order clear /
-/// needs-holding / accrete.
-pub(super) fn feet_accrete_button(pedal: u8) -> Option<(usize, AccreteControlKind)> {
-  match pedal {
-    1 => Some((0, AccreteControlKind::Clear)),
-    2 => Some((0, AccreteControlKind::NeedsHolding)),
-    3 => Some((0, AccreteControlKind::Accrete)),
-    8 => Some((1, AccreteControlKind::Clear)),
-    9 => Some((1, AccreteControlKind::NeedsHolding)),
-    0 => Some((1, AccreteControlKind::Accrete)),
-    _ => None,
-  }
-}
-
-/// Build the drumkit pedal hook that mirrors the accrete trios onto the KMSS
-/// (TODO/misc.org "feet accrete"). `triple_banks[t]` is the grid whose bank pedal
-/// triple `t` drives (0 = pedals 1/2/3 = the older grid, 1 = pedals 8/9/0); a
-/// triple mirrors only while ITS grid's feet-accrete toggle is on, so the softstep
-/// can accrete for one monome, both, or neither. Consuming an event suppresses
-/// that pedal's sample; a pedal whose toggle is off drums as usual. A pedal
-/// "press" is the decoder's Fire (down) and its Release (up), so holding pedal 3
-/// or 0 is exactly holding that bank's accrete button.
-/// `softstep_id` pins the mirror to ONE board. The two triples (1/2/3 and 8/9/0)
-/// distinguish the two GRIDS, not the two boards -- so with a second SoftStep
-/// connected its pedal 3 would otherwise mirror this board's pedal 3, both boards
-/// driving one bank. The rig-declared bindings supersede this hook; it stays for the
-/// existing single-board drums rig.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn feet_accrete_hook(
-  softstep_id: String,
-  feet_accrete_on: Arc<Vec<AtomicBool>>,
-  triple_banks: [usize; 2],
-  ring: Arc<Mutex<Vec<GridRing>>>,
-  held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
-  voices: Arc<Mutex<VoiceMap>>,
-  release_secs: f32,
-  sample_rate: f32,
-) -> drumkit_runtime::PedalHook {
-  Arc::new(move |device, pedal, down| {
-    if device != softstep_id {
-      return false;
-    }
-    let Some((triple, button)) = feet_accrete_button(pedal) else {
-      return false;
-    };
-    let grid = triple_banks[triple];
-    if !feet_accrete_on.get(grid).map(|b| b.load(Ordering::Relaxed)).unwrap_or(false) {
-      return false;
-    }
-    // The trio only; erase has no pedal here (feet_accrete_button never yields it).
-    if button == AccreteControlKind::Erase {
-      return false;
-    }
-    drive_accrete(grid, button, down, &ring, &held_all, &voices, release_secs, sample_rate)
-  })
-}
-
 /// Apply one accrete-button edge to one grid's bank, from a foot or a finger.
 ///
-/// Shared by the legacy feet-accrete mirror and the rig-declared `accrete_control`
-/// pedals so the two cannot drift. Decides under the accrete lock and touches voices
-/// only after it drops -- the module's no-nested-locks rule, same as the on-grid
-/// buttons. Returns whether the press was consumed.
+/// Shared by every rig-declared `accrete_control` pedal (and the on-grid buttons, via
+/// their own call sites) so they cannot drift. Decides under the accrete lock and
+/// touches voices only after it drops -- the module's no-nested-locks rule, same as
+/// the on-grid buttons. Returns whether the press was consumed.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drive_accrete(
   grid: usize,

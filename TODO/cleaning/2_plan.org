@@ -78,7 +78,8 @@ green-lit in 1_vision.org: =tap_tempo_pad= -> =factored_pulse_pad=; the
 bindings). Plus vision 7's pointer-dedup: the window-kind semantics that
 readmes duplicate normatively get emacs-followable =[[file:...]]= links to
 rigs/README.org instead (prose explanations stay).
-*** TODO [jeff] retiring softstep_accretes_toggle needs a pedal decision
+*** DONE [jeff] retiring softstep_accretes_toggle needs a pedal decision
+Resolved: second board carries the six pedals; softstep_accretes_toggle deleted.
 Checked =rigs/2-monomes_kmss-drums.org= before touching anything: its =drumkit=
 softstep window already claims all ten KMSS pedals on the rig's one softstep
 board ("feet") -- 1 snare, 2 kick, 3 ditto, 4 hat, 5 open_hat, 6 high_tom, 7

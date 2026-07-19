@@ -68,14 +68,6 @@ pub(super) fn handle_key(
     }
     return;
   }
-  // Feet-accrete toggle: key-down flips THIS grid's switch (does the softstep
-  // mirror this monome's accrete bank?); key-up does nothing.
-  if in_overlay(rt.overlays.feet_accrete_rect, cell) {
-    if press {
-      let _ = rt.shared.feet_accrete_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
-    }
-    return;
-  }
   // The editmode buttons, through the same `editmode_press` the softstep pedals run:
   // clear empties THIS grid's edit SELECTION (branch-3 queue item 4: pure deselection --
   // every cleared note stays sustained, so nothing is silenced), accrete puts every

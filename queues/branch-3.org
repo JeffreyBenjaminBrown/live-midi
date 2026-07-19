@@ -209,5 +209,26 @@ reading the fall-through path, not by adding new code. Tests: 3 new (a sustained
 unedited pitch retriggers rather than drags; a genuinely free pitch still drags the
 nearest edited note; the exit trigger still outranks the broadened retrigger check).
 =cargo test --workspace=: 699 passed, 0 failed.
-* The TODO item remaining in TODO/cleaning/2_plan.org
+* DONE The TODO item remaining in TODO/cleaning/2_plan.org
 I just added it.
+** DONE claude: second KMSS carries the sustain pedals; softstep_accretes_toggle retired
+Per Jeff's nested answer ("let's use the other kmss"): =rigs/2-monomes_kmss-drums.org=
+gained a second =[[softsteps]]= board (id ="sustain"=, ="SoftStep"= vs the drum board's
+="SSCOM"=) carrying six unconditional =accrete_control= pedals mirroring the old
+hardcoded 1/2/3 = grid A clear/needs_holding/accrete, 8/9/0 = grid B's -- muscle memory
+preserved, no on-grid toggle gate. Deleted end to end:
+=MonomeWindowRig::SoftstepAccretesToggle= (rig.rs), =Overlays.feet_accrete_rect=,
+=feet_accrete_on=, the keys.rs toggle branch, and =hooks::{feet_accrete_button,
+feet_accrete_hook}=; the generic =accrete_control= pedal machinery (=drive_accrete=,
+=rig_pedal_hook=) stays and now runs unconditionally in the drums rig too. The
+per-grid-bank pedal-hook test was adapted (not deleted) to drive the explicit
+=rig_pedal_hook= path instead of the retired mirror. Bonus fix, needed to make the
+"drums still play with the sustain board unplugged" promise actually true:
+=drumkit_runtime::start_with_hook= used to hard-fail bring-up if ANY declared SoftStep
+board (not just the whole subsystem) wasn't physically present -- latent since the
+2-softsteps rig, newly load-bearing once kmss-drums got a second board. Now each
+declared board is checked independently (=softsteps_present_among=, pure + tested) and
+a missing one is skipped with a warning rather than killing every board's bring-up.
+Docs updated (rigs/README.org, the kmss-drums readme + mock rig notes); TODO/cleaning
+/2_plan.org's pedal-decision heading marked DONE. =cargo test --workspace=: 702 passed,
+0 failed.

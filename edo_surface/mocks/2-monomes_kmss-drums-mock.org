@@ -155,16 +155,6 @@ fingered notes (with slide on, the new note steals the cut voice -- legato).
 *** PARAM kind = "mono_toggle"
 *** PARAM rect = [1, 2, 1, 2]
 ** ELEM monome_windows
-Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
-to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
-mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
-playing samples. The softstep can mirror one monome, both, or neither. Just
-above the on-grid trio.
-*** PARAM id = "feet-accrete-a"
-*** PARAM monome = "a"
-*** PARAM kind = "softstep_accretes_toggle"
-*** PARAM rect = [0, 14, 0, 14]
-** ELEM monome_windows
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
@@ -250,16 +240,6 @@ fingered notes (with slide on, the new note steals the cut voice -- legato).
 *** PARAM monome = "b"
 *** PARAM kind = "mono_toggle"
 *** PARAM rect = [1, 2, 1, 2]
-** ELEM monome_windows
-Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
-to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
-mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
-playing samples. The softstep can mirror one monome, both, or neither. Just
-above the on-grid trio.
-*** PARAM id = "feet-accrete-b"
-*** PARAM monome = "b"
-*** PARAM kind = "softstep_accretes_toggle"
-*** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,

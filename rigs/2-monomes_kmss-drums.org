@@ -12,7 +12,7 @@ See also softstep.toml (the shared SoftStep detection & velocity parameters).
 ** PARAM id = "2-monomes_kmss-drums"
 ** PARAM title = "Two monomes + KMSS drums"
 ** shared SoftStep parameters (softstep.toml)
-This rig drives at least one SoftStep board. Every board reads its detection and
+This rig drives two SoftStep boards. Every board reads its detection and
 pressure parameters from the shared file rigs/softstep.toml, not from this rig
 file. That shared file holds the onset and release thresholds, the attack window,
 the pressure scaling, the contact-bounce and settle debounce guards, and the
@@ -20,10 +20,14 @@ de-stick window. Every rig that uses a SoftStep reads the same file, and the
 meter reads it too, so one edit there reaches all of them at once.
 ** about the rig
 ===========================================================================
-THREE SURFACES AT ONCE (see rigs/2-monomes_kmss-drums.org):
+FOUR SURFACES AT ONCE (see rigs/2-monomes_kmss-drums.org):
 - two 16x16 monome grids, each a full 46-EDO play surface with its own
 independent scroll register and its own voices;
-- the KMSS pedalboard as a velocity-sensitive TR-808 drumkit.
+- the KMSS pedalboard as a velocity-sensitive TR-808 drumkit;
+- a second KMSS underfoot for sustain: six accrete_control pedals (1/2/3 grid
+A's clear/needs_holding/accrete, 8/9/0 grid B's), unconditional -- no on-grid
+toggle gates them (2026-07, replacing the retired softstep_accretes_toggle
+mirror; see TODO/cleaning/2_plan.org).
 Each grid also carries a 4-cell waveform strip on its top row that sets its
 OWN timbre, a volume fader that sets its OWN loudness, and a 3x2 scroll pad
 in the bottom-right that moves *that* grid's pitch window. The same pitch
@@ -228,16 +232,6 @@ fingered notes (with slide on, the new note steals the cut voice -- legato).
 *** PARAM monome = "a"
 *** PARAM kind = "mono_toggle"
 *** PARAM rect = [1, 2, 1, 2]
-** ELEM monome_windows              # grid A: feet-accrete toggle
-Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
-to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
-mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
-playing samples. The softstep can mirror one monome, both, or neither. Just
-above the on-grid trio.
-*** PARAM id = "feet-accrete-a"
-*** PARAM monome = "a"
-*** PARAM kind = "softstep_accretes_toggle"
-*** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows              # grid A: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
@@ -327,16 +321,6 @@ fingered notes (with slide on, the new note steals the cut voice -- legato).
 *** PARAM monome = "b"
 *** PARAM kind = "mono_toggle"
 *** PARAM rect = [1, 2, 1, 2]
-** ELEM monome_windows              # grid B: feet-accrete toggle
-Feet accrete (key-down flips; PER-GRID): while on, the KMSS pedal triple mapped
-to this grid -- 1/2/3 for the older (monobright) monome, 8/9/0 for the other --
-mirrors this grid's accrete trio (clear / needs-holding / accrete) instead of
-playing samples. The softstep can mirror one monome, both, or neither. Just
-above the on-grid trio.
-*** PARAM id = "feet-accrete-b"
-*** PARAM monome = "b"
-*** PARAM kind = "softstep_accretes_toggle"
-*** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows              # grid B: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
 [tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
@@ -351,7 +335,10 @@ separate from any [[timbres]] AM).
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM softsteps
 ---------------------------------------------------------------------------
-KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit layout.
+TWO SoftStep boards, distinguished by ALSA client name (reliable; their CARD
+numbers follow plug order and are NOT stable, so nothing here names one). This
+one is the KMSS drumkit (velocity-sensitive TR-808), reusing the kmss-drumkit
+layout; presents as "SSCOM". The other, below, carries the sustain pedals.
 ---------------------------------------------------------------------------
 *** PARAM id = "feet"
 *** PARAM select.name_contains = "SSCOM"
@@ -370,3 +357,59 @@ last hit" (pad, ditto, ditto repeats the same sample, it does not echo the
 ditto). Does nothing if nothing has played yet. See drumkit_runtime/mod.rs
 (`PadKind::Ditto`).
 real crash (synth, CC0), not the 808 CY; fuller than the kit -> trimmed a bit
+** ELEM softsteps
+---------------------------------------------------------------------------
+The sustain pedals (Jeff: "let's use the other kmss" -- TODO/cleaning/2_plan.org
+"retiring softstep_accretes_toggle needs a pedal decision"). This board carries
+nothing but the six accrete pedals below; it is free in every other rig.
+---------------------------------------------------------------------------
+*** PARAM id = "sustain"
+*** PARAM select.name_contains = "SoftStep"
+** ELEM softstep_windows              # sustain board: grid A clear
+Explicit, UNCONDITIONAL accrete_control pedals -- the replacement for the
+retired softstep_accretes_toggle mirror (deleted 2026-07; it hardcoded this
+exact 1/2/3 + 8/9/0 mapping too, but only while an on-grid toggle was on).
+Same pedal numbers, so the muscle memory survives: 1/2/3 drive grid A's clear /
+needs_holding / accrete, 8/9/0 drive grid B's. Parameter reference:
+[[file:README.org::*SoftStep (KMSS)][rigs/README.org "SoftStep (KMSS)"]].
+*** PARAM id = "sustain-clear-a"
+*** PARAM softstep = "sustain"
+*** PARAM kind = "accrete_control"
+*** PARAM pedal = 1
+*** PARAM monome = "a"
+*** PARAM control = "clear"
+** ELEM softstep_windows              # sustain board: grid A needs-holding
+*** PARAM id = "sustain-hold-a"
+*** PARAM softstep = "sustain"
+*** PARAM kind = "accrete_control"
+*** PARAM pedal = 2
+*** PARAM monome = "a"
+*** PARAM control = "needs_holding"
+** ELEM softstep_windows              # sustain board: grid A accrete
+*** PARAM id = "sustain-accrete-a"
+*** PARAM softstep = "sustain"
+*** PARAM kind = "accrete_control"
+*** PARAM pedal = 3
+*** PARAM monome = "a"
+*** PARAM control = "accrete"
+** ELEM softstep_windows              # sustain board: grid B clear
+*** PARAM id = "sustain-clear-b"
+*** PARAM softstep = "sustain"
+*** PARAM kind = "accrete_control"
+*** PARAM pedal = 8
+*** PARAM monome = "b"
+*** PARAM control = "clear"
+** ELEM softstep_windows              # sustain board: grid B needs-holding
+*** PARAM id = "sustain-hold-b"
+*** PARAM softstep = "sustain"
+*** PARAM kind = "accrete_control"
+*** PARAM pedal = 9
+*** PARAM monome = "b"
+*** PARAM control = "needs_holding"
+** ELEM softstep_windows              # sustain board: grid B accrete
+*** PARAM id = "sustain-accrete-b"
+*** PARAM softstep = "sustain"
+*** PARAM kind = "accrete_control"
+*** PARAM pedal = 0
+*** PARAM monome = "b"
+*** PARAM control = "accrete"

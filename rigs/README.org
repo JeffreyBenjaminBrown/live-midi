@@ -342,7 +342,6 @@ Built-in unbundled window kinds:
 - ~distortion_toggle~
 - ~slide_toggle~
 - ~mono_toggle~
-- ~softstep_accretes_toggle~
 - ~factored_pulse_pad~
 - ~editmode_control~
 
@@ -473,19 +472,18 @@ large). Leave it at 0 unless you want that compression as an effect.
 Note that =distortion_shape= below 1 bends the curve straight from the origin and eats
 level fast (=k = 0.5= costs ~5 dB on a *single* note), which the compensation now hides.
 
-A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
-(single cell, at most one of each per monome, dim/bright LED). All are
-per-grid switches, like the distortion toggle. Slide: a new note on that grid
-re-triggers the nearest pitch released within ~slide.candidate_window_ms~ and
-glides it into the new pitch over ~slide.duration_ms~ (both optional in the
-~[slide]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
-other fingered notes -- its own grid's switch (and with that grid's slide on,
-the new note *steals* the cut note's voice and glides it over -- true legato,
-no attack re-trigger).
-Softstep-accretes: while grid g's toggle is on, the
-KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
-for the other) mirrors g's accrete trio instead of playing samples -- one
-monome, both, or neither (see the rig's .org).
+A ~slide_toggle~ / ~mono_toggle~ is the same shape (single cell, at most one of
+each per monome, dim/bright LED). Both are per-grid switches, like the
+distortion toggle. Slide: a new note on that grid re-triggers the nearest pitch
+released within ~slide.candidate_window_ms~ and glides it into the new pitch
+over ~slide.duration_ms~ (both optional in the ~[slide]~ table; defaults 1000 /
+100). Mono: each new note cuts that grid's other fingered notes -- its own
+grid's switch (and with that grid's slide on, the new note *steals* the cut
+note's voice and glides it over -- true legato, no attack re-trigger).
+
+(The ~softstep_accretes_toggle~ kind that used to live here -- an on-grid
+switch gating a hardcoded KMSS pedal mirror -- was retired 2026-07: see the
+~accrete_control~ pedal section below, "SoftStep (KMSS)".)
 
 A ~factored_pulse_pad~ (called ~tap_tempo_pad~ until 2026-07 -- it is the
 factored-pulse control; only its tap cell taps tempo) is a 3x2 block
@@ -609,9 +607,17 @@ Built-in softstep window kinds:
 - ~editmode_control~ (the pedal form)
 
 All but the drumkit bind ONE pedal each to a control that would otherwise cost grid
-cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
-mirror, which hardcodes pedals 1/2/3 + 8/9/0 and only acts while an on-grid toggle
-is on. Every binding is stated in the rig rather than buried in the runtime:
+cells, and they are unconditional. Every binding is stated in the rig rather than
+buried in the runtime.
+
+In 2026-07 ~accrete_control~ pedals replaced the legacy ~softstep_accretes_toggle~
+mirror (a MONOME window kind, gone from the "Monome windows" section above): that
+kind hardcoded pedals 1/2/3 + 8/9/0 to a fixed monome-bank mapping and only acted
+while an on-grid toggle was on, so the same pedal did double duty (drums when the
+toggle was off, sustain when it was on) -- necessary on a rig with only one SoftStep
+board and no pedals to spare. A rig with a SECOND board can instead bind those same
+pedal numbers explicitly and unconditionally (see
+~rigs/2-monomes_kmss-drums.org~'s second ~[[softsteps]]~ board, id ~"sustain"~):
 
 #+begin_src toml
 [[softstep_windows]]
@@ -876,11 +882,16 @@ loads iff every device it depends on is present.
   ~controls~ names a *different* grid (one monome setting the other's timbre or
   volume) is dropped when that target grid is absent -- its cells revert to plain
   play cells. A *self*-controlling strip (the current rigs) is unaffected.
-- *The SoftStep drumkit is standalone.* It loads whenever its SoftStep is
-  present, even with *no* grids connected -- it is a sample-trigger surface in
-  its own right (the monome->softstep accretion mirror is an add-on a grid
-  enables, never a load-time requirement). With grids absent, the feet-accrete
-  toggles simply never turn on, so every pedal drums.
+- *The SoftStep drumkit is standalone.* It loads whenever ANY declared SoftStep
+  board is present, even with *no* grids connected -- it is a sample-trigger
+  surface in its own right. A rig-declared pedal binding (~accrete_control~ and
+  friends) whose target grid is absent is simply dropped, the same way a
+  cross-surface strip is.
+- *A missing SECOND board.* A rig with more than one ~[[softsteps]]~ board
+  (e.g. ~2-monomes_kmss-drums~'s drum board plus its sustain-pedal board) skips
+  whichever declared board isn't plugged in -- a startup warning names it --
+  while every board that IS present still comes up: the drums keep playing
+  with the sustain pedals unplugged, and vice versa.
 - If *nothing* runnable is present (no grids and no SoftStep), the run errors
   rather than idling.
 

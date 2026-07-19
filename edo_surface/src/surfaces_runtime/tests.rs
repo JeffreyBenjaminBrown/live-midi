@@ -79,7 +79,6 @@
       assert_eq!(g.overlays.distortion_rect, [0, 1, 0, 1], "grid {:?} distortion toggle", g.monome_id);
       assert_eq!(g.overlays.slide_rect, [1, 1, 1, 1], "grid {:?} slide toggle", g.monome_id);
       assert_eq!(g.overlays.mono_rect, [1, 2, 1, 2], "grid {:?} mono toggle", g.monome_id);
-      assert_eq!(g.overlays.feet_accrete_rect, [0, 14, 0, 14], "grid {:?} feet-accrete", g.monome_id);
       assert_eq!(g.overlays.poly_rect, [13, 0, 15, 1], "grid {:?} polyrhythm pad", g.monome_id);
     }
     // Deliberately NO assertions on tunables here (the distortion curve, the trail,
@@ -204,7 +203,6 @@
         distortion_rect: NO_RECT,
         slide_rect: NO_RECT,
         mono_rect: NO_RECT,
-        feet_accrete_rect: NO_RECT,
         poly_rect: NO_RECT,
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
@@ -1041,54 +1039,62 @@
   /// The `[[timbres]]` square entry, replaced by the reload test.
   const WAVE_SQUARE: &str = "waveform = \"square\"";
 
+  /// The pedal hook end to end, for a SECOND board's `accrete_control` bindings --
+  /// the explicit replacement for the retired `softstep_accretes_toggle` mirror
+  /// (TODO/cleaning/2_plan.org: "retiring softstep_accretes_toggle needs a pedal
+  /// decision" -- Jeff's answer was a second KMSS carrying the six pedals). Same
+  /// six-pedal mapping the old mirror hardcoded (1/2/3 -> grid 0's clear /
+  /// needs_holding / accrete, 8/9/0 -> grid 1's), but through `rig_pedal_hook` /
+  /// `drive_accrete` -- UNCONDITIONAL (no on-grid toggle gate) and keyed by device id,
+  /// so a same-numbered pedal on a different device never crosses over.
   #[test]
-  fn the_pedal_hook_mirrors_each_banks_trio_only_while_its_toggle_is_on() {
+  fn the_pedal_hook_drives_each_banks_trio_from_the_explicit_bindings() {
     use crate::types::{Timbre, VoiceSource};
 
-    // Triple 0 (pedals 1/2/3) -> grid 0's bank, triple 1 (8/9/0) -> grid 1's.
-    let feet_on: Arc<Vec<AtomicBool>> =
-      Arc::new((0..2).map(|_| AtomicBool::new(false)).collect());
     let ring = Arc::new(Mutex::new(vec![
       GridRing::new(AccreteState::new()),
       GridRing::new(AccreteState::new()),
     ]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let hook = feet_accrete_hook(
-      "feet".to_string(),
-      Arc::clone(&feet_on),
-      [0, 1],
+    let poly = Arc::new(Mutex::new(PolyrhythmState::new(2)));
+    let mut actions: HashMap<(String, u8), PedalAction> = HashMap::new();
+    for (pedal, grid, control) in [
+      (1, 0, AccreteControlKind::Clear),
+      (2, 0, AccreteControlKind::NeedsHolding),
+      (3, 0, AccreteControlKind::Accrete),
+      (8, 1, AccreteControlKind::Clear),
+      (9, 1, AccreteControlKind::NeedsHolding),
+      (0, 1, AccreteControlKind::Accrete),
+    ] {
+      actions.insert(("feet2".to_string(), pedal), PedalAction::Accrete { grid, control });
+    }
+    let hook = rig_pedal_hook(
+      actions,
       Arc::clone(&ring),
       Arc::clone(&held_all),
       Arc::clone(&voices),
+      Arc::clone(&poly),
+      Duration::from_millis(2000),
       0.05,
       48000.0,
     );
 
-    // Both toggles off: nothing is consumed; the pedals drum as usual.
-    assert!(!hook("feet", 3, true), "off: pedal 3 stays a drum pad");
+    // A DIFFERENT device's pedal 3 must not touch this bank: the hook is keyed by
+    // (device, pedal), so a same-numbered pedal on another device is simply unbound
+    // (the caller's drumkit pedal map handles it, if anything does).
+    assert!(!hook("other-board", 3, true), "another board's pedal 3 is unbound here");
     assert!(!ring.lock().unwrap()[0].accrete.accreting());
+    // This board's own unmapped pedal (4) is unbound too -- only the six pedals above
+    // are in the map, unconditionally (no toggle to flip first, unlike the old mirror).
+    assert!(!hook("feet2", 4, true), "pedal 4 is not one of the six bound pedals");
 
-    feet_on[0].store(true, Ordering::Relaxed);
-    // A DIFFERENT board's pedal 3 must not touch this board's bank, even with the
-    // toggle on: the printed labels are identical across boards, so only the device
-    // id separates them. Without this the second SoftStep would mirror onto grid 0's
-    // accrete bank the moment it was plugged in.
-    assert!(!hook("other-board", 3, true), "another board's pedal 3 is not mirrored");
-    assert!(
-      !ring.lock().unwrap()[0].accrete.accreting(),
-      "another board's pedal 3 must not toggle this bank",
-    );
-    // Unmapped pedals still drum even while on.
-    assert!(!hook("feet", 4, true), "pedal 4 (closed hat) is never mirrored");
-    // The other triple's grid is still off: its pedals keep drumming.
-    assert!(!hook("feet", 0, true), "pedal 0 drums while grid 1's toggle is off");
     // Pedal 3 = grid 0's accrete: default needs-holding is OFF, so a tap toggles the
     // mode -- and the activation captures held notes from grid 0's registry ONLY.
     held_all.lock().unwrap()[0].insert((2, 3), 44);
     held_all.lock().unwrap()[1].insert((7, 7), 51);
-    assert!(hook("feet", 3, true), "on: pedal 3 is consumed");
-    hook("feet", 3, false);
+    assert!(hook("feet2", 3, true), "pedal 3 is consumed");
+    hook("feet2", 3, false);
     assert!(ring.lock().unwrap()[0].accrete.accreting(), "grid 0's accrete mode toggled by foot");
     assert!(!ring.lock().unwrap()[1].accrete.accreting(), "grid 1's bank untouched");
     assert!(
@@ -1104,11 +1110,10 @@
       "grid 1's held note was NOT captured (banks are per-monome)",
     );
 
-    // Turn grid 1's toggle on, accrete a note there, then clear it from pedal 8:
-    // only grid 1's bank and drone are cleared.
-    feet_on[1].store(true, Ordering::Relaxed);
-    assert!(hook("feet", 0, true), "pedal 0 = grid 1's accrete, now consumed");
-    hook("feet", 0, false);
+    // Accrete a note on grid 1 (pedal 0), then clear it (pedal 8): only grid 1's
+    // bank and drone are cleared.
+    assert!(hook("feet2", 0, true), "pedal 0 = grid 1's accrete, consumed");
+    hook("feet2", 0, false);
     let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     a.note_on((5, 5), 20, Timbre::default(), None);
@@ -1120,8 +1125,8 @@
       let gr = &mut r[1];
       gr.accrete.note_played(31, &mut gr.store);
     }
-    assert!(hook("feet", 8, true), "pedal 8 = grid 1's clear, consumed");
-    hook("feet", 8, false);
+    assert!(hook("feet2", 8, true), "pedal 8 = grid 1's clear, consumed");
+    hook("feet2", 8, false);
     let v = voices.lock().unwrap();
     for (src, state) in v.iter() {
       let VoiceSource::SurfaceDrone { grid, .. } = src else { continue };
@@ -1312,9 +1317,9 @@
     STOP.store(false, Ordering::SeqCst);
   }
 
-  /// The toggles end-to-end: every one (distortion / slide / mono / feet-accrete)
-  /// is PER-GRID -- each rests dim, a press lights only that grid's cell, the two
-  /// grids' switches are independent, and each turns off from its own grid.
+  /// The toggles end-to-end: every one (distortion / slide / mono) is PER-GRID --
+  /// each rests dim, a press lights only that grid's cell, the two grids' switches
+  /// are independent, and each turns off from its own grid.
   #[test]
   fn every_toggle_is_per_grid_and_independent() {
     use crate::mock_monome::{wait_until, GridSpec, MockRig};
@@ -1339,12 +1344,10 @@
     let b = mock.grid(1);
     let secs = Duration::from_secs;
     assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
-    // Distortion (0,1), slide (1,1), mono (1,2), and feet-accrete (0,14) are all
-    // PER-GRID: grid a's press lights grid a only, and grid b's toggle is a
-    // separate switch (b's press turns b ON, not a off).
-    for (x, y, name) in
-      [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono"), (0, 14, "feet-accrete")]
-    {
+    // Distortion (0,1), slide (1,1), and mono (1,2) are all PER-GRID: grid a's press
+    // lights grid a only, and grid b's toggle is a separate switch (b's press turns
+    // b ON, not a off).
+    for (x, y, name) in [(0, 1, "distortion"), (1, 1, "slide"), (1, 2, "mono")] {
       assert!(wait_until(secs(3), || a.level_at(x, y) == 4 && b.level_at(x, y) == 4),
         "{name} rests dim on both grids");
       a.press(x, y);

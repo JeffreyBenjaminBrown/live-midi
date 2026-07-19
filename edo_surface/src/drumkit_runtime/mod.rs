@@ -34,9 +34,10 @@ use samples::DrumSample;
 
 /// A host runtime's tap on the pedal stream, called with `(softstep id, printed
 /// label, down)` on every Fire (down) and Release (up). Returning `true` CONSUMES the
-/// event: the pad plays no sample for it (the surfaces runtime's feet-accrete mirror
-/// repurposes pads this way while its toggle is on). Releases are delivered too, but
-/// nothing sample-side listens to them.
+/// event: the pad plays no sample for it (the surfaces runtime's rig-declared pedal
+/// bindings -- `accrete_control` and friends -- repurpose pads this way,
+/// unconditionally). Releases are delivered too, but nothing sample-side listens to
+/// them.
 ///
 /// The id is the rig's `[[softsteps]] id`, and it is load-bearing once TWO boards are
 /// connected: the printed labels are the same on both, so `(1, true)` alone cannot
@@ -227,11 +228,30 @@ pub fn start_with_hook(
     }
   }
 
-  // 3. Setup succeeded -> switch EVERY declared board into tether mode (and arm
-  // restoration). Each board resolves its own rawmidi port from its own selector, so
-  // two SoftSteps both enter; a board left in standalone would stream no sensors at
-  // all. The session restores all of them together.
+  // 2.5. Which declared boards currently have a live MIDI port. The caller (the
+  // surfaces runtime) gates whether this whole function runs on `any_softstep_present`
+  // -- ANY declared board being live -- so with more than one board declared, a board
+  // that ISN'T among these is a per-board skip from here on, not a hard failure: its
+  // samples/pedals simply do nothing until it's reconnected, while every board that IS
+  // present still comes up (TODO/cleaning/2_plan.org, "the surfaces runtime brings up
+  // whatever boards are present"). A single-board rig with its one board missing still
+  // ends up erroring below (`connections` stays empty), matching the old behavior.
+  let present = softsteps_present_among(rig, &live_input_port_names());
+
+  // 3. Switch every PRESENT board into tether mode (and arm restoration). Each board
+  // resolves its own rawmidi port from its own selector, so two SoftSteps both enter; a
+  // board left in standalone would stream no sensors at all. The session restores all
+  // of them together.
   for softstep in &rig.softsteps {
+    if !present.contains(&softstep.id) {
+      eprintln!(
+        "warning: SoftStep {:?} (matching {:?}) not found -- its pedals/samples will not \
+         respond until it is reconnected",
+        softstep.id,
+        softstep.select.name_substring(),
+      );
+      continue;
+    }
     tether_session.enter(softstep.select.name_substring()).map_err(|e| {
       format!(
         "could not enter tether mode on {:?} (needs alsa-utils `amidi`): {e}",
@@ -240,8 +260,9 @@ pub fn start_with_hook(
     })?;
   }
   println!(
-    "  {} device(s) in tether mode (pressure-sensitive); will restore standalone on exit",
-    rig.softsteps.len()
+    "  {}/{} declared device(s) in tether mode (pressure-sensitive); will restore standalone on exit",
+    present.len(),
+    rig.softsteps.len(),
   );
 
   // Timing pedals (the tempo-factor pedals, but NOT the =1/Unity switch, which has its
@@ -266,6 +287,9 @@ pub fn start_with_hook(
   let mut connections: Vec<MidiInputConnection<()>> = Vec::new();
   let mut timers: Vec<(Arc<AtomicBool>, JoinHandle<()>)> = Vec::new();
   for (device_id, build) in devices {
+    if !present.contains(&device_id) {
+      continue; // already warned about above
+    }
     let DeviceBuild { pedal_map, select_substring } = build;
     print_device_summary(&device_id, &pedal_map, params);
 
@@ -459,7 +483,8 @@ fn run_voice_timer(
             }
           }
         }
-        // One-shot samples ignore releases; the hook (feet-accrete) needs them.
+        // One-shot samples ignore releases; the host hook (rig-declared pedal bindings,
+        // e.g. holding an accrete_control pedal) needs them.
         DrumEvent::Release { label } => {
           if let Some(h) = hook.as_ref() {
             let _ = h(&device_id, label, false);
@@ -483,15 +508,30 @@ pub fn any_softstep_present(rig: &Rig) -> bool {
   if rig.softsteps.is_empty() {
     return false;
   }
+  !softsteps_present_among(rig, &live_input_port_names()).is_empty()
+}
+
+/// Every currently visible MIDI input port's name. Side-effect-free (opens the MIDI
+/// subsystem only to enumerate ports, same as `any_softstep_present`); empty if the
+/// subsystem can't even be opened.
+fn live_input_port_names() -> Vec<String> {
   let Ok(midi_in) = MidiInput::new("kmss-probe") else {
-    return false;
+    return Vec::new();
   };
-  let names: Vec<String> =
-    midi_in.ports().iter().filter_map(|p| midi_in.port_name(p).ok()).collect();
+  midi_in.ports().iter().filter_map(|p| midi_in.port_name(p).ok()).collect()
+}
+
+/// Which of `rig.softsteps`' ids currently have a live port among `names`, matched the
+/// same substring rule `select_input_port` binds by. Pure (the caller enumerates the
+/// live ports), so it's testable without hardware -- `any_softstep_present` and
+/// `start_with_hook`'s per-board presence check both go through this one rule.
+fn softsteps_present_among(rig: &Rig, names: &[String]) -> HashSet<String> {
   rig
     .softsteps
     .iter()
-    .any(|s| names.iter().any(|n| n.contains(s.select.name_substring())))
+    .filter(|s| names.iter().any(|n| n.contains(s.select.name_substring())))
+    .map(|s| s.id.clone())
+    .collect()
 }
 
 fn select_input_port(midi_in: &MidiInput, substring: &str) -> Result<MidiInputPort, String> {
@@ -546,6 +586,68 @@ fn print_device_summary(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::rig::{SoftstepRig, SoftstepSelect};
+
+  fn softstep(id: &str, name_contains: &str) -> SoftstepRig {
+    SoftstepRig {
+      id: id.to_string(),
+      select: SoftstepSelect { name_contains: Some(name_contains.to_string()) },
+    }
+  }
+
+  fn rig_with_softsteps(softsteps: Vec<SoftstepRig>) -> Rig {
+    Rig {
+      version: 1,
+      id: "test".into(),
+      title: "test".into(),
+      tunings: vec![],
+      monomes: vec![],
+      midi: None,
+      piano: None,
+      sinks: vec![],
+      monome_windows: vec![],
+      softsteps,
+      softstep_windows: vec![],
+      display: None,
+      looper: None,
+      am: None,
+      trail: None,
+      slide: None,
+      tap_tempo: None,
+      timbres: vec![],
+      expression_pedals: vec![],
+      echo_input: false,
+    }
+  }
+
+  /// The per-board presence check `start_with_hook` now uses to skip a missing board
+  /// instead of hard-failing the whole bring-up (TODO/cleaning/2_plan.org, "the
+  /// surfaces runtime brings up whatever boards are present"): with two declared
+  /// boards and only one live port, exactly that board's id comes back, matched by
+  /// its own `select.name_contains` -- never by the OTHER board's substring, and never
+  /// a board that isn't declared at all.
+  #[test]
+  fn softsteps_present_among_finds_only_the_live_board() {
+    let rig = rig_with_softsteps(vec![softstep("feet", "SSCOM"), softstep("kmss2", "SoftStep")]);
+    let names = vec!["SSCOM MIDI 1".to_string(), "SSCOM MIDI 2".to_string()];
+    let present = softsteps_present_among(&rig, &names);
+    assert!(present.contains("feet"), "the live board is present");
+    assert!(!present.contains("kmss2"), "the unplugged board is not");
+  }
+
+  #[test]
+  fn softsteps_present_among_is_empty_with_no_live_ports() {
+    let rig = rig_with_softsteps(vec![softstep("feet", "SSCOM"), softstep("kmss2", "SoftStep")]);
+    assert!(softsteps_present_among(&rig, &[]).is_empty(), "nothing is live");
+  }
+
+  #[test]
+  fn softsteps_present_among_finds_both_when_both_are_live() {
+    let rig = rig_with_softsteps(vec![softstep("feet", "SSCOM"), softstep("kmss2", "SoftStep")]);
+    let names = vec!["SSCOM MIDI 1".to_string(), "SoftStep Control Surface".to_string()];
+    let present = softsteps_present_among(&rig, &names);
+    assert!(present.contains("feet") && present.contains("kmss2"), "both live: {present:?}");
+  }
 
   /// A `PedalHook` must be able to tell the two boards apart. The printed labels are
   /// identical on both, and ONE hook Arc is cloned to every device's timer thread, so

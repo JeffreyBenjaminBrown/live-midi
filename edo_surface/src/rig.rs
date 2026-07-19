@@ -868,14 +868,6 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
   },
-  // A single-cell on/off toggle (surfaces runtime): while on, the KMSS pedals
-  // 1/2/3 and 8/9/0 mirror the accrete button trio (clear / needs_holding /
-  // accrete) instead of playing samples. See TODO/misc.org "feet accrete".
-  SoftstepAccretesToggle {
-    id: String,
-    monome: String,
-    rect: [i32; 4],
-  },
   // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
   // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
   // notes join a sustained set that rings after the fingers lift, until cleared.
@@ -1052,7 +1044,6 @@ impl MonomeWindowRig {
       | MonomeWindowRig::DistortionToggle { id, .. }
       | MonomeWindowRig::SlideToggle { id, .. }
       | MonomeWindowRig::MonoToggle { id, .. }
-      | MonomeWindowRig::SoftstepAccretesToggle { id, .. }
       | MonomeWindowRig::EditmodeControl { id, .. }
       | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
@@ -1087,7 +1078,6 @@ impl MonomeWindowRig {
       | MonomeWindowRig::DistortionToggle { monome, .. }
       | MonomeWindowRig::SlideToggle { monome, .. }
       | MonomeWindowRig::MonoToggle { monome, .. }
-      | MonomeWindowRig::SoftstepAccretesToggle { monome, .. }
       | MonomeWindowRig::EditmodeControl { monome, .. }
       | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
@@ -1122,7 +1112,6 @@ impl MonomeWindowRig {
       | MonomeWindowRig::DistortionToggle { rect, .. }
       | MonomeWindowRig::SlideToggle { rect, .. }
       | MonomeWindowRig::MonoToggle { rect, .. }
-      | MonomeWindowRig::SoftstepAccretesToggle { rect, .. }
       | MonomeWindowRig::EditmodeControl { rect, .. }
       | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
@@ -1158,7 +1147,6 @@ impl MonomeWindowRig {
       MonomeWindowRig::DistortionToggle { .. } => "distortion_toggle",
       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
-      MonomeWindowRig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
@@ -1366,9 +1354,10 @@ pub enum SoftstepWindowRig {
   },
   /// One pedal driving one monome's accrete bank -- the same `AccreteControlKind`
   /// the on-grid buttons use, so a rig can put sustain under a foot instead of
-  /// spending grid cells on it. Unlike the older `softstep_accretes_toggle` mirror
-  /// (which hardcodes pedals 1/2/3 and 8/9/0 and needs an on-grid toggle to turn it
-  /// on), this binding is unconditional and stated in the rig.
+  /// spending grid cells on it. Unconditional and stated in the rig -- unlike the
+  /// retired `softstep_accretes_toggle` mirror (deleted 2026-07; it hardcoded pedals
+  /// 1/2/3 and 8/9/0 and needed an on-grid toggle to turn it on), this binding does
+  /// not depend on any on-grid state.
   AccreteControl {
     id: String,
     softstep: String,
@@ -1923,9 +1912,6 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     }
     MonomeWindowRig::MonoToggle { id, monome, rect } => {
       Some(("mono_toggle", id, monome, *rect))
-    }
-    MonomeWindowRig::SoftstepAccretesToggle { id, monome, rect } => {
-      Some(("softstep_accretes_toggle", id, monome, *rect))
     }
     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
       // Per-control uniqueness: label by control so a monome may carry one clear
