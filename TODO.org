@@ -14,7 +14,7 @@ pw-jack cargo run --bin midi_pulse \
 | Old SS              |                 |           |                 |               |
 | clear edits         | _               | tap tempo | _               | clear edits   |
 | clear sustain       | accrete sustain | _         | accrete sustain | clear sustain |
-* store chords
+* ONGOING queue/branch-2.org
 * Should the =1 pedal also get the Settle debounce?
 Claude wrote (roughly):
 

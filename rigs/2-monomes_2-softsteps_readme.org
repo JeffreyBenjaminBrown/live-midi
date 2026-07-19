@@ -510,8 +510,9 @@ gliding over =slide.duration_ms= (100 ms). Leave edit mode to play normally agai
 - A note on the bottom row has no cell below it, so it cannot be edited.
 
 ** the diamond dance
-Each edited note is marked by a single lit cell turning around it -- above, left,
-below, right -- holding each corner 150 ms, so one turn is 600 ms.
+Each edited note is marked by a single DIM cell -- dim like the trails --
+turning around it -- above, left, below, right -- holding each corner 150 ms,
+so one turn is 600 ms.
 
 - This is local, unlike everything else on these grids. It marks the exact
   cell(s) holding that exact pitch on that one grid: never octave-equivalents,
@@ -521,13 +522,14 @@ below, right -- holding each corner 150 ms, so one turn is 600 ms.
   turns together. That is why a corner that cannot be drawn is skipped but
   still spends its slot: compressing the turn would drift that dance out of
   phase.
-- It clobbers a dim trail but yields to a bright note. A trail is decoration; a
-  sounding note is information. Without the clobber, a note whose four neighbours
-  happened to be trailed would dance invisibly -- exactly when the grid is busiest.
+- It yields to a bright note -- a sounding note is information, and the corner
+  is simply skipped for that slot, not retimed. Over a trailed cell it blends
+  in (dim on dim), so a dance crossing the trail loses that corner visually
+  -- the accepted price of dim dancers.
 - Expect it to read less cleanly on grid A, whose "dim" is faked by fast flashing.
 
 ** the square dance
-A sustained note is marked the diamond's diagonal twin: a single lit cell turning
+A sustained note is marked the diamond's diagonal twin: a single dim cell turning
 among its four DIAGONAL neighbours -- NW, SW, SE, NE -- on the diamond's own clock
 (150 ms per corner, 600 ms per turn), but 45 degrees (an eighth of a turn) out of
 phase, so each square position lands exactly between two diamond positions in time. A
@@ -543,9 +545,10 @@ once was. A plain sustained note (not edited) shows the square alone.
   that exact pitch on that one grid, register-aware, never octave-equivalents, never
   the other grid -- so at most two images (colliding cells), sometimes one, and none
   when that register is not on screen.
-- Same clobber/yield rule as the diamond: it overwrites a dim trail but yields to a
-  bright (sounding) note -- that corner is simply skipped, not retimed, so the two
-  dances never drift out of phase with each other.
+- Same paint rule as the diamond: dim like the trails (blending in over a
+  trailed cell), yielding to a bright (sounding) note -- that corner is simply
+  skipped, not retimed, so the two dances never drift out of phase with each
+  other.
 - Reads the grid's own sustained-pitch bank -- the same bank the cross-grid bright
   reflection folds into pitch classes -- but pitch-exact and register-aware like the
   diamond, never class-folded.

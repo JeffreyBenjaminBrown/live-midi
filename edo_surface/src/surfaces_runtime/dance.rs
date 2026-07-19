@@ -90,19 +90,19 @@ pub fn flash_on(elapsed: Duration) -> bool {
 
 /// What the dance may do to a cell that is already lit for another reason.
 ///
-/// Jeff's rule (4e): the dance *clobbers* a dim trail -- "the trails are dim; a
-/// diamond dance can temporarily make a trail bright" -- but yields to a cell that is
-/// already bright, because that cell is a sounding note and overwriting it would
-/// destroy real information. A yielded corner is *skipped, not retimed*.
-///
-/// Without the clobber the indicator could vanish exactly when the grid is busiest:
-/// with up to `trails_max` (9) classes lit dim across both grids, a note whose four
-/// neighbours all happen to be trailed would dance invisibly.
+/// The dancers paint DIM, like the trails (Jeff's "have the dancers be dim like
+/// trails", superseding the original bright-dance rule of 4e). They still yield to
+/// a cell that is already bright, because that cell is a sounding note and
+/// overwriting it would destroy real information -- a yielded corner is *skipped,
+/// not retimed*. Over a trailed cell the dance still nominally draws, but dim on
+/// dim is invisible: a corner crossing a trail simply blends in for that slot
+/// (accepted with the dim-dancers call -- the old clobber rationale, "a note whose
+/// four neighbours are all trailed would dance invisibly", is priced in now).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Occupancy {
   /// Nothing there: the dance draws.
   Dark,
-  /// A trail. The dance wins and shows bright.
+  /// A trail. The dance draws (indistinguishably -- both are dim).
   Dim,
   /// A sounding note. The dance yields; this corner is simply not drawn.
   Bright,

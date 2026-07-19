@@ -161,16 +161,18 @@ pub fn levels_for_grid(
         } else {
           OFF
         };
-        // The dance clobbers a dim trail but yields to a sounding note, which is real
-        // information (4e). A yielded corner is skipped, NOT retimed -- the clock is
-        // absolute, so this cell simply shows the note underneath for its slot.
+        // The dancers paint DIM, like the trails (Jeff), and yield to a sounding
+        // note, which is real information. A yielded corner is skipped, NOT
+        // retimed -- the clock is absolute, so this cell simply shows the note
+        // underneath for its slot. (Over a trailed cell the dance draws but dim
+        // on dim is indistinguishable; accepted.)
         let under = match base {
           BRIGHT => super::dance::Occupancy::Bright,
           DIM => super::dance::Occupancy::Dim,
           _ => super::dance::Occupancy::Dark,
         };
         if dance_cells.contains(&(x, y)) && super::dance::draws_over(under) {
-          BRIGHT
+          DIM
         } else {
           base
         }
@@ -392,31 +394,26 @@ mod tests {
   }
 
   #[test]
-  fn a_danced_cell_lights_bright_over_nothing() {
+  fn a_danced_cell_lights_dim_over_nothing() {
+    // The dancers are dim, like the trails (Jeff, superseding the bright-dance 4e).
     let levels = levels_for_grid(
       &empty(), &empty(), &dance_at(&[(5, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&levels, 5, 4), BRIGHT);
+    assert_eq!(at(&levels, 5, 4), DIM);
     assert_eq!(at(&levels, 5, 5), OFF, "only the corner, not the note's own cell");
   }
 
-  /// 4e: the dance CLOBBERS a dim trail. Without this a note whose neighbours all
-  /// happen to be trailed would dance invisibly -- exactly when the grid is busiest.
+  /// Over a trailed cell the dance still draws, but dim on dim is indistinguishable
+  /// -- the corner blends in for that slot (the accepted price of dim dancers).
   #[test]
-  fn a_danced_cell_clobbers_a_dim_trail() {
+  fn a_danced_cell_over_a_trail_stays_dim() {
     let trail: HashSet<i32> = [class_at(0, 5, 4)].into_iter().collect();
-    let plain = levels_for_grid(
-      &empty(), &trail, &no_dance(), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
-      &[], 0, XS, YS, EDO, 16, 16,
-    );
-    assert_eq!(at(&plain, 5, 4), DIM, "a trail alone is dim");
-
     let danced = levels_for_grid(
       &empty(), &trail, &dance_at(&[(5, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&danced, 5, 4), BRIGHT, "the dance wins over a trail");
+    assert_eq!(at(&danced, 5, 4), DIM, "dance + trail = still just dim");
   }
 
   /// ...but it YIELDS to a sounding note, which is real information. The cell simply
@@ -444,30 +441,30 @@ mod tests {
   // path rather than some parallel rule.
 
   #[test]
-  fn a_square_danced_cell_lights_bright_over_nothing() {
+  fn a_square_danced_cell_lights_dim_over_nothing() {
     let levels = levels_for_grid(
       &empty(), &empty(), &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&levels, 6, 4), BRIGHT, "the diagonal neighbour, e.g. NE of (5,5)");
+    assert_eq!(at(&levels, 6, 4), DIM, "the diagonal neighbour, e.g. NE of (5,5)");
     assert_eq!(at(&levels, 5, 5), OFF, "only the corner, not the note's own cell");
   }
 
   #[test]
-  fn a_square_danced_cell_clobbers_a_dim_trail_but_yields_to_a_sounding_note() {
+  fn a_square_danced_cell_blends_with_a_trail_and_yields_to_a_sounding_note() {
     let trail: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let danced = levels_for_grid(
       &empty(), &trail, &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&danced, 6, 4), BRIGHT, "the dance wins over a trail (4e), diamond or square alike");
+    assert_eq!(at(&danced, 6, 4), DIM, "dance + trail = dim, diamond or square alike");
 
     let sounding: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let yielded = levels_for_grid(
       &sounding, &empty(), &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&yielded, 6, 4), BRIGHT, "still bright -- as the NOTE, the dance yields");
+    assert_eq!(at(&yielded, 6, 4), BRIGHT, "bright -- as the NOTE, the dance yields");
   }
 
   /// The visible payoff of the T/8 offset: a voice both edited (diamond) AND
@@ -486,7 +483,7 @@ mod tests {
     let levels =
       levels_for_grid(&empty(), &empty(), &both, NO_FLASH, FULL, NONE, 0, NONE, -1, NONE, &[], 0, XS, YS, EDO, 16, 16);
     for (x, y) in both.iter().copied() {
-      assert_eq!(at(&levels, x, y), BRIGHT, "({x},{y}) should be lit by one of the two dances");
+      assert_eq!(at(&levels, x, y), DIM, "({x},{y}) should be lit (dim) by one of the two dances");
     }
     assert_eq!(at(&levels, 5, 5), OFF, "the note's own cell is untouched by either dance");
   }

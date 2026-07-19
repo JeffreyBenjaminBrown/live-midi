@@ -1,5 +1,17 @@
 * ONGOING TODO/chord-storage-v2
-** correction in my earlier request : longest phase -> longest period
+** TODO exit edit mode should not delete the voice
+At least for the voice-specific gesture that is not currently the case.
+The voice must have bee added to the sustained set when it was sustained, I think.
+So there's already the gesture 'remove from sustained set'
+that would end the voice entirely; this one might as well do something else.
+
+This seems only to happen when the voice was sustained via entering edit mode.
+That suggests edit mode is being recorded as its reason for existence.
+We don't need that concept to exist.
+If it enters sustain via sustain or via edit,
+globally (from the sofstep) or locally (from the monome),
+its reason for existence is sustain.
+** DONE correction in my earlier request : longest phase -> longest period
 Each voice at frequency higher than the base (longest) cycle
 has its phase recorded
 relative to the base cycle, as well as its own position in its own cycle. It
@@ -10,3 +22,22 @@ Unusually, the base cycle starts at phase=0,
 rather than wherever in that cycle we were when save happened.
 All the others begin wherever they were relative to it and in themselves
 when they were saved.
+*** DONE claude: the base cycle, one rewind for everything
+=chords::snapshot= now picks the LONGEST-PERIOD voice (lowest pitch; ties to
+the largest phase) as the base and rewinds the save instant by =dt =
+phase_B / freq_B= seconds -- to the most recent start of the base's cycle.
+Each voice stores its phase as of that instant (=phase_i - dt * freq_i=, from
+the stored pitch's frequency, so a mid-glide save uses the target it will
+replay at), which is one number that encodes both "where it was in itself"
+and "where it was relative to the base cycle"; the base stores exactly 0.
+The factored-pulse phases rewind by the SAME =dt= (one coherent instant),
+which also removed the old separate pulse-reference rule. Docs updated
+(2_discussion Round 3 note, both readmes, StoredVoice/snapshot comments);
+tests rewritten around the octave-pair rewind math. =cargo test
+--workspace=: 734 passed, 0 failed.
+
+Refined per chat: ties go to the voice closest to its cycle boundary in
+EITHER direction (=min(phase, 1 - phase)=), and accordingly the anchor is
+the base's nearest boundary -- =dt= is signed, so a base past half-cycle
+advances to the boundary just ahead instead of rewinding nearly a full
+cycle. 735 passed, 0 failed.
