@@ -41,18 +41,9 @@
 //! sample shares the sound card via PipeWire.
 
 // The meter now uses the debounce controls (the treatment toggle drives
-// `set_all_debounce`), but it still leaves other decoder internals (`is_hard`, the
-// per-label `set_debounce_by_label`) unexercised, so the allow stays.
-#[path = "drumkit_runtime/decode.rs"]
-#[allow(dead_code)]
-mod decode;
-// `tether::session()` (an alternate constructor for a host runtime that owns its own
-// signal handling) is unused here -- this meter is standalone, so it uses `arm()`
-// instead, like the drumkit runtime's own standalone path (`run_from_rig`).
-#[path = "drumkit_runtime/tether.rs"]
-#[allow(dead_code)]
-mod tether;
-
+// The drumkit runtime -- and its `decode` / `tether` submodules that this meter reuses
+// -- now live in the `edo_surface` crate (cleaning phase 7); the SAME decoder, imported
+// rather than re-mounted.
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, Seek, SeekFrom, Write};
@@ -63,8 +54,9 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputPort};
 
-use midi_pulse::midi;
-use midi_pulse::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
+use edo_surface::drumkit_runtime::{decode, tether};
+use edo_surface::midi;
+use edo_surface::rig::{drum_samples_dir, load_softstep_params, SoftstepParams};
 
 use decode::{
   collect_control_changes, gain_from_pressure, DebounceMode, DrumEvent, TetherDecoder, NUM_PADS,

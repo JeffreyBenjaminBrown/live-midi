@@ -1,0 +1,276 @@
+#+title: Cleaning plan
+#+date: 2026-07-19
+
+Executes 1_vision.org with Jeff's answers folded in. Phases are STRICTLY
+SERIAL (each touches files the next rebuilds on); each ends with the full
+workspace suite green and a commit. Phases 1-6 are unblocked; 7-8 hold TODOs
+for Jeff. Mechanical phases go to small subagents; the judgment-heavy ones
+(5, 6) stay with the main session. Deviations get recorded here, per
+when-to-stop.org.
+
+* the phases
+** 1. Extract surfaces_runtime/mod.rs's tests -> tests.rs [unblocked, mechanical]
+=#[cfg(test)] mod tests= (~1.8k lines, half the file) moves to
+=surfaces_runtime/tests.rs= via =#[cfg(test)] mod tests;= + =use super::*=.
+Zero behavior; halves the god-module before the real split.
+** 2. Principled voice keys, no generics [unblocked]
+Per Jeff (vision 2): redesign =VoiceSource= itself rather than genericize.
+Keep the engine-facing truth "the render never reads keys"; the enum gains
+honest variants and the puns die:
+- keep =Fingered { xy }= and =Accreted { chord, pitch }= (sawwave + looper use
+  them literally);
+- add =SurfaceFinger { grid, cell }=, =SurfaceDrone { grid, pitch }=,
+  =SurfaceRetired { grid, seq }=;
+- synth.rs's =voice_key= / =sustain_key= / SUSTAIN_BASE / RETIRED_BASE and the
+  cell-packing arithmetic are deleted; every walk in mod.rs matches the real
+  variants.
+** 3. Split surfaces_runtime/mod.rs at its seams [unblocked]
+After 1+2 the remainder splits into submodules roughly: =settings.rs=
+(resolve + bring-up plan), =paint.rs= (LED painting), =keys.rs= (handle_key +
+overlay dispatch), =hooks.rs= (pedal hook + dispatchers: editmode,
+factored-pulse), =pedal_volume.rs= (curve + thread), =reload.rs= (Live +
+adopt); mod.rs keeps run() + thread spawning + the shared types. Names may
+shift as the seams reveal themselves; that's a how-deviation, recorded here.
+** 4. GridThread from first principles [unblocked]
+Per Jeff (vision 4): full grouping, clones acceptable. Target shape:
+=Overlays= (every rect + the pressed-LED bools), =SharedState= (the Arc'd
+cross-grid handles), =Tuning= (edo/steps/fund/register math inputs),
+=Knobs= (slide/trail/echo scalars), leaving the per-thread machinery (sock,
+prefix, sink, slide candidates) flat. Borrow fights resolved by cloning.
+** 5. Reify the volume chain [unblocked]
+Per the vision-5 response: replace the baked product in =timbre.gain= with
+per-voice COMPONENTS -- slot amplitude, fader gain, pedal gain -- multiplied
+in the render (all linear amplitude). Fader moves become assignment (ratio
+rescale + its never-zero rule die); the pedal keeps its slew but loses its
+special-case framing. Looper/sawwave set the extra components to 1.0 and are
+bit-identical. RMS-pinning tests guard the refactor.
+** 6. Reify reasons-to-ring (the big one) [unblocked, last of the code phases]
+Per the vision-1 response: a =ring= module owns the SUSTAIN and EDIT reason
+sets per grid (absorbing =AccreteState.sustained= and =EditState.pitches=;
+their state machines stay, pointed at the shared store); fingers stay in the
+held map, derived in as a count. One operation -- remove reason R from
+pitches P, end whatever drops to zero -- replaces the five hand-rolled
+checks (exit-edit, sustain-toggle-off, both clears, release_cell). Every
+existing incident test must pass unmodified; new tests pin the multi-finger
+and colliding-cell cases.
+** 7. Unbury the live core [blocked on naming]
+Per vision 6c: code the latest rig uses moves out of =buried/=; buried may
+depend on live, never the reverse. Rough split: the surfaces runtime, sawwave
+engine, rig loader/org parser, drumkit+softstep, expression pedals, monome +
+mock, device_assign move OUT; the looper/piano/un-12 runtimes and their bins
+stay buried (depending on the live crate).
+*** DONE [jeff] what should the unburied home be called?
+The obvious candidates: promote it INTO =edo_surface/= (the successor crate
+finally succeeds -- my mild favorite, since the name already exists and the
+crate is nearly empty), or a fresh top-level dir (=synth/=? =live/=?
+=instrument/=?). Also: should the legacy runtimes stay a separate crate in
+=buried/= (cleanest dependency arrow) or move wholesale and only the DIR name
+change? Your call; everything else in this phase is mechanical.
+**** TODO
+Promoting it into edo_surface,
+and keeping the legacy runtimes separate,
+seem good.
+** 8. Rename day + rig-facing cleanups [blocked on approvals above]
+One deliberate commit, worktrees level, executing whichever of these you've
+green-lit in 1_vision.org: =tap_tempo_pad= -> =factored_pulse_pad=; the
+=[surfaces]= table divided into =[trail]= / =[slide]= / =[tap_tempo]=;
+=softstep_accretes_toggle= retired (kmss rig rebound to explicit pedal
+bindings). Plus vision 7's pointer-dedup: the window-kind semantics that
+readmes duplicate normatively get emacs-followable =[[file:...]]= links to
+rigs/README.org instead (prose explanations stay).
+*** TODO [jeff] retiring softstep_accretes_toggle needs a pedal decision
+Checked =rigs/2-monomes_kmss-drums.org= before touching anything: its =drumkit=
+softstep window already claims all ten KMSS pedals on the rig's one softstep
+board ("feet") -- 1 snare, 2 kick, 3 ditto, 4 hat, 5 open_hat, 6 high_tom, 7
+low_tom, 8 wood_block, 9 cowbell, 0 crash. The =softstep_accretes_toggle=
+mirror needs exactly six of those same pedals -- 1/2/3 for grid A's clear /
+needs_holding / accrete, 8/9/0 for grid B's -- and only works because it is
+GATED by an on-grid toggle per grid, so the pedal plays a sample when the
+toggle is off and mirrors accrete when it's on. An explicit, unconditional
+=accrete_control= pedal binding on those six pedals would collide with the
+drumkit's claim on the very same pedals (=validate_softsteps= rejects a pedal
+claimed by more than one window), and there are no free pedals to rebind onto
+instead (the only pedals the mirror doesn't already touch -- 4/5/6/7 -- are
+themselves claimed by the hat/tom drum pads). Per the plan's instruction, left
+untouched rather than improvised: the code (=softstep_accretes_toggle= kind,
+=feet_accrete_*= machinery) and the rig are unchanged. Options:
+- Keep =softstep_accretes_toggle= as it is. It is the only mechanism today's
+  single 10-pedal board has for making the same six pedals serve both drums
+  and the accrete mirror; retiring it costs real pedal real estate.
+- Free six pedals for explicit =accrete_control= bindings by moving those drum
+  pads elsewhere -- a second SoftStep board, or consolidating some pads (e.g.
+  more =ditto= pedals) -- a gear/rig decision, not a code one.
+- A third kind: an explicit but *gated* pedal binding, where the rig states
+  both the =accrete_control= target AND which on-grid toggle arms it, keeping
+  the double-duty gate but replacing the hardcoded 1/2/3 + 8/9/0 mapping with
+  a rig-declared one. More code than deleting the kind -- only worth it if the
+  hardcoded mapping itself, not just its unconditionality, is what should go.
+**** TODO Let's use the other kmss.
+If that other kmss is already free, great.
+If not, I imagine it's because that rig is using it for polyrhythm tempo stuff.
+In that case let's just ditch that usage
+(the monome keys for it are easier for me anyway)
+to free up that kmss for the sustain
+(which is much more important to have underfoot).
+That is, one kmss will be all drums, and the other for the 6 pedals you need.
+*** DONE [jeff] confirm the two names
+=factored_pulse_pad= for the pad, and =[trail]=/=[slide]=/=[tap_tempo]= for
+the divided table -- or supply your own; the mechanics are ready either way.
+**** TODO perfect
+* progress
+- [2026-07-19] Phases written; 1_vision.org annotated (two ONGOING questions
+  answered with TODO responses; directives marked DONE). Beginning phase 1.
+- [2026-07-19] Phase 1 done: mod.rs tests -> tests.rs (1392 lines moved), suite green.
+- [2026-07-19] Phase 2 done: SurfaceFinger/SurfaceDrone/SurfaceRetired variants replace the key puns; suite green.
+- [2026-07-19] Phase 3 done: mod.rs split into settings/reload/paint/keys/hooks/pedal_volume (+ tests.rs); suite green.
+- [2026-07-19] Phase 4 done: GridThread (57 fields) grouped into =Overlays= (15 rects,
+  now a shared type built once in settings.rs and stored whole in both GridSettings
+  and GridThread -- the "+2 fields in three places" dance collapses to one struct +
+  one resolve site), =Shared= (15 Arc'd cross-grid handles, cheaply Clone), =Tuning=
+  (6 register-geometry fields) and =Knobs= (8 rig-scalar fields), leaving 11 fields
+  flat (grid_index, sock, prefix, listen_port, device_id, device_port, monobright,
+  timbres, sink, slide, started). Deviation: the two editmode press-LED bools stayed
+  flat on GridThread rather than folding into Overlays, since Overlays is shared
+  verbatim with GridSettings and settings has no press-state concept. No borrow
+  fights arose (Shared's fields are all Mutex/Atomic, so every access is `&`, never
+  `&mut`); no clones were needed beyond the free per-thread `shared.clone()`. Suite
+  green (697 passing).
+- [2026-07-19] Phase 5 done: per-voice volume components (slot amplitude / fader_gain / pedal grid_gain) multiply in the render; ratio-rescale replaced by assignment.
+- [2026-07-19] Phase 6 done: reasons-to-ring reified (=1_vision= item 1, Jeff's
+  big bang; fingers carved out as a derived count). New =ring= module: =Reason=
+  {Sustain, Edit}, =RingStore= (the sustain + edit pitch sets, absorbed out of
+  =AccreteState.sustained= and =EditState.pitches=), and =GridRing= {accrete, edit,
+  store} -- the runtime's two =Arc<Mutex<Vec<AccreteState>>>= / =Vec<EditState>=
+  handles merge to one =Arc<Mutex<Vec<GridRing>>>= (=Shared.ring=), one lock per grid,
+  no cross-lock ordering. =RingStore::remove_reason(reason, pitches, finger_count) ->
+  newly-reasonless pitches= replaces the five hand-rolled "any other reason?" checks
+  (exit-edit, per-note sustain-off, both clears; the release path stays a query). The
+  accrete/edit state machines keep their logic, every set-touching method now taking
+  =&mut RingStore=. Full suite green (bin midi_pulse 483 passed, 0 failed; workspace 0
+  failures). Deviations:
+  - tests.rs is plumbing-only: assertions unmodified, construction rewired to the one
+    ring handle (this is the planned deviation from "tests pass unmodified").
+  - =press_clear= became LED-only; the sustained-set FLUSH moved to the callers'
+    =remove_reason(Sustain, all)= (which both empties the set and reports the drones to
+    end), rather than =press_clear= taking the store. Two accrete unit tests
+    (=clear_flushes_but_does_not_stop_accretion=, =clear_still_flushes_a_momentary_bank=)
+    now flush via =remove_reason=; assertions' meaning kept, noted in-file.
+  - =synth::release_sustained_voices= + =SurfaceSink::release_sustained= DELETED (unused
+    once the clears switched to =remove_reason= + =end_drones_at=, per the plan's
+    "delete if unused"). Their two synth tests were removed, NOT dropped silently: the
+    keep-set (spare-edited) behaviour moved to ring.rs's =remove_reason= tests, and the
+    per-grid drone isolation stays covered by =end_drones_at_releases_named_drones_and_spares_every_finger=.
+  - Voice-ending unified on =synth::end_drones_at= for every clear/exit/sustain-off
+    path (drone-ramp in place); the exit path previously used =cut_sustained= (retire +
+    free the key) -- audibly identical for these paths, and it keeps voice ops outside
+    ring per the no-nested-locks rule.
+  - New ring.rs tests (6): remove_reason returns only reason-less pitches; finger-count
+    respected; the doubly-held finger/sustain/edit matrix; the colliding-cells
+    two-finger case; note_moved re-files both sets; classes fold per reason.
+  - Known edge (design-inherent, untested historically): =remove_reason='s finger-count
+    spares a pitch a finger still holds, so in the rare colliding-cells case where one
+    pitch carries BOTH a drone and a live finger, removing the drone's last stored
+    reason leaves that drone ringing (the finger's own voice is separate). Every
+    non-colliding path matches the prior behaviour exactly; every incident invariant
+    test passes. Left as designed.
+  - Two non-test-build dead_code warnings remain for =EditState= exit/moved/clear (plan
+    mandates the state machine keep them) and the any/pitches/ring::any query helpers,
+    now exercised only by their unit tests; the =cargo test= build is clean.
+- [2026-07-19] Phase 8a done (A + B + C of the approved slice; the
+  =tap_tempo_pad -> factored_pulse_pad= rename stayed out, per its own
+  =ONGOING=). Suite green (=cargo test --workspace=: edo_surface 33, midi_pulse
+  lib 124, midi_pulse bin 483, softstep_meter 62 -- 0 failures; counts unchanged
+  from the phase-6 baseline except the rig/rig_org tests adapted in place).
+  - *A (=[surfaces]= divided, "Yes!").* =SurfacesRig= replaced by three structs
+    (=TrailRig= {clobber_radius, max}, =SlideRig= {candidate_window_ms,
+    duration_ms}, =TapTempoRig= {window_ms}), each its own optional top-level
+    =Rig= field (=trail=/=slide=/=tap_tempo=) -- no =[surfaces]= grab-bag left,
+    so the old flat keys are now unknown-field errors (=deny_unknown_fields=
+    on the new structs; =Rig= itself already denies unknown top-level keys).
+    Every default kept identical (27 / 7 / 1000 / 100 / 2000). Updated:
+    =surfaces_runtime/settings.rs= (=resolve_settings= now reads three
+    =.unwrap_or_default()=s instead of one), doc comments in mod.rs/keys.rs/
+    settings.rs/sawwave_runtime.rs that named =[surfaces].*=; the rig.rs parse
+    tests (=slide_and_mono_toggles_validate_like_distortion=,
+    =tap_tempo_pad_must_be_three_by_two=) and rig_org.rs's TABLE-surfaces tests
+    (=nested_tables_and_grouping_are_transparent=,
+    =hash_comments_on_load_bearing_headlines=,
+    =a_leading_hash_comments_the_whole_headline_out=) adapted to
+    =TABLE trail=/=clobber_radius=/=max=; surfaces_runtime/tests.rs's rig-
+    construction and reload fixtures rewired to the three structs/tables
+    (=surfaces_defaults_when_table_absent= renamed
+    =surfaces_defaults_when_tables_absent=, now clearing and re-defaulting all
+    three). Rigs: =2-monomes_2-softsteps.org= (its own "# TODO: this is a dumb
+    name" resolved -- deleted, replaced by =TABLE trail=/=slide=/=tap_tempo=,
+    each with its own doc body) and =2-monomes_kmss-drums.org= divided the
+    same way; =buried/mocks/2-monomes_kmss-drums-mock.org= likewise (its
+    softstep_accretes_toggle windows untouched, see B). rigs/README.org's
+    =* Surfaces= section grew three subheadings (one per table, each with its
+    toml snippet + field docs) instead of one; its =tap_tempo_pad=/
+    =slide_toggle= prose in "Monome windows" updated to the new key paths.
+    Both per-rig readmes' =[surfaces]=/flat-key mentions (glossary, LEDs,
+    "slide and mono") repointed to =trail.*=/=slide.*=/=tap_tempo.*=.
+  - *B (=softstep_accretes_toggle=, conditional) -- the conflict branch.*
+    Inspected =rigs/2-monomes_kmss-drums.org= first, per the plan's
+    condition: its one =drumkit= softstep window already claims all ten KMSS
+    pedals (1 snare / 2 kick / 3 ditto / 4 hat / 5 open_hat / 6 high_tom /
+    7 low_tom / 8 wood_block / 9 cowbell / 0 crash) on the rig's only softstep
+    board ("feet"), and the =softstep_accretes_toggle= mirror needs exactly
+    six of those same pedals (1/2/3 + 8/9/0), working only because the
+    on-grid toggle GATES which job a press does. An explicit, unconditional
+    =accrete_control= binding on those pedals would collide with the
+    drumkit's claim (=validate_softsteps= rejects a pedal claimed by more
+    than one window), and no pedal is free to rebind onto instead (4/5/6/7
+    are themselves claimed by the hats/toms). This is the "pedals genuinely
+    conflict" branch: left the code (=softstep_accretes_toggle= kind,
+    =feet_accrete_*= machinery in hooks.rs/mod.rs/keys.rs/settings.rs) and
+    both rigs' =softstep_accretes_toggle= windows untouched, and added
+    =TODO/cleaning/2_plan.org= phase 8's "*** TODO [jeff] retiring
+    softstep_accretes_toggle needs a pedal decision" laying out the pedal
+    math and three options (keep it; free six pedals by moving drum pads
+    elsewhere; add a third, rig-declared-but-gated pedal kind).
+  - *C (pointer-dedup, vision 7).* Replaced the two clearest normative
+    duplicates of rigs/README.org window-kind specs with emacs =[[file:...]]=
+    links, keeping the contextual prose: =2-monomes_kmss-drums_readme.org='s
+    "* polyrhythm" section (the tap window / per-grid factor / =1= double-tap
+    dance / pulse mechanics / blink display -- previously restated in full,
+    now a link to =rigs/README.org= "Monome windows" plus the two rig-
+    specific facts: the rect table and "shared tap, independent factors");
+    =2-monomes_2-softsteps_readme.org='s "NSS: the factored pulse" =1='s
+    double-tap-dance and edit-mode-retune bullets (now a link to "SoftStep
+    (KMSS)", keeping the concrete NSS-pedal walkthrough). Also linked the
+    kmss-drums readme's "trail" glossary bullet to =rigs/README.org=
+    "Surfaces" for the parameter names/ranges, keeping its LED-behaviour
+    prose. Left alone (contextual, not normative, or already pointing
+    elsewhere): the slide/mono mechanics section (ties/legato/accrete-
+    interaction detail README doesn't have), the feet-accrete prose (rig-
+    specific pedal numbers), the distortion section (a sink parameter, not a
+    window kind -- out of this phase's stated scope), and the softsteps
+    readme's own trail/LEDs mention (already a cross-readme pointer to the
+    kmss-drums readme's fuller "LEDs" section).
+- [2026-07-19] Phase 8b: tap_tempo_pad -> factored_pulse_pad (approved "perfect").
+- [2026-07-19] Phase 7 done: unburied the live core into =edo_surface= (Jeff's naming
+  answer -- promote into the existing crate, keep the legacy runtimes separate). MOVED
+  out of =buried/midi_pulse= into =edo_surface/src=: =surfaces_runtime/=, =drumkit_runtime/=,
+  the =sawwave/= engine (mounted flat as =edo_surface::{consts,diagnostics,leds,osc,pitch,
+  state,types,voices,windows}=, exactly as the old bin mounted it), =rig.rs=/=rig_org.rs=,
+  =monome.rs=/=mock_monome.rs=/=monome_brightness.rs=, =device_assign.rs=, =edo_play.rs=,
+  =expression_pedals.rs=, =midi.rs= (drumkit needs it), =bitmap_font.rs= (+ =fonts/=), and
+  the =mocks/= dir (so =mock_rig_dir()='s baked =mocks= path still resolves). STAYED in
+  =buried=: =looper_runtime/=, =remap_runtime/=, =sawwave_runtime.rs=, the piano/un-12/
+  monome-edo runtimes, =mapping.rs=, =monome_window.rs=, =piano_runtime.rs=/
+  =piano_transform.rs=, and ALL four bins (=midi_pulse= dispatch, =mock_monome=,
+  =softstep_meter=, =pedal_monitor=) -- =buried= now =edo_surface = { path = "../edo_surface" }=
+  and refers to the live core (=use edo_surface::rig= etc.); the arrow never points back.
+  Bin invocations unchanged (=--bin midi_pulse -- <rig>=, =--bin mock_monome=,
+  =--bin softstep_meter=, =--bin pedal_monitor=). =tools/= also repointed
+  (=edo_surface::{midi,expression_pedals}=). Traps handled: (1) =rig_dir=/=drum_samples_dir=
+  use =../rigs=/=../drum-samples= and still resolve (=edo_surface/= is one level under root,
+  like =buried/=); =mock_rig_dir= uses a bare =mocks=, so the =mocks/= dir moved with
+  =rig.rs=; the two stale "buried/ is one level under root" comments fixed. (2) No collision
+  with =edo_surface='s existing =tuning=/=voice= modules (33 tests) -- everything coexists.
+  Verify: =cargo test --workspace= 0 failures. Test redistribution: =edo_surface= 473 (was
+  33), =midi_pulse= lib 8, =midi_pulse= bin 159, =softstep_meter= 28. The pre-move total
+  dropped by 34 because the =decode=/=tether= tests, previously compiled into BOTH the
+  =midi_pulse= bin (via =drumkit_runtime=) and the =softstep_meter= bin (via =#[path]=), now
+  compile once in =edo_surface=; no unique test was lost.

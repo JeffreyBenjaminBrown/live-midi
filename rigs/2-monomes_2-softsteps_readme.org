@@ -4,9 +4,9 @@
 The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
 grids, each a full 46-EDO play surface, and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry the controls that would otherwise cost grid cells --
-sustain, the factored pulse, and edit-delete (the factored pulse and
-edit-delete are ALSO on each grid, upper right; hands and feet drive the same
-state). The two EX-P expression pedals are each grid's volume (see "the EX-P
+sustain, the factored pulse, and edit mode (the factored pulse and the
+editmode clear are ALSO on each grid, upper right; hands and feet drive the
+same state). The two EX-P expression pedals are each grid's volume (see "the EX-P
 volume pedals"). No drums: see "what is deliberately NOT here."
 
 Background + every design decision behind this layout: =TODO/many/1_vision.org=
@@ -97,10 +97,10 @@ Here's how to see what's connected:
 - sustain (accrete) -- each grid has its own bank of sustained notes. Here
   it's reduced to two OSS pedals per grid: clear and a momentary accrete
   (hold to add notes, release to stop adding -- nothing is ever un-added by
-  releasing). See "OSS: sustain + edit-delete".
+  releasing). See "OSS: two symmetric rows".
 - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
-  grid, each a simple linear volume: heel silent, toe unity, slewed. See
-  "the EX-P volume pedals".
+  grid, each a volume pedal: heel silent, toe unity, fader-law taper
+  (exponential + linear splice), slewed. See "the EX-P volume pedals".
 
 * usage
 
@@ -125,7 +125,7 @@ lives on a SoftStep instead:
 
 #+begin_example
   col: 0   1   2   3   4   5  ...        12    13    14    15
-  row 0  [SIN TRI SQR SAW]  .   .   .   DEL    x3    x2    tap   <- edit-delete + factored-pulse pad
+  row 0  [SIN TRI SQR SAW]  .   .   .   CLR    x3    x2    tap   <- editmode-clear + factored-pulse pad
   row 1    .   .   .   .   .   .          .    /3    /2    =1    <- factored-pulse pad
    ...                        (46-EDO play cells)
   row 13   .   .   .   .   .   .          .     .     .     .
@@ -133,16 +133,16 @@ lives on a SoftStep instead:
   row 15   .   .   .   .   .   .          .   LEFT   DOWN RIGHT  <- scroll pad
 #+end_example
 
-- The waveform strip (=[0,0,3,0]=), the edit-delete button (=[12,0]=), the
+- The waveform strip (=[0,0,3,0]=), the editmode-clear button (=[12,0]=), the
   factored-pulse pad (=[13,0,15,1]=), and the scroll pad (=[13,14,15,15]=)
-  occlude the play grid: pressing them re-timbres, deletes the edited voices,
-  moves the factored pulse, or scrolls rather than sounding a note. Every
-  other cell on both grids is an ordinary 46-EDO play cell.
-- The edit-delete button ((12,0), just left of the pad's =x3=; dim at rest,
-  bright while pressed) deletes -- silences and ends, the ordinary voice
-  ending -- every edited drone on its own grid, and leaves edit mode empty
-  (a fingered note just leaves edit mode, ending when its finger lifts).
-  Same job as OSS pedals 7/9 (see "OSS: sustain + edit-delete").
+  occlude the play grid: pressing them re-timbres, clears edit mode, moves
+  the factored pulse, or scrolls rather than sounding a note. Every other
+  cell on both grids is an ordinary 46-EDO play cell.
+- The editmode-clear button ((12,0), just left of the pad's =x3=; dim at
+  rest, bright while pressed) removes every pitch from edit mode on its own
+  grid: each voice rings on iff a finger or the sustain bank still holds it,
+  and an edit-only drone ends by the ordinary release. Same job as OSS pedal
+  6 / 0 (see "OSS: two symmetric rows").
 - The factored-pulse pad is the six-button block from the kmss rig, brought
   back by request: its factor buttons and ~=1~ drive the same per-grid state
   as the NSS pedals (see "NSS: the factored pulse"), and its tap cell blinks
@@ -162,29 +162,46 @@ the whole layout is spatial -- left buttons drive the left grid. Assigning by
 enumeration order instead would let a replug silently swap the grids,
 inverting the entire pedal board with no error.
 
-* OSS: sustain + edit-delete
+* OSS: two symmetric rows
 
-Sustain is momentary only: hold the accrete pedal to add notes to that
-grid's sustained set, release to stop adding (nothing already added is
-removed by releasing). This rig binds only two sustain pedals per grid (clear
-+ accrete) rather than the on-grid four the library also supports --
+The board is two symmetric rows, one concept each: the bottom row drives the
+SUSTAIN bank, the top row drives EDIT MODE, with the same shape -- outer
+pedals clear, inner pedals accrete, left pedals to the left grid.
+
+Sustain (bottom) is momentary only: hold the accrete pedal to add notes to
+that grid's sustained set, release to stop adding (nothing already added is
+removed by releasing). This rig binds only two sustain pedals per grid
+(clear + accrete) rather than the on-grid four the library also supports --
 =needs_holding= and =erase= still exist in the library code, they are simply
-unbound here (permanently-on =needs_holding=, in effect). Each grid also gets
-an edit-delete pedal: stomp to delete -- silence and end, the ordinary voice
-ending -- every edited drone on that grid, leaving edit mode empty; fingered
-notes just leave edit mode and end when their finger lifts (the same control
-as the grid's own (12,0) button).
+unbound here (permanently-on =needs_holding=, in effect).
 
-| pedal | job                       |
-|-------+---------------------------|
-|     1 | clear grid A (LOM)        |
-|     2 | accrete grid A (momentary) |
-|     4 | accrete grid B (momentary) |
-|     5 | clear grid B (RNM)        |
-|     7 | delete grid A's edit-mode voices |
-|     9 | delete grid B's edit-mode voices |
+Edit mode (top): the outer pedals CLEAR it -- every pitch leaves edit mode,
+and each voice rings on iff a finger or the sustain bank still holds it (an
+edit-only drone ends by the ordinary release). The inner pedals ACCRETE into
+it -- a one-shot that puts every voice sounding on that grid, fingered and
+sustained alike, into edit mode. One-shot rather than momentary because the
+moment anything is edited the grid becomes a pitch-picker: there are no "new
+notes played while held" to capture.
 
-Pedals 3, 6, 8, 0 are free. Left buttons drive the left grid, right
+The two accretes are symmetric in what they take: sustain-accrete captures
+every fingered AND every edit-mode voice; editmode-accrete captures every
+fingered AND every sustained voice. And each clear removes only its OWN
+reason -- a note both sustained and edited survives either clear alone and
+keeps ringing (audibly; the old silent "dancing ghost" cannot recur), so the
+full kill is both clears together.
+
+| pedal | row    | job                                   |
+|-------+--------+---------------------------------------|
+|     1 | bottom | clear grid A's sustain (LOM)          |
+|     2 | bottom | accrete-sustain grid A (momentary)    |
+|     4 | bottom | accrete-sustain grid B (momentary)    |
+|     5 | bottom | clear grid B's sustain (RNM)          |
+|     6 | top    | clear grid A's edit mode              |
+|     7 | top    | accrete-editmode grid A (one-shot)    |
+|     9 | top    | accrete-editmode grid B (one-shot)    |
+|     0 | top    | clear grid B's edit mode              |
+
+Pedals 3 and 8 are free. Left buttons drive the left grid, right
 buttons the right grid, matching Jeff's left/right principle. Pedal 8 once held
 a global tap tempo; Jeff retired it (he never set a tempo with it), so the base
 tempo is a seeded 1 Hz, retappable only on the grid pads' tap cells -- see
@@ -218,16 +235,15 @@ ambiguous middle column, here applied per grid.
   matching buttons on its own upper-right pad (same state; the pad's LEDs
   reflect pedal presses and vice versa) -- so one grid's factored pulse can
   run at, say, 3/2 the rate of the other's, or not at all.
-- ~=1~ keeps the existing double-tap dance verbatim: press while the grid's
-  factored pulse is off -> turns it ON, keeping the current tempo factor;
-  press while it's on -> snaps the tempo factor to unity (back to the base
-  1 Hz, unmultiplied); a second press within 400 ms of that one -> turns the
-  factored pulse OFF. So from cold: press once to start (at whatever tempo
-  factor was dialled in), press again to snap to unity, and a fast third press
-  stops it.
-- ~=1~ does nothing different in edit mode -- only the multipliers (=x2= /
-  =x3= / =/2= / =/3=) are edit controls. See "per-voice edit" below for what
-  they do there.
+- ~=1~'s double-tap dance (start / snap-to-unity / stop) and what the
+  multiplier pedals do to a note in edit mode are the same rules the on-grid
+  pad and the ~pulse_factor_pedal~ kind both follow -- full spec:
+  [[file:README.org::*SoftStep (KMSS)][rigs/README.org "SoftStep (KMSS)"]].
+  On THIS rig it plays out on the NSS pedals above: from cold, press ~=1~
+  once to start (at whatever tempo factor is dialled in), again to snap to
+  unity, a fast third press to stop; the =x2= / =x3= / =/2= / =/3= pedals are
+  the edit-mode retune controls. See "per-voice edit" below for what they do
+  to an edited note here.
 
 Terminology trap: this is called the factored pulse, never "slow AM" and never
 just "the pulse" (to avoid clobbering, say, PWM, or some other future use of
@@ -249,8 +265,17 @@ its "MPC-20 pedals" port is missing the rig prints a red note at startup and
 plays on without them). Not the SoftSteps' own EX-P jacks -- that CC is still
 deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
 
-- *Linear.* The pedal's reliable ~1..119 CC travel maps straight to an
-  amplitude factor 0..1: full heel = silent, full toe = unity. No taper.
+- *The fader law: exponential with a linear splice.* The pedal's reliable
+  ~1..119 CC travel maps to a position 0..1. The top 90% of the travel is
+  EXPONENTIAL -- dB-linear, covering =curve_remainder_exp_db= (50 dB) up to
+  unity at full toe, so equal travel is an equal loudness step -- and the
+  first =curve_initial_lin_frac= (10%) fades linearly from exact silence up
+  to the exponential's -50 dB floor, because an exponential alone never
+  reaches 0. Both knobs are per-pedal in the rig, written out at their
+  defaults, and HOT-RELOADABLE: edit them and press =r= + Enter -- the new
+  taper is applied through the pedal's current position immediately, no
+  pedal movement needed. (Linear was tried first -- numb at the toe, a cliff at the
+  heel -- then quadratic; this is how console faders are actually built.)
 - *Live and future.* It rescales the grid's sounding voices (drones included)
   and every note struck later, multiplying below the waveform strip's timbre
   amplitude and the synth master volume.
@@ -266,7 +291,7 @@ deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
 Play-grid LEDs follow the usual =surfaces_runtime= rules (shared with the
 =2-monomes_kmss-drums= rig -- see its readme's "LEDs" section for the full
 detail): held notes light bright, reflected across both grids under each
-grid's own scroll register; a shared recent-note trail (up to =trails_max= 9
+grid's own scroll register; a shared recent-note trail (up to =trail.max= 9
 pitch classes) lights dim; the waveform strip shows the selected waveform
 bright, the rest dim; the scroll pad's arrows are dim, its octave corners
 dark, and it fully occludes the play grid beneath it.
@@ -333,14 +358,16 @@ ring, alongside a finger and a sustain; a note rings while any of the three hold
 So leaving edit mode silences it only if nothing else was holding it up: a note you
 had also sustained keeps going.
 
-To be rid of ALL of them at once there is the *edit-delete* control -- OSS
-pedal 7 (grid A) / 9 (grid B), or the grid's own (12,0) button. Unlike the
-one-note exit gesture it acts on everything: every edited DRONE is silenced
-and ended (the ordinary release ramp), sustains included; the pitches leave
-the sustain bank; and edit mode empties -- the grid plays again immediately.
-A note a finger is physically holding does not end (a finger's voice is the
-finger's to end): it just loses its edit and sustain reasons, so it ends
-normally the moment the finger lifts.
+To be rid of ALL of them at once there is the *editmode clear* -- OSS pedal
+6 (grid A) / 0 (grid B), or the grid's own (12,0) button. Unlike the
+one-note exit gesture it acts on everything: every pitch leaves edit mode,
+and each voice then rings on iff it still has another reason -- a finger, or
+the sustain bank. An edit-only drone ends by the ordinary release ramp; a
+sustained note keeps droning (take that reason with the sustain clear); a
+fingered note ends normally when its finger lifts. And to point the
+mass-edit the other way there is *editmode accrete* -- OSS pedal 7 (A) / 9
+(B) -- a one-shot that puts every sounding voice (fingered and sustained
+alike) INTO edit mode, ready for a bulk retune.
 
 Leaving always works, whether or not the note can still be heard. That matters more
 than it sounds: anything that silences an edited note (a =clear=, say) would otherwise
@@ -350,7 +377,7 @@ because the gesture that dismisses it needed the sound that just went away.
 ** dragging a note's pitch
 While any note on a grid is in edit mode, that grid stops playing new notes: a
 press drags the nearest edited note to the pressed pitch instead, gliding over
-=slide_duration_ms= (100 ms). Leave edit mode to play normally again.
+=slide.duration_ms= (100 ms). Leave edit mode to play normally again.
 
 - The nearest edited note moves -- one of them. (Contrast the factored pulse
   below, which moves all of them. This is deliberate, and it is worth
@@ -435,7 +462,7 @@ and plays on regardless.
 - No distortion, slide, mono, erase, needs-holding, or feet-accrete toggles --
   all exist in the library (reused by =2-monomes_kmss-drums=) but none are
   bound in this rig. Sustain here is the reduced clear+momentary-accrete pair
-  only (see "OSS: sustain + edit-delete").
+  only (see "OSS: two symmetric rows").
   (The EX-P pedals used to be on this list -- deferred by 2_discussion 1a --
   but they are volume pedals now; see "the EX-P volume pedals".)
 - No tap tempo *pedal*. It was retired (Jeff never tapped), and the base tempo

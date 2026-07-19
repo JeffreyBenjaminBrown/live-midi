@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use midi_pulse::rig::{EdgeName, EdgeRef, RectSpecRig, ResolvedEdge};
+use edo_surface::rig::{EdgeName, EdgeRef, RectSpecRig, ResolvedEdge};
 
 /// Resolve all windows' rects to absolute corners `[left, top, right, bottom]`.
 /// `specs` is `(id, rect)` in any order; references may point forward or backward.
@@ -82,7 +82,7 @@ fn resolve_edge(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use midi_pulse::rig::EdgeSpecRig;
+  use edo_surface::rig::EdgeSpecRig;
 
   fn abs(rect: [i32; 4]) -> RectSpecRig {
     RectSpecRig::Absolute(rect)

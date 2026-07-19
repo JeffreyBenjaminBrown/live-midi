@@ -4,7 +4,7 @@
 * Overview | purpose
 Two programs decode the SoftStep's tether stream into hits with a strike pressure:
 
-- *the kit* -- =buried/midi_pulse/drumkit_runtime/= (=decode.rs= is the state machine,
+- *the kit* -- =edo_surface/src/drumkit_runtime/= (=decode.rs= is the state machine,
   =audio.rs= plays the samples). This is the instrument that actually makes drum sound.
 - *the meter* -- =tools/softstep/meter/main.py=. A diagnostic tool: live pressure
   bars, a pressure-scaled audition, and per-pad =.org= logs. It is *meant* to mirror the kit so

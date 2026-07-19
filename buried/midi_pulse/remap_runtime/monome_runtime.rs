@@ -1,4 +1,4 @@
-use midi_pulse::monome;
+use edo_surface::monome;
 use rosc::{decoder, OscPacket, OscType};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
@@ -231,7 +231,7 @@ fn discover_configured_device(
   sock: &UdpSocket,
   listen_port: u16,
   select_size: Option<[i32; 2]>,
-) -> Option<midi_pulse::monome::DeviceInfo> {
+) -> Option<edo_surface::monome::DeviceInfo> {
   let devices = monome::discover_devices(sock, listen_port);
   let selected = devices.iter().rev().find(|device| {
     select_size.is_none_or(|[w, h]| device.grid_w == w && device.grid_h == h)

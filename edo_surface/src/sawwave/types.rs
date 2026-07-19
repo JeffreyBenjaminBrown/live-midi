@@ -56,10 +56,34 @@ pub type VoiceId = u64;
 // distinguishes accretion voices belonging to different chords —
 // during emitter transitions both the old and new chord may have
 // voices in the map at the same pitch.
+//
+// `Fingered` and `Accreted` are sawwave's own vocabulary (the looper runtime
+// reuses `Accreted` genuinely too — its `chord` is always 0). The `Surface*`
+// variants below are the surfaces runtime's own voices, keyed by (grid, ...)
+// rather than by chord. They exist purely so ITS OWN map-walking code (volume
+// rescale, pedal gains, factored-pulse retune, the bulk clears) is
+// self-describing: the render engine (`voices::render_block` and friends)
+// never reads a `VoiceSource` at all, only ever the `VoiceState` it maps to —
+// so there is no engine cost to naming these honestly instead of punning them
+// onto `Accreted` (as they used to be: fingered as `{chord: grid, pitch:
+// y*256+x}`, drones as `{chord: 0x100+grid}`, retired tails as
+// `{chord: 0x10000+grid}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VoiceSource {
   Fingered { xy: MonomeKey },
   Accreted { chord: ChordId, pitch: i32 },
+  // A surfaces-runtime voice still tied to the finger that struck it, keyed by
+  // the cell (not the pitch) so scrolling the register cannot orphan it and
+  // two cells colliding on one pitch stay independent voices.
+  SurfaceFinger { grid: usize, cell: MonomeKey },
+  // A surfaces-runtime voice whose finger lifted while sustained (accreted):
+  // a drone, keyed by pitch (the accrete set is pitch-keyed too).
+  SurfaceDrone { grid: usize, pitch: i32 },
+  // A surfaces-runtime drone cut by a retrigger of its own pitch
+  // (`SurfaceSink::cut_sustained`): only its release ramp is left, moved off
+  // the drone key so the pitch can re-drone immediately. `seq` is an
+  // arbitrary uniquifier (the sink's voice-id counter), not a pitch.
+  SurfaceRetired { grid: usize, seq: u64 },
 }
 
 // === Timbre =============================================================
@@ -136,7 +160,12 @@ impl Default for AmShapeFamily {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timbre {
   pub waveform: Waveform,
-  pub gain:     f32,   // linear per-voice gain; 1.0 = unity
+  // Linear per-voice gain; 1.0 = unity. For the surfaces runtime this is the
+  // timbre SLOT's amplitude alone -- the grid fader and pedal are separate,
+  // stored components (`VoiceState::fader_gain`, `grid_gain`) multiplied in
+  // at render time, not baked in here. Other runtimes (sawwave/looper) have
+  // no fader or pedal, so this is their whole per-voice gain, unchanged.
+  pub gain:     f32,
   pub am:       Am,    // absolute (Hz-rate) tremolo
   pub fm:       Fm,    // absolute (Hz-rate, cents-depth) vibrato
   pub rel_am:   RelAm, // pitch-relative AM, independent of `am`
@@ -171,6 +200,13 @@ pub struct VoiceState {
   pub env:             f32,
   pub target_env:      f32,
   pub ramp_per_sample: f32,
+  // A drag's two-stage retrigger. While `Some(attack_ramp)`, this voice is ramping DOWN
+  // to silence (its `target_env` is 0), and the instant `env` reaches 0 the engine
+  // launches an attack toward the peak at `attack_ramp` INSTEAD of reaping the voice --
+  // so a drag dips to silence then re-strikes. `None` for every other voice; nothing
+  // else changes. Cleared on release (note_off), so a finger lifting mid-dip does not
+  // re-strike.
+  pub pending_attack:  Option<f32>,
   // The pluck decay (see above): the level the envelope settles at after the
   // attack peak, and the per-full-rate-sample retention of the distance to it.
   pub sustain_env:     f32,
@@ -192,13 +228,18 @@ pub struct VoiceState {
   // Deliberately separate from the note's timbre AM.
   pub factored_pulse_freq:   f32,
   pub factored_pulse_phase:  f32,
+  // The grid volume fader (the surfaces runtime's on-screen/rig volume strip):
+  // an ABSOLUTE linear gain, assigned wholesale on every fader move
+  // (`synth::set_grid_fader_gain`) -- never ratio-composed, so 0 is a legal,
+  // recoverable value like any other. 1.0 wherever faders don't exist --
+  // behavior unchanged for every other runtime.
+  pub fader_gain:       f32,
   // The grid volume pedal (the surfaces runtime's EX-P expression pedals): an
-  // ABSOLUTE multiplier in [0,1] on top of `timbre.gain`. `grid_gain` chases
-  // `grid_gain_target` per sample (`voices::GAIN_SLEW_SECS`), so a sweeping pedal
-  // is smooth rather than stepping at CC rate (zipper). Absolute rather than
-  // ratio-composed like the volume fader, because a pedal at 0 must be
-  // recoverable and a ratio from 0 is not. Both 1.0 wherever pedals don't exist
-  // -- behavior unchanged for every other runtime.
+  // ABSOLUTE multiplier in [0,1] on top of `timbre.gain` and `fader_gain`.
+  // `grid_gain` chases `grid_gain_target` per sample (`voices::GAIN_SLEW_SECS`),
+  // so a sweeping pedal is smooth rather than stepping at CC rate (zipper).
+  // Both 1.0 wherever pedals don't exist -- behavior unchanged for every other
+  // runtime.
   pub grid_gain:        f32,
   pub grid_gain_target: f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in

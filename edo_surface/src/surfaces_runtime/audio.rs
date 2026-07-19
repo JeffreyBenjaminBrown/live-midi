@@ -10,7 +10,6 @@ use cpal::SampleFormat;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::synth::SUSTAIN_BASE;
 use super::Live;
 use crate::types::{AmShapeFamily, VoiceMap, VoiceSource};
 use crate::voices::{BlockRenderer, DistortionStage};
@@ -30,7 +29,7 @@ pub fn start_null(requested_sample_rate: u32) -> Audio {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn start(
+pub(crate) fn start(
   voices: Arc<Mutex<VoiceMap>>,
   requested_sample_rate: u32,
   requested_buffer_frames: u32,
@@ -103,9 +102,9 @@ pub fn start(
       let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
       // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.
       // Distortion is per-monome: a voice routes to the dirty (distorted) bus iff
-      // its grid's toggle is on. Fingered voices carry `chord: grid`; sustained
-      // (accrete) drones carry `chord: SUSTAIN_BASE + grid` -- both follow their
-      // grid's toggle.
+      // its grid's toggle is on -- fingered voices and sustained (accrete) drones
+      // both follow their own grid's toggle; retired release tails (no grid worth
+      // routing specially) stay on the clean bus, as they always have.
       renderer.render_with_distortion(
         &mut voices,
         data,
@@ -115,10 +114,11 @@ pub fn start(
         am_shape_family,
         distortion,
         |src| {
-          let VoiceSource::Accreted { chord, .. } = src else {
-            return false;
+          let grid = match src {
+            VoiceSource::SurfaceFinger { grid, .. } => *grid,
+            VoiceSource::SurfaceDrone { grid, .. } => *grid,
+            _ => return false,
           };
-          let grid = if *chord >= SUSTAIN_BASE { *chord - SUSTAIN_BASE } else { *chord };
           flags.get(grid).copied().unwrap_or(false)
         },
       );

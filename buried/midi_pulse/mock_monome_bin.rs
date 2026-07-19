@@ -22,7 +22,7 @@
 //!
 //! <grid> is an index (0,1,...) or a name: edo=0, loops=1.
 
-use midi_pulse::mock_monome::{GridSpec, MockRig};
+use edo_surface::mock_monome::{GridSpec, MockRig};
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

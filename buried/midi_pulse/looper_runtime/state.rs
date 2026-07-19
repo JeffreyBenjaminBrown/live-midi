@@ -18,8 +18,8 @@ use super::sink::{NoteSource, SawNoteSink};
 use super::timbre_editor::{
   EditorAction, EditorView, ParamKind, TimbreEditor, TimbreParam, EDITOR_ROWS,
 };
-use crate::types::Timbre;
-use midi_pulse::rig::TimbreTarget;
+use edo_surface::types::Timbre;
+use edo_surface::rig::TimbreTarget;
 
 /// Monome LED levels, in the four buckets this grid actually shows (0/4/8/15).
 pub const LEVEL_OFF: i32 = 0;
@@ -1224,7 +1224,7 @@ fn in_rect(rect: [i32; 4], x: i32, y: i32) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::types::VoiceMap;
+  use edo_surface::types::VoiceMap;
   use std::collections::HashMap as Map;
   use std::sync::{Arc, Mutex};
 
@@ -1601,7 +1601,7 @@ mod tests {
 
   #[test]
   fn editor_waveform_press_sets_live_timbre_and_plays_no_note() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_editor();
     assert_eq!(s.live_timbre.waveform, Waveform::Triangle, "default");
     // Control row cell x=4 = Saw (fold=0, Sine/Triangle/Square/Saw = 1..4).
@@ -1672,7 +1672,7 @@ mod tests {
 
   #[test]
   fn note_fingered_below_the_editor_carries_the_edited_timbre() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_editor();
     s.edo_key(3, 0, true, ms(0)); // editor: set Square (control cell x=3)
     assert_eq!(s.live_timbre.waveform, Waveform::Square);
@@ -1690,7 +1690,7 @@ mod tests {
 
   #[test]
   fn slot_save_recall_round_trips_a_full_timbre_and_auto_disarms() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_editor();
     // Dial a non-default timbre: Saw + a non-unity amplitude + AM depth.
     s.edo_key(4, 0, true, ms(0)); // Saw
@@ -1776,7 +1776,7 @@ mod tests {
 
   #[test]
   fn quick_cells_set_waveforms_before_any_save() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_editor();
     s.edo_key(0, 0, true, ms(0)); // fold
     assert!(s.timbre_quick.is_empty(), "waveform mode");
@@ -1786,7 +1786,7 @@ mod tests {
 
   #[test]
   fn saving_a_timbre_rolls_the_quick_cells_and_recall_works() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_editor(); // unfolded for the save gesture
     // Save a Saw into slot 0.
     s.edo_key(4, 0, true, ms(0)); // Saw
@@ -1832,7 +1832,7 @@ mod tests {
 
   #[test]
   fn loop_selection_stamp_changes_the_selected_note_and_undo_reverts() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor(); // unfolded
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100)); // select the single (bottom) display row
@@ -1849,7 +1849,7 @@ mod tests {
 
   #[test]
   fn loop_column_stamp_changes_all_notes_at_once() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     s.loops_key(0, 3, true, ms(0)); // start
     s.edo_key(0, 8, true, ms(10)); // two notes close in time -> one display column
@@ -1888,7 +1888,7 @@ mod tests {
 
   #[test]
   fn loop_recall_onto_a_selection_stamps_the_whole_timbre() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     // Put a Saw timbre into slot 0 (set live directly, then arm + capture).
     s.live_timbre.waveform = Waveform::Saw;
@@ -1906,9 +1906,9 @@ mod tests {
 
   /// Record a Saw note into slot 0, then play it (target=loop, no selection).
   fn record_and_play_saw(s: &mut LooperState) {
-    s.live_timbre.waveform = crate::types::Waveform::Saw;
+    s.live_timbre.waveform = edo_surface::types::Waveform::Saw;
     record_one_note(s, 0);
-    s.live_timbre.waveform = crate::types::Waveform::Triangle;
+    s.live_timbre.waveform = edo_surface::types::Waveform::Triangle;
     s.loops_key(2, 3, true, ms(1000)); // play
   }
 
@@ -1917,13 +1917,13 @@ mod tests {
     let mut s = state_with_loop_editor();
     assert!(s.remap.is_none());
     s.edo_key(1, 0, true, ms(0)); // Sine, no selection -> an override (not live, not the loop yet)
-    assert_eq!(s.live_timbre.waveform, crate::types::Waveform::Triangle, "live untouched");
+    assert_eq!(s.live_timbre.waveform, edo_surface::types::Waveform::Triangle, "live untouched");
     assert!(!s.timbre_overrides.is_empty(), "a held override exists");
   }
 
   #[test]
   fn play_along_rewrites_notes_as_the_playhead_triggers_them() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     record_and_play_saw(&mut s); // the loop note is Saw
     // Hold a Sine override (no selection), then let the playhead reach the note.
@@ -1935,7 +1935,7 @@ mod tests {
 
   #[test]
   fn released_override_stops_applying_without_sustain() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     record_and_play_saw(&mut s);
     s.edo_key(1, 0, true, ms(1050)); // hold Sine
@@ -1948,7 +1948,7 @@ mod tests {
 
   #[test]
   fn sustain_keeps_a_released_override_applying() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     record_and_play_saw(&mut s);
     s.edo_key(6, 0, true, ms(1040)); // sustain-the-edits ON
@@ -1966,13 +1966,13 @@ mod tests {
 
   // ---- C7b: save-undo checkpoint ----
 
-  fn loop_wf(s: &LooperState) -> crate::types::Waveform {
+  fn loop_wf(s: &LooperState) -> edo_surface::types::Waveform {
     s.loops.slots[0].events.iter().find(|e| e.on).unwrap().timbre.waveform
   }
 
   #[test]
   fn save_undo_single_checkpoints_and_double_reverts() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0); // committed = triangle ("save 0")
     s.loops_key(0, 15, true, ms(1100)); // select the note (selection persists through stamps)
@@ -1990,7 +1990,7 @@ mod tests {
 
   #[test]
   fn save_undo_lone_tap_only_sets_a_restore_point() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     record_one_note(&mut s, 0);
     s.loops_key(0, 15, true, ms(1100));
@@ -2012,7 +2012,7 @@ mod tests {
 
   #[test]
   fn loop_editor_display_tracks_the_lowest_sounding_note() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     s.live_timbre.waveform = Waveform::Saw; // the recorded note will be Saw
     record_one_note(&mut s, 0);
@@ -2025,7 +2025,7 @@ mod tests {
 
   #[test]
   fn loop_editor_display_holds_the_last_note_on_a_rest() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loop_editor();
     s.live_timbre.waveform = Waveform::Saw; // the recorded note is Saw (note-on@0, off@200)
     record_one_note(&mut s, 0);
@@ -2083,7 +2083,7 @@ mod tests {
 
   #[test]
   fn loops_editor_edits_the_live_timbre() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = state_with_loops_editor();
     s.loops_key(0, 0, true, ms(0)); // unfold (value rows reachable)
     s.loops_key(4, 0, true, ms(1)); // Saw waveform cell on the loops editor

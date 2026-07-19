@@ -36,10 +36,18 @@ pub struct Rig {
   /// it is the rig-level morph family the per-note `am.shape` value sweeps within.
   #[serde(default)]
   pub am: Option<AmRig>,
-  /// Surfaces-runtime settings (the shared recent-note trail). Absent for non-surfaces
-  /// rigs; the surfaces runtime falls back to `SurfacesRig::default`.
+  /// `[trail]` table: the surfaces runtime's shared recent-note trail. Absent for
+  /// non-surfaces rigs; the surfaces runtime falls back to `TrailRig::default`.
   #[serde(default)]
-  pub surfaces: Option<SurfacesRig>,
+  pub trail: Option<TrailRig>,
+  /// `[slide]` table: the slide feature's timing knobs (surfaces runtime). Absent
+  /// falls back to `SlideRig::default`.
+  #[serde(default)]
+  pub slide: Option<SlideRig>,
+  /// `[tap_tempo]` table: the tap-tempo pairing window (surfaces runtime). Absent
+  /// falls back to `TapTempoRig::default`.
+  #[serde(default)]
+  pub tap_tempo: Option<TapTempoRig>,
   /// The four selectable timbres behind a `waveform_selector` strip, left to right
   /// (surfaces runtime). Absent = the plain four waveforms (sine / triangle /
   /// square / saw, everything else off) -- exactly the pre-timbres behavior. When
@@ -121,11 +129,14 @@ fn default_timbre_amplitude() -> f32 {
 
 /// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
 /// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
-/// deliberately drops) bound as a simple LINEAR volume for one monome's grid: the
-/// pedal's reliable ~1..119 CC travel maps to an amplitude factor 0..1 (full heel =
-/// silent, full toe = unity), applied to that grid's sounding and future voices and
-/// slewed in the engine (`voices::GAIN_SLEW_SECS`) so sweeps don't zipper. Until a
-/// pedal first moves it contributes unity, so an unplugged pedal never mutes a grid.
+/// deliberately drops) bound as a volume pedal for one monome's grid: the pedal's
+/// reliable ~1..119 CC travel maps to a position 0..1, tapered into the amplitude
+/// factor by the standard fader law -- an EXPONENTIAL (dB-linear) curve over most
+/// of the travel, SPLICED to a linear fade over the first `curve_initial_lin_frac`
+/// of it so full heel is exactly silent (an exponential alone never reaches 0).
+/// Full toe = unity. Applied to that grid's sounding and future voices, slewed in
+/// the engine (`voices::GAIN_SLEW_SECS`) so sweeps don't zipper. Until a pedal
+/// first moves it contributes unity, so an unplugged pedal never mutes a grid.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExpressionPedalRig {
@@ -134,6 +145,23 @@ pub struct ExpressionPedalRig {
   pub channel: u8,
   /// The monome whose grid volume this pedal drives. Must have an `edo_note_grid`.
   pub monome: String,
+  /// The fraction of the travel, from the heel, that fades LINEARLY from silence up
+  /// to the exponential's floor. In [0, 1); 0 = no splice (silence snaps on at the
+  /// exact bottom). Default 0.1.
+  #[serde(default = "default_curve_initial_lin_frac")]
+  pub curve_initial_lin_frac: f32,
+  /// The dB span of the exponential remainder of the travel: gain runs dB-linearly
+  /// from -this (where the splice meets it) up to 0 dB at full toe. > 0. Default 50.
+  #[serde(default = "default_curve_remainder_exp_db")]
+  pub curve_remainder_exp_db: f32,
+}
+
+fn default_curve_initial_lin_frac() -> f32 {
+  0.1
+}
+
+fn default_curve_remainder_exp_db() -> f32 {
+  50.0
 }
 
 fn default_timbre_freq() -> f32 {
@@ -356,44 +384,30 @@ fn default_trail_clobber_radius() -> i32 {
   27
 }
 
-fn default_trails_max() -> usize {
+fn default_trail_max() -> usize {
   7
 }
 
-/// `[surfaces]` table: instrument-wide settings for the surfaces runtime's shared
+/// `[trail]` table: instrument-wide settings for the surfaces runtime's shared
 /// recent-note trail (the dim backdrop of the last few played pitch classes). A missing
 /// table -- or any missing field -- uses these defaults, so behaviour is unchanged for
 /// rigs that don't declare it.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
-pub struct SurfacesRig {
+pub struct TrailRig {
   /// Trail clobber radius, as a *divisor of the octave*: playing a note clears any
-  /// trailed pitch-class within `edo / trail_clobber_radius` steps of it, so close
+  /// trailed pitch-class within `edo / clobber_radius` steps of it, so close
   /// pitches never crowd the backdrop. Bigger value = tighter radius (clears fewer);
   /// the default 27 is 1/27 of an octave (~44 cents).
-  pub trail_clobber_radius: i32,
+  pub clobber_radius: i32,
   /// The most *distinct* pitch classes the shared trail keeps at once (newest first);
   /// older ones drop off the end. Default 7.
-  pub trails_max: usize,
-  /// The slide feature's candidate window, in ms: a new note may slide from a note
-  /// released no longer ago than this. Default 1000.
-  pub slide_candidate_window_ms: u64,
-  /// The tap-tempo pairing window, in ms: two taps at most this far apart set the
-  /// tapped tempo (rolling window). Default 2000.
-  pub tap_tempo_window_ms: u64,
-  /// How long a slide takes to reach the new pitch, in ms. Default 100.
-  pub slide_duration_ms: u64,
+  pub max: usize,
 }
 
-impl Default for SurfacesRig {
+impl Default for TrailRig {
   fn default() -> Self {
-    Self {
-      trail_clobber_radius: default_trail_clobber_radius(),
-      trails_max: default_trails_max(),
-      slide_candidate_window_ms: default_slide_candidate_window_ms(),
-      tap_tempo_window_ms: default_tap_tempo_window_ms(),
-      slide_duration_ms: default_slide_duration_ms(),
-    }
+    Self { clobber_radius: default_trail_clobber_radius(), max: default_trail_max() }
   }
 }
 
@@ -401,12 +415,49 @@ fn default_slide_candidate_window_ms() -> u64 {
   1000
 }
 
+fn default_slide_duration_ms() -> u64 {
+  100
+}
+
+/// `[slide]` table: the slide feature's timing knobs (surfaces runtime). A missing
+/// table -- or any missing field -- uses these defaults.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct SlideRig {
+  /// The slide feature's candidate window, in ms: a new note may slide from a note
+  /// released no longer ago than this. Default 1000.
+  pub candidate_window_ms: u64,
+  /// How long a slide takes to reach the new pitch, in ms. Default 100.
+  pub duration_ms: u64,
+}
+
+impl Default for SlideRig {
+  fn default() -> Self {
+    Self {
+      candidate_window_ms: default_slide_candidate_window_ms(),
+      duration_ms: default_slide_duration_ms(),
+    }
+  }
+}
+
 fn default_tap_tempo_window_ms() -> u64 {
   2000
 }
 
-fn default_slide_duration_ms() -> u64 {
-  100
+/// `[tap_tempo]` table: the tap-tempo pairing window (surfaces runtime). A missing
+/// table -- or a missing field -- uses this default.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct TapTempoRig {
+  /// The tap-tempo pairing window, in ms: two taps at most this far apart set the
+  /// tapped tempo (rolling window). Default 2000.
+  pub window_ms: u64,
+}
+
+impl Default for TapTempoRig {
+  fn default() -> Self {
+    Self { window_ms: default_tap_tempo_window_ms() }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -780,7 +831,7 @@ pub enum MonomeWindowRig {
   },
   // A single-cell on/off toggle for the slide feature (surfaces runtime): while on,
   // a new note re-triggers the nearest recently-released pitch and glides it into
-  // the new one. Window/candidate knobs live in the `[surfaces]` table.
+  // the new one. Window/candidate knobs live in the `[slide]` table.
   SlideToggle {
     id: String,
     monome: String,
@@ -794,25 +845,25 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
   },
-  // A single-cell momentary button (surfaces runtime): key-down deletes -- silences
-  // and ends, by the ordinary release ramp -- every DRONE at an edited pitch on
-  // this monome's grid, dropping those pitches from its sustain bank and leaving
-  // edit mode empty (the grid plays again immediately). A fingered voice does not
-  // end -- it only loses its edit/sustain reasons, ending on the ordinary release
-  // when the finger lifts. The same job as an `edit_delete_pedal`, on-grid.
-  EditDeleteButton {
+  // A single-cell momentary button (surfaces runtime) driving this monome's EDIT
+  // MODE in bulk, mirroring the accrete (sustain) controls -- see
+  // `EditmodeControlKind` for what `clear` and `accrete` do. The same jobs as the
+  // softstep `editmode_control` pedals, on-grid.
+  EditmodeControl {
     id: String,
     monome: String,
     rect: [i32; 4],
+    control: EditmodeControlKind,
   },
-  // The 3x2 polyrhythm pad (surfaces runtime), by convention in the top-right:
+  // The 3x2 factored-pulse pad (surfaces runtime), by convention in the top-right:
   //   | x3 | x2 | tap |
   //   | /3 | /2 | =1  |
-  // Tap twice within [surfaces].tap_tempo_window_ms to set the tapped tempo; the
+  // Tap twice within [tap_tempo].window_ms to set the tapped tempo; the
   // factor buttons scale it (exact 2^a * 3^b); notes struck while a tempo is
-  // applied pulse with a unipolar triangle at that tempo. See TODO/misc.org
-  // "polyrhythm interface".
-  TapTempoPad {
+  // applied pulse with a unipolar triangle at that tempo. Only the tap cell
+  // taps tempo -- the pad as a whole is the factored-pulse control. See
+  // TODO/misc.org "polyrhythm interface".
+  FactoredPulsePad {
     id: String,
     monome: String,
     rect: [i32; 4],
@@ -1002,8 +1053,8 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { id, .. }
       | MonomeWindowRig::MonoToggle { id, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { id, .. }
-      | MonomeWindowRig::EditDeleteButton { id, .. }
-      | MonomeWindowRig::TapTempoPad { id, .. }
+      | MonomeWindowRig::EditmodeControl { id, .. }
+      | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
@@ -1037,8 +1088,8 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { monome, .. }
       | MonomeWindowRig::MonoToggle { monome, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { monome, .. }
-      | MonomeWindowRig::EditDeleteButton { monome, .. }
-      | MonomeWindowRig::TapTempoPad { monome, .. }
+      | MonomeWindowRig::EditmodeControl { monome, .. }
+      | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
@@ -1072,8 +1123,8 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { rect, .. }
       | MonomeWindowRig::MonoToggle { rect, .. }
       | MonomeWindowRig::SoftstepAccretesToggle { rect, .. }
-      | MonomeWindowRig::EditDeleteButton { rect, .. }
-      | MonomeWindowRig::TapTempoPad { rect, .. }
+      | MonomeWindowRig::EditmodeControl { rect, .. }
+      | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
@@ -1108,8 +1159,8 @@ impl MonomeWindowRig {
       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
       MonomeWindowRig::SoftstepAccretesToggle { .. } => "softstep_accretes_toggle",
-      MonomeWindowRig::EditDeleteButton { .. } => "edit_delete_button",
-      MonomeWindowRig::TapTempoPad { .. } => "tap_tempo_pad",
+      MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
+      MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
@@ -1328,7 +1379,7 @@ pub enum SoftstepWindowRig {
     control: AccreteControlKind,
   },
   /// The pedal that taps the ONE global tempo. Two taps within
-  /// `[surfaces].tap_tempo_window_ms` define it; tapping only defines it, and starts
+  /// `[tap_tempo].window_ms` define it; tapping only defines it, and starts
   /// nothing.
   TapTempoPedal { id: String, softstep: String, pedal: u8 },
   /// One pedal nudging one monome's pulse. What it acts on depends on that monome's
@@ -1342,19 +1393,37 @@ pub enum SoftstepWindowRig {
     monome: String,
     factor: PulseFactorRig,
   },
-  /// One pedal that deletes -- silences and ends, by the ordinary release ramp --
-  /// every DRONE at an edited pitch on one monome's grid, dropping those pitches
-  /// from its sustain bank and leaving edit mode empty (the grid plays again
-  /// immediately). A fingered voice does not end -- it only loses its edit/sustain
-  /// reasons, ending on the ordinary release when the finger lifts. The same job
-  /// as an on-grid `edit_delete_button`.
-  EditDeletePedal {
+  /// One pedal driving one monome's EDIT MODE in bulk, mirroring the
+  /// `accrete_control` sustain pedals (queue.org "accrete-editmode pedals like
+  /// accrete-sustain") -- see `EditmodeControlKind` for what `clear` and `accrete`
+  /// do. The same jobs as an on-grid `editmode_control` button.
+  EditmodeControl {
     id: String,
     softstep: String,
     pedal: u8,
-    /// The monome whose edited voices this deletes. Must have an `edo_note_grid`.
+    /// The monome whose edit mode this drives. Must have an `edo_note_grid`.
     monome: String,
+    control: EditmodeControlKind,
   },
+}
+
+/// What an `editmode_control` (pedal or on-grid button) does to its monome's edit
+/// mode, symmetric with the sustain bank's clear/accrete:
+///
+/// - `clear`: key-down removes EVERY pitch from edit mode. Each voice then rings
+///   on iff it still has another reason (a finger, or the sustain bank); an
+///   edit-only drone ends by the ordinary release ramp. Unlike the sustain
+///   accrete's `clear`, nothing leaves the sustain bank -- each clear removes only
+///   its OWN reason, so the full kill is both clears.
+/// - `accrete`: key-down puts every voice currently sounding on this grid -- every
+///   fingered voice and every sustained voice -- into edit mode. A one-shot, not a
+///   hold: the moment anything is edited the grid becomes a pitch-picker (presses
+///   drag rather than play), so there are no "notes played while held" to capture.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum EditmodeControlKind {
+  Clear,
+  Accrete,
 }
 
 /// A pulse-factor pedal's job. The exponent factors are what the on-grid polyrhythm
@@ -1382,7 +1451,7 @@ impl SoftstepWindowRig {
       | SoftstepWindowRig::AccreteControl { id, .. }
       | SoftstepWindowRig::TapTempoPedal { id, .. }
       | SoftstepWindowRig::PulseFactorPedal { id, .. }
-      | SoftstepWindowRig::EditDeletePedal { id, .. } => id,
+      | SoftstepWindowRig::EditmodeControl { id, .. } => id,
     }
   }
 
@@ -1392,7 +1461,7 @@ impl SoftstepWindowRig {
       | SoftstepWindowRig::AccreteControl { softstep, .. }
       | SoftstepWindowRig::TapTempoPedal { softstep, .. }
       | SoftstepWindowRig::PulseFactorPedal { softstep, .. }
-      | SoftstepWindowRig::EditDeletePedal { softstep, .. } => softstep,
+      | SoftstepWindowRig::EditmodeControl { softstep, .. } => softstep,
     }
   }
 
@@ -1403,7 +1472,7 @@ impl SoftstepWindowRig {
       SoftstepWindowRig::AccreteControl { .. } => "accrete_control",
       SoftstepWindowRig::TapTempoPedal { .. } => "tap_tempo_pedal",
       SoftstepWindowRig::PulseFactorPedal { .. } => "pulse_factor_pedal",
-      SoftstepWindowRig::EditDeletePedal { .. } => "edit_delete_pedal",
+      SoftstepWindowRig::EditmodeControl { .. } => "editmode_control",
     }
   }
 
@@ -1415,7 +1484,7 @@ impl SoftstepWindowRig {
       SoftstepWindowRig::AccreteControl { pedal, .. }
       | SoftstepWindowRig::TapTempoPedal { pedal, .. }
       | SoftstepWindowRig::PulseFactorPedal { pedal, .. }
-      | SoftstepWindowRig::EditDeletePedal { pedal, .. } => vec![*pedal],
+      | SoftstepWindowRig::EditmodeControl { pedal, .. } => vec![*pedal],
     }
   }
 }
@@ -1435,14 +1504,14 @@ pub enum DisplayRig {
 }
 
 pub fn rig_dir() -> PathBuf {
-  // buried/ is one level under the repo root; rigs/ is a top-level sibling.
+  // edo_surface/ is one level under the repo root; rigs/ is a top-level sibling.
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rigs")
 }
 
 /// Top-level folder holding drum-sample WAVs. A `drumkit` window's pads resolve
 /// under here: `drum_samples_dir()/<pad.sample>` (a `sample` may name a subpath).
 pub fn drum_samples_dir() -> PathBuf {
-  // buried/ is one level under the repo root; drum-samples/ is a top-level sibling.
+  // edo_surface/ is one level under the repo root; drum-samples/ is a top-level sibling.
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../drum-samples")
 }
 
@@ -1688,7 +1757,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_volume_strips(rig)?;
   validate_accrete_controls(rig)?;
   validate_single_cell_toggles(rig)?;
-  validate_tap_tempo_pads(rig)?;
+  validate_factored_pulse_pads(rig)?;
   validate_timbres(rig)?;
   validate_expression_pedals(rig)?;
   validate_looper(rig)?;
@@ -1724,6 +1793,21 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
     }
     if !monomes.insert(p.monome.as_str()) {
       return Err(format!("monome {:?} has two expression pedals", p.monome));
+    }
+    if !p.curve_initial_lin_frac.is_finite()
+      || !(0.0..1.0).contains(&p.curve_initial_lin_frac)
+    {
+      return Err(format!(
+        "expression pedal (channel {}): curve_initial_lin_frac must be in 0..1 \
+         (1 would leave no travel for the exponential), got {}",
+        p.channel, p.curve_initial_lin_frac,
+      ));
+    }
+    if !p.curve_remainder_exp_db.is_finite() || p.curve_remainder_exp_db <= 0.0 {
+      return Err(format!(
+        "expression pedal (channel {}): curve_remainder_exp_db must be > 0, got {}",
+        p.channel, p.curve_remainder_exp_db,
+      ));
     }
   }
   Ok(())
@@ -1776,19 +1860,19 @@ fn validate_timbres(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
-/// A `tap_tempo_pad` is exactly 3x2 cells on a monome that has an `edo_note_grid`,
-/// at most one per monome (its six sub-cells are the fixed x3/x2/tap and /3/2/=1
-/// layout).
-fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
+/// A `factored_pulse_pad` is exactly 3x2 cells on a monome that has an
+/// `edo_note_grid`, at most one per monome (its six sub-cells are the fixed
+/// x3/x2/tap and /3/2/=1 layout).
+fn validate_factored_pulse_pads(rig: &Rig) -> Result<(), String> {
   let mut seen: HashSet<&str> = HashSet::new();
   for window in &rig.monome_windows {
-    let MonomeWindowRig::TapTempoPad { id, monome, rect } = window else {
+    let MonomeWindowRig::FactoredPulsePad { id, monome, rect } = window else {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
     if x1 - x0 != 2 || y1 - y0 != 1 {
       return Err(format!(
-        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
+        "factored_pulse_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 3x2 cells",
       ));
     }
     let has_edo_grid = rig.monome_windows.iter().any(|w| {
@@ -1796,7 +1880,7 @@ fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
     });
     if !has_edo_grid {
       return Err(format!(
-        "tap_tempo_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+        "factored_pulse_pad window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
     let [gw, gh] = rig
@@ -1807,18 +1891,20 @@ fn validate_tap_tempo_pads(rig: &Rig) -> Result<(), String> {
       .unwrap_or([16, 16]);
     if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
       return Err(format!(
-        "tap_tempo_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+        "factored_pulse_pad window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
       ));
     }
     if !seen.insert(monome.as_str()) {
-      return Err(format!("monome {monome:?} declares more than one tap_tempo_pad (window {id:?})"));
+      return Err(format!(
+        "monome {monome:?} declares more than one factored_pulse_pad (window {id:?})"
+      ));
     }
   }
   Ok(())
 }
 
 /// The single-cell per-monome buttons (`distortion_toggle`, `slide_toggle`,
-/// `mono_toggle`, ..., plus the momentary `edit_delete_button`): each is one cell on
+/// `mono_toggle`, ..., plus the momentary `editmode_control` buttons): each is one cell on
 /// a monome that has an `edo_note_grid`, at most one of each kind per monome (a
 /// second would be a redundant twin of the same control).
 fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
@@ -1836,8 +1922,18 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     MonomeWindowRig::SoftstepAccretesToggle { id, monome, rect } => {
       Some(("softstep_accretes_toggle", id, monome, *rect))
     }
-    MonomeWindowRig::EditDeleteButton { id, monome, rect } => {
-      Some(("edit_delete_button", id, monome, *rect))
+    MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
+      // Per-control uniqueness: label by control so a monome may carry one clear
+      // AND one accrete button, but not two of either.
+      Some((
+        match control {
+          EditmodeControlKind::Clear => "editmode_control (clear)",
+          EditmodeControlKind::Accrete => "editmode_control (accrete)",
+        },
+        id,
+        monome,
+        *rect,
+      ))
     }
     _ => None,
   });
@@ -2073,10 +2169,10 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
   // no defined behavior, and the old check only looked at drumkit pads.
   let mut tap_pedal: Option<(&str, u8)> = None;
   let mut factor_claims: HashSet<(&str, PulseFactorRig)> = HashSet::new();
-  let mut edit_delete_claims: HashSet<&str> = HashSet::new();
+  let mut editmode_claims: HashSet<(&str, EditmodeControlKind)> = HashSet::new();
   let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
   // A pedal that drives a grid's accrete bank or pulse needs that grid to be a play
-  // surface; the same requirement the on-grid accrete_control / tap_tempo_pad carry.
+  // surface; the same requirement the on-grid accrete_control / factored_pulse_pad carry.
   let play_grid_monomes: HashSet<&str> = rig
     .monome_windows
     .iter()
@@ -2141,17 +2237,17 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
           ));
         }
       }
-      SoftstepWindowRig::EditDeletePedal { id, monome, .. } => {
+      SoftstepWindowRig::EditmodeControl { id, monome, control, .. } => {
         require_ref("softstep_window.monome", monome, &monome_ids)?;
         if !play_grid_monomes.contains(monome.as_str()) {
           return Err(format!(
-            "edit_delete_pedal window {id:?} targets monome {monome:?}, which has no edo_note_grid",
+            "editmode_control window {id:?} targets monome {monome:?}, which has no edo_note_grid",
           ));
         }
-        // One per monome: a second would be a redundant twin of the same button.
-        if !edit_delete_claims.insert(monome.as_str()) {
+        // One of each control per monome: a second would be a redundant twin.
+        if !editmode_claims.insert((monome.as_str(), *control)) {
           return Err(format!(
-            "monome {monome:?} has two edit_delete_pedal windows ({id:?} is the second)",
+            "monome {monome:?} has two {control:?} editmode_control windows ({id:?} is the second)",
           ));
         }
       }
@@ -2220,7 +2316,7 @@ fn validate_softsteps(rig: &Rig) -> Result<(), String> {
       SoftstepWindowRig::AccreteControl { .. }
       | SoftstepWindowRig::TapTempoPedal { .. }
       | SoftstepWindowRig::PulseFactorPedal { .. }
-      | SoftstepWindowRig::EditDeletePedal { .. } => {}
+      | SoftstepWindowRig::EditmodeControl { .. } => {}
     }
   }
 
@@ -4082,6 +4178,11 @@ monome = "b"
     bad(&EXPRESSION_PEDALS.replace("channel = 2", "channel = 1"), "two expression pedals");
     bad(&EXPRESSION_PEDALS.replace("monome = \"b\"", "monome = \"a\""), "two expression pedals");
     bad(&EXPRESSION_PEDALS.replace("monome = \"b\"", "monome = \"nope\""), "no edo_note_grid");
+    // The taper knobs: the linear splice must leave room for the exponential, and
+    // the exponential must span a positive dB range.
+    let with = |extra: &str| format!("{EXPRESSION_PEDALS}{extra}");
+    bad(&with("curve_initial_lin_frac = 1.0\n"), "curve_initial_lin_frac");
+    bad(&with("curve_remainder_exp_db = 0.0\n"), "curve_remainder_exp_db");
   }
 
   #[test]
@@ -4133,10 +4234,10 @@ rect = [1, 2, 1, 2]
     let rig = parse_rig(&format!("{SURFACES_MIN}{toggles}")).expect("both toggles validate");
     assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::SlideToggle { .. })));
     assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::MonoToggle { .. })));
-    // The [surfaces] slide knobs default sensibly.
-    let surfaces = rig.surfaces.unwrap_or_default();
-    assert_eq!(surfaces.slide_candidate_window_ms, 1000);
-    assert_eq!(surfaces.slide_duration_ms, 100);
+    // The [slide] knobs default sensibly.
+    let slide = rig.slide.unwrap_or_default();
+    assert_eq!(slide.candidate_window_ms, 1000);
+    assert_eq!(slide.duration_ms, 100);
     // A 2-cell slide toggle fails like any single-cell toggle.
     let err = parse_rig(&format!(
       "{SURFACES_MIN}{}",
@@ -4147,17 +4248,17 @@ rect = [1, 2, 1, 2]
   }
 
   #[test]
-  fn tap_tempo_pad_must_be_three_by_two() {
+  fn factored_pulse_pad_must_be_three_by_two() {
     let pad = r#"
 [[monome_windows]]
 id = "poly-a"
 monome = "a"
-kind = "tap_tempo_pad"
+kind = "factored_pulse_pad"
 rect = [13, 0, 15, 1]
 "#;
     let rig = parse_rig(&format!("{SURFACES_MIN}{pad}")).expect("a 3x2 pad validates");
-    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::TapTempoPad { .. })));
-    assert_eq!(rig.surfaces.unwrap_or_default().tap_tempo_window_ms, 2000, "default window");
+    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::FactoredPulsePad { .. })));
+    assert_eq!(rig.tap_tempo.unwrap_or_default().window_ms, 2000, "default window");
     let err = parse_rig(&format!("{SURFACES_MIN}{}", pad.replace("rect = [13, 0, 15, 1]", "rect = [13, 0, 15, 2]")))
       .expect_err("a 3x3 pad should fail");
     assert!(err.contains("exactly 3x2"), "{err}");

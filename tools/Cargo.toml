@@ -28,3 +28,4 @@ path = "synth/triangle_chord.rs"
 [dependencies]
 midir = "0.10"
 midi_pulse = { path = "../buried" }
+edo_surface = { path = "../edo_surface" }

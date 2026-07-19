@@ -463,6 +463,15 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
         v.env -= ramp;
       }
     }
+    // A drag's dip-then-attack retrigger: when the down-ramp bottoms out at silence,
+    // launch the attack (toward the peak) instead of reaping the voice.
+    if v.env <= 0.0 {
+      if let Some(attack_ramp) = v.pending_attack.take() {
+        v.env = 0.0;
+        v.target_env = 1.0;
+        v.ramp_per_sample = attack_ramp;
+      }
+    }
     // Voice is gone once env and target both reach 0.
     if v.env == 0.0 && v.target_env == 0.0 {
       return false;
@@ -539,8 +548,11 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     // oscillator. Since `osc * wf_norm` has RMS 1/sqrt(3) for *every* waveform, the
     // voice's RMS is exactly `b / sqrt(3)`, and incoherent voices (distinct EDO
     // pitches) add in power. Summing `b^2` therefore hands the distortion the dirty
-    // bus's RMS for free -- no detector, no lag. `b >= 0`: every factor is.
-    let b = v.env * v.timbre.gain * v.grid_gain * amm * factored_pulse * amplitude;
+    // bus's RMS for free -- no detector, no lag. `b >= 0`: every factor is. The volume
+    // chain is stored components multiplied here, never baked together: the timbre
+    // slot's amplitude, the grid fader's gain, and the pedal's grid_gain -- all plain
+    // linear multipliers, all 1.0 wherever that mechanism doesn't exist.
+    let b = v.env * v.timbre.gain * v.fader_gain * v.grid_gain * amm * factored_pulse * amplitude;
     let s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * b;
     if dirty(src) {
       dirt += s;
@@ -774,6 +786,7 @@ pub fn spawn_accretion_voice(
     pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
   voices.insert(VoiceSource::Accreted { chord, pitch }, VoiceState {
     id,
+    pending_attack: None,
     freq: freq_for_pitch(pitch, fund, edo),
     freq_target: 0.0,
     glide_per_sample: 1.0,
@@ -785,6 +798,7 @@ pub fn spawn_accretion_voice(
     sustain_env,
     decay_per_sample,
     timbre: Timbre::default(),
+    fader_gain: 1.0,
     grid_gain: 1.0,
     grid_gain_target: 1.0,
     am_phase: 0.0,
@@ -839,9 +853,10 @@ mod tests {
   fn sustained_voice_produces_triangle_output() {
     let sr = 48000.0;
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0,
       target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let data = render_voice(v, 1024, sr);
     let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
@@ -855,11 +870,12 @@ mod tests {
     let sr = 48000.0;
     let release_samples = (RELEASE_SECS * sr) as usize; // 2400
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0,
       target_env: 0.0,
       ramp_per_sample: 1.0 / (RELEASE_SECS * sr),
       sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -889,8 +905,9 @@ mod tests {
   fn per_voice_gain_scales_amplitude() {
     let sr = 48000.0;
     let mk = |gain: f32| VoiceState {
+      pending_attack: None,
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let peak = |g: f32| render_voice(mk(g), 1024, sr).iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
     let (full, half) = (peak(1.0), peak(0.5));
@@ -905,9 +922,10 @@ mod tests {
     let sr = 48000.0;
     let rms = |waveform: Waveform| {
       let v = VoiceState {
+        pending_attack: None,
         id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       };
       let data = render_voice(v, sr as usize, sr); // ~1 s = many whole periods
       (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
@@ -1020,13 +1038,14 @@ mod tests {
     let run = |freq: f32| {
       let mut voices: VoiceMap = HashMap::new();
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        pending_attack: None,
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
           rel_am: RelAm { depth: 0.5, freq: 0.25 },
           rel_fm: RelFm { depth: 0.5, freq: 0.125 },
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       });
       let mut data = vec![0.0_f32; 480]; // 10 ms
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
@@ -1053,10 +1072,11 @@ mod tests {
     let sr = 48000.0;
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+      pending_attack: None,
       id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.25, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
       am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
-      grid_gain: 1.0, grid_gain_target: 0.0,
+      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 0.0,
     });
     let mut down = vec![0.0_f32; 14400]; // 300 ms: many slew time constants
     render_block_with_amplitude(&mut voices, &mut down, 1, sr, 1.0, AmShapeFamily::default());
@@ -1084,13 +1104,14 @@ mod tests {
     let render = |depth: f32| {
       let mut voices: VoiceMap = HashMap::new();
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        pending_attack: None,
         id: 0, freq: 300.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
           waveform: Waveform::Sine,
           rel_fm: RelFm { depth, freq: 0.05 }, // 15 Hz LFO on the 300 Hz voice
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
@@ -1110,13 +1131,14 @@ mod tests {
     let rms = |depth: f32| {
       let mut voices: VoiceMap = HashMap::new();
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        pending_attack: None,
         id: 0, freq: 1000.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
           waveform: Waveform::Sine,
           am: Am { depth, freq: 50.0, shape: 0.0 },
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::SinToSquare);
@@ -1140,9 +1162,10 @@ mod tests {
       voices.insert(
         VoiceSource::Fingered { xy: (0, 0) },
         VoiceState {
+          pending_attack: None,
           id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
           timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
         },
       );
       let mut data = vec![0.0_f32; 4800];
@@ -1166,9 +1189,10 @@ mod tests {
     let sr = 48000.0;
     let render = |freq: f32| {
       let v = VoiceState {
+        pending_attack: None,
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       };
       render_voice(v, 1024, sr)
     };
@@ -1186,9 +1210,10 @@ mod tests {
     // PolyBLEP must band-limit on |dt|, so a discontinuous waveform stays bounded.
     let sr = 48000.0;
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: -220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Saw, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1204,6 +1229,41 @@ mod tests {
       let p = i as f32 / 100.0;
       assert_eq!(poly_blep(p, dt), poly_blep(p, -dt), "poly_blep must depend on |dt| only");
     }
+  }
+
+  #[test]
+  fn a_pending_attack_dips_to_silence_then_re_strikes() {
+    // The drag retrigger's engine half: a voice with `pending_attack` set ramps DOWN to
+    // silence (target_env 0), and the instant it bottoms out the engine launches the queued
+    // attack toward the peak INSTEAD of reaping the voice.
+    let sr = 48000.0;
+    let dip_ramp = 0.5 / (0.002 * sr); // reach 0 from env 0.5 in ~2 ms
+    let attack_ramp = 1.0 / (0.003 * sr); // then a 3 ms attack toward the peak
+    let v = VoiceState {
+      pending_attack: Some(attack_ramp),
+      id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0,
+      env: 0.5, target_env: 0.0, ramp_per_sample: dip_ramp, sustain_env: 0.35, decay_per_sample: 1.0,
+      timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
+    };
+    let mut voices: VoiceMap = HashMap::new();
+    voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+    let mut data = vec![0.0_f32; 4096];
+
+    // ~1 ms in (48 samples): still dipping, attack still queued, not yet silent.
+    render_block(&mut voices, &mut data[..48], 1, sr);
+    {
+      let st = voices.values().next().expect("voice survives the dip");
+      assert!(st.env < 0.5 && st.env > 0.0, "dipping toward silence: {}", st.env);
+      assert!(st.pending_attack.is_some(), "the attack is still queued mid-dip");
+    }
+    // Past the bottom, mid-attack (~3 ms total): the queued attack launched and the voice
+    // survived -- it was NOT reaped when env hit zero.
+    render_block(&mut voices, &mut data[..100], 1, sr);
+    let st = voices.values().next().expect("voice survives the re-strike, not reaped at silence");
+    assert!(st.pending_attack.is_none(), "the queued attack has launched");
+    assert_eq!(st.target_env, 1.0, "and the envelope now heads for the peak");
+    assert!(st.env > 0.0, "climbing back up from silence");
   }
 
   #[test]
@@ -1229,12 +1289,13 @@ mod tests {
     let sr = 48000.0;
     let (sustain_env, decay_per_sample) = pluck_envelope(0.35, 0.05, 1.0, sr);
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 0.0,
       target_env: 1.0,
       ramp_per_sample: 1.0 / (0.003 * sr),
       sustain_env, decay_per_sample,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1269,11 +1330,12 @@ mod tests {
     // accretion level with NO pluck decay must ramp down the linear way, not stall.
     let sr = 48000.0;
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0,
       target_env: 0.5,
       ramp_per_sample: 0.5 / (0.05 * sr),
       sustain_env: 0.5, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Accreted { chord: 0, pitch: 10 }, v);
@@ -1291,12 +1353,13 @@ mod tests {
     // 1 kHz sine) around each phase of interest.
     let sr = 48000.0;
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: 1000.0, freq_target: 0.0, glide_per_sample: 1.0,
       factored_pulse_freq: 10.0, factored_pulse_phase: 0.0,
       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1346,10 +1409,11 @@ mod tests {
     let dur = 0.1_f32;
     let glide = (440.0_f32 / 220.0).powf(1.0 / (dur * sr));
     let v = VoiceState {
+      pending_attack: None,
       id: 0, freq: 220.0, freq_target: 440.0, glide_per_sample: glide, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0,
       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1408,9 +1472,10 @@ mod tests {
       // 58-EDO steps over 80 Hz, spread so no two voices share a harmonic.
       let freq = 80.0 * 2.0_f32.powf((7 * i) as f32 / 58.0);
       voices.insert(VoiceSource::Fingered { xy: (i as i32, 0) }, VoiceState {
+        pending_attack: None,
         id: i as u64, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: i as f32 * 0.137, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       });
     }
     voices
@@ -1561,11 +1626,12 @@ mod tests {
   fn plucked_voice(sample_rate: f32, sustain: f32, decay_secs: f32) -> VoiceMap {
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+      pending_attack: None,
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0,
       factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: sustain, decay_per_sample: (-1.0 / (decay_secs * sample_rate)).exp(),
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
     });
     voices
   }
@@ -1798,9 +1864,10 @@ mod tests {
     let heavy = DistortionStage { curve: Distortion { scale: 0.3, shape: 2.0 }, makeup: &off };
     let mk = |xy: (i32, i32), freq: f32| {
       (VoiceSource::Fingered { xy }, VoiceState {
+        pending_attack: None,
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       })
     };
     let render = |sources: &[(VoiceSource, VoiceState)], distortion, dirty: fn(&VoiceSource) -> bool| {
@@ -1837,13 +1904,14 @@ mod tests {
     let render = |depth_cents: f32| {
       let mut voices: VoiceMap = HashMap::new();
       voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        pending_attack: None,
         id: 0, freq: 300.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre {
           waveform: Waveform::Sine,
           fm: Fm { depth_cents, freq: 6.0 },
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
       });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());

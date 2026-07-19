@@ -6,7 +6,7 @@ The =2-monomes_kmss-drums= rig drives *three surfaces at once*: two
 SoftStep (KMSS) pedalboard as a velocity-sensitive drumkit. It is the first rig
 that *composes* what used to be three mutually-exclusive runtimes (the sawwave EDO
 grid, the looper's scroll pad, the drumkit) into one -- see the "surfaces runtime"
-in =buried/midi_pulse/surfaces_runtime/=.
+in =edo_surface/src/surfaces_runtime/=.
 
 Background + the runtime-unification rationale:
 =TODO/DONE/2-monomes_58-8-1_kmss-drums.org= (the plan) and its
@@ -31,13 +31,14 @@ Background + the runtime-unification rationale:
   in the rig's =[[timbres]] amplitude= (hot-reloadable with 'r'), and the master
   is the synth sink's =amplitude=. Cells 4..12 of the top row are play cells again;
   13..15 belong to the polyrhythm pad.
-- *trail* -- up to ~trails_max~ recently played *pitch classes* (octave-independent; 9
+- *trail* -- up to ~trail.max~ recently played *pitch classes* (octave-independent; 9
   here), shared across both grids, shown dim on both as a backdrop; a currently-sounding
   class shows bright instead. Repeating a note refreshes its single entry (so hammering one
   note never floods or erases the trail), and playing a note clears any trailed neighbour
-  within ~1/trail_clobber_radius~ of an octave (1/27 here, ~44 cents), so close pitches
-  never crowd the backdrop. Both knobs live in the ~[surfaces]~ table. Lets you see where
-  to finger on one grid to harmonize with the other.
+  within ~1/trail.clobber_radius~ of an octave (1/27 here, ~44 cents), so close pitches
+  never crowd the backdrop. Both knobs live in the ~[trail]~ table (parameter names and
+  ranges: [[file:README.org::*Surfaces][rigs/README.org "Surfaces"]]). Lets you see
+  where to finger on one grid to harmonize with the other.
 - *independent voices* -- the same pitch fingered on both grids is *two* separate
   voices; releasing one never cuts the other. Even two cells on one grid that collide
   to the same pitch are independent (one voice per finger). Voices are keyed by
@@ -50,8 +51,8 @@ Background + the runtime-unification rationale:
   [[../../../learnings/distortion.org]].
 - *slide toggle* -- =(1,1)= (right of the distortion toggle): while on, a new note
   on THIS grid re-triggers the nearest pitch released within the last
-  ~slide_candidate_window_ms~ and *glides* it into the new pitch over
-  ~slide_duration_ms~ (both in the ~[surfaces]~ table). A used slide source leaves
+  ~slide.candidate_window_ms~ and *glides* it into the new pitch over
+  ~slide.duration_ms~ (both in the ~[slide]~ table). A used slide source leaves
   the candidate set. Per-monome switch; each grid keeps its own candidate history.
 - *mono toggle* -- =(1,2)= (below slide): while on, each new note cuts that grid's
   other fingered notes (through the normal release path, so accrete still captures
@@ -64,7 +65,7 @@ Background + the runtime-unification rationale:
   The softstep can mirror one monome, both, or neither. Holding pedal 3 or 0 IS
   holding that bank's accrete button (the tether decoder reports foot lifts).
 - *polyrhythm pad* -- the 3x2 top-right corner (=[13,0]..[15,1]=): =| x3 x2 tap |=
-  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo_window_ms~ to define the ONE
+  over =| /3 /2 =1 |=. Tap twice within ~tap_tempo.window_ms~ to define the ONE
   global tapped tempo (displayed by the blinking tap cell, unfactored; defining it
   starts nothing). Each grid then has its own *applied* tempo -- tapped x its own
   2^a x 3^b factor -- and its own amplitude-cycling switch on =1 (press to start,
@@ -125,7 +126,7 @@ overlays drawn on top:
   sustains / toggles rather than sounding a note.
 - The scroll-pad corners follow the looper's convention: top-left = down an octave
   (notes sound lower), top-right = up an octave; arrows raise pitch down/right,
-  lower it up/left. See =midi_pulse::edo_play=.
+  lower it up/left. See =edo_surface::edo_play=.
 
 * LEDs
 
@@ -138,12 +139,12 @@ The play-grid LEDs are *register-aware* and *shared across both grids* (the visu
 - *Cross-grid reflection.* A note held on *either* grid lights on *both* grids; each grid
   places it under its own register, so the same note can appear at different cells on the
   two grids -- it shows where to finger to match the other surface.
-- *Trails (dim).* Up to ~trails_max~ recent *pitch classes* (shared across both grids,
+- *Trails (dim).* Up to ~trail.max~ recent *pitch classes* (shared across both grids,
   octave-independent; 9 here) stay lit *dim* after release, until newer presses push them
   out. A trailed class that is also currently sounding shows *bright* (bright clobbers dim).
   Repeating a note keeps a single entry, and playing a note clears any trailed neighbour
-  within ~1/trail_clobber_radius~ of an octave (1/27 here) -- so the dim backdrop stays
-  sparse. Both are set in the ~[surfaces]~ table.
+  within ~1/trail.clobber_radius~ of an octave (1/27 here) -- so the dim backdrop stays
+  sparse. Both are set in the ~[trail]~ table.
 - *Waveform strip*: the selected waveform is bright, the other three dim; a grid's strip
   shows the waveform *it controls* (its own timbre, in this rig).
 - *Scroll pad*: the four arrows are *dim*, the two octave corners dark. The pad fully
@@ -274,9 +275,9 @@ into a compressor. Derivation, options and measured error bounds:
 own notes): each grid remembers its recently *released* notes (audible releases
 only -- a note that became an accrete drone is still ringing and never a slide
 source). When a new note is struck with that grid's slide on, the nearest
-remembered pitch released within ~slide_candidate_window_ms~ (default 1000) is
+remembered pitch released within ~slide.candidate_window_ms~ (default 1000) is
 consumed as the *source*: the new note's voice starts at the source pitch and
-glides -- pitch-linearly -- into the struck pitch over ~slide_duration_ms~
+glides -- pitch-linearly -- into the struck pitch over ~slide.duration_ms~
 (default 100). Ties break toward the more recent release; a source is never
 reused.
 
@@ -316,46 +317,15 @@ factor buttons and the =1 pulse switch belong to the grid you press them on:
 | =(13,0)= x3 | =(14,0)= x2 | =(15,0)= tap |
 | =(13,1)= /3 | =(14,1)= /2 | =(15,1)= =1  |
 
-- *Tap tempo (global).* Tap twice within ~tap_tempo_window_ms~ (default 2000; the
-  window *rolls*, so a stale first tap simply re-arms) and the interval becomes
-  the *tapped tempo* -- shared by both grids. Taps pair up: a third tap inside the
-  window does nothing until its fourth arrives, and that pair overrides the
-  first. Tapping only DEFINES the tempo; no cycling starts. The base tempo is
-  seeded at 1 Hz on bring-up, so a tempo always exists and tapping only ever
-  *overrides* it. The tap cell is the
-  tempo *display*: it *blinks* between black and fully lit -- full-on for the
-  first 10% of each cycle of the *base* tempo, dark between flashes,
-  phase-anchored to your taps once you tap, whether or not this grid's cycling
-  is on. The blink is *unfactored*: it shows the
-  metronome you tapped, as if every grid were at unity, so both grids' tap cells
-  blink in step and no factor button ever moves them. (What a grid's factor
-  changes is the rate its *notes* pulse at, not the display.)
-- *Factor (per grid).* A grid's applied tempo = tapped x 2^a x 3^b, nudged by its
-  own x2 / /2 / x3 / /3 (exponents, so x3 then /3 is *exactly* unity); =1 zeroes
-  them, once cycling is on. Each direction's LED lights while that grid's factor
-  leans its way.
-- *The =1 pulse switch (per grid).* A grid's amplitude cycling starts OFF, and
-  what =1 does depends on the switch:
-  - *cycling off* -- the press turns cycling ON and leaves the factor alone, so a
-    grid can start cycling at whatever rate you had dialled in.
-  - *cycling on* -- a lone press zeroes the exponents (back to the tapped tempo);
-    a second press within 400 ms of that one turns cycling OFF instead.
-  The 400 ms test is applied only between two presses made while cycling was
-  already on. The press that switches cycling on cannot be half of the double-tap
-  (or it would immediately switch itself back off), and neither can the press
-  right after a switch-off. So from cold: tap to start, tap again to snap to unity
-  -- however fast -- and a third fast tap to stop. The =1 LED shows the switch:
-  bright while this grid's cycling is on.
-- *The pulse.* Every note struck while its grid's cycling is on (and a tempo
-  exists) gets a *unipolar triangle* amplitude pulse in [0,1] -- full at onset,
-  fading to silence at the half-cycle, swelling back to full by the next cycle
-  start -- at that grid's applied tempo *at its onset* (later tempo/switch changes
-  leave sounding notes alone; notes are deliberately NOT phase-synced to each
-  other). It peaks exactly where the old descending sawtooth did, but returns to
-  the peak by a ramp rather than a jump, so the cycle boundary has no step in
-  amplitude. This is a separate mechanism from any
-  ~[[timbres]]~ AM. One grid can pulse at 3/2 the rate of the other, or alone
-  (see jeff-maybe-review-this.org).
+Full behavior -- the tap-pairing window, the per-grid 2^a x 3^b factor, the
+=1 double-tap dance (start / snap-to-unity / stop), the unipolar-triangle
+pulse, and the tap cell's unfactored blink display -- is the
+~factored_pulse_pad~ window kind's spec (called ~tap_tempo_pad~ until 2026-07),
+shared verbatim by every rig that has
+one: [[file:README.org::*Monome windows][rigs/README.org "Monome windows"]].
+On this rig the tap is shared by both grids (one global tempo) while each
+grid keeps its own factor and cycling switch, so one grid can pulse at, say,
+3/2 the rate of the other, or alone (see jeff-maybe-review-this.org).
 
 * the KMSS drumkit
 

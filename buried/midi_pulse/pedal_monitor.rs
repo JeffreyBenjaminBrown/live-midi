@@ -2,7 +2,7 @@
 //!
 //! Connects to the "MPC-20 pedals" virtual ALSA-seq port and draws each pedal's live
 //! normalized position (0.0..1.0) plus a bar and the raw CC. This is only a demo of
-//! `midi_pulse::expression_pedals::PedalReader`; how the pedals will actually be USED is not
+//! `edo_surface::expression_pedals::PedalReader`; how the pedals will actually be USED is not
 //! designed yet.
 //!
 //! PREREQUISITE: the host-side bridge must be running (the pedals have no ALSA device of
@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;
 
-use midi_pulse::expression_pedals::{PedalReader, DEFAULT_PORT, PEDAL_RAW_BOTTOM, PEDAL_RAW_TOP};
+use edo_surface::expression_pedals::{PedalReader, DEFAULT_PORT, PEDAL_RAW_BOTTOM, PEDAL_RAW_TOP};
 
 const BAR_W: usize = 40;
 

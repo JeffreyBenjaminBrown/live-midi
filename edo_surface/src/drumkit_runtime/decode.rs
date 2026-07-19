@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use midi_pulse::rig::SoftstepParams;
+use crate::rig::SoftstepParams;
 
 pub const NUM_PADS: usize = 10;
 

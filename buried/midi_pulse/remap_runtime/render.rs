@@ -1,4 +1,5 @@
-use midi_pulse::{monome, monome_window};
+use edo_surface::monome;
+use midi_pulse::monome_window;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

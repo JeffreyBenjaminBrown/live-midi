@@ -13,7 +13,7 @@
 
 use midir::{MidiInput, MidiOutput, MidiInputConnection, MidiOutputConnection};
 use midir::os::unix::{VirtualInput, VirtualOutput};
-use midi_pulse::midi;
+use edo_surface::midi;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{thread, io};

@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::types::Timbre;
+use edo_surface::types::Timbre;
 
 /// A note-on/off in a loop. On-events carry the timbre captured at record time
 /// (6_plan C6); off-events' timbre is unused. (No `Eq`: `Timbre` holds f32s.)
@@ -484,7 +484,7 @@ mod tests {
 
   #[test]
   fn record_captures_the_timbre_and_playback_carries_it() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let saw = Timbre { waveform: Waveform::Saw, ..Timbre::default() };
     let mut s = store();
     s.start_recording(ms(0));

@@ -343,8 +343,8 @@ Built-in unbundled window kinds:
 - ~slide_toggle~
 - ~mono_toggle~
 - ~softstep_accretes_toggle~
-- ~tap_tempo_pad~
-- ~edit_delete_button~
+- ~factored_pulse_pad~
+- ~editmode_control~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -473,9 +473,9 @@ level fast (=k = 0.5= costs ~5 dB on a *single* note), which the compensation no
 A ~slide_toggle~ / ~mono_toggle~ / ~softstep_accretes_toggle~ is the same shape
 (single cell, at most one of each per monome, dim/bright LED). All are
 per-grid switches, like the distortion toggle. Slide: a new note on that grid
-re-triggers the nearest pitch released within ~slide_candidate_window_ms~ and
-glides it into the new pitch over ~slide_duration_ms~ (both optional in the
-~[surfaces]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
+re-triggers the nearest pitch released within ~slide.candidate_window_ms~ and
+glides it into the new pitch over ~slide.duration_ms~ (both optional in the
+~[slide]~ table; defaults 1000 / 100). Mono: each new note cuts that grid's
 other fingered notes -- its own grid's switch (and with that grid's slide on,
 the new note *steals* the cut note's voice and glides it over -- true legato,
 no attack re-trigger).
@@ -484,9 +484,11 @@ KMSS pedal triple mapped to grid g (1/2/3 for the older monobright monome, 8/9/0
 for the other) mirrors g's accrete trio instead of playing samples -- one
 monome, both, or neither (see the rig's .org).
 
-A ~tap_tempo_pad~ is a 3x2 block (=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one
-per monome, on a monome with an ~edo_note_grid~): tap twice within
-~[surfaces].tap_tempo_window_ms~ (default 2000) to redefine the ONE global tapped
+A ~factored_pulse_pad~ (called ~tap_tempo_pad~ until 2026-07 -- it is the
+factored-pulse control; only its tap cell taps tempo) is a 3x2 block
+(=| x3 x2 tap |= over =| /3 /2 =1 |=; at most one per monome, on a monome with
+an ~edo_note_grid~): tap twice within
+~[tap_tempo].window_ms~ (default 2000) to redefine the ONE global tapped
 tempo (redefining it starts nothing; the surfaces runtime seeds the base at 1 Hz
 on bring-up, so a tempo always exists and tapping is optional -- it overrides the
 seed). Each monome scales the base into its own
@@ -594,7 +596,7 @@ Built-in softstep window kinds:
 - ~accrete_control~
 - ~tap_tempo_pedal~
 - ~pulse_factor_pedal~
-- ~edit_delete_pedal~
+- ~editmode_control~ (the pedal form)
 
 All but the drumkit bind ONE pedal each to a control that would otherwise cost grid
 cells, and they are unconditional -- unlike the older ~softstep_accretes_toggle~
@@ -627,18 +629,29 @@ factor = "x2"             # "x2" / "x3" / "div2" / "div3" / "unity"
 
 A ~pulse_factor_pedal~ acts on whichever thing that monome is currently editing:
 with no note in edit mode it moves the grid's tempo factor (exactly as the on-grid
-~tap_tempo_pad~'s factor cells do -- pad and pedal run the same code), and with
+~factored_pulse_pad~'s factor cells do -- pad and pedal run the same code), and with
 notes in edit mode the multipliers retune those notes. ~unity~ is the ~=1~ switch
 and never retunes edit-mode notes.
 
-An ~edit_delete_pedal~ (one pedal, a ~monome~ with an ~edo_note_grid~, at most one
-per monome) deletes -- silences and ends, by the ordinary release ramp -- every
-DRONE at an edited pitch on that monome's grid. The pitches leave the grid's
-sustain bank and edit mode empties, so the grid plays again immediately. A
-fingered voice at an edited pitch does NOT end (a finger's voice is the finger's
-to end): it only loses its edit/sustain reasons, so it ends on the ordinary
-release when the finger lifts. The on-grid ~edit_delete_button~ (single cell, at
-most one per monome, dim at rest / bright while pressed) is the same control on
+An ~editmode_control~ pedal (one pedal, a ~monome~ with an ~edo_note_grid~, at
+most one of each ~control~ per monome) drives that monome's EDIT MODE in bulk,
+symmetric with the ~accrete_control~ sustain pedals:
+
+- ~control = "clear"~: key-down removes every pitch from edit mode. Each voice
+  then rings on iff it still has another reason -- a finger, or the sustain
+  bank -- and an edit-only drone ends by the ordinary release ramp. Each clear
+  removes only its OWN reason (the sustain clear likewise spares edited
+  drones), so a note both sustained and edited survives either clear alone;
+  the full kill is both clears.
+- ~control = "accrete"~: a ONE-SHOT that puts every voice currently sounding on
+  the grid -- every fingered voice and every sustained voice -- into edit mode.
+  One-shot rather than a hold: the moment anything is edited the grid becomes
+  a pitch-picker, so a "notes played while held" phase cannot exist. (The
+  sustain accrete is symmetric in what it captures: it takes every fingered
+  AND every edit-mode voice.)
+
+The on-grid ~editmode_control~ window (single cell, ~control~ field, at most one
+of each per monome, dim at rest / bright while pressed) is the same control on
 the grid itself.
 
 Rejected at load: a pedal label outside 0..9; one pedal claimed by two windows on
@@ -646,7 +659,8 @@ the same device (including across kinds -- a pedal that is both a drum and a cle
 button has no defined behavior); two ~tap_tempo_pedal~ windows (the tapped tempo is
 global, so there is one); two pedals giving the same monome the same ~factor~
 (different monomes may of course share a tempo factor -- that is the point of
-per-monome tempo factors); two ~edit_delete_pedal~ windows for one monome; and a
+per-monome tempo factors); two same-~control~ ~editmode_control~ windows for one
+monome; and a
 ~monome~ that is unknown or has no ~edo_note_grid~.
 
 Pedals are addressed by their printed label (1..9, then 0). On start, the
@@ -665,7 +679,7 @@ protocol.
 * Expression pedals (EX-P volume)
 
 An optional top-level ~[[expression_pedals]]~ array (surfaces runtime) binds the
-M-Audio EX-P expression pedals as simple LINEAR volume pedals, one per monome.
+M-Audio EX-P expression pedals as volume pedals, one per monome.
 The pedals reach the runtime via the MPC-20 -> host bridge
 (run ~tools/pedals/bridge.sh~ on the HOST; both pedals send
 CC 21, one per MIDI channel) -- NOT via the SoftSteps' own EX-P jacks, whose CC
@@ -673,16 +687,28 @@ the decoder deliberately drops.
 
 #+begin_src toml
 [[expression_pedals]]
-channel = 1   # MPC-20 MIDI channel, 1 or 2
-monome = "a"  # whose grid volume this pedal drives; must have an edo_note_grid
+channel = 1                     # MPC-20 MIDI channel, 1 or 2
+monome = "a"                    # whose grid volume; must have an edo_note_grid
+curve_initial_lin_frac = 0.1    # heel fraction that fades linearly to exact 0
+curve_remainder_exp_db = 50.0   # dB span of the exponential rest of the travel
 
 [[expression_pedals]]
 channel = 2
 monome = "b"
 #+end_src
 
-The pedal's reliable ~1..119 CC travel maps linearly to an amplitude factor
-0..1: full heel = silent, full toe = unity. It applies to the grid's sounding
+The pedal's reliable ~1..119 CC travel maps to a position 0..1, tapered into
+the amplitude factor by the standard fader law: the top ~(1 -
+curve_initial_lin_frac)~ of the travel is *exponential* (dB-linear), covering
+~curve_remainder_exp_db~ up to unity at full toe, and the first
+~curve_initial_lin_frac~ fades *linearly* from exact silence up to the
+exponential's floor -- an exponential alone never reaches 0. Defaults: 0.1 and
+50 dB; both are per-pedal fields, validated to [0,1) and > 0, and
+hot-reloadable with ~r~ (the new taper is applied through the pedal's current
+position immediately). (Linear was
+tried first -- numb at the toe, a cliff at the heel, since
+amplitude-to-loudness is roughly logarithmic -- then quadratic; this is the
+console fader's law.) It applies to the grid's sounding
 voices AND its future notes, multiplying below the timbre amplitude and the
 volume fader, and the engine slews each voice toward the pedal (~20 ms time
 constant, per sample), so sweeps are smooth rather than zipper-stepping at CC
@@ -777,23 +803,47 @@ sink = "midi"
 * Surfaces
 
 The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
-[[./2-monomes_kmss-drums_readme.org]]) reads one optional table of instrument-wide
-scalars for the shared *recent-note trail* -- the dim backdrop of the last few played
-pitch classes:
+[[./2-monomes_kmss-drums_readme.org]]) reads three small, independent, optional
+tables of instrument-wide scalars. Each table -- and each field within it -- is
+optional; a missing one falls back to its default, so behaviour is unchanged for
+rigs that don't declare it. Only the surfaces runtime consults them.
+
+** ~[trail]~
+
+The shared *recent-note trail* -- the dim backdrop of the last few played pitch
+classes:
 
 #+begin_src toml
-[surfaces]
-trail_clobber_radius = 27  # clear trailed classes within edo/this steps of a played note
-trails_max = 9             # keep at most this many distinct classes (newest first)
+[trail]
+clobber_radius = 27  # clear trailed classes within edo/this steps of a played note
+max = 9              # keep at most this many distinct classes (newest first)
 #+end_src
 
-- ~trail_clobber_radius~ is a *divisor of the octave*: a played note clears any trailed
-  class within ~edo / trail_clobber_radius~ steps of it, so close pitches never crowd the
+- ~clobber_radius~ is a *divisor of the octave*: a played note clears any trailed
+  class within ~edo / clobber_radius~ steps of it, so close pitches never crowd the
   backdrop. Bigger = tighter; ~27~ is 1/27 of an octave (~44 cents). Default ~27~.
-- ~trails_max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
+- ~max~ caps the number of *distinct* pitch classes in the trail. Default ~7~.
 
-The whole table (and each field) is optional; omitting it uses the defaults, so behaviour
-is unchanged for rigs that don't declare it. Only the surfaces runtime consults it.
+** ~[slide]~
+
+Timing knobs for the ~slide_toggle~ windows (see "Monome windows" above): how
+recently a released note may still be slid from, and how long the glide takes.
+
+#+begin_src toml
+[slide]
+candidate_window_ms = 1000  # a note released within this long ago is a slide source
+duration_ms = 100           # how long the glide takes to reach the new pitch
+#+end_src
+
+** ~[tap_tempo]~
+
+The tap-tempo pairing window shared by the ~factored_pulse_pad~ / ~tap_tempo_pedal~
+windows (see "Monome windows" and "SoftStep (KMSS)" above):
+
+#+begin_src toml
+[tap_tempo]
+window_ms = 2000  # two taps at most this far apart set the tapped tempo
+#+end_src
 
 ** Robustness to missing gear
 

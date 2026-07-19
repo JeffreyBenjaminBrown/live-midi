@@ -1,4 +1,4 @@
-use crate::midi;
+use edo_surface::midi;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 

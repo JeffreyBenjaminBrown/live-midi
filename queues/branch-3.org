@@ -1,0 +1,41 @@
+These are ordered; please start from the top.
+* Fast =1 on monome does not work.
+There *is* need to debounce that signal on the kmss,
+but there is no apparent need to debounce on the monome.
+Somehow the monome just knows; maybe its software is better than the KMSS's,
+or maybe we're skipping some processing that would normally be done to the KMSS signals,
+by their -- drivers? As a sidequest, please have a subagent look around online
+and explain why the two might be different, in a child of this headline,
+prefixed "TODO " so I will find it and Emacs will display it right.
+
+But anyway, the main quest here:
+I suspect we are debouncing those signals from the monome.
+If that's true, let's not do that.
+If that's not true, respond (in another TODO child of this headline)
+with ideas for why my fast double-presses of =1 aren't working on the monome.
+
+While we're at it, make sure we're not debouncing any other monome signals either,
+unless we actually have good reason to.
+* =1 should affect the voices in edit mode
+If a voice is in edit mode, the factor modifiers like (*2) affect it,
+but entering and exiting polyrhythm pulse mode via =1 does not.
+It should.
+* make sustain visible, via a square dance, which interacts with the diamond dance
+The square dance will be just like the diamond dance,
+but at the node's diagonal neighbors instead of its adjacent ones.
+The square dance should have the same frequency as the diamond dance,
+but be 45 degrees out of phase. That way, if both apply to a voice
+(because it's simultaneously in edit mode and being sustained)
+I'll see what looks like roughly one thing circling it.
+
+Like the diamond dance, the square dance should only apply to voices
+at the right pitch in the same octave -- so at most two images,
+sometimes one, and sometimes (specifically,
+when that register is not currently shown on the grid) none.
+* Entering edit mode should just add the voice to the sustained set.
+Exiting its sustain (by ending sustain monome-globally or just for that voice)
+should end the voice, but exiting edit mode (again globally or locally) should not.
+* Retrigger should not reset the phase of a voice.
+That should apply to both retrigger for pitch-drag and retrigger at the same pitch.
+* The TODO item remaining in TODO/cleaning/2_plan.org
+I just added it.

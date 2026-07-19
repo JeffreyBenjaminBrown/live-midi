@@ -89,7 +89,7 @@ Two ways forward:
   tools/pedals/bridge.sh
   #+end_src
   Verify from the container: =aseqdump -p 'MPC-20 pedals'= while moving a pedal. The
-  container-side reader is =midi_pulse::expression_pedals= (the =pedal_monitor= bin proves
+  container-side reader is =edo_surface::expression_pedals= (the =pedal_monitor= bin proves
   it live: =cargo run --bin pedal_monitor=).
 - *Or a real ALSA device the plain way:* a host-side kernel fix (make the CH345 quirk apply
   to this composite device), OR route the MPC-20's *5-pin DIN* MIDI out (its TRS adapter)

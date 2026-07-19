@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
-use midi_pulse::midi;
-use midi_pulse::rig::{
+use crate::midi;
+use crate::rig::{
   drum_samples_dir, load_softstep_params, PulseFactorRig, Rig, SinkRig, SoftstepParams,
   SoftstepWindowRig,
 };

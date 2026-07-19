@@ -1,15 +1,15 @@
-use crate::consts::{CELL_SET_ACCRETION_TARGET, FLASH_PHASE_MS, HEARTBEAT_SECS};
-use crate::pitch::{build_pitch_class, freq_for};
-use crate::state::{
+use edo_surface::consts::{CELL_SET_ACCRETION_TARGET, FLASH_PHASE_MS, HEARTBEAT_SECS};
+use edo_surface::pitch::{build_pitch_class, freq_for};
+use edo_surface::state::{
   chord_press, chord_release, control_press, control_release, edo_press, edo_release,
 };
-use crate::types::{AppState, Brightness, Button, LedCmd, VoiceMap, Window, WindowId};
-use crate::voices::BlockRenderer;
-use crate::windows::{set_led, window_for_cell};
+use edo_surface::types::{AppState, Brightness, Button, LedCmd, VoiceMap, Window, WindowId};
+use edo_surface::voices::BlockRenderer;
+use edo_surface::windows::{set_led, window_for_cell};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use midi_pulse::rig::{Rig, MonomeWindowRig, SinkRig};
-use midi_pulse::monome;
+use edo_surface::rig::{Rig, MonomeWindowRig, SinkRig};
+use edo_surface::monome;
 use rosc::{decoder, OscPacket, OscType};
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -105,8 +105,8 @@ struct RuntimeSettings {
   sustain_level: f32,
   decay_secs: f32,
   windows: Vec<Window>,
-  /// Echo each fingered note to stderr (`[surfaces].echo_input` / top-level
-  /// `echo_input`). Off by default; see the rig field's doc.
+  /// Echo each fingered note to stderr (top-level rig `echo_input`). Off by
+  /// default; see the rig field's doc.
   echo_input: bool,
 }
 
@@ -148,7 +148,7 @@ fn run(settings: RuntimeSettings) -> Result<(), Box<dyn std::error::Error>> {
     settings.fund,
     settings.edo,
     audio.sample_rate,
-    crate::types::AudioParams {
+    edo_surface::types::AudioParams {
       amplitude: settings.amplitude,
       attack_secs: settings.attack_secs,
       release_secs: settings.release_secs,
@@ -370,7 +370,7 @@ fn start_audio_stream(
       // Legacy runtime has no AM (default timbres), so the family is inert.
       renderer.render(
         &mut voices, data, channels, sample_rate, amplitude,
-        crate::types::AmShapeFamily::default(),
+        edo_surface::types::AmShapeFamily::default(),
       );
       cb_count_audio.fetch_add(1, Ordering::Relaxed);
       sample_count_audio.fetch_add((data.len() / channels) as u64, Ordering::Relaxed);
@@ -480,9 +480,9 @@ fn repaint(
     };
     set_led(windows, WindowId::ControlsTop, cell, brightness, sock, device, &led_level_set);
   }
-  for chord in 0..crate::consts::N_CHORDS {
+  for chord in 0..edo_surface::consts::N_CHORDS {
     let cell = (chord as i32, 15);
-    let brightness = crate::state::chord_button_brightness(state, chord);
+    let brightness = edo_surface::state::chord_button_brightness(state, chord);
     set_led(
       windows,
       WindowId::ControlsBottom,

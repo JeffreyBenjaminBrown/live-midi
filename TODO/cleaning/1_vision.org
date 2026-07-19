@@ -1,0 +1,249 @@
+#+title: Could be better: refactoring candidates, with dangers
+#+date: 2026-07-18
+
+Written for queue.org "refactor and investigate with an eye to safety". Two
+halves, per the instructions there: what I judged safe I FIXED (logged first,
+briefly); the type/reification questions are ASSESSED ONLY, each with a
+dangers section, ordered roughly by value-per-risk. "Danger" here means: ways
+the change could break behavior we rely on, or cost more than it pays.
+
+* fixed in this pass (the low-risk half)
+- ORIENTATION.org's "active work" section still described the looper; it now
+  maps the surfaces runtime (with a module-by-module index), demotes the
+  looper to "previous instrument", and stops claiming =edo_surface/= is the
+  instrument being built (it is a mostly-empty successor crate; everything
+  live runs in =buried/=).
+- The [[timbres]] parameter documentation existed in THREE places (rigs
+  README + the kmss rig + its mock) and drifted on every rename -- both the
+  =am_hz= and =abs_*= renames had to chase all three. The rig and mock now
+  point at the one home, rigs/README.org "Timbres".
+- (Earlier in the same session, under the same banner: dead references to
+  =host-nix-config-copy/=, =TODO/monome-looper/=, =code/rust/configs/=, and
+  the =rig_has_tap_source= comment were already cleaned as they were found.)
+
+* assessed only (the higher-risk half)
+
+** 1. Reify "reasons to ring" (the biggest one)
+A voice keeps sounding for up to three reasons -- a finger, the sustain bank,
+edit mode -- but no type says so. The reasons live in three unrelated
+structures (the =held= cell map, =AccreteState.sustained=, =EditState.pitches=),
+and every control that removes a reason must hand-code the question "does
+anything else still hold this note up?" That question now appears, phrased
+slightly differently, in: the exit-edit gesture, sustain-toggle-off, the
+editmode clear, the sustain clear's keep-set, and =release_cell=. Each got its
+own bug or near-bug historically (the dancing ghost; exit-edit killing
+fingered voices; the drag-then-exit kill).
+
+A reified =RingReasons= (per grid: pitch -> set of {Finger, Sustain, Edit}),
+with one function "remove reason R from pitches P; end whatever drops to
+zero", would collapse five hand-rolled checks into one and make the
+symmetric-clears model true by construction.
+
+Dangers:
+- This is the hottest, most bug-storied logic in the runtime. The current
+  checks are individually tested against the exact incidents that produced
+  them; a rewrite starts that clock over. The tests would survive, but they
+  pin end states, not the paths -- subtle re-orderings (end the voice before
+  or after the set updates; lock ordering) are where the originals went wrong.
+- Fingers are keyed by CELL, sustains/edits by PITCH, and the same pitch can
+  be fingered twice (colliding cells). A naive pitch-keyed reason set erases
+  that distinction and re-introduces the class of bug that cell-keying fixed.
+  The real type is more like pitch -> {sustain?, edit?, finger_count}, fed
+  from the held map -- doable, but it must not become a second copy of truth
+  that can drift from the three primaries. Either it REPLACES them (big bang)
+  or it is derived on demand (which is roughly what the code does today,
+  just without the name).
+- Cross-cutting: touches accrete.rs, edit.rs, synth.rs and mod.rs at once;
+  guaranteed conflicts with any parallel worktree.
+Verdict: the best candidate if edit/sustain interactions keep growing; not
+worth it to tidy what exists. If done: derive-on-demand first (a pure
+function =reasons(grid, pitch)= used by every check), migrate checks one at a
+time, only then consider making it the owner.
+
+*** DONE big bang seems better
+but push back if you disagree.
+**** DONE [claude] mostly agree; one carve-out, and I'm proceeding on it
+Big bang for the SUSTAIN and EDIT reasons: a =ring= module owns them, with the
+one operation "remove reason R from pitches P, end what drops to zero" -- the
+symmetric-clears model becomes true by construction. The carve-out: FINGERS
+stay owned by the per-grid held map (cell-keyed) and are *derived into* the
+reason view as a count, never stored pitch-keyed -- two fingers can hold one
+pitch (colliding cells), and flattening that to a boolean re-creates the bug
+class that cell-keying fixed. That is 90% of your big bang; the remaining 10%
+is where the bodies are buried. Proceeding on this basis (plan phase 6);
+object if you wanted fingers absorbed too.
+
+** 2. A real key type for surface voices
+=synth.rs= packs everything into =VoiceSource::Accreted=: fingered voices as
+={chord: grid, pitch: y*256+x}=, drones as ={chord: 0x100+grid}=, retired
+tails as ={chord: 0x10000+grid}=. It works, it is documented, and it is a
+pun. Every consumer that walks the voice map (volume rescale, pedal gains,
+factored-pulse retune, the clears) re-derives "which kind is this" from
+magic offsets. A =SurfaceVoiceKey { grid, role: Fingered(cell) | Drone(pitch)
+| Retired(seq) }= would make those walks self-describing.
+
+Dangers:
+- =VoiceMap='s key type is shared with the sawwave and looper runtimes; a new
+  key means either genericizing the engine (churn in the render hot path,
+  three runtimes touched) or a parallel map (state split across two maps --
+  worse than the pun).
+- The pun is CONTAINED: only synth.rs constructs keys, and the two helpers
+  (=voice_key=, =sustain_key=) plus three constants are the whole surface.
+  The consumers outside synth.rs mostly go through those helpers already.
+Verdict: cheap-looking, expensive underneath. The contained version of this
+improvement -- moving the remaining raw-offset matches in mod.rs behind
+synth.rs helper predicates (=is_grid_voice(src, grid)= etc.) -- gets ~80% of
+the clarity with none of the engine churn, and IS safe enough to just do.
+
+*** DONE Splitting the engine actually seems fine.
+Realistically, I won't use those earlier synths again;
+instead I'll ask to have features from them integrated into the newest.
+So we can do the principled thing without needing generics.
+
+** 3. surfaces_runtime/mod.rs is a 3.7k-line god-module
+It holds: settings resolution, bring-up planning, thread spawning, the key
+dispatcher, LED painting, the pedal hook, the polyrhythm pad, the editmode
+and factored-pulse dispatchers, the pedal-volume thread, hot reload, and all
+integration tests. Finding "the code for window kind X" means grep, which
+ORIENTATION now says out loud. Natural seams exist: =handle_key= + overlay
+dispatch; painting; resolve/bring-up; the hooks.
+
+Dangers:
+- Pure motion, but a LOT of it: a split is the biggest possible merge
+  conflict with worktree 2 and with any in-flight work, for zero behavior
+  change. History/blame gets a discontinuity right through the most-edited
+  file.
+- The seams are less clean than they look: =handle_key= and painting share
+  the GridThread fields; a module split either threads long argument lists
+  or promotes GridThread methods (see 4).
+Verdict: do it opportunistically -- when a lull in feature work coincides
+with worktree 2 being merged -- and move ONLY tests out first (tests are
+half the file, conflict least, and their extraction is mechanical).
+
+*** DONE let's do it
+I'll keep the other branches stable while you do,
+or at worst add only simple features.
+
+** 4. GridThread is a ~45-field god-struct
+Every overlay rect, every shared handle, every knob, flat. Adding a control
+means +2 fields in three places (struct, resolve, ctor) -- we did exactly
+that dance three times this week. Grouping suggests itself: =Overlays= (the
+rects), =Shared= (the Arc'd cross-grid state), =Tuning=, =Knobs=.
+
+Dangers:
+- The flatness is partly load-bearing: disjoint field borrows let
+  =handle_key(&mut rt)= mutate =rt.editmode_clear_down= while holding
+  =&rt.sink= elsewhere; grouping fields behind sub-structs can turn today's
+  fine-grained borrows into borrow-checker fights, whose "fix" is usually
+  cloning or restructuring that would not otherwise exist.
+- Like 3, it is high-churn/zero-behavior, and every open branch pays.
+Verdict: cheap and safe for the RECTS specifically (an =OverlayRects= struct
++ one resolve helper would have absorbed all three of this week's +2-field
+dances); leave the rest flat.
+
+*** DONE I'd prefer dividing it as much as one would do if coding from first principles.
+
+If that means more clones, whatever;
+performance has never been a problem.
+
+** 5. Two volume mechanisms with different composition rules
+Per-grid loudness is the product of: timbre-slot amplitude x volume-fader
+gain (baked into =timbre.gain= at note-on, RATIO-rescaled live) x the pedal's
+=grid_gain= (absolute, slewed). The fader must never hit 0 (ratio math); the
+pedal reaches 0 by design (absolute math). That asymmetry is documented at
+each site but nothing enforces it, and a future "third volume" would have to
+rediscover the distinction.
+
+Dangers:
+- Any unification runs through =accumulate_voices=, the render hot path
+  shared by three runtimes; a regression here is a *sound* regression
+  (loudness steps, zipper) that tests catch only where we thought to pin
+  RMS. The looper's fader behavior would change silently if the ratio path
+  were "cleaned up" into absolute.
+Verdict: leave the mechanisms; the improvement worth having is a short
+=learnings/volume-chain.org= documenting the whole chain in one place
+(cheap, zero risk) rather than a type.
+
+*** DONE I don't think the type would go wrong.
+It sounds like you're saying some volume factors are
+logarithmic factors to add in log space,
+while others are proportions to multiply in logarithmic space,
+yes? If so, types does seem like the natural way to do it,
+and again I don't think that's complex enough to go sideways.
+Besides, if it did I would run into it fast.
+**** DONE [claude] not quite -- and the type fix is even simpler than that
+Every factor is a plain linear-amplitude multiplier; nothing lives in log
+space at composition time (the fader's POSITIONS are log-spaced and the pedal
+curve is exponential, but both emit a linear gain before composing). The real
+asymmetry was storage: =timbre.gain= baked slot-amplitude x fader into ONE
+number, so a live fader move could only be applied as a ratio (you can't
+re-derive the parts from the product), and ratio-from-zero is undefined --
+which is why the pedal had to be a separate absolute field. The type fix is
+therefore: store the components separately per voice and multiply in the
+render. Then every control is plain assignment, zero is legal everywhere, and
+a future fourth factor is one more field. Doing exactly that (plan phase 5).
+
+** 6. Rig-facing names that have drifted from the concepts
+- =tap_tempo_pad= is, in the current instrument, the FACTORED-PULSE pad; its
+  readme needs a "terminology trap" note to explain the mismatch. Honest
+  name: =factored_pulse_pad= (keeping =tap_tempo_pedal= for the pedal, which
+  really is only tap).
+- =[surfaces]= the table (your own "# TODO: this is a dumb name" in the rig):
+  it is the grab-bag of instrument-wide scalars -- trail, slide, tap window.
+  =[instrument]=? =[feel]=? Naming is yours to pick; mechanically trivial.
+  - ONGOING Can it be divided? The names in the divided table
+    could then be more useful.
+    - DONE [claude] yes, cleanly, and it names itself: =[trail]=
+      (clobber_radius, max -- today's trail_clobber_radius/trails_max),
+      =[slide]= (candidate_window_ms, duration_ms), =[tap_tempo]=
+      (window_ms). Three tiny tables, no grab-bag left. Wire-in is trivial;
+      awaiting your yes (rig-facing keys change). Plan phase 8 (rename day).
+      - DONE Yes!
+- =softstep_accretes_toggle= is the legacy hardcoded mirror, superseded in
+  spirit by rig-declared =accrete_control= pedals; still referenced by the
+  kmss rig.
+  - DONE Are you saying we should just stop referencing it?
+    - DONE [claude] yes: rebind the kmss rig's feet-accrete mirroring as
+      explicit =accrete_control= / =editmode_control= pedal bindings (the
+      modern, rig-stated form), drop the =softstep_accretes_toggle= windows
+      from that rig, then delete the kind from the code. Loses one behavior:
+      the on-grid toggle that GATES the mirror (the modern bindings are
+      unconditional). If you use that gate, say so and it stays; otherwise
+      plan phase 8.
+- =buried/= itself: ALL the live code lives there; the name actively
+  misdirects (ORIENTATION now says so, but the name still says the opposite).
+  - DONE That's fine -- buried doesn't mean dead, just not being maintained.
+    Although anything we're still using in the latest rig
+    should not be buried. Buried things can refer on nonburied things,
+    but the reverse feels unnatural.
+    - (Adopted: unbury the live core -- plan phase 7, with a TODO there for
+      what the unburied home should be called.)
+
+Dangers:
+- Every one of these is a find/replace across code + rigs + readmes + DONE
+  logs, easy alone -- but rig keys are muscle memory and live in OTHER
+  WORKTREES' rigs too, so a rename merges as a conflict or, worse, a
+  silently-broken rig ("unknown field" at load, loud but annoying
+  mid-session). Renaming =buried/= additionally invalidates every path in
+  every doc and the etags/build caches.
+
+Verdict: batch them into one deliberate "rename day" commit made when the
+worktrees are level, ideally by you (the names should be yours); none is
+worth doing piecemeal.
+
+** 7. Doc entry points: mostly good, one real gap
+The per-rig readmes, rigs/README.org, ORIENTATION, and the learnings/ notes
+divide cleanly. The one recurring failure mode is DUPLICATED normative doc
+(the timbre block, now fixed; the readmes' repetition of window-kind
+semantics from rigs/README.org is the remaining instance -- e.g. the
+factored-pulse dance is specified in three files). Where the duplication is
+pedagogical (a readme explaining in context) it is worth keeping; where it
+is normative (ranges, defaults, key names), each copy should either be
+generated or replaced by a pointer.
+
+Danger: pointer-chasing costs readers something too -- your readmes are good
+BECAUSE they repeat with context. I would only de-duplicate parameter tables
+and defaults, never the prose.
+*** DONE I really like replacing duplication with pointers.
+Those pointers should be emacs-style relative links,
+to make them followable quickly.

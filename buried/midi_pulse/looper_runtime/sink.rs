@@ -14,8 +14,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::pitch::freq_for_pitch;
-use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
+use edo_surface::pitch::freq_for_pitch;
+use edo_surface::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 
 /// Who is asking for a pitch to sound. `Live` carries the edo cell so that two
 /// distinct held cells whose steps collide to the same absolute pitch are two
@@ -73,7 +73,7 @@ impl SawNoteSink {
     decay_secs: f32,
   ) -> Self {
     let (sustain_env, decay_per_sample) =
-      crate::voices::pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
+      edo_surface::voices::pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
     SawNoteSink {
       voices,
       refs: HashMap::new(),
@@ -107,6 +107,7 @@ impl SawNoteSink {
       voice_key(pitch),
       VoiceState {
         id,
+        pending_attack: None,
         freq: freq_for_pitch(pitch, self.fund, self.edo),
         freq_target: 0.0,
         glide_per_sample: 1.0,
@@ -118,6 +119,7 @@ impl SawNoteSink {
         sustain_env: self.sustain_env,
         decay_per_sample: self.decay_per_sample,
         timbre,
+        fader_gain: 1.0,
         grid_gain: 1.0,
         grid_gain_target: 1.0,
         am_phase: 0.0,
@@ -276,7 +278,7 @@ mod tests {
 
   #[test]
   fn note_on_stamps_the_timbre_on_the_spawned_voice() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = sink();
     let t = Timbre { waveform: Waveform::Saw, gain: 0.5, ..Timbre::default() };
     s.note_on(30, NoteSource::Live(0, 0), t);
@@ -289,7 +291,7 @@ mod tests {
 
   #[test]
   fn first_timbre_wins_on_same_pitch_collision() {
-    use crate::types::Waveform;
+    use edo_surface::types::Waveform;
     let mut s = sink();
     s.note_on(30, NoteSource::Live(0, 0), Timbre { waveform: Waveform::Saw, ..Timbre::default() });
     // Second source, different timbre, but the pitch already sounds -> ref-count

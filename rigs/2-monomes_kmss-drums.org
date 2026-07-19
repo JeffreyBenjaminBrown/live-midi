@@ -18,7 +18,7 @@ file. That shared file holds the onset and release thresholds, the attack window
 the pressure scaling, the contact-bounce and settle debounce guards, and the
 de-stick window. Every rig that uses a SoftStep reads the same file, and the
 meter reads it too, so one edit there reaches all of them at once.
-** TABLE surfaces
+** about the rig
 ===========================================================================
 THREE SURFACES AT ONCE (see rigs/2-monomes_kmss-drums.org):
 - two 16x16 monome grids, each a full 46-EDO play surface with its own
@@ -32,20 +32,24 @@ the other), each in its grid's currently-selected waveform.
 Launch under pw-jack so the synth + drum sampler share the card via PipeWire:
 pw-jack cargo run --bin midi_pulse -- 2-monomes_kmss-drums
 ===========================================================================
+** TABLE trail
 Shared recent-note trail (the dim backdrop of the last few played pitch classes).
-*** PARAM trail_clobber_radius = 27
+*** PARAM clobber_radius = 27
 Clobber radius as a divisor of the octave: a played note clears any trailed class
-within edo/trail_clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents);
+within edo/clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents);
 bigger = tighter = fewer potential neighbors to clobber.
-*** PARAM trails_max = 9
+*** PARAM max = 9
 How many distinct pitch classes the trail keeps at once (newest first).
-*** PARAM slide_candidate_window_ms = 1000
-Slide (the slide_toggle windows): a new note may glide from a note released
-within this many ms...
-*** PARAM slide_duration_ms = 100
+** TABLE slide
+Timing knobs for the slide_toggle windows.
+*** PARAM candidate_window_ms = 1000
+A new note may glide from a note released within this many ms...
+*** PARAM duration_ms = 100
 ...taking this long to arrive at the new pitch.
-*** PARAM tap_tempo_window_ms = 2000
-Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
+** TABLE tap_tempo
+Pairing window for the factored_pulse_pad.
+*** PARAM window_ms = 2000
+Two taps at most this far apart set the tempo.
 ** ELEM tunings
 *** PARAM id = "main"
 *** PARAM edo = 46
@@ -54,26 +58,9 @@ Tap tempo (the tap_tempo_pad): two taps at most this far apart set the tempo.
 *** PARAM fundamental_hz = 80
 ** timbres
 *** ELEM timbres
----------------------------------------------------------------------------
 The four selectable timbres behind each grid's waveform strip, left to right.
-Each has a base waveform ("sin"/"sine", "tri"/"triangle", "square", "saw") and
-numeric parameters; everything but amplitude ships "off". The abs_* modulators
-run at a fixed Hz; the rel_* ones are a second, independent AM/FM pair whose
-LFO rates (and the FM depth) scale with the voice's pitch. Ranges:
-amplitude          per-timbre gain, multiplied below the volume fader; 0..1
-typical (above 1 amplifies -- watch the clamp). Default 1.0.
-abs_am_depth       tremolo depth 0..1 (0 = off; 1 dips to silence)
-abs_am_hz          tremolo rate in Hz; ~0.1..10 musical (default 1.0)
-am_shape           abs tremolo LFO morph 0..1 (0 smooth .. 1 near-square chop)
-abs_fm_depth_cents vibrato depth in cents; ~5..50 subtle, 100+ seasick (0 = off)
-abs_fm_hz          vibrato rate in Hz; ~0.1..10 musical (default 1.0)
-rel_am_depth       pitch-rate tremolo depth 0..1 (0 = off)
-rel_am_freq        its rate as a multiple of the voice's pitch (0 = off; 1 =
-audio-rate ring-mod territory -- give the sink oversample)
-rel_fm_depth       linear FM depth as a multiple of the voice's pitch (0 = off;
-1 sweeps 2f..0; > 1 goes through zero)
-rel_fm_freq        its rate as a multiple of the voice's pitch (0 = off)
----------------------------------------------------------------------------
+Parameter names, ranges and semantics: rigs/README.org "Timbres" (ONE home for
+that doc -- the copies that used to live here drifted on every rename).
 **** PARAM waveform = "sin"
 **** PARAM abs_am_depth = 0.2
 **** PARAM abs_am_hz = 4
@@ -229,7 +216,7 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM rect = [0, 1, 0, 1]
 ** ELEM monome_windows              # grid A: slide toggle
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
-nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+nearest recently-released pitch and glides it into the new one. Knobs: [slide].
 *** PARAM id = "slide-a"
 *** PARAM monome = "a"
 *** PARAM kind = "slide_toggle"
@@ -253,7 +240,7 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows              # grid A: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+[tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
 =1 starts this grid's cycling (keeping the factor), snaps to unity on a second
 press, and stops on a fast double-tap. Notes struck while a tempo is applied and
@@ -261,7 +248,7 @@ cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
 separate from any [[timbres]] AM).
 *** PARAM id = "poly-a"
 *** PARAM monome = "a"
-*** PARAM kind = "tap_tempo_pad"
+*** PARAM kind = "factored_pulse_pad"
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM monome_windows              # grid B: 46-EDO play surface
 ---------------------------------------------------------------------------
@@ -328,7 +315,7 @@ distorted bus; a grid left off bypasses the clipper.
 *** PARAM rect = [0, 1, 0, 1]
 ** ELEM monome_windows              # grid B: slide toggle
 Slide toggle (key-down flips; PER-GRID): a new note on this grid re-triggers the
-nearest recently-released pitch and glides it into the new one. Knobs: [surfaces].
+nearest recently-released pitch and glides it into the new one. Knobs: [slide].
 *** PARAM id = "slide-b"
 *** PARAM monome = "b"
 *** PARAM kind = "slide_toggle"
@@ -352,7 +339,7 @@ above the on-grid trio.
 *** PARAM rect = [0, 14, 0, 14]
 ** ELEM monome_windows              # grid B: polyrhythm pad
 The polyrhythm pad, top-right: | x3 x2 tap | /3 /2 =1 |. Tap twice within
-[surfaces].tap_tempo_window_ms to set the tempo (the tap cell blinks at 10% duty,
+[tap_tempo].window_ms to set the tempo (the tap cell blinks at 10% duty,
 at the UNFACTORED tapped tempo); the factor buttons scale it exactly (2^a * 3^b).
 =1 starts this grid's cycling (keeping the factor), snaps to unity on a second
 press, and stops on a fast double-tap. Notes struck while a tempo is applied and
@@ -360,7 +347,7 @@ cycling is on pulse with a unipolar triangle at that tempo (fixed per note,
 separate from any [[timbres]] AM).
 *** PARAM id = "poly-b"
 *** PARAM monome = "b"
-*** PARAM kind = "tap_tempo_pad"
+*** PARAM kind = "factored_pulse_pad"
 *** PARAM rect = [13, 0, 15, 1]
 ** ELEM softsteps
 ---------------------------------------------------------------------------

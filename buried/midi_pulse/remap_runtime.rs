@@ -1,10 +1,11 @@
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiOutput};
-use midi_pulse::rig::{
+use edo_surface::rig::{
   Rig, InitialMapRig, MonomeRig, MonomeWindowRig, PianoMappingRig,
   RecordControlKind, RemapIdiomRig, ScaleControlKind,
 };
-use midi_pulse::{midi, piano_transform};
+use edo_surface::midi;
+use midi_pulse::piano_transform;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};

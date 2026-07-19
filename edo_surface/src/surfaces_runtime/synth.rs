@@ -9,10 +9,13 @@
 //! `(grid, cell)`, with no ref-counting: each press is its own voice.
 //!
 //! We reuse the engine's pure pieces (`freq_for_pitch`, `VoiceState`, the block
-//! renderer) without touching any sawwave file, exactly as the looper's sink does --
-//! and, like it, we reuse the `Accreted` `VoiceSource` variant purely as an opaque
-//! per-voice handle (`render_block` never reads the key), here packing the grid index
-//! and the cell into it.
+//! renderer) without touching any sawwave file, exactly as the looper's sink does.
+//! Unlike the looper's sink, we key our voices with our own honest `VoiceSource`
+//! variants (`SurfaceFinger` / `SurfaceDrone` / `SurfaceRetired`) rather than reusing
+//! `Accreted` as an opaque handle -- the render engine never reads the key either way,
+//! but our own map-walking code (fader gains, pedal gains, factored-pulse retune,
+//! the bulk clears) gets to match on what a voice actually is instead of re-deriving
+//! it from a chord offset.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -21,38 +24,33 @@ use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState};
 use crate::voices::pluck_envelope;
 
-/// The `chord` offset that marks a voice as *sustained* (accreted) rather than
-/// fingered: a sustained voice from grid `g` is keyed `Accreted { chord: SUSTAIN_BASE
-/// + g, .. }`. Far above any real grid index, so finger and sustain keys never
-/// collide in the shared map.
-pub const SUSTAIN_BASE: usize = 0x100;
-
-/// The `chord` offset for *retired* voices: drones cut by a retrigger of their own
-/// pitch (`cut_sustained`). A retired voice only rings out its release ramp; moving
-/// it off the sustain key frees that key for the replacing note immediately, so the
-/// pitch can re-drone before the old tail has died. Far above `SUSTAIN_BASE + grid`.
-const RETIRED_BASE: usize = 0x10000;
-
-/// Multiply the per-voice gain of every voice belonging to `grid` by `ratio`, in
-/// place. Drives the *live* volume control: a volume strip sets the loudness of
-/// whatever grid it `controls` (its own, in the current rigs), and moving it must
-/// change notes that are already sounding (a fader, not a radio) -- so we walk the
-/// shared map and rescale that grid's voices by new_fader / old_fader. Ratio (not
-/// assignment) because a voice's gain also carries its timbre slot's `amplitude`,
-/// which must survive fader moves. Future note-ons pick up the new fader from the
-/// shared per-grid state; this only touches the ones already in flight. Sustained
-/// (accreted) voices keep following the fader of the grid they came from -- a drone
-/// you can only kill with `clear` should at least obey a volume pedal.
-pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32) {
-  if !ratio.is_finite() {
-    return; // an old fader gain of 0 never happens (the log fader bottoms at -30 dB)
+/// Aim every voice belonging to `grid` -- fingered and sustained (drone) alike -- at
+/// fader gain `gain`, in place. Drives the *live* volume control: a volume strip sets
+/// the loudness of whatever grid it `controls` (its own, in the current rigs), and
+/// moving it must change notes that are already sounding (a fader, not a radio) -- so
+/// we walk the shared map and ASSIGN `fader_gain` on that grid's voices. Plain
+/// assignment, not a ratio: the volume chain is stored components multiplied at
+/// render time (`voices::accumulate_voices`), so the timbre slot's amplitude lives in
+/// `timbre.gain` untouched and the fader is free to land anywhere, including 0 --
+/// a fader parked at the bottom recovers exactly like the pedal does. Future note-ons
+/// pick up the new fader from the shared per-grid state (via `SurfaceSink::note_on`);
+/// this only touches the ones already in flight. Sustained (accreted) voices keep
+/// following the fader of the grid they came from -- a drone you can only kill with
+/// `clear` should at least obey a volume fader. Retired voices (release tails) are
+/// left alone, like `set_grid_pedal_gain` leaves them.
+pub fn set_grid_fader_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+  if !gain.is_finite() {
+    return;
   }
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    if let VoiceSource::Accreted { chord, .. } = src {
-      if *chord == grid || *chord == SUSTAIN_BASE + grid {
-        state.timbre.gain *= ratio;
-      }
+    let voice_grid = match src {
+      VoiceSource::SurfaceFinger { grid, .. } => *grid,
+      VoiceSource::SurfaceDrone { grid, .. } => *grid,
+      _ => continue,
+    };
+    if voice_grid == grid {
+      state.fader_gain = gain;
     }
   }
 }
@@ -63,11 +61,9 @@ pub fn rescale_grid_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, ratio: f32)
 /// edit applies to every note in edit mode on this grid at once (Jeff's asymmetry: a
 /// pitch DRAG moves only the nearest, `2_discussion` 2d).
 ///
-/// But a voice's key does not carry its pitch uniformly: a *fingered* voice is keyed
-/// by the cell it was struck on (`voice_key` packs `y * 256 + x` into the same field a
-/// drone uses for its pitch), so `held` -- this grid's live cell -> pitch map -- is
-/// how a fingered voice's pitch is known. Passing it in keeps that packing private
-/// here rather than leaking it to every caller.
+/// But a voice's key does not carry its pitch uniformly: a *fingered* voice
+/// (`SurfaceFinger`) is keyed by the cell it was struck on, not its pitch, so `held`
+/// -- this grid's live cell -> pitch map -- is how a fingered voice's pitch is known.
 ///
 /// The phase is deliberately KEPT. `factored_pulse_phase` free-runs and only
 /// `factored_pulse_freq` is read per sample, so changing the rate mid-note is a slope change
@@ -103,26 +99,23 @@ pub fn scale_factored_pulse_rate(
       continue;
     }
     let wanted = cells.contains(src)
-      || matches!(src, VoiceSource::Accreted { chord, pitch }
-                  if *chord == SUSTAIN_BASE + grid && edited.contains(pitch));
+      || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
+                  if *g == grid && edited.contains(pitch));
     if wanted {
       state.factored_pulse_freq *= ratio;
     }
   }
 }
 
-/// Pack a grid index + cell into an opaque `VoiceMap` key. Distinct grids get
-/// distinct `chord` values, so the same cell on two grids never collides; distinct
-/// cells on one grid pack to distinct `pitch` fields. Cells are 0..grid_w/h (<= 16),
-/// so `y * 256 + x` is collision-free for any real grid.
+/// A fingered voice's key: per grid and the cell it was struck on.
 fn voice_key(grid: usize, cell: (i32, i32)) -> VoiceSource {
-  VoiceSource::Accreted { chord: grid, pitch: cell.1 * 256 + cell.0 }
+  VoiceSource::SurfaceFinger { grid, cell }
 }
 
 /// The key of a *sustained* voice: per source grid and absolute pitch (the accrete
-/// set is keyed the same way), disjoint from every finger key via `SUSTAIN_BASE`.
+/// set is keyed the same way).
 fn sustain_key(grid: usize, pitch: i32) -> VoiceSource {
-  VoiceSource::Accreted { chord: SUSTAIN_BASE + grid, pitch }
+  VoiceSource::SurfaceDrone { grid, pitch }
 }
 
 /// One grid's voice driver into a *shared* `VoiceMap` (both grids + the audio stream
@@ -145,6 +138,12 @@ pub struct SurfaceSink {
   /// writes them). A fresh note starts at ITS grid's current pedal volume --
   /// already settled, no slew-in. Unity when the rig has no pedals.
   pedal_gains: Arc<Mutex<Vec<f32>>>,
+  /// The per-grid volume-fader gains -- the SAME shared `Arc` the volume strip's
+  /// `set_volume` (keys.rs) writes into and `set_grid_fader_gain` walks live. A
+  /// fresh note stamps its `fader_gain` from ITS grid's current entry (unity absent
+  /// a fader or before its first move); `set_grid_fader_gain` re-aims voices already
+  /// in flight. Two views of one vec, never two copies.
+  fader_gains: Arc<Mutex<Vec<f32>>>,
 }
 
 impl SurfaceSink {
@@ -160,6 +159,7 @@ impl SurfaceSink {
     sustain_level: f32,
     decay_secs: f32,
     pedal_gains: Arc<Mutex<Vec<f32>>>,
+    fader_gains: Arc<Mutex<Vec<f32>>>,
   ) -> Self {
     let (sustain_env, decay_per_sample) = pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
     SurfaceSink {
@@ -174,6 +174,7 @@ impl SurfaceSink {
       sustain_env,
       decay_per_sample,
       pedal_gains,
+      fader_gains,
     }
   }
 
@@ -181,6 +182,13 @@ impl SurfaceSink {
   /// its first movement).
   fn pedal_gain(&self) -> f32 {
     let gains = self.pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
+    gains.get(self.grid).copied().unwrap_or(1.0)
+  }
+
+  /// This grid's current volume-fader gain (unity absent a fader or before its
+  /// first move).
+  fn fader_gain(&self) -> f32 {
+    let gains = self.fader_gains.lock().unwrap_or_else(|e| e.into_inner());
     gains.get(self.grid).copied().unwrap_or(1.0)
   }
 
@@ -193,6 +201,7 @@ impl SurfaceSink {
     let id = self.next_id;
     self.next_id += 1;
     let pedal = self.pedal_gain();
+    let fader = self.fader_gain();
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     voices.insert(
       voice_key(self.grid, cell),
@@ -207,9 +216,14 @@ impl SurfaceSink {
         env: 0.0,
         target_env: 1.0,
         ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        pending_attack: None,
         sustain_env: self.sustain_env,
         decay_per_sample: self.decay_per_sample,
+        // `timbre.gain` is the slot's amplitude alone (the caller no longer bakes the
+        // fader into it -- see keys.rs); the fader and pedal are separate, stored
+        // components multiplied in at render time.
         timbre,
+        fader_gain: fader,
         grid_gain: pedal,
         grid_gain_target: pedal,
         am_phase: 0.0,
@@ -333,8 +347,10 @@ impl SurfaceSink {
   }
 
   /// Hand a sounding voice to the finger now on `cell`: re-home it there as an ordinary
-  /// FINGERED voice, gliding it to `to`, and preserve everything else about it -- its
-  /// envelope, timbre, gain, and the factored pulse's rate and phase all continue.
+  /// FINGERED voice, gliding it to `to`, and RETRIGGER its pluck at the drag's onset. Its
+  /// timbre, gain, and the factored pulse's rate and phase all continue; only the envelope
+  /// re-fires, so each drag lands a rhythmic accent (Jeff). The re-attack happens at the
+  /// OLD pitch -- the glide has not moved `freq` yet -- and the glide then carries it to `to`.
   ///
   /// This is what a drag does. Pressing a monomekey to drag a voice is a finger going
   /// down, and that finger must own the voice afterwards, or the voice is stranded:
@@ -361,6 +377,16 @@ impl SurfaceSink {
     let Some(mut state) = voices.remove(&src) else {
       return false;
     };
+    // Retrigger the pluck at the drag's onset, at the OLD pitch (freq is untouched here),
+    // with a dip-then-attack for a punchy accent: ramp the envelope DOWN to silence over
+    // ~2 ms, and the engine then launches a fresh attack to the peak (see
+    // `VoiceState::pending_attack`). The dip avoids the click a hard reset-to-silence
+    // makes, and the full silence->peak attack gives real bite; the pluck decay then
+    // rings it back down.
+    const DIP_SECS: f32 = 0.002;
+    state.target_env = 0.0;
+    state.ramp_per_sample = state.env / (DIP_SECS * self.sample_rate).max(1.0);
+    state.pending_attack = Some(1.0 / (self.attack_secs * self.sample_rate));
     let target = freq_for_pitch(to, self.fund, self.edo);
     let start = state.freq; // live, mid-glide included
     if target == start {
@@ -409,6 +435,7 @@ impl SurfaceSink {
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+      state.pending_attack = None; // a finger lifting mid-drag-dip must NOT re-strike
     }
   }
 
@@ -433,13 +460,6 @@ impl SurfaceSink {
     }
   }
 
-  /// This bank's accrete 'clear': ramp THIS grid's sustained voices to silence over
-  /// the sink's release time. The other grid's drones and all fingered voices are
-  /// untouched (accrete banks are per-monome).
-  pub fn release_sustained(&mut self) {
-    release_sustained_voices(&self.voices, self.grid, self.release_secs, self.sample_rate);
-  }
-
   /// This sink's release timing, for callers that end voices through the free
   /// functions (e.g. `end_edited_voices`) rather than a sink method.
   pub fn release_params(&self) -> (f32, f32) {
@@ -462,9 +482,9 @@ impl SurfaceSink {
     state.target_env = 0.0;
     state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
     // next_id doubles as the retired-key uniquifier: two cuts never collide.
-    let uniq = self.next_id as i32;
+    let seq = self.next_id;
     self.next_id += 1;
-    voices.insert(VoiceSource::Accreted { chord: RETIRED_BASE + self.grid, pitch: uniq }, state);
+    voices.insert(VoiceSource::SurfaceRetired { grid: self.grid, seq }, state);
   }
 }
 
@@ -472,7 +492,7 @@ impl SurfaceSink {
 /// volume `gain` (absolute, 0..1; NOT a ratio, so a pedal parked at 0 recovers).
 /// Each voice slews there per sample (`voices::GAIN_SLEW_SECS`), which is what
 /// keeps a sweeping pedal free of zipper noise. Retired voices (release tails) are
-/// left alone, like `rescale_grid_gain` leaves them.
+/// left alone, like `set_grid_fader_gain` leaves them.
 pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
   if !gain.is_finite() {
     return;
@@ -480,57 +500,40 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
   let gain = gain.clamp(0.0, 1.0);
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    if let VoiceSource::Accreted { chord, .. } = src {
-      if *chord == grid || *chord == SUSTAIN_BASE + grid {
-        state.grid_gain_target = gain;
-      }
+    let voice_grid = match src {
+      VoiceSource::SurfaceFinger { grid, .. } => *grid,
+      VoiceSource::SurfaceDrone { grid, .. } => *grid,
+      _ => continue,
+    };
+    if voice_grid == grid {
+      state.grid_gain_target = gain;
     }
   }
 }
 
-/// The edit-delete control's voice half: delete -- silence and end, by the ordinary
-/// release ramp, exactly how every voice ends -- each DRONE of `grid` at an edited
-/// pitch. Fingered voices are deliberately not here: a finger's voice is the
-/// finger's to end (the rule the exit gesture already lives by), so a held note
-/// merely loses its edit/sustain reasons and ends on the ordinary release when the
-/// finger lifts. The caller empties the edit set and the sustain-bank entries;
-/// this touches only the voices.
-pub fn end_edited_drones(
+/// End -- silence, by the ordinary release ramp, exactly how every voice ends --
+/// each DRONE of `grid` at one of `pitches`. The bulk-clear controls' voice half:
+/// the caller works out WHICH drones lost their last reason (editmode clear passes
+/// edited-minus-sustained) and empties its own set; this touches only the voices.
+/// Fingered voices are deliberately not here: a finger's voice is the finger's to
+/// end (the rule the exit gesture lives by).
+pub fn end_drones_at(
   voices: &Arc<Mutex<VoiceMap>>,
   grid: usize,
-  edited: &HashSet<i32>,
+  pitches: &HashSet<i32>,
   release_secs: f32,
   sample_rate: f32,
 ) {
-  if edited.is_empty() {
+  if pitches.is_empty() {
     return;
   }
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    if matches!(src, VoiceSource::Accreted { chord, pitch }
-         if *chord == SUSTAIN_BASE + grid && edited.contains(pitch))
+    if matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
+         if *g == grid && pitches.contains(pitch))
     {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (release_secs * sample_rate);
-    }
-  }
-}
-
-/// Ramp one grid's sustained voices to silence -- that bank's accrete 'clear', in a
-/// form the feet-accrete pedal hook can call without owning a sink.
-pub fn release_sustained_voices(
-  voices: &Arc<Mutex<VoiceMap>>,
-  grid: usize,
-  release_secs: f32,
-  sample_rate: f32,
-) {
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (src, state) in voices.iter_mut() {
-    if let VoiceSource::Accreted { chord, .. } = src {
-      if *chord == SUSTAIN_BASE + grid {
-        state.target_env = 0.0;
-        state.ramp_per_sample = state.env / (release_secs * sample_rate);
-      }
     }
   }
 }
@@ -548,7 +551,10 @@ mod tests {
   fn sink(grid: usize, voices: &Arc<Mutex<VoiceMap>>) -> SurfaceSink {
     // sustain_level 1.0 = no pluck decay, so target_env assertions stay exact.
     let pedal_gains = Arc::new(Mutex::new(vec![1.0; 2]));
-    SurfaceSink::new(grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, pedal_gains)
+    let fader_gains = Arc::new(Mutex::new(vec![1.0; 2]));
+    SurfaceSink::new(
+      grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, pedal_gains, fader_gains,
+    )
   }
 
   fn count(voices: &Arc<Mutex<VoiceMap>>) -> usize {
@@ -695,9 +701,10 @@ mod tests {
   fn pedal_gain_targets_this_grids_voices_and_note_ons_start_at_it() {
     let voices = shared();
     let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; 2]));
+    let fader_gains = Arc::new(Mutex::new(vec![1.0_f32; 2]));
     let mut a = SurfaceSink::new(
       0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
-      Arc::clone(&pedal_gains),
+      Arc::clone(&pedal_gains), Arc::clone(&fader_gains),
     );
     let mut b = sink(1, &voices);
     a.note_on((0, 0), 20, Timbre::default(), None);
@@ -718,10 +725,10 @@ mod tests {
   }
 
   #[test]
-  fn end_edited_drones_releases_edited_drones_and_spares_every_finger() {
-    // Grid 0 has: a drone at edited pitch 20, a fingered voice at edited pitch 30,
-    // a fingered voice at unedited pitch 40, and a drone at unedited pitch 50.
-    // Grid 1 has a drone at pitch 20 too (edited pitches are per-grid).
+  fn end_drones_at_releases_named_drones_and_spares_every_finger() {
+    // Grid 0 has: a drone at pitch 20 (to end), a fingered voice at pitch 30
+    // (named but fingered), a fingered voice at pitch 40, and a drone at pitch 50.
+    // Grid 1 has a drone at pitch 20 too (grids are independent).
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
@@ -734,20 +741,26 @@ mod tests {
     b.note_on((0, 0), 20, Timbre::default(), None);
     b.sustain_note((0, 0), 20);
 
-    let edited: HashSet<i32> = [20, 30].into();
-    end_edited_drones(&voices, 0, &edited, 0.05, 48000.0);
+    let pitches: HashSet<i32> = [20, 30].into();
+    end_drones_at(&voices, 0, &pitches, 0.05, 48000.0);
 
     let v = voices.lock().unwrap();
     let ended = |src: &VoiceSource| v[src].target_env == 0.0;
-    assert!(ended(&sustain_key(0, 20)), "the edited drone rings out");
+    assert!(ended(&sustain_key(0, 20)), "the named drone rings out");
     assert!(
       !ended(&voice_key(0, (1, 0))),
-      "the finger holding an edited pitch keeps sounding -- a finger's voice is the finger's to end",
+      "a finger at a named pitch keeps sounding -- a finger's voice is the finger's to end",
     );
-    assert!(!ended(&voice_key(0, (2, 0))), "an unedited finger keeps sounding");
-    assert!(!ended(&sustain_key(0, 50)), "an unedited drone keeps sounding");
+    assert!(!ended(&voice_key(0, (2, 0))), "an unnamed finger keeps sounding");
+    assert!(!ended(&sustain_key(0, 50)), "an unnamed drone keeps sounding");
     assert!(!ended(&sustain_key(1, 20)), "the OTHER grid's drone at 20 is untouched");
   }
+
+  // The old `release_sustained_spares_the_keep_set` test is gone with the function it
+  // covered (cleaning phase 6): the sustain-clear now runs `RingStore::remove_reason`,
+  // whose keep-set behaviour (spare edited/fingered pitches) is pinned in ring.rs
+  // (`the_doubly_held_matrix`, `remove_reason_returns_only_the_reason_less_pitches`),
+  // and the drone-ending half is `end_drones_at` above.
 
   #[test]
   fn sustaining_the_same_pitch_twice_releases_the_second_finger_voice() {
@@ -819,39 +832,52 @@ mod tests {
     assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.target_env), Some(1.0), "grid b's drone keeps ringing");
   }
 
-  #[test]
-  fn release_sustained_silences_only_its_own_grids_drones() {
-    let voices = shared();
-    let mut a = sink(0, &voices);
-    let mut b = sink(1, &voices);
-    a.note_on((3, 4), 20, Timbre::default(), None);
-    a.sustain_note((3, 4), 20);
-    b.note_on((5, 5), 33, Timbre::default(), None);
-    b.sustain_note((5, 5), 33);
-    a.note_on((6, 6), 40, Timbre::default(), None); // a still-fingered note
-    a.release_sustained();
-    let v = voices.lock().unwrap();
-    assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(0.0), "grid a drone released");
-    assert_eq!(v.get(&sustain_key(1, 33)).map(|s| s.target_env), Some(1.0), "grid b drone keeps ringing (banks are per-monome)");
-    assert_eq!(v.get(&voice_key(0, (6, 6))).map(|s| s.target_env), Some(1.0), "fingered note untouched");
-  }
+  // `release_sustained_silences_only_its_own_grids_drones` is likewise gone with its
+  // function; the per-grid drone isolation and "fingered note untouched" it asserted
+  // are covered by `end_drones_at_releases_named_drones_and_spares_every_finger`,
+  // which is the mechanism the clears now use.
 
   #[test]
   fn the_volume_fader_reaches_sustained_voices_from_its_grid() {
     let voices = shared();
     let mut a = sink(0, &voices);
     let mut b = sink(1, &voices);
-    // Grid 0's drone carries a timbre-slot amplitude of 0.8 in its gain; the fader
-    // rescale is a ratio, so that factor must survive.
+    // Grid 0's drone carries a timbre-slot amplitude of 0.8; the fader is a separate,
+    // stored component, so a fader move must leave it alone (no more ratio-into-gain).
     a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() }, None);
     a.sustain_note((3, 4), 20);
     b.note_on((3, 4), 20, Timbre::default(), None);
     b.sustain_note((3, 4), 20);
-    rescale_grid_gain(&voices, 0, 0.25);
+    set_grid_fader_gain(&voices, 0, 0.25);
     let v = voices.lock().unwrap();
-    let g0 = v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain).unwrap();
-    assert!((g0 - 0.2).abs() < 1e-6, "grid 0's drone rescaled by the ratio: {g0}");
-    assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.timbre.gain), Some(1.0), "grid 1's drone untouched");
+    assert_eq!(
+      v.get(&sustain_key(0, 20)).map(|s| s.fader_gain), Some(0.25),
+      "grid 0's drone fader assigned",
+    );
+    assert_eq!(
+      v.get(&sustain_key(0, 20)).map(|s| s.timbre.gain), Some(0.8),
+      "the slot amplitude survives the fader move -- it was never baked in",
+    );
+    assert_eq!(
+      v.get(&sustain_key(1, 20)).map(|s| s.fader_gain), Some(1.0),
+      "grid 1's drone untouched",
+    );
+  }
+
+  #[test]
+  fn the_volume_fader_can_reach_zero_and_recover() {
+    // The old ratio-rescale math could never leave the fader at 0 (a ratio FROM zero
+    // is undefined, hence the pedal's separate absolute field); plain assignment has
+    // no such rule -- 0 is just another value.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((3, 4), 20, Timbre { gain: 0.8, ..Timbre::default() }, None);
+    set_grid_fader_gain(&voices, 0, 0.0);
+    assert_eq!(voices.lock().unwrap()[&voice_key(0, (3, 4))].fader_gain, 0.0, "silenced");
+    set_grid_fader_gain(&voices, 0, 0.5);
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&voice_key(0, (3, 4))].fader_gain, 0.5, "recovers from zero");
+    assert_eq!(v[&voice_key(0, (3, 4))].timbre.gain, 0.8, "slot amplitude untouched throughout");
   }
 
   // ---- glide_voice_to: the per-voice pitch edit primitive ----
@@ -1170,10 +1196,16 @@ mod tests {
 
     // Exit edit mode tries to cut the drone at pitch 35 -- but there is none.
     a.cut_sustained(35);
-    assert!(
-      v.lock().unwrap()[&voice_key(0, (7, 7))].target_env > 0.0,
-      "the fingered voice survives the exit, because the drag finger holds it",
-    );
+    {
+      let g = v.lock().unwrap();
+      let st = &g[&voice_key(0, (7, 7))];
+      // Alive: the drag's dip-then-attack leaves it at target_env 0 with an attack queued
+      // for the moment it bottoms out, so aliveness is "sounding OR about to re-strike".
+      assert!(
+        st.target_env > 0.0 || st.pending_attack.is_some(),
+        "the fingered voice survives the exit, because the drag finger holds it",
+      );
+    }
 
     // Lifting the drag cell ends it.
     a.note_off((7, 7));
@@ -1210,6 +1242,31 @@ mod tests {
     let st = &g[&voice_key(0, (7, 7))];
     assert_eq!(st.factored_pulse_freq, 3.0, "the pulse rate is kept");
     assert_eq!(st.factored_pulse_phase, phase, "and its phase does not jump");
+  }
+
+  /// A drag retriggers the pluck with a dip-then-attack, so each drag lands a punchy accent
+  /// (Jeff). The drag first ramps the envelope DOWN toward silence and queues a fresh
+  /// attack, which the engine launches once the dip bottoms out (see the sawwave test
+  /// `a_pending_attack_dips_to_silence_then_re_strikes`).
+  #[test]
+  fn a_drag_sets_up_the_dip_then_attack_retrigger() {
+    let v = shared();
+    let mut a = sink(0, &v);
+    a.note_on((3, 3), 20, Timbre::default(), None);
+    // A voice mid-attack, well above silence.
+    {
+      let mut g = v.lock().unwrap();
+      let st = g.get_mut(&voice_key(0, (3, 3))).unwrap();
+      st.env = 0.5;
+      st.target_env = 1.0;
+      st.pending_attack = None;
+    }
+    a.rehome_to_cell(Some((3, 3)), 20, (7, 7), 35, 0.1);
+    let g = v.lock().unwrap();
+    let st = &g[&voice_key(0, (7, 7))];
+    assert_eq!(st.target_env, 0.0, "the drag first ramps the envelope DOWN toward silence");
+    assert!(st.pending_attack.is_some(), "with a fresh attack queued to launch at the bottom");
+    assert!(st.env > 0.0, "the dip starts from the current level, not an instant jump -- no click");
   }
 
   #[test]
