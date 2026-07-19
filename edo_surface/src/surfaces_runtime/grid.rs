@@ -97,10 +97,12 @@ fn button_level_at(buttons: &[ButtonOverlay], x: i32, y: i32) -> Option<i32> {
 /// `sounding_classes` and `trail_classes` are pitch classes (`0..edo`). A class that is
 /// both sounding and trailed paints `BRIGHT` (sounding wins -- full clobbers dim).
 #[allow(clippy::too_many_arguments)]
-/// `dance_cells` are the cells this grid's diamond dances want lit RIGHT NOW, already
-/// resolved from the edit set and the shared clock by the caller (only the caller
-/// knows the register). Exact CELLS, not pitch classes: the dance is local -- it marks
-/// the note being edited, never its octave-equivalents (2_discussion 4e).
+/// `dance_cells` are the cells this grid's diamond (edit-mode) AND square (sustained)
+/// dances want lit RIGHT NOW, already resolved from the edit/sustain sets and the
+/// shared clock by the caller (only the caller knows the register) -- one merged set,
+/// since both dances paint identically here. Exact CELLS, not pitch classes: the dance
+/// is local -- it marks the note being edited or sustained, never its
+/// octave-equivalents (2_discussion 4e; queue item 3 for the square dance).
 ///
 /// `octave_flash` says which octave-shift corner is blinking this instant because an
 /// edit-mode or sustained note is off-screen that way (4g).
@@ -430,6 +432,63 @@ mod tests {
     assert_eq!(at(&levels, 5, 4), BRIGHT, "still bright -- but as the NOTE, not the dance");
     // Indistinguishable by level alone, which is the accepted cost of the yield rule:
     // the dance loses that slot rather than destroying the note's own signal.
+  }
+
+  // ---- the square dance (sustained pitches), as painted ----
+  //
+  // `levels_for_grid` takes one merged `dance_cells` set -- it does not know or care
+  // whether a cell came from the diamond's `corner_cell` or the square's
+  // `diagonal_cell` (mod.rs resolves both into the same set before calling here). So
+  // these mirror the diamond's three compositing tests exactly, just with a diagonal
+  // offset, to pin that the square dance gets identical treatment through the shared
+  // path rather than some parallel rule.
+
+  #[test]
+  fn a_square_danced_cell_lights_bright_over_nothing() {
+    let levels = levels_for_grid(
+      &empty(), &empty(), &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &[], 0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&levels, 6, 4), BRIGHT, "the diagonal neighbour, e.g. NE of (5,5)");
+    assert_eq!(at(&levels, 5, 5), OFF, "only the corner, not the note's own cell");
+  }
+
+  #[test]
+  fn a_square_danced_cell_clobbers_a_dim_trail_but_yields_to_a_sounding_note() {
+    let trail: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
+    let danced = levels_for_grid(
+      &empty(), &trail, &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &[], 0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&danced, 6, 4), BRIGHT, "the dance wins over a trail (4e), diamond or square alike");
+
+    let sounding: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
+    let yielded = levels_for_grid(
+      &sounding, &empty(), &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &[], 0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&yielded, 6, 4), BRIGHT, "still bright -- as the NOTE, the dance yields");
+  }
+
+  /// The visible payoff of the T/8 offset: a voice both edited (diamond) AND
+  /// sustained (square) lights TWO distinct cells around it at once -- an edge
+  /// neighbour and a diagonal one -- which is what reads as "roughly one thing
+  /// circling it" once the clock turns (queue item 3).
+  #[test]
+  fn a_voice_both_edited_and_sustained_lights_an_edge_and_a_diagonal_cell_at_once() {
+    let elapsed = std::time::Duration::from_millis(75);
+    let note = (5, 5);
+    let mut both = HashSet::new();
+    both.insert(super::super::dance::corner_cell(note, elapsed));
+    both.insert(super::super::dance::diagonal_cell(note, elapsed));
+    assert_eq!(both.len(), 2, "the two dances are 45 degrees apart, never the same cell");
+
+    let levels =
+      levels_for_grid(&empty(), &empty(), &both, NO_FLASH, FULL, NONE, 0, NONE, -1, NONE, &[], 0, XS, YS, EDO, 16, 16);
+    for (x, y) in both.iter().copied() {
+      assert_eq!(at(&levels, x, y), BRIGHT, "({x},{y}) should be lit by one of the two dances");
+    }
+    assert_eq!(at(&levels, 5, 5), OFF, "the note's own cell is untouched by either dance");
   }
 
   #[test]

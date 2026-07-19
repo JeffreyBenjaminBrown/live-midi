@@ -803,14 +803,17 @@ fn grid_thread(mut rt: GridThread) {
     }
     let trail_classes = trail_set(&rt.shared.trail);
 
-    // The diamond dances and the off-screen indicator. Both read THIS grid's edit set
-    // plus its own sustained pitches: local, never mirrored from the other grid and
-    // never octave-duplicated, unlike everything else painted here.
+    // The diamond dance (edit-mode) and the square dance (sustained), plus the
+    // off-screen indicator. All three read THIS grid's edit set and its own
+    // sustained pitches: local, never mirrored from the other grid and never
+    // octave-duplicated, unlike everything else painted here.
     let elapsed = rt.started.elapsed();
-    // Snapshot under the lock, then draw: the pedal hook writes this too (`clear`).
-    let edited: Vec<i32> = {
+    // Snapshot both under one lock, then draw: the pedal hook writes these too
+    // (`clear`).
+    let (edited, sustained): (Vec<i32>, Vec<i32>) = {
       let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-      rings[rt.grid_index].store.iter(Reason::Edit).collect()
+      let store = &rings[rt.grid_index].store;
+      (store.iter(Reason::Edit).collect(), store.iter(Reason::Sustain).collect())
     };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
     for pitch in edited.iter().copied() {
@@ -819,6 +822,16 @@ fn grid_thread(mut rt: GridThread) {
       // pitch"). So dance every cell that sounds it, not just the first.
       for (x, y) in cells_for_pitch(&rt, register, pitch) {
         dance_cells.insert(dance::corner_cell((x, y), elapsed));
+      }
+    }
+    // The square dance: the same rule, but for sustained pitches, at the diagonal
+    // neighbours, T/8 out of phase with the diamond -- a pitch that is both edited
+    // and sustained shows all 8 positions circling together (queue item 3). Shares
+    // `cells_for_pitch` and `dance_cells` with the diamond above, so it gets the
+    // same at-most-two-images and clobber/yield compositing for free.
+    for pitch in sustained.iter().copied() {
+      for (x, y) in cells_for_pitch(&rt, register, pitch) {
+        dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
       }
     }
     // The visible pitch window, for "is that note off-screen".
@@ -831,11 +844,7 @@ fn grid_thread(mut rt: GridThread) {
     let off = if dance::flash_on(elapsed) {
       // One signal for BOTH edit-mode and sustained notes -- Jeff's call ("in both
       // cases"), so the LED cannot say which kind you are chasing.
-      let sustained: Vec<i32> = {
-        let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        rings[rt.grid_index].store.iter(Reason::Sustain).collect()
-      };
-      dance::off_screen(edited.iter().copied().chain(sustained), lo, hi)
+      dance::off_screen(edited.iter().copied().chain(sustained.iter().copied()), lo, hi)
     } else {
       dance::OffScreen::default()
     };

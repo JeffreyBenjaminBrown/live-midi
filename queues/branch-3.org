@@ -111,7 +111,7 @@ Setting the rate to 0 steps the render's amplitude multiplier straight to 1
 (not wherever the triangle wave sat) -- a real, accepted click, flagged in a
 comment at =set_factored_pulse_rate_at='s doc. =cargo test --workspace=: 678
 passed, 0 failed.
-* make sustain visible, via a square dance, which interacts with the diamond dance
+* DONE make sustain visible, via a square dance, which interacts with the diamond dance
 The square dance will be just like the diamond dance,
 but at the node's diagonal neighbors instead of its adjacent ones.
 The square dance should have the same frequency as the diamond dance,
@@ -123,6 +123,20 @@ Like the diamond dance, the square dance should only apply to voices
 at the right pitch in the same octave -- so at most two images,
 sometimes one, and sometimes (specifically,
 when that register is not currently shown on the grid) none.
+** DONE claude: the square dance, diagonal and 45deg out of phase
+=surfaces_runtime/dance.rs= gained =DIAGONALS= (NW/SW/SE/NE), =SQUARE_OFFSET_MS=
+(=CORNER_MS/2=, i.e. T/8), and =diagonal_at=/=diagonal_cell=, built on the diamond's
+own =corner_at= clock/modulus so both dances stay in lockstep. =grid_thread= (mod.rs)
+now also reads THIS grid's =Reason::Sustain= pitches (same =RingStore= bank the
+sustained-class reflection folds into classes, but here pitch-exact/register-aware
+via the existing =cells_for_pitch=) and inserts their =diagonal_cell= into the SAME
+=dance_cells= set the diamond writes to -- so =levels_for_grid='s existing compositing
+rule (dance clobbers a dim trail, yields/skips a bright note) applies to the square
+dance for free, unchanged. The off-screen scroll-pad-corner flash already covered
+sustained notes (verified, no change needed). Tests: 9 new (dance.rs: turn order,
+diagonal-cell grid coords, shared clock, T/8-interleave, 8-position circle; grid.rs:
+square-dance compositing + a both-dances two-cell case). =cargo test --workspace=:
+687 passed, 0 failed.
 * Entering edit mode should just add the voice to the sustained set.
 Exiting its sustain (by ending sustain monome-globally or just for that voice)
 should end the voice, but exiting edit mode (again globally or locally) should not.

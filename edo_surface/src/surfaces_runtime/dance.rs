@@ -1,6 +1,7 @@
 //! The "diamond dance": how an edit-mode note is marked on its grid, and how an
 //! off-screen note is pointed at (`TODO/many/1_vision.org` "the diamond dance" and
-//! `2_discussion.org` 4e-4g).
+//! `2_discussion.org` 4e-4g). And the "square dance" that marks a SUSTAINED note the
+//! same way (queue item 3, `queues/branch-3.org`).
 //!
 //! A single lit cell rotates around the edited note -- above, left, below, right --
 //! each corner holding for `CORNER_MS`, so one full turn is `4 * CORNER_MS`. Exactly
@@ -15,6 +16,16 @@
 //! *Unlike every other LED rule here, this one is local*: it marks the exact cells
 //! holding that exact pitch on that one grid -- never octave-equivalents, never the
 //! other grid. So it cannot reuse the cross-grid reflection path.
+//!
+//! The square dance is the diamond dance's diagonal twin: same clock, same
+//! `CORNER_MS` hold time, but at the four DIAGONAL neighbours (NW, SW, SE, NE) and
+//! `SQUARE_OFFSET_MS` (`CORNER_MS / 2`, i.e. `T/8` of a full turn) out of phase, so
+//! each square position sits exactly halfway between the two diamond positions it
+//! falls between in time. A pitch that is simultaneously edited (diamond) and
+//! sustained (square) therefore shows all 8 positions in turn -- "roughly one thing
+//! circling it" (Jeff). Same image rules as the diamond -- register-aware, pitch-exact,
+//! at most two cells per pitch, none when the register hides it -- so it shares the
+//! diamond's cell-location and occupancy machinery rather than duplicating it.
 
 use std::time::Duration;
 
@@ -40,6 +51,35 @@ pub fn corner_at(elapsed: Duration) -> usize {
 /// The cell this dance wants to light at `elapsed`, given the danced cell.
 pub fn corner_cell(cell: (i32, i32), elapsed: Duration) -> (i32, i32) {
   let (dx, dy) = CORNERS[corner_at(elapsed)];
+  (cell.0 + dx, cell.1 + dy)
+}
+
+/// How far out of phase the square dance runs from the diamond: half a corner's hold
+/// time, i.e. `T/8` of a full `4 * CORNER_MS` turn. That is what makes each square
+/// position land exactly between the two diamond positions bracketing it in time,
+/// rather than merely "some other diagonal cell".
+pub const SQUARE_OFFSET_MS: u64 = CORNER_MS / 2;
+
+/// The four diagonal corners, in the same rotational sense as `CORNERS` (above ->
+/// left -> below -> right) -- each entry sits physically between the two `CORNERS`
+/// entries it is temporally between: north-west is between above and left,
+/// south-west between left and below, south-east between below and right, and
+/// north-east between right and the next turn's above.
+pub const DIAGONALS: [(i32, i32); 4] = [(-1, -1), (-1, 1), (1, 1), (1, -1)];
+
+/// Which diagonal is lit at `elapsed`. Built on `corner_at`'s exact clock and
+/// modulus, offset by `SQUARE_OFFSET_MS` -- shifted forward by a full turn minus the
+/// offset rather than subtracted, so this never underflows near `elapsed == 0`.
+pub fn diagonal_at(elapsed: Duration) -> usize {
+  let ms = elapsed.as_millis() as u64;
+  let period = CORNER_MS * CORNERS.len() as u64;
+  let shifted = ms + period - SQUARE_OFFSET_MS;
+  ((shifted / CORNER_MS) % DIAGONALS.len() as u64) as usize
+}
+
+/// The cell the square dance wants to light at `elapsed`, given the danced cell.
+pub fn diagonal_cell(cell: (i32, i32), elapsed: Duration) -> (i32, i32) {
+  let (dx, dy) = DIAGONALS[diagonal_at(elapsed)];
   (cell.0 + dx, cell.1 + dy)
 }
 
@@ -164,6 +204,85 @@ mod tests {
     assert_eq!(corner_at(ms(150)), 1);
     assert_eq!(corner_at(ms(299)), 1, "the slot is still spent");
     assert_eq!(corner_at(ms(300)), 2, "and the next corner starts on time");
+  }
+
+  // ---- the square dance: same clock, diagonal neighbours, T/8 out of phase ----
+
+  #[test]
+  fn the_square_dance_turns_nw_sw_se_ne_and_repeats() {
+    // The square dance's first transition (to NW) lands at T/8 = 75 ms, not at 0 --
+    // until then it is still showing NE, the position between the PREVIOUS turn's
+    // "right" and this turn's "above".
+    assert_eq!(diagonal_at(ms(0)), 3, "NE: mid-way between the prior turn's E and this turn's N");
+    assert_eq!(diagonal_at(ms(74)), 3);
+    assert_eq!(diagonal_at(ms(75)), 0, "NW, T/8 into the turn");
+    assert_eq!(diagonal_at(ms(224)), 0);
+    assert_eq!(diagonal_at(ms(225)), 1, "SW");
+    assert_eq!(diagonal_at(ms(374)), 1);
+    assert_eq!(diagonal_at(ms(375)), 2, "SE");
+    assert_eq!(diagonal_at(ms(524)), 2);
+    assert_eq!(diagonal_at(ms(525)), 3, "NE");
+    assert_eq!(diagonal_at(ms(600)), 3, "still NE -- the next NW is T/8 into the next turn");
+    assert_eq!(diagonal_at(ms(675)), 0, "one full turn (600 ms) later, back to NW");
+  }
+
+  #[test]
+  fn exactly_one_diagonal_is_lit_at_any_instant() {
+    let mut seen = std::collections::HashSet::new();
+    for c in DIAGONALS {
+      assert!(seen.insert(c), "the four diagonals must be distinct cells");
+    }
+    for t in (0..600).step_by(37) {
+      assert!(diagonal_at(ms(t)) < 4);
+    }
+  }
+
+  #[test]
+  fn the_diagonal_cell_is_the_diagonal_neighbour_in_grid_coordinates() {
+    assert_eq!(diagonal_cell((5, 5), ms(75)), (4, 4), "NW");
+    assert_eq!(diagonal_cell((5, 5), ms(225)), (4, 6), "SW");
+    assert_eq!(diagonal_cell((5, 5), ms(375)), (6, 6), "SE");
+    assert_eq!(diagonal_cell((5, 5), ms(525)), (6, 4), "NE");
+  }
+
+  /// Same shared, absolute clock as the diamond: two square-danced notes at the same
+  /// instant must show the same offset, regardless of when each note started
+  /// sustaining.
+  #[test]
+  fn the_square_dance_shares_the_diamonds_absolute_clock() {
+    let t = ms(1_234);
+    assert_eq!(diagonal_at(t), diagonal_at(t));
+    assert_eq!(diagonal_cell((2, 2), t).0 - 2, diagonal_cell((9, 9), t).0 - 9);
+    assert_eq!(diagonal_cell((2, 2), t).1 - 2, diagonal_cell((9, 9), t).1 - 9);
+  }
+
+  /// The concrete spec (queue item 3): the square dance's steps land `T/8` after the
+  /// diamond's, so the two together look like one thing circling. Merge each dance's
+  /// four transition instants over one turn and the eight are evenly spaced 75 ms
+  /// apart -- not clumped, not overlapping.
+  #[test]
+  fn the_two_dances_transitions_interleave_evenly_75ms_apart() {
+    let mut boundaries: Vec<u64> =
+      (0..4).map(|k| k * CORNER_MS).chain((0..4).map(|k| k * CORNER_MS + SQUARE_OFFSET_MS)).collect();
+    boundaries.sort_unstable();
+    assert_eq!(boundaries.len(), 8);
+    for pair in boundaries.windows(2) {
+      assert_eq!(pair[1] - pair[0], SQUARE_OFFSET_MS, "each transition is T/8 from its neighbour");
+    }
+  }
+
+  /// The visible result of that interleave: across one full turn, a voice that is
+  /// both edited (diamond) and sustained (square) lights all 8 positions around its
+  /// cell in turn -- "roughly one thing circling it" (Jeff, queue item 3).
+  #[test]
+  fn both_dances_together_trace_all_eight_positions_around_a_cell() {
+    let cell = (5, 5);
+    let mut seen = std::collections::HashSet::new();
+    for t in (0..600).step_by(5) {
+      seen.insert(corner_cell(cell, ms(t)));
+      seen.insert(diagonal_cell(cell, ms(t)));
+    }
+    assert_eq!(seen.len(), 8, "4 edge-adjacent + 4 diagonal neighbours, all visited in one turn");
   }
 
   #[test]
