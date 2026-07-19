@@ -15,10 +15,10 @@ use midi_pulse::rig::{
 use crate::drumkit_runtime;
 use crate::types::VoiceMap;
 
-use super::accrete::{self, AccreteState};
-use super::edit;
+use super::accrete;
 use super::keys::{capture_grid_held_into, erase_grid_held_into, held_pitches};
 use super::polyrhythm::{PolyrhythmState, TempoFactorButton};
+use super::ring::{GridRing, Reason};
 use super::synth;
 
 /// Which accrete button a KMSS pedal mirrors, and for which pedal TRIPLE (0 =
@@ -56,10 +56,9 @@ pub(super) fn feet_accrete_hook(
   softstep_id: String,
   feet_accrete_on: Arc<Vec<AtomicBool>>,
   triple_banks: [usize; 2],
-  accrete: Arc<Mutex<Vec<AccreteState>>>,
+  ring: Arc<Mutex<Vec<GridRing>>>,
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: Arc<Mutex<VoiceMap>>,
-  edit: Arc<Mutex<Vec<edit::EditState>>>,
   release_secs: f32,
   sample_rate: f32,
 ) -> drumkit_runtime::PedalHook {
@@ -78,9 +77,7 @@ pub(super) fn feet_accrete_hook(
     if button == AccreteControlKind::Erase {
       return false;
     }
-    drive_accrete(
-      grid, button, down, &accrete, &held_all, &voices, &edit, release_secs, sample_rate,
-    )
+    drive_accrete(grid, button, down, &ring, &held_all, &voices, release_secs, sample_rate)
   })
 }
 
@@ -95,53 +92,73 @@ pub(super) fn drive_accrete(
   grid: usize,
   button: AccreteControlKind,
   down: bool,
-  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: &Arc<Mutex<VoiceMap>>,
-  edit: &Arc<Mutex<Vec<edit::EditState>>>,
   release_secs: f32,
   sample_rate: f32,
 ) -> bool {
   let mut activated = accrete::Activated::default();
-  {
-    let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(state) = banks.get_mut(grid) else {
+  // A sustain clear removes only the SUSTAIN reason (symmetric with editmode clear,
+  // queue.org "accrete-editmode pedals like accrete-sustain"): a drone whose pitch is
+  // in edit mode keeps ringing (audibly -- not the old silent "dancing ghost"), a
+  // fingered pitch's finger is untouched, and only the reason-less drones end. The one
+  // `remove_reason` call replaces the old flush + edited-keep-set dance. The finger
+  // multiset is snapshotted before the ring lock (no nested locks).
+  let held_for_clear = if button == AccreteControlKind::Clear && down {
+    held_pitches(held_all, grid)
+  } else {
+    Vec::new()
+  };
+  let ended: Vec<i32> = {
+    let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(gr) = rings.get_mut(grid) else {
       return false;
     };
     match (button, down) {
-      (AccreteControlKind::Clear, true) => state.press_clear(),
-      (AccreteControlKind::Clear, false) => state.release_clear(),
-      (AccreteControlKind::NeedsHolding, true) => activated = state.press_needs_holding(),
-      (AccreteControlKind::NeedsHolding, false) => {}
-      (AccreteControlKind::Accrete, true) => activated.accrete = state.press_accrete(),
-      (AccreteControlKind::Accrete, false) => state.release_accrete(),
-      (AccreteControlKind::Erase, true) => activated.erase = state.press_erase(),
-      (AccreteControlKind::Erase, false) => state.release_erase(),
+      (AccreteControlKind::Clear, true) => {
+        gr.accrete.press_clear();
+        let all: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
+        gr.store.remove_reason(Reason::Sustain, all, |p| {
+          held_for_clear.iter().filter(|&&h| h == p).count()
+        })
+      }
+      (AccreteControlKind::Clear, false) => {
+        gr.accrete.release_clear();
+        Vec::new()
+      }
+      (AccreteControlKind::NeedsHolding, true) => {
+        activated = gr.accrete.press_needs_holding();
+        Vec::new()
+      }
+      (AccreteControlKind::NeedsHolding, false) => Vec::new(),
+      (AccreteControlKind::Accrete, true) => {
+        activated.accrete = gr.accrete.press_accrete();
+        Vec::new()
+      }
+      (AccreteControlKind::Accrete, false) => {
+        gr.accrete.release_accrete();
+        Vec::new()
+      }
+      (AccreteControlKind::Erase, true) => {
+        activated.erase = gr.accrete.press_erase();
+        Vec::new()
+      }
+      (AccreteControlKind::Erase, false) => {
+        gr.accrete.release_erase();
+        Vec::new()
+      }
     }
-  }
-  if button == AccreteControlKind::Clear && down {
-    // Clear removes only the SUSTAIN reason (symmetric with editmode clear,
-    // queue.org "accrete-editmode pedals like accrete-sustain"): a drone whose
-    // pitch is in edit mode keeps ringing. This supersedes the old panic-button
-    // coupling that also emptied edit mode -- that fix existed because clear used
-    // to silence edited drones too, stranding SILENT notes in edit mode ("a
-    // dancing ghost that won't go away"). Spared drones stay audible, so they are
-    // not ghosts, and both the exit gesture and the editmode clear can still
-    // dismiss them; the full kill is the two clears together.
-    let edited: HashSet<i32> = edit
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .get(grid)
-      .map(|e| e.pitches().collect())
-      .unwrap_or_default();
-    synth::release_sustained_voices(voices, grid, &edited, release_secs, sample_rate);
+  };
+  if !ended.is_empty() {
+    synth::end_drones_at(voices, grid, &ended.into_iter().collect(), release_secs, sample_rate);
   }
   if activated.accrete {
-    capture_grid_held_into(held_all, accrete, edit, grid);
+    capture_grid_held_into(held_all, ring, grid);
   }
   if activated.erase {
     // A needs-holding flip can activate a physically-held ERASE button.
-    erase_grid_held_into(held_all, accrete, grid);
+    erase_grid_held_into(held_all, ring, grid);
   }
   true
 }
@@ -216,31 +233,21 @@ pub(super) fn tempo_factor_ratio(factor: TempoFactorButton) -> Option<f32> {
 /// module's rule.
 pub(super) fn editmode_clear(
   grid: usize,
-  edit: &Arc<Mutex<Vec<edit::EditState>>>,
-  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   voices: &Arc<Mutex<VoiceMap>>,
   release_secs: f32,
   sample_rate: f32,
 ) {
-  let edited: HashSet<i32> = {
-    let mut states = edit.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(e) = states.get_mut(grid) else { return };
-    let pitches: HashSet<i32> = e.pitches().collect();
-    e.clear();
-    pitches
+  // Remove the EDIT reason from every edited pitch and end exactly the drones with no
+  // remaining reason -- a sustained drone keeps ringing (its bank membership is
+  // untouched), and a fingered voice was never a drone. One `remove_reason` call.
+  let ended: Vec<i32> = {
+    let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(gr) = rings.get_mut(grid) else { return };
+    let edited: Vec<i32> = gr.store.iter(Reason::Edit).collect();
+    gr.store.remove_reason(Reason::Edit, edited, |_| 0)
   };
-  if edited.is_empty() {
-    return;
-  }
-  let sustained: HashSet<i32> = {
-    let banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-    banks.get(grid).map(|b| b.sustained_pitches().collect()).unwrap_or_default()
-  };
-  // Only the drones whose SOLE reason was edit mode end; a sustained drone keeps
-  // ringing (its bank membership is untouched), and a fingered voice was never a
-  // drone at all.
-  let dying: HashSet<i32> = edited.difference(&sustained).copied().collect();
-  synth::end_drones_at(voices, grid, &dying, release_secs, sample_rate);
+  synth::end_drones_at(voices, grid, &ended.into_iter().collect(), release_secs, sample_rate);
 }
 
 /// The editmode `accrete` control on `grid`: a ONE-SHOT that puts every voice
@@ -253,31 +260,25 @@ pub(super) fn editmode_clear(
 /// edited is simply one more reason to ring.
 pub(super) fn editmode_accrete(
   grid: usize,
-  edit: &Arc<Mutex<Vec<edit::EditState>>>,
-  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
 ) {
   let fingered = held_pitches(held_all, grid);
-  let sustained: Vec<i32> = {
-    let banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-    banks.get(grid).map(|b| b.sustained_pitches().collect()).unwrap_or_default()
-  };
-  let mut states = edit.lock().unwrap_or_else(|e| e.into_inner());
-  let Some(e) = states.get_mut(grid) else { return };
+  let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+  let Some(gr) = rings.get_mut(grid) else { return };
+  let sustained: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
   for pitch in fingered.into_iter().chain(sustained) {
-    e.enter(pitch);
+    gr.edit.enter(pitch, &mut gr.store);
   }
 }
 
 /// Dispatch one editmode_control press (shared by the pedal hook and the on-grid
 /// buttons, so hands and feet cannot diverge). Key-down only; key-up is the
 /// caller's LED business.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn editmode_press(
   grid: usize,
   control: EditmodeControlKind,
-  edit: &Arc<Mutex<Vec<edit::EditState>>>,
-  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: &Arc<Mutex<VoiceMap>>,
   release_secs: f32,
@@ -285,9 +286,9 @@ pub(super) fn editmode_press(
 ) {
   match control {
     EditmodeControlKind::Clear => {
-      editmode_clear(grid, edit, accrete, voices, release_secs, sample_rate);
+      editmode_clear(grid, ring, voices, release_secs, sample_rate);
     }
-    EditmodeControlKind::Accrete => editmode_accrete(grid, edit, accrete, held_all),
+    EditmodeControlKind::Accrete => editmode_accrete(grid, ring, held_all),
   }
 }
 
@@ -303,15 +304,15 @@ pub(super) fn factored_pulse_press(
   grid: usize,
   factor: TempoFactorButton,
   poly: &Arc<Mutex<PolyrhythmState>>,
-  edit: &Arc<Mutex<Vec<edit::EditState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: &Arc<Mutex<VoiceMap>>,
 ) {
-  let edited: HashSet<i32> = edit
+  let edited: HashSet<i32> = ring
     .lock()
     .unwrap_or_else(|e| e.into_inner())
     .get(grid)
-    .map(|e| e.pitches().collect())
+    .map(|gr| gr.store.iter(Reason::Edit).collect())
     .unwrap_or_default();
   match tempo_factor_ratio(factor) {
     Some(ratio) if !edited.is_empty() => {
@@ -342,11 +343,10 @@ pub(super) fn factored_pulse_press(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn rig_pedal_hook(
   actions: HashMap<(String, u8), PedalAction>,
-  accrete: Arc<Mutex<Vec<AccreteState>>>,
+  ring: Arc<Mutex<Vec<GridRing>>>,
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
   voices: Arc<Mutex<VoiceMap>>,
   poly: Arc<Mutex<PolyrhythmState>>,
-  edit: Arc<Mutex<Vec<edit::EditState>>>,
   tap_window: Duration,
   release_secs: f32,
   sample_rate: f32,
@@ -356,9 +356,9 @@ pub(super) fn rig_pedal_hook(
       return false;
     };
     match *action {
-      PedalAction::Accrete { grid, control } => drive_accrete(
-        grid, control, down, &accrete, &held_all, &voices, &edit, release_secs, sample_rate,
-      ),
+      PedalAction::Accrete { grid, control } => {
+        drive_accrete(grid, control, down, &ring, &held_all, &voices, release_secs, sample_rate)
+      }
       // Tap and the tempo-factor buttons are key-down only, like their on-grid
       // twins. The press is still CONSUMED on key-up, or the pedal would drum on
       // release.
@@ -372,16 +372,14 @@ pub(super) fn rig_pedal_hook(
         if down {
           // Shared with the on-grid pad's factor cells: edit-mode retune vs
           // tempo-factor move, decided in one place (`factored_pulse_press`).
-          factored_pulse_press(grid, factor, &poly, &edit, &held_all, &voices);
+          factored_pulse_press(grid, factor, &poly, &ring, &held_all, &voices);
         }
         true
       }
       PedalAction::Editmode { grid, control } => {
         if down {
           // Shared with the on-grid editmode buttons (`editmode_press`).
-          editmode_press(
-            grid, control, &edit, &accrete, &held_all, &voices, release_secs, sample_rate,
-          );
+          editmode_press(grid, control, &ring, &held_all, &voices, release_secs, sample_rate);
         }
         true
       }

@@ -460,15 +460,6 @@ impl SurfaceSink {
     }
   }
 
-  /// This bank's accrete 'clear': ramp THIS grid's sustained voices to silence over
-  /// the sink's release time -- except drones at the `keep` pitches, which still
-  /// have another reason to ring (edit mode; the clear removes only the sustain
-  /// reason). The other grid's drones and all fingered voices are untouched
-  /// (accrete banks are per-monome).
-  pub fn release_sustained(&mut self, keep: &HashSet<i32>) {
-    release_sustained_voices(&self.voices, self.grid, keep, self.release_secs, self.sample_rate);
-  }
-
   /// This sink's release timing, for callers that end voices through the free
   /// functions (e.g. `end_edited_voices`) rather than a sink method.
   pub fn release_params(&self) -> (f32, f32) {
@@ -543,28 +534,6 @@ pub fn end_drones_at(
     {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (release_secs * sample_rate);
-    }
-  }
-}
-
-/// Ramp one grid's sustained voices to silence -- that bank's accrete 'clear', in a
-/// form the feet-accrete pedal hook can call without owning a sink. Drones at the
-/// `keep` pitches survive: they still have another reason to ring (edit mode), and
-/// the clear removes only the sustain reason.
-pub fn release_sustained_voices(
-  voices: &Arc<Mutex<VoiceMap>>,
-  grid: usize,
-  keep: &HashSet<i32>,
-  release_secs: f32,
-  sample_rate: f32,
-) {
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (src, state) in voices.iter_mut() {
-    if let VoiceSource::SurfaceDrone { grid: g, pitch } = src {
-      if *g == grid && !keep.contains(pitch) {
-        state.target_env = 0.0;
-        state.ramp_per_sample = state.env / (release_secs * sample_rate);
-      }
     }
   }
 }
@@ -787,21 +756,11 @@ mod tests {
     assert!(!ended(&sustain_key(1, 20)), "the OTHER grid's drone at 20 is untouched");
   }
 
-  #[test]
-  fn release_sustained_spares_the_keep_set() {
-    // The symmetric sustain-clear: drones at kept (edited) pitches survive.
-    let voices = shared();
-    let mut a = sink(0, &voices);
-    a.note_on((0, 0), 20, Timbre::default(), None);
-    a.sustain_note((0, 0), 20);
-    a.note_on((1, 0), 30, Timbre::default(), None);
-    a.sustain_note((1, 0), 30);
-    let keep: HashSet<i32> = [30].into();
-    a.release_sustained(&keep);
-    let v = voices.lock().unwrap();
-    assert_eq!(v[&sustain_key(0, 20)].target_env, 0.0, "the unkept drone rings out");
-    assert_eq!(v[&sustain_key(0, 30)].target_env, 1.0, "the kept (edited) drone survives");
-  }
+  // The old `release_sustained_spares_the_keep_set` test is gone with the function it
+  // covered (cleaning phase 6): the sustain-clear now runs `RingStore::remove_reason`,
+  // whose keep-set behaviour (spare edited/fingered pitches) is pinned in ring.rs
+  // (`the_doubly_held_matrix`, `remove_reason_returns_only_the_reason_less_pitches`),
+  // and the drone-ending half is `end_drones_at` above.
 
   #[test]
   fn sustaining_the_same_pitch_twice_releases_the_second_finger_voice() {
@@ -873,22 +832,10 @@ mod tests {
     assert_eq!(v.get(&sustain_key(1, 20)).map(|s| s.target_env), Some(1.0), "grid b's drone keeps ringing");
   }
 
-  #[test]
-  fn release_sustained_silences_only_its_own_grids_drones() {
-    let voices = shared();
-    let mut a = sink(0, &voices);
-    let mut b = sink(1, &voices);
-    a.note_on((3, 4), 20, Timbre::default(), None);
-    a.sustain_note((3, 4), 20);
-    b.note_on((5, 5), 33, Timbre::default(), None);
-    b.sustain_note((5, 5), 33);
-    a.note_on((6, 6), 40, Timbre::default(), None); // a still-fingered note
-    a.release_sustained(&HashSet::new());
-    let v = voices.lock().unwrap();
-    assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(0.0), "grid a drone released");
-    assert_eq!(v.get(&sustain_key(1, 33)).map(|s| s.target_env), Some(1.0), "grid b drone keeps ringing (banks are per-monome)");
-    assert_eq!(v.get(&voice_key(0, (6, 6))).map(|s| s.target_env), Some(1.0), "fingered note untouched");
-  }
+  // `release_sustained_silences_only_its_own_grids_drones` is likewise gone with its
+  // function; the per-grid drone isolation and "fingered note untouched" it asserted
+  // are covered by `end_drones_at_releases_named_drones_and_spares_every_finger`,
+  // which is the mechanism the clears now use.
 
   #[test]
   fn the_volume_fader_reaches_sustained_voices_from_its_grid() {

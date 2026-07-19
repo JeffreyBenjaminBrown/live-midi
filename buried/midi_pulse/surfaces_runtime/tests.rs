@@ -714,10 +714,8 @@
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     // The two-softstep rig binds no needs_holding, so its banks are momentary.
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 1]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new(vec![edit::EditState::new()]));
 
     // A finger goes down: a voice sounds, and held_all carries it (what the grid
     // thread publishes on note-on, and what the pedal hook reads).
@@ -727,16 +725,20 @@
 
     // The accrete pedal goes down.
     assert!(drive_accrete(
-      0, AccreteControlKind::Accrete, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+      0, AccreteControlKind::Accrete, true, &ring, &held_all, &voices, 0.05, 48000.0,
     ));
     assert!(
-      accrete.lock().unwrap()[0].sustained_pitches().any(|p| p == 20),
+      ring.lock().unwrap()[0].store.iter(Reason::Sustain).any(|p| p == 20),
       "pressing accrete must capture the already-held note",
     );
 
     // The finger lifts. release_cell's decision, reproduced: a captured note keeps
     // ringing.
-    let keep = accrete.lock().unwrap()[0].note_released_sustains(20);
+    let keep = {
+      let mut r = ring.lock().unwrap();
+      let gr = &mut r[0];
+      gr.accrete.note_released_sustains(20, &mut gr.store)
+    };
     assert!(keep, "the lifted note is sustained, so it survives");
     if keep {
       sink.sustain_note((3, 3), 20);
@@ -757,23 +759,28 @@
     // clear then takes the last reason and ends it. Both clears = the full kill.
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary(), AccreteState::new_momentary()]));
+    let ring = Arc::new(Mutex::new(vec![
+      GridRing::new(AccreteState::new_momentary()),
+      GridRing::new(AccreteState::new_momentary()),
+    ]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
 
     // Two notes, both sustained on grid 0, one of them also in edit mode.
     let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
-      accrete.lock().unwrap()[0].sustain_pitch(pitch);
+      ring.lock().unwrap()[0].store.add(Reason::Sustain, pitch);
     }
-    edit.lock().unwrap()[0].enter(20);
+    {
+      let mut r = ring.lock().unwrap();
+      let gr = &mut r[0];
+      gr.edit.enter(20, &mut gr.store);
+    }
 
     // Sustain-clear: the bank flushes; only the sustain-only drone ends.
     assert!(drive_accrete(
-      0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+      0, AccreteControlKind::Clear, true, &ring, &held_all, &voices, 0.05, 48000.0,
     ));
     let drone = |pitch| VoiceSource::SurfaceDrone { grid: 0, pitch };
     {
@@ -781,13 +788,13 @@
       assert_eq!(v[&drone(10)].target_env, 0.0, "the sustain-only drone releases");
       assert!(v[&drone(20)].target_env > 0.0, "the edited drone keeps ringing");
     }
-    assert!(accrete.lock().unwrap()[0].sustained_pitches().next().is_none(), "the set flushed");
-    assert!(edit.lock().unwrap()[0].is_editing(20), "clear does not touch edit mode");
+    assert!(ring.lock().unwrap()[0].store.iter(Reason::Sustain).next().is_none(), "the set flushed");
+    assert!(ring.lock().unwrap()[0].store.has(Reason::Edit, 20), "clear does not touch edit mode");
 
     // Editmode-clear takes the drone's last reason: now it ends, and the grid plays.
-    editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
+    editmode_clear(0, &ring, &voices, 0.05, 48000.0);
     assert_eq!(voices.lock().unwrap()[&drone(20)].target_env, 0.0, "no reason left: it ends");
-    assert!(!edit.lock().unwrap()[0].any(), "edit mode empties");
+    assert!(!ring.lock().unwrap()[0].store.any(Reason::Edit), "edit mode empties");
   }
 
   #[test]
@@ -796,44 +803,42 @@
     // still in the sustain bank keeps its drone.
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new(vec![edit::EditState::new()]));
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 1])), Arc::new(Mutex::new(vec![1.0; 1])));
     // Pitch 10: edited only. Pitch 20: edited AND sustained.
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
-      edit.lock().unwrap()[0].enter(pitch);
+      let mut r = ring.lock().unwrap();
+      let gr = &mut r[0];
+      gr.edit.enter(pitch, &mut gr.store);
     }
-    accrete.lock().unwrap()[0].sustain_pitch(20);
+    ring.lock().unwrap()[0].store.add(Reason::Sustain, 20);
 
-    editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
+    editmode_clear(0, &ring, &voices, 0.05, 48000.0);
     let drone = |pitch| VoiceSource::SurfaceDrone { grid: 0, pitch };
     let v = voices.lock().unwrap();
     assert_eq!(v[&drone(10)].target_env, 0.0, "the edit-only drone ends");
     assert!(v[&drone(20)].target_env > 0.0, "the sustained drone keeps its other reason");
     drop(v);
-    assert!(!edit.lock().unwrap()[0].any(), "edit mode empties either way");
+    assert!(!ring.lock().unwrap()[0].store.any(Reason::Edit), "edit mode empties either way");
     assert!(
-      accrete.lock().unwrap()[0].sustained_pitches().eq([20]),
+      ring.lock().unwrap()[0].store.iter(Reason::Sustain).eq([20]),
       "the sustain bank is untouched",
     );
   }
 
   #[test]
   fn editmode_accrete_captures_fingered_and_sustained_voices() {
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::from([((1, 1), 10)])]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new(vec![edit::EditState::new()]));
-    accrete.lock().unwrap()[0].sustain_pitch(20);
+    ring.lock().unwrap()[0].store.add(Reason::Sustain, 20);
 
-    editmode_accrete(0, &edit, &accrete, &held_all);
-    let e = edit.lock().unwrap();
-    assert!(e[0].is_editing(10), "the fingered voice enters edit mode");
-    assert!(e[0].is_editing(20), "the sustained voice too");
-    assert_eq!(e[0].pitches().count(), 2, "and nothing else");
+    editmode_accrete(0, &ring, &held_all);
+    let r = ring.lock().unwrap();
+    assert!(r[0].store.has(Reason::Edit, 10), "the fingered voice enters edit mode");
+    assert!(r[0].store.has(Reason::Edit, 20), "the sustained voice too");
+    assert_eq!(r[0].store.iter(Reason::Edit).count(), 2, "and nothing else");
   }
 
   #[test]
@@ -841,16 +846,18 @@
     // queue.org: "accrete-sustain should add every fingered voice and every
     // edit-mode voice". Pitch 10 is fingered, pitch 20 rings only via edit mode;
     // stomping accrete captures both into the sustain bank.
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::from([((1, 1), 10)])]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new(vec![edit::EditState::new()]));
-    edit.lock().unwrap()[0].enter(20);
+    {
+      let mut r = ring.lock().unwrap();
+      let gr = &mut r[0];
+      gr.edit.enter(20, &mut gr.store);
+    }
 
-    assert!(accrete.lock().unwrap()[0].press_accrete(), "activation edge");
-    capture_grid_held_into(&held_all, &accrete, &edit, 0);
-    let banks = accrete.lock().unwrap();
-    let captured: HashSet<i32> = banks[0].sustained_pitches().collect();
+    assert!(ring.lock().unwrap()[0].accrete.press_accrete(), "activation edge");
+    capture_grid_held_into(&held_all, &ring, 0);
+    let r = ring.lock().unwrap();
+    let captured: HashSet<i32> = r[0].store.iter(Reason::Sustain).collect();
     assert_eq!(captured, [10, 20].into(), "fingered AND edited voices join the bank");
   }
 
@@ -861,27 +868,26 @@
   #[test]
   fn clear_flushes_per_note_sustains_as_well_as_pedal_accretes() {
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary()]));
+    let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 1]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new(vec![edit::EditState::new()]));
 
     // One note sustained by the PEDAL (accrete live while it was played)...
     {
-      let mut banks = accrete.lock().unwrap();
-      banks[0].press_accrete();
-      banks[0].note_played(10);
-      banks[0].release_accrete();
+      let mut r = ring.lock().unwrap();
+      let gr = &mut r[0];
+      gr.accrete.press_accrete();
+      gr.accrete.note_played(10, &mut gr.store);
+      gr.accrete.release_accrete();
     }
     // ...and one sustained by the per-note button, with no pedal involved at all.
-    accrete.lock().unwrap()[0].sustain_pitch(20);
-    assert_eq!(accrete.lock().unwrap()[0].sustained_pitches().count(), 2);
+    ring.lock().unwrap()[0].store.add(Reason::Sustain, 20);
+    assert_eq!(ring.lock().unwrap()[0].store.iter(Reason::Sustain).count(), 2);
 
     drive_accrete(
-      0, AccreteControlKind::Clear, true, &accrete, &held_all, &voices, &edit, 0.05, 48000.0,
+      0, AccreteControlKind::Clear, true, &ring, &held_all, &voices, 0.05, 48000.0,
     );
     assert!(
-      accrete.lock().unwrap()[0].sustained_pitches().next().is_none(),
+      ring.lock().unwrap()[0].store.iter(Reason::Sustain).next().is_none(),
       "clear must flush the button-sustained note too, not just the pedalled one",
     );
   }
@@ -890,15 +896,20 @@
   #[test]
   fn editmode_clear_leaves_the_other_grids_edit_mode_alone() {
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new_momentary(), AccreteState::new_momentary()]));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
-    edit.lock().unwrap()[0].enter(10);
-    edit.lock().unwrap()[1].enter(20);
+    let ring = Arc::new(Mutex::new(vec![
+      GridRing::new(AccreteState::new_momentary()),
+      GridRing::new(AccreteState::new_momentary()),
+    ]));
+    {
+      let mut r = ring.lock().unwrap();
+      let (a, b) = r.split_at_mut(1);
+      a[0].edit.enter(10, &mut a[0].store);
+      b[0].edit.enter(20, &mut b[0].store);
+    }
 
-    editmode_clear(0, &edit, &accrete, &voices, 0.05, 48000.0);
-    assert!(!edit.lock().unwrap()[0].any(), "grid 0's edit mode cleared");
-    assert!(edit.lock().unwrap()[1].any(), "grid 1's edit mode is its own business");
+    editmode_clear(0, &ring, &voices, 0.05, 48000.0);
+    assert!(!ring.lock().unwrap()[0].store.any(Reason::Edit), "grid 0's edit mode cleared");
+    assert!(ring.lock().unwrap()[1].store.any(Reason::Edit), "grid 1's edit mode is its own business");
   }
 
   #[test]
@@ -1033,26 +1044,26 @@
     // Triple 0 (pedals 1/2/3) -> grid 0's bank, triple 1 (8/9/0) -> grid 1's.
     let feet_on: Arc<Vec<AtomicBool>> =
       Arc::new((0..2).map(|_| AtomicBool::new(false)).collect());
-    let accrete = Arc::new(Mutex::new(vec![AccreteState::new(), AccreteState::new()]));
+    let ring = Arc::new(Mutex::new(vec![
+      GridRing::new(AccreteState::new()),
+      GridRing::new(AccreteState::new()),
+    ]));
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let edit: Arc<Mutex<Vec<edit::EditState>>> =
-      Arc::new(Mutex::new((0..2).map(|_| edit::EditState::new()).collect()));
     let hook = feet_accrete_hook(
       "feet".to_string(),
       Arc::clone(&feet_on),
       [0, 1],
-      Arc::clone(&accrete),
+      Arc::clone(&ring),
       Arc::clone(&held_all),
       Arc::clone(&voices),
-      Arc::clone(&edit),
       0.05,
       48000.0,
     );
 
     // Both toggles off: nothing is consumed; the pedals drum as usual.
     assert!(!hook("feet", 3, true), "off: pedal 3 stays a drum pad");
-    assert!(!accrete.lock().unwrap()[0].accreting());
+    assert!(!ring.lock().unwrap()[0].accrete.accreting());
 
     feet_on[0].store(true, Ordering::Relaxed);
     // A DIFFERENT board's pedal 3 must not touch this board's bank, even with the
@@ -1061,7 +1072,7 @@
     // accrete bank the moment it was plugged in.
     assert!(!hook("other-board", 3, true), "another board's pedal 3 is not mirrored");
     assert!(
-      !accrete.lock().unwrap()[0].accreting(),
+      !ring.lock().unwrap()[0].accrete.accreting(),
       "another board's pedal 3 must not toggle this bank",
     );
     // Unmapped pedals still drum even while on.
@@ -1074,14 +1085,18 @@
     held_all.lock().unwrap()[1].insert((7, 7), 51);
     assert!(hook("feet", 3, true), "on: pedal 3 is consumed");
     hook("feet", 3, false);
-    assert!(accrete.lock().unwrap()[0].accreting(), "grid 0's accrete mode toggled by foot");
-    assert!(!accrete.lock().unwrap()[1].accreting(), "grid 1's bank untouched");
+    assert!(ring.lock().unwrap()[0].accrete.accreting(), "grid 0's accrete mode toggled by foot");
+    assert!(!ring.lock().unwrap()[1].accrete.accreting(), "grid 1's bank untouched");
     assert!(
-      accrete.lock().unwrap()[0].note_released_sustains(44),
+      {
+        let mut r = ring.lock().unwrap();
+        let gr = &mut r[0];
+        gr.accrete.note_released_sustains(44, &mut gr.store)
+      },
       "grid 0's held note was captured on activation",
     );
     assert!(
-      accrete.lock().unwrap()[1].sustained_classes(58).is_empty(),
+      ring.lock().unwrap()[1].store.classes(Reason::Sustain, 58).is_empty(),
       "grid 1's held note was NOT captured (banks are per-monome)",
     );
 
@@ -1096,7 +1111,11 @@
     a.sustain_note((5, 5), 20);
     b.note_on((6, 6), 31, Timbre::default(), None);
     b.sustain_note((6, 6), 31);
-    accrete.lock().unwrap()[1].note_played(31);
+    {
+      let mut r = ring.lock().unwrap();
+      let gr = &mut r[1];
+      gr.accrete.note_played(31, &mut gr.store);
+    }
     assert!(hook("feet", 8, true), "pedal 8 = grid 1's clear, consumed");
     hook("feet", 8, false);
     let v = voices.lock().unwrap();
@@ -1109,11 +1128,11 @@
       }
     }
     assert!(
-      accrete.lock().unwrap()[1].sustained_classes(58).is_empty(),
+      ring.lock().unwrap()[1].store.classes(Reason::Sustain, 58).is_empty(),
       "grid 1's set was flushed (accrete mode itself stays on -- clear never exits it)",
     );
     assert!(
-      !accrete.lock().unwrap()[0].sustained_classes(58).is_empty(),
+      !ring.lock().unwrap()[0].store.classes(Reason::Sustain, 58).is_empty(),
       "grid 0's set survives grid 1's clear",
     );
   }

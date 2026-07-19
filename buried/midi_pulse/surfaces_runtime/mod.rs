@@ -35,6 +35,7 @@ mod polyrhythm;
 mod pulse_window;
 mod readout;
 mod reload;
+mod ring;
 mod settings;
 mod slide;
 mod synth;
@@ -65,6 +66,7 @@ use midi_pulse::rig::{AccreteControlKind, MonomeWindowRig, SinkRig};
 use crate::voices::Distortion;
 
 use accrete::AccreteState;
+use ring::{GridRing, Reason};
 use polyrhythm::{TempoFactorButton, PolyrhythmState};
 use slide::SlideCandidates;
 use grid::{
@@ -344,26 +346,29 @@ fn run(
   // sustains, with nothing on the surface saying why and no way back but `clear`. So
   // such a bank is momentary: hold to accrete, lift to stop. Bind a `needs_holding`
   // control and you get the switchable bank the drums rig has always had.
-  let accrete: Arc<Mutex<Vec<AccreteState>>> = Arc::new(Mutex::new(
+  // The per-grid ring: one `GridRing` per monome (its accrete bank, its edit-mode
+  // machine, and the shared store of what rings), all under ONE lock (cleaning phase
+  // 6, `1_vision` item 1). Absorbing the old separate `Vec<AccreteState>` and
+  // `Vec<EditState>` handles into one removes the two-lock ordering hazard: entering
+  // edit mode and sustaining a pitch write the same store, so the two can never
+  // disagree about what rings, and the pedal hook (which reads and writes both) takes
+  // a single lock. A bank whose `needs_holding` switch is bound NOWHERE can never
+  // leave whatever mode it starts in; leaving it at the toggle default is then a trap
+  // (one tap latches sustain on), so such a bank comes up momentary -- hold to
+  // accrete, lift to stop.
+  let ring: Arc<Mutex<Vec<GridRing>>> = Arc::new(Mutex::new(
     (0..num_grids)
       .map(|g| {
-        if grid_has_needs_holding_control(rig, &s.grids[g]) {
+        let accrete = if grid_has_needs_holding_control(rig, &s.grids[g]) {
           AccreteState::new()
         } else {
           AccreteState::new_momentary()
-        }
+        };
+        GridRing::new(accrete)
       })
       .collect(),
   ));
   let held_all = Arc::new(Mutex::new(vec![HashMap::<(i32, i32), i32>::new(); num_grids]));
-  // Each grid's edit-mode state, SHARED rather than owned by its grid thread -- the
-  // pedal hook both reads it (a factored-pulse pedal retunes the edited notes when
-  // there are any) and writes it (`clear` must dismiss them, or it silences a note
-  // and leaves it dancing). Same shape as `accrete`, which it is inseparable from:
-  // entering edit mode sustains a pitch in that bank, so the two must not disagree
-  // about what rings.
-  let edit: Arc<Mutex<Vec<edit::EditState>>> =
-    Arc::new(Mutex::new((0..num_grids).map(|_| edit::EditState::new()).collect()));
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
   // from `drumkit_runtime` (not forked); kept alive for the run, restoring standalone
@@ -394,10 +399,9 @@ fn run(
         mirror_board,
         Arc::clone(&feet_accrete_on),
         [older, other],
-        Arc::clone(&accrete),
+        Arc::clone(&ring),
         Arc::clone(&held_all),
         Arc::clone(&voices),
-        Arc::clone(&edit),
         s.release,
         audio.sample_rate,
       )
@@ -405,11 +409,10 @@ fn run(
       println!("surfaces: {} rig-declared pedal binding(s)", actions.len());
       rig_pedal_hook(
         actions,
-        Arc::clone(&accrete),
+        Arc::clone(&ring),
         Arc::clone(&held_all),
         Arc::clone(&voices),
         Arc::clone(&poly),
-        Arc::clone(&edit),
         s.tap_window,
         s.release,
         audio.sample_rate,
@@ -448,14 +451,13 @@ fn run(
     trail: Arc::clone(&trail),
     volume_pos: Arc::clone(&volume_pos),
     gains: Arc::clone(&gains),
-    accrete: Arc::clone(&accrete),
+    ring: Arc::clone(&ring),
     held_all: Arc::clone(&held_all),
     distortion_on: Arc::clone(&distortion_on),
     slide_on: Arc::clone(&slide_on),
     mono_on: Arc::clone(&mono_on),
     feet_accrete_on: Arc::clone(&feet_accrete_on),
     poly: Arc::clone(&poly),
-    edit: Arc::clone(&edit),
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
   };
@@ -568,9 +570,13 @@ struct Shared {
   /// Per-grid volume position (column within the strip) and linear gain.
   volume_pos: Arc<Mutex<Vec<i32>>>,
   gains: Arc<Mutex<Vec<f32>>>,
-  /// The accrete (sustain) banks, one per monome under one lock; this grid's trio
-  /// drives `accrete[grid_index]` only.
-  accrete: Arc<Mutex<Vec<AccreteState>>>,
+  /// The per-grid ring: each `GridRing` bundles a monome's accrete bank, its edit-mode
+  /// machine, and the shared store of which pitches ring (for sustain and for edit),
+  /// all under ONE lock. This grid's trio + edit gestures drive `ring[grid_index]`
+  /// only. Absorbs what used to be two separate `Vec<AccreteState>` /
+  /// `Vec<EditState>` handles (cleaning phase 6), so sustain and edit can never
+  /// disagree about what sounds and there is no cross-lock ordering to get wrong.
+  ring: Arc<Mutex<Vec<GridRing>>>,
   /// Every grid's held notes (cell -> struck pitch), for accrete's capture-on-
   /// activation. Each grid thread rewrites only its own slot.
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
@@ -585,9 +591,6 @@ struct Shared {
   feet_accrete_on: Arc<Vec<AtomicBool>>,
   /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
-  /// Which of THIS grid's pitches are in per-voice edit mode. Grid-local and
-  /// pitch-keyed: never mirrored to the other grid, never octave-duplicated.
-  edit: Arc<Mutex<Vec<edit::EditState>>>,
   /// The hot-reloadable parameters; refreshed into `GridThread`'s own fields when the
   /// generation moves (see `refresh_live`).
   live: Arc<Live>,
@@ -793,9 +796,9 @@ fn grid_thread(mut rt: GridThread) {
     // is not in anyone's sustained set to be picked up above; it has to be unioned in
     // here or an edited drone would go silent-looking while still audible.
     {
-      let states = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner());
-      for state in states.iter() {
-        sounding_classes.extend(state.pitches().map(|p| p.rem_euclid(rt.tuning.edo)));
+      let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+      for gr in rings.iter() {
+        sounding_classes.extend(gr.store.iter(Reason::Edit).map(|p| p.rem_euclid(rt.tuning.edo)));
       }
     }
     let trail_classes = trail_set(&rt.shared.trail);
@@ -806,8 +809,8 @@ fn grid_thread(mut rt: GridThread) {
     let elapsed = rt.started.elapsed();
     // Snapshot under the lock, then draw: the pedal hook writes this too (`clear`).
     let edited: Vec<i32> = {
-      let states = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner());
-      states[rt.grid_index].pitches().collect()
+      let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+      rings[rt.grid_index].store.iter(Reason::Edit).collect()
     };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
     for pitch in edited.iter().copied() {
@@ -829,8 +832,8 @@ fn grid_thread(mut rt: GridThread) {
       // One signal for BOTH edit-mode and sustained notes -- Jeff's call ("in both
       // cases"), so the LED cannot say which kind you are chasing.
       let sustained: Vec<i32> = {
-        let banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
-        banks[rt.grid_index].sustained_pitches().collect()
+        let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+        rings[rt.grid_index].store.iter(Reason::Sustain).collect()
       };
       dance::off_screen(edited.iter().copied().chain(sustained), lo, hi)
     } else {

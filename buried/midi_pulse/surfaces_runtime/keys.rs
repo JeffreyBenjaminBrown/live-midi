@@ -14,13 +14,13 @@ use midi_pulse::rig::EditmodeControlKind;
 
 use crate::types::Timbre;
 
-use super::accrete::AccreteState;
 use super::grid::{slot_for_selector_cell, volume_cells, volume_gain_for_pos};
 use super::hooks::{editmode_press, factored_pulse_press};
 use super::paint::publish_sounding;
 use super::polyrhythm::TempoFactorButton;
+use super::ring::{GridRing, Reason};
 use super::settings::{current_slot, set_slot};
-use super::synth::set_grid_fader_gain;
+use super::synth::{self, set_grid_fader_gain};
 use super::{edit, GridThread, VOLUME_DB_RANGE};
 
 /// Route one debounced key edge by which overlay (if any) it falls in.
@@ -94,7 +94,7 @@ pub(super) fn handle_key(
         let (release_secs, sample_rate) = rt.sink.release_params();
         editmode_press(
           rt.grid_index, control,
-          &rt.shared.edit, &rt.shared.accrete, &rt.shared.held_all, &rt.shared.voices,
+          &rt.shared.ring, &rt.shared.held_all, &rt.shared.voices,
           release_secs, sample_rate,
         );
       }
@@ -124,7 +124,7 @@ pub(super) fn handle_key(
       if let Some(factor) = factor {
         factored_pulse_press(
           rt.grid_index, factor,
-          &rt.shared.poly, &rt.shared.edit, &rt.shared.held_all, &rt.shared.voices,
+          &rt.shared.poly, &rt.shared.ring, &rt.shared.held_all, &rt.shared.voices,
         );
       }
     }
@@ -135,24 +135,32 @@ pub(super) fn handle_key(
   // voices are touched after it drops (the module's no-nested-locks rule).
   if in_overlay(rt.overlays.clear_rect, cell) {
     if press {
-      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_clear();
-      // Clear removes only the SUSTAIN reason (symmetric with editmode clear): a
-      // drone whose pitch is in edit mode keeps ringing -- audibly, so it is not
-      // the old silent "dancing ghost" -- until editmode clear (or its exit
-      // gesture) takes that reason too.
-      let edited: HashSet<i32> = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner())
-        [rt.grid_index]
-        .pitches()
-        .collect();
-      rt.sink.release_sustained(&edited);
+      // Sustain clear removes the SUSTAIN reason from every sustained pitch and ends
+      // exactly the drones that had no other reason -- edited drones keep ringing
+      // (audibly, so it is not the old silent "dancing ghost") until editmode clear
+      // (or the exit gesture) takes that reason too, and a fingered pitch's finger is
+      // never touched. One `remove_reason` call replaces the old flush + keep-set
+      // dance.
+      let ended = {
+        let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let gr = &mut rings[rt.grid_index];
+        gr.accrete.press_clear();
+        let all: Vec<i32> = gr.store.iter(Reason::Sustain).collect();
+        gr.store.remove_reason(Reason::Sustain, all, |p| finger_count(held, p))
+      };
+      let (release_secs, sample_rate) = rt.sink.release_params();
+      synth::end_drones_at(
+        &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
+      );
     } else {
-      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_clear();
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].accrete.release_clear();
     }
     return;
   }
   if in_overlay(rt.overlays.needs_holding_rect, cell) {
     if press {
-      let activated = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+      let activated = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .accrete
         .press_needs_holding();
       if activated.accrete {
         capture_grid_held(rt);
@@ -165,13 +173,14 @@ pub(super) fn handle_key(
   }
   if in_overlay(rt.overlays.accrete_rect, cell) {
     if press {
-      let activated =
-        rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_accrete();
+      let activated = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .accrete
+        .press_accrete();
       if activated {
         capture_grid_held(rt);
       }
     } else {
-      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_accrete();
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].accrete.release_accrete();
     }
     return;
   }
@@ -180,13 +189,14 @@ pub(super) fn handle_key(
   // (each keeps sounding until its own finger lifts).
   if in_overlay(rt.overlays.erase_rect, cell) {
     if press {
-      let activated =
-        rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].press_erase();
+      let activated = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+        .accrete
+        .press_erase();
       if activated {
         erase_grid_held(rt);
       }
     } else {
-      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].release_erase();
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].accrete.release_erase();
     }
     return;
   }
@@ -295,7 +305,11 @@ pub(super) fn handle_key(
       }
     }
     held.insert(cell, pitch);
-    rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].note_played(pitch);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+      let gr = &mut rings[rt.grid_index];
+      gr.accrete.note_played(pitch, &mut gr.store);
+    }
     push_trail(
       &rt.shared.trail, pitch.rem_euclid(rt.tuning.edo), rt.tuning.edo,
       rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
@@ -319,10 +333,15 @@ pub(super) fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i
   };
   // A note rings without a finger for either of two independent reasons: it is
   // sustained (pedal, or the per-note button), or it is being edited. Either keeps it.
-  let sustains = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-    .note_released_sustains(pitch);
-  let editing =
-    rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index].is_editing(pitch);
+  // One ring lock answers both, and `note_released_sustains` writes through to the
+  // store (joining/leaving the sustained set per the accrete condition).
+  let (sustains, editing) = {
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &mut rings[rt.grid_index];
+    let sustains = gr.accrete.note_released_sustains(pitch, &mut gr.store);
+    let editing = gr.store.has(Reason::Edit, pitch);
+    (sustains, editing)
+  };
   if sustains || editing {
     rt.sink.sustain_note(cell, pitch);
   } else {
@@ -346,8 +365,11 @@ pub(super) fn cut_for_legato(
   let Some(pitch) = held.get(&cell).copied() else {
     return false;
   };
-  let keep = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-    .note_released_sustains(pitch);
+  let keep = {
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &mut rings[rt.grid_index];
+    gr.accrete.note_released_sustains(pitch, &mut gr.store)
+  };
   held.remove(&cell);
   if keep {
     rt.sink.sustain_note(cell, pitch);
@@ -375,28 +397,23 @@ pub(super) fn publish_held(
 /// edit-mode voice"; an edited drone is a sounding voice like any other). Snapshot
 /// each registry first, then feed the bank -- short, non-nested locks.
 pub(super) fn capture_grid_held(rt: &GridThread) {
-  capture_grid_held_into(&rt.shared.held_all, &rt.shared.accrete, &rt.shared.edit, rt.grid_index);
+  capture_grid_held_into(&rt.shared.held_all, &rt.shared.ring, rt.grid_index);
 }
 
 /// `capture_grid_held` for callers that aren't a grid thread (the pedal hook).
 pub(super) fn capture_grid_held_into(
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
-  accrete: &Arc<Mutex<Vec<AccreteState>>>,
-  edit: &Arc<Mutex<Vec<edit::EditState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   grid: usize,
 ) {
-  let mut snapshot = held_pitches(held_all, grid);
-  snapshot.extend(
-    edit
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .get(grid)
-      .map(|e| e.pitches().collect::<Vec<i32>>())
-      .unwrap_or_default(),
-  );
-  let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-  if let Some(bank) = banks.get_mut(grid) {
-    bank.capture_held(snapshot);
+  // Snapshot the held (fingered) pitches under their own lock first, then feed the
+  // bank -- short, non-nested locks. Every sounding voice joins: the fingered notes
+  // AND the pitches ringing only because they are in edit mode.
+  let held = held_pitches(held_all, grid);
+  let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(gr) = rings.get_mut(grid) {
+    let edited: Vec<i32> = gr.store.iter(Reason::Edit).collect();
+    gr.accrete.capture_held(held.into_iter().chain(edited), &mut gr.store);
   }
 }
 
@@ -404,18 +421,18 @@ pub(super) fn capture_grid_held_into(
 /// the notes currently held on this grid leave the sustained set (they keep
 /// sounding under their fingers).
 pub(super) fn erase_grid_held(rt: &GridThread) {
-  erase_grid_held_into(&rt.shared.held_all, &rt.shared.accrete, rt.grid_index);
+  erase_grid_held_into(&rt.shared.held_all, &rt.shared.ring, rt.grid_index);
 }
 
 pub(super) fn erase_grid_held_into(
   held_all: &Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
-  accrete: &Arc<Mutex<Vec<AccreteState>>>,
+  ring: &Arc<Mutex<Vec<GridRing>>>,
   grid: usize,
 ) {
   let snapshot = held_pitches(held_all, grid);
-  let mut banks = accrete.lock().unwrap_or_else(|e| e.into_inner());
-  if let Some(bank) = banks.get_mut(grid) {
-    bank.erase_held(snapshot);
+  let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+  if let Some(gr) = rings.get_mut(grid) {
+    gr.accrete.erase_held(snapshot, &mut gr.store);
   }
 }
 
@@ -473,16 +490,12 @@ pub(super) fn handle_edit_press(
   let edit_target = neighbour(-1); // the note above the pressed cell
   let sustain_target = neighbour(1); // the note below it
 
-  // A note rings for any of three independent reasons: a finger on it, a sustain
-  // (pedal or per-note button), or being edited. Both triggers ask only "is it
-  // audible", so all three count.
-  let sustained: HashSet<i32> = {
-    let banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
-    banks[rt.grid_index].sustained_pitches().collect()
-  };
-
-  // Decide under the edit lock, act after it drops: the branches below take the
-  // accrete lock, and this module's rule is no nested locks.
+  // Decide under the ring lock, act after it drops: the voice touches below happen
+  // after the lock, and this module's rule is no nested locks. One lock now covers
+  // sustain and edit both (they share the store), so there is no ordering to get
+  // wrong. A note rings for any of three independent reasons -- a finger on it, a
+  // sustain, or being edited -- and both triggers ask only "is it audible", so all
+  // three count in `is_sounding`.
   enum Act {
     Play,
     Entered,
@@ -491,72 +504,72 @@ pub(super) fn handle_edit_press(
     Dragged(i32, i32),
   }
   let act = {
-    let mut states = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner());
-    let editing: HashSet<i32> = states[rt.grid_index].pitches().collect();
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &mut rings[rt.grid_index];
+    let sustained: HashSet<i32> = gr.store.iter(Reason::Sustain).collect();
+    let editing: HashSet<i32> = gr.store.iter(Reason::Edit).collect();
     let is_sounding = |p: i32| {
       held.values().any(|h| *h == p) || sustained.contains(&p) || editing.contains(&p)
     };
-    let e = &mut states[rt.grid_index];
-    match e.classify(edit_target, sustain_target, pitch, is_sounding) {
+    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, &gr.store) {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
-        e.enter(pitch);
+        gr.edit.enter(pitch, &mut gr.store);
         Act::Entered
       }
-      edit::Press::ExitEdit { pitch } => {
-        e.exit(pitch);
-        Act::Exited(pitch)
-      }
+      // The edit reason is removed by `remove_reason` in the act below, so it can end
+      // exactly the reason-less drone in the same breath.
+      edit::Press::ExitEdit { pitch } => Act::Exited(pitch),
       edit::Press::ToggleSustain { pitch } => Act::Sustain(pitch, !sustained.contains(&pitch)),
       edit::Press::Drag { from, to } => {
-        e.moved(from, to);
+        // A drag re-files the pitch in BOTH reason sets at once (the note may be
+        // sustained, edited, or both), so a clear can't miss it under the old name and
+        // the trail keeps up.
+        gr.store.note_moved(from, to);
         Act::Dragged(from, to)
       }
     }
   };
 
+  let (release_secs, sample_rate) = rt.sink.release_params();
   match act {
     Act::Play => return true,
     // Entering needs nothing else: being edited is itself a reason to ring, so the
     // note simply keeps sounding when the finger lifts (`release_cell` asks).
     Act::Entered => {}
     Act::Exited(pitch) => {
-      // Only the DRONE is in question here, and a drone's reasons are exactly two:
-      // sustained, or edited. Not "fingered" -- a finger has its own voice, keyed by
-      // its cell, which this must not touch and which dies on the ordinary release.
-      //
-      // So: having taken away `edited`, cut the drone unless a sustain still holds it
-      // up. `cut_sustained` is a no-op when there is no drone, which is what makes
-      // "exit while still holding the note" keep sounding -- that note has no drone,
-      // only a finger.
-      //
-      // Asking "is any finger on this pitch?" instead (as this did) is a different
-      // question, and answering yes to it stranded a drone that had just lost its
-      // last reason -- audible forever, with nothing left that could cut it.
-      if !sustained.contains(&pitch) {
-        rt.sink.cut_sustained(pitch);
-      }
+      // Take away the EDIT reason and end the drone iff nothing else holds the pitch up
+      // -- a sustain, or a finger (a finger has its own voice, so a fingered pitch's
+      // finger is never ended here). `end_drones_at` only touches drones, so "exit
+      // while still holding the note" is naturally a no-op: that note has a finger, no
+      // drone. This is the exit-edit half of the one `remove_reason` operation.
+      let ended = {
+        let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+        rings[rt.grid_index].store.remove_reason(Reason::Edit, [pitch], |p| finger_count(held, p))
+      };
+      synth::end_drones_at(
+        &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
+      );
     }
     Act::Sustain(pitch, on) => {
-      let mut banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
       if on {
-        banks[rt.grid_index].sustain_pitch(pitch);
+        // Switching sustain ON starts nothing at the voice level: a fingered note has
+        // no drone yet (it gets one when the finger lifts), and a note ringing because
+        // it is edited already has one. Just add the reason.
+        rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+          .store
+          .add(Reason::Sustain, pitch);
       } else {
-        banks[rt.grid_index].drop_pitch(pitch);
+        // The mirror of leaving edit mode: remove the SUSTAIN reason, end the drone iff
+        // nothing else (edit, or a finger) still holds it.
+        let ended = {
+          let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+          rings[rt.grid_index].store.remove_reason(Reason::Sustain, [pitch], |p| finger_count(held, p))
+        };
+        synth::end_drones_at(
+          &rt.shared.voices, rt.grid_index, &ended.into_iter().collect(), release_secs, sample_rate,
+        );
       }
-      drop(banks);
-      if !on {
-        // Same rule as leaving edit mode, and for the same reason: this is about the
-        // DRONE, whose reasons are sustained-or-edited. A finger is not one of them.
-        let editing = rt.shared.edit.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-          .is_editing(pitch);
-        if !editing {
-          rt.sink.cut_sustained(pitch);
-        }
-      }
-      // Switching sustain ON starts nothing: a fingered note has no drone yet (it
-      // gets one when the finger lifts), and a note ringing because it is edited
-      // already has one.
     }
     Act::Dragged(from, to) => {
       // The finger that pressed `cell` now holds this voice, so re-home the voice to
@@ -571,11 +584,8 @@ pub(super) fn handle_edit_press(
         held.remove(&oc);
       }
       held.insert(cell, to);
-      // Accrete and the trail both track PITCHES, so a moved voice is re-filed under
-      // its new one -- otherwise a clear would miss it, and the trail would keep
-      // showing a pitch that is no longer sounding.
-      rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-        .note_moved(from, to);
+      // The store was re-filed under the new pitch during classify; the trail tracks
+      // pitches too, so add the new one or it would keep showing a pitch that moved.
       push_trail(
         &rt.shared.trail, to.rem_euclid(rt.tuning.edo), rt.tuning.edo,
         rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
@@ -583,6 +593,13 @@ pub(super) fn handle_edit_press(
     }
   }
   false
+}
+
+/// How many held cells sound exactly `pitch` right now -- the derived FINGER count
+/// (never stored in the ring). Two colliding cells finger one pitch, so this is a
+/// count, not a boolean: `remove_reason` uses it to spare a pitch a finger still holds.
+pub(super) fn finger_count(held: &HashMap<(i32, i32), i32>, pitch: i32) -> usize {
+  held.values().filter(|&&p| p == pitch).count()
 }
 
 pub(super) fn in_overlay(rect: [i32; 4], cell: (i32, i32)) -> bool {

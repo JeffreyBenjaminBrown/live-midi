@@ -35,8 +35,14 @@
 //! e.g. after a clear, notes still fingered under a still-held accrete re-join the set
 //! when they are next examined.
 
-use std::collections::HashSet;
+use super::ring::{Reason, RingStore};
 
+/// The accrete ("sustain") condition machine for one bank. It no longer OWNS the
+/// sustained set: that lives in the shared [`RingStore`] (cleaning phase 6), so every
+/// method that used to touch `self.sustained` now reaches through a `store` argument.
+/// The state here is only the button conditions -- the sustained *pitches* are the
+/// store's, shared with edit mode so the two can never disagree about what rings.
+#[derive(Debug)]
 pub struct AccreteState {
   /// Whether *accrete* and *erase* must be held (vs toggling a mode). Starts false:
   /// both are toggles until the needs-holding button says otherwise.
@@ -54,8 +60,6 @@ pub struct AccreteState {
   erase_hold_count: usize,
   /// How many clear buttons are physically held (drives that button's LED only).
   clear_count: usize,
-  /// The sustained set: absolute pitches (this bank's grid only).
-  sustained: HashSet<i32>,
 }
 
 /// Which conditions a `press_needs_holding` flip turned ON (off -> on edges only).
@@ -78,7 +82,6 @@ impl AccreteState {
       erase_mode_on: false,
       erase_hold_count: 0,
       clear_count: 0,
-      sustained: HashSet::new(),
     }
   }
 
@@ -115,12 +118,12 @@ impl AccreteState {
     }
   }
 
-  /// Key-down on *clear*: flush the set. The runtime silences the sustained voices
-  /// (they are its to ramp out); notes still fingered keep sounding as ordinary
-  /// held notes.
+  /// Key-down on *clear*: light the LED. Flushing the sustained set is no longer done
+  /// here -- the caller runs `RingStore::remove_reason(Sustain, all sustained)`, which
+  /// both empties the set and reports which drones to end (sparing edited and fingered
+  /// pitches). This method keeps only the condition-machine's LED bookkeeping.
   pub fn press_clear(&mut self) {
     self.clear_count += 1;
-    self.sustained.clear();
   }
 
   pub fn release_clear(&mut self) {
@@ -181,29 +184,32 @@ impl AccreteState {
 
   /// A note-on happened on this bank's grid. If erasing, the pitch leaves the
   /// sustained set (the note itself keeps sounding until its finger lifts; erase
-  /// overrides accrete); else if accreting, it joins immediately.
-  pub fn note_played(&mut self, pitch: i32) {
+  /// overrides accrete); else if accreting, it joins immediately. The sustained set
+  /// is the shared store's.
+  pub fn note_played(&mut self, pitch: i32, store: &mut RingStore) {
     if self.erasing() {
-      self.sustained.remove(&pitch);
+      store.discard(Reason::Sustain, pitch);
     } else if self.accreting() {
-      self.sustained.insert(pitch);
+      store.add(Reason::Sustain, pitch);
     }
   }
 
   /// Bulk-capture the notes currently held on this bank's grid -- called when the
   /// accreting condition turns on. Inert while erase is live (erase wins).
-  pub fn capture_held<I: IntoIterator<Item = i32>>(&mut self, held: I) {
+  pub fn capture_held<I: IntoIterator<Item = i32>>(&mut self, held: I, store: &mut RingStore) {
     if self.erasing() {
       return;
     }
-    self.sustained.extend(held);
+    for pitch in held {
+      store.add(Reason::Sustain, pitch);
+    }
   }
 
   /// Bulk-erase the notes currently held on this bank's grid -- called when the
   /// erasing condition turns on (they keep sounding under their fingers).
-  pub fn erase_held<I: IntoIterator<Item = i32>>(&mut self, held: I) {
+  pub fn erase_held<I: IntoIterator<Item = i32>>(&mut self, held: I, store: &mut RingStore) {
     for pitch in held {
-      self.sustained.remove(&pitch);
+      store.discard(Reason::Sustain, pitch);
     }
   }
 
@@ -212,58 +218,15 @@ impl AccreteState {
   /// condition, never -- the pitch leaves the set on the spot (the continuous
   /// reading, mirroring accrete's). Otherwise true if it is already in the set, or
   /// the accreting condition holds at release time (joining the set on the spot).
-  pub fn note_released_sustains(&mut self, pitch: i32) -> bool {
+  pub fn note_released_sustains(&mut self, pitch: i32, store: &mut RingStore) -> bool {
     if self.erasing() {
-      self.sustained.remove(&pitch);
+      store.discard(Reason::Sustain, pitch);
       return false;
     }
     if self.accreting() {
-      self.sustained.insert(pitch);
+      store.add(Reason::Sustain, pitch);
     }
-    self.sustained.contains(&pitch)
-  }
-
-  /// The sustained pitches themselves (not classes). Edit mode asks per-pitch
-  /// whether a note is sounding on THIS grid, and a drone counts: an edited note
-  /// keeps ringing with no finger on it and must stay editable.
-  pub fn sustained_pitches(&self) -> impl Iterator<Item = i32> + '_ {
-    self.sustained.iter().copied()
-  }
-
-  /// Sustain `pitch` outright, whatever the accrete condition. Returns whether it was
-  /// NEWLY sustained -- i.e. whether the caller is now the reason it rings.
-  ///
-  /// For per-voice edit mode, which is a *second* reason a note keeps sounding
-  /// (`1_vision`: "even if the note in edit mode was being fingered rather than
-  /// sustained, it will continue to sound until exiting edit mode"). Routing it through
-  /// this bank rather than inventing a parallel set means every downstream reader --
-  /// the release path, the bright-LED reflection, `clear` -- treats an edited note
-  /// exactly like any other sounding note, with no special cases.
-  pub fn sustain_pitch(&mut self, pitch: i32) -> bool {
-    self.sustained.insert(pitch)
-  }
-
-  /// Stop sustaining `pitch`. The mirror of [`sustain_pitch`], for a caller undoing
-  /// its own reason (edit mode ending); the voice itself is the caller's to release.
-  pub fn drop_pitch(&mut self, pitch: i32) {
-    self.sustained.remove(&pitch);
-  }
-
-  /// Re-file a sustained pitch that MOVED (a per-voice pitch edit dragged it). The
-  /// set is keyed by pitch, so without this a dragged drone would still be filed
-  /// under the pitch it left: clear would still flush it, but by the wrong name, and
-  /// `note_released_sustains` would re-drone the old pitch. A no-op if `from` was not
-  /// sustained (a fingered note was dragged, which the finger map tracks instead).
-  pub fn note_moved(&mut self, from: i32, to: i32) {
-    if self.sustained.remove(&from) {
-      self.sustained.insert(to);
-    }
-  }
-
-  /// The sustained pitch *classes* (for the shared bright-LED reflection; the
-  /// runtime paints the union of every bank's classes -- they are all sounding).
-  pub fn sustained_classes(&self, edo: i32) -> HashSet<i32> {
-    self.sustained.iter().map(|p| p.rem_euclid(edo)).collect()
+    store.has(Reason::Sustain, pitch)
   }
 
   // --- LED states ---
@@ -285,11 +248,6 @@ impl AccreteState {
   pub fn erase_lit(&self) -> bool {
     self.erasing()
   }
-
-  #[cfg(test)]
-  fn sustained_len(&self) -> usize {
-    self.sustained.len()
-  }
 }
 
 impl Default for AccreteState {
@@ -301,34 +259,48 @@ impl Default for AccreteState {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::surfaces_runtime::ring::Reason::Sustain;
+
+  /// The sustained set now lives in the shared store, so each bank test builds one
+  /// alongside and points the bank at it (cleaning phase 6: the assertions are
+  /// unchanged, only the plumbing -- the set is read through the store).
+  fn sustained_len(store: &RingStore) -> usize {
+    store.iter(Sustain).count()
+  }
+
+  fn sustained_classes(store: &RingStore, edo: i32) -> std::collections::HashSet<i32> {
+    store.classes(Sustain, edo)
+  }
 
   #[test]
   fn starts_as_an_inert_toggle() {
     let s = AccreteState::new();
+    let store = RingStore::new();
     assert!(!s.needs_holding_lit(), "needs-holding starts off (accrete is a toggle)");
     assert!(!s.accrete_lit(), "not accreting at startup");
     assert!(!s.clear_lit());
-    assert_eq!(s.sustained_classes(58).len(), 0);
+    assert_eq!(sustained_classes(&store, 58).len(), 0);
   }
 
   #[test]
   fn toggle_mode_accretes_notes_played_while_on() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     assert!(s.press_accrete(), "toggle-mode entry is an activation (capture held notes)");
     assert!(s.accrete_lit(), "key-down toggled accrete mode on");
     s.release_accrete();
     assert!(s.accrete_lit(), "key-up does nothing in toggle mode");
-    s.note_played(30);
-    s.note_played(42);
-    assert!(s.note_released_sustains(30), "a note played during the mode sustains");
-    assert!(s.note_released_sustains(42));
+    s.note_played(30, &mut store);
+    s.note_played(42, &mut store);
+    assert!(s.note_released_sustains(30, &mut store), "a note played during the mode sustains");
+    assert!(s.note_released_sustains(42, &mut store));
     // Un-toggle: new notes stop joining, but nothing is deleted.
     s.press_accrete();
     s.release_accrete();
     assert!(!s.accrete_lit());
-    s.note_played(50);
-    assert!(!s.note_released_sustains(50), "a note played after the mode does not sustain");
-    assert!(s.note_released_sustains(30), "the earlier note still sustains");
+    s.note_played(50, &mut store);
+    assert!(!s.note_released_sustains(50, &mut store), "a note played after the mode does not sustain");
+    assert!(s.note_released_sustains(30, &mut store), "the earlier note still sustains");
   }
 
   #[test]
@@ -355,16 +327,17 @@ mod tests {
   #[test]
   fn needs_holding_mode_accretes_only_while_held() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     assert!(!s.press_needs_holding().accrete, "flipping the mode with accrete unheld activates nothing");
     assert!(s.needs_holding_lit());
     assert!(s.press_accrete(), "accrete down starts the condition -> capture held notes");
     assert!(s.accrete_lit());
-    s.note_played(30);
+    s.note_played(30, &mut store);
     s.release_accrete();
     assert!(!s.accrete_lit(), "key-up ends the condition in needs-holding mode");
-    assert!(s.note_released_sustains(30), "captured while held -> still sustains");
-    s.note_played(44);
-    assert!(!s.note_released_sustains(44), "played after the hold -> does not sustain");
+    assert!(s.note_released_sustains(30, &mut store), "captured while held -> still sustains");
+    s.note_played(44, &mut store);
+    assert!(!s.note_released_sustains(44, &mut store), "played after the hold -> does not sustain");
   }
 
   #[test]
@@ -372,25 +345,32 @@ mod tests {
     // The continuous reading: in needs-holding mode, "fingered while accrete is down"
     // is judged at release time too (e.g. a note that was held before a clear).
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_needs_holding();
     s.press_accrete();
-    assert!(s.note_released_sustains(25), "released under a held accrete -> joins the set");
+    assert!(s.note_released_sustains(25, &mut store), "released under a held accrete -> joins the set");
   }
 
   #[test]
   fn clear_flushes_but_does_not_stop_accretion() {
+    // Moved/adapted (cleaning phase 6): flushing the set is no longer `press_clear`'s
+    // job -- the caller runs `remove_reason(Sustain, all)`, which is what empties it.
+    // The assertions' meaning is unchanged: clear lights, the set flushes, and accrete
+    // mode survives the clear.
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete(); // toggle mode on
-    s.note_played(30);
-    assert_eq!(s.sustained_len(), 1);
+    s.note_played(30, &mut store);
+    assert_eq!(sustained_len(&store), 1);
     s.press_clear();
     assert!(s.clear_lit(), "clear lights while pressed");
-    assert_eq!(s.sustained_len(), 0, "the set is flushed");
+    store.remove_reason(Sustain, store.iter(Sustain).collect::<Vec<_>>(), |_| 0);
+    assert_eq!(sustained_len(&store), 0, "the set is flushed");
     s.release_clear();
     assert!(!s.clear_lit(), "clear goes dark on key-up");
     assert!(s.accrete_lit(), "clear does not exit accrete mode");
-    s.note_played(31);
-    assert!(s.note_released_sustains(31), "accretion continues after a clear");
+    s.note_played(31, &mut store);
+    assert!(s.note_released_sustains(31, &mut store), "accretion continues after a clear");
   }
 
   #[test]
@@ -424,56 +404,61 @@ mod tests {
   #[test]
   fn capture_held_takes_a_batch() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete();
-    s.capture_held([10, 20]);
-    assert!(s.note_released_sustains(10));
-    assert!(s.note_released_sustains(20));
-    assert_eq!(s.sustained_classes(58), [10, 20].into_iter().collect());
+    s.capture_held([10, 20], &mut store);
+    assert!(s.note_released_sustains(10, &mut store));
+    assert!(s.note_released_sustains(20, &mut store));
+    assert_eq!(sustained_classes(&store, 58), [10, 20].into_iter().collect());
   }
 
   #[test]
   fn banks_are_independent() {
     // Two banks (one per monome): accreting on one adds nothing to -- and clears
-    // nothing from -- the other.
+    // nothing from -- the other. Each bank has its own store slot.
     let mut banks = [AccreteState::new(), AccreteState::new()];
+    let mut stores = [RingStore::new(), RingStore::new()];
     banks[0].press_accrete(); // bank 0 into toggle mode
-    banks[0].note_played(30);
-    banks[1].note_played(30); // bank 1 is not accreting
-    assert!(banks[0].note_released_sustains(30), "bank 0 sustains its own note");
-    assert!(!banks[1].note_released_sustains(30), "bank 1 does not follow suit");
+    banks[0].note_played(30, &mut stores[0]);
+    banks[1].note_played(30, &mut stores[1]); // bank 1 is not accreting
+    assert!(banks[0].note_released_sustains(30, &mut stores[0]), "bank 0 sustains its own note");
+    assert!(!banks[1].note_released_sustains(30, &mut stores[1]), "bank 1 does not follow suit");
     banks[1].press_clear();
-    assert!(banks[0].note_released_sustains(30), "bank 1's clear leaves bank 0 ringing");
+    stores[1].remove_reason(Sustain, stores[1].iter(Sustain).collect::<Vec<_>>(), |_| 0);
+    assert!(banks[0].note_released_sustains(30, &mut stores[0]), "bank 1's clear leaves bank 0 ringing");
     assert!(!banks[1].accrete_lit(), "bank 1 never entered accrete mode");
   }
 
   #[test]
   fn sustained_classes_fold_octaves() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete();
-    s.capture_held([60, 2, -56]);
+    s.capture_held([60, 2, -56], &mut store);
     // 60 % 58 = 2, -56 mod 58 = 2: all one class.
-    assert_eq!(s.sustained_classes(58), [2].into_iter().collect());
+    assert_eq!(sustained_classes(&store, 58), [2].into_iter().collect());
   }
 
   #[test]
   fn erase_toggle_mode_removes_pressed_pitches_until_untoggled() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete(); // accrete mode on
-    s.note_played(30);
-    s.note_played(42);
+    s.note_played(30, &mut store);
+    s.note_played(42, &mut store);
     s.press_accrete(); // accrete mode off (both pitches stay)
     assert!(s.press_erase(), "erase-mode entry is an activation (erase held notes)");
     s.release_erase();
     assert!(s.erase_lit(), "key-down toggled erase mode on; key-up does nothing");
-    s.note_played(30);
-    assert!(!s.note_released_sustains(30), "a pitch pressed under erase leaves the set");
-    assert_eq!(s.sustained_classes(58), [42].into_iter().collect(), "unpressed pitches stay");
+    s.note_played(30, &mut store);
+    assert!(!s.note_released_sustains(30, &mut store), "a pitch pressed under erase leaves the set");
+    assert_eq!(sustained_classes(&store, 58), [42].into_iter().collect(), "unpressed pitches stay");
     // Un-toggle: erasure stops.
     s.press_erase();
     s.release_erase();
     assert!(!s.erase_lit());
-    s.note_played(42);
-    assert!(s.note_released_sustains(42), "after erase mode ends, presses stop erasing");
+    s.note_played(42, &mut store);
+    assert!(s.note_released_sustains(42, &mut store), "after erase mode ends, presses stop erasing");
   }
 
   #[test]
@@ -495,20 +480,21 @@ mod tests {
   #[test]
   fn needs_holding_governs_erase_like_accrete() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete(); // tap: accrete mode on, fill the set
     s.release_accrete();
-    s.note_played(30);
+    s.note_played(30, &mut store);
     s.press_accrete(); // tap: and off again
     s.release_accrete();
     s.press_needs_holding();
     s.press_erase();
     assert!(s.erase_lit(), "erase live while held");
-    s.note_played(30);
-    assert!(!s.note_released_sustains(30), "pressed under a held erase -> removed");
+    s.note_played(30, &mut store);
+    assert!(!s.note_released_sustains(30, &mut store), "pressed under a held erase -> removed");
     s.release_erase();
     assert!(!s.erase_lit());
-    s.note_played(30); // does nothing: neither condition live
-    assert!(!s.note_released_sustains(30), "30 was erased and never re-added");
+    s.note_played(30, &mut store); // does nothing: neither condition live
+    assert!(!s.note_released_sustains(30, &mut store), "30 was erased and never re-added");
   }
 
   #[test]
@@ -525,8 +511,9 @@ mod tests {
   #[test]
   fn flipping_needs_holding_with_erase_held_activates_erase() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete();
-    s.note_played(30);
+    s.note_played(30, &mut store);
     s.press_accrete(); // set holds 30; accrete off
     s.press_needs_holding(); // needs-holding on
     s.press_needs_holding(); // and back off (toggle semantics restored)
@@ -541,35 +528,37 @@ mod tests {
   #[test]
   fn erase_overrides_accrete_when_both_are_live() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete(); // accrete mode on
-    s.note_played(30);
+    s.note_played(30, &mut store);
     assert!(s.press_erase(), "erase mode on too (activation)");
-    s.note_played(30);
-    assert!(!s.note_released_sustains(30), "pressed under both -> erased, not re-added");
-    s.note_played(44);
-    assert!(!s.note_released_sustains(44), "a fresh pitch under both is NOT captured");
+    s.note_played(30, &mut store);
+    assert!(!s.note_released_sustains(30, &mut store), "pressed under both -> erased, not re-added");
+    s.note_played(44, &mut store);
+    assert!(!s.note_released_sustains(44, &mut store), "a fresh pitch under both is NOT captured");
     assert!(s.accrete_lit() && s.erase_lit(), "both LEDs show their own condition");
     // capture_held is inert while erase is live (erase wins for bulk actions too).
-    s.capture_held([50]);
-    assert!(!s.note_released_sustains(50), "bulk capture under live erase adds nothing");
+    s.capture_held([50], &mut store);
+    assert!(!s.note_released_sustains(50, &mut store), "bulk capture under live erase adds nothing");
     // Un-toggle erase: accrete mode is still on and resumes adding.
     s.press_erase();
-    s.note_played(44);
-    assert!(s.note_released_sustains(44), "accrete resumes once erase ends");
+    s.note_played(44, &mut store);
+    assert!(s.note_released_sustains(44, &mut store), "accrete resumes once erase ends");
   }
 
   #[test]
   fn erase_held_bulk_removes_only_the_given_pitches() {
     let mut s = AccreteState::new();
+    let mut store = RingStore::new();
     s.press_accrete();
-    s.capture_held([10, 20, 30]);
+    s.capture_held([10, 20, 30], &mut store);
     s.press_accrete(); // accrete off; set = {10, 20, 30}
     s.press_erase(); // erase on: the caller bulk-erases held notes
-    s.erase_held([10, 30]);
-    assert_eq!(s.sustained_classes(58), [20].into_iter().collect(), "only the held pitches left");
+    s.erase_held([10, 30], &mut store);
+    assert_eq!(sustained_classes(&store, 58), [20].into_iter().collect(), "only the held pitches left");
     s.press_erase(); // erase off again
     s.release_erase();
-    assert!(s.note_released_sustains(20), "the survivor still sustains");
+    assert!(s.note_released_sustains(20, &mut store), "the survivor still sustains");
   }
 
   // ---- momentary banks (rigs that bind no needs_holding control) ----
@@ -579,14 +568,15 @@ mod tests {
   #[test]
   fn a_momentary_bank_stops_accreting_the_moment_the_button_is_released() {
     let mut a = AccreteState::new_momentary();
+    let mut store = RingStore::new();
     a.press_accrete();
     assert!(a.accreting(), "held: accreting");
     a.release_accrete();
     assert!(!a.accreting(), "released: NOT accreting -- a tap must not latch");
 
     // ...and a note played afterwards must not sustain.
-    a.note_played(40);
-    assert!(!a.note_released_sustains(40), "a note played after the lift is not sustained");
+    a.note_played(40, &mut store);
+    assert!(!a.note_released_sustains(40, &mut store), "a note played after the lift is not sustained");
   }
 
   /// The contrast, and why the default is not simply wrong: a bank WITH the switch
@@ -602,12 +592,13 @@ mod tests {
   #[test]
   fn a_momentary_bank_sustains_notes_played_while_held() {
     let mut a = AccreteState::new_momentary();
+    let mut store = RingStore::new();
     a.press_accrete();
-    a.note_played(40);
-    assert!(a.note_released_sustains(40), "held: the note joins the sustained set");
+    a.note_played(40, &mut store);
+    assert!(a.note_released_sustains(40, &mut store), "held: the note joins the sustained set");
     a.release_accrete();
     // It stays sustained -- lifting the foot stops ADDING, it does not flush.
-    assert!(a.sustained_pitches().any(|p| p == 40), "lifting does not clear what was caught");
+    assert!(store.iter(Sustain).any(|p| p == 40), "lifting does not clear what was caught");
   }
 
   /// Two feet / a pedal and a button can overlap on one bank; the hold is counted,
@@ -625,11 +616,15 @@ mod tests {
 
   #[test]
   fn clear_still_flushes_a_momentary_bank() {
+    // Adapted (cleaning phase 6): the flush is `remove_reason(Sustain, all)`, which is
+    // what the clear button now runs; the assertion (clear empties the set) is unchanged.
     let mut a = AccreteState::new_momentary();
+    let mut store = RingStore::new();
     a.press_accrete();
-    a.note_played(40);
+    a.note_played(40, &mut store);
     a.release_accrete();
     a.press_clear();
-    assert!(a.sustained_pitches().next().is_none(), "clear empties the set");
+    store.remove_reason(Sustain, store.iter(Sustain).collect::<Vec<_>>(), |_| 0);
+    assert!(store.iter(Sustain).next().is_none(), "clear empties the set");
   }
 }

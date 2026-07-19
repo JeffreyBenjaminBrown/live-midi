@@ -10,14 +10,15 @@ use std::sync::{Arc, Mutex};
 use midi_pulse::monome;
 
 use super::grid::{button_level, volume_cells, ButtonOverlay, BRIGHT, DIM};
+use super::ring::Reason;
 use super::GridThread;
 
 /// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the
-/// union of every bank's sustained pitch classes (which paint bright on every
+/// union of every grid's sustained pitch classes (which paint bright on every
 /// grid -- they are all sounding, like the cross-grid note reflection).
 pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
-  let banks = rt.shared.accrete.lock().unwrap_or_else(|e| e.into_inner());
-  let s = &banks[rt.grid_index];
+  let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+  let s = &rings[rt.grid_index].accrete;
   let buttons = vec![
     (rt.overlays.clear_rect, button_level(s.clear_lit())),
     (rt.overlays.needs_holding_rect, button_level(s.needs_holding_lit())),
@@ -25,8 +26,8 @@ pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>
     (rt.overlays.erase_rect, button_level(s.erase_lit())),
   ];
   let mut classes = HashSet::new();
-  for bank in banks.iter() {
-    classes.extend(bank.sustained_classes(rt.tuning.edo));
+  for gr in rings.iter() {
+    classes.extend(gr.store.classes(Reason::Sustain, rt.tuning.edo));
   }
   (buttons, classes)
 }
