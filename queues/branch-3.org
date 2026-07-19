@@ -183,11 +183,31 @@ naming of "the phase" (oscillator) and because a reset there is a slow modulator
 restart, not a click. Tests: 4 new (same-pitch retrigger carries phase forward,
 plain note_on still starts at 0, plus two pin/confirm tests for the pending_attack
 relaunch and rehome_to_cell). =cargo test --workspace=: 696 passed, 0 failed.
-* pitch drag should not clobber a sustained voice or another edit-mode voice
+* DONE pitch drag should not clobber a sustained voice or another edit-mode voice
 If multiple notes are in edit mode, and one of the keys representing one of them
 is pressed (again), currently what happens is that the nearest voice
 also in edit mode is dragged to the pressed pitch, reducing the number of voices.
 That should not be. Drag should only apply when the pitch pressed is not the pitch
 of any voice in the editing set or the sustain set.
+** DONE claude: drag now needs a genuinely free pitch
+=EditState::classify= gained a =sustained: impl Fn(i32) -> bool= parameter alongside
+=sounding=; the retrigger arm now checks =sustained(pressed_pitch)= instead of
+=self.is_editing(pressed_pitch, store)=. One check covers both sets on purpose: queue
+item 4's invariant (edited ⊆ sustained) means every edited pitch is already sustained,
+so "the editing set or the sustain set" IS the sustain set as long as that invariant
+holds -- a comment at the call site and in classify's own doc spells this out so the
+union intent survives if the invariant is ever relaxed. Only when the pressed pitch is
+free of both does the nearest-edited drag still fire; the exit/enter/sustain-toggle
+trigger arms keep their existing priority above all of this, unchanged. keys.rs's call
+site already had a =sustained= =HashSet= built for =is_sounding=; it just gained a
+second closure over the same set. The retrigger PATH needed no wiring: falling through
+to =Press::Play= lands in the same ordinary note-on code (=cut_sustained= +
+=note_on_with_phase=) that already retriggers a sustained pitch outside edit mode, so a
+sustained-but-unedited pitch pressed while editing now cuts and replaces that voice
+exactly like any other retrigger, continuing its phase (queue item 5) -- verified by
+reading the fall-through path, not by adding new code. Tests: 3 new (a sustained-but-
+unedited pitch retriggers rather than drags; a genuinely free pitch still drags the
+nearest edited note; the exit trigger still outranks the broadened retrigger check).
+=cargo test --workspace=: 699 passed, 0 failed.
 * The TODO item remaining in TODO/cleaning/2_plan.org
 I just added it.

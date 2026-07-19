@@ -510,7 +510,12 @@ pub(super) fn handle_edit_press(
     let gr = &mut rings[rt.grid_index];
     let sustained: HashSet<i32> = gr.store.iter(Reason::Sustain).collect();
     let is_sounding = |p: i32| held.values().any(|h| *h == p) || sustained.contains(&p);
-    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, &gr.store) {
+    // Branch-3 queue item 6: a press only drags the nearest edited note when the
+    // pressed pitch is free of BOTH the editing set and the sustain set; otherwise it
+    // retriggers. `is_sustained` alone covers both sets, because queue item 4's
+    // invariant (edited ⊆ sustained) means every edited pitch is already in here too.
+    let is_sustained = |p: i32| sustained.contains(&p);
+    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &gr.store) {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
         // Entering edit mode also SUSTAINS the pitch (edited ⊆ sustained): a

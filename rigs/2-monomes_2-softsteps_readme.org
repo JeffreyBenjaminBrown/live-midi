@@ -396,9 +396,14 @@ that state no longer arises in the first place.)
 
 ** dragging a note's pitch
 While any note on a grid is in edit mode, that grid stops playing new notes: a
-press drags the nearest edited note to the pressed pitch instead, gliding over
-=slide.duration_ms= (100 ms). Leave edit mode to play normally again.
+press on a FREE pitch drags the nearest edited note to the pressed pitch instead,
+gliding over =slide.duration_ms= (100 ms). Leave edit mode to play normally again.
 
+- A press on any sustained or edited pitch retriggers it instead of dragging --
+  drag needs a free pitch, claimed by no voice in the editing set or the sustain
+  set. Without this, pressing a second edited (or merely sustained) note's own
+  pitch would drag the nearest edited note ONTO it, silently collapsing two
+  voices into one.
 - The nearest edited note moves -- one of them. (Contrast the factored pulse
   below, which moves all of them. This is deliberate, and it is worth
   knowing: "in edit mode" picks a different selection depending on which
