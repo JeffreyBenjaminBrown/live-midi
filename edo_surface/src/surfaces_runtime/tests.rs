@@ -1,13 +1,13 @@
   use super::*;
   use crate::rig::{load_named_rig, SlideRig, TapTempoRig, TrailRig};
 
-  /// A real `GridThread` over the real =2-monomes_2-softsteps= rig's grid A, wired
+  /// A real `GridThread` over the real =2-edogrids_ss-accrete_ss-pulse= rig's grid A, wired
   /// to a live voice map, for driving `handle_key` end to end without hardware.
   /// The socket binds an ephemeral port and nothing is ever sent or received on it;
   /// the accrete bank is momentary, exactly as `run()` builds it for this rig
   /// (no needs_holding control is bound anywhere).
   fn test_grid_thread() -> GridThread {
-    let rig = load_named_rig("2-monomes_2-softsteps").expect("rig loads");
+    let rig = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("rig loads");
     let s = resolve_settings(&rig).expect("rig resolves");
     let num_grids = s.grids.len();
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
@@ -878,7 +878,7 @@
   fn the_two_softstep_rig_loads_and_pins_its_gear() {
     use crate::rig::{AccreteControlKind, PulseFactorRig, SoftstepWindowRig};
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read the shipped rig");
     let rig = crate::rig_org::parse_org_rig(&source).expect("the shipped rig parses");
@@ -1065,7 +1065,7 @@
   #[test]
   fn the_two_softstep_rigs_pedals_resolve_to_the_right_actions() {
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read the shipped rig");
     let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
@@ -1136,7 +1136,7 @@
   #[test]
   fn a_pedal_whose_grid_is_absent_is_dropped() {
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read");
     let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
@@ -1409,7 +1409,7 @@
   fn the_two_softstep_rigs_accrete_is_momentary_not_toggle() {
     use crate::rig::{AccreteControlKind, SoftstepWindowRig};
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read the shipped rig");
     let rig = crate::rig_org::parse_org_rig(&source).expect("parses");

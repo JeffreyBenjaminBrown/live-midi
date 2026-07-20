@@ -119,7 +119,7 @@ impl PolyrhythmState {
   /// Seed the base tempo at bring-up (the surfaces runtime seeds 1 Hz for every
   /// rig). Without a seed the base would stay `None` until the first tap, and the
   /// tempo-factor controls would have nothing to multiply -- fatal in a rig with no
-  /// tap source at all (2-monomes_2-softsteps: Jeff never taps), and a pointless
+  /// tap source at all (2-edogrids_ss-accrete_ss-pulse: Jeff never taps), and a pointless
   /// wait in the rest. The phase anchor is `now`, so blinkers pulse at this rate
   /// from bring-up. Tapping, where a rig offers it, still overrides this later.
   pub fn set_fixed_tempo(&mut self, hz: f32, now: Instant) {

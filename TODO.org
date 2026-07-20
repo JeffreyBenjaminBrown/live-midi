@@ -6,7 +6,7 @@ serial
 xhost --run 'xhost +local:'   # per login, not per use of a rig
 **** in docker
 pw-jack cargo run --bin midi_pulse \
- -- 2-monomes_2-softsteps
+ -- 2-edogrids_ss-accrete_ss-pulse
 *** where SS pads are
 | New SS, upside-down |                 |           |                 |               |
 | x2                  | x3              | RNM : =1  | x3              | x2            |
@@ -63,7 +63,7 @@ serial
 xhost --run 'xhost +local:'   # per login, not per use of a rig
 *** in docker
 pw-jack cargo run --bin midi_pulse \
- -- 2-monomes_2-softsteps
+ -- 2-edogrids_ss-accrete_ss-pulse
 ** nudge amplitude
 ** store [pulsing] chord, including timbre
 ** nudge global tempo

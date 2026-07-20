@@ -67,7 +67,7 @@ explaining that it's relevant.
 
 I kept the single shared =rigs/softstep.toml=. I added a top-level headline,
 "shared SoftStep parameters (softstep.toml)", to each of the three rigs that use
-a SoftStep: =2-monomes_2-softsteps=, =2-monomes_kmss-drums=, and =kmss-drumkit=.
+a SoftStep: =2-edogrids_ss-accrete_ss-pulse=, =2-monomes_kmss-drums=, and =kmss-drumkit=.
 Each headline explains that the board reads its detection and pressure parameters
 from that shared file.
 

@@ -260,7 +260,7 @@ fn run(
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
-  // source at all (2-monomes_2-softsteps retired its tap pedal: Jeff never set a
+  // source at all (2-edogrids_ss-accrete_ss-pulse retired its tap pedal: Jeff never set a
   // tempo with it) is not stuck waiting for a tap that can never come, and where a
   // tap source exists, tapping simply overrides the seed.
   let poly = {

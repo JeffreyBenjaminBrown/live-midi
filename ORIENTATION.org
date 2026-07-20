@@ -29,13 +29,13 @@ live only in Claude's memory. Follow the links for depth.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
 
-* the active work: 2-monomes_2-softsteps (the surfaces runtime)
+* the active work: 2-edogrids_ss-accrete_ss-pulse (the surfaces runtime)
 Jeff's daily instrument lately: two 46-EDO play grids + two SoftStep pedal
 boards (sustain + edit mode underfoot), two EX-P volume pedals, per-grid
 factored pulse, per-voice edit mode, configurable timbres with abs/rel AM+FM.
 - *Canonical reference (read this first):*
-  [[./rigs/2-monomes_2-softsteps_readme.org]] -- glossary, usage, layout.
-- Rig: =rigs/2-monomes_2-softsteps.org= (TOML-in-org; heavily commented).
+  [[./rigs/2-edogrids_ss-accrete_ss-pulse_readme.org]] -- glossary, usage, layout.
+- Rig: =rigs/2-edogrids_ss-accrete_ss-pulse.org= (TOML-in-org; heavily commented).
 - Runtime: =edo_surface/src/surfaces_runtime/=. =mod.rs= is the shell AND most
   behavior (large; grep for the window kind you care about); pure pieces live in
   =edit.rs= (per-voice edit state), =accrete.rs= (sustain banks),
@@ -60,7 +60,7 @@ A two-grid looping instrument in 58-EDO; still runs.
 * build / run / test
 #+begin_src sh
 cargo test -p midi_pulse                                      # fast, no hardware
-pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps   # needs the gear
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse   # needs the gear
 #+end_src
 Most logic is testable without hardware; do that. Running for real needs the
 grids and audio routing (below). Ctrl-C blanks both grids and stops audio.

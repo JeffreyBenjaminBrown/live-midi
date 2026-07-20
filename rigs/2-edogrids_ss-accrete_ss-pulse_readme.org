@@ -1,7 +1,12 @@
-#+title: Two monomes + two SoftSteps -- reference
+#+title: Two EDO grids + an accrete SoftStep + a pulse SoftStep -- reference
 #+date: 2026-07-17
 
-The =2-monomes_2-softsteps= rig drives four surfaces at once: two 16x16 monome
+(Renamed 2026-07-20 from =2-monomes_2-softsteps=: the two boards do different
+jobs, so the name now says which. Its drum-surface sibling --
+identical but for the newer board -- is
+[[./2-edogrids_ss-accrete_ss-drums_readme.org]].)
+
+The =2-edogrids_ss-accrete_ss-pulse= rig drives four surfaces at once: two 16x16 monome
 grids, each a full 46-EDO play surface with nine chord-storage slots (see
 "chord storage"), and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry the controls that would otherwise cost grid cells --
@@ -21,7 +26,7 @@ dir: =TODO/chord-storage-v2/=.
 Run it under =pw-jack= so the synth shares the sound card via PipeWire:
 
 #+begin_src sh
-pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse
 #+end_src
 
 Needs both 16x16 grids AND both SoftSteps connected. The rig pins the grids
@@ -133,7 +138,7 @@ Launch under =pw-jack= so the synth (=cpal_synth=) shares the sound card via
 PipeWire:
 
 #+begin_src sh
-pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse
 #+end_src
 
 Needs both 16x16 grids and both SoftSteps -- see "startup" above for how to

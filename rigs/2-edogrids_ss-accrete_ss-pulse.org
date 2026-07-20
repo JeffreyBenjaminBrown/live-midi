@@ -1,4 +1,4 @@
-* 2-monomes_2-softsteps
+* 2-edogrids_ss-accrete_ss-pulse
 ** about
 This rig is written in a TOML-in-org format unique (so far) to this repo.
 The data lives in headlines titled
@@ -7,12 +7,12 @@ headlines nest tables and array-of-table elements; any other headline just group
 documents; and every body (like this one) is a human note the loader ignores. A "#" on
 a headline starts a comment, TOML-style, even on a load-bearing one. Format reference
 (C-c C-o to follow): [[file:README.org]]
-Reference doc for this rig: [[file:2-monomes_2-softsteps_readme.org]]
+Reference doc for this rig: [[file:2-edogrids_ss-accrete_ss-pulse_readme.org]]
 ** rig identity
 *** PARAM version = 1
 See also softstep.toml (the shared SoftStep detection & pressure parameters).
-*** PARAM id = "2-monomes_2-softsteps"
-*** PARAM title = "Two monomes + two SoftSteps"
+*** PARAM id = "2-edogrids_ss-accrete_ss-pulse"
+*** PARAM title = "Two EDO grids + an accrete SoftStep + a pulse SoftStep"
 ** shared SoftStep parameters (softstep.toml)
 This rig drives at least one SoftStep board. Every board reads its detection and
 pressure parameters from the shared file rigs/softstep.toml, not from this rig
@@ -30,7 +30,7 @@ editmode-clear button at (12,0), a 3x2 factored-pulse pad (top-right, doubling
 the NSS pedals), and a 3x2 scroll pad (bottom-right). Everything else on the
 grid is a note.
 Launch under pw-jack so the synth shares the card via PipeWire:
-pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse
 ===========================================================================
 ** TABLE trail
 Shared recent-note trail (the dim backdrop of the last few played pitch classes).

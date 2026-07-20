@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 # The live instrument core (cleaning phase 7): everything the latest rig
-# (2-monomes_2-softsteps) runs -- the surfaces + drumkit runtimes, the sawwave engine,
+# (2-edogrids_ss-accrete_ss-pulse) runs -- the surfaces + drumkit runtimes, the sawwave engine,
 # the rig loader/org parser, monome + mock, expression pedals, device assignment, the
 # bitmap font. Deliberately does NOT depend on midi_pulse (`buried/`): the dependency
 # arrow points the other way -- buried refers to live, never the reverse. Its rigs live

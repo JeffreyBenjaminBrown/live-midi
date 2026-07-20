@@ -537,7 +537,7 @@ transpose to (pressed pitch - center), gliding every edited voice at once,
 mono-style (newest press wins, releases snap to the most recent held key, the
 last release keeps the transpose); the octave corners move the X itself, even
 off-screen, non-persistently; exiting keeps a nonzero transpose. Player's
-reference: [[./2-monomes_2-softsteps_readme.org]] "fine transpose".
+reference: [[./2-edogrids_ss-accrete_ss-pulse_readme.org]] "fine transpose".
 
 A ~chord_block~ (surfaces runtime; TODO/chord-storage-v2) is a 5x2 block of
 chord-storage controls -- slots 1..5 on the top row, the ARM button then slots
@@ -575,7 +575,7 @@ empties. Slots persist per rig id under =state/chord-slots/= (atomic writes on
 every save; toggles and arming are not persisted). LEDs: slots idle dim with
 an active slot bright; the arm cell is black until armed, then flashes. The
 full player's
-reference: [[./2-monomes_2-softsteps_readme.org]] "chord storage" and "chord
+reference: [[./2-edogrids_ss-accrete_ss-pulse_readme.org]] "chord storage" and "chord
 voices in edit mode".
 
 The bundled 12-EDO offset/root board is:
