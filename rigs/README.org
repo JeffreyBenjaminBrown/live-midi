@@ -527,7 +527,9 @@ black.
 A ~fine_transpose_toggle~ (surfaces runtime) is a single cell (at most one per
 monome, on a monome with an ~edo_note_grid~; lit bright while on, resting dim
 under the control flash) that turns the play grid into a live transpose
-controller for the edit selection: a dancing 5x5 X (one ring dim at a time,
+controller for the edit selection (entering with an empty selection first
+selects everything sounding on that monome, exactly as the ~editmode_control~
+accrete one-shot does): a dancing 5x5 X (one ring dim at a time,
 out-in-out at 50 ms per phase, painted only where nothing else is) marks a
 center pitch seeded at the board center; each play press sets the selection's
 transpose to (pressed pitch - center), gliding every edited voice at once,

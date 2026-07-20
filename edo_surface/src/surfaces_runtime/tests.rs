@@ -425,6 +425,66 @@
     );
   }
 
+  /// Entering fine transpose with NO edit selection first selects everything
+  /// sounding on that monome -- the editmode-accrete one-shot, "just as if they
+  /// had pressed the kmss select-everything button" (Jeff by chat). A non-empty
+  /// selection is left exactly as it is.
+  #[test]
+  fn entering_fine_transpose_with_nothing_selected_selects_everything_sounding() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    use crate::types::Timbre;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let toggle = (1, 15);
+    let step = {
+      let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
+      move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y)
+    };
+
+    // Sounding but UNSELECTED: a fingered note, a sustained drone, a chord voice.
+    handle_key(&mut rt, &mut register, &mut held, (3, 12), true); // stays fingered
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 4), true); // sustain handle
+    handle_key(&mut rt, &mut register, &mut held, (5, 4), false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), false); // drones
+    let chord_pitch = step(8, 8);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![StoredVoice {
+        pitch: chord_pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+        osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+      }] });
+    }
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), true); // recall slot 0
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
+    assert!(!rt.shared.ring.lock().unwrap()[0].store.any(Reason::Edit), "nothing selected yet");
+
+    // Enter: everything sounding joins the selection.
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    {
+      let rings = rt.shared.ring.lock().unwrap();
+      assert!(rings[0].store.has(Reason::Edit, step(3, 12)), "the fingered note is selected");
+      assert!(rings[0].store.has(Reason::Edit, step(5, 5)), "the drone is selected");
+      assert!(rings[0].chord.live.values().all(|v| v.edited), "the chord voice is selected");
+    }
+
+    // Exit; deselect only the drone's pitch via its handle, keeping the rest
+    // selected -- a NON-empty selection must survive a re-entry untouched.
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), true); // exit-edit handle
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
+    assert!(!rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, step(5, 5)));
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    assert!(
+      !rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, step(5, 5)),
+      "re-entry with a live selection selects nothing new",
+    );
+  }
+
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());

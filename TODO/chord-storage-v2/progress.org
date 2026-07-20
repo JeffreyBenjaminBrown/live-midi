@@ -215,6 +215,9 @@ only where everything else is OFF). Pure state in =fine.rs=, fully tested;
 e2e pinned through the harness; interpretation flagged in the queue: applied
 live rather than on-exit (vetoable).
 =cargo test --workspace=: 750 passed, 0 failed.
+Refinement (chat): entry with an empty selection runs the editmode-accrete
+one-shot first (select everything sounding on that monome); a non-empty
+selection survives entry untouched. 751 passed, 0 failed.
 
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's

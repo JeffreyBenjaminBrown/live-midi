@@ -124,6 +124,23 @@ pub(super) fn handle_key(
       if rt.fine.on {
         rt.fine.exit();
       } else {
+        // Entering with NOTHING selected first selects everything sounding on
+        // this monome -- exactly the editmode-accrete one-shot ("just as if they
+        // had pressed the kmss select-everything button", Jeff by chat). A
+        // non-empty selection is left exactly as it is.
+        let selection_empty = {
+          let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+          let gr = &rings[rt.grid_index];
+          !gr.store.any(Reason::Edit) && !gr.chord.live.values().any(|v| v.edited)
+        };
+        if selection_empty {
+          editmode_press(
+            rt.grid_index,
+            EditmodeControlKind::Accrete,
+            &rt.shared.ring,
+            &rt.shared.held_all,
+          );
+        }
         let center = step_for_cell(
           rt.tuning.x_step,
           rt.tuning.y_step,

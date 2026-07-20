@@ -602,7 +602,10 @@ Jeff's calls ("I'll understand").
 ** fine transpose
 The octave switchers above transpose coarsely; the =FT= toggle at =(1,15)=
 (lit bright while on) turns the whole play grid into a FINE transpose
-controller for the edit selection. While on:
+controller for the edit selection. Entering with NOTHING selected first
+selects everything sounding on that monome -- the same one-shot as the
+editmode-accrete pedal (OSS 7/9) -- so a bare =FT= press means "fine-transpose
+everything"; a selection you already made is left exactly as it is. While on:
 
 - A big dancing X marks a CENTER pitch, seeded at the board center's pitch
   ((8,8) under the current register). Pressing any play cell sets the
