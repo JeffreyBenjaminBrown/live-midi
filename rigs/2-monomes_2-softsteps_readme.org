@@ -117,7 +117,8 @@ Here's how to see what's connected:
   (exponential + linear splice), slewed. See "the EX-P volume pedals".
 - diamond dance -- the lit cell turning around an edit-mode note's cell(s), above /
   left / below / right. See "the diamond dance".
-- square dance -- the diamond's diagonal twin, marking a sustained note's cell(s) at
+- square dance -- the diamond's diagonal twin, marking a sustained or chord
+  voice's cell(s) at
   NW / SW / SE / NE, 45 degrees out of phase so the two together read as one thing
   circling a note that is both edited and sustained. See "the square dance".
 
@@ -545,17 +546,20 @@ so one turn is 600 ms.
 - Expect it to read less cleanly on grid A, whose "dim" is faked by fast flashing.
 
 ** the square dance
-A sustained note is marked the diamond's diagonal twin: a single dim cell turning
+A sustained note -- or a CHORD voice: every playing-while-not-fingered voice
+carries this marker, whatever its origin -- is marked the diamond's diagonal
+twin: a single dim cell turning
 among its four DIAGONAL neighbours -- NW, SW, SE, NE -- on the diamond's own clock
 (150 ms per corner, 600 ms per turn), but 45 degrees (an eighth of a turn) out of
 phase, so each square position lands exactly between two diamond positions in time. A
-voice that is simultaneously edited (the diamond) and sustained (the square) shows all
+voice that is simultaneously edited (the diamond) and square-dancing shows all
 8 positions in turn: roughly one thing circling it.
 
-Because an edited note is ALWAYS sustained now (edited ⊆ sustained), the diamond and
+Because an edited note is ALWAYS sustained now (edited ⊆ sustained), and an
+edited chord voice square-dances too, the diamond and
 the square always appear together on an edited note: that 8-position circle is the
 NORMAL look of an edited note, not the rare edited-and-separately-sustained case it
-once was. A plain sustained note (not edited) shows the square alone.
+once was. A plain sustained note or chord voice (not edited) shows the square alone.
 
 - Same locality and image rules as the diamond: it marks the exact cell(s) sounding
   that exact pitch on that one grid, register-aware, never octave-equivalents, never
@@ -565,7 +569,8 @@ once was. A plain sustained note (not edited) shows the square alone.
   trailed cell), yielding to a bright (sounding) note -- that corner is simply
   skipped, not retimed, so the two dances never drift out of phase with each
   other.
-- Reads the grid's own sustained-pitch bank -- the same bank the cross-grid bright
+- Reads the grid's own sustained-pitch bank plus its live chord voices' pitches
+  -- the same sources the cross-grid bright
   reflection folds into pitch classes -- but pitch-exact and register-aware like the
   diamond, never class-folded.
 
@@ -647,8 +652,10 @@ already ringing on its own reason:
   its SAVED loudness, and it keeps that loudness until the EX-P next moves
   -- the pedal sends nothing untouched -- after which the chord voice
   follows the pedal like every other voice on the grid, edited or not.
-- *It dances the diamond* like any edited note (and never the square -- it
-  is not sustained), and off-screen chord voices flash the octave corners.
+- *It dances like a sustained note.* Every chord voice square-dances (the
+  playing-while-not-fingered marker, whatever the origin), an EDITED chord
+  voice adds the diamond -- the same 8-position circle an edited piano note
+  shows -- and off-screen chord voices flash the octave corners.
 
 * the on-screen window
 Born when the factored-pulse controls left the grid for the feet (a pedal has no

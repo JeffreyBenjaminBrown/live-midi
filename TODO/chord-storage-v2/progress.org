@@ -179,6 +179,14 @@ sense but not in the polyrhythm pulse sense":
 Supersedes round 2's finger/chord full-coexistence in that one direction.
 =cargo test --workspace=: 740 passed, 0 failed.
 
+* DONE 12. chord voices square-dance
+Every live chord voice now carries the square dance, exactly like a
+sustained note -- one marker for playing-while-not-fingered, whatever the
+origin (Jeff, by chat). An edited chord voice therefore shows the same
+8-position circle an edited piano note does. One chained iterator in the
+repaint's square-dance loop (the pitches were already snapshotted for the
+off-screen flash); readme dance sections and glossary updated.
+
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's
   shared LFO phases (advanced at the new timbre's rates) for the fade's

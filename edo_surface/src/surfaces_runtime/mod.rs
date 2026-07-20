@@ -827,8 +827,9 @@ fn grid_thread(mut rt: GridThread) {
       )
     };
     let mut dance_cells: HashSet<(i32, i32)> = HashSet::new();
-    // Edit-flagged CHORD voices diamond-dance like the piano layer's edited notes;
-    // they are not sustained, so they never square-dance (chord-storage-v2).
+    // Edit-flagged CHORD voices diamond-dance like the piano layer's edited notes
+    // (every chord voice also square-dances below, so an EDITED chord voice shows
+    // the same 8-position circle an edited piano note does).
     for pitch in edited.iter().copied().chain(chord_edited.iter().copied()) {
       // A pitch can occupy TWO cells on one grid, and Jeff wants both to dance
       // ("sometimes there are two monome buttons representing exactly the same
@@ -844,7 +845,10 @@ fn grid_thread(mut rt: GridThread) {
     // not the rare edited-and-separately-sustained case it used to be. Shares
     // `cells_for_pitch` and `dance_cells` with the diamond above, so it gets the same
     // at-most-two-images and clobber/yield compositing for free.
-    for pitch in sustained.iter().copied() {
+    // CHORD voices square-dance exactly like sustained ones (Jeff: same dance for
+    // both) -- they are the other kind of playing-while-not-fingered voice, and the
+    // marker reads the same either way.
+    for pitch in sustained.iter().copied().chain(chord_pitches.iter().copied()) {
       for (x, y) in cells_for_pitch(&rt, register, pitch) {
         dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
       }
