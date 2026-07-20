@@ -1,0 +1,159 @@
+#+title: Pedal slide: discussion
+#+date: 2026-07-20
+
+Responses to 1_vision.org, per the queue: TODO = needs your attention,
+DONE (probably) = probably doesn't. Ordered: first whether I've understood
+the core mechanism, then gaps, then dangers, then small stuff.
+
+* TODO my formalization of the goalpost-moving -- confirm this is your intent
+The vision's kink description resolves, I believe, into this invariant:
+
+  At every instant, the pedal-to-pitch map is two log-linear segments
+  JOINED AT THE PEDAL'S CURRENT POSITION: one from (F_now, P_now) down to
+  (0, whatever side 0 holds), one up to (1, whatever side 1 holds).
+  Moving the pedal follows the segment you are moving along; the segment
+  BEHIND you is re-derived from wherever you now are.
+
+Consequences worth saying out loud, because they follow from the invariant
+rather than from anything you wrote explicitly:
+- The map is HYSTERETIC: sweep up along a kinked map, reverse halfway, and
+  the path down is a fresh straight segment to home -- not a retrace of the
+  curve you came up on. Pitch is always continuous, and the endpoints are
+  always exact (0 lands home, 1 lands target), but the middle is
+  path-dependent. I believe that is not just acceptable but the point --
+  it is the same trick as MIDI "catch-up" knob pickup, generalized.
+- "Once the pedal reaches either endpoint, the kink is gone" falls out
+  automatically: at an endpoint the two segments fuse into one.
+- The same invariant, with amplitude segments instead of pitch segments,
+  CURES the fade-map ill-definedness you caught yourself on (see next).
+
+* TODO the fade "discontinuity at F" dissolves under the same trick
+The vision accepts "a potential discontinuity at F" for fade-in/out volumes
+-- but that contradicts "slide should always be smooth", and it isn't
+necessary. Use the pitch invariant verbatim for amplitude: the fade map is
+two segments joined at (F_now, V_now), one to (0, 0), one to (1, 1), each
+segment shaped like the quartic (i.e. the quartic is the SHAPE of a segment,
+re-scaled to its span, not a fixed global curve). Continuous by
+construction, exact at the ends, same hysteresis. If you confirm the
+formalization above, this one comes for free and no discontinuity ever
+sounds. The x^4-vs-splice question from the volume-pedal work doesn't arise
+here: a fading slide voice wants exact 0 at one end and its sibling's level
+at the other, which segments give you inherently.
+
+* TODO which voices slide, and what happens with none in edit mode
+The vision covers "some voices in edit mode". Unspecified: slide mode ON,
+target picked, but NOTHING in edit mode. Options: (a) the pick lights a
+target and the pedal fades a NEW voice in from silence (the chord-case
+fade-in logic, applied to a single pick -- my favorite: it makes the pedal a
+swell into any pitch, and it is exactly the chord case with a one-note
+chord); (b) picks are inert without an edit selection. Also please confirm
+the intended selection: the pedal drags EDIT-MODE voices only (the
+selection), all matched pairs moving in parallel under the one pedal, each
+pair with its own kink state.
+
+* TODO target-matching needs a tie-break rule
+"Target each as-yet untargeted voice to the nearest available target" is
+greedy and order-dependent: with voices A < B and targets X < Y placed so
+both voices are nearest to X, who gets X depends on processing order (and
+greedy can be globally worse than an optimal pairing). Everywhere else the
+instrument breaks ties LOWEST-FIRST (the looper's rule, the drag rule). I
+propose: process edit-mode voices in ascending pitch, each taking its
+nearest remaining target, ties to the lower target. Deterministic, cheap,
+matches house style. Same rule mirrored for the fewer-targets case to
+decide who fades out (untargeted voices = the ones left over after the same
+ascending pass). Confirm or supply your own rule.
+
+* TODO the midpoint flip wants hysteresis
+Home/target swap "when I cross the midpoint". A pedal RESTING near 0.5
+(sensor noise, foot tremor) would flip home/target -- and the LED colors,
+and which end future picks retarget -- many times per second. Propose a
+band: flip only on crossing 0.5 +/- epsilon (say 0.05) in the direction
+away from the current home. Costs nothing musically (the flip matters only
+when you later pick or look), prevents the flicker. Also note the flip is
+PURELY about (a) which end a new pick replaces and (b) the LED roles -- it
+must not itself move any pitch (it doesn't, under the formalization, since
+the map doesn't mention "home"; only picks and the pedal do).
+
+* TODO set membership and LEDs during flight
+A sliding voice's actual pitch is intermediate, usually on no cell. The
+vision specifies the two ANCHOR cells' looks (home: lit + dance; target:
+100 ms flash, no dance) and the midpoint color swap. Open: where does the
+voice LIVE in the pitch-keyed sets (sustain/edit) during flight? Proposal
+matching your color swap: it stays filed at HOME's pitch until the midpoint
+flip, then re-files to the target pitch (ring's note_moved), so clears,
+retriggers, octave reflections, and the dances all follow the cell that is
+currently painted as "the note". The voice's own sounding-class reflection
+(bright octave-equivalents) would then track the FILED pitch, not the
+instantaneous glide -- I think lighting the true intermediate class would
+smear meaninglessly across cells anyway. Confirm.
+
+* TODO leaving slide mode (and entering it) mid-anything
+Unspecified transitions, all need a rule:
+- Toggle slide OFF mid-flight: voices freeze at their current (possibly
+  in-between, microtonally off-grid) pitches? Snap to nearest of home/
+  target? I propose: freeze exactly where they are (smoothness above all;
+  they are sustained voices, a later drag can tidy them), and drop all
+  targets/kinks.
+- Toggle OFF returns the pedal to VOLUME duty: the pedal is physically at
+  some position; naively the grid's volume jumps there. Propose catch-up
+  pickup: volume stays at its pre-slide value until the pedal position
+  crosses it, then tracks (the same trick yet again). Symmetrically,
+  toggling slide ON should not yank pitch anywhere: slide starts with no
+  targets, so the pedal is inert until the first pick -- good, but say
+  whether the VOLUME it abandons stays frozen at its last value (my
+  assumption) or resets to unity.
+- Sustain-clear / editmode-clear during flight: clearing sustain ends
+  sliding voices like any drone (fine); clearing edit deselects them --
+  proposal: deselection also cancels their slide pairing (a slide needs its
+  selection), voices freeze in place, targets unlight.
+
+* TODO chord storage doesn't exist yet -- sequencing
+The chord-storage case reads well, but there is no chord storage in the
+surfaces runtime today (TODO/chord-storage/ is unbuilt; the old sawwave
+chord slots live in the pre-surfaces runtime). So: build pedal slide's
+core (targets, kinked map, fades, LEDs, toggle) now, and specify the chord
+interaction as a constraint on chord storage's LATER design? Or is chord
+storage meant to come first? The fade-in/out logic is worth building now
+regardless -- the no-edit-voices case above exercises it without chords.
+
+* TODO the toggle cell, per rig
+"Bottom-leftmost button of each monome": in 2-monomes_2-softsteps, (0,15)
+is currently a play cell -- free, fine, one more note sacrificed to an
+overlay (the established trade). But in 2-monomes_kmss-drums, (0,15) is
+accrete CLEAR. I assume this feature targets the 2-softsteps rig (it is the
+one with the EX-P pedals wired); if pedal slide ever reaches the kmss rig
+the toggle needs a different cell there. New single-cell window kind
+(pedal_slide_toggle, per-monome, dim/bright) -- routine.
+
+* DONE (probably) smoothness machinery: interpret "10 ms" as a time constant
+"10 ms to transition between two adjacent pedal values" read literally as a
+rate limit means a full-range sweep drags for ~1.2 s, and the per-step
+pitch delta varies with the kink anyway. I intend a one-pole smoother on
+the pedal-driven pitch (per voice, in the render, exactly like the volume
+pedal's GAIN_SLEW_SECS), sized so adjacent-step transitions take ~10 ms --
+fast sweeps stay proportionally fast, zipper stays gone. The existing
+glide_per_sample machinery (walk-to-target-then-stop) is the wrong shape
+for a continuous controller; this will be a sibling mechanism, not a reuse.
+
+* DONE (probably) naming: "pedal slide" vs the existing "slide"
+The instrument already has slide_toggle (note-to-note glide on strike).
+Distinct concepts, one word. Following the factored-pulse precedent I'll
+keep "pedal slide" as the full name everywhere (kind name
+pedal_slide_toggle, docs never say bare "slide" for it) and add a
+terminology-trap note beside the existing one in the readme.
+
+* DONE (probably) mundane implications, noted so they're deliberate
+- While a grid's pedal is sliding, that grid has NO live volume pedal
+  (fader and master still work). Inherent to the design.
+- The mis-trimmed EX-P (reads ~35..127 until its MIN thumbwheel is fixed)
+  will have its slide range compressed the same way its volume is today --
+  hardware, not code.
+- Log-linear pitch segments = interpolation in cents, matching how every
+  glide in the engine already walks (multiplicative). The pedal's
+  [1,119]->[0,1] normalization is reused as-is; the volume taper params
+  (curve_*) do not apply to pitch.
+- Retargeting only ever moves the FAR side's goalpost (the vision's
+  home-proximity rule), so a pick can never yank the pitch you are
+  currently nearest to -- nice property, preserved by the formalization.
+- 100 ms target flash: I'll drive it from the shared dance clock (the
+  vision permits it), so it can't drift against the other animations.

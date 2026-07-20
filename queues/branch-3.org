@@ -1,5 +1,5 @@
 These are ordered; please start from the top.
-* TODO TODO/pedal-slide/
+* AWAITS (Jeff's turn) : TODO/pedal-slide/
 To start, please read 1_vision.org,
 and respond in 2_discussion.org with everything that occurs to you:
 Is it well-specified? Complete? Awkward? Dangerous? Self-contradictory?
