@@ -130,7 +130,10 @@ impl Treatment {
   /// The decoder debounce mode for this treatment, filled from softstep.toml.
   fn mode(self, params: &SoftstepParams) -> DebounceMode {
     match self {
-      Treatment::Standard => DebounceMode::Standard,
+      Treatment::Standard => DebounceMode::Standard {
+        since_fire: Duration::from_millis(params.standard_settle_ms),
+        quiet: Duration::from_millis(params.standard_release_ms),
+      },
       Treatment::Settle => DebounceMode::Settle {
         since_fire: Duration::from_millis(params.factor_settle_ms),
         quiet: Duration::from_millis(params.factor_release_ms),
@@ -1123,9 +1126,20 @@ mod tests {
 
   #[test]
   fn treatment_maps_to_the_matching_decoder_mode() {
-    let params =
-      SoftstepParams { factor_settle_ms: 150, factor_release_ms: 25, ..SoftstepParams::default() };
-    assert_eq!(Treatment::Standard.mode(&params), DebounceMode::Standard);
+    let params = SoftstepParams {
+      factor_settle_ms: 150,
+      factor_release_ms: 25,
+      standard_settle_ms: 120,
+      standard_release_ms: 45,
+      ..SoftstepParams::default()
+    };
+    assert_eq!(
+      Treatment::Standard.mode(&params),
+      DebounceMode::Standard {
+        since_fire: Duration::from_millis(120),
+        quiet: Duration::from_millis(45),
+      },
+    );
     assert_eq!(
       Treatment::Settle.mode(&params),
       DebounceMode::Settle {

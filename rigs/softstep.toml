@@ -7,14 +7,31 @@
 #
 # All keys are optional; a missing key uses the default shown. Reject-on-typo is on.
 
-on_sum              = 20    # a hit fires when a pad's sum-of-4 exceeds this
+on_sum              = 40    # a hit fires when a pad's sum-of-4 exceeds this
 off_sum             = 20    # the pad re-arms once its sum-of-4 falls below this
+#
+# on_sum > off_sum is a Schmitt trigger: a pad must fall back to 20 before it can fire
+# again at 40, so a sum hovering at the threshold cannot chatter. These were EQUAL (20/20)
+# until 2026-07-20, i.e. there was no hysteresis band at all. For scale, KMI's own editor
+# ships 50/45 -- but on max-of-4 (0..127), not our sum-of-4 (0..508), so their band is
+# both higher and much narrower than it looks. See learnings/keith-mcmillen-softstep.org.
 attack_ms           = 14    # after firing on onset, keep watching this long to raise pressure to a later peak
 pressure_full_scale = 460   # pad sum-of-4 (0..508) that maps to full pressure (1.0)
 gain_db_range       = 20.0  # dB between the softest (pressure 0) and hardest (pressure 1) hit
 silence_to_zero_ms  = 25    # a sensor with no CC for this long reads 0 (de-stick); 0 = off
 factor_settle_ms    = 150   # Settle pads (x2, /2, ...): minimum time from a fire until it may fire again
-factor_release_ms   = 25    # quiet window before a pad may re-fire: Standard's quiet gate + Settle's inactivity
+factor_release_ms   = 25    # Settle pads: how long the pad must sit below off_sum before it may re-arm
+
+# Standard pads (drums, accrete -- every pad that is not a tempo-factor pedal). The same
+# two-guard shape as the factor_* pair above: a clock guard and a signal guard.
+standard_settle_ms  = 120   # minimum time from a fire until this pad may fire again
+standard_release_ms = 45    # ...and its sum must ALSO have held UNCHANGED this long first
+#
+# Both are per-pad; nothing in the decoder couples pads, so two feet always both fire.
+# The clock guard caps one pad at ~8 strikes/second -- if fast rolls on a single pad get
+# eaten, that is this knob. The signal guard is the one a bounce cannot outlast: the
+# tether stream is on-change, so an unchanged sum means the pad is sending nothing.
+# Setting both to 0 restores the pre-2026-07-20 behaviour (quiet gate only, at 25 ms).
 
 # Sum-of-4 at or above which a strike counts as HARD rather than light, so one pad can
 # serve two related purposes (tap lightly for one, stomp for the other). A raw sum, like
