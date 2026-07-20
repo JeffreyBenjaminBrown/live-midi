@@ -183,6 +183,19 @@ Arm (the flashing cell) then press a slot to save every voice this grid is
 sounding; a disarmed slot press toggles the stored chord on (lit solid) and
 off. Centered-ish in the free span, with the bigger gap kept next to the
 editmode-clear at (12,0). See TODO/chord-storage-v2/.
+**** ELEM monome_windows              # grid A: pedal-slide toggle
+***** PARAM id = "pedal-slide-a"
+***** PARAM monome = "a"
+***** PARAM kind = "pedal_slide_toggle"
+***** PARAM rect = [0, 15, 0, 15]
+The bottom-leftmost button (1_vision "the bottom-leftmost button of each
+monome toggles pedal slide mode for it"). While ON, grid A's EX-P pedal drives
+a pitch-slide engine instead of volume: pressing a FREE pitch sets a target
+(the nearest edit-mode voice's far goalpost, or -- with nothing edited -- a
+swell into a fresh voice), and the pedal glides the voice into it, always
+smooth. Volume freezes; toggling OFF returns the pedal to volume through the
+same kinked x^4 map (immediate both ways) until it reaches an endpoint. Dim at
+rest, bright while on. See TODO/pedal-slide/.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -228,6 +241,13 @@ Grid B's twin of grid A's editmode-clear button (same job as OSS pedal 0).
 ***** PARAM kind = "chord_block"
 ***** PARAM rect = [5, 0, 9, 1]
 Grid B's twin of grid A's chord block; its nine slots are its own.
+**** ELEM monome_windows              # grid B: pedal-slide toggle
+***** PARAM id = "pedal-slide-b"
+***** PARAM monome = "b"
+***** PARAM kind = "pedal_slide_toggle"
+***** PARAM rect = [0, 15, 0, 15]
+Grid B's twin of grid A's pedal-slide toggle (its own EX-P pedal, its own
+engine). See TODO/pedal-slide/.
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and

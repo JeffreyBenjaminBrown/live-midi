@@ -75,6 +75,9 @@ pub(super) struct Overlays {
   /// The slide / mono toggles' cells, `NO_RECT` when absent (global switches too).
   pub(super) slide_rect: [i32; 4],
   pub(super) mono_rect: [i32; 4],
+  /// The pedal-slide toggle's cell, `NO_RECT` when absent (per-monome; drives this
+  /// grid's EX-P pedal between volume and the pitch-slide engine).
+  pub(super) pedal_slide_rect: [i32; 4],
   /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
   pub(super) poly_rect: [i32; 4],
   /// The editmode_control buttons' cells, `NO_RECT` when absent: clear empties
@@ -296,6 +299,14 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let pedal_slide_rect = rig
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowRig::PedalSlideToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     let poly_rect = rig
       .monome_windows
       .iter()
@@ -338,6 +349,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       distortion_rect,
       slide_rect,
       mono_rect,
+      pedal_slide_rect,
       poly_rect,
       editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),

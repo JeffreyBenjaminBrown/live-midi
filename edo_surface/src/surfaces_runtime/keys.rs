@@ -114,6 +114,31 @@ pub(super) fn handle_key(
     }
     return;
   }
+  // Pedal-slide toggle: key-down flips THIS grid's switch and enters/leaves the slide
+  // engine (TODO/pedal-slide). Entering freezes the grid volume (the pedal switches to
+  // slide duty); leaving freezes every sliding voice where it is, drops the
+  // targets/kinks, and hands the frozen volume back for the pedal's catch-up pickup.
+  if in_overlay(rt.overlays.pedal_slide_rect, cell) {
+    if press {
+      let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
+      rt.shared.pedal_slide_on[rt.grid_index].store(now_on, Ordering::Relaxed);
+      let frozen = rt.sink.pedal_gain();
+      {
+        let mut eng =
+          rt.shared.pedal_slide[rt.grid_index].lock().unwrap_or_else(|e| e.into_inner());
+        if now_on {
+          eng.enter(frozen);
+        } else {
+          eng.exit();
+        }
+      }
+      if !now_on {
+        // Freeze the sliding voices at their current pitch (smoothness above all).
+        synth::freeze_slide(&rt.shared.voices, rt.grid_index);
+      }
+    }
+    return;
+  }
   // The editmode buttons, through the same `editmode_press` the softstep pedals run:
   // clear empties THIS grid's edit SELECTION (branch-3 queue item 4: pure deselection --
   // every cleared note stays sustained, so nothing is silenced), accrete puts every
@@ -819,7 +844,14 @@ pub(super) fn handle_edit_press(
     Silent,
     Sustain(i32, bool, Vec<u64>),
     Dragged { from: i32, to: i32, piano_moved: bool, chord_seqs: Vec<u64> },
+    // Pedal-slide (TODO/pedal-slide): a press on a FREE pitch while slide mode is on
+    // picks a target instead of dragging/playing. Silent; the pedal does the moving.
+    SlidePick(i32),
   }
+  // While a grid's pedal-slide mode is on it is a target-picker: a press on a free
+  // pitch sets a slide target (the nearest edit-mode voice's far goalpost, or a swell
+  // into a fresh voice with none) rather than dragging or sounding a note.
+  let slide_mode = rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
   let act = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let gr = &mut rings[rt.grid_index];
@@ -836,8 +868,24 @@ pub(super) fn handle_edit_press(
     // pressed pitch is free of the editing set and the sustain set; otherwise it
     // retriggers (classify also consults `edited_union` for the chord half).
     let is_sustained = |p: i32| sustained.contains(&p);
-    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union)
-    {
+    let press = gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union);
+    // Pedal-slide interception: a Drag (something is edited, this pitch is free)
+    // becomes a pick, and a plain Play on a genuinely FREE pitch (nothing edited)
+    // becomes a swell pick. A press on a SOUNDING pitch still retriggers, and the edit
+    // triggers (enter/exit/sustain) still work -- they select what to slide.
+    let slide_pick = if slide_mode {
+      match press {
+        edit::Press::Drag { to, .. } => Some(to),
+        edit::Press::Play if !is_sounding(pitch) => Some(pitch),
+        _ => None,
+      }
+    } else {
+      None
+    };
+    if let Some(target) = slide_pick {
+      Act::SlidePick(target)
+    } else {
+    match press {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
         // One press takes BOTH layers at this pitch into the selection (Jeff: "if
@@ -909,6 +957,7 @@ pub(super) fn handle_edit_press(
         Act::Dragged { from, to, piano_moved, chord_seqs }
       }
     }
+    }
   };
 
   let (release_secs, sample_rate) = rt.sink.release_params();
@@ -973,8 +1022,61 @@ pub(super) fn handle_edit_press(
         rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
       );
     }
+    Act::SlidePick(target) => {
+      slide_pick(rt, held, target);
+    }
   }
   false
+}
+
+/// A pedal-slide pick (`Act::SlidePick`): retarget the nearest edit-mode voice's far
+/// goalpost to `target`, or -- with no edit-mode voices -- swell a fresh voice in from
+/// silence (the one-note swell). The engine decides which; here we build its edit-mode
+/// voice list, spawn/register any fade-in voices, and apply the first round of drives so
+/// the pick takes effect before the next pedal poll.
+fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32) {
+  let grid = rt.grid_index;
+  // The grid's edit-mode voices, keyed as the pedal-slide engine drives them: a
+  // fingered voice by its cell, a fingerless (drone) one by its pitch. (Phase A leaves
+  // the chord layer to phase B.)
+  let voices: Vec<(VoiceSource, i32)> = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings[grid]
+      .store
+      .iter(Reason::Edit)
+      .map(|p| {
+        let key = match held.iter().find(|(_, hp)| **hp == p) {
+          Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+          None => VoiceSource::SurfaceDrone { grid, pitch: p },
+        };
+        (key, p)
+      })
+      .collect()
+  };
+  let outcome = {
+    let mut eng = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner());
+    eng.pick(target, &voices)
+  };
+  // Spawn every extra target as a real sustained fade-in voice (the swell), joining the
+  // sustain set, and register the pairing so the pedal drives its quartic amplitude.
+  for pitch in outcome.spawn_fade_ins {
+    let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
+    let timbre = Timbre {
+      waveform: slot.waveform,
+      gain: slot.amplitude,
+      am: slot.am,
+      fm: slot.fm,
+      rel_am: slot.rel_am,
+      rel_fm: slot.rel_fm,
+    };
+    let key = rt.sink.spawn_slide_fade_in(pitch, timbre);
+    rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid].store.add(Reason::Sustain, pitch);
+    rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).register_fade_in(key, pitch);
+  }
+  // Apply the drives now so the pick lands immediately (the pedal poll would otherwise
+  // wait up to a poll interval).
+  let drives = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).drives();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
 }
 
 /// How many held cells sound exactly `pitch` right now -- the derived FINGER count

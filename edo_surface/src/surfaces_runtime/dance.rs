@@ -88,6 +88,16 @@ pub fn flash_on(elapsed: Duration) -> bool {
   (elapsed.as_millis() as u64 / FLASH_MS) % 2 == 0
 }
 
+/// The pedal-slide TARGET flash half-period: 100 ms (`1_vision` "flashing between
+/// bright and off every 100 ms"). Driven off the same absolute clock as the dances, so
+/// it never drifts against them (`2_discussion` "driven from the shared dance clock").
+pub const TARGET_FLASH_MS: u64 = 100;
+
+/// Is a pedal-slide target cell lit this instant? A 50% square wave at `TARGET_FLASH_MS`.
+pub fn target_flash_on(elapsed: Duration) -> bool {
+  (elapsed.as_millis() as u64 / TARGET_FLASH_MS) % 2 == 0
+}
+
 /// What the dance may do to a cell that is already lit for another reason.
 ///
 /// The dancers paint DIM, like the trails (Jeff's "have the dancers be dim like

@@ -1,0 +1,106 @@
+#+title: Pedal slide: progress
+#+date: 2026-07-20
+
+Phase A of pedal slide -- everything except the chord-storage interaction (phase B).
+Written against 1_vision.org + 2_discussion.org (including Jeff's DONE amendment on
+the mode-off volume return).
+
+* what's done and went well
+
+- *The pure heart: `surfaces_runtime/pedal_slide.rs`.* Pure, no I/O, unit-tested like
+  `polyrhythm.rs`. It holds:
+  - `Segments` -- the anchored two-segment map (the invariant): two segments joined at
+    the pedal's current position, `s0` at fraction 0, `s1` at 1, re-derived behind you
+    as the pedal moves. One `Shape` (Linear for pitch, Quartic for amplitude fades)
+    parametrizes it. Endpoint-exact, hysteretic (reverse = fresh segment home,
+    anchor re-pinned), kink-gone-at-endpoint, and far-side-only retarget all fall out
+    of the one construction. Pitch lives in fractional EDO-step space (linear there =
+    log-linear in Hz), so no logs in the segment math.
+  - `PedalSlideState` -- mode flag, per-voice `Pairing`s (pitch slides + quartic
+    amplitude fades), home/target side with midpoint hysteresis (`HYSTERESIS_BAND`
+    0.05), `pick` (single-pick home-proximity retarget or one-note swell),
+    `match_targets` (the ascending, ties-lower batch matcher -- built and tested now,
+    wired to picks in phase B), `on_pedal`/`drives`/`take_refiles`/`reconcile`/
+    `led_roles`.
+  - `VolumeReturn` -- the amendment's kinked-x^4 volume return, reusing `Segments`.
+  22 unit tests here, hammering continuity under mid-flight retarget, the hysteretic
+  reversal, endpoint exactness, kink-gone-at-endpoint, the far-side-only rule, the
+  quartic fade, the home hysteresis, the matcher, and the volume return.
+
+- *Rig kind `pedal_slide_toggle`.* `rig.rs` variant + match arms + validation (single
+  cell, one per monome, needs an `edo_note_grid`; parses from `kind =
+  "pedal_slide_toggle"` via serde). Bound at `(0,15)` on BOTH grids in
+  `rigs/2-monomes_2-softsteps.org` with inline comments; NOT added to any other rig.
+  `Overlays.pedal_slide_rect` + resolve in `settings.rs`.
+
+- *Toggle + play-path + flight.* `keys.rs`: the toggle branch (enter/exit the engine,
+  freeze on exit) and the pick interception (a Drag, or a Play on a free pitch,
+  becomes `Act::SlidePick`; `slide_pick` builds the edit-mode voice list, spawns/
+  registers fade-in voices, applies the first drive). `synth.rs`: `apply_slide_drives`,
+  `freeze_slide`/`freeze_slide_voices`, `spawn_slide_fade_in`, `rekey_drone`, and a new
+  `VoiceState.slide_freq_target` driven by a one-pole smoother (`SLIDE_SLEW_SECS` 10 ms,
+  sibling of `GAIN_SLEW_SECS`) in the render hot path -- distinct from `glide_per_sample`.
+
+- *Pedal routing (dual duty).* `pedal_volume.rs::expression_pedal_loop` now checks each
+  grid's `pedal_slide_on`: ON drives the engine (`on_pedal` + `apply_slide_drives`); the
+  ON->OFF edge starts a `VolumeReturn`; OFF applies it until an endpoint, then reverts to
+  the taper. `mod.rs` holds the per-grid `pedal_slide_on` atomics + `pedal_slide` engines
+  (each its own lock) in `Shared`, and passes them to the pedal thread.
+
+- *LEDs + re-filing.* The grid thread repaint drains the engine's midpoint-flip re-files
+  (ring `note_moved` + drone `rekey_drone`), flashes the TARGET goalpost cells 100 ms
+  bright/off off the shared dance clock (`dance::target_flash_on`), and reconciles the
+  pairings against the live edit set (so an editmode-clear/sustain-clear from EITHER
+  surface cancels + freezes + unlights). Home pitches paint bright + dance through the
+  ordinary sustained path.
+
+- *Docs.* `rigs/README.org` window-kind entry + description + expression-pedal dual-duty
+  note; the rig readme (`2-monomes_2-softsteps_readme.org`) gains a "pedal slide" section,
+  a glossary entry, a terminology-trap note beside the pedal/note slide split, and an
+  LED note; rig inline comments at the toggle cells.
+
+- `cargo test --workspace`: 0 failures (569 edo_surface lib + 159 rig-org + the rest).
+
+* Changes to the plan's envisioned order
+
+- The plan pictured the midpoint-flip re-file happening in the expression-pedal loop
+  (item 5). It can't: the ring and the sink are the grid thread's, and re-keying a
+  pitch-keyed drone needs the sink. So the engine QUEUES re-files in `on_pedal` (pedal
+  thread) and the grid thread DRAINS + applies them each repaint (`take_refiles`). Same
+  net effect, cleaner ownership, no cross-thread sink reach.
+- Item 6's "editmode-clear cancels pairings" is implemented as a per-repaint `reconcile`
+  against the live edit set rather than an event hook, so a clear from ANY surface (grid
+  button OR softstep pedal) is covered uniformly -- I never had to thread the engine into
+  `hooks::editmode_clear`.
+- The amendment (volume return) landed mid-implementation and replaced the catch-up
+  pickup I had already written; `VolumeReturn` reuses the slide's own `Segments`.
+
+* what's imperfect about what's done
+
+- *Fade-in voices are keyed as drones (`SurfaceDrone{grid,pitch}`).* Fine for phase-A
+  single-pick swells (one per pitch), and they join the sustain set as real voices, but
+  two swells into the same pitch would collide on the key. Phase B's chord recall (many
+  targets at once) will want a dedicated fade-voice key or a seq.
+- *Fingered (finger-still-down) slide voices re-file the ring store but not the held
+  map at the midpoint flip.* Their voice key is the CELL (stable, so the pedal keeps
+  driving them correctly) and the store/LEDs follow via `note_moved`; only the grid
+  thread's local `held` cell->pitch mirror lags for such a voice mid-flight. Drones
+  (the common flight case -- an edited voice whose finger lifted) re-key fully. A held
+  finger through a whole pedal sweep is the less common gesture.
+- *The initial-drive latency.* A pick applies one round of drives immediately, but
+  thereafter the pedal thread's ~10 ms poll is the update rate; the render's 10 ms
+  smoother covers it, so this is inaudible, but it is not sample-accurate.
+
+* choices determining the future
+
+- *`slide_freq_target` sentinel (0.0 = inactive) on `VoiceState`*, one-pole slewed in the
+  render, is now the pedal-slide flight mechanism. Fade amplitude reuses `grid_gain_target`
+  (the volume-pedal slew). Neither adds a hot-path branch for non-sliding voices beyond a
+  single `> 0.0` check.
+- *Matching model.* Single picks use the vision's home-proximity rule (nearest voice's
+  far goalpost); target SETS use the ascending ties-lower matcher (`match_targets`). Phase
+  B (chord recall) should call `match_targets` + `register_fade_in` for the recalled
+  chord's voices; the fade-out path and `Kind::FadeOut` are already built and tested for it.
+- *Home re-filing files the note at the home-side pitch and re-keys drones at the flip.*
+  Chord voices are excluded in phase A; phase B will need the same for `SurfaceChord` keys
+  (they are seq-keyed, so no re-key -- only the store/registry follows).

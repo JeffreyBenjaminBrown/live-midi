@@ -34,6 +34,10 @@
       distortion_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
       slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
       mono_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      pedal_slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      pedal_slide: Arc::new(
+        (0..num_grids).map(|_| Mutex::new(pedal_slide::PedalSlideState::new())).collect(),
+      ),
       poly,
       live,
       voices: Arc::clone(&voices),
@@ -150,6 +154,59 @@
       rt.shared.voices.lock().unwrap()[&drone].target_env,
       0.0,
       "removing its sustain is what ends it",
+    );
+  }
+
+  /// Pedal slide end to end through the real key handler (TODO/pedal-slide): edit a
+  /// note, turn the toggle on, then a press on a FREE pitch PICKS a target (it does not
+  /// drag or sound), the pedal now drives the edit-mode voice's pitch, and toggling off
+  /// freezes it. Mirrors the exact hardware sequence.
+  #[test]
+  fn pedal_slide_pick_targets_the_edit_voice_and_the_toggle_freezes_it() {
+    use crate::types::VoiceSource;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5);
+    let handle = (5, 6); // directly below: the edit handle
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+    handle_key(&mut rt, &mut register, &mut held, note, true); // strike
+    handle_key(&mut rt, &mut register, &mut held, handle, true); // enter edit (+ sustain)
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    handle_key(&mut rt, &mut register, &mut held, note, false); // lift: it drones, edited
+
+    // Turn pedal-slide ON at the bottom-left toggle.
+    let toggle = (0, 15);
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    assert!(rt.shared.pedal_slide_on[0].load(Ordering::Relaxed), "the toggle is on");
+    assert!(rt.shared.pedal_slide[0].lock().unwrap().mode(), "the engine entered slide mode");
+
+    // Pick a free pitch: it PICKS a target, does not drag the note or sound anything.
+    let target_cell = (10, 10);
+    let target_pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, target_cell.0, target_cell.1);
+    handle_key(&mut rt, &mut register, &mut held, target_cell, true);
+    handle_key(&mut rt, &mut register, &mut held, target_cell, false);
+    assert_eq!(
+      rt.shared.pedal_slide[0].lock().unwrap().targets(),
+      vec![target_pitch],
+      "the pick set a target",
+    );
+    assert!(
+      rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, pitch),
+      "the edited note stayed put -- the press picked, it did not drag it onto the target",
+    );
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
+    assert!(
+      rt.shared.voices.lock().unwrap()[&drone].slide_freq_target > 0.0,
+      "the pedal now drives the edit-mode voice's pitch",
+    );
+
+    // Toggle OFF: the voice freezes where it is (slide target cleared).
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    assert!(!rt.shared.pedal_slide_on[0].load(Ordering::Relaxed), "the toggle is off");
+    assert_eq!(
+      rt.shared.voices.lock().unwrap()[&drone].slide_freq_target, 0.0,
+      "toggling off freezes the voice (no more pedal drive)",
     );
   }
 
@@ -540,6 +597,7 @@
         distortion_rect: NO_RECT,
         slide_rect: NO_RECT,
         mono_rect: NO_RECT,
+        pedal_slide_rect: NO_RECT,
         poly_rect: NO_RECT,
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
@@ -837,14 +895,17 @@
         "factored_pulse_pad",
         "editmode_control",
         "chord_block",
+        "pedal_slide_toggle",
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
         "factored_pulse_pad",
         "editmode_control",
-        "chord_block"
+        "chord_block",
+        "pedal_slide_toggle"
       ],
-      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
+      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f); \
+       each grid also carries its own pedal_slide_toggle (TODO/pedal-slide)",
     );
 
     // The editmode controls mirror the sustain row one row up (queue.org): OSS

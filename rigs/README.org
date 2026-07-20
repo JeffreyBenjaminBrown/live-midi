@@ -342,6 +342,7 @@ Built-in unbundled window kinds:
 - ~distortion_toggle~
 - ~slide_toggle~
 - ~mono_toggle~
+- ~pedal_slide_toggle~
 - ~factored_pulse_pad~
 - ~editmode_control~
 - ~chord_block~
@@ -489,6 +490,23 @@ over ~slide.duration_ms~ (both optional in the ~[slide]~ table; defaults 1000 /
 100). Mono: each new note cuts that grid's other fingered notes -- its own
 grid's switch (and with that grid's slide on, the new note *steals* the cut
 note's voice and glides it over -- true legato, no attack re-trigger).
+
+A ~pedal_slide_toggle~ is the same single-cell, per-monome, dim/bright shape --
+but it is NOT the note-to-note ~slide_toggle~ above (terminology trap: "pedal
+slide" is always the full name). While it is ON, that grid's EX-P expression
+pedal stops driving VOLUME and drives a pitch-SLIDE engine instead: a press on a
+free pitch sets a slide TARGET (the nearest edit-mode voice's far goalpost, or --
+with nothing edited -- a swell into a fresh voice from silence), and the pedal
+glides the voice into it, always smooth (an anchored two-segment cents-space map:
+picking a new target mid-flight moves only the goalpost you are heading toward,
+never the pitch you are nearest). Which pedal half is "home" flips at the pedal's
+midpoint (with hysteresis), so you can chain slides -- raise into one pitch, pick
+another, lower into that. Volume freezes while sliding; toggling OFF returns the
+pedal to volume through the SAME kinked x^4 map (immediate in both directions)
+until it reaches an endpoint, then the ordinary taper resumes. Needs the grid to
+have both an ~edo_note_grid~ and an ~expression_pedal~ (the toggle validates like
+any single-cell one regardless; the pedal is what makes it do anything). See
+~TODO/pedal-slide/~.
 
 (The ~softstep_accretes_toggle~ kind that used to live here -- an on-grid
 switch gating a hardcoded KMSS pedal mirror -- was retired 2026-07: see the
@@ -789,6 +807,15 @@ grid. If the bridge's "MPC-20 pedals" port is missing at startup, the runtime
 prints a red note and plays on without them. Rejected at load: a channel
 outside 1..2, the same channel or the same monome claimed twice, and a monome
 with no ~edo_note_grid~.
+
+Dual duty (TODO/pedal-slide): a grid's EX-P pedal is a volume pedal ONLY while
+that grid's ~pedal_slide_toggle~ is off. Toggle it on and the same pedal drives
+the pitch-slide engine instead (see ~pedal_slide_toggle~ above); volume freezes
+where it was, and toggling back off returns the pedal to volume through an
+anchored kinked x^4 map -- immediately effective in either direction, reverting
+to the taper above once it reaches an endpoint -- rather than jumping or going
+dead. So a grid never has a live volume pedal AND a live pitch slide at once;
+the toggle chooses.
 
 * Optional display
 
