@@ -28,7 +28,7 @@ use crate::rig::{
   SoftstepWindowRig,
 };
 
-use audio::{Sampler, Trigger, VoiceId};
+use audio::{Sampler, SamplerAmplitude, Trigger, VoiceId};
 use decode::{collect_control_changes, gain_from_pressure, DebounceMode, DrumEvent, TetherDecoder};
 use samples::DrumSample;
 
@@ -97,8 +97,20 @@ pub struct DrumSession {
   // Dropped after the timers stop (field order): the MIDI callbacks stop feeding the
   // decoders, then the tether session restores standalone mode last.
   _connections: Vec<MidiInputConnection<()>>,
-  _samplers: HashMap<String, Sampler>,
+  /// Kept alive for the run (dropping a `Sampler` stops its stream), and also READ:
+  /// `sampler_amplitudes` hands out live gain handles for the hot-reload path.
+  samplers: HashMap<String, Sampler>,
   _tether: tether::TetherSession,
+}
+
+impl DrumSession {
+  /// Each running `cpal_sampler` sink's id paired with a live handle to its master
+  /// gain, so a caller that re-reads the rig can revise drum volume without a
+  /// restart. Only the scalar is live: adding, removing, or re-pointing a sink still
+  /// needs a restart, since those rebind streams.
+  pub fn sampler_amplitudes(&self) -> Vec<(String, SamplerAmplitude)> {
+    self.samplers.iter().map(|(id, s)| (id.clone(), s.amplitude())).collect()
+  }
 }
 
 impl Drop for DrumSession {
@@ -109,7 +121,7 @@ impl Drop for DrumSession {
     for (_, handle) in self.timers.drain(..) {
       let _ = handle.join();
     }
-    // `_connections`, `_samplers`, then `_tether` drop after this in field order, so
+    // `_connections`, `samplers`, then `_tether` drop after this in field order, so
     // standalone mode is restored only once the sensor stream has been released.
   }
 }
@@ -173,7 +185,7 @@ pub fn start_with_hook(
         continue;
       }
       let sampler = if no_audio {
-        Sampler::start_null(*sample_rate)
+        Sampler::start_null(*sample_rate, *amplitude)
       } else {
         Sampler::start(*sample_rate, *buffer_frames, *amplitude)
           .map_err(|e| format!("start sampler sink {id:?}: {e}"))?
@@ -356,7 +368,7 @@ pub fn start_with_hook(
   Ok(DrumSession {
     timers,
     _connections: connections,
-    _samplers: samplers,
+    samplers,
     _tether: tether_session,
   })
 }

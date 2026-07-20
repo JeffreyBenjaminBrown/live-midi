@@ -27,7 +27,7 @@ joined mid-slide kinks at the current pedal position. Also paid two phase-A debt
 fade voices can no longer collide on their pitch key (deduped targets + reuse), and a
 finger-still-down slide voice's held-map mirror now follows the midpoint flip.
 
-Readme: the "pedal slide" section of =rigs/2-monomes_2-softsteps_readme.org= (now with
+Readme: the "pedal slide" section of =rigs/2-edogrids_ss-accrete_ss-pulse_readme.org= (renamed since) (now with
 the chord paragraph). Tests: `cargo test --workspace` is green (575 edo_surface lib +
 159 rig-org + the rest). Left INTACT below: the two unrelated queue items (Fast =1,
 monome debouncing) and their TODO children -- untouched.

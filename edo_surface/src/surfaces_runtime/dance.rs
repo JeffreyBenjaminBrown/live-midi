@@ -105,15 +105,14 @@ pub fn target_flash_on(elapsed: Duration) -> bool {
 /// trails", superseding the original bright-dance rule of 4e). They still yield to
 /// a cell that is already bright, because that cell is a sounding note and
 /// overwriting it would destroy real information -- a yielded corner is *skipped,
-/// not retimed*. Over a trailed cell the dance still nominally draws, but dim on
-/// dim is invisible: a corner crossing a trail simply blends in for that slot
-/// (accepted with the dim-dancers call -- the old clobber rationale, "a note whose
-/// four neighbours are all trailed would dance invisibly", is priced in now).
+/// not retimed*. Over a TRAILED cell the dance draws INVERTED: the trail goes
+/// black for that slot (Jeff's "toggle the color of a trail" -- dim on dim was
+/// invisible, and the dark hole walking the trail is what reads).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Occupancy {
-  /// Nothing there: the dance draws.
+  /// Nothing there: the dance draws (dim).
   Dark,
-  /// A trail. The dance draws (indistinguishably -- both are dim).
+  /// A trail. The dance draws inverted: the cell goes black for the slot.
   Dim,
   /// A sounding note. The dance yields; this corner is simply not drawn.
   Bright,

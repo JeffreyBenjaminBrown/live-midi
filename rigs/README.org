@@ -44,9 +44,13 @@ alternatives lately:
 
 # on host, once per login
 xhost +local:
-# in docker:
+# in docker -- the current instrument, in its two forms (identical but for
+# what the NEWER SoftStep does: the factored pulse, or a drumkit):
 pw-jack cargo run --bin midi_pulse \
-  2-monomes_kmss-drums
+  2-edogrids_ss-accrete_ss-pulse
+
+pw-jack cargo run --bin midi_pulse \
+  2-edogrids_ss-accrete_ss-drums
 
 pw-jack cargo run --bin midi_pulse \
   monome-looper-58-8-1-timbre
@@ -345,13 +349,14 @@ Built-in unbundled window kinds:
 - ~pedal_slide_toggle~
 - ~factored_pulse_pad~
 - ~editmode_control~
+- ~fine_transpose_toggle~
 - ~chord_block~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
 the window's own ~monome~, though a different play grid is legal (cross-control).
 The surfaces runtime uses it to give each play grid its own timbre control (see
-[[./2-monomes_kmss-drums_readme.org]]). Its rect must cover exactly the four cells
+[[./2-edogrids_ss-accrete_ss-pulse_readme.org]]). Its rect must cover exactly the four cells
 (one row, four wide).
 
 A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
@@ -547,6 +552,21 @@ is on: it blinks at 10% duty at the base tempo -- unfactored, so both grids' tap
 cells blink together and no tempo-factor button moves them -- fully lit against
 black.
 
+A ~fine_transpose_toggle~ (surfaces runtime) is a single cell (at most one per
+monome, on a monome with an ~edo_note_grid~; lit bright while on, resting dim
+under the control flash) that turns the play grid into a live transpose
+controller for the edit selection (entering with an empty selection first
+selects everything sounding on that monome, exactly as the ~editmode_control~
+accrete one-shot does): a dancing 5x5 X -- two fully-lit dots trailing each
+other along one slash then the other, 25 ms per step, overwriting whatever
+they pass over where lit -- marks a
+center pitch seeded at the board center; each play press sets the selection's
+transpose to (pressed pitch - center), gliding every edited voice at once,
+mono-style (newest press wins, releases snap to the most recent held key, the
+last release keeps the transpose); the octave corners move the X itself, even
+off-screen, non-persistently; exiting keeps a nonzero transpose. Player's
+reference: [[./2-edogrids_ss-accrete_ss-pulse_readme.org]] "fine transpose".
+
 A ~chord_block~ (surfaces runtime; TODO/chord-storage-v2) is a 5x2 block of
 chord-storage controls -- slots 1..5 on the top row, the ARM button then slots
 6..9 on the bottom -- at most one per monome, on a monome with an
@@ -583,7 +603,7 @@ empties. Slots persist per rig id under =state/chord-slots/= (atomic writes on
 every save; toggles and arming are not persisted). LEDs: slots idle dim with
 an active slot bright; the arm cell is black until armed, then flashes. The
 full player's
-reference: [[./2-monomes_2-softsteps_readme.org]] "chord storage" and "chord
+reference: [[./2-edogrids_ss-accrete_ss-pulse_readme.org]] "chord storage" and "chord
 voices in edit mode".
 
 The bundled 12-EDO offset/root board is:
@@ -687,9 +707,12 @@ mirror (a MONOME window kind, gone from the "Monome windows" section above): tha
 kind hardcoded pedals 1/2/3 + 8/9/0 to a fixed monome-bank mapping and only acted
 while an on-grid toggle was on, so the same pedal did double duty (drums when the
 toggle was off, sustain when it was on) -- necessary on a rig with only one SoftStep
-board and no pedals to spare. A rig with a SECOND board can instead bind those same
-pedal numbers explicitly and unconditionally (see
-~rigs/2-monomes_kmss-drums.org~'s second ~[[softsteps]]~ board, id ~"sustain"~):
+board and no pedals to spare. A rig with a SECOND board can instead bind sustain
+pedals explicitly and unconditionally, choosing its own layout rather than
+inheriting a hardcoded one -- see the ~"old"~ board in
+~rigs/2-edogrids_ss-accrete_ss-pulse.org~ (and its drum-board twin
+~..._ss-drums.org~), which spends a whole board on sustain and edit mode in two
+rows of four:
 
 #+begin_src toml
 [[softstep_windows]]
@@ -907,7 +930,8 @@ sink = "midi"
 * Surfaces
 
 The surfaces runtime (two EDO play grids + optional KMSS drumkit; see
-[[./2-monomes_kmss-drums_readme.org]]) reads three small, independent, optional
+[[./2-edogrids_ss-accrete_ss-pulse_readme.org]], and its drum-board twin
+[[./2-edogrids_ss-accrete_ss-drums_readme.org]]) reads three small, independent, optional
 tables of instrument-wide scalars. Each table -- and each field within it -- is
 optional; a missing one falls back to its default, so behaviour is unchanged for
 rigs that don't declare it. Only the surfaces runtime consults them.
@@ -969,7 +993,7 @@ loads iff every device it depends on is present.
   friends) whose target grid is absent is simply dropped, the same way a
   cross-surface strip is.
 - *A missing SECOND board.* A rig with more than one ~[[softsteps]]~ board
-  (e.g. ~2-monomes_kmss-drums~'s drum board plus its sustain-pedal board) skips
+  (e.g. ~2-edogrids_ss-accrete_ss-drums~'s drum board plus its sustain-pedal board) skips
   whichever declared board isn't plugged in -- a startup warning names it --
   while every board that IS present still comes up: the drums keep playing
   with the sustain pedals unplugged, and vice versa.

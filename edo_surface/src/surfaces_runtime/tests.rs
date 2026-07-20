@@ -1,21 +1,17 @@
   use super::*;
   use crate::rig::{load_named_rig, SlideRig, TapTempoRig, TrailRig};
 
-  /// A real `GridThread` over the real =2-monomes_2-softsteps= rig's grid A, wired
+  /// A real `GridThread` over the real =2-edogrids_ss-accrete_ss-pulse= rig's grid A, wired
   /// to a live voice map, for driving `handle_key` end to end without hardware.
   /// The socket binds an ephemeral port and nothing is ever sent or received on it;
   /// the accrete bank is momentary, exactly as `run()` builds it for this rig
   /// (no needs_holding control is bound anywhere).
   fn test_grid_thread() -> GridThread {
-    let rig = load_named_rig("2-monomes_2-softsteps").expect("rig loads");
+    let rig = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("rig loads");
     let s = resolve_settings(&rig).expect("rig resolves");
     let num_grids = s.grids.len();
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let live = Arc::new(Live {
-      generation: AtomicU64::new(0),
-      params: Mutex::new(live_params(&s)),
-      makeup: Mutex::new(live_makeup(&s)),
-    });
+    let live = Arc::new(Live::new(&s));
     let poly = {
       let mut p = PolyrhythmState::new(num_grids);
       p.set_fixed_tempo(1.0, Instant::now());
@@ -78,6 +74,7 @@
       shared,
       slide: SlideCandidates::new(),
       pedal_slide: pedal_slide::PedalSlideState::new(),
+      fine: fine::FineTranspose::new(),
       started: Instant::now(),
       sink: SurfaceSink::new(
         0,
@@ -1094,6 +1091,152 @@
     assert_ne!(register, 0, "with no selection, the corner moves the register as ever");
   }
 
+  /// queues/branch-2.org "fine transpose", end to end: toggle on at (0,15), press
+  /// transpose keys (live scalar transpose of the whole selection, mono-style with
+  /// snap-back, the last release keeping it), move the X with an octave corner,
+  /// exit with the transpose still in effect and the grid playing again.
+  #[test]
+  fn fine_transpose_sets_a_live_scalar_transpose_of_the_selection() {
+    use crate::pitch::freq_for_pitch;
+    use crate::types::VoiceSource;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let edo = rt.tuning.edo;
+    let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
+    let step = move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y);
+    let toggle = (1, 15); // one cell right of the pedal-slide toggle, which holds the corner
+    let note = (5, 5);
+    let pitch = step(note.0, note.1);
+    let freq_at = |rt: &GridThread, p: i32| freq_for_pitch(p, rt.tuning.fund, edo);
+
+    // An edited drone to transpose: strike, edit via the handle, lift.
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+
+    // Enter fine transpose: the X seeds at the board center's pitch.
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    assert!(rt.fine.on);
+    let center = step(8, 8);
+    assert_eq!(rt.fine.center, center, "the X seeds at the board center");
+
+    // Press a key: the selection moves to (pressed - center), live.
+    let key_a = (8, 11); // interval +3 from the center
+    let int_a = step(key_a.0, key_a.1) - center;
+    handle_key(&mut rt, &mut register, &mut held, key_a, true);
+    let drone = |p: i32| VoiceSource::SurfaceDrone { grid: 0, pitch: p };
+    {
+      let v = rt.shared.voices.lock().unwrap();
+      let s = &v[&drone(pitch + int_a)];
+      assert_eq!(s.freq_target, freq_at(&rt, pitch + int_a), "gliding to +3, live");
+      assert_eq!(v.len(), 1, "a transpose key sounds no note of its own");
+    }
+    assert!(
+      rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, pitch + int_a),
+      "the selection re-filed at the transposed pitch",
+    );
+
+    // A second key (first still held) wins; releasing it snaps back; releasing the
+    // last key keeps the transpose.
+    let key_b = (8, 13); // interval +5
+    let int_b = step(key_b.0, key_b.1) - center;
+    handle_key(&mut rt, &mut register, &mut held, key_b, true);
+    assert!(rt.shared.voices.lock().unwrap().contains_key(&drone(pitch + int_b)), "newest wins");
+    handle_key(&mut rt, &mut register, &mut held, key_b, false);
+    assert!(
+      rt.shared.voices.lock().unwrap().contains_key(&drone(pitch + int_a)),
+      "release snaps to the still-held key",
+    );
+    handle_key(&mut rt, &mut register, &mut held, key_a, false);
+    assert_eq!(rt.fine.applied, int_a, "the LAST release keeps the transpose");
+
+    // An octave corner moves the X, not the register and not the voices.
+    handle_key(&mut rt, &mut register, &mut held, (13, 14), true); // octave-down corner
+    handle_key(&mut rt, &mut register, &mut held, (13, 14), false);
+    assert_eq!(rt.fine.center, center - edo, "the X moved an octave down");
+    assert_eq!(register, 0, "the register held");
+    assert!(rt.shared.voices.lock().unwrap().contains_key(&drone(pitch + int_a)), "voices held");
+
+    // Exit: the transpose remains in effect; the grid plays again.
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    assert!(!rt.fine.on);
+    assert!(
+      rt.shared.voices.lock().unwrap().contains_key(&drone(pitch + int_a)),
+      "a nonzero transpose remains in effect on exit",
+    );
+    handle_key(&mut rt, &mut register, &mut held, (3, 12), true); // an ordinary note again
+    assert!(
+      rt.shared.voices.lock().unwrap().contains_key(
+        &VoiceSource::SurfaceFinger { grid: 0, cell: (3, 12) },
+      ),
+      "after exit the grid plays notes again",
+    );
+  }
+
+  /// Entering fine transpose with NO edit selection first selects everything
+  /// sounding on that monome -- the editmode-accrete one-shot, "just as if they
+  /// had pressed the kmss select-everything button" (Jeff by chat). A non-empty
+  /// selection is left exactly as it is.
+  #[test]
+  fn entering_fine_transpose_with_nothing_selected_selects_everything_sounding() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    use crate::types::Timbre;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let toggle = (1, 15); // one cell right of the pedal-slide toggle, which holds the corner
+    let step = {
+      let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
+      move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y)
+    };
+
+    // Sounding but UNSELECTED: a fingered note, a sustained drone, a chord voice.
+    handle_key(&mut rt, &mut register, &mut held, (3, 12), true); // stays fingered
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 4), true); // sustain handle
+    handle_key(&mut rt, &mut register, &mut held, (5, 4), false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), false); // drones
+    let chord_pitch = step(8, 8);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![StoredVoice {
+        pitch: chord_pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+        osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+      }] });
+    }
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), true); // recall slot 0
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
+    assert!(!rt.shared.ring.lock().unwrap()[0].store.any(Reason::Edit), "nothing selected yet");
+
+    // Enter: everything sounding joins the selection.
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    {
+      let rings = rt.shared.ring.lock().unwrap();
+      assert!(rings[0].store.has(Reason::Edit, step(3, 12)), "the fingered note is selected");
+      assert!(rings[0].store.has(Reason::Edit, step(5, 5)), "the drone is selected");
+      assert!(rings[0].chord.live.values().all(|v| v.edited), "the chord voice is selected");
+    }
+
+    // Exit; deselect only the drone's pitch via its handle, keeping the rest
+    // selected -- a NON-empty selection must survive a re-entry untouched.
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), true); // exit-edit handle
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
+    assert!(!rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, step(5, 5)));
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    assert!(
+      !rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, step(5, 5)),
+      "re-entry with a live selection selects nothing new",
+    );
+  }
+
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());
@@ -1301,6 +1444,7 @@
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
         chord_rect: NO_RECT,
+        fine_transpose_rect: NO_RECT,
       },
     }
   }
@@ -1487,7 +1631,7 @@
   fn the_two_softstep_rig_loads_and_pins_its_gear() {
     use crate::rig::{AccreteControlKind, PulseFactorRig, SoftstepWindowRig};
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read the shipped rig");
     let rig = crate::rig_org::parse_org_rig(&source).expect("the shipped rig parses");
@@ -1595,16 +1739,19 @@
         "editmode_control",
         "chord_block",
         "pedal_slide_toggle",
+        "fine_transpose_toggle",
         "edo_note_grid",
         "waveform_selector",
         "edo_shift_pad",
         "factored_pulse_pad",
         "editmode_control",
         "chord_block",
-        "pedal_slide_toggle"
+        "pedal_slide_toggle",
+        "fine_transpose_toggle"
       ],
       "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f); \
-       each grid additionally carries its own pedal_slide_toggle (TODO/pedal-slide)",
+       each grid additionally carries its own pedal_slide_toggle (TODO/pedal-slide) \
+       and fine_transpose_toggle (queues/branch-2.org)",
     );
 
     // The editmode controls mirror the sustain row one row up (queue.org): OSS
@@ -1675,7 +1822,7 @@
   #[test]
   fn the_two_softstep_rigs_pedals_resolve_to_the_right_actions() {
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read the shipped rig");
     let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
@@ -1746,7 +1893,7 @@
   #[test]
   fn a_pedal_whose_grid_is_absent_is_dropped() {
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read");
     let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
@@ -2019,7 +2166,7 @@
   fn the_two_softstep_rigs_accrete_is_momentary_not_toggle() {
     use crate::rig::{AccreteControlKind, SoftstepWindowRig};
     let source = std::fs::read_to_string(
-      crate::rig::rig_dir().join("2-monomes_2-softsteps.org"),
+      crate::rig::rig_dir().join("2-edogrids_ss-accrete_ss-pulse.org"),
     )
     .expect("read the shipped rig");
     let rig = crate::rig_org::parse_org_rig(&source).expect("parses");
@@ -2083,11 +2230,7 @@
     // generation moves, so grid threads and the audio callback pick them up.
     let base = load_named_rig("2-monomes_kmss-drums-mock").expect("rig loads");
     let s = resolve_settings(&base).expect("resolves");
-    let live = Live {
-      generation: AtomicU64::new(0),
-      params: Mutex::new(live_params(&s)),
-      makeup: Mutex::new(live_makeup(&s)),
-    };
+    let live = Live::new(&s);
 
     let source = std::fs::read_to_string(
       crate::rig::mock_rig_dir().join("2-monomes_kmss-drums-mock.org"),

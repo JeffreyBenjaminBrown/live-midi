@@ -28,6 +28,7 @@ mod chords;
 mod chords_persist;
 mod dance;
 mod edit;
+mod fine;
 mod grid;
 mod hooks;
 mod keys;
@@ -157,11 +158,9 @@ fn run(
   let s = resolve_settings(rig)?;
   let num_grids = s.grids.len();
   // The hot-reloadable parameters ('r' + Enter re-reads the rig; see `Live`).
-  let live = Arc::new(Live {
-    generation: AtomicU64::new(0),
-    params: Mutex::new(live_params(&s)),
-    makeup: Mutex::new(live_makeup(&s)),
-  });
+  // Drum gains are registered onto this later, once the drumkit exists (it is brought
+  // up much further down, after the 'r' thread below is already reading `live`).
+  let live = Arc::new(Live::new(&s));
   if let Some(name) = reload_name {
     let live_for_stdin = Arc::clone(&live);
     let name = name.to_string();
@@ -178,7 +177,7 @@ fn run(
         }
       }
     });
-    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves).");
+    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves / drum volume).");
   }
 
   // Discover whatever grids are actually connected and assign each configured grid a
@@ -275,7 +274,7 @@ fn run(
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
-  // source at all (2-monomes_2-softsteps retired its tap pedal: Jeff never set a
+  // source at all (2-edogrids_ss-accrete_ss-pulse retired its tap pedal: Jeff never set a
   // tempo with it) is not stuck waiting for a tap that can never come, and where a
   // tap source exists, tapping simply overrides the seed.
   let poly = {
@@ -447,11 +446,16 @@ fn run(
       s.release,
       audio.sample_rate,
     );
-    Some(drumkit_runtime::start_with_hook(
+    let session = drumkit_runtime::start_with_hook(
       rig,
       drumkit_runtime::tether::session(),
       Some(hook),
-    )?)
+    )?;
+    // Hand the 'r' reload live handles on the drum gains, so drum volume is
+    // revisable mid-play like the synth's. Registered here rather than at `Live`'s
+    // construction because the samplers only exist now.
+    live.register_samplers(session.sampler_amplitudes());
+    Some(session)
   } else {
     None
   };
@@ -541,6 +545,7 @@ fn run(
       shared: shared.clone(),
       slide: SlideCandidates::new(),
       pedal_slide: pedal_slide::PedalSlideState::new(),
+      fine: fine::FineTranspose::new(),
       started: Instant::now(),
       sink: SurfaceSink::new(
         grid_index,
@@ -711,6 +716,8 @@ struct GridThread {
   /// mutated together, by one thread, in one order. That is the whole fix for the
   /// reverted build's disease (6_plan.org's ranked cause 1).
   pedal_slide: pedal_slide::PedalSlideState,
+  /// THIS grid's fine-transpose mode (the X, the scalar transpose, the key stack).
+  fine: fine::FineTranspose,
   /// When this runtime started. The diamond dance's phase is a pure function of
   /// elapsed time from here, so every dance on the instrument turns in step -- that
   /// is the whole reason a skipped corner is not allowed to retime its dance.
@@ -839,6 +846,9 @@ fn grid_thread(mut rt: GridThread) {
     // The editmode buttons: dim at rest (findable), bright while pressed.
     buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
     buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
+    // The fine-transpose toggle: bright while the mode is on, resting dim (which
+    // the slow control flash gates) otherwise.
+    buttons.push((rt.overlays.fine_transpose_rect, button_level(rt.fine.on)));
     if rt.overlays.poly_rect != NO_RECT {
       // The pad's six cells, all per-THIS-grid state: the tempo-factor cells show
       // which way this grid's tempo factor leans; =1 shows this grid's
@@ -925,6 +935,17 @@ fn grid_thread(mut rt: GridThread) {
         dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
       }
     }
+    // The fine-transpose X (queues/branch-2.org, revised by chat): TWO fully-lit
+    // dots trailing each other along one slash of a 5x5 X and then the other,
+    // 25 ms per step, around the center pitch's on-screen image(s). Where lit
+    // they overwrite everything on the play surface; absent while the center is
+    // off-screen.
+    let mut x_cells: HashSet<(i32, i32)> = HashSet::new();
+    if rt.fine.on {
+      for img in cells_for_pitch(&rt, register, rt.fine.center) {
+        x_cells.extend(fine::x_walk_cells(img, elapsed));
+      }
+    }
     // The visible pitch window, for "is that note off-screen".
     let [ex0, ey0, ex1, ey1] = rt.overlays.edo_rect;
     let corners = [
@@ -953,6 +974,7 @@ fn grid_thread(mut rt: GridThread) {
       &sounding_classes,
       &trail_classes,
       &dance_cells,
+      &x_cells,
       off,
       dance::overlay_dim_on(elapsed),
       rt.overlays.edo_rect,

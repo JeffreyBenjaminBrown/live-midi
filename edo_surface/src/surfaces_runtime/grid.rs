@@ -120,6 +120,7 @@ pub fn levels_for_grid(
   sounding_classes: &HashSet<i32>,
   trail_classes: &HashSet<i32>,
   dance_cells: &HashSet<(i32, i32)>,
+  x_cells: &HashSet<(i32, i32)>,
   octave_flash: super::dance::OffScreen,
   overlay_dim_on: bool,
   edo_rect: [i32; 4],
@@ -184,8 +185,21 @@ pub fn levels_for_grid(
           DIM => super::dance::Occupancy::Dim,
           _ => super::dance::Occupancy::Dark,
         };
-        if dance_cells.contains(&(x, y)) && super::dance::draws_over(under) {
-          DIM
+        // The fine-transpose X's walking dots: FULLY LIT, and where lit they
+        // overwrite everything on the play surface -- voices, dances, trails
+        // (Jeff's revision of the original everything-clobbers-it X, which read
+        // poorly). Where the X is dark it overwrites nothing at all.
+        if x_cells.contains(&(x, y)) {
+          BRIGHT
+        } else if dance_cells.contains(&(x, y)) && super::dance::draws_over(under) {
+          // A dancer TOGGLES a trailed cell (Jeff): dim over dark as ever, but
+          // BLACK over a trail -- dim on dim was invisible, and the dark hole
+          // walking through the trail is what makes the dance legible there.
+          if base == DIM {
+            OFF
+          } else {
+            DIM
+          }
         } else {
           base
         }
@@ -239,6 +253,11 @@ mod tests {
   /// describe. The off half has its own test.
   const DIM_ON: bool = true;
 
+  /// No fine-transpose X: the baseline every non-X test paints against.
+  fn no_x() -> HashSet<(i32, i32)> {
+    HashSet::new()
+  }
+
   fn paint(
     sounding: &HashSet<i32>,
     trail: &HashSet<i32>,
@@ -246,7 +265,7 @@ mod tests {
     volume_col: i32,
   ) -> Vec<i32> {
     levels_for_grid(
-      sounding, trail, &no_dance(), NO_FLASH, DIM_ON, FULL, SELECTOR, 1, VOLUME, volume_col, SCROLL,
+      sounding, trail, &no_dance(), &no_x(), NO_FLASH, DIM_ON, FULL, SELECTOR, 1, VOLUME, volume_col, SCROLL,
       &[], register, XS, YS, EDO, 16, 16,
     )
   }
@@ -273,7 +292,7 @@ mod tests {
     ];
     let trail: HashSet<i32> = [class_at(0, 6, 6)].into_iter().collect();
     let off_half = levels_for_grid(
-      &empty(), &trail, &no_dance(), NO_FLASH, false, FULL, SELECTOR, 1, VOLUME, 10, SCROLL,
+      &empty(), &trail, &no_dance(), &no_x(), NO_FLASH, false, FULL, SELECTOR, 1, VOLUME, 10, SCROLL,
       &buttons, 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&off_half, 0, 0), OFF, "an unselected selector slot goes dark");
@@ -287,13 +306,29 @@ mod tests {
     // The dim half is exactly the old picture (pinned throughout the other tests
     // via DIM_ON); spot-check the same cells.
     let dim_half = levels_for_grid(
-      &empty(), &trail, &no_dance(), NO_FLASH, true, FULL, SELECTOR, 1, VOLUME, 10, SCROLL,
+      &empty(), &trail, &no_dance(), &no_x(), NO_FLASH, true, FULL, SELECTOR, 1, VOLUME, 10, SCROLL,
       &buttons, 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&dim_half, 0, 0), DIM);
     assert_eq!(at(&dim_half, 14, 14), DIM);
     assert_eq!(at(&dim_half, 0, 15), DIM);
     assert_eq!(at(&dim_half, 6, 6), DIM);
+  }
+
+  /// The fine-transpose X's walking dots are FULLY LIT and, where lit, overwrite
+  /// everything on the play surface -- trails, dances, whatever sounds there.
+  /// Where the X is dark it overwrites nothing.
+  #[test]
+  fn the_x_dots_paint_bright_over_everything_where_lit_and_nothing_where_not() {
+    let x: HashSet<(i32, i32)> = [(6, 6), (8, 8)].into_iter().collect();
+    let trail: HashSet<i32> = [class_at(0, 6, 6), class_at(0, 5, 5)].into_iter().collect();
+    let levels = levels_for_grid(
+      &empty(), &trail, &dance_at(&[(8, 8)]), &x, NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1,
+      NONE, &[], 0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&levels, 6, 6), BRIGHT, "a dot overwrites a trailed cell");
+    assert_eq!(at(&levels, 8, 8), BRIGHT, "a dot overwrites a dance corner");
+    assert_eq!(at(&levels, 5, 5), DIM, "where the X is dark, everything shows as ever");
   }
 
   #[test]
@@ -306,7 +341,7 @@ mod tests {
   #[test]
   fn selector_lights_selected_bright_others_dim() {
     let levels = levels_for_grid(
-      &empty(), &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, SELECTOR, 2, NONE, -1, NONE,
+      &empty(), &empty(), &no_dance(), &no_x(), NO_FLASH, DIM_ON, FULL, SELECTOR, 2, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 2, 0), BRIGHT, "slot 2 (square) selected");
@@ -326,7 +361,7 @@ mod tests {
     // Make the class under the clear button "sound" -- the button must occlude it.
     let cls: HashSet<i32> = [class_at(0, 0, 15)].into_iter().collect();
     let levels = levels_for_grid(
-      &cls, &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, SELECTOR, 1, VOLUME, 10, SCROLL, &buttons,
+      &cls, &empty(), &no_dance(), &no_x(), NO_FLASH, DIM_ON, FULL, SELECTOR, 1, VOLUME, 10, SCROLL, &buttons,
       0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 0, 15), DIM, "clear rests dim even though its class sounds");
@@ -342,7 +377,7 @@ mod tests {
     let buttons: Vec<ButtonOverlay> = vec![([15, 0, 15, 0], OFF)];
     let cls: HashSet<i32> = [class_at(0, 15, 0)].into_iter().collect();
     let levels = levels_for_grid(
-      &cls, &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, NONE, 1, NONE, -1, SCROLL, &buttons,
+      &cls, &empty(), &no_dance(), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 1, NONE, -1, SCROLL, &buttons,
       0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 15, 0), OFF, "blink-off tap cell is black, not dim");
@@ -450,23 +485,23 @@ mod tests {
   fn a_danced_cell_lights_dim_over_nothing() {
     // The dancers are dim, like the trails (Jeff, superseding the bright-dance 4e).
     let levels = levels_for_grid(
-      &empty(), &empty(), &dance_at(&[(5, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &empty(), &dance_at(&[(5, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 5, 4), DIM);
     assert_eq!(at(&levels, 5, 5), OFF, "only the corner, not the note's own cell");
   }
 
-  /// Over a trailed cell the dance still draws, but dim on dim is indistinguishable
-  /// -- the corner blends in for that slot (the accepted price of dim dancers).
+  /// Over a trailed cell the dance draws INVERTED -- the trail goes black for the
+  /// slot (Jeff's "toggle the color of a trail"; dim on dim was invisible).
   #[test]
-  fn a_danced_cell_over_a_trail_stays_dim() {
+  fn a_danced_cell_toggles_a_trailed_cell_black() {
     let trail: HashSet<i32> = [class_at(0, 5, 4)].into_iter().collect();
     let danced = levels_for_grid(
-      &empty(), &trail, &dance_at(&[(5, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &trail, &dance_at(&[(5, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&danced, 5, 4), DIM, "dance + trail = still just dim");
+    assert_eq!(at(&danced, 5, 4), OFF, "dance over trail = the trail toggles black");
   }
 
   /// ...but it YIELDS to a sounding note, which is real information. The cell simply
@@ -476,7 +511,7 @@ mod tests {
   fn a_danced_cell_yields_to_a_sounding_note_and_is_simply_skipped() {
     let sounding: HashSet<i32> = [class_at(0, 5, 4)].into_iter().collect();
     let levels = levels_for_grid(
-      &sounding, &empty(), &dance_at(&[(5, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
+      &sounding, &empty(), &dance_at(&[(5, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 5, 4), BRIGHT, "still bright -- but as the NOTE, not the dance");
@@ -496,7 +531,7 @@ mod tests {
   #[test]
   fn a_square_danced_cell_lights_dim_over_nothing() {
     let levels = levels_for_grid(
-      &empty(), &empty(), &dance_at(&[(6, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &empty(), &dance_at(&[(6, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 6, 4), DIM, "the diagonal neighbour, e.g. NE of (5,5)");
@@ -504,17 +539,17 @@ mod tests {
   }
 
   #[test]
-  fn a_square_danced_cell_blends_with_a_trail_and_yields_to_a_sounding_note() {
+  fn a_square_danced_cell_toggles_a_trail_and_yields_to_a_sounding_note() {
     let trail: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let danced = levels_for_grid(
-      &empty(), &trail, &dance_at(&[(6, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &trail, &dance_at(&[(6, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&danced, 6, 4), DIM, "dance + trail = dim, diamond or square alike");
+    assert_eq!(at(&danced, 6, 4), OFF, "dance over trail toggles black, diamond or square alike");
 
     let sounding: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let yielded = levels_for_grid(
-      &sounding, &empty(), &dance_at(&[(6, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
+      &sounding, &empty(), &dance_at(&[(6, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&yielded, 6, 4), BRIGHT, "bright -- as the NOTE, the dance yields");
@@ -534,7 +569,7 @@ mod tests {
     assert_eq!(both.len(), 2, "the two dances are 45 degrees apart, never the same cell");
 
     let levels =
-      levels_for_grid(&empty(), &empty(), &both, NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE, &[], 0, XS, YS, EDO, 16, 16);
+      levels_for_grid(&empty(), &empty(), &both, &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE, &[], 0, XS, YS, EDO, 16, 16);
     for (x, y) in both.iter().copied() {
       assert_eq!(at(&levels, x, y), DIM, "({x},{y}) should be lit (dim) by one of the two dances");
     }
@@ -544,7 +579,7 @@ mod tests {
   #[test]
   fn the_octave_corners_rest_dark_and_flash_when_a_note_is_off_screen_that_way() {
     let dark = levels_for_grid(
-      &empty(), &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, SCROLL,
+      &empty(), &empty(), &no_dance(), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, SCROLL,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     // Find the two octave corners of the scroll pad.
@@ -566,7 +601,7 @@ mod tests {
 
     // A note ABOVE the window is reached by raising the register -> OctaveUp flashes.
     let above = levels_for_grid(
-      &empty(), &empty(), &no_dance(),
+      &empty(), &empty(), &no_dance(), &no_x(),
       super::super::dance::OffScreen { below: false, above: true }, DIM_ON,
       FULL, NONE, 0, NONE, -1, SCROLL, &[], 0, XS, YS, EDO, 16, 16,
     );
@@ -575,7 +610,7 @@ mod tests {
 
     // Both directions at once -> both corners (1_vision).
     let both = levels_for_grid(
-      &empty(), &empty(), &no_dance(),
+      &empty(), &empty(), &no_dance(), &no_x(),
       super::super::dance::OffScreen { below: true, above: true }, DIM_ON,
       FULL, NONE, 0, NONE, -1, SCROLL, &[], 0, XS, YS, EDO, 16, 16,
     );
@@ -588,7 +623,7 @@ mod tests {
   #[test]
   fn the_scroll_arrows_stay_dim_and_never_flash() {
     let levels = levels_for_grid(
-      &empty(), &empty(), &no_dance(),
+      &empty(), &empty(), &no_dance(), &no_x(),
       super::super::dance::OffScreen { below: true, above: true }, DIM_ON,
       FULL, NONE, 0, NONE, -1, SCROLL, &[], 0, XS, YS, EDO, 16, 16,
     );

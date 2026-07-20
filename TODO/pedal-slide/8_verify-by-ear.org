@@ -14,7 +14,7 @@ the only question the harness cannot answer.
 
 * how to run it
 #+begin_src sh
-pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse
 #+end_src
 The EX-P pedals need =tools/pedals/bridge.sh= running on the HOST (see
 =tools/pedals/README.org=). One pedal reads ~35..127 until its MIN thumbwheel is
@@ -87,9 +87,11 @@ G. *The silent end reclaims the range.* Instead, go all the way to the SILENT
    across the whole travel, both arriving together at the target.
 
 * slice 1 -- one voice, one target [NOT YET PLAYED]
-The toggle is each grid's *bottom-left cell*, =[0,15]= (a free play cell on this
-rig; it is the accrete clear on =2-monomes_kmss-drums=, which does not carry
-this feature). Dim at rest, bright while on.
+The toggle is each grid's *bottom-left cell*, =[0,15]=, on BOTH edogrid rigs.
+(It is the accrete clear on =2-monomes_kmss-drums=, which does not carry this
+feature.) Fine transpose, which briefly held this corner while pedal slide was
+deferred, has moved one cell right to =[1,15]= -- exactly as that rig's own note
+said it would "if [the slide pedal] ever lands". Dim at rest, bright while on.
 
 Setup for every item: strike a note, press the cell BELOW it to edit it (which
 also sustains it), lift your finger. Then press =[0,15]=.

@@ -888,6 +888,16 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
     control: AccreteControlKind,
   },
+  // A single-cell toggle for FINE TRANSPOSE (surfaces runtime;
+  // queues/branch-2.org): while on, a dancing X marks a center pitch, play
+  // presses set a scalar transpose of the grid's whole edit selection (pressed
+  // pitch minus the X's center), and the octave corners move the X. At most one
+  // per monome, on a monome with an edo_note_grid.
+  FineTransposeToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // The chord-storage block (surfaces runtime; TODO/chord-storage-v2): a 5x2
   // compound overlaid on the edo grid. Top row = slots 1..5, bottom row = the ARM
   // button then slots 6..9. Arm + slot press saves every voice the monome is
@@ -1069,6 +1079,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { id, .. }
       | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
+      | MonomeWindowRig::FineTransposeToggle { id, .. }
       | MonomeWindowRig::ChordBlock { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
@@ -1105,6 +1116,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { monome, .. }
       | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
+      | MonomeWindowRig::FineTransposeToggle { monome, .. }
       | MonomeWindowRig::ChordBlock { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
@@ -1141,6 +1153,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { rect, .. }
       | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
+      | MonomeWindowRig::FineTransposeToggle { rect, .. }
       | MonomeWindowRig::ChordBlock { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
@@ -1178,6 +1191,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
+      MonomeWindowRig::FineTransposeToggle { .. } => "fine_transpose_toggle",
       MonomeWindowRig::ChordBlock { .. } => "chord_block",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
@@ -1988,6 +2002,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     }
     MonomeWindowRig::PedalSlideToggle { id, monome, rect } => {
       Some(("pedal_slide_toggle", id, monome, *rect))
+    }
+    MonomeWindowRig::FineTransposeToggle { id, monome, rect } => {
+      Some(("fine_transpose_toggle", id, monome, *rect))
     }
     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
       // Per-control uniqueness: label by control so a monome may carry one clear
@@ -3769,6 +3786,66 @@ factor = "x2"
     };
     assert_eq!(pads[0].gain, 1.0, "default pad gain");
     assert_eq!(pads.len(), 3);
+  }
+
+  /// The two sibling rigs differ in exactly one place: what the NEWER SoftStep does.
+  /// Everything else -- grids, overlays, and the older board's sustain/edit pedals --
+  /// must stay identical, so a change to one is a deliberate change to both.
+  #[test]
+  fn the_two_edogrid_rigs_differ_only_in_the_newer_boards_job() {
+    let pulse = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("pulse rig loads");
+    let drums = load_named_rig("2-edogrids_ss-accrete_ss-drums").expect("drums rig loads");
+
+    assert_eq!(pulse.monomes, drums.monomes, "same two grids, pinned by the same serials");
+    assert_eq!(pulse.monome_windows, drums.monome_windows, "same on-grid overlays");
+    assert_eq!(pulse.expression_pedals, drums.expression_pedals, "same EX-P volume pedals");
+    assert_eq!(pulse.tunings, drums.tunings, "same 46-EDO tuning");
+
+    // Both declare the same two boards; only the newer one's windows differ.
+    let boards = |r: &Rig| -> Vec<String> {
+      r.softsteps.iter().map(|s| s.select.name_substring().to_string()).collect()
+    };
+    assert_eq!(boards(&pulse), boards(&drums), "same two boards, matched the same way");
+    let on_old = |r: &Rig| -> Vec<String> {
+      r.softstep_windows
+        .iter()
+        .filter(|w| w.softstep() == "old")
+        .map(|w| format!("{}:{}", w.id(), w.kind_name()))
+        .collect()
+    };
+    assert_eq!(on_old(&pulse), on_old(&drums), "the older board's job is untouched");
+  }
+
+  /// The drum map is bound to PRINTED LABELS, but the newer board is physically
+  /// rotated 180 degrees, so the labels here are deliberately NOT the ones
+  /// `2-monomes_kmss-drums` used -- they are chosen so each drum lands under the
+  /// same foot. Rebinding these to "match" the older rig would mirror the kit.
+  #[test]
+  fn the_drum_kit_sits_on_the_newer_board_in_foot_order() {
+    let rig = load_named_rig("2-edogrids_ss-accrete_ss-drums").expect("drums rig loads");
+    let kit = rig
+      .softstep_windows
+      .iter()
+      .find(|w| matches!(w, SoftstepWindowRig::Drumkit { .. }))
+      .expect("the rig declares a drumkit");
+    assert_eq!(kit.softstep(), "new", "the kit is on the NEWER board");
+
+    let SoftstepWindowRig::Drumkit { pads, .. } = kit else { unreachable!() };
+    // As Jeff stands: far row reads 5 4 3 2 1, near row reads 0 9 8 7 6.
+    let far: Vec<&str> = [5u8, 4, 3, 2, 1].iter().map(|p| pad_voice(pads, *p)).collect();
+    let near: Vec<&str> = [0u8, 9, 8, 7, 6].iter().map(|p| pad_voice(pads, *p)).collect();
+    assert_eq!(far, ["high_tom.wav", "low_tom.wav", "wood_block.wav", "cowbell.wav",
+                     "crash_electronic.wav"]);
+    assert_eq!(near, ["snare.wav", "kick.wav", "<ditto>", "hat.wav", "open_hat.wav"]);
+  }
+
+  fn pad_voice(pads: &[DrumPadRig], pedal: u8) -> &str {
+    let pad = pads.iter().find(|p| p.pedal == pedal).expect("every pedal is bound");
+    if pad.ditto {
+      "<ditto>"
+    } else {
+      pad.sample.as_deref().expect("a non-ditto pad names a sample")
+    }
   }
 
   #[test]

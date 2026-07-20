@@ -7,9 +7,39 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::samples::DrumSample;
+
+/// A running sampler's master amplitude, shared with its audio callback so that
+/// `'r'` can revise it mid-play (the surfaces runtime's reload writes here; see
+/// `surfaces_runtime::reload`).
+///
+/// An atomic rather than a `Mutex` on purpose: this callback deliberately takes
+/// exactly ONE lock (the voice pool), and a single hot-reloadable scalar is not
+/// worth a second one on the audio thread. `f32` has no atomic, so the bits are
+/// stored in an `AtomicU32` -- `Relaxed` throughout, since the amplitude is
+/// self-contained and orders nothing else.
+#[derive(Clone)]
+pub struct SamplerAmplitude(Arc<AtomicU32>);
+
+impl SamplerAmplitude {
+  fn new(amplitude: f32) -> SamplerAmplitude {
+    SamplerAmplitude(Arc::new(AtomicU32::new(amplitude.to_bits())))
+  }
+
+  pub fn get(&self) -> f32 {
+    f32::from_bits(self.0.load(Ordering::Relaxed))
+  }
+
+  /// Revise the master gain. Takes effect on the next callback -- a step, not a
+  /// ramp: a reload is a deliberate act between hits, not a performance gesture,
+  /// and voices already ringing keep their own de-zippered per-voice gain.
+  pub fn set(&self, amplitude: f32) {
+    self.0.store(amplitude.to_bits(), Ordering::Relaxed);
+  }
+}
 
 /// A fixed pool size: drum hits are short and sparse, but allow generous overlap
 /// (fast rolls, two feet, a ringing crash under new hits) without ever allocating
@@ -163,17 +193,20 @@ pub struct Sampler {
   _stream: Option<cpal::Stream>,
   pool: Arc<Mutex<VoicePool>>,
   output_rate: f32,
+  amplitude: SamplerAmplitude,
 }
 
 impl Sampler {
   /// A silent sampler: no cpal stream, so it needs no sound card and makes no
   /// sound. Used for headless runs (`MIDI_PULSE_NO_AUDIO`); triggers still record
-  /// into the pool harmlessly.
-  pub fn start_null(requested_sample_rate: u32) -> Sampler {
+  /// into the pool harmlessly. It still carries a live amplitude cell, so a
+  /// headless run can exercise the reload path.
+  pub fn start_null(requested_sample_rate: u32, amplitude: f32) -> Sampler {
     Sampler {
       _stream: None,
       pool: Arc::new(Mutex::new(VoicePool::new())),
       output_rate: requested_sample_rate as f32,
+      amplitude: SamplerAmplitude::new(amplitude),
     }
   }
 
@@ -220,21 +253,31 @@ impl Sampler {
 
     let pool = Arc::new(Mutex::new(VoicePool::new()));
     let pool_for_cb = Arc::clone(&pool);
+    let amplitude = SamplerAmplitude::new(amplitude);
+    let amplitude_for_cb = amplitude.clone();
     let stream = device.build_output_stream(
       &stream_config,
       move |data: &mut [f32], _| {
+        // The master gain is hot-reloadable ('r'), so read it fresh each callback.
+        let gain = amplitude_for_cb.get();
         let mut pool = pool_for_cb.lock().unwrap_or_else(|e| e.into_inner());
-        pool.mix(data, channels, amplitude);
+        pool.mix(data, channels, gain);
       },
       |error| eprintln!("drum sampler stream error: {error:?}"),
       None,
     )?;
     stream.play()?;
-    Ok(Sampler { _stream: Some(stream), pool, output_rate })
+    Ok(Sampler { _stream: Some(stream), pool, output_rate, amplitude })
   }
 
   pub fn output_rate(&self) -> f32 {
     self.output_rate
+  }
+
+  /// A handle to this sampler's master gain, for the hot-reload path. Cloning it
+  /// shares the cell -- writing through the clone reaches the audio callback.
+  pub fn amplitude(&self) -> SamplerAmplitude {
+    self.amplitude.clone()
   }
 
   pub fn trigger(&self) -> Trigger {

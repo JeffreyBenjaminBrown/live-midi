@@ -1,4 +1,284 @@
 * DONE
+** fine transpose
+We just implemented one way to transpose, via octaves.
+This will be another, finer one.
+
+Branch 3 is currently working on a 'slide' that will use the lower-leftmost
+monomekey. This should be the lowest one right next to it, x=1 y=15.
+When this is toggled on, it lights up,
+and the meaning of pressing grid keys changes.
+The grid still looks the same, *except* that a big dancing X
+(described soon) marks the center of the board.
+Pressing any note transposes all edit-moded notes an interval
+equal to the distance from the note fingered to the center of the X.
+The octave switchers can be used to move the X -- even off-screen.
+(Such range changes do not persist once fine transpose is exited.)
+Transpose is a scalar, so the grid is in 'mono' mode when fine-transpose is on --
+each note played cuts off the last, and if a finger is released,
+transpose snaps to the key most recently depressed,
+with the exception that when the last key is let up,
+the transpose does not revert to 0.
+
+When fine transpose mode is exited, if the transpose was nonzero,
+it remains in effect. Displayed pitch values adjust immediately
+(remember that all the voices are still visible the same as normal
+during fine-transpose).
+
+The big X cycles a dim light through 3 states, 0-1-2-1-0-1-2-1 ...
+and is clobbered by everything that could possibly clobber it
+(voices, diamond dances, even trails).
+0   0
+ 1 1
+  2
+ 1 1
+0   0
+Each phase of the X dance lasts 50 ms.
+*** DONE claude: implemented; one interpretation to veto
+Built as specified: =fine_transpose_toggle= at (1,15) on both grids (a new
+single-cell window kind; lit bright while on, resting dim under the control
+flash), the X seeded at the board center's pitch ((8,8) under the current
+register) and drawn as one dim ring at a time (outer/inner/center, 50 ms
+per phase, absolute clock), painted at the LOWEST priority -- voices,
+dances, and trails all clobber it, and it simply isn't drawn while its
+center pitch is off-screen. Presses set the scalar transpose mono-style
+(newest wins; releases snap to the most recent held key; the last release
+keeps it); the octave corners move the X +/- an octave, non-persistently;
+the arrows still scroll; exit keeps a nonzero transpose and restores normal
+playing. Transpose presses sound nothing and skip every play-path side
+effect (no held entry, no trail, no accrete capture, no retriggers); a
+finger that predates the mode still releases normally.
+
+The one interpretation you should know about: I read the transpose as
+applied LIVE -- each press glides the whole selection (both layers, no
+envelope event, the same in-place machinery as the octave switchers) the
+moment it lands, and the display follows ("all the voices are still visible
+the same as normal"), so exit has nothing left to apply. If you meant the
+alternative -- silent while in the mode, applied on exit -- say so and I
+will flip it.
+
+Pinned end to end
+(=fine_transpose_sets_a_live_scalar_transpose_of_the_selection=), plus pure
+state tests (stack/snap/center math) and an X-compositing test (paints only
+where nothing else does). Docs: readme "fine transpose" section + layout
+diagram + glossary; rigs/README kind + description. =cargo test
+--workspace=: 750 passed, 0 failed.
+
+Refined per chat: entering with an EMPTY selection first selects everything
+sounding on that monome (the editmode-accrete one-shot, same code as OSS
+pedal 7/9); a non-empty selection is left untouched. 751 passed, 0 failed.
+** non-grid buttons should flash slowish
+Wherever they would currently be dim,
+let's have them flash 200 ms *dim*, 200 ms off.
+That way they are distinguishable from grid notes.
+It should not apply to the octave switchers,
+the arm-write-to-chord-slot button,
+or the tap tempo button -- not because they are that
+(the rule should be more general,
+because the particular treatment of different keys could vary as we develop)
+but rather because those are never 'dim non-grid cells' of the monome.
+*** DONE claude: implemented as exactly the general rule
+One gate in the compositor (=levels_for_grid=): any OVERLAY cell that
+resolves to a resting DIM shows OFF during the flash clock's off half
+(=dance::overlay_dim_on=, 200/200, absolute -- all controls flash in step);
+play-cell dims (trails, dancers) are never gated. Your exclusions fall out
+for free: the octave corners, the arm cell, and the tap blink are never dim
+non-grid cells, so nothing is there to gate -- no per-button special cases
+anywhere. What flashes in this rig: unselected waveform cells, scroll
+arrows, resting factor cells and editmode buttons, and the chord slots.
+Six mock-LED tests that sampled a resting dim at an instant became
+"never bright" checks; a new grid test pins the off half (overlay dims
+blank, play dims hold, brights hold). On monobright grid A the fast
+fake-dim shimmer now gates on/off at the slow clock -- worth an ear/eye on
+the hardware.
+** in edit mode, octave switchers should edit the edit-moded voices
+When edit mode is on, the octave switchers' only effect
+is to drag the voices that are in edit mode:
+the left one (the one that normally moves the range to view lower notes)
+moves them lower, and the other, higher.
+*** DONE claude: octave corners retune the whole selection; register holds
+With a live edit selection, the octave corners move EVERY edited voice
+(both layers -- fingered/droning piano voices glide in place, chord voices
+too) by +/- one octave, like the multipliers act on all rather than the
+drag's nearest-one, with no envelope event (bulk edit controls stay
+click-free); the register does not move, and the four arrows still scroll.
+With nothing selected the corners scroll as ever. Set shifts are computed
+whole and drones re-key end-first, so chains of edited pitches an octave
+apart cannot collapse. One accepted edge: shifting ONTO a pitch that
+already holds an unmoved drone merges/overwrites at that pitch (the
+cell-drag's free-pitch guard has no analogue here) -- rare, and easy to
+revisit if it ever bites. Pinned end to end by
+=octave_switchers_retune_the_edit_selection_instead_of_scrolling=.
+** exit edit mode should not delete the voice
+At least for the voice-specific gesture that is not currently the case.
+The voice must have bee added to the sustained set when it was sustained, I think.
+So there's already the gesture 'remove from sustained set'
+that would end the voice entirely; this one might as well do something else.
+
+This seems only to happen when the voice was sustained via entering edit mode.
+That suggests edit mode is being recorded as its reason for existence.
+We don't need that concept to exist.
+If it enters sustain via sustain or via edit,
+globally (from the sofstep) or locally (from the monome),
+its reason for existence is sustain.
+*** DONE claude: cannot reproduce on this build -- I think your instrument predates the fix; please restart and retest
+Your diagnosis is exactly right -- and it is exactly what branch-3 queue item 4
+("entering edit mode should just add the voice to the sustained set") already
+abolished, in commit =0fe1e25=, which is merged here and predates all of chord
+storage. In the current code =Reason::Edit= is a pure SELECTION: =enter= adds
+Sustain+Edit, the per-voice exit and both editmode clears only discard Edit,
+and the complete list of voice-ending paths (grepped and pinned) is the
+sustain-toggle-off, erase, the widened clears, chord toggle-off, and the
+ordinary finger release -- the exit gesture reaches none of them.
+
+I could not reproduce the deletion. To be sure it stays that way I built the
+first =GridThread= test harness (tests.rs =test_grid_thread=, over the real
+rig's grid A) and pinned your exact sequence end to end through the real
+=handle_key=: strike -> handle-press (enter edit; the store gains Sustain AND
+Edit) -> lift (it drones) -> handle-press again (exit). The drone keeps
+ringing, still sustained; only the sustain toggle above then ends it
+(=the_per_voice_exit_gesture_ends_no_voice=).
+
+What you describe is the exact PRE-merge behavior (edit as its own
+life-support reason, exit = last reason gone = voice dies). So my best guess
+is the instrument you played was a binary from before that merge -- a
+long-lived =pw-jack cargo run= session, or a run from another worktree.
+Please restart it from =worktrees/2= and retest. If it STILL reproduces,
+tell me the exact finger sequence (which grid; entered edit via the handle or
+pedal 7; was the note fingered or already droning; any drag in between; which
+gesture was the exit) and I will chase it with the new harness.
+**** DONE whatever, it's good now
+*** DONE I think the previous sentence ("If it enters ... its reason for existence is sustain") can be true even for voices recalled from storage.
+The fact that they came from storage is not relevant --
+they can be ended via the kill-sustain controls,
+so they might as well just be considered sustained.
+Maybe the only distinction we will ever need is
+'fingered | playing while not fingered';
+how something got to be playing while not fingered
+does not need to be remembered.
+**** DONE claude speaking: I agree with the principle -- but it overturns two of your own round-2 rulings, and you should re-rule them explicitly
+(Both re-rulings arrived inline below and are implemented; also confirmed in
+the CLI when our edits to this file kept clobbering each other.)
+Yes, mostly. "Chord" as a REASON TO RING can die exactly the way "edit" did:
+the ring model collapses to fingered | sustained, and chord membership
+(the seq -> slot registry) survives only as BOOKKEEPING -- the slot
+toggle-off and the slot LED genuinely need to know which voices came from
+which slot, so that much provenance stays; it just stops mattering to
+life-support, the way edit membership became a selection that ends nothing.
+What this buys, all of which I like:
+
+- The edit carve-out disappears: edited ⊆ sustained becomes universal again,
+  and the two-layer selection union in the key handler shrinks.
+- A per-voice kill for ONE chord voice appears for free -- the sustain
+  toggle above it ends it, which round 2 noted was missing (today only the
+  widened clear can end a chord voice, wholesale).
+- Erase, the clears, and capture all become uniform: "every voice sounding
+  without a finger" with no special cases.
+
+But two behaviors you ruled the OTHER way in 2_discussion round 2 are
+overturned by this, and they should be re-ruled on purpose, not by
+accident:
+
+1. *The pedal.* Sustained voices follow the EX-P live; your round-2
+   amplitude ruling made chord voices "untouchable outside of edit mode",
+   loudness frozen as saved. If they are just sustained, the first pedal
+   move after a recall re-aims them like everything else -- that is the
+   "pedal pickup for all" option you steered away from. Which wins: the
+   frozen saved loudness, or the uniform pedal?
+   DONE : The uniform pedal.
+   (claude: implemented. `set_grid_pedal_gain` matches chord voices, so a CC
+   re-aims them like every other voice; a recall still starts at the SAVED
+   loudness and holds it until the pedal next moves, since the EX-P sends
+   nothing untouched. The edit-only pickup machinery is deleted.)
+2. *Same-pitch coexistence.* Your "Otherwise." ruling: chord voices are
+   scenes, not piano keys -- two chord voices may share a pitch, a finger
+   at that pitch never swallows them, and re-fingering never mangles the
+   scene. The PIANO sustain machinery is the opposite by design:
+   one-voice-per-pitch (the sustain set is a pitch set; re-fingering a
+   sustained pitch cuts and replaces its drone). Making chord voices
+   literally sustained either re-introduces the swallowing you rejected, or
+   requires rebuilding sustain to be per-VOICE rather than per-pitch -- a
+   real refactor of the ring/accrete architecture (worth doing if you want
+   it, but it is cleaning-phase-sized, not a patch).
+   DONE : Re-fingering a sustained or chord pitch should retrigger it
+   in the envelope sense but not in the polyrhythm pulse sense.
+   That's what happens if a finger lands on a preexisting chord voice.
+   In the reverse situation, though, both voices should coexist.
+   Edit and sustain instructions in that case apply to both voices.
+   (claude: implemented. A finger on a chord pitch RESTRIKES the chord
+   voices there -- the drag-style dip-then-attack on the same voice; pitch,
+   timbre, loudness, oscillator, and pulse all continue; no new voice, and
+   the release does nothing. The sustained-pitch retrigger, which already
+   continued the oscillator, now continues the factored pulse too -- old
+   rate AND phase, not the grid's onset pulse; a pulseless drone stays
+   pulseless. Recall-onto-fingered still coexists, and the edit/sustain
+   gestures already took both voices at a pitch. Pinned by
+   =a_finger_on_a_chord_pitch_restrikes_the_chord_voice_instead_of_playing=
+   and the rewritten retrigger tests.)
+
+There is a cheap middle path that honors "how it got here does not need to
+be remembered" at the CONTROL level without the refactor: keep chord voices
+seq-keyed (so scenes still stack and never swallow), but make every
+kill-sustain control reach them uniformly -- the sustain toggle above a
+chord voice ends it, erase ends chord voices at the erased pitches, clears
+already do -- and drop the edit carve-out. From the player's seat the
+distinction is then gone; under the hood the registry remains as slot
+bookkeeping. The one thing the middle path does NOT unify is the pedal
+(question 1 still needs your ruling either way).
+
+Tell me: (a) pedal -- frozen or uniform? (b) same-pitch -- keep the
+never-swallow scenes (middle path), or true per-voice sustain (refactor)?
+Then I will implement whichever shape you pick.
+*** DONE (jeff speaking) actually maybe not
+Each chord button has to be able to toggle off
+the specific voices it brought forth.
+And yet global end sustain should still end chords too,
+and local end sustain should also end a chord voice there --
+for those controls, the origin doesn't matter.
+**** DONE claude: implemented exactly this shape
+The seq -> slot registry stays (the slot toggle and its LED need the
+provenance), and the kill-sustain controls are origin-blind: the GLOBAL
+end-sustain already ended chords (the widened clear), and the LOCAL one now
+does too -- =ChordLayer::end_at_pitch= + the sustain handle's kill direction
+end every chord voice at that pitch, from any slot, untoggling a slot this
+empties (no solid LED over silence). The ON direction (sustaining a
+fingered, unsustained note) touches no chord voice, and the accrete
+CAPTURES still ignore them -- they capture, they don't kill. With your
+uniform-pedal and retrigger answers above, the only remaining chord-voice
+distinctions are the ones the slot buttons themselves need. Pinned through
+the real key handler
+(=the_local_end_sustain_also_ends_chord_voices_at_its_pitch=) plus unit
+tests; docs updated in both readmes. =cargo test --workspace=: 740 passed,
+0 failed.
+** correction in my earlier request : longest phase -> longest period
+Each voice at frequency higher than the base (longest) cycle
+has its phase recorded
+relative to the base cycle, as well as its own position in its own cycle. It
+resumes (after the attack slew) at both of those. This way I can guarantee that
+everything sounds the same relative to the base cycle.
+
+Unusually, the base cycle starts at phase=0,
+rather than wherever in that cycle we were when save happened.
+All the others begin wherever they were relative to it and in themselves
+when they were saved.
+*** DONE claude: the base cycle, one rewind for everything
+=chords::snapshot= now picks the LONGEST-PERIOD voice (lowest pitch; ties to
+the largest phase) as the base and rewinds the save instant by =dt =
+phase_B / freq_B= seconds -- to the most recent start of the base's cycle.
+Each voice stores its phase as of that instant (=phase_i - dt * freq_i=, from
+the stored pitch's frequency, so a mid-glide save uses the target it will
+replay at), which is one number that encodes both "where it was in itself"
+and "where it was relative to the base cycle"; the base stores exactly 0.
+The factored-pulse phases rewind by the SAME =dt= (one coherent instant),
+which also removed the old separate pulse-reference rule. Docs updated
+(2_discussion Round 3 note, both readmes, StoredVoice/snapshot comments);
+tests rewritten around the octave-pair rewind math. =cargo test
+--workspace=: 734 passed, 0 failed.
+
+Refined per chat: ties go to the voice closest to its cycle boundary in
+EITHER direction (=min(phase, 1 - phase)=), and accordingly the anchor is
+the base's nearest boundary -- =dt= is signed, so a base past half-cycle
+advances to the boundary just ahead instead of rewinding nearly a full
+cycle. 735 passed, 0 failed.
 ** =1 should affect the voices in edit mode
 If a voice is in edit mode, the factor modifiers like (*2) affect it,
 but entering and exiting polyrhythm pulse mode via =1 does not.

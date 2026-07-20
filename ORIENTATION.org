@@ -39,13 +39,26 @@ live only in Claude's memory. Follow the links for depth.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
 
-* the active work: 2-monomes_2-softsteps (the surfaces runtime)
+* the active work: the 2-edogrids pair (the surfaces runtime)
 Jeff's daily instrument lately: two 46-EDO play grids + two SoftStep pedal
 boards (sustain + edit mode underfoot), two EX-P volume pedals, per-grid
 factored pulse, per-voice edit mode, configurable timbres with abs/rel AM+FM.
+Two rigs, *identical but for what the NEWER SoftStep does* -- a rename in
+2026-07 put that difference in the names (both were once
+=2-monomes_2-softsteps=, a name that counted the hardware instead):
+- =2-edogrids_ss-accrete_ss-pulse= -- the newer board drives the factored pulse.
+- =2-edogrids_ss-accrete_ss-drums= -- the newer board is a TR-808 drumkit
+  instead. Jeff never touched the pulse pedals, and the grids' own upper-right
+  pads already drive the pulse, so that board was free.
+Change one rig's grids and you must change the other's; a test
+(=the_two_edogrid_rigs_differ_only_in_the_newer_boards_job=, in =rig.rs=)
+fails if they drift.
 - *Canonical reference (read this first):*
-  [[./rigs/2-monomes_2-softsteps_readme.org]] -- glossary, usage, layout.
-- Rig: =rigs/2-monomes_2-softsteps.org= (TOML-in-org; heavily commented).
+  [[./rigs/2-edogrids_ss-accrete_ss-pulse_readme.org]] -- glossary, usage, layout. It
+  covers BOTH rigs; [[./rigs/2-edogrids_ss-accrete_ss-drums_readme.org]] documents only
+  the drum board, on purpose (duplicated rig docs here drift on every rename).
+- Rigs: =rigs/2-edogrids_ss-accrete_ss-{pulse,drums}.org= (TOML-in-org; heavily
+  commented).
 - Runtime: =edo_surface/src/surfaces_runtime/=. Since cleaning phase 3 this is a
   dozen small modules, not one big =mod.rs=: =mod.rs= keeps only =run()=, the
   =grid_thread= loop, and the shared STOP/signal machinery. Behavior lives in
@@ -76,9 +89,9 @@ A two-grid looping instrument in 58-EDO; still runs.
 
 * build / run / test
 #+begin_src sh
-cargo test -p edo_surface                                     # fast, no hardware
-cargo test --workspace                                        # everything
-pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps   # needs the gear
+cargo test -p edo_surface                    # fast, no hardware
+cargo test --workspace                       # everything
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse   # needs the gear
 #+end_src
 The live crate is =edo_surface=, so that is the =-p= you want; =-p midi_pulse=
 tests only the =buried/= legacy crate (the looper/piano/un-12 runtimes and the

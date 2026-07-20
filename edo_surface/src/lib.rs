@@ -1,4 +1,4 @@
-//! The instrument that the `2-monomes_2-softsteps` rig runs: two 16x16 monome grids as
+//! The instrument that the `2-edogrids_ss-accrete_ss-pulse` rig runs: two 16x16 monome grids as
 //! 46-EDO play surfaces, two SoftStep boards carrying sustain, tap tempo and the pulse,
 //! an on-screen readout, and per-voice editing.
 //!
@@ -16,7 +16,7 @@ pub mod tuning;
 pub mod voice;
 
 // The live instrument core, unburied here in cleaning phase 7 (everything the
-// `2-monomes_2-softsteps` rig uses). `buried/` (the old `midi_pulse` crate) now depends
+// `2-edogrids_ss-accrete_ss-pulse` rig uses). `buried/` (the old `midi_pulse` crate) now depends
 // on this crate for these; the reverse never happens.
 
 // The rig loader + its org-mode parser, and the surface plumbing.
