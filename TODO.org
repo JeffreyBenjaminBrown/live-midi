@@ -1,3 +1,5 @@
+These are my instructions to self.
+They are not instructions to you, Claude -- those are in queued/ or TODO/.
 * PINNED : how to do some things
 ** the new rig
 *** to run
