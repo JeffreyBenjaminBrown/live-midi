@@ -1,0 +1,100 @@
+#+title: What Fable knew: session hand-off, 2026-07-20
+#+date: 2026-07-20
+
+Written at Jeff's request at session end (usage limits). Everything in my
+working awareness that is not already in this directory's files or the repo.
+The successor session should read 6_plan.org first, then this.
+
+* pedal-slide rebuild: exact status
+- The corpse is REVERTED (=4744972=) after the bug-2 diagnosis was
+  mechanically CONFIRMED (=a76612f= -- voice froze at exactly
+  MIDPOINT+HYSTERESIS_BAND; the refined mechanism -- reconcile reading
+  stale ring state and permanently cancelling the pairing -- is recorded in
+  6_plan.org "diagnosis verification"). Baseline: 742 tests, 0 failures.
+- SLICE 1 IS NOT BUILT. The agent I launched for it STALLED (watchdog,
+  no progress 600 s) during its read-the-code phase and left a clean tree.
+  Nothing to salvage, nothing to distrust; just start it again.
+- The slice-1 brief added these specifics beyond 6_plan.org (reuse them):
+  - Build the wiring harness FIRST, red, then make it green. Seed it from
+    the confirmation test's shape: =git show a76612f=.
+  - Lift from 5_diffs.org, do not rewrite: the =Segments= math (correct,
+    22 honest tests), the =pedal_slide_toggle= rig-kind plumbing, and
+    (slice 6, later) =VolumeReturn=, which is self-contained and probably
+    correct.
+  - Pedal thread publishes ONLY an atomic f32-bits fraction per grid; the
+    grid thread reads it each repaint and does everything else.
+  - Slice-1 trims: mode-off = freeze + plain taper resumes bluntly
+    (kinked return is slice 6); a second pick mid-flight bluntly replaces
+    the pairing with a TODO(slice-2) marker (the kink is slice 2).
+  - A dev logging switch (env PEDAL_SLIDE_LOG=1): per grid-thread step,
+    fraction + each managed voice's (key, map pitch, audible Hz).
+  - Create TODO/pedal-slide/7_verify-by-ear.org -- the accumulating
+    hardware checklist, one section per slice, for Jeff's next session at
+    the grids. (Number collision with this file: harmless, or renumber.)
+- Slices 2-6 remain as 6_plan.org specifies. Keep them strictly serial,
+  one commit each, harness extended BEFORE behavior in every slice.
+
+* open threads elsewhere in the repo
+- Branch 2 holds one unmerged commit: =f9a8b79= "fine transpose: the play
+  grid as a live scalar transpose controller for the edit selection".
+  Jeff hasn't asked for the merge; offer it.
+- queues/branch-3.org item 1 ("Fast =1 on monome") AWAITS Jeff: two TODO
+  children (my four hypotheses; the firmware-vs-raw-pressure research).
+  My private bet is hypothesis 2 -- the =1 double-tap deliberately does
+  not arm from cold, so from OFF two fast presses read as on->unity, which
+  LOOKS like a dead second press. If Jeff confirms that reading, the fix
+  is a semantics decision (arm-from-cold), a ~5-line change in
+  polyrhythm.rs::press plus its dance tests.
+- A niche edge recorded in the (now-reverted) queue DONE child, still true
+  as a design question for the rebuild's slice 5: a chord already SOUNDING
+  (recalled before slide mode) coexisting with slide targets can double
+  pitches.
+- Worktree =main= is several merges behind branch 3; Jeff fast-forwards it
+  himself periodically.
+
+* orchestration playbook (what worked; the successor should copy it)
+- Design in the main context, EXECUTE via subagents: sonnet for mechanical
+  or well-specified work, opus for judgment-heavy phases. Every brief:
+  (1) required reading = the plan/vision/discussion files, (2) explicit
+  scope + out-of-scope, (3) "decide defensible judgment calls yourself and
+  record them" (when-to-stop.org), (4) explicit STOP-without-committing
+  conditions, (5) run cargo test --workspace to 0 failures, (6) annotate
+  the queue/plan file (DONE + a "** DONE claude:" child), (7) commit with
+  a real message + "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>".
+- Serial when files overlap (nearly always in surfaces_runtime). Use
+  SendMessage to amend a running agent (worked mid-flight for the volume
+  amendment).
+- THE LESSON OF THE CORPSE (also in 6_plan): a green pure-core suite is
+  not a working instrument. Wiring-level invariant tests + thin slices +
+  hardware checkpoints. Never again two mega-phases before the first ear.
+- Agents sometimes stall (one watchdog death this session): relaunch with
+  the same brief; check git status first -- a stalled agent may or may not
+  have left partial edits.
+
+* Jeff's working conventions (the turn-taking protocol)
+- Headline keywords are a conversation: "TODO " = the reader whose turn it
+  is must look (when Jeff writes TODO, it's for me; my responses marked
+  TODO are for him); "DONE (probably) " = probably needs no attention;
+  ONGOING = answered-underneath; "AWAITS (Jeff's turn)" = blocked on him.
+  Mark HIS items DONE when absorbed into work; leave historical records
+  (queue DONE children, TODO/DONE/) untouched by later renames.
+- queues/branch-3.org is ordered top-down. when-to-stop.org governs
+  everything: don't stop to ask; record deviations; TODO-at-Jeff and move
+  on when genuinely blocked.
+- Jeff plays the instrument daily and reports as a user ("what I
+  experience"); he does not want to review logic. The ear checklist
+  (verify-by-ear) is how his testing time gets used efficiently.
+
+* misc facts a successor might otherwise re-derive expensively
+- Test baseline at hand-off: 742 passed, 0 failed, tree clean at
+  =4744972=. The count includes softstep timing work merged from main.
+- The live crate is =edo_surface/= (unburied in cleaning phase 7);
+  =buried/= keeps legacy runtimes + the dispatch bins and depends on
+  edo_surface, never the reverse.
+- The EX-P pedals arrive via tools/pedals/bridge.sh on the HOST (nix
+  wrapper; see tools/pedals/README.org "Run the bridge"); one pedal is
+  mis-trimmed (~35..127) pending its MIN thumbwheel.
+- Rig-facing invariants Jeff relies on: per-grid tempo = 1 x 2^x x 3^y Hz
+  (base retap preserves exponents -- pinned by test); edited subset of
+  sustained (queue item 4); drag needs a free pitch; retriggers keep
+  oscillator phase.
