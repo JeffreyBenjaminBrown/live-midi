@@ -345,11 +345,25 @@
       self.audible()
     }
 
-    /// The one sounding voice's pitch, in (fractional) EDO steps -- what the ear hears.
+    /// The slid voice's pitch, in (fractional) EDO steps -- what the ear hears. Read
+    /// through the pairing's own key, so this follows the voice across every re-file
+    /// and re-key; once the slide has ended (a freeze), it falls back to the single
+    /// remaining sounding voice. Release tails (`SurfaceRetired`) are never counted.
     fn audible(&self) -> f32 {
       let voices = self.rt.shared.voices.lock().unwrap();
-      assert_eq!(voices.len(), 1, "exactly one voice should be sounding");
-      let hz = voices.values().next().unwrap().freq;
+      let key = self.rt.pedal_slide.pairings().first().map(|p| p.voice);
+      let hz = match key.and_then(|k| voices.get(&k)) {
+        Some(v) => v.freq,
+        None => {
+          let live: Vec<f32> = voices
+            .iter()
+            .filter(|(src, _)| !matches!(src, crate::types::VoiceSource::SurfaceRetired { .. }))
+            .map(|(_, v)| v.freq)
+            .collect();
+          assert_eq!(live.len(), 1, "expected one un-retired voice, found {}", live.len());
+          live[0]
+        }
+      };
       let (fund, edo) = (self.rt.tuning.fund, self.rt.tuning.edo);
       (hz as f64 / fund).log2() as f32 * edo as f32
     }
@@ -487,6 +501,164 @@
     assert!(
       (landed - second as f32).abs() < 0.05,
       "and the NEW target is reached exactly: wanted {second}, heard {landed:.3}",
+    );
+  }
+
+  /// Slice 2's hysteresis, at the wiring level: reverse mid-flight and the way back is
+  /// a FRESH straight line home, not a retrace of the way up -- so the pitch at a given
+  /// pedal position is path-dependent, but the endpoints stay exact and nothing ever
+  /// jumps. (The same trick as MIDI knob pickup; `2_discussion` calls this out as the
+  /// point rather than a side effect.)
+  #[test]
+  fn reversing_after_a_mid_flight_retarget_still_lands_home_exactly() {
+    let mut r = SlideRigUnderTest::new();
+    let cell = r.cell_for(r.h + 12);
+    r.press(cell);
+    r.sweep(0.0, 0.5);
+
+    // Retarget far away, pinning a big kink at f = 0.5, and climb a little.
+    let far = r.cell_for(r.h + 40);
+    r.press(far);
+    let up = r.sweep(0.5, 0.75);
+    assert!(up > r.h as f32 + 6.0, "the big new goalpost pulled the pitch up, at {up:.3}");
+
+    // Now reverse all the way home. The descent is a new segment from here, and it
+    // must still arrive exactly -- every step of it checked for jumps by `sweep`.
+    let home = r.sweep(0.75, 0.0);
+    assert!(
+      (home - r.h as f32).abs() < 0.05,
+      "the heel lands exactly home however kinked the way up was, heard {home:.3}",
+    );
+  }
+
+  // ---- slice 3: the midpoint flip ----
+
+  /// `1_vision`: "'home' switches from one side of the pedal to the other every time I
+  /// reach it -- but actually before then. It has to switch when I cross the midpoint."
+  /// The swap re-files the note and swaps the LED roles PART WAY UP, while the pitch is
+  /// still in between -- and must move no pitch at all doing it.
+  #[test]
+  fn crossing_the_midpoint_swaps_the_roles_without_moving_the_pitch() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+
+    // Just below the band's far edge: nothing has swapped yet.
+    r.sweep(0.0, 0.52);
+    let before = r.render_ms(20);
+    assert_eq!(r.rt.pedal_slide.home(), pedal_slide::Home::Low, "inside the band, no swap");
+    assert!(
+      r.rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, r.h),
+      "still filed at the pitch it came from",
+    );
+
+    // Cross it.
+    let after = r.pedal_to(0.58);
+    assert!(
+      (after - before).abs() < MAX_STEP_JUMP,
+      "the swap must move NO pitch -- the map does not mention home ({before:.3} -> {after:.3})",
+    );
+    assert_eq!(r.rt.pedal_slide.home(), pedal_slide::Home::High, "past the band: swapped");
+    let rings = r.rt.shared.ring.lock().unwrap();
+    assert!(rings[0].store.has(Reason::Edit, t), "the note re-filed to the target's pitch");
+    assert!(!rings[0].store.has(Reason::Edit, r.h), "and left the one it came from");
+    drop(rings);
+    let (home, target) = r.rt.pedal_slide.led_roles();
+    assert!(home.contains(&t) && target.contains(&r.h), "the colours swapped with it");
+
+    // And the pitch still arrives exactly, having re-filed mid-flight.
+    let landed = r.sweep(0.58, 1.0);
+    assert!((landed - t as f32).abs() < 0.05, "still lands exactly, heard {landed:.3}");
+  }
+
+  /// The band exists so a foot RESTING near the middle cannot flicker the roles (and
+  /// with them the LED colours and the end a new pick would replace) many times a
+  /// second. Jitter across 0.5 must change nothing.
+  #[test]
+  fn a_foot_trembling_at_the_midpoint_does_not_flicker_the_roles() {
+    let mut r = SlideRigUnderTest::new();
+    let cell = r.cell_for(r.h + 27);
+    r.press(cell);
+    r.sweep(0.0, 0.5);
+    let home_before = r.rt.pedal_slide.home();
+    for f in [0.49, 0.52, 0.48, 0.53, 0.5, 0.47, 0.54] {
+      r.pedal_to(f);
+      assert_eq!(r.rt.pedal_slide.home(), home_before, "jitter at f={f} must not swap roles");
+    }
+  }
+
+  /// A finger still DOWN on the note being slid. When it lifts, the voice moves from
+  /// its cell key to its pitch key (`sustain_note`) -- and if the pairing does not
+  /// follow, the pedal is left driving a key the voice map no longer has and the note
+  /// freezes mid-glide. That is exactly the reverted build's failure, reached by a
+  /// different route, so it is pinned here through the real key handler.
+  #[test]
+  fn lifting_the_finger_mid_slide_hands_the_pairing_to_the_drone() {
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5);
+    let handle = (5, 6);
+    let h = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+    handle_key(&mut rt, &mut register, &mut held, note, true); // strike, finger STAYS down
+    handle_key(&mut rt, &mut register, &mut held, handle, true); // edit it (+ sustain)
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+
+    let mut r = SlideRigUnderTest { rt, register, held, h };
+    let t = h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    assert_eq!(
+      r.rt.pedal_slide.pairings()[0].voice,
+      crate::types::VoiceSource::SurfaceFinger { grid: 0, cell: note },
+      "while fingered, the pairing addresses the CELL",
+    );
+
+    // Slide past the midpoint swap, which re-files a FINGERED voice's pitch (its key
+    // does not move, but the ring and the held map must still follow, or the release
+    // below looks up a pitch nobody is sustaining and cuts the note).
+    r.sweep(0.0, 0.7);
+    assert_eq!(r.held[&note], t, "the held map followed the re-file");
+
+    // Now lift the finger.
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, note, false);
+    assert_eq!(
+      r.rt.pedal_slide.pairings()[0].voice,
+      crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: t },
+      "the pairing followed the voice to its drone key",
+    );
+
+    let landed = r.sweep(0.7, 1.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "and the slide carries on to arrive exactly, heard {landed:.3}",
+    );
+  }
+
+  /// The mirror gesture: a finger LANDS on a sliding drone to retrigger it. The voice
+  /// becomes cell-keyed, and the slide must survive that too.
+  #[test]
+  fn retriggering_a_sliding_note_keeps_it_sliding() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    r.sweep(0.0, 0.3);
+
+    // Press the cell the note is filed at: a retrigger, not a pick (the pitch sounds).
+    let home_cell = r.cell_for(r.h);
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, home_cell, true);
+    assert_eq!(
+      r.rt.pedal_slide.pairings()[0].voice,
+      crate::types::VoiceSource::SurfaceFinger { grid: 0, cell: home_cell },
+      "the retrigger took the voice over, and the pairing followed",
+    );
+    let landed = r.sweep(0.3, 1.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "a retriggered note keeps sliding to its target, heard {landed:.3}",
     );
   }
 

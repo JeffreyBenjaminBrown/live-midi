@@ -348,6 +348,7 @@ pub(super) fn handle_key(
           rel_fm: slot.rel_fm,
         };
         rt.sink.note_on_continuing(cell, pitch, timbre, cut);
+        drone_became_fingered(rt, pitch, cell);
         held.insert(cell, pitch);
         let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
         let gr = &mut rings[rt.grid_index];
@@ -442,7 +443,10 @@ pub(super) fn handle_key(
         // oscillator and pulse; with nothing cut, a plain fresh note (phase 0,
         // the grid's onset pulse).
         None => match retrigger {
-          Some(cut) => rt.sink.note_on_continuing(cell, pitch, timbre, cut),
+          Some(cut) => {
+            rt.sink.note_on_continuing(cell, pitch, timbre, cut);
+            drone_became_fingered(rt, pitch, cell);
+          }
           None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
         },
       }
@@ -685,6 +689,11 @@ pub(super) fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i
   };
   if sustains {
     rt.sink.sustain_note(cell, pitch);
+    // The voice just moved from its cell key to its pitch key. If the pedal is sliding
+    // it, the pairing has to follow -- otherwise it addresses a key the voice map no
+    // longer has and the note freezes mid-glide (the reverted build's disease, wearing
+    // a different hat).
+    became_a_drone(rt, cell, pitch);
   } else {
     rt.sink.note_off(cell);
     let mono = rt.shared.mono_on[rt.grid_index].load(Ordering::Relaxed);
@@ -714,9 +723,33 @@ pub(super) fn cut_for_legato(
   held.remove(&cell);
   if keep {
     rt.sink.sustain_note(cell, pitch);
+    became_a_drone(rt, cell, pitch);
     return false;
   }
   true
+}
+
+/// A fingered voice at `cell` just became the drone at `pitch` (`sustain_note`). Tell
+/// the pedal-slide engine, so a slide in flight keeps addressing the voice that exists.
+/// Inert when the pedal is not sliding this voice, which is nearly always.
+fn became_a_drone(rt: &mut GridThread, cell: (i32, i32), pitch: i32) {
+  let grid = rt.grid_index;
+  rt.pedal_slide.rekey_voice(
+    VoiceSource::SurfaceFinger { grid, cell },
+    VoiceSource::SurfaceDrone { grid, pitch },
+  );
+}
+
+/// The mirror: a finger landed on a sliding DRONE and took it over (`cut_sustained` +
+/// `note_on_continuing`), so the voice is cell-keyed now. Same reason as
+/// `became_a_drone` -- a retrigger is an envelope event, and it must not quietly
+/// detach the note from the pedal that is sliding it.
+fn drone_became_fingered(rt: &mut GridThread, pitch: i32, cell: (i32, i32)) {
+  let grid = rt.grid_index;
+  rt.pedal_slide.rekey_voice(
+    VoiceSource::SurfaceDrone { grid, pitch },
+    VoiceSource::SurfaceFinger { grid, cell },
+  );
 }
 
 /// Mirror this grid's held map into the shared per-grid registry (for accrete's

@@ -721,6 +721,11 @@ impl SurfaceSink {
     };
     state.target_env = 0.0;
     state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+    // A retired voice is a dying tail nobody addresses any more, so it must not carry
+    // on a pedal slide: freeze its pitch where the cut found it. (Without this, cutting
+    // a drone the pedal was sliding leaves the tail gliding on toward a target it is no
+    // longer part of -- audible, and surprising.)
+    state.slide_freq_target = 0.0;
     // next_id doubles as the retired-key uniquifier: two cuts never collide.
     let seq = self.next_id;
     self.next_id += 1;

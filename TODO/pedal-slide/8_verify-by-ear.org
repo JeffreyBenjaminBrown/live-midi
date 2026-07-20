@@ -66,10 +66,34 @@ also sustains it), lift your finger. Then press =[0,15]=.
     pedal). The note should stay sounding, frozen where it was, and its target
     should stop flashing.
 
-** things slice 1 deliberately does NOT do yet
+* slices 2 + 3 -- the kink and the midpoint flip [NOT YET PLAYED]
+Slice 2 (mid-flight retarget) arrived with slice 1 -- see item 8 above, which is
+its whole checklist. Slice 3 moves the home/target swap from the ENDS of the
+pedal's travel to its midpoint, which is what =1_vision= specifies.
+
+11. *The colours swap halfway.* Start a slide and push the pedal slowly past the
+    middle. Somewhere just past halfway the two cells should trade looks: the
+    target stops flashing and starts being lit + danced, and the pitch you came
+    from starts flashing instead. *The sound must not change at all* at that
+    moment -- the swap is about labels, not pitch.
+12. *And back on the way down.* Coming back, they should trade again slightly
+    BELOW halfway (there is a deliberate dead band, so the swap points differ
+    going up and coming down -- that is intended).
+13. *A resting foot does not flicker.* Park the pedal right around the middle and
+    let your foot tremble. The colours must stay put, not strobe.
+14. *Chaining slides -- the point of the whole thing.* Raise the pedal into pitch
+    A. Now pick pitch B and LOWER the pedal into it. Then pick C and raise into
+    that. Each pick should set the end you are heading FOR, and each travel
+    should arrive exactly. This is the workflow =1_vision= opens with.
+15. *With a finger still down.* Strike a note, edit it, and *keep your finger on
+    it*. Pick a target and slide past the middle, then lift the finger. The
+    slide must continue and still arrive exactly. (Lifting hands the voice from
+    its cell to its pitch -- a hand-off with the same shape as the original bug.)
+16. *Retriggering mid-slide.* Mid-slide, press the cell the note is currently
+    lit at. It should re-strike (envelope only) and *keep sliding*.
+
+** things slices 1-3 deliberately do NOT do yet
 Don't report these as bugs:
-- The home/target colours swap only at the *ends* of the pedal's travel, not at
-  the midpoint. The midpoint flip is slice 3.
 - Picking a pitch with NOTHING in edit mode does nothing at all. The swell-from-
   silence is slice 4.
 - Recalling a chord while pedal slide is on behaves as it always did. Chords are

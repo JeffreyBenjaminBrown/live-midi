@@ -198,12 +198,16 @@ impl Home {
   }
 }
 
-/// WHEN home swaps ends. The rebuild lands this in two steps (`6_plan.org`'s slices):
-/// slice 1 swaps roles only on ARRIVAL at an endpoint -- enough to prove "the pedal
-/// lives forever, the far side now holds the old home" without the re-filing
-/// complexity -- and slice 3 moves the swap to the pedal's midpoint (with the
-/// hysteresis band) as `1_vision` specifies. One knob so the two differ in exactly one
-/// place.
+/// WHEN home swaps ends.
+///
+/// `AtMidpoint` is the shipping behaviour and what `1_vision` specifies: "'home'
+/// switches from one side of the pedal to the other every time I reach it -- but
+/// actually before then. It has to switch when I cross the midpoint of the pedal's
+/// range." `AtEndpoints` was the rebuild's slice-1 stepping stone (prove the pedal
+/// lives forever before adding mid-travel re-filing); it survives because it is the
+/// cleanest way to test the arrival semantics in isolation, with no band to reason
+/// about, and because keeping both makes the flip point one knob rather than a
+/// condition smeared through the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlipPolicy {
   /// Roles swap when the pedal REACHES the far end.
@@ -297,7 +301,7 @@ impl PedalSlideState {
       cur_f: 0.0,
       moving_up: true,
       home: Home::Low,
-      flip: FlipPolicy::AtEndpoints,
+      flip: FlipPolicy::AtMidpoint,
       pairings: Vec::new(),
       frozen_volume: 1.0,
     }
@@ -313,6 +317,13 @@ impl PedalSlideState {
 
   pub fn fraction(&self) -> f32 {
     self.cur_f
+  }
+
+  /// Override when home swaps ends. Used by the tests to exercise the arrival
+  /// semantics in isolation (`FlipPolicy::AtEndpoints`), where no band is in play.
+  #[cfg(test)]
+  pub fn set_flip_policy(&mut self, flip: FlipPolicy) {
+    self.flip = flip;
   }
 
   pub fn frozen_volume(&self) -> f32 {
@@ -420,14 +431,15 @@ impl PedalSlideState {
   /// pairing whose painted pitch therefore moves.
   fn propose_flip(&mut self, f: f32) -> Vec<Refile> {
     let crossed = match (self.flip, self.home) {
-      // Slice 1: arrival at the far end is the swap. The pedal never dies -- reaching
-      // the target makes it home, and the far side now holds the pitch you came from,
-      // so sliding back returns there (`6_plan.org`: nothing is ever "completed" while
-      // slide mode is on).
+      // Arrival at the far end is a swap: the pedal never dies -- reaching the target
+      // makes it home, the far side now holds the pitch you came from, and sliding back
+      // returns there. Under `AtMidpoint` the swap has usually already happened by
+      // then, so these arms only fire for a sweep that turned around inside the band.
       (FlipPolicy::AtEndpoints, Home::Low) => f >= 1.0,
       (FlipPolicy::AtEndpoints, Home::High) => f <= 0.0,
-      // Slice 3: the vision's midpoint, with a band so a resting foot cannot flicker
-      // the roles.
+      // The vision's midpoint, with a band so a foot resting near the middle (sensor
+      // noise, tremor) cannot flicker the roles -- and with it the LED colours and the
+      // end a new pick would replace -- many times a second.
       (FlipPolicy::AtMidpoint, Home::Low) => f > MIDPOINT + HYSTERESIS_BAND,
       (FlipPolicy::AtMidpoint, Home::High) => f < MIDPOINT - HYSTERESIS_BAND,
     };
@@ -458,6 +470,27 @@ impl PedalSlideState {
     if let Some(p) = self.pairings.iter_mut().find(|p| p.voice == refile.voice_old) {
       p.voice = refile.voice_new;
       p.filed = refile.to;
+    }
+  }
+
+  /// The owner re-keyed a managed voice WITHOUT its pitch moving: the same note, now
+  /// held differently. Two gestures do this and both can happen mid-slide --
+  ///
+  /// - a finger lifting off a note that is being slid (`SurfaceFinger` -> `SurfaceDrone`,
+  ///   via `SurfaceSink::sustain_note`), and
+  /// - a finger landing on a sliding drone to retrigger it (`SurfaceDrone` ->
+  ///   `SurfaceFinger`, via `cut_sustained` + `note_on_continuing`)
+  ///
+  /// -- and each is the reverted build's disease in a second guise: the pairing would
+  /// go on addressing a key the voice map no longer has, and the note would silently
+  /// freeze mid-glide. Same discipline as [`confirm_refile`]: the owner moves the voice
+  /// first and tells the engine after.
+  pub fn rekey_voice(&mut self, old: VoiceSource, new: VoiceSource) {
+    if old == new {
+      return;
+    }
+    if let Some(p) = self.pairings.iter_mut().find(|p| p.voice == old) {
+      p.voice = new;
     }
   }
 
