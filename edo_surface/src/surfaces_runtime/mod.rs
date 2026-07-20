@@ -1048,6 +1048,13 @@ fn pedal_slide_step(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>) ->
     publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
   }
 
+  // Slide mode with nothing picked yet is the common resting state, and this runs on
+  // every repaint (~1 kHz). Nothing below can do anything without pairings, and the two
+  // snapshots it takes both allocate, so stop here.
+  if rt.pedal_slide.is_empty() {
+    return Vec::new();
+  }
+
   // 3. reconcile against the (now current) edit selection
   let edited: HashSet<i32> = {
     let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());

@@ -31,7 +31,28 @@ Readme: the "pedal slide" section of =rigs/2-monomes_2-softsteps_readme.org= (no
 the chord paragraph). Tests: `cargo test --workspace` is green (575 edo_surface lib +
 159 rig-org + the rest). Left INTACT below: the two unrelated queue items (Fast =1,
 monome debouncing) and their TODO children -- untouched.
-** TODO The result didn't work. The folder has further reports.
+** DONE The result didn't work. The folder has further reports.
+** DONE claude: rebuilt from 6_plan.org, all six slices
+Reverted build's three bugs traced to two causes and both fixed structurally
+rather than patched. (1) A sliding voice's identity changed across threads: the
+engine is now a plain OWNED FIELD on =GridThread= (the thread that already owns
+the ring, the sink and the held map), the pedal thread only publishes a fraction
+into an atomic, and identity moves only through a re-file the owner applies and
+then CONFIRMS. (2) Bug 1 was membership, not matching: the managed set is now
+explicit, with each pairing recording why it is managed, so a recalled chord's
+seq-keyed voices are visible to the matcher and chord-to-chord GLIDES.
+
+Both original bugs were deliberately reintroduced to confirm the new
+wiring-level harness catches them; both failed, then passed on restore.
+
+Slice 3 turned up two more identity hand-offs nobody had specified (a finger
+lifting off a sliding note, and one landing on it to retrigger) -- same
+discipline fixes both.
+
+Everything is in =TODO/pedal-slide/=: =3_progress.org= is the build log (with two
+TODO questions for you, neither blocking), and =8_verify-by-ear.org= is the
+hardware checklist -- 30 items across the six slices, for one session at the
+grids. Nothing here has touched hardware yet; that checklist is the ask.
 * AWAITS (Jeff's turn) : Fast =1 on monome does not work.
 There *is* need to debounce that signal on the kmss,
 but there is no apparent need to debounce on the monome.

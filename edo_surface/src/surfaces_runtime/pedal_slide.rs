@@ -455,14 +455,15 @@ impl PedalSlideState {
     self.flip = flip;
   }
 
-  // The three below are read by the TESTS rather than by the runtime, which goes
-  // through `drives()` and `led_roles()`. They are the engine's observable state, and
-  // the harness asserts on them directly.
-  #[allow(dead_code)]
+  /// Nothing managed -- the resting state of a grid in slide mode that has not been
+  /// given a target yet. The repaint checks this before doing any per-step work.
   pub fn is_empty(&self) -> bool {
     self.pairings.is_empty()
   }
 
+  // Read by the TESTS rather than by the runtime, which goes through `drives()` and
+  // `led_roles()`; they are the engine's observable state and the harness asserts on
+  // them directly.
   #[allow(dead_code)]
   pub fn pairings(&self) -> &[Pairing] {
     &self.pairings
