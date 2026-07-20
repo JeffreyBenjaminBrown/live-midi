@@ -5,7 +5,7 @@ Responses to 1_vision.org, per the queue: TODO = needs your attention,
 DONE (probably) = probably doesn't. Ordered: first whether I've understood
 the core mechanism, then gaps, then dangers, then small stuff.
 
-* TODO my formalization of the goalpost-moving -- confirm this is your intent
+* DONE my formalization of the goalpost-moving -- confirm this is your intent
 The vision's kink description resolves, I believe, into this invariant:
 
   At every instant, the pedal-to-pitch map is two log-linear segments
@@ -27,7 +27,9 @@ rather than from anything you wrote explicitly:
 - The same invariant, with amplitude segments instead of pitch segments,
   CURES the fade-map ill-definedness you caught yourself on (see next).
 
-* TODO the fade "discontinuity at F" dissolves under the same trick
+** DONE Aww hell yes!!!!
+
+* DONE the fade "discontinuity at F" dissolves under the same trick
 The vision accepts "a potential discontinuity at F" for fade-in/out volumes
 -- but that contradicts "slide should always be smooth", and it isn't
 necessary. Use the pitch invariant verbatim for amplitude: the fade map is
@@ -40,7 +42,7 @@ sounds. The x^4-vs-splice question from the volume-pedal work doesn't arise
 here: a fading slide voice wants exact 0 at one end and its sibling's level
 at the other, which segments give you inherently.
 
-* TODO which voices slide, and what happens with none in edit mode
+* DONE which voices slide, and what happens with none in edit mode
 The vision covers "some voices in edit mode". Unspecified: slide mode ON,
 target picked, but NOTHING in edit mode. Options: (a) the pick lights a
 target and the pedal fades a NEW voice in from silence (the chord-case
@@ -50,8 +52,20 @@ chord); (b) picks are inert without an edit selection. Also please confirm
 the intended selection: the pedal drags EDIT-MODE voices only (the
 selection), all matched pairs moving in parallel under the one pedal, each
 pair with its own kink state.
+** TODO Let's go with your favorite, but:
+It will make new notes confusing.
+Suppose I'm swelling into a new note,
+and I play a second note on the grid.
+The first note already has nonzero volume.
+If I pluck the second while I'm 60% of the way to the target,
+the new note will consider the nearer side of the pedal home,
+and so it won't swell into being until I start
+sweeping the pedal the other direction.
 
-* TODO target-matching needs a tie-break rule
+I don't see anything obviously more elegant,
+and it will definitely have its musical uses,
+so I'll try it.
+* DONE target-matching needs a tie-break rule
 "Target each as-yet untargeted voice to the nearest available target" is
 greedy and order-dependent: with voices A < B and targets X < Y placed so
 both voices are nearest to X, who gets X depends on processing order (and
@@ -63,7 +77,7 @@ matches house style. Same rule mirrored for the fewer-targets case to
 decide who fades out (untargeted voices = the ones left over after the same
 ascending pass). Confirm or supply your own rule.
 
-* TODO the midpoint flip wants hysteresis
+* DONE the midpoint flip wants hysteresis
 Home/target swap "when I cross the midpoint". A pedal RESTING near 0.5
 (sensor noise, foot tremor) would flip home/target -- and the LED colors,
 and which end future picks retarget -- many times per second. Propose a
@@ -74,7 +88,7 @@ PURELY about (a) which end a new pick replaces and (b) the LED roles -- it
 must not itself move any pitch (it doesn't, under the formalization, since
 the map doesn't mention "home"; only picks and the pedal do).
 
-* TODO set membership and LEDs during flight
+* DONE set membership and LEDs during flight
 A sliding voice's actual pitch is intermediate, usually on no cell. The
 vision specifies the two ANCHOR cells' looks (home: lit + dance; target:
 100 ms flash, no dance) and the midpoint color swap. Open: where does the
@@ -87,7 +101,7 @@ currently painted as "the note". The voice's own sounding-class reflection
 instantaneous glide -- I think lighting the true intermediate class would
 smear meaninglessly across cells anyway. Confirm.
 
-* TODO leaving slide mode (and entering it) mid-anything
+* DONE leaving slide mode (and entering it) mid-anything
 Unspecified transitions, all need a rule:
 - Toggle slide OFF mid-flight: voices freeze at their current (possibly
   in-between, microtonally off-grid) pitches? Snap to nearest of home/
@@ -107,7 +121,7 @@ Unspecified transitions, all need a rule:
   proposal: deselection also cancels their slide pairing (a slide needs its
   selection), voices freeze in place, targets unlight.
 
-* TODO chord storage doesn't exist yet -- sequencing
+* ONGOING chord storage doesn't exist yet -- sequencing
 The chord-storage case reads well, but there is no chord storage in the
 surfaces runtime today (TODO/chord-storage/ is unbuilt; the old sawwave
 chord slots live in the pre-surfaces runtime). So: build pedal slide's
@@ -116,7 +130,12 @@ interaction as a constraint on chord storage's LATER design? Or is chord
 storage meant to come first? The fade-in/out logic is worth building now
 regardless -- the no-edit-voices case above exercises it without chords.
 
-* TODO the toggle cell, per rig
+** TODO Did it just get built?
+I'm using it in 2-monomes_2-softsteps in branch 2. I've merged branch 2 here.
+Maybe I did that recently. Do you still not see it here?
+If not, can you see it there?
+
+* DONE the toggle cell, per rig
 "Bottom-leftmost button of each monome": in 2-monomes_2-softsteps, (0,15)
 is currently a play cell -- free, fine, one more note sacrificed to an
 overlay (the established trade). But in 2-monomes_kmss-drums, (0,15) is
