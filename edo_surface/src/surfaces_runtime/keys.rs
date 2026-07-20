@@ -114,6 +114,28 @@ pub(super) fn handle_key(
     }
     return;
   }
+  // Fine transpose (queues/branch-2.org): key-down toggles THIS grid's mode. On
+  // entry the X seeds at the board center's pitch under the current register and
+  // the transpose starts at 0; on exit a nonzero transpose simply REMAINS in
+  // effect -- the voices were moved live, so there is nothing left to apply --
+  // and the X's position is forgotten ("range changes do not persist").
+  if in_overlay(rt.overlays.fine_transpose_rect, cell) {
+    if press {
+      if rt.fine.on {
+        rt.fine.exit();
+      } else {
+        let center = step_for_cell(
+          rt.tuning.x_step,
+          rt.tuning.y_step,
+          *register,
+          rt.tuning.grid_w / 2,
+          rt.tuning.grid_h / 2,
+        );
+        rt.fine.enter(center);
+      }
+    }
+    return;
+  }
   // The editmode buttons, through the same `editmode_press` the softstep pedals run:
   // clear empties THIS grid's edit SELECTION (branch-3 queue item 4: pure deselection --
   // every cleared note stays sustained, so nothing is silenced), accrete puts every
@@ -255,7 +277,13 @@ pub(super) fn handle_key(
         _ => None,
       };
       if let Some(delta) = octave {
-        if octave_shift_edited(rt, held, delta) {
+        // In fine transpose the corners move the X ITSELF -- even off-screen; the
+        // register and the voices hold still until a transpose key says otherwise.
+        if rt.fine.on {
+          rt.fine.move_center(delta);
+          return;
+        }
+        if shift_edited_voices(rt, held, delta) {
           publish_held(&rt.shared.held_all, rt.grid_index, held);
           publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
           return;
@@ -277,6 +305,20 @@ pub(super) fn handle_key(
     if rt.knobs.echo_input {
       let f = rt.tuning.fund * 2f64.powf(pitch as f64 / rt.tuning.edo as f64);
       eprintln!("press grid={} x={:>2} y={:>2} f={f:.2} Hz", rt.grid_index, cell.0, cell.1);
+    }
+    // Fine transpose: the play grid is a transpose CONTROLLER -- this press sets
+    // the selection's transpose to (pitch - X center) and sounds nothing. Mono-
+    // style: the newest press wins; the snap-back lives in the release path.
+    // Every play-cell press is a transpose key while the mode is on: no notes,
+    // no handles, no drags, no retriggers.
+    if rt.fine.on {
+      let delta = rt.fine.press(cell, pitch);
+      if delta != 0 {
+        shift_edited_voices(rt, held, delta);
+      }
+      publish_held(&rt.shared.held_all, rt.grid_index, held);
+      publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
+      return;
     }
     // Per-voice edit mode, BEFORE the play path: this press may be an edit trigger or
     // a pitch drag rather than a note, and in both of those cases it must not sound.
@@ -434,7 +476,18 @@ pub(super) fn handle_key(
       rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
     );
   } else {
-    release_cell(rt, held, cell);
+    // A fine-transpose key coming up snaps the transpose to the most recent key
+    // still held (the LAST release keeps it -- no revert to 0). A finger that
+    // predates the mode is not in the transpose stack and releases normally even
+    // while the mode is on.
+    let fine_release = rt.fine.on.then(|| rt.fine.release(cell)).flatten();
+    if let Some(delta) = fine_release {
+      if delta != 0 {
+        shift_edited_voices(rt, held, delta);
+      }
+    } else {
+      release_cell(rt, held, cell);
+    }
   }
   publish_held(&rt.shared.held_all, rt.grid_index, held);
   publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
@@ -581,7 +634,7 @@ fn chord_toggle(rt: &mut GridThread, slot: usize) {
 /// reflection stay put -- only the exact-cell markers (the dances) and the
 /// off-screen corners react. A pure glide, no envelope event: the bulk edit
 /// controls (the multipliers) are click-free, and this is one of them.
-fn octave_shift_edited(
+fn shift_edited_voices(
   rt: &mut GridThread,
   held: &mut HashMap<(i32, i32), i32>,
   delta: i32,

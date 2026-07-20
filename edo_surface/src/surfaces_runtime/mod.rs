@@ -28,6 +28,7 @@ mod chords;
 mod chords_persist;
 mod dance;
 mod edit;
+mod fine;
 mod grid;
 mod hooks;
 mod keys;
@@ -509,6 +510,7 @@ fn run(
       knobs,
       shared: shared.clone(),
       slide: SlideCandidates::new(),
+      fine: fine::FineTranspose::new(),
       started: Instant::now(),
       sink: SurfaceSink::new(
         grid_index,
@@ -666,6 +668,8 @@ struct GridThread {
   shared: Shared,
   /// THIS grid's recently-released notes (slide sources) + the slide knobs.
   slide: SlideCandidates,
+  /// THIS grid's fine-transpose mode (the X, the scalar transpose, the key stack).
+  fine: fine::FineTranspose,
   /// When this runtime started. The diamond dance's phase is a pure function of
   /// elapsed time from here, so every dance on the instrument turns in step -- that
   /// is the whole reason a skipped corner is not allowed to retime its dance.
@@ -767,6 +771,9 @@ fn grid_thread(mut rt: GridThread) {
     // The editmode buttons: dim at rest (findable), bright while pressed.
     buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
     buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
+    // The fine-transpose toggle: bright while the mode is on, resting dim (which
+    // the slow control flash gates) otherwise.
+    buttons.push((rt.overlays.fine_transpose_rect, button_level(rt.fine.on)));
     if rt.overlays.poly_rect != NO_RECT {
       // The pad's six cells, all per-THIS-grid state: the tempo-factor cells show
       // which way this grid's tempo factor leans; =1 shows this grid's
@@ -853,6 +860,17 @@ fn grid_thread(mut rt: GridThread) {
         dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
       }
     }
+    // The fine-transpose X (queues/branch-2.org): a 5x5 X around the center
+    // pitch's on-screen image(s), one ring lit dim at a time on a 50 ms
+    // out-in-out cycle. Painted at the LOWEST priority -- clobbered by voices,
+    // dances, even trails -- and simply absent while the center is off-screen.
+    let mut x_cells: HashSet<(i32, i32)> = HashSet::new();
+    if rt.fine.on {
+      let ring = fine::x_ring_at(elapsed);
+      for img in cells_for_pitch(&rt, register, rt.fine.center) {
+        x_cells.extend(fine::x_ring_cells(img, ring));
+      }
+    }
     // The visible pitch window, for "is that note off-screen".
     let [ex0, ey0, ex1, ey1] = rt.overlays.edo_rect;
     let corners = [
@@ -881,6 +899,7 @@ fn grid_thread(mut rt: GridThread) {
       &sounding_classes,
       &trail_classes,
       &dance_cells,
+      &x_cells,
       off,
       dance::overlay_dim_on(elapsed),
       rt.overlays.edo_rect,

@@ -344,6 +344,7 @@ Built-in unbundled window kinds:
 - ~mono_toggle~
 - ~factored_pulse_pad~
 - ~editmode_control~
+- ~fine_transpose_toggle~
 - ~chord_block~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
@@ -522,6 +523,18 @@ retune those in place. The tap cell displays the tempo whether or not cycling
 is on: it blinks at 10% duty at the base tempo -- unfactored, so both grids' tap
 cells blink together and no tempo-factor button moves them -- fully lit against
 black.
+
+A ~fine_transpose_toggle~ (surfaces runtime) is a single cell (at most one per
+monome, on a monome with an ~edo_note_grid~; lit bright while on, resting dim
+under the control flash) that turns the play grid into a live transpose
+controller for the edit selection: a dancing 5x5 X (one ring dim at a time,
+out-in-out at 50 ms per phase, painted only where nothing else is) marks a
+center pitch seeded at the board center; each play press sets the selection's
+transpose to (pressed pitch - center), gliding every edited voice at once,
+mono-style (newest press wins, releases snap to the most recent held key, the
+last release keeps the transpose); the octave corners move the X itself, even
+off-screen, non-persistently; exiting keeps a nonzero transpose. Player's
+reference: [[./2-monomes_2-softsteps_readme.org]] "fine transpose".
 
 A ~chord_block~ (surfaces runtime; TODO/chord-storage-v2) is a 5x2 block of
 chord-storage controls -- slots 1..5 on the top row, the ARM button then slots

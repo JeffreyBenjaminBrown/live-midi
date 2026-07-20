@@ -183,6 +183,16 @@ Arm (the flashing cell) then press a slot to save every voice this grid is
 sounding; a disarmed slot press toggles the stored chord on (lit solid) and
 off. Centered-ish in the free span, with the bigger gap kept next to the
 editmode-clear at (12,0). See TODO/chord-storage-v2/.
+**** ELEM monome_windows              # grid A: fine-transpose toggle
+***** PARAM id = "fine-a"
+***** PARAM monome = "a"
+***** PARAM kind = "fine_transpose_toggle"
+***** PARAM rect = [1, 15, 1, 15]
+Next to the lower-leftmost key (which branch 3 is claiming for its slide).
+While on (lit bright): a dancing X marks a center pitch, every play press
+sets the edit selection's transpose to the interval from the pressed pitch
+to that center (mono-style; the last release keeps the transpose), and the
+octave corners move the X itself. Exit keeps a nonzero transpose.
 *** grid B windows
 **** ELEM monomes
 ***** PARAM id = "b"
@@ -228,6 +238,12 @@ Grid B's twin of grid A's editmode-clear button (same job as OSS pedal 0).
 ***** PARAM kind = "chord_block"
 ***** PARAM rect = [5, 0, 9, 1]
 Grid B's twin of grid A's chord block; its nine slots are its own.
+**** ELEM monome_windows              # grid B: fine-transpose toggle
+***** PARAM id = "fine-b"
+***** PARAM monome = "b"
+***** PARAM kind = "fine_transpose_toggle"
+***** PARAM rect = [1, 15, 1, 15]
+Grid B's twin of grid A's fine-transpose toggle.
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
 as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and

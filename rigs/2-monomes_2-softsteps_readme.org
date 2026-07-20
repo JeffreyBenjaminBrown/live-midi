@@ -117,6 +117,9 @@ Here's how to see what's connected:
 - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
   grid, each a volume pedal: heel silent, toe unity, fader-law taper
   (exponential + linear splice), slewed. See "the EX-P volume pedals".
+- fine transpose -- a per-grid mode (the =FT= toggle at =(1,15)=) in which
+  play presses set a live scalar transpose of the edit selection, measured
+  from a dancing X's center pitch. See "fine transpose".
 - diamond dance -- the lit cell turning around an edit-mode note's cell(s), above /
   left / below / right. See "the diamond dance".
 - square dance -- the diamond's diagonal twin, marking a sustained or chord
@@ -152,14 +155,16 @@ lives on a SoftStep instead:
    ...                        (46-EDO play cells)
   row 13   .   .   .   .   .   .   .   .   .   .   .   .    .      .     .    .
   row 14   .   .   .   .   .   .   .   .   .   .   .   .    .   8vaDN   UP  8vaUP
-  row 15   .   .   .   .   .   .   .   .   .   .   .   .    .   LEFT  DOWN  RIGHT
+  row 15   .  FT   .   .   .   .   .   .   .   .   .   .    .   LEFT  DOWN  RIGHT
 #+end_example
 
 - The waveform strip (=[0,0,3,0]=), the chord block (=[5,0,9,1]= -- slots 1..5
   over ARM + slots 6..9; see "chord storage"), the editmode-clear button
-  (=[12,0]=), the factored-pulse pad (=[13,0,15,1]=), and the scroll pad
+  (=[12,0]=), the factored-pulse pad (=[13,0,15,1]=), the fine-transpose
+  toggle (=FT= at =[1,15]=; see "fine transpose"), and the scroll pad
   (=[13,14,15,15]=) occlude the play grid: pressing them re-timbres, saves or
-  recalls a chord, clears edit mode, moves the factored pulse, or scrolls
+  recalls a chord, clears edit mode, moves the factored pulse, toggles fine
+  transpose, or scrolls
   rather than sounding a note. Every other cell on both grids is an ordinary
   46-EDO play cell.
 - The editmode-clear button ((12,0), just left of the pad's =x3=; dim at
@@ -593,6 +598,35 @@ Only the octave corners ever flash -- never the four arrows -- so a note scrolle
 by less than an octave gets no hint. And one signal covers both edit-mode and
 sustained notes, so the LED cannot tell you which kind you are chasing. Both are
 Jeff's calls ("I'll understand").
+
+** fine transpose
+The octave switchers above transpose coarsely; the =FT= toggle at =(1,15)=
+(lit bright while on) turns the whole play grid into a FINE transpose
+controller for the edit selection. While on:
+
+- A big dancing X marks a CENTER pitch, seeded at the board center's pitch
+  ((8,8) under the current register). Pressing any play cell sets the
+  selection's transpose to the interval from the pressed pitch to that
+  center -- applied LIVE, gliding, both layers at once, no envelope event.
+  Transpose presses sound nothing, and no other play gesture exists while
+  the mode is on (no notes, no handles, no drags, no retriggers).
+- The transpose is a SCALAR, so the keys are mono-style: the newest press
+  wins outright; releasing a finger snaps the transpose to the most
+  recently pressed key still held; releasing the LAST key leaves the
+  transpose where it is (it never reverts to 0 on its own).
+- The octave switchers move the X ITSELF by an octave -- even off-screen
+  (the X just isn't drawn there) -- widening or narrowing what a given key
+  means. These moves do not persist: a re-entry re-seeds the X at the board
+  center, untransposed. The four arrows still scroll the window as ever.
+- Exiting (press =FT= again) keeps a nonzero transpose in effect -- the
+  voices were moved live, so nothing snaps back -- and the grid plays
+  normally again. The voices stay visible by the normal rules throughout.
+
+The X itself: a 5x5 diagonal cross around the center's on-screen image(s),
+with ONE ring lit dim at a time, cycling outer corners -> inner diagonals ->
+center -> inner -> outer at 50 ms per phase. It paints at the lowest
+priority of anything on the grid -- voices, dances, even trails all clobber
+it -- so it never hides information.
 
 ** the octave switchers in edit mode
 While any voice on a grid is in edit mode, that grid's two octave corners

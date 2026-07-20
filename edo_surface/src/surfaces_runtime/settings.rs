@@ -84,6 +84,8 @@ pub(super) struct Overlays {
   /// The 5x2 chord-storage block (slots 1..5 over arm + slots 6..9), `NO_RECT`
   /// when absent.
   pub(super) chord_rect: [i32; 4],
+  /// The fine-transpose toggle's cell, `NO_RECT` when absent.
+  pub(super) fine_transpose_rect: [i32; 4],
 }
 
 /// One play grid's resolved rig: its monome binding + its overlay rects + which
@@ -312,6 +314,16 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let fine_transpose_rect = rig
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowRig::FineTransposeToggle { monome, rect, .. } if monome == monome_id => {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     let editmode_rect_on = |wanted: EditmodeControlKind| {
       rig
         .monome_windows
@@ -342,6 +354,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
       chord_rect,
+      fine_transpose_rect,
     };
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),

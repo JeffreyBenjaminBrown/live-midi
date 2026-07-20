@@ -200,6 +200,22 @@ off-screen flash); readme dance sections and glossary updated.
   there (no free-pitch guard, unlike the cell drag).
 =cargo test --workspace=: 742 passed, 0 failed.
 
+* DONE 14. fine transpose (queues/branch-2.org)
+New mode + window kind =fine_transpose_toggle= at (1,15), both grids. While
+on: the play grid is a transpose controller for the edit selection -- each
+press sets the scalar transpose to (pressed pitch - X center), applied LIVE
+through =shift_edited_voices= (renamed from the octave-switcher helper; both
+layers, in-place glides, no envelope event); mono-style key stack with
+snap-back, the last release keeping the transpose; octave corners move the X
+(non-persistent, register holds); arrows still scroll; exit keeps a nonzero
+transpose. The X: one dim ring at a time (outer/inner/center, 50 ms/phase,
+=fine::x_ring_at/x_ring_cells=), drawn at the center pitch's on-screen
+image(s), LOWEST paint priority (a new =x_cells= compositor input painted
+only where everything else is OFF). Pure state in =fine.rs=, fully tested;
+e2e pinned through the harness; interpretation flagged in the queue: applied
+live rather than on-exit (vetoable).
+=cargo test --workspace=: 750 passed, 0 failed.
+
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's
   shared LFO phases (advanced at the new timbre's rates) for the fade's

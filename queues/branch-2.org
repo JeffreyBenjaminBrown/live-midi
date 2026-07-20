@@ -1,4 +1,67 @@
 * ONGOING TODO/chord-storage-v2
+** DONE fine transpose
+We just implemented one way to transpose, via octaves.
+This will be another, finer one.
+
+Branch 3 is currently working on a 'slide' that will use the lower-leftmost
+monomekey. This should be the lowest one right next to it, x=1 y=15.
+When this is toggled on, it lights up,
+and the meaning of pressing grid keys changes.
+The grid still looks the same, *except* that a big dancing X
+(described soon) marks the center of the board.
+Pressing any note transposes all edit-moded notes an interval
+equal to the distance from the note fingered to the center of the X.
+The octave switchers can be used to move the X -- even off-screen.
+(Such range changes do not persist once fine transpose is exited.)
+Transpose is a scalar, so the grid is in 'mono' mode when fine-transpose is on --
+each note played cuts off the last, and if a finger is released,
+transpose snaps to the key most recently depressed,
+with the exception that when the last key is let up,
+the transpose does not revert to 0.
+
+When fine transpose mode is exited, if the transpose was nonzero,
+it remains in effect. Displayed pitch values adjust immediately
+(remember that all the voices are still visible the same as normal
+during fine-transpose).
+
+The big X cycles a dim light through 3 states, 0-1-2-1-0-1-2-1 ...
+and is clobbered by everything that could possibly clobber it
+(voices, diamond dances, even trails).
+0   0
+ 1 1
+  2
+ 1 1
+0   0
+Each phase of the X dance lasts 50 ms.
+*** DONE claude: implemented; one interpretation to veto
+Built as specified: =fine_transpose_toggle= at (1,15) on both grids (a new
+single-cell window kind; lit bright while on, resting dim under the control
+flash), the X seeded at the board center's pitch ((8,8) under the current
+register) and drawn as one dim ring at a time (outer/inner/center, 50 ms
+per phase, absolute clock), painted at the LOWEST priority -- voices,
+dances, and trails all clobber it, and it simply isn't drawn while its
+center pitch is off-screen. Presses set the scalar transpose mono-style
+(newest wins; releases snap to the most recent held key; the last release
+keeps it); the octave corners move the X +/- an octave, non-persistently;
+the arrows still scroll; exit keeps a nonzero transpose and restores normal
+playing. Transpose presses sound nothing and skip every play-path side
+effect (no held entry, no trail, no accrete capture, no retriggers); a
+finger that predates the mode still releases normally.
+
+The one interpretation you should know about: I read the transpose as
+applied LIVE -- each press glides the whole selection (both layers, no
+envelope event, the same in-place machinery as the octave switchers) the
+moment it lands, and the display follows ("all the voices are still visible
+the same as normal"), so exit has nothing left to apply. If you meant the
+alternative -- silent while in the mode, applied on exit -- say so and I
+will flip it.
+
+Pinned end to end
+(=fine_transpose_sets_a_live_scalar_transpose_of_the_selection=), plus pure
+state tests (stack/snap/center math) and an X-compositing test (paints only
+where nothing else does). Docs: readme "fine transpose" section + layout
+diagram + glossary; rigs/README kind + description. =cargo test
+--workspace=: 750 passed, 0 failed.
 ** DONE non-grid buttons should flash slowish
 Wherever they would currently be dim,
 let's have them flash 200 ms *dim*, 200 ms off.

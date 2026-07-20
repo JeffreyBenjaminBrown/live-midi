@@ -877,6 +877,16 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
     control: AccreteControlKind,
   },
+  // A single-cell toggle for FINE TRANSPOSE (surfaces runtime;
+  // queues/branch-2.org): while on, a dancing X marks a center pitch, play
+  // presses set a scalar transpose of the grid's whole edit selection (pressed
+  // pitch minus the X's center), and the octave corners move the X. At most one
+  // per monome, on a monome with an edo_note_grid.
+  FineTransposeToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // The chord-storage block (surfaces runtime; TODO/chord-storage-v2): a 5x2
   // compound overlaid on the edo grid. Top row = slots 1..5, bottom row = the ARM
   // button then slots 6..9. Arm + slot press saves every voice the monome is
@@ -1057,6 +1067,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { id, .. }
       | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
+      | MonomeWindowRig::FineTransposeToggle { id, .. }
       | MonomeWindowRig::ChordBlock { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
@@ -1092,6 +1103,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { monome, .. }
       | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
+      | MonomeWindowRig::FineTransposeToggle { monome, .. }
       | MonomeWindowRig::ChordBlock { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
@@ -1127,6 +1139,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::EditmodeControl { rect, .. }
       | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
+      | MonomeWindowRig::FineTransposeToggle { rect, .. }
       | MonomeWindowRig::ChordBlock { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
@@ -1163,6 +1176,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
+      MonomeWindowRig::FineTransposeToggle { .. } => "fine_transpose_toggle",
       MonomeWindowRig::ChordBlock { .. } => "chord_block",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
@@ -1970,6 +1984,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     }
     MonomeWindowRig::MonoToggle { id, monome, rect } => {
       Some(("mono_toggle", id, monome, *rect))
+    }
+    MonomeWindowRig::FineTransposeToggle { id, monome, rect } => {
+      Some(("fine_transpose_toggle", id, monome, *rect))
     }
     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
       // Per-control uniqueness: label by control so a monome may carry one clear
