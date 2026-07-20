@@ -350,6 +350,14 @@
       self.render_ms(1)
     }
 
+    /// The loudest sample once the gain slew has settled. `peak_over_ms` alone takes
+    /// the MAX over its window, so it reports whatever the level was on the way IN --
+    /// useless for "is it quieter now". 200 ms is ~10 time constants of GAIN_SLEW_SECS.
+    fn settled_peak(&mut self) -> f32 {
+      self.render_ms(200);
+      self.peak_over_ms(50)
+    }
+
     /// The loudest sample over `ms` of real rendering -- what "silent" and "present"
     /// actually mean to an ear, as opposed to what a gain field claims.
     fn peak_over_ms(&mut self, ms: usize) -> f32 {
@@ -914,6 +922,50 @@
     untouched.on_pedal(0.9);
     assert!(untouched.pedal_seen());
     assert_eq!(untouched.home(), pedal_slide::Home::High, "the side it spoke from is home");
+  }
+
+  /// The wrong-way gate through the REAL render (Jeff's design, 2026-07-20): picked
+  /// with the pedal parked mid-travel, going toward home holds the pitch and takes the
+  /// note away in volume instead -- so the home pitch is never lost, and the wrong
+  /// direction is audibly going nowhere.
+  #[test]
+  fn going_the_wrong_way_holds_the_pitch_and_fades_it_out_audibly() {
+    let mut r = SlideRigUnderTest::new_untouched_pedal();
+    // Park the pedal mid-travel and let the engine adopt that as its starting point.
+    r.pedal_to(0.4);
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+
+    // The wrong way: the PITCH must not move at all, and the note must actually get
+    // quieter -- measured as rendered peak, not as a gain field.
+    let loud = r.settled_peak();
+    for f in [0.3, 0.2, 0.1] {
+      let pitch = r.pedal_to(f);
+      assert!(
+        (pitch - r.h as f32).abs() < 0.01,
+        "at f={f} the pitch must hold at home, heard {pitch:.3}",
+      );
+    }
+    let quiet = r.settled_peak();
+    assert!(quiet < loud * 0.2, "going the wrong way must be audibly quieter: {loud} -> {quiet}");
+
+    // Back to the pick point: the pitch is exactly home again, at full volume. The pin
+    // did not follow the foot, so home was never lost.
+    let back = r.pedal_to(0.4);
+    assert!((back - r.h as f32).abs() < 0.01, "home recovered exactly, heard {back:.3}");
+    // Compared against the FADED level, not the original: these notes are plucked, so
+    // the envelope has decayed over the ~700 ms this test spends rendering, and an
+    // absolute comparison would be measuring the pluck rather than the gate.
+    let recovered = r.settled_peak();
+    assert!(
+      recovered > quiet * 5.0,
+      "and the volume comes back at the pick point: {quiet} -> {recovered}",
+    );
+
+    // And onward the right way still arrives exactly.
+    let landed = r.sweep(0.4, 1.0);
+    assert!((landed - t as f32).abs() < 0.05, "arrives at the target, heard {landed:.3}");
   }
 
   /// Toggling pedal slide off mid-flight freezes the voice exactly where it is --

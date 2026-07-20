@@ -156,6 +156,14 @@ impl Segments {
     self.anchor_v + (target - self.anchor_v) * self.shape.at(t)
   }
 
+  /// The value at `f` on a map whose joint is FIXED, choosing the segment by which
+  /// SIDE of the joint `f` falls on rather than by the direction of travel. That is
+  /// what a pinned map means: leaving the joint and coming back retraces the same
+  /// curve, instead of re-deriving a fresh segment from wherever you turned around.
+  fn eval_pinned(&self, f: f32) -> f32 {
+    self.eval(f.clamp(0.0, 1.0), f >= self.anchor_f)
+  }
+
   /// Re-pin the anchor at the current position (a reversal, a retarget, or an
   /// endpoint): the joint moves to `(f, cur)` so the segment behind re-derives from
   /// here.
@@ -279,6 +287,68 @@ pub enum FlipPolicy {
   AtMidpoint,
 }
 
+/// The WRONG-WAY GATE: what happens when a slide is picked with the pedal parked away
+/// from an endpoint, and the foot then travels toward home instead of toward the
+/// target (Jeff's design, 2026-07-20).
+///
+/// The problem it solves: with the note at `H` and the pedal at `F`, the map cannot be
+/// a single straight line over the whole travel AND leave the pitch alone at the moment
+/// of the pick AND land exactly on the target -- the slope is forced to `delta/(1-F)`,
+/// and something has to give on the near side of `F`. Letting the line simply continue
+/// would strand the note among pitches you cannot name and cannot get back from.
+///
+/// So the near side does nothing to the PITCH -- it holds at `H`, which is therefore
+/// never lost -- and says so with the VOLUME instead: full at `F`, fading quartically
+/// to silence at the home end. Going the wrong way is audibly going nowhere, and
+/// returning to `F` brings the note back, continuously, exactly at `H`.
+///
+/// `pin` is the one kink in this instrument that OUTLIVES the pedal leaving it: every
+/// other re-pins on reversal, this one must not, or `H` would drift away from the
+/// position that recovers it. Both pins dissolve at an endpoint:
+/// - reaching the FAR end (the target) drops the gate entirely -- the map becomes the
+///   plain line between the two pitches and the pedal stops touching volume for good;
+/// - reaching the HOME end (silence) moves both pins to the opposite end, so the way
+///   back sweeps pitch `H -> T` and volume `0 -> full` across the whole travel, the two
+///   arriving together.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WrongWayGate {
+  /// Where the pitch map's joint is frozen: the pitch holds at `H` on the home side of
+  /// this, and slides toward the target beyond it.
+  pub pitch_pin: f32,
+  /// Where the volume is full: it fades quartically from here to silence at the home
+  /// end, and is full everywhere beyond.
+  pub gain_pin: f32,
+  /// Which end was home when the gate opened. Fixed for its lifetime -- the midpoint
+  /// flip re-labels roles for painting, and must not turn this map inside out.
+  pub home_low: bool,
+}
+
+impl WrongWayGate {
+  fn home_end(&self) -> f32 {
+    if self.home_low {
+      0.0
+    } else {
+      1.0
+    }
+  }
+
+  fn far_end(&self) -> f32 {
+    1.0 - self.home_end()
+  }
+
+  /// The volume factor at pedal position `f`: 1 from the pin outward, and a quartic
+  /// falling to exactly 0 at the home end. Quartic like the fades, so silence is
+  /// approached gently and most of the travel still sounds.
+  fn gain(&self, f: f32) -> f32 {
+    let span = (self.gain_pin - self.home_end()).abs();
+    if span <= EPS {
+      return 1.0;
+    }
+    let t = ((f - self.home_end()).abs() / span).clamp(0.0, 1.0);
+    t * t * t * t
+  }
+}
+
 /// What one voice is doing under the pedal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -332,8 +402,16 @@ pub struct Pairing {
   /// The integer pitch this voice is currently filed and painted at (the ring's sets,
   /// its drone key if it is a drone, the cell the dances mark).
   pub filed: i32,
+  /// The pedal position this pairing last saw, so the gate's volume can be read off the
+  /// pairing alone (the segment carries the pitch, not the fraction).
+  pub at_f: f32,
   pub kind: Kind,
   pub seg: Segments,
+  /// Live only while this slide was picked away from an endpoint and has not reached
+  /// one since (see [`WrongWayGate`]). While it is set, the pitch map is PINNED rather
+  /// than re-anchored on reversal, and the pedal drives this voice's volume as well as
+  /// its pitch.
+  pub gate: Option<WrongWayGate>,
 }
 
 impl Pairing {
@@ -346,12 +424,14 @@ impl Pairing {
     }
   }
 
-  /// The amplitude in `[0, 1]` a FADE voice should sound at now, or `None` for a pitch
-  /// slide (whose loudness the pedal does not touch -- the grid volume is frozen).
+  /// The amplitude factor in `[0, 1]` the pedal is imposing on this voice now, or
+  /// `None` when it is imposing none. A swell's whole business is amplitude; a pitch
+  /// slide leaves it alone (the grid volume is frozen) EXCEPT while its wrong-way gate
+  /// is open, where the fade is what says "this direction is going nowhere".
   pub fn current_amp(&self) -> Option<f32> {
     match self.kind {
-      Kind::Pitch => None,
       Kind::Fade => Some(self.seg.cur.clamp(0.0, 1.0)),
+      Kind::Pitch => self.gate.map(|g| g.gain(self.at_f)),
     }
   }
 }
@@ -618,21 +698,51 @@ impl PedalSlideState {
     let f_old = self.cur_f;
     if (f - f_old).abs() > EPS {
       let up = f > f_old;
-      if up != self.moving_up && !self.pairings.is_empty() {
-        // A reversal: re-pin every anchor at the reversal point, so the return path is
-        // a fresh segment to home (the hysteresis). At an endpoint this is what fuses
-        // the two segments into one clean line -- "the kink is gone".
-        for p in &mut self.pairings {
+      for p in &mut self.pairings {
+        // A reversal re-pins the anchor at the reversal point, so the way back is a
+        // fresh segment to home (the hysteresis). A GATED pairing is the one exception
+        // -- its joint is what makes the home pitch recoverable, so it must not drift
+        // to wherever the foot happened to turn around.
+        if up != self.moving_up && p.gate.is_none() {
           p.seg.repin(f_old);
         }
+        p.seg.cur = if p.gate.is_some() { p.seg.eval_pinned(f) } else { p.seg.eval(f, up) };
+        p.at_f = f;
       }
       self.moving_up = up;
+    } else {
       for p in &mut self.pairings {
-        p.seg.cur = p.seg.eval(f, up);
+        p.at_f = f;
       }
     }
     self.cur_f = f;
+    self.dissolve_gates_at_endpoints(f);
     self.propose_flip(f)
+  }
+
+  /// "As soon as the pedal reaches either endpoint, the kink should vanish."
+  ///
+  /// Reaching the FAR end means the slide arrived: drop the gate, re-pin the map at
+  /// the endpoint so the return trip is one clean line between the two pitches, and
+  /// hand volume back for good -- from here the pedal is pure pitch.
+  ///
+  /// Reaching the HOME end means the wrong way was followed all the way to silence.
+  /// Nothing is lost there, so both pins move to the opposite end: the way back now
+  /// sweeps pitch `H -> T` and volume `0 -> full` across the whole travel, arriving
+  /// together. Both hand-offs are continuous, because at the endpoint the old map and
+  /// the new one agree on both pitch and volume.
+  fn dissolve_gates_at_endpoints(&mut self, f: f32) {
+    for p in &mut self.pairings {
+      let Some(g) = p.gate else { continue };
+      if (f - g.far_end()).abs() <= EPS {
+        p.seg.repin(f);
+        p.gate = None;
+      } else if (f - g.home_end()).abs() <= EPS {
+        p.gate = Some(WrongWayGate { pitch_pin: g.home_end(), gain_pin: g.far_end(), ..g });
+        p.seg.anchor_f = g.home_end();
+        p.seg.anchor_v = p.seg.cur;
+      }
+    }
   }
 
   /// Has the pedal crossed the point where home swaps ends? If so, flip the LABEL now
@@ -777,7 +887,11 @@ impl PedalSlideState {
     let far_is_high = self.home.is_low();
     let (s0, s1) = if far_is_high { (start, end) } else { (end, start) };
     let seg = Segments::new(s0, s1, self.cur_f, start, Shape::Quartic);
-    Pairing { voice, tenure: Tenure::WhileSounding, filed: pitch, kind: Kind::Fade, seg }
+    // A swell is already all amplitude; it needs no wrong-way signal on top.
+    Pairing {
+      voice, tenure: Tenure::WhileSounding, filed: pitch, at_f: self.cur_f,
+      kind: Kind::Fade, seg, gate: None,
+    }
   }
 
   /// A whole SET of targets arriving at once -- a chord recalled while pedal slide is
@@ -870,14 +984,28 @@ impl PedalSlideState {
           seg.s0 = target as f32;
         }
       }
-      return Pairing { voice, tenure, filed: prev.filed, kind: Kind::Pitch, seg };
+      // A RETARGET keeps whatever gate it had: the pin marks where this voice's home
+      // is recoverable from, and re-aiming the far goalpost does not move that.
+      return Pairing {
+        voice, tenure, filed: prev.filed, at_f: self.cur_f, kind: Kind::Pitch, seg,
+        gate: prev.gate,
+      };
     }
     // A fresh pairing: the home endpoint is the voice's current pitch, the far endpoint
     // the target, anchored where the pedal is.
     let (s0, s1) =
       if far_is_high { (base as f32, target as f32) } else { (target as f32, base as f32) };
     let seg = Segments::new(s0, s1, self.cur_f, base as f32, Shape::Linear);
-    Pairing { voice, tenure, filed: base, kind: Kind::Pitch, seg }
+    // Picked AT an endpoint, the map is already the plain line from one end to the
+    // other and there is no wrong way to go -- no gate. Picked anywhere else, the near
+    // side of the pedal cannot slide (see `WrongWayGate`), so it fades instead.
+    let at_end = self.cur_f <= EPS || self.cur_f >= 1.0 - EPS;
+    let gate = (!at_end).then_some(WrongWayGate {
+      pitch_pin: self.cur_f,
+      gain_pin: self.cur_f,
+      home_low: far_is_high,
+    });
+    Pairing { voice, tenure, filed: base, at_f: self.cur_f, kind: Kind::Pitch, seg, gate }
   }
 
   /// The per-voice drive commands to apply this instant.
@@ -1277,6 +1405,136 @@ mod tests {
     st.pick(20, &[(drone(10), 10)]);
     assert_eq!(st.exit(), vec![drone(10)], "the owner freezes exactly these");
     assert!(!st.mode() && st.is_empty());
+  }
+
+  // ---- the wrong-way gate (Jeff's design, 2026-07-20) ----
+
+  /// Picked with the pedal parked mid-travel: the pitch holds at H on the near side of
+  /// the pick and slides H -> T beyond it, and the VOLUME is what says which way is
+  /// which -- full from the pick outward, fading quartically to silence at the home
+  /// end. So the home pitch can never be lost, and going the wrong way is audibly
+  /// going nowhere.
+  #[test]
+  fn going_the_wrong_way_holds_the_pitch_and_fades_the_volume_out() {
+    let mut st = PedalSlideState::new();
+    st.enter(Some(0.4));
+    st.pick(27, &[(drone(0), 0)]);
+
+    // Toward the target: pitch slides, volume stays full.
+    for &(f, want) in &[(0.4_f32, 0.0_f32), (0.7, 13.5), (1.0, 27.0)] {
+      st.on_pedal(f);
+      let d = st.drives()[0];
+      assert!((d.pitch.0 - want).abs() < 1e-3, "at f={f} wanted {want}, got {}", d.pitch.0);
+      assert!(d.amp.is_none_or(|a| (a - 1.0).abs() < 1e-4), "full volume the right way");
+    }
+  }
+
+  #[test]
+  fn the_wrong_way_is_silent_at_the_end_and_recovers_exactly_at_the_pick() {
+    let mut st = PedalSlideState::new();
+    st.enter(Some(0.4));
+    st.pick(27, &[(drone(0), 0)]);
+
+    // The wrong way: pitch pinned at H, volume falling quartically.
+    let mut last = 1.0_f32;
+    for f in [0.3_f32, 0.2, 0.1] {
+      st.on_pedal(f);
+      let d = st.drives()[0];
+      assert!((d.pitch.0 - 0.0).abs() < 1e-4, "the pitch holds at H, got {}", d.pitch.0);
+      let amp = d.amp.expect("the wrong way drives volume");
+      assert!(amp < last, "and the volume keeps falling: {amp} !< {last}");
+      last = amp;
+    }
+    // Turning back BEFORE the end (the end itself dissolves the pin -- see
+    // `reaching_the_wrong_end_makes_the_whole_travel_useful_again`), the pitch is still
+    // pinned at H and the volume climbs back the way it fell.
+    st.on_pedal(0.2);
+    assert!((st.drives()[0].pitch.0 - 0.0).abs() < 1e-4, "still H on the way back");
+    assert!(st.drives()[0].amp.unwrap() > last, "and the volume is coming back");
+    st.on_pedal(0.4);
+    assert_eq!(st.drives()[0].amp, Some(1.0), "full again exactly at the pick point");
+    assert!((st.drives()[0].pitch.0 - 0.0).abs() < 1e-4, "and exactly at H there");
+
+    // All the way to the home end IS silence.
+    st.on_pedal(0.0);
+    assert_eq!(st.drives()[0].amp, Some(0.0), "silent at the home end");
+  }
+
+  /// The pin is the one kink that outlives the pedal leaving it. Every other re-pins on
+  /// reversal; if this one did, H would drift to wherever the foot turned around and
+  /// could never be recovered.
+  #[test]
+  fn the_wrong_way_pin_does_not_follow_the_foot() {
+    let mut st = PedalSlideState::new();
+    st.enter(Some(0.4));
+    st.pick(27, &[(drone(0), 0)]);
+    // Wander around inside the wrong-way region, reversing twice.
+    for f in [0.25_f32, 0.1, 0.3, 0.15] {
+      st.on_pedal(f);
+      assert!((st.drives()[0].pitch.0 - 0.0).abs() < 1e-4, "still pinned at H at f={f}");
+    }
+    // Back through the pick point: full volume, and the slide starts from there again
+    // with its ORIGINAL gearing (27 steps over the remaining 0.6 of travel).
+    st.on_pedal(0.4);
+    assert_eq!(st.drives()[0].amp, Some(1.0), "full volume exactly at the pick point");
+    st.on_pedal(0.7);
+    assert!(
+      (st.drives()[0].pitch.0 - 13.5).abs() < 1e-3,
+      "the gearing is unchanged by the wandering, got {}",
+      st.drives()[0].pitch.0,
+    );
+  }
+
+  /// Reaching the FAR end drops the gate for good: the map becomes the plain line
+  /// between the two pitches and the pedal stops touching volume.
+  #[test]
+  fn arriving_dissolves_the_gate_and_hands_volume_back() {
+    let mut st = PedalSlideState::new();
+    st.enter(Some(0.4));
+    st.pick(27, &[(drone(0), 0)]);
+    st.on_pedal(1.0);
+    assert_eq!(st.drives()[0].amp, None, "the pedal no longer controls volume");
+    // ...and the whole travel is now one clean line, exact at both ends.
+    st.on_pedal(0.5);
+    assert!((st.drives()[0].pitch.0 - 13.5).abs() < 1e-3, "got {}", st.drives()[0].pitch.0);
+    st.on_pedal(0.0);
+    assert!((st.drives()[0].pitch.0 - 0.0).abs() < 1e-4, "back to H exactly");
+    assert_eq!(st.drives()[0].amp, None, "still no volume duty");
+  }
+
+  /// Reaching the WRONG end moves both pins to the opposite end, so the way back sweeps
+  /// pitch H -> T and volume 0 -> full across the whole travel, arriving together.
+  #[test]
+  fn reaching_the_wrong_end_makes_the_whole_travel_useful_again() {
+    let mut st = PedalSlideState::new();
+    st.enter(Some(0.4));
+    st.pick(27, &[(drone(0), 0)]);
+    st.on_pedal(0.0);
+    assert_eq!(st.drives()[0].amp, Some(0.0), "silent at the wrong end");
+
+    st.on_pedal(0.5);
+    let d = st.drives()[0];
+    assert!((d.pitch.0 - 13.5).abs() < 1e-3, "pitch now spans the FULL travel, got {}", d.pitch.0);
+    let amp = d.amp.expect("volume is still coming back in");
+    assert!((amp - 0.0625).abs() < 1e-3, "quartic across the whole travel, got {amp}");
+
+    st.on_pedal(1.0);
+    let d = st.drives()[0];
+    assert!((d.pitch.0 - 27.0).abs() < 1e-4, "reaches T exactly");
+    assert_eq!(d.amp, None, "and at T the volume is full and handed back for good");
+  }
+
+  /// Picked AT an endpoint there is no wrong way to go, so no gate is opened and the
+  /// pedal never touches volume -- the ordinary case must stay ordinary.
+  #[test]
+  fn a_pick_at_an_endpoint_opens_no_gate() {
+    for park in [0.0_f32, 1.0] {
+      let mut st = PedalSlideState::new();
+      st.enter(Some(park));
+      st.pick(27, &[(drone(0), 0)]);
+      assert!(st.pairings()[0].gate.is_none(), "parked at {park}: no gate");
+      assert_eq!(st.drives()[0].amp, None, "and no volume duty");
+    }
   }
 
   // ---- the anchored-kink volume return (2_discussion's amendment) ----

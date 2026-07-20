@@ -668,7 +668,8 @@ fn chord_slide_to(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: us
     }
   }
   let drives = rt.pedal_slide.drives();
-  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+  let frozen = rt.sink.frozen_grid_gain();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, frozen, rt.tuning.fund, rt.tuning.edo);
 }
 
 /// The octave switchers' edit-mode action (queues/branch-2.org): move EVERY edited
@@ -1183,7 +1184,8 @@ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32)
   // pedal parked away from home the pick has an immediate audible consequence, and it
   // should land on the press, not up to a repaint later.
   let drives = rt.pedal_slide.drives();
-  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+  let frozen = rt.sink.frozen_grid_gain();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, frozen, rt.tuning.fund, rt.tuning.edo);
 }
 
 /// How many held cells sound exactly `pitch` right now -- the derived FINGER count

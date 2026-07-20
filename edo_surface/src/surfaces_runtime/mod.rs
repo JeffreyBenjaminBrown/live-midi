@@ -1082,7 +1082,8 @@ fn pedal_slide_step(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>) ->
 
   // 4. drive
   let drives = rt.pedal_slide.drives();
-  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+  let frozen = rt.sink.frozen_grid_gain();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, frozen, rt.tuning.fund, rt.tuning.edo);
   pedal_slide_log(rt, f, &drives);
 
   let (_home, targets) = rt.pedal_slide.led_roles();

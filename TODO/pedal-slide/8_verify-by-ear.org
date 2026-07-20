@@ -64,6 +64,28 @@ C. *That side is home.* From there, travelling AWAY from where the pedal started
    exactly. If your foot started near the toe, that means pushing toward the HEEL
    goes to the target -- which is correct, not backwards.
 
+* the wrong-way fade [NEW, NOT YET PLAYED]
+Jeff's design, after the first hardware session. Picking a target with the pedal
+parked part-way along its travel forces a steeper gear ratio on that first sweep
+-- unavoidably, given that the target must be exact at the far end and the press
+must not move the pitch. The near side of the pick point therefore cannot slide.
+It now holds the home pitch and fades out instead.
+
+D. *The wrong way holds the pitch.* Park the pedal around the middle, edit a
+   note, turn pedal slide on, pick a target. Now move the pedal AWAY from the
+   target. The pitch must not move at all -- and the note should get quieter,
+   quartically, reaching silence at that end of the travel.
+E. *Home comes back exactly.* Wander around below the pick point, then return to
+   it. The note should come back to full volume, at exactly its original pitch.
+   The pick point does not follow your foot -- that is deliberate, and it is what
+   makes the home pitch impossible to lose.
+F. *Arriving hands volume back.* Sweep the right way to the target. On arrival
+   the pedal should stop affecting volume altogether, and the whole travel should
+   now be one clean line between the two pitches.
+G. *The silent end reclaims the range.* Instead, go all the way to the SILENT
+   end. Now sweep back: pitch should slide home -> target and volume 0 -> full
+   across the whole travel, both arriving together at the target.
+
 * slice 1 -- one voice, one target [NOT YET PLAYED]
 The toggle is each grid's *bottom-left cell*, =[0,15]= (a free play cell on this
 rig; it is the accrete clear on =2-monomes_kmss-drums=, which does not carry

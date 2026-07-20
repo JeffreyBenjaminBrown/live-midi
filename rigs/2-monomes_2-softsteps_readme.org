@@ -360,6 +360,16 @@ one. Different mechanism, one word, so the name is always qualified here.
   position -- so the pitch you are nearest never jumps. Reverse the pedal and it
   takes a fresh straight line home rather than retracing: the same trick as MIDI
   knob pickup. Under all of it a ~10 ms smoother melts the pedal's CC steps.
+- *Going the wrong way fades out.* If you pick a target with the pedal parked
+  part-way along its travel, the near side of that point cannot slide -- the note
+  is already at its home pitch. So it holds there and says so with VOLUME
+  instead: full at the point where you picked, fading (x^4) to silence at the
+  home end. Going the wrong way is audibly going nowhere, and the home pitch can
+  never get lost -- return to where you picked and it comes back, continuously
+  and exactly. That pick point is the one kink in this instrument that survives
+  the pedal leaving it. Both ends dissolve it: reach the TARGET and the pedal is
+  pure pitch from then on; reach the silent end and the way back sweeps pitch and
+  volume together across the whole travel, arriving at the target at full volume.
 - *Home flips at the middle.* Which pedal half is "home" flips as you cross the
   midpoint (with a small dead band, so a resting foot cannot flicker it). That is
   what lets you chain slides: raise the pedal into one pitch, pick another, lower

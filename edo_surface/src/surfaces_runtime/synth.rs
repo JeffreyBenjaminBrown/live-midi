@@ -681,6 +681,14 @@ impl SurfaceSink {
     Some(key)
   }
 
+  /// This grid's frozen expression-pedal volume -- what the pedal's amplitude duty was
+  /// left at when the pedal-slide toggle took it away. Nothing writes it while slide
+  /// mode is on, so it still holds that value, and a slide's own amplitude work (a
+  /// swell, a wrong-way fade) scales it rather than replacing it.
+  pub(super) fn frozen_grid_gain(&self) -> f32 {
+    self.pedal_gain()
+  }
+
   /// Is a voice keyed here at all? The re-file path asks before moving a FINGERED
   /// slide voice's filed pitch, which re-keys nothing but must still not collide with
   /// a drone already ringing at the destination.
@@ -943,6 +951,7 @@ pub fn end_drones_at(
 pub(super) fn apply_slide_drives(
   voices: &Arc<Mutex<VoiceMap>>,
   drives: &[super::pedal_slide::Drive],
+  frozen_gain: f32,
   fund: f64,
   edo: i32,
 ) {
@@ -953,10 +962,13 @@ pub(super) fn apply_slide_drives(
   for d in drives {
     if let Some(state) = voices.get_mut(&d.voice) {
       state.slide_freq_target = d.pitch.to_hz(fund, edo);
-      // Fades only: a pitch slide leaves the grid volume frozen where it was, which is
-      // the whole bargain of taking the pedal off volume duty.
+      // An amplitude the pedal is imposing -- a swell coming in, or a wrong-way fade
+      // saying this direction goes nowhere. It SCALES the grid volume frozen at
+      // mode entry rather than replacing it, so a slide never resets the loudness you
+      // set before you started; a pitch slide with nothing imposed leaves it alone
+      // entirely, which is the whole bargain of taking the pedal off volume duty.
       if let Some(amp) = d.amp {
-        state.grid_gain_target = amp.clamp(0.0, 1.0);
+        state.grid_gain_target = frozen_gain * amp.clamp(0.0, 1.0);
       }
     }
   }
