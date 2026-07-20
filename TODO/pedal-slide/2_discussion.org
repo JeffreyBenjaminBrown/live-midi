@@ -52,7 +52,7 @@ chord); (b) picks are inert without an edit selection. Also please confirm
 the intended selection: the pedal drags EDIT-MODE voices only (the
 selection), all matched pairs moving in parallel under the one pedal, each
 pair with its own kink state.
-** TODO Let's go with your favorite, but:
+** DONE Let's go with your favorite, but:
 It will make new notes confusing.
 Suppose I'm swelling into a new note,
 and I play a second note on the grid.
@@ -121,7 +121,7 @@ Unspecified transitions, all need a rule:
   proposal: deselection also cancels their slide pairing (a slide needs its
   selection), voices freeze in place, targets unlight.
 
-* ONGOING chord storage doesn't exist yet -- sequencing
+* DONE chord storage doesn't exist yet -- sequencing [RESOLVED: it exists here]
 The chord-storage case reads well, but there is no chord storage in the
 surfaces runtime today (TODO/chord-storage/ is unbuilt; the old sawwave
 chord slots live in the pre-surfaces runtime). So: build pedal slide's
@@ -130,10 +130,16 @@ interaction as a constraint on chord storage's LATER design? Or is chord
 storage meant to come first? The fade-in/out logic is worth building now
 regardless -- the no-edit-voices case above exercises it without chords.
 
-** TODO Did it just get built?
+** DONE Did it just get built?
 I'm using it in 2-monomes_2-softsteps in branch 2. I've merged branch 2 here.
 Maybe I did that recently. Do you still not see it here?
 If not, can you see it there?
+*** DONE [claude] yes -- it's here; my note was stale
+chords_persist.rs + the chord windows are in this branch (your branch-2
+merges brought them; "chord voices square-dance like sustained ones" is in
+this history). My note predated seeing those merges. So the chord case IS
+buildable now and the implementation includes it. (Branch 2 has one commit
+not yet merged here -- f9a8b79, fine transpose -- unrelated to chords.)
 
 * DONE the toggle cell, per rig
 "Bottom-leftmost button of each monome": in 2-monomes_2-softsteps, (0,15)
