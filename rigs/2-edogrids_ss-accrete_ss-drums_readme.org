@@ -1,0 +1,171 @@
+#+title: Two EDO grids + an accrete SoftStep + a drum SoftStep -- reference
+#+date: 2026-07-20
+
+The drum-surface twin of [[./2-edogrids_ss-accrete_ss-pulse.org][2-edogrids_ss-accrete_ss-pulse]]. Everything about the grids is
+the same instrument, down to the cell: same two 46-EDO play surfaces, same
+overlays, same chord slots, same edit mode, same EX-P volume pedals, same
+older SoftStep carrying sustain and edit mode under two rows of pedals.
+
+*One thing differs.* The NEWER SoftStep (NSS) is a velocity-sensitive TR-808
+drumkit here instead of the factored-pulse pedals.
+
+*This file documents only that difference.* For anything else -- the glossary,
+the per-grid layout, edit mode, chord storage, the dances, fine transpose, the
+EX-P taper, the LED rules, startup -- read the sibling's reference:
+[[./2-edogrids_ss-accrete_ss-pulse_readme.org]]. Every word of it applies here except
+its "NSS: the factored pulse" section and its "what is deliberately NOT here"
+first line ("No drumkit"). Do not copy those sections into this file; the one
+thing this repo has learned about duplicated rig docs is that they drift on
+every rename.
+
+* why the newer board changed jobs
+
+Jeff never actually touched it. The five-per-grid pulse pedals it carried
+(=x2= / =x3= / =/2= / =/3= / ~=1~) were never a unique control surface -- every
+one of them is also on that grid's own upper-right 3x2 pad, driving the same
+per-grid state, which is exactly what the sibling's rig comments mean by "same
+state; hands or feet". So the board was spending ten pedals duplicating
+something the hands already reach.
+
+Nothing is lost by reclaiming it. On this rig the factored pulse is entirely
+hand-driven, from the grid pads, with identical behaviour -- the tempo factor,
+the ~=1~ double-tap dance, the edit-mode retunes, the tap cell's blink. What is
+gained is a kit.
+
+* startup
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-drums
+#+end_src
+
+=pw-jack= matters a little more here than on the sibling: the drum sampler is a
+second cpal stream, so BOTH it and the synth need to reach the card through
+PipeWire. Otherwise startup is identical -- including the once-per-login
+=xhost +local:= on the host for the on-screen window.
+
+The two boards are still told apart by ALSA client name, never card number:
+=SSCOM= is the older board (sustain + edit mode), =SoftStep= the newer one (now
+the kit).
+
+* the kit
+
+Ten pads, the TR-808 set carried over from =2-monomes_kmss-drums=. As Jeff
+stands over the board:
+
+#+begin_example
+  far row    high_tom   low_tom   wood_block   cowbell   crash
+  (5 4 3 2 1)
+
+  near row   snare      kick      ditto        hat       open_hat
+  (0 9 8 7 6)
+#+end_example
+
+** the pedal labels are NOT the older rig's, on purpose
+
+=2-monomes_kmss-drums= bound this same kit to labels =1..0= in the obvious
+order. That rig drummed on the OLDER board, which sits square in front of Jeff.
+*This board is physically rotated 180 degrees.* The code never learns about the
+rotation -- it only ever binds printed labels -- so reusing those labels here
+would put every drum in the mirror-opposite place: kick out at the far right,
+crash under the near left, ditto stranded in the far row.
+
+So the labels are remapped instead, and the FEET are what stayed still. A drum
+is where your foot already expects it; the number printed under it is not.
+Concretely, each drum's label is what the old rig's label becomes after the
+rotation:
+
+| voice      | old rig (OSS) | here (NSS) |
+|------------+---------------+------------|
+| snare      |             1 |          0 |
+| kick       |             2 |          9 |
+| ditto      |             3 |          8 |
+| hat        |             4 |          7 |
+| open hat   |             5 |          6 |
+| high tom   |             6 |          5 |
+| low tom    |             7 |          4 |
+| wood block |             8 |          3 |
+| cowbell    |             9 |          2 |
+| crash      |             0 |          1 |
+
+Two tests in =edo_surface/src/rig.rs= hold this in place --
+=the_drum_kit_sits_on_the_newer_board_in_foot_order= asserts the physical row
+order above, so a well-meaning future edit that "fixes" the labels to match the
+older rig fails loudly instead of silently mirroring the kit.
+
+** ditto
+
+Pedal 8 here (pedal 3 there), and in both cases the middle of the NEAR row --
+the gap between the feet, where either foot can reach it. It is not a sample.
+It retriggers whichever sample most recently played on any pedal in this
+window, at THIS press's own pressure against that sample's own pad's gain trim:
+"a generalized double-bass pedal". A ditto press never itself becomes "the last
+hit", so pad-ditto-ditto repeats the sample rather than echoing the ditto. It
+does nothing until something else has played.
+
+** pressure, not velocity
+
+The runtime tethers the board on start (SysEx over ALSA rawmidi) and restores
+standalone mode on exit or Ctrl-C. In tether mode each pad streams its four
+pressure sensors as CC 40..79; the runtime sums them (0..508) into a pressure
+0.0..1.0 and spreads that over a dB range. A pad's =gain= is a *scale* on top
+of that pressure, not a fixed loudness. All the detection knobs -- thresholds,
+attack window, debounce, de-stick -- are shared in [[./softstep.toml]], not in this
+rig. Device protocol: [[../learnings/keith-mcmillen-softstep.org]].
+
+** volume
+
+The kit has no expression pedal, unlike the grids. Its one knob is the
+=cpal_sampler= sink's =amplitude= (1.6, carried over), with per-pad =gain=
+trimming below it -- pedal 1's crash is a synthesized =crash_electronic.wav=,
+fuller than the rest of the kit, so it is trimmed to 0.5. Balance the kit
+against the grids there.
+
+Two caveats on that knob, neither of them new to this rig:
+
+- *It is not hot-reloadable.* Pressing =r= reloads the =cpal_synth= sink's
+  amplitude but not the =cpal_sampler='s, so a drum-volume edit needs a
+  restart. (A general limitation of the sampler sink, noted in
+  =jeff-maybe-review-this.org=; not something this rig introduced.)
+- *1.6 may clip the loudest hits.* The mixer hard-clamps to [-1, 1]. Measured
+  against the shipped WAVs, a full-pressure single hit on =kick=, =high_tom=,
+  =cowbell= or =open_hat= crosses that ceiling at =amplitude = 1.6=; =hat=,
+  =low_tom=, =wood_block= and the trimmed crash do not. This was carried over
+  unexamined from =2-monomes_kmss-drums=, so it may be an accepted trade or
+  simply never measured -- it is written down here so it can be listened for
+  rather than rediscovered. Pull the sink down, or trim the four loud pads,
+  if it reads harsh.
+
+* what was NOT inherited from 2-monomes_kmss-drums
+
+That rig is the kit's source, and it carries one real defect: *its two grids are
+not pinned by serial.* Both =[[monomes]]= entries select on =select.size= alone,
+so which physical grid becomes "a" is decided by enumeration order. That was
+harmless when written, but it since grew a sustain board whose pedals target a
+grid BY NAME -- so a replug can silently invert which foot controls which grid,
+with no error. (=TODO/many/3_plan.org= 1a called this out before that board
+landed; =select.id_contains= support exists and every other rig uses it.)
+
+This rig does not inherit that: it pins =m256-282= and =m0000102= like its
+pulse-rig sibling, and the shared test asserts both rigs' =[[monomes]]= are
+identical. Only the drumkit window, the =cpal_sampler= sink, and the sample/gain
+choices were taken from the older rig -- none of which reference a grid at all.
+
+* robustness to missing gear
+
+As the sibling, plus: the two boards are independent. The drums still play with
+the sustain board unplugged, and the sustain pedals still work with the drum
+board unplugged; the runtime brings up every board that IS present and names
+the missing one in red at startup. The drumkit is standalone enough to load
+even with NO grids connected.
+
+* what is deliberately NOT here
+
+Same list as the sibling's, minus the drums, minus the pulse pedals:
+
+- *No factored-pulse pedals.* The pulse lives on the grid pads only. This is
+  the trade the rig exists to make.
+- No distortion, slide, mono, erase, or needs-holding toggles. All exist in the
+  library; none are bound here. Sustain is still the reduced
+  clear + momentary-accrete pair on the older board.
+- No tap tempo pedal. The base tempo is seeded at 1 Hz; the grid pads' tap
+  cells are the only way to retap it.
