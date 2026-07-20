@@ -1,0 +1,113 @@
+* TODO Pedal slide!
+I'll start by describing aspects and cases.
+I'm not sure I have a general theory.
+** pedal slide can be enabled per monome
+By default the pedal affects volume.
+The bottom-leftmost button of each monome toggles pedal slide mode for it.
+** which half the pedal is on matters.
+For purposes of sliding pitch, the pedal is continuous,
+and the full range [1,119] does it.
+However, if the pedal is nearer to its low limit than its high limit,
+then changing the slide target changes the destination at the high limit.
+If instead the pedal is nearer to its high limit,
+then picking a new 'slide destination' changes the target at its lower limit.
+
+Why this weird logic: The idea is that I can pick a pitch,
+slide to it with the pedal, then pick another pitch and slide to that new one.
+But for the first slide, I was raising the pedal, and for the second,
+I was lowering it. Therefore 'home' switches from one side of the pedal
+to the other every time I reach it -- but actually before then.
+It has to switch when I cross the midpoint of the pedal's range.
+Choosing new pitches to slide to means choosing the state that will be arrived at
+at "target", the other side of "home".
+** slide should always be smooth
+It should never be that moving the pedal causes a discontinuous jump in pitch.
+Partly this is achieved with slew -- for starters,
+let's try 10 ms to transition between
+the two pitches implied by two adjacent pedal values.
+
+But more importantly, we "move the goalposts".
+Suppose the pedal was sliding voice A
+from pitch H(ome) to pitch H + D(elta)
+The pedal is at fraction F in [0,1/2)
+(I'm normalizing its range to [0,1],
+because [1,119] is annoying to write and subject to change)
+where H is on side 0 and H+D is on side 1,
+and the voice is at pitch P.
+Suppose now we pick a new target which, effectively, changes D to D'.
+(It changes D, rather than P, because we are closer to the side
+that targets P than we are to the side that targets P+D.)
+
+We do not, upon picking the new target, want P to suddenly jump.
+So we redefine the map from the pedal's range to pitch.
+The pitch of the pedal range from 0 to F is unchanged, log-linear
+(pitch is a function of pedal)
+but there is now a kink at F, so that the pitch from F to 1
+is also log-linear, landing 1 at P+D'.
+
+As the pedal moves in either direction, the kink moves with it,
+so that the range from the pedal to either endpoint stays log-linear.
+(By log-linear I mean like how the same distance traveled on a keyboard
+results in the same logarithmic change in pitch.)
+Once the pedal reaches either endpoint, the kink is gone,
+and it stays gone until another change of target mid-flight introduces a new one.
+** cases
+*** with some voices in edit mode
+There is not inherently anything to slide to yet.
+Without slide enabled, picking a new* pitch
+will drag the nearest edit-mode pitch to it.
+(By new I mean not sustained. If it is sustained,
+regardless of whether it is in edit mode,
+touching it just retriggers it.
+I believe this parenthetical is already implemented.)
+But with slide enabled, picking a new pitch
+just lights up that pitch in a special 'this is a target' way:
+Flashing between bright and off every 100 ms.
+(This can be synced to other dances if that's handy;
+it's too fast for the visible phase information to be useful to me anyway.)
+The nearest voice will be dragged to it
+only when the pedal does the dragging.
+
+With pitches A and B in edit mode,
+I might pick a new pitch A' that is closer to A and start dragging.
+A is the home pitch and A' the target pitch,
+until I cross the midpoint. After that, the reverse is true,
+and they should switch colors accordingly:
+A' is now fully lit and circled by the edit-mode dance,
+and A is flashing the way targets do, with no dancer circling it.
+
+If I touch another pitch B' that is closer to B than it is to
+(A if A is home, A' if A' is now home),
+then that becomes the new target for B, without changing the A-A' relationship.
+If B' was picked mid-flight, a kink at the current pedal fraction
+is introduced in the map from B to B', but not the one from A to A'.
+*** chord storage
+During slide mode, at most one chord can be selected from storage at a time.
+Its voices all join the target set. If the target set as a result
+has more voices than the set of edit-mode notes,
+don't change the target of any voices that already have targets,
+target each as-yet untargeted voice that's in edit mode
+to the nearest avaiable target,
+and just fade in the other voices.
+The fade logic uses the same kink trick:
+if the pedal's home side is 0 and the target side is 1,
+and the pedal is at fraction F where 0 < F < 1,
+then the range from 0 to F all maps to 0,
+and the range from F to 1 maps (in the cool partly-linear mostly-exponential
+manner already used for ordinary pedal amplitude control)
+from amplitude 0 to to 1.
+And the kink, again, moves around: even when current volume for that voice
+is some V such that 0 < V < 1, if the pedal is at fraction F,
+the range [0,F] maps to [0,V] and the range [F,1] maps to [V,1].
+
+Wait, crap. That looks ill-defined.
+Better to use a simple quartic (x^4) curve.
+That way we don't have to worry about the kink being in the
+linear portion of one side and the nonlinear portion of the other.
+There's still a kink, though: the map to amplitude over the input range [0,F]
+should be a smooth quartic, and so should the map over the range [F,1],
+but there's a potential discontinuity at F that only goes away
+once the user reaches either side.
+
+If, instead, there are *fewer* targets than there are voices in edit mode,
+I guess similarly fade them out.

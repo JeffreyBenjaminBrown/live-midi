@@ -1,5 +1,13 @@
 These are ordered; please start from the top.
-* ONGOING (Jeff's turn) : Fast =1 on monome does not work.
+* TODO TODO/pedal-slide/
+To start, please read 1_vision.org,
+and respond in 2_discussion.org with everything that occurs to you:
+Is it well-specified? Complete? Awkward? Dangerous? Self-contradictory?
+Per the pattern already established elsewhere in TODO/ (maybe esp. TODO/DONE/,
+but maybe outside of that) make the headline that everything
+that need my attention begin with "TODO ",
+and things that probably don't "DONE (probably) ".
+* AWAITS (Jeff's turn) : Fast =1 on monome does not work.
 There *is* need to debounce that signal on the kmss,
 but there is no apparent need to debounce on the monome.
 Somehow the monome just knows; maybe its software is better than the KMSS's,
