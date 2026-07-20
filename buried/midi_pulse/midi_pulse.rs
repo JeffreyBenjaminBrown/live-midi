@@ -260,6 +260,19 @@ mod dispatch_tests {
     assert!(!is_looper_rig(&c), "no loop_display");
   }
 
+  /// The two sibling rigs must land on the same runtime despite one of them carrying
+  /// a drumkit: the drums ride along inside surfaces, they do not divert the rig into
+  /// the drums-only arm the way a grid-less `kmss-drumkit` does.
+  #[test]
+  fn both_edogrid_rigs_route_to_surfaces() {
+    for name in ["2-edogrids_ss-accrete_ss-pulse", "2-edogrids_ss-accrete_ss-drums"] {
+      let c = load_named_rig(name).unwrap_or_else(|e| panic!("{name} loads: {e}"));
+      assert!(is_surfaces_rig(&c), "{name}: grids -> surfaces");
+      assert!(!is_drumkit_rig(&c), "{name}: has monome windows, so not the drums-only arm");
+      assert!(!is_looper_rig(&c), "{name}: no loop_display");
+    }
+  }
+
   #[test]
   fn drumkit_rig_still_routes_to_drumkit() {
     let c = load_named_rig("kmss-drumkit").expect("loads");

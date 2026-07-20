@@ -1,0 +1,439 @@
+* 2-edogrids_ss-accrete_ss-drums
+** about
+This rig is written in a TOML-in-org format unique (so far) to this repo.
+The data lives in headlines titled
+"PARAM key = value" (values are ordinary TOML syntax); "TABLE name" / "ELEM name"
+headlines nest tables and array-of-table elements; any other headline just groups and
+documents; and every body (like this one) is a human note the loader ignores. A "#" on
+a headline starts a comment, TOML-style, even on a load-bearing one. Format reference
+(C-c C-o to follow): [[file:README.org]]
+Reference doc for this rig: [[file:2-edogrids_ss-accrete_ss-drums_readme.org]]
+** rig identity
+*** PARAM version = 1
+See also softstep.toml (the shared SoftStep detection & pressure parameters).
+*** PARAM id = "2-edogrids_ss-accrete_ss-drums"
+*** PARAM title = "Two EDO grids + an accrete SoftStep + a drum SoftStep"
+** shared SoftStep parameters (softstep.toml)
+This rig drives at least one SoftStep board. Every board reads its detection and
+pressure parameters from the shared file rigs/softstep.toml, not from this rig
+file. That shared file holds the onset and release thresholds, the attack window,
+the pressure scaling, the contact-bounce and settle debounce guards, and the
+de-stick window. Every rig that uses a SoftStep reads the same file, and the
+meter reads it too, so one edit there reaches all of them at once.
+** about the rig
+===========================================================================
+FOUR SURFACES, WITH DRUMS. The drum-surface twin of
+2-edogrids_ss-accrete_ss-pulse: identical in every respect except what the
+NEWER SoftStep does. Two 16x16 monome grids, each a full 46-EDO play
+surface; the OLDER board (SSCOM) still carries sustain and edit mode, two
+rows as ever; and the NEWER board (SoftStep) is now a velocity-sensitive
+TR-808 drumkit instead of the factored-pulse pedals.
+Jeff never actually touched those pulse pedals -- and their whole function
+also lives on each grid's own upper-right 3x2 pad -- so this trades a
+duplicate control surface for a kit. Nothing is lost: the factored pulse is
+still fully drivable by hand.
+Each grid keeps the same overlays -- a 4-cell waveform strip (top-left), a
+chord block, an editmode-clear button at (12,0), a 3x2 factored-pulse pad
+(top-right, now the ONLY pulse surface), a fine-transpose toggle at (0,15),
+and a 3x2 scroll pad (bottom-right). Everything else on the grid is a note.
+Launch under pw-jack so the synth AND the drum sampler share the card:
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-drums
+===========================================================================
+** TABLE trail
+Shared recent-note trail (the dim backdrop of the last few played pitch classes).
+*** PARAM clobber_radius = 27
+Clobber radius as a divisor of the octave: a played note clears any trailed class
+within edo/clobber_radius steps of it. 27 -> 1/27 of an octave (~44 cents).
+*** PARAM max = 9
+At most this many distinct pitch classes in the trail (newest first).
+** TABLE slide
+*** PARAM candidate_window_ms = 1000
+Slide: a released note stays a slide source for this long.
+*** PARAM duration_ms = 100
+How long a glide takes. ALSO the per-voice pitch-edit drag time: dragging an
+edit-mode note to a new pitch reuses this, so 'r' retunes the drag feel live.
+Jeff's starting value; slow enough to hear it move, fast enough not to smear
+the rhythm.
+** TABLE tap_tempo
+*** PARAM window_ms = 2000
+Two taps at most this far apart on a pad's tap cell set the one global tempo.
+The base is seeded at 1 Hz, so tapping is optional: the tap pedal was retired
+(Jeff never tapped), and the on-grid pads' tap cells are the only tap source.
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 46
+*** PARAM x_step = 9
+46-EDO, 9 steps per cell across and 1 down. So pitch rises DOWN and RIGHT, and
+"one microtone above" a note is the cell directly BELOW it -- which is what the
+per-voice edit gesture uses.
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 80
+** timbres
+The four selectable timbres behind each grid's waveform strip, left to right.
+*** ELEM timbres
+**** PARAM waveform = "sin"
+**** PARAM amplitude = 1.0          # > 1 can clip
+abs_* = fixed-Hz modulators; rel_* = an independent pair whose LFO rates (and
+the FM depth) are multiples of the voice's pitch. All defaults shown.
+**** PARAM abs_am_depth = 0.0       # 0 = off, 1 dips to silence
+**** PARAM abs_am_hz = 1.0
+**** PARAM am_shape = 0.0           # abs LFO morph: 0 smooth .. 1 near-square
+**** PARAM abs_fm_depth_cents = 0.0
+**** PARAM abs_fm_hz = 1.0
+**** PARAM rel_am_depth = 0       # 0 = off, 1 dips to silence
+**** PARAM rel_am_freq = 1.0        # x voice pitch; 1 = audio-rate (oversample!)
+**** PARAM rel_fm_depth = 0.25       # x voice pitch; 1 sweeps 2f..0, > 1 thru-zero
+**** PARAM rel_fm_freq = 2        # x voice pitch
+*** ELEM timbres
+**** PARAM waveform = "tri"
+**** PARAM amplitude = 1.0          # > 1 can clip
+abs_* = fixed-Hz modulators; rel_* = an independent pair whose LFO rates (and
+the FM depth) are multiples of the voice's pitch. All defaults shown.
+**** PARAM abs_am_depth = 0.0       # 0 = off, 1 dips to silence
+**** PARAM abs_am_hz = 1.0
+**** PARAM am_shape = 0.0           # abs LFO morph: 0 smooth .. 1 near-square
+**** PARAM abs_fm_depth_cents = 0.0
+**** PARAM abs_fm_hz = 1.0
+**** PARAM rel_am_depth = 0       # 0 = off, 1 dips to silence
+**** PARAM rel_am_freq = 1        # x voice pitch; 1 = audio-rate (oversample!)
+**** PARAM rel_fm_depth = 0.25       # x voice pitch; 1 sweeps 2f..0, > 1 thru-zero
+**** PARAM rel_fm_freq = 1        # x voice pitch
+*** ELEM timbres
+**** PARAM waveform = "square"
+**** PARAM amplitude = 1.0          # > 1 can clip
+abs_* = fixed-Hz modulators; rel_* = an independent pair whose LFO rates (and
+the FM depth) are multiples of the voice's pitch. All defaults shown.
+**** PARAM abs_am_depth = 0.0       # 0 = off, 1 dips to silence
+**** PARAM abs_am_hz = 1.0
+**** PARAM am_shape = 0.0           # abs LFO morph: 0 smooth .. 1 near-square
+**** PARAM abs_fm_depth_cents = 0.0
+**** PARAM abs_fm_hz = 1.0
+**** PARAM rel_am_depth = 1       # 0 = off, 1 dips to silence
+**** PARAM rel_am_freq = 4        # x voice pitch; 1 = audio-rate (oversample!)
+**** PARAM rel_fm_depth = 0.25       # x voice pitch; 1 sweeps 2f..0, > 1 thru-zero
+**** PARAM rel_fm_freq = 3        # x voice pitch
+*** ELEM timbres
+**** PARAM waveform = "saw"
+** ELEM sinks # audio params, inc. synth
+*** PARAM id = "synth"
+*** PARAM kind = "cpal_synth"
+*** PARAM sample_rate = 48000
+*** PARAM buffer_frames = 128
+*** PARAM amplitude = 0.15
+*** PARAM attack_secs = 0.003
+*** PARAM release_secs = 0.050
+*** PARAM sustain_level = 0.35
+*** PARAM decay_secs = 0.5
+** ELEM sinks # the drum sampler
+One-shot WAVs for the newer board's kit, down the same cpal/JACK path as the
+synth -- which is why the launch line wants pw-jack.
+*** PARAM id = "drums"
+*** PARAM kind = "cpal_sampler"
+*** PARAM sample_rate = 48000
+*** PARAM buffer_frames = 128
+*** PARAM amplitude = 1.6
+The single drum-kit volume knob (linear; a pad's own `gain` trims it below this).
+1.6 carried over from 2-monomes_kmss-drums, where it was the old sink 0.8 x a
+separate drum_sample_amplitude 2.0, since folded into this one knob. The kit has
+no expression pedal, so this is the only place to balance it against the grids.
+** the two monomes
+Pinned by SERIAL, not by size. Every softstep pedal below targets a monome BY
+NAME ("clear the left monome"), and Jeff's whole layout is spatial -- left
+buttons drive the left grid. Assign by enumeration order instead and a replug
+silently swaps the grids, inverting the entire pedal board with no error.
+Get the serials with: send /serialosc/list to 127.0.0.1:12002.
+*** grid A windows
+**** ELEM monomes
+***** PARAM id = "a"
+GRID A = LOM, the LEFT / older monome. A Series 256; it is the MONOBRIGHT one,
+so it cannot dim a single LED and fakes "dim" by flashing fast.
+***** PARAM listen_port = 9000        # must be unique across monomes
+***** PARAM prefix = "/surface-a"
+***** PARAM select.size = [16, 16]
+***** PARAM select.id_contains = "m256-282"
+**** ELEM monome_windows              # grid A: the 46-EDO play surface
+***** PARAM id = "grid-a"
+***** PARAM monome = "a"
+***** PARAM kind = "edo_note_grid"
+***** PARAM rect = [0, 0, 15, 15]
+The WHOLE grid is the play surface; the overlays below sit on top of it.
+***** PARAM tuning = "main"
+***** PARAM sink = "synth"
+**** ELEM monome_windows              # grid A: waveform strip
+***** PARAM id = "wave-a"
+***** PARAM monome = "a"
+***** PARAM kind = "waveform_selector"
+***** PARAM rect = [0, 0, 3, 0]
+***** PARAM controls = "a"            # sets grid A's OWN timbre
+**** ELEM monome_windows              # grid A: scroll pad
+***** PARAM id = "scroll-a"
+***** PARAM monome = "a"
+***** PARAM kind = "edo_shift_pad"
+***** PARAM rect = [13, 14, 15, 15]
+Arrows shift by one cell; the two top corners by an octave. Only the octave
+corners flash when an edit-mode or sustained note is off-screen.
+**** ELEM monome_windows              # grid A: factored-pulse pad
+***** PARAM id = "poly-a"
+***** PARAM monome = "a"
+***** PARAM kind = "factored_pulse_pad"
+***** PARAM rect = [13, 0, 15, 1]
+The six-button block from the kmss rig: | x3 x2 tap | over | /3 /2 =1 |. On
+THIS rig it is the only factored-pulse surface -- the sibling rig's NSS pedals
+duplicated it, and the newer board is a drumkit here -- so the factored pulse
+is entirely hand-driven. The state and the behaviour are otherwise identical.
+The tap cell blinks the base tempo -- seeded at 1 Hz, so tapping is possible
+here but never necessary.
+**** ELEM monome_windows              # grid A: editmode-clear button
+***** PARAM id = "editmode-clear-btn-a"
+***** PARAM monome = "a"
+***** PARAM kind = "editmode_control"
+***** PARAM rect = [12, 0, 12, 0]
+***** PARAM control = "clear"
+Just left of the factored-pulse pad's x3. Key-down removes every pitch from
+edit mode -- pure DESELECTION: an edited note is always sustained (edited ⊆
+sustained), so this ends NO voice; it only drops the selection. Silence an
+edited note by taking its sustain (the sustain clear / toggle / erase), which
+ends AND deselects it. Same job as OSS pedal 6. Dim at rest, bright while pressed.
+**** ELEM monome_windows              # grid A: chord-storage block
+***** PARAM id = "chords-a"
+***** PARAM monome = "a"
+***** PARAM kind = "chord_block"
+***** PARAM rect = [5, 0, 9, 1]
+Slots 1..5 (top row) over ARM + slots 6..9 (bottom row, arm at the left).
+Arm (the flashing cell) then press a slot to save every voice this grid is
+sounding; a disarmed slot press toggles the stored chord on (lit solid) and
+off. Centered-ish in the free span, with the bigger gap kept next to the
+editmode-clear at (12,0). See TODO/chord-storage-v2/.
+**** ELEM monome_windows              # grid A: fine-transpose toggle
+***** PARAM id = "fine-a"
+***** PARAM monome = "a"
+***** PARAM kind = "fine_transpose_toggle"
+***** PARAM rect = [0, 15, 0, 15]
+The lower-left CORNER. (The slide pedal that was to claim this key is
+deferred -- "slide pedal was a fiasco"; if it ever lands, fine transpose
+moves one cell right.)
+While on (lit bright): a dancing X marks a center pitch, every play press
+sets the edit selection's transpose to the interval from the pressed pitch
+to that center (mono-style; the last release keeps the transpose), and the
+octave corners move the X itself. Exit keeps a nonzero transpose.
+*** grid B windows
+**** ELEM monomes
+***** PARAM id = "b"
+GRID B = RNM, the RIGHT / newer monome. Varibright.
+***** PARAM listen_port = 9001
+***** PARAM prefix = "/surface-b"
+***** PARAM select.size = [16, 16]
+***** PARAM select.id_contains = "m0000102"
+**** ELEM monome_windows              # grid B: the 46-EDO play surface
+***** PARAM id = "grid-b"
+***** PARAM monome = "b"
+***** PARAM kind = "edo_note_grid"
+***** PARAM rect = [0, 0, 15, 15]
+***** PARAM tuning = "main"
+***** PARAM sink = "synth"
+**** ELEM monome_windows              # grid B: waveform strip
+***** PARAM id = "wave-b"
+***** PARAM monome = "b"
+***** PARAM kind = "waveform_selector"
+***** PARAM rect = [0, 0, 3, 0]
+***** PARAM controls = "b"
+**** ELEM monome_windows              # grid B: scroll pad
+***** PARAM id = "scroll-b"
+***** PARAM monome = "b"
+***** PARAM kind = "edo_shift_pad"
+***** PARAM rect = [13, 14, 15, 15]
+**** ELEM monome_windows              # grid B: factored-pulse pad
+***** PARAM id = "poly-b"
+***** PARAM monome = "b"
+***** PARAM kind = "factored_pulse_pad"
+***** PARAM rect = [13, 0, 15, 1]
+Same six-button block as grid A's, driving grid B's own factor and switch.
+**** ELEM monome_windows              # grid B: editmode-clear button
+***** PARAM id = "editmode-clear-btn-b"
+***** PARAM monome = "b"
+***** PARAM kind = "editmode_control"
+***** PARAM rect = [12, 0, 12, 0]
+***** PARAM control = "clear"
+Grid B's twin of grid A's editmode-clear button (same job as OSS pedal 0).
+**** ELEM monome_windows              # grid B: chord-storage block
+***** PARAM id = "chords-b"
+***** PARAM monome = "b"
+***** PARAM kind = "chord_block"
+***** PARAM rect = [5, 0, 9, 1]
+Grid B's twin of grid A's chord block; its nine slots are its own.
+**** ELEM monome_windows              # grid B: fine-transpose toggle
+***** PARAM id = "fine-b"
+***** PARAM monome = "b"
+***** PARAM kind = "fine_transpose_toggle"
+***** PARAM rect = [0, 15, 0, 15]
+Grid B's twin of grid A's fine-transpose toggle.
+** the two softsteps
+Distinguished by ALSA client name, which is reliable: the older board presents
+as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
+are NOT stable, so nothing here names one.
+The older board keeps its sibling-rig job (sustain + edit mode); the newer one
+is the drumkit. Either may be unplugged on its own: the runtime brings up every
+board that IS present and names the missing one in red, so the drums still play
+with the sustain board absent, and vice versa.
+*** old softstep: sustain (bottom row) + edit mode (top row)
+Two rows. Bottom row = the SUSTAIN bank: outer pedals (1/5) clear it, inner
+pedals (2/4) accrete into it, momentary only (hold to add, release to stop
+adding). Top row = EDIT MODE, same button shape: outer pedals (6/0) clear it,
+inner pedals (7/9) accrete into it (a one-shot: every sounding voice enters
+edit mode). The accretes capture the same voices: sustain-accrete takes every
+fingered AND every edit-mode voice; editmode-accrete takes every fingered AND
+every sustained voice (sustaining any it finds only fingered). But the two
+CLEARS are NOT symmetric: edit is a selection over the sustained voices, not a
+reason to ring (edited ⊆ sustained). The sustain clear ends every fingerless
+drone -- edited or not -- and deselects it; the edit clear only deselects and
+silences nothing. (This supersedes the earlier symmetric-clears design, where
+each clear removed only its own reason and the full kill was both together.)
+Left buttons drive the left grid, right buttons the right grid.
+The tap pedal that once sat here was retired; the base tempo is a seeded 1 Hz.
+**** ELEM softsteps
+***** PARAM id = "old"
+The OLDER board, nearer Jeff. Not rotated, so its printed labels read
+  6 7 8 9 0   (far row)
+  1 2 3 4 5   (near row)
+***** PARAM select.name_contains = "SSCOM"
+**** ELEM softstep_windows            # pedal 1: clear grid A
+***** PARAM id = "clear-a"
+***** PARAM softstep = "old"
+***** PARAM kind = "accrete_control"
+***** PARAM pedal = 1
+***** PARAM monome = "a"
+***** PARAM control = "clear"
+**** ELEM softstep_windows            # pedal 2: accrete grid A
+***** PARAM id = "accrete-a"
+***** PARAM softstep = "old"
+***** PARAM kind = "accrete_control"
+***** PARAM pedal = 2
+***** PARAM monome = "a"
+***** PARAM control = "accrete"
+**** ELEM softstep_windows            # pedal 4: accrete grid B
+***** PARAM id = "accrete-b"
+***** PARAM softstep = "old"
+***** PARAM kind = "accrete_control"
+***** PARAM pedal = 4
+***** PARAM monome = "b"
+***** PARAM control = "accrete"
+**** ELEM softstep_windows            # pedal 5: clear grid B
+***** PARAM id = "clear-b"
+***** PARAM softstep = "old"
+***** PARAM kind = "accrete_control"
+***** PARAM pedal = 5
+***** PARAM monome = "b"
+***** PARAM control = "clear"
+**** ELEM softstep_windows            # pedal 6 (outer): clear grid A's edit mode
+***** PARAM id = "editmode-clear-a"
+***** PARAM softstep = "old"
+***** PARAM kind = "editmode_control"
+***** PARAM pedal = 6
+***** PARAM monome = "a"
+***** PARAM control = "clear"
+The top row sits above the sustain row: outer pedals clear EDIT MODE, inner
+pedals accrete into it. The edit clear is pure DESELECTION -- every cleared
+note is still sustained (edited ⊆ sustained), so it ends NO voice; it only
+drops the selection. To silence an edited note, take its sustain (the sustain
+clear ends AND deselects it). This supersedes the old symmetric clears.
+**** ELEM softstep_windows            # pedal 7 (inner): accrete grid A into edit mode
+***** PARAM id = "editmode-accrete-a"
+***** PARAM softstep = "old"
+***** PARAM kind = "editmode_control"
+***** PARAM pedal = 7
+***** PARAM monome = "a"
+***** PARAM control = "accrete"
+A one-shot, not a hold: key-down puts every voice sounding on grid A -- every
+fingered voice and every sustained voice -- into edit mode. (A hold-to-add
+phase can't exist here: the moment anything is edited, the grid becomes a
+pitch-picker, so there are no new notes to capture.)
+**** ELEM softstep_windows            # pedal 9 (inner): accrete grid B into edit mode
+***** PARAM id = "editmode-accrete-b"
+***** PARAM softstep = "old"
+***** PARAM kind = "editmode_control"
+***** PARAM pedal = 9
+***** PARAM monome = "b"
+***** PARAM control = "accrete"
+**** ELEM softstep_windows            # pedal 0 (outer): clear grid B's edit mode
+***** PARAM id = "editmode-clear-b"
+***** PARAM softstep = "old"
+***** PARAM kind = "editmode_control"
+***** PARAM pedal = 0
+***** PARAM monome = "b"
+***** PARAM control = "clear"
+# The tap-tempo pedal was retired: Jeff never used it to set a tempo. The runtime
+# seeds the base tempo at 1 Hz (PolyrhythmState::set_fixed_tempo), so the x2 / /2 /
+# ... controls always have a base to multiply; the grid pads' tap cells can retap
+# it. Pedals 3 and 8 on this board are now free.
+*** new softstep: the drumkit
+The velocity-sensitive TR-808 kit from 2-monomes_kmss-drums, moved onto THIS
+board because Jeff never touched the factored-pulse pedals that used to live
+here -- and did not need to, since every one of them is duplicated on the
+grids' own upper-right pads. So the pedals are simply gone from this rig; the
+factored pulse is unchanged and entirely hand-driven.
+Pressure-sensitive, not MIDI-velocity: the runtime tethers the board on start
+(SysEx over rawmidi), reads each pad's four sensors as CC 40..79, sums them
+into a pressure 0..1 and spreads that over softstep.toml's gain_db_range.
+Standalone mode is restored on exit or Ctrl-C.
+**** ELEM softsteps
+***** PARAM id = "new"
+The NEWER board, farther from Jeff and physically ROTATED 180 degrees. The code
+never learns about the rotation -- it binds printed labels. As Jeff reads it:
+  5 4 3 2 1   (far row)
+  0 9 8 7 6   (near row)
+***** PARAM select.name_contains = "SoftStep"
+**** ELEM softstep_windows            # the kit
+***** PARAM id = "kit"
+***** PARAM softstep = "new"
+***** PARAM kind = "drumkit"
+***** PARAM sink = "drums"
+***** PARAM pads = [ { pedal = 0, sample = "snare.wav" }, { pedal = 9, sample = "kick.wav" }, { pedal = 8, ditto = true }, { pedal = 7, sample = "hat.wav" }, { pedal = 6, sample = "open_hat.wav" }, { pedal = 5, sample = "high_tom.wav" }, { pedal = 4, sample = "low_tom.wav" }, { pedal = 3, sample = "wood_block.wav" }, { pedal = 2, sample = "cowbell.wav" }, { pedal = 1, sample = "crash_electronic.wav", gain = 0.5 }, ]
+The pedal NUMBERS differ from 2-monomes_kmss-drums even though the kit is the
+same, and that is the point. That rig put the drums on the OLDER board, which
+is not rotated; this board is turned 180 degrees, so binding the same labels
+would land every drum in the mirror-opposite place. These numbers are chosen so
+each drum sits where Jeff's foot already expects it. Physically, as he stands:
+  far row  (5 4 3 2 1) : high_tom  low_tom  wood_block  cowbell  crash
+  near row (0 9 8 7 6) : snare     kick     ditto       hat      open_hat
+Ditto (label 8 here, label 3 there) keeps its old spot too: middle of the NEAR
+row, in the gap between the feet, where either foot can reach it. It is not a
+sample -- it retriggers whichever sample most recently played on any pedal in
+this window, at THIS press's pressure against that sample's own pad's gain
+trim, "a generalized double-bass pedal". A ditto press never itself becomes
+"the last hit", so pad, ditto, ditto repeats the sample rather than echoing the
+ditto. It does nothing until something else has played.
+Pedal 1's crash is the synthesized crash_electronic.wav (not the 808 CY), which
+is fuller than the rest of the kit -- hence the 0.5 trim.
+Detection/velocity knobs (debounce, de-stick, thresholds) are shared and live
+in rigs/softstep.toml, not here.
+Sample files are NOT checked when the rig parses (so rigs stay unit-testable
+without a filesystem); a missing WAV errors at launch instead. They resolve
+under the top-level drum-samples/ folder, and a sample may name a subpath if a
+second kit ever lands there.
+** the EX-P volume pedals
+Two M-Audio EX-P expression pedals, reaching the runtime via the MPC-20 ->
+host bridge (run tools/pedals/bridge.sh on the HOST; if its
+"MPC-20 pedals" port is missing the runtime prints a red note and plays on
+without them). Each is a volume pedal for one grid: the pedal's reliable
+~1..119 CC travel maps to a position 0..1, tapered by the fader law -- an
+exponential (dB-linear) over most of the travel, spliced to a linear fade at
+the heel; see the curve_* params on each pedal below -- full heel silent,
+full toe unity -- applied to that grid's sounding and future voices, slewed
+in the engine (~20 ms) so sweeps don't zipper. Until a pedal first moves it
+contributes unity, so an unplugged pedal never mutes its grid.
+Swap the monome values here if the pedals end up cabled the other way round.
+*** ELEM expression_pedals            # MPC-20 channel 1 -> grid A's volume
+**** PARAM channel = 1
+**** PARAM monome = "a"
+The taper (both params at their defaults, spelled out so the names are here):
+the top (1 - curve_initial_lin_frac) of the travel is EXPONENTIAL, running
+dB-linearly over curve_remainder_exp_db up to unity at full toe; the first
+curve_initial_lin_frac fades LINEARLY from exact silence up to the
+exponential's floor, since an exponential alone never reaches 0.
+**** PARAM curve_initial_lin_frac = 0.1
+**** PARAM curve_remainder_exp_db = 50.0
+*** ELEM expression_pedals            # MPC-20 channel 2 -> grid B's volume
+**** PARAM channel = 2
+**** PARAM monome = "b"
+**** PARAM curve_initial_lin_frac = 0.1
+**** PARAM curve_remainder_exp_db = 50.0

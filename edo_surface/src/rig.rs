@@ -3770,6 +3770,66 @@ factor = "x2"
     assert_eq!(pads.len(), 3);
   }
 
+  /// The two sibling rigs differ in exactly one place: what the NEWER SoftStep does.
+  /// Everything else -- grids, overlays, and the older board's sustain/edit pedals --
+  /// must stay identical, so a change to one is a deliberate change to both.
+  #[test]
+  fn the_two_edogrid_rigs_differ_only_in_the_newer_boards_job() {
+    let pulse = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("pulse rig loads");
+    let drums = load_named_rig("2-edogrids_ss-accrete_ss-drums").expect("drums rig loads");
+
+    assert_eq!(pulse.monomes, drums.monomes, "same two grids, pinned by the same serials");
+    assert_eq!(pulse.monome_windows, drums.monome_windows, "same on-grid overlays");
+    assert_eq!(pulse.expression_pedals, drums.expression_pedals, "same EX-P volume pedals");
+    assert_eq!(pulse.tunings, drums.tunings, "same 46-EDO tuning");
+
+    // Both declare the same two boards; only the newer one's windows differ.
+    let boards = |r: &Rig| -> Vec<String> {
+      r.softsteps.iter().map(|s| s.select.name_substring().to_string()).collect()
+    };
+    assert_eq!(boards(&pulse), boards(&drums), "same two boards, matched the same way");
+    let on_old = |r: &Rig| -> Vec<String> {
+      r.softstep_windows
+        .iter()
+        .filter(|w| w.softstep() == "old")
+        .map(|w| format!("{}:{}", w.id(), w.kind_name()))
+        .collect()
+    };
+    assert_eq!(on_old(&pulse), on_old(&drums), "the older board's job is untouched");
+  }
+
+  /// The drum map is bound to PRINTED LABELS, but the newer board is physically
+  /// rotated 180 degrees, so the labels here are deliberately NOT the ones
+  /// `2-monomes_kmss-drums` used -- they are chosen so each drum lands under the
+  /// same foot. Rebinding these to "match" the older rig would mirror the kit.
+  #[test]
+  fn the_drum_kit_sits_on_the_newer_board_in_foot_order() {
+    let rig = load_named_rig("2-edogrids_ss-accrete_ss-drums").expect("drums rig loads");
+    let kit = rig
+      .softstep_windows
+      .iter()
+      .find(|w| matches!(w, SoftstepWindowRig::Drumkit { .. }))
+      .expect("the rig declares a drumkit");
+    assert_eq!(kit.softstep(), "new", "the kit is on the NEWER board");
+
+    let SoftstepWindowRig::Drumkit { pads, .. } = kit else { unreachable!() };
+    // As Jeff stands: far row reads 5 4 3 2 1, near row reads 0 9 8 7 6.
+    let far: Vec<&str> = [5u8, 4, 3, 2, 1].iter().map(|p| pad_voice(pads, *p)).collect();
+    let near: Vec<&str> = [0u8, 9, 8, 7, 6].iter().map(|p| pad_voice(pads, *p)).collect();
+    assert_eq!(far, ["high_tom.wav", "low_tom.wav", "wood_block.wav", "cowbell.wav",
+                     "crash_electronic.wav"]);
+    assert_eq!(near, ["snare.wav", "kick.wav", "<ditto>", "hat.wav", "open_hat.wav"]);
+  }
+
+  fn pad_voice(pads: &[DrumPadRig], pedal: u8) -> &str {
+    let pad = pads.iter().find(|p| p.pedal == pedal).expect("every pedal is bound");
+    if pad.ditto {
+      "<ditto>"
+    } else {
+      pad.sample.as_deref().expect("a non-ditto pad names a sample")
+    }
+  }
+
   #[test]
   fn drumkit_pedal_out_of_range_is_rejected() {
     let err = parse_rig(&DRUMKIT_TOML.replace("pedal = 1,", "pedal = 10,"))
