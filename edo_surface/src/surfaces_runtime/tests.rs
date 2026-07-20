@@ -1238,6 +1238,53 @@
     );
   }
 
+  /// Jeff: "killing all notes while in fine transpose mode should exit fine transpose
+  /// mode. (Nothing left to transpose.)" The kill comes through the SoftStep sustain
+  /// CLEAR (`drive_accrete`) -- the same call the foot pedal makes, which never touches
+  /// this grid's key handler -- so the exit is decided in the repaint, not at a button.
+  #[test]
+  fn killing_all_the_notes_exits_fine_transpose() {
+    use crate::rig::AccreteControlKind;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let toggle = (1, 15);
+
+    // A sustained, edited drone, then enter fine transpose.
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), true); // edit handle (sustains + selects)
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), false); // drones
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    assert!(rt.fine.on, "fine transpose is on with a live selection");
+
+    // A repaint while the selection stands leaves the mode alone.
+    exit_fine_transpose_if_empty(&mut rt);
+    assert!(rt.fine.on, "still on -- there is something to transpose");
+
+    // The foot's sustain clear: ends every drone AND cascades the edit reason away.
+    let (release_secs, sample_rate) = rt.sink.release_params();
+    drive_accrete(
+      0,
+      AccreteControlKind::Clear,
+      true,
+      &rt.shared.ring,
+      &rt.shared.held_all,
+      &rt.shared.voices,
+      release_secs,
+      sample_rate,
+    );
+    assert!(
+      !rt.shared.ring.lock().unwrap()[0].store.any(Reason::Edit),
+      "the clear emptied the selection",
+    );
+
+    // The next repaint sees nothing to transpose and leaves the mode.
+    exit_fine_transpose_if_empty(&mut rt);
+    assert!(!rt.fine.on, "killing the notes exited fine transpose");
+  }
+
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());

@@ -823,6 +823,10 @@ fn grid_thread(mut rt: GridThread) {
     // the whole step happens in one order with nothing else acting in between. The
     // target pitches come back for the LED flash below.
     let slide_targets = pedal_slide_step(&mut rt, &mut held);
+    // Fine transpose has nothing to transpose once its selection empties -- which
+    // killing all the notes does. Leave the mode when that happens (checked here so it
+    // catches a sustain clear from the FOOT pedal too, not just the grid button).
+    exit_fine_transpose_if_empty(&mut rt);
     // The TARGET goalpost cells: a 100 ms bright/off flash, no dancer (`1_vision`),
     // driven off the same absolute clock as the dances so it cannot drift against
     // them. Pushed as single-cell buttons so they occlude the play grid and land on
@@ -1137,6 +1141,35 @@ fn pedal_slide_log(rt: &GridThread, f: f32, drives: &[pedal_slide::Drive]) {
       d.voice,
       d.pitch.0,
     );
+  }
+}
+
+/// Leave fine transpose when there is nothing left to transpose (Jeff: "killing all
+/// notes while in fine transpose mode should exit fine transpose mode").
+///
+/// Fine transpose acts on the SELECTION -- the edit-mode piano pitches plus the
+/// edit-flagged chord voices (`shift_edited_voices`). The sustain clear empties both at
+/// once: it ends every drone and cascades edit membership away, and ends every chord
+/// voice. So once the selection is empty the mode has no subject, and it exits. Run
+/// each repaint (not off the clear gesture) because that clear can arrive from the
+/// SoftStep pedal on another thread, which never passes through this grid's key
+/// handler -- the same reason `pedal_slide` reconciles here rather than at the button.
+///
+/// This also covers the plain editmode-clear (deselect without ending the notes): the
+/// selection is empty either way, and "fine transpose needs its selection" mirrors
+/// pedal slide's "a slide needs its selection". A later re-press re-grabs everything
+/// sounding, so nothing is stranded.
+fn exit_fine_transpose_if_empty(rt: &mut GridThread) {
+  if !rt.fine.on {
+    return;
+  }
+  let has_selection = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &rings[rt.grid_index];
+    gr.store.any(Reason::Edit) || gr.chord.live.values().any(|v| v.edited)
+  };
+  if !has_selection {
+    rt.fine.exit();
   }
 }
 

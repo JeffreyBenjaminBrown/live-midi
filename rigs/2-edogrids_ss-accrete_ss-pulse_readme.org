@@ -704,6 +704,11 @@ everything"; a selection you already made is left exactly as it is. While on:
 - Exiting (press =FT= again) keeps a nonzero transpose in effect -- the
   voices were moved live, so nothing snaps back -- and the grid plays
   normally again. The voices stay visible by the normal rules throughout.
+- KILLING ALL THE NOTES exits the mode on its own: with nothing selected
+  there is nothing left to transpose, so a sustain clear (from the grid or
+  the SoftStep pedal) that empties the selection drops =FT= too. Clearing
+  the selection without ending the notes does the same; a later =FT= press
+  re-grabs everything sounding.
 
 The X itself: a trail of TWO fully-lit dots walking a 5x5 diagonal cross
 around the center's on-screen image(s) -- first one slash end to end, then
