@@ -1036,7 +1036,11 @@ fn pedal_slide_step(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>) ->
     let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     rings[rt.grid_index].store.iter(Reason::Edit).collect()
   };
-  let dropped = rt.pedal_slide.reconcile(&edited);
+  let alive: HashSet<crate::types::VoiceSource> = {
+    let voices = rt.shared.voices.lock().unwrap_or_else(|e| e.into_inner());
+    voices.keys().copied().collect()
+  };
+  let dropped = rt.pedal_slide.reconcile(&edited, |v| alive.contains(v));
   synth::freeze_slide_voices(&rt.shared.voices, &dropped);
 
   // 4. drive

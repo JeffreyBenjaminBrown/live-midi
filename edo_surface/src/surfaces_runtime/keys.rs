@@ -22,7 +22,7 @@ use super::polyrhythm::TempoFactorButton;
 use super::ring::{GridRing, Reason};
 use super::settings::{current_slot, set_slot};
 use super::synth::{self, set_grid_fader_gain};
-use super::{edit, GridThread, VOLUME_DB_RANGE};
+use super::{edit, pedal_slide, GridThread, VOLUME_DB_RANGE};
 
 /// Route one debounced key edge by which overlay (if any) it falls in.
 pub(super) fn handle_key(
@@ -1087,8 +1087,27 @@ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32)
       })
       .collect()
   };
-  if !rt.pedal_slide.pick(target, &candidates) {
-    return;
+  let outcome = rt.pedal_slide.pick(target, &candidates);
+  // Nothing to pair with: the pick becomes a SWELL into a brand-new voice, born silent
+  // and raised by the pedal (`2_discussion`: "it makes the pedal a swell into any
+  // pitch, and it is exactly the chord case with a one-note chord"). It joins the
+  // sustain set, so it is a real drone the clears and handles can reach.
+  if let Some(pitch) = outcome.spawn_fade_in {
+    let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
+    let timbre = Timbre {
+      waveform: slot.waveform,
+      gain: slot.amplitude,
+      am: slot.am,
+      fm: slot.fm,
+      rel_am: slot.rel_am,
+      rel_fm: slot.rel_fm,
+    };
+    if let Some(key) = rt.sink.spawn_slide_swell(pitch, timbre) {
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid]
+        .store
+        .add(Reason::Sustain, pitch);
+      rt.pedal_slide.register_fade(key, pitch, pedal_slide::FadeDir::In);
+    }
   }
   // Apply this round of drives now rather than waiting for the next repaint: with the
   // pedal parked away from home the pick has an immediate audible consequence, and it

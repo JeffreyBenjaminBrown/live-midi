@@ -336,6 +336,15 @@
       self.render_ms(1)
     }
 
+    /// The loudest sample over `ms` of real rendering -- what "silent" and "present"
+    /// actually mean to an ear, as opposed to what a gain field claims.
+    fn peak_over_ms(&mut self, ms: usize) -> f32 {
+      let mut voices = self.rt.shared.voices.lock().unwrap();
+      let mut data = vec![0.0_f32; 48 * ms];
+      crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
+      data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()))
+    }
+
     fn render_ms(&mut self, ms: usize) -> f32 {
       {
         let mut voices = self.rt.shared.voices.lock().unwrap();
@@ -659,6 +668,48 @@
     assert!(
       (landed - t as f32).abs() < 0.05,
       "a retriggered note keeps sliding to its target, heard {landed:.3}",
+    );
+  }
+
+  // ---- slice 4: the swell ----
+
+  /// With NOTHING in edit mode, a pick makes the pedal a swell into that pitch --
+  /// Jeff's chosen answer in `2_discussion`. Checked where it matters: the voice is
+  /// really silent at the heel and really at full at the toe, measured as RENDERED
+  /// AMPLITUDE, not as an engine number.
+  #[test]
+  fn a_pick_with_nothing_edited_swells_a_new_voice_in_from_silence() {
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON, nothing edited
+    let mut r = SlideRigUnderTest { rt, register, held, h: 0 };
+
+    let pitch = step_for_cell(r.rt.tuning.x_step, r.rt.tuning.y_step, 0, 7, 7);
+    r.press((7, 7));
+    let key = crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch };
+    assert!(
+      r.rt.shared.voices.lock().unwrap().contains_key(&key),
+      "the pick spawned a real drone voice",
+    );
+    assert!(
+      r.rt.shared.ring.lock().unwrap()[0].store.has(Reason::Sustain, pitch),
+      "and it joined the sustain set, so the clears and handles can reach it",
+    );
+
+    // At the heel it must be genuinely INAUDIBLE, envelope attack notwithstanding.
+    let quiet = r.peak_over_ms(50);
+    assert!(quiet < 1e-4, "silent at the heel, rendered peak {quiet:.6}");
+
+    // Swell it in.
+    for i in 1..=100 {
+      r.pedal_to(i as f32 / 100.0);
+    }
+    let loud = r.peak_over_ms(50);
+    assert!(loud > 0.01, "at the toe it is fully present, rendered peak {loud:.6}");
+    assert!(
+      (r.audible() - pitch as f32).abs() < 0.01,
+      "and it sat at its own pitch throughout -- a swell moves volume, not pitch",
     );
   }
 

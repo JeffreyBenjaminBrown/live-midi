@@ -635,6 +635,58 @@ impl SurfaceSink {
     }
   }
 
+  /// Spawn a pedal-slide SWELL voice: a fresh drone at `pitch` that starts SILENT and
+  /// rises as the pedal drives its `grid_gain_target` through the quartic fade map. Its
+  /// envelope attacks and plucks like any note -- the swell is amplitude ON TOP of that,
+  /// so what you hear is the note's own shape emerging, not a synthetic ramp -- and it
+  /// is keyed as a drone, so it is a real sustained voice that every later gesture
+  /// (clears, retriggers, chord saves) treats like any other. Returns its key.
+  ///
+  /// Refuses, returning `None`, if a voice already rings at `pitch`: overwriting would
+  /// silently kill it, and there is nothing to swell into that is not already there.
+  pub fn spawn_slide_swell(&mut self, pitch: i32, timbre: Timbre) -> Option<VoiceSource> {
+    let key = sustain_key(self.grid, pitch);
+    let fader = self.fader_gain();
+    let id = self.next_id;
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    if voices.contains_key(&key) {
+      return None;
+    }
+    self.next_id += 1;
+    voices.insert(
+      key,
+      VoiceState {
+        id,
+        freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
+        factored_pulse_freq: 0.0,
+        factored_pulse_phase: 0.0,
+        phase: 0.0,
+        env: 0.0,
+        target_env: 1.0,
+        ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        pending_attack: None,
+        sustain_env: self.sustain_env,
+        decay_per_sample: self.decay_per_sample,
+        timbre,
+        fader_gain: fader,
+        // Silent until the pedal swells it: the fade drives `grid_gain_target`, and
+        // `grid_gain` starts level with it so there is no slew-in from the pedal's
+        // ordinary volume.
+        grid_gain: 0.0,
+        grid_gain_target: 0.0,
+        slide_freq_target: 0.0,
+        am_phase: 0.0,
+        fm_phase: 0.0,
+        rel_am_phase: 0.0,
+        rel_fm_phase: 0.0,
+        timbre_xfade: None,
+      },
+    );
+    Some(key)
+  }
+
   /// Is a voice keyed here at all? The re-file path asks before moving a FINGERED
   /// slide voice's filed pitch, which re-keys nothing but must still not collide with
   /// a drone already ringing at the destination.
@@ -907,6 +959,11 @@ pub(super) fn apply_slide_drives(
   for d in drives {
     if let Some(state) = voices.get_mut(&d.voice) {
       state.slide_freq_target = d.pitch.to_hz(fund, edo);
+      // Fades only: a pitch slide leaves the grid volume frozen where it was, which is
+      // the whole bargain of taking the pedal off volume duty.
+      if let Some(amp) = d.amp {
+        state.grid_gain_target = amp.clamp(0.0, 1.0);
+      }
     }
   }
 }

@@ -92,10 +92,30 @@ pedal's travel to its midpoint, which is what =1_vision= specifies.
 16. *Retriggering mid-slide.* Mid-slide, press the cell the note is currently
     lit at. It should re-strike (envelope only) and *keep sliding*.
 
-** things slices 1-3 deliberately do NOT do yet
+* slice 4 -- the swell [NOT YET PLAYED]
+With *nothing in edit mode*, a pick no longer does nothing: it makes the pedal a
+swell into that pitch, from silence. (Your call in =2_discussion=: "let's go
+with your favorite... it will definitely have its musical uses".)
+
+17. *Swell into a pitch.* With pedal slide on, nothing edited, and the pedal at
+    the heel: press any free pitch. Nothing should sound at all. Now push the
+    pedal down -- the note should rise out of true silence, gently at first
+    (it is an x^4 curve, so most of the loudness arrives in the last third).
+18. *It is a real note.* At the toe it should be a normal sustained note: it
+    lights, it square-dances, the handles and clears reach it.
+19. *It flashes until it arrives.* The cell should flash while you are swelling
+    it in, and stop flashing once it is fully in.
+20. *Swell started mid-travel.* Park the pedal halfway, then pick. The note
+    should be silent at that moment (no click, no jump) and swell in as you push
+    on from there -- and still reach full exactly at the toe.
+21. *The one you flagged.* =2_discussion=: swelling a note in, then picking a
+    SECOND one while past the midpoint, means the second one takes the near side
+    as home and only swells when you sweep back the other way. You predicted
+    this would be confusing and wanted to try it anyway -- this is the item where
+    you find out.
+
+** things slices 1-4 deliberately do NOT do yet
 Don't report these as bugs:
-- Picking a pitch with NOTHING in edit mode does nothing at all. The swell-from-
-  silence is slice 4.
 - Recalling a chord while pedal slide is on behaves as it always did. Chords are
   slice 5.
 - Toggling pedal slide off hands the pedal back to volume bluntly. Slice 6.
