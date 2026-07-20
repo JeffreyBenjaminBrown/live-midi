@@ -1241,6 +1241,44 @@
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());
 
+  /// A running `run()` under test, torn down on DROP -- so it happens even if the test
+  /// panics.
+  ///
+  /// This matters more than it looks. The mock rig's grid ports are fixed (9102/9103),
+  /// and a test that fails an assertion unwinds straight past any hand-written
+  /// teardown, leaving `run()` alive with those ports still bound. `MOCK_LOCK` does not
+  /// help: it is released by the unwind too, and it was never the thing holding the
+  /// sockets. Every later mock test then dies on "Address already in use", so ONE real
+  /// failure arrives as a cascade of unrelated ones with the cause buried at the top.
+  /// That is exactly how a rig-layout mistake presented during the branch-2 merge.
+  ///
+  /// Drop order does the rest: declare the lock guard, then the `MockRig`, then this,
+  /// and the runtime is stopped before the mock grids it talks to go away.
+  struct MockRun(Option<thread::JoinHandle<()>>);
+
+  impl Drop for MockRun {
+    fn drop(&mut self) {
+      STOP.store(true, Ordering::SeqCst);
+      if let Some(handle) = self.0.take() {
+        let _ = handle.join();
+      }
+      // Left false for the next test, which expects to start from a stopped world.
+      STOP.store(false, Ordering::SeqCst);
+    }
+  }
+
+  impl MockRun {
+    /// Spawn `run()` against the mock detector and hold it until this guard drops.
+    fn start(rig: Rig, detector_port: u16, what: &'static str) -> MockRun {
+      STOP.store(false, Ordering::SeqCst);
+      MockRun(Some(thread::spawn(move || {
+        if let Err(e) = run(&rig, detector_port, true, None) {
+          eprintln!("mock {what} run error: {e}");
+        }
+      })))
+    }
+  }
+
   #[test]
   fn selector_writes_the_controlled_grids_timbre_slot() {
     // A grid's selector re-timbres the grid at `controls_index`, leaving every other
@@ -1524,15 +1562,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock surfaces run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "surfaces");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -1577,9 +1607,6 @@
     a.release(10, 0);
     assert!(wait_until(secs(3), || a.level_at(10, 0) == 4), "released into the trail");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// Robust-to-missing-gear (TODO.org): a two-grid rig with only ONE grid connected
@@ -1596,15 +1623,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock one-grid run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "one-grid");
 
     let a = mock.grid(0);
     let secs = Duration::from_secs;
@@ -1619,9 +1638,6 @@
     a.release(5, 5);
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "released note lingers dim");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The shipped two-softstep rig must load and resolve. This is the rig's only
@@ -2407,15 +2423,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock polyrhythm run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "polyrhythm");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -2467,9 +2475,6 @@
     assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "the tap cell still blinks the tempo");
     assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "and grid a blinks it too");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The accrete (sustain) banks end-to-end: toggle accrete mode on grid a (its trio
@@ -2487,15 +2492,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock accrete run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "accrete");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -2556,9 +2553,6 @@
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "cleared note drops to the trail on a");
     assert!(wait_until(secs(3), || b.level_at(5, 5) == 4), "and on b");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The toggles end-to-end: every one (distortion / slide / mono) is PER-GRID --
@@ -2574,15 +2568,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock distortion run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "distortion");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -2611,9 +2597,6 @@
       assert!(wait_until(secs(3), || b.level_at(x, y) == 4), "grid b's {name} off again");
     }
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// A monobright grid (old Series-256 serial id) can't dim a single LED, so the runtime
@@ -2632,15 +2615,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock monobright run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "monobright");
 
     let mono = mock.grid(0); // Series-256 serial -> fake-dim by flashing.
     let vari = mock.grid(1); // newer serial -> native levels.
@@ -2655,7 +2630,4 @@
     mono.press(6, 6);
     assert!(wait_until(secs(3), || mono.level_at(6, 6) == 15), "monobright held note bright via map");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
