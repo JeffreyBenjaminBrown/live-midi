@@ -75,18 +75,19 @@ the mode-off volume return).
 - The amendment (volume return) landed mid-implementation and replaced the catch-up
   pickup I had already written; `VolumeReturn` reuses the slide's own `Segments`.
 
-* what's imperfect about what's done
+* what's imperfect about what's done (phase A; the first two are PAID in phase B below)
 
 - *Fade-in voices are keyed as drones (`SurfaceDrone{grid,pitch}`).* Fine for phase-A
   single-pick swells (one per pitch), and they join the sustain set as real voices, but
   two swells into the same pitch would collide on the key. Phase B's chord recall (many
-  targets at once) will want a dedicated fade-voice key or a seq.
+  targets at once) will want a dedicated fade-voice key or a seq. [RESOLVED in phase B --
+  kept the drone key, made collisions structurally impossible instead.]
 - *Fingered (finger-still-down) slide voices re-file the ring store but not the held
   map at the midpoint flip.* Their voice key is the CELL (stable, so the pedal keeps
   driving them correctly) and the store/LEDs follow via `note_moved`; only the grid
   thread's local `held` cell->pitch mirror lags for such a voice mid-flight. Drones
   (the common flight case -- an edited voice whose finger lifted) re-key fully. A held
-  finger through a whole pedal sweep is the less common gesture.
+  finger through a whole pedal sweep is the less common gesture. [RESOLVED in phase B.]
 - *The initial-drive latency.* A pick applies one round of drives immediately, but
   thereafter the pedal thread's ~10 ms poll is the update rate; the render's 10 ms
   smoother covers it, so this is inaudible, but it is not sample-accurate.
@@ -104,3 +105,59 @@ the mode-off volume return).
 - *Home re-filing files the note at the home-side pitch and re-keys drones at the flip.*
   Chord voices are excluded in phase A; phase B will need the same for `SurfaceChord` keys
   (they are seq-keyed, so no re-key -- only the store/registry follows).
+
+* Phase B -- chord recall + the phase-A debts paid
+
+Written against 1_vision's "chord storage" case and 2_discussion's settled contract.
+Phase B wires the already-built `match_targets` to chord recall, and pays the first two
+imperfections above. `cargo test --workspace`: 0 failures (575 edo_surface lib + 159
+rig-org + the rest; 6 new tests).
+
+** what's done
+
+- *Chord recall as a target set.* `keys.rs::chord_block_press`: a DISARMED slot press
+  with pedal slide ON no longer sounds the chord -- it routes to `chord_slide_select`,
+  which reads the slot's pitches (`ChordLayer::select_for_slide`, deduped) and feeds them
+  to `PedalSlideState::match_targets`. Save (armed) and OFF-mode recall are unchanged.
+- *`match_targets` rewritten faithful to the vision.* Existing PITCH pairings are kept
+  verbatim (already-targeted voices keep their targets); untargeted edit voices match
+  ascending-nearest-ties-lower to the AVAILABLE targets (chord pitches minus the taken
+  ones); extra targets return in `spawn_fade_ins` for the wiring to swell in; fewer
+  targets than voices fades the leftovers OUT. The three phase-A matcher tests still pass
+  unchanged (they reduce to this when there are no prior pairings).
+- *Selection marker + LED.* `ChordLayer::slide_selected: Option<usize>` records the one
+  selected slide chord; the slot paints solid (`paint::chord_view`). Cleared on toggle-off.
+- *Two integration tests + four pure tests* cover: recall-under-slide joins targets and
+  swells the extra in without sounding; the replacement/reuse semantics; the mid-flight
+  join continuity; the "already satisfied" skip; and the finger-refile held update.
+
+** decisions recorded (when-to-stop autonomy)
+
+- *Imperfection (a) -- fade-voice key.* KEPT the drone key (`SurfaceDrone{grid,pitch}`):
+  a fade voice IS a drone (sustained, fingerless), and its pitch is fixed at spawn, so the
+  key is exact, not a shortcut -- PROVIDED no pitch ever carries two fade voices. Made that
+  structurally true instead of adding a dedicated `SurfaceSlideFade` variant (which would
+  have rippled through every voice-map walk and needed a settle-on-arrival re-file): the
+  chord target set is deduped; `match_targets` REUSES an existing fade at a re-requested
+  pitch (anchored at the current amplitude, so no jump) rather than spawning a second, and
+  CONVERTS a no-longer-wanted fade to a fade-OUT; and the recall wiring skips a chord pitch
+  a plain finger/drone already holds. A pitch therefore holds at most one fade voice.
+- *Imperfection (b) -- finger re-file held mirror.* At the midpoint flip a finger-still-down
+  voice keeps its CELL key (`voice_old == voice_new`), so only the grid thread's local
+  `held` cell->pitch mirror lagged. `keys::apply_finger_refiles` now updates the local map
+  from those re-files and re-publishes the shared `held_all` mirror, so map and store agree
+  (drone re-files, which re-key, still go through `rekey_drone` and touch no cell).
+- *Replacement semantics.* "At most one chord selected": selecting a chord marks it
+  `slide_selected` (replacing any prior) and re-runs `match_targets` with its pitches.
+  Already-targeted (consumed) voices keep their slides; the previous chord's un-consumed
+  fades are reused if the new chord re-requests their pitch, else faded out. A single-pick
+  swell is a fade like any other, so a chord recall reuses/recedes it the same way.
+- *Slide mode OFF is unchanged* -- a slot press recalls and sounds normally.
+- *Un-consumed targets on toggle-off DROP* (phase A's freeze-and-drop extends): `exit`
+  clears the pairings, the sliding voices freeze where they are, and the swelled-in fade
+  voices -- already in the sustain set with a drone key -- simply settle as the drones they
+  are, then follow the pedal's volume return like every other voice. No special settle path.
+- *"Already satisfied".* A chord pitch equal to a voice's CURRENT filed pitch needs no
+  pairing and no fade -- the chord already has a voice there; that (untargeted) edit voice
+  is left alone, not faded out. The wiring additionally drops chord pitches a NON-edit
+  live voice already holds, so a fade is only ever spawned into a free pitch.

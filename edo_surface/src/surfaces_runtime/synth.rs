@@ -670,8 +670,14 @@ impl SurfaceSink {
   /// (`grid_gain` 0) and swells as the pedal-slide engine drives its `grid_gain_target`
   /// through the quartic fade map. Its envelope attacks and rings like any note (the
   /// swell is amplitude on top), and it is keyed as a drone (`SurfaceDrone`) so it is a
-  /// real sustained voice that joins the sustain machinery. Returns its key so the
-  /// slide engine can register the pairing. No-op-safe: overwrites any voice at the key.
+  /// real sustained voice that joins the sustain machinery -- a fade voice IS a drone
+  /// (sustained, fingerless), so the pitch key is exact. Phase B's collision worry (two
+  /// swells onto one pitch) is settled UPSTREAM, not with a dedicated fade key: the
+  /// chord target set is deduped, `pedal_slide::match_targets` REUSES an existing fade
+  /// at a re-requested pitch instead of spawning a second, and the recall wiring skips a
+  /// pitch a plain finger/drone already holds -- so the caller only ever spawns into a
+  /// free pitch. Returns its key so the slide engine can register the pairing.
+  /// No-op-safe: overwrites any voice at the key.
   pub fn spawn_slide_fade_in(&mut self, pitch: i32, timbre: Timbre) -> VoiceSource {
     let id = self.next_id;
     self.next_id += 1;

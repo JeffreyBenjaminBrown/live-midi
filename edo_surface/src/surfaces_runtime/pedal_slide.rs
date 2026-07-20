@@ -33,9 +33,16 @@
 //! wiring converts `cur` to Hz with `freq_for_pitch` and the segment math needs no
 //! logarithms of its own.
 //!
-//! Phase A (this module) covers the toggle, the target set, the per-voice pairings,
-//! the home/target hysteresis, the anchored map, and the fades. The chord-storage
-//! interaction is phase B.
+//! Phase A covered the toggle, the target set, the per-voice pairings, the home/target
+//! hysteresis, the anchored map, and the fades. Phase B wires
+//! [`PedalSlideState::match_targets`] to chord recall: a stored chord selected while
+//! slide mode is on does not sound -- its pitches join the target set, existing slides
+//! keep their targets, untargeted edit voices match ascending-nearest-ties-lower,
+//! extra targets swell in,
+//! and leftovers fade out. Fade voices keep the pitch-keyed `SurfaceDrone` key (they
+//! ARE drones -- sustained, fingerless); `match_targets` reuses an existing fade rather
+//! than spawning a second at one pitch, and the wiring skips a chord pitch a plain
+//! finger/drone already holds, so the key never collides.
 
 use std::collections::HashSet;
 
@@ -351,6 +358,20 @@ impl PedalSlideState {
     &self.pairings
   }
 
+  /// The pitches (integer EDO steps) of the current FADE voices -- the swells the
+  /// engine owns. The chord-recall wiring uses this to tell a chord pitch that
+  /// coincides with an existing slide fade (which `match_targets` will REUSE) apart
+  /// from one that coincides with a plain finger/drone (which it must skip), so it
+  /// filters only the latter.
+  pub fn fade_pitches(&self) -> Vec<i32> {
+    self
+      .pairings
+      .iter()
+      .filter(|p| matches!(p.kind, Kind::FadeIn | Kind::FadeOut))
+      .map(|p| p.pitch.round() as i32)
+      .collect()
+  }
+
   /// Enter slide mode, freezing the grid volume at `frozen_volume`. Starts with no
   /// targets, so the pedal is inert until the first pick (no pitch is yanked).
   pub fn enter(&mut self, frozen_volume: f32) {
@@ -494,36 +515,116 @@ impl PedalSlideState {
     }
   }
 
-  /// A whole set of targets arriving at once (the chord-storage case, phase B; the
-  /// deterministic matcher is built and tested now, wired to picks in phase B).
-  /// Ascending pitch pass: each voice takes its nearest remaining target, ties to the
-  /// lower target. Extra targets swell NEW voices in from silence; leftover voices
-  /// (fewer targets) fade out. Returns the pitches needing fresh fade-in voices.
-  #[allow(dead_code)] // wired to chord recall in phase B; unit-tested now
-  pub fn match_targets(&mut self, targets: &[i32], voices: &[(VoiceSource, i32)]) -> PickOutcome {
-    let mut voices: Vec<(VoiceSource, i32)> = voices.to_vec();
-    voices.sort_by_key(|(_, p)| *p);
-    let mut remaining: Vec<i32> = targets.to_vec();
-    let mut new_pairings: Vec<Pairing> = Vec::new();
-    for (voice, base) in &voices {
-      if remaining.is_empty() {
-        // A leftover voice (fewer targets than voices): fade it out from where it is.
-        let prev = self.pairings.iter().find(|p| p.voice == *voice);
-        let start_amp = prev.and_then(|p| p.current_amp()).unwrap_or(1.0);
-        new_pairings.push(self.fade_pairing(*voice, *base as f32, Kind::FadeOut, start_amp, 0.0));
+  /// A whole set of targets arriving at once -- the chord-storage case (phase B): a
+  /// recalled chord's pitches all join the target set. Faithful to `1_vision`'s chord
+  /// rule ("don't change the target of any voices that already have targets, target
+  /// each as-yet untargeted voice that's in edit mode to the nearest available target,
+  /// and just fade in the other voices"):
+  ///
+  /// - `chord_pitches` is deduped to a target SET (two chord voices at one pitch are
+  ///   one slide destination).
+  /// - EXISTING pitch pairings keep their targets untouched; their targets are "taken"
+  ///   and their voices are not re-matched.
+  /// - A target already equal to a voice's CURRENT filed pitch is *already satisfied*
+  ///   (decision, `3_progress` phase B): no pairing, no fade -- the chord already has a
+  ///   voice there. Such an untargeted edit voice is left alone (not faded out).
+  /// - EXISTING fade voices are REUSED when the new chord re-requests their pitch
+  ///   (flipped/kept as a swell IN, anchored at the current fraction so a mid-flight
+  ///   re-selection does not jump), and CONVERTED to fade OUT when it does not (the
+  ///   previous selection's un-consumed targets recede). This is what keeps a pitch
+  ///   from ever carrying two fade voices, so the pitch-keyed `SurfaceDrone` key stays
+  ///   collision-free without a dedicated fade key.
+  /// - As-yet untargeted edit voices are matched ascending, each to its nearest
+  ///   remaining AVAILABLE target, ties to the lower target; leftover voices (fewer
+  ///   targets) fade OUT; leftover targets are returned in `spawn_fade_ins` for the
+  ///   wiring to swell fresh voices IN.
+  ///
+  /// `edit_voices` is the grid's whole edit selection as `(key, current filed pitch)`;
+  /// the caller has already dropped any chord pitch that coincides with a NON-edit
+  /// sounding voice (a plain finger or drone), so this only ever spawns a fade into a
+  /// pitch no live voice holds.
+  pub fn match_targets(
+    &mut self,
+    chord_pitches: &[i32],
+    edit_voices: &[(VoiceSource, i32)],
+  ) -> PickOutcome {
+    let home_low = self.home == Home::Low;
+    // The target SET: deduped, ascending.
+    let mut targets: Vec<i32> = chord_pitches.to_vec();
+    targets.sort_unstable();
+    targets.dedup();
+    let target_set: HashSet<i32> = targets.iter().copied().collect();
+
+    // Split the current pairings: pitch slides are kept verbatim (already-targeted
+    // voices keep their targets); fades are reused or receded below.
+    let existing = std::mem::take(&mut self.pairings);
+    let mut kept_pitch: Vec<Pairing> = Vec::new();
+    let mut fades: Vec<Pairing> = Vec::new();
+    for p in existing {
+      match p.kind {
+        Kind::Pitch => kept_pitch.push(p),
+        Kind::FadeIn | Kind::FadeOut => fades.push(p),
+      }
+    }
+
+    // Targets a kept pairing already owns are unavailable; pitches a voice already
+    // sits at are already satisfied.
+    let taken: HashSet<i32> =
+      kept_pitch.iter().map(|p| filed_side_pitch(&p.seg, !home_low).round() as i32).collect();
+    let mut satisfied: HashSet<i32> =
+      kept_pitch.iter().map(|p| filed_side_pitch(&p.seg, home_low).round() as i32).collect();
+    for (_, base) in edit_voices {
+      satisfied.insert(*base);
+    }
+    let mut available: Vec<i32> =
+      targets.iter().copied().filter(|t| !taken.contains(t) && !satisfied.contains(t)).collect();
+
+    // Reuse or recede the existing fades.
+    let mut result_fades: Vec<Pairing> = Vec::new();
+    for f in fades {
+      let pitch = f.pitch.round() as i32;
+      let cur_amp = f.current_amp().unwrap_or(0.0);
+      if let Some(pos) = available.iter().position(|t| *t == pitch) {
+        available.remove(pos);
+        // Re-requested: keep swelling IN from wherever the fade currently sits.
+        result_fades.push(self.fade_pairing(f.voice, f.pitch, Kind::FadeIn, cur_amp, 1.0));
+      } else {
+        // No longer wanted: fade OUT from wherever it currently sits.
+        result_fades.push(self.fade_pairing(f.voice, f.pitch, Kind::FadeOut, cur_amp, 0.0));
+      }
+    }
+
+    // The untargeted edit voices: those with no kept pitch pairing and not already
+    // satisfied (already parked on a chord pitch -> left alone).
+    let kept_voices: HashSet<VoiceSource> = kept_pitch.iter().map(|p| p.voice).collect();
+    let mut matchable: Vec<(VoiceSource, i32)> = edit_voices
+      .iter()
+      .filter(|(v, base)| !kept_voices.contains(v) && !target_set.contains(base))
+      .copied()
+      .collect();
+    matchable.sort_by_key(|(_, p)| *p);
+
+    let mut new_pitch: Vec<Pairing> = Vec::new();
+    for (voice, base) in &matchable {
+      if available.is_empty() {
+        // Fewer targets than voices: fade the leftover edit voice OUT from full.
+        result_fades.push(self.fade_pairing(*voice, *base as f32, Kind::FadeOut, 1.0, 0.0));
         continue;
       }
-      let (idx, _) = remaining
+      let (idx, _) = available
         .iter()
         .enumerate()
         .min_by_key(|(_, t)| ((*t - base).abs(), **t))
         .unwrap();
-      let target = remaining.remove(idx);
-      new_pairings.push(self.pitch_pairing(*voice, *base, target));
+      let target = available.remove(idx);
+      new_pitch.push(self.pitch_pairing(*voice, *base, target));
     }
-    let spawn_fade_ins = remaining;
-    self.pairings = new_pairings;
-    PickOutcome { spawn_fade_ins }
+
+    self.pairings = kept_pitch;
+    self.pairings.extend(new_pitch);
+    self.pairings.extend(result_fades);
+    // Whatever targets remain need a fresh fade-in voice swelled in from silence.
+    PickOutcome { spawn_fade_ins: available }
   }
 
   /// Replace (or insert) a pairing keyed by its voice.
@@ -766,6 +867,11 @@ mod tests {
     assert_eq!(refiles.len(), 1, "the one pitch pairing re-files");
     assert_eq!(refiles[0].from, 10, "was painted at the low (home) pitch");
     assert_eq!(refiles[0].to, 30, "now painted at the high (new home = target) pitch");
+    assert_eq!(
+      refiles[0].voice_old, refiles[0].voice_new,
+      "a finger-still-down voice keeps its CELL key across the flip -- so the held map, \
+       not a re-key, is what must follow it (the phase-B fix)",
+    );
     assert!(st.take_refiles().is_empty(), "draining consumes them");
   }
 
@@ -816,6 +922,103 @@ mod tests {
     st.enter(0.0);
     let out = st.match_targets(&[12, 40], &[(finger((0, 0)), 10)]);
     assert_eq!(out.spawn_fade_ins, vec![40], "the voice takes 12 (nearer); 40 swells in");
+  }
+
+  // ---- chord recall (phase B) ----
+
+  /// The vision's chord rule: a recalled chord's pitches join the target set; a voice
+  /// that already has a target keeps it, an untargeted edit voice matches the nearest
+  /// available target, and an extra target swells in.
+  #[test]
+  fn chord_recall_keeps_targeted_voices_matches_untargeted_and_swells_extras() {
+    let mut st = PedalSlideState::new();
+    st.enter(0.0);
+    st.on_pedal(0.0);
+    // Voice A=10 is already sliding to 30 (a prior single pick).
+    st.pick(30, &[(finger((0, 0)), 10)]);
+    // Recall chord {12, 30, 50} with edit voices A=10 (targeted) and B=20 (untargeted).
+    let voices = [(finger((0, 0)), 10), (finger((1, 1)), 20)];
+    let out = st.match_targets(&[12, 30, 50], &voices);
+    let pa = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap();
+    assert_eq!(pa.seg.s1, 30.0, "the already-targeted voice keeps its target (30 is taken)");
+    let pb = st.pairings().iter().find(|p| p.voice == finger((1, 1))).unwrap();
+    assert_eq!(pb.kind, Kind::Pitch);
+    assert_eq!(pb.seg.s1, 12.0, "the untargeted voice matches the nearest AVAILABLE target");
+    assert_eq!(out.spawn_fade_ins, vec![50], "the leftover target swells a new voice in");
+  }
+
+  /// Duplicate chord pitches are one destination, and a chord pitch a voice already
+  /// sits on is already satisfied -- no pairing, no fade, the voice left alone.
+  #[test]
+  fn a_chord_pitch_a_voice_already_sits_on_is_already_satisfied() {
+    let mut st = PedalSlideState::new();
+    st.enter(0.0);
+    // Edit voice A=10; recall chord {10, 10, 20} (a duplicate + a pitch A is already at).
+    let out = st.match_targets(&[10, 10, 20], &[(finger((0, 0)), 10)]);
+    assert!(
+      st.pairings().iter().all(|p| p.voice != finger((0, 0))),
+      "the voice already parked on a chord pitch is left alone -- no pairing, no fade"
+    );
+    assert_eq!(out.spawn_fade_ins, vec![20], "the deduped other pitch swells in once");
+  }
+
+  /// At most one chord selected: selecting a second replaces the first's un-consumed
+  /// targets -- an overlapping pitch's fade is REUSED (stays swelling in, one voice per
+  /// pitch, so the drone key never collides), a dropped pitch recedes, a new one swells.
+  #[test]
+  fn selecting_a_new_chord_replaces_the_previous_chords_un_consumed_fades() {
+    let mut st = PedalSlideState::new();
+    st.enter(0.0);
+    st.on_pedal(0.0);
+    // Chord A {40, 60}, no edit voices: both swell in; the wiring registers them.
+    let out = st.match_targets(&[40, 60], &[]);
+    assert_eq!(out.spawn_fade_ins, vec![40, 60]);
+    st.register_fade_in(finger((5, 5)), 40);
+    st.register_fade_in(finger((6, 6)), 60);
+    // Chord B {40, 70}: 40 overlaps -> reused, 60 dropped -> recedes, 70 -> fresh swell.
+    let out2 = st.match_targets(&[40, 70], &[]);
+    let f40 = st.pairings().iter().find(|p| p.pitch.round() as i32 == 40).unwrap();
+    assert_eq!(f40.kind, Kind::FadeIn, "the re-requested pitch's fade is reused, not doubled");
+    let f60 = st.pairings().iter().find(|p| p.pitch.round() as i32 == 60).unwrap();
+    assert_eq!(f60.kind, Kind::FadeOut, "the dropped chord's un-consumed target recedes");
+    assert_eq!(out2.spawn_fade_ins, vec![70], "only the genuinely new pitch swells in");
+    // Exactly one voice per pitch -- no drone-key collision.
+    assert_eq!(st.fade_pitches().iter().filter(|p| **p == 40).count(), 1);
+  }
+
+  /// A chord joined mid-flight kinks at the current fraction rather than jumping: a
+  /// kept pitch pairing does not move, and a reused fade keeps its current amplitude.
+  #[test]
+  fn a_mid_flight_chord_join_kinks_without_jumping() {
+    let mut st = PedalSlideState::new();
+    st.enter(0.0);
+    st.on_pedal(0.0);
+    // A pitch voice sliding, and a fade swelling, both partway up.
+    st.pick(30, &[(finger((0, 0)), 10)]);
+    st.match_targets(&[30, 50], &[(finger((0, 0)), 10)]); // A keeps 30, 50 registered next
+    st.register_fade_in(finger((5, 5)), 50);
+    st.on_pedal(0.5);
+    let a_cur = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap().seg.cur;
+    let f_amp = st
+      .pairings()
+      .iter()
+      .find(|p| p.voice == finger((5, 5)))
+      .unwrap()
+      .current_amp()
+      .unwrap();
+    assert!((a_cur - 20.0).abs() < 1e-3, "A slid to 20 at f=0.5");
+    // Re-select an overlapping chord {30, 50, 80} mid-flight.
+    st.match_targets(&[30, 50, 80], &[(finger((0, 0)), 10)]);
+    let a_cur2 = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap().seg.cur;
+    let f_amp2 = st
+      .pairings()
+      .iter()
+      .find(|p| p.voice == finger((5, 5)))
+      .unwrap()
+      .current_amp()
+      .unwrap();
+    assert!((a_cur2 - a_cur).abs() < 1e-6, "the kept pitch slide does not jump");
+    assert!((f_amp2 - f_amp).abs() < 1e-6, "the reused fade does not jump");
   }
 
   #[test]

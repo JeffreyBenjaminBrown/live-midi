@@ -1,5 +1,5 @@
 These are ordered; please start from the top.
-* AWAITS (Jeff's turn) : TODO/pedal-slide/
+* DONE : TODO/pedal-slide/
 To start, please read 1_vision.org,
 and respond in 2_discussion.org with everything that occurs to you:
 Is it well-specified? Complete? Awkward? Dangerous? Self-contradictory?
@@ -7,6 +7,29 @@ Per the pattern already established elsewhere in TODO/ (maybe esp. TODO/DONE/,
 but maybe outside of that) make the headline that everything
 that need my attention begin with "TODO ",
 and things that probably don't "DONE (probably) ".
+** DONE claude: pedal slide implemented, both phases.
+Discussion is in =2_discussion.org= (your vision confirmed + the open questions
+settled); the build log with every decision is =3_progress.org=.
+
+*Phase A* -- the core: the =pedal_slide_toggle= at each grid's =[0,15]=, the pure
+anchored-two-segment map (`surfaces_runtime/pedal_slide.rs` -- continuity, hysteresis,
+endpoint-exactness, kink-gone-at-endpoint, the far-side-only retarget, all from one
+construction), the target picker, the quartic fades, the home/target hysteresis + LED
+roles, the midpoint-flip re-filing, and the kinked-x^4 volume return when you toggle
+off (your DONE amendment). No-edit-voices picks swell a new note in from silence.
+
+*Phase B* -- chord storage: recalling a stored chord while pedal slide is ON does NOT
+sound it -- its pitches join the target set (at most one chord selected at a time; the
+slot lights solid). Already-targeted voices keep their slides, untargeted edit voices
+match nearest-ascending, extra chord pitches swell in, leftovers fade out; a chord
+joined mid-slide kinks at the current pedal position. Also paid two phase-A debts:
+fade voices can no longer collide on their pitch key (deduped targets + reuse), and a
+finger-still-down slide voice's held-map mirror now follows the midpoint flip.
+
+Readme: the "pedal slide" section of =rigs/2-monomes_2-softsteps_readme.org= (now with
+the chord paragraph). Tests: `cargo test --workspace` is green (575 edo_surface lib +
+159 rig-org + the rest). Left INTACT below: the two unrelated queue items (Fast =1,
+monome debouncing) and their TODO children -- untouched.
 * AWAITS (Jeff's turn) : Fast =1 on monome does not work.
 There *is* need to debounce that signal on the kmss,
 but there is no apparent need to debounce on the monome.

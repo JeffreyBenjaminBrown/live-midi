@@ -134,7 +134,13 @@ pub(super) fn handle_key(
       }
       if !now_on {
         // Freeze the sliding voices at their current pitch (smoothness above all).
+        // Un-consumed chord targets drop (the pairings were cleared by `exit`); the
+        // fade voices simply settle as the sustained drones they already are. Clear the
+        // chord's slide selection so its slot LED reverts.
         synth::freeze_slide(&rt.shared.voices, rt.grid_index);
+        rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+          .chord
+          .slide_selected = None;
       }
     }
     return;
@@ -486,8 +492,14 @@ pub(super) fn chord_block_press(
       let armed = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
         .chord
         .armed;
+      let slide_mode = rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
       if armed {
+        // Saving still works in slide mode -- arm captures whatever is sounding.
         chord_save(rt, held, slot);
+      } else if slide_mode {
+        // Recall under slide mode: the chord's pitches join the slide target set
+        // instead of sounding (TODO/pedal-slide phase B).
+        chord_slide_select(rt, held, slot);
       } else {
         chord_toggle(rt, slot);
       }
@@ -718,6 +730,29 @@ pub(super) fn cut_for_legato(
     return false;
   }
   true
+}
+
+/// Apply the finger-voice half of the pedal-slide midpoint-flip re-files to the grid
+/// thread's local held mirror (TODO/pedal-slide phase B, paying a phase-A debt). A
+/// finger-still-down slide voice keeps its CELL key across the flip (`voice_old ==
+/// voice_new`, a `SurfaceFinger`), so only the local `held` cell->pitch map lags -- the
+/// ring store already followed via `note_moved`. Point the cell at the new pitch so the
+/// two agree. A drone re-file (`voice_old != voice_new`) is handled by `rekey_drone` and
+/// touches no cell. Returns whether the map changed (so the caller re-publishes it).
+pub(super) fn apply_finger_refiles(
+  refiles: &[super::pedal_slide::Refile],
+  held: &mut HashMap<(i32, i32), i32>,
+) -> bool {
+  let mut changed = false;
+  for r in refiles {
+    if r.voice_old == r.voice_new {
+      if let VoiceSource::SurfaceFinger { cell, .. } = r.voice_old {
+        held.insert(cell, r.to);
+        changed = true;
+      }
+    }
+  }
+  changed
 }
 
 /// Mirror this grid's held map into the shared per-grid registry (for accrete's
@@ -1036,30 +1071,87 @@ pub(super) fn handle_edit_press(
 /// the pick takes effect before the next pedal poll.
 fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32) {
   let grid = rt.grid_index;
-  // The grid's edit-mode voices, keyed as the pedal-slide engine drives them: a
-  // fingered voice by its cell, a fingerless (drone) one by its pitch. (Phase A leaves
-  // the chord layer to phase B.)
-  let voices: Vec<(VoiceSource, i32)> = {
-    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-    rings[grid]
-      .store
-      .iter(Reason::Edit)
-      .map(|p| {
-        let key = match held.iter().find(|(_, hp)| **hp == p) {
-          Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
-          None => VoiceSource::SurfaceDrone { grid, pitch: p },
-        };
-        (key, p)
-      })
-      .collect()
-  };
+  let voices = slide_edit_voices(rt, held, grid);
   let outcome = {
     let mut eng = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner());
     eng.pick(target, &voices)
   };
-  // Spawn every extra target as a real sustained fade-in voice (the swell), joining the
-  // sustain set, and register the pairing so the pedal drives its quartic amplitude.
-  for pitch in outcome.spawn_fade_ins {
+  spawn_slide_fades(rt, grid, &outcome.spawn_fade_ins);
+  apply_slide_now(rt, grid);
+}
+
+/// Chord recall while slide mode is ON (TODO/pedal-slide phase B): the pressed slot is
+/// NOT sounded -- its pitches join the target set. At most one chord is selected at a
+/// time (`select_for_slide` marks it, replacing any prior). The engine's `match_targets`
+/// then keeps every already-targeted voice's target, matches each untargeted edit voice
+/// ascending-nearest-ties-lower, swells extra targets in, and fades leftovers out. An
+/// empty slot is inert.
+fn chord_slide_select(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize) {
+  let grid = rt.grid_index;
+  let Some(mut targets) = ({
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings[grid].chord.select_for_slide(slot)
+  }) else {
+    return; // empty slot: inert
+  };
+  let edit_voices = slide_edit_voices(rt, held, grid);
+  // A chord pitch a NON-edit voice already holds (a plain finger or sustained drone) is
+  // already satisfied -- drop it, so we never swell a fade into a pitch a live voice
+  // holds (which would collide on the `SurfaceDrone` key). A pitch held by an existing
+  // slide FADE is kept: `match_targets` reuses that fade rather than spawning a second.
+  let occupied: HashSet<i32> = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let sustained: HashSet<i32> = rings[grid].store.iter(Reason::Sustain).collect();
+    let edited: HashSet<i32> = rings[grid].store.iter(Reason::Edit).collect();
+    drop(rings);
+    let fades: HashSet<i32> = rt.shared.pedal_slide[grid]
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .fade_pitches()
+      .into_iter()
+      .collect();
+    sustained
+      .into_iter()
+      .chain(held.values().copied())
+      .filter(|p| !edited.contains(p) && !fades.contains(p))
+      .collect()
+  };
+  targets.retain(|p| !occupied.contains(p));
+  let outcome = {
+    let mut eng = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner());
+    eng.match_targets(&targets, &edit_voices)
+  };
+  spawn_slide_fades(rt, grid, &outcome.spawn_fade_ins);
+  apply_slide_now(rt, grid);
+}
+
+/// This grid's edit-mode voices as the pedal-slide engine keys them: a fingered voice by
+/// its cell, a fingerless (drone) one by its pitch.
+fn slide_edit_voices(
+  rt: &GridThread,
+  held: &HashMap<(i32, i32), i32>,
+  grid: usize,
+) -> Vec<(VoiceSource, i32)> {
+  let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+  rings[grid]
+    .store
+    .iter(Reason::Edit)
+    .map(|p| {
+      let key = match held.iter().find(|(_, hp)| **hp == p) {
+        Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+        None => VoiceSource::SurfaceDrone { grid, pitch: p },
+      };
+      (key, p)
+    })
+    .collect()
+}
+
+/// Spawn each extra target as a real sustained fade-in voice (the swell), joining the
+/// sustain set, and register its pairing so the pedal drives the quartic amplitude. The
+/// caller has ensured no live voice already holds any of these pitches, so the drone key
+/// is free.
+fn spawn_slide_fades(rt: &mut GridThread, grid: usize, pitches: &[i32]) {
+  for &pitch in pitches {
     let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
     let timbre = Timbre {
       waveform: slot.waveform,
@@ -1073,8 +1165,11 @@ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32)
     rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid].store.add(Reason::Sustain, pitch);
     rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).register_fade_in(key, pitch);
   }
-  // Apply the drives now so the pick lands immediately (the pedal poll would otherwise
-  // wait up to a poll interval).
+}
+
+/// Apply the current round of drives now so a pick/recall lands immediately (the pedal
+/// poll would otherwise wait up to a poll interval).
+fn apply_slide_now(rt: &GridThread, grid: usize) {
   let drives = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).drives();
   synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
 }

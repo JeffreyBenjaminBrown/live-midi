@@ -67,7 +67,11 @@ pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverl
     buttons.push(([ax, ay, ax, ay], arm_level));
     for slot in 0..chords::SLOTS {
       let (x, y) = chords::slot_cell(rect, slot);
-      buttons.push(([x, y, x, y], if layer.active[slot] { BRIGHT } else { DIM }));
+      // Solid for a sounding recall; also solid for the slot SELECTED as the pedal-slide
+      // target chord (phase B) -- it is the one whose pitches the pedal will drag to;
+      // dim otherwise.
+      let lit = layer.active[slot] || layer.slide_selected == Some(slot);
+      buttons.push(([x, y, x, y], if lit { BRIGHT } else { DIM }));
     }
   }
   (buttons, classes)

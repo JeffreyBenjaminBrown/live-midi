@@ -365,14 +365,29 @@ one. Different mechanism, one word, so the name is always qualified here.
   into that -- home switches so each new pick sets the far end you are heading
   for. The home cell stays lit and danced; the target cell flashes bright/off
   every 100 ms (no dancer). At the flip the two swap roles.
+- *Recalling a chord as a target set.* While pedal slide is on, pressing a
+  stored chord slot does NOT sound the chord -- its pitches join the slide
+  TARGET set (the slot lights solid to show it is the picked one). At most one
+  chord is selected at a time; selecting another replaces the first's still
+  un-consumed targets. Then the same matcher runs: every voice that already has
+  a target keeps it, each as-yet untargeted edit-mode voice takes the nearest
+  remaining chord pitch (ties to the lower), extra chord pitches SWELL new
+  voices in from silence (the quartic fade), and if the chord asks for fewer
+  pitches than there are edit voices the leftovers FADE OUT. A chord pitch a
+  live voice already holds is already satisfied -- no drag, no fade. Recall a
+  chord mid-slide and the new joins kink at the current pedal position, like a
+  target pick does, so nothing jumps. (With pedal slide OFF, a slot press
+  recalls normally -- see "chord storage".)
 - *Volume freezes; leaving is immediate.* While sliding, that grid has no live
   volume pedal -- the volume holds where it was. Toggle pedal slide OFF and the
   pedal returns to volume through the SAME kinked x^4 construction, so pushing
   or pulling changes the loudness AT ONCE in either direction (no dead zone
   waiting to "catch up"); once the pedal reaches an endpoint it reverts to the
   ordinary fader taper. Toggling OFF mid-slide freezes every sliding voice
-  exactly where it is (a later drag can tidy an off-grid pitch); clearing the
-  edit selection or the sustain also ends/freezes the slide.
+  exactly where it is (a later drag can tidy an off-grid pitch), and any
+  un-consumed chord targets simply drop (the swelled-in voices settle as the
+  drones they already are); clearing the edit selection or the sustain also
+  ends/freezes the slide.
 
 * LEDs
 

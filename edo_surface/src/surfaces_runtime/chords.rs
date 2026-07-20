@@ -88,6 +88,13 @@ pub struct ChordLayer {
   pub active: [bool; SLOTS],
   /// The live chord voices, by their key's `seq`.
   pub live: HashMap<u64, LiveChordVoice>,
+  /// The slot currently SELECTED as this grid's pedal-slide target chord, if any
+  /// (TODO/pedal-slide phase B). While slide mode is on, recalling a slot does not
+  /// sound it -- its pitches join the slide target set -- and at most one slot is
+  /// selected at a time (selecting another replaces it). Purely a selection marker
+  /// (for the slot LED and the one-at-a-time rule); the target math lives in the
+  /// pedal-slide engine. Cleared when slide mode turns off.
+  pub slide_selected: Option<usize>,
   next_seq: u64,
 }
 
@@ -176,6 +183,20 @@ impl ChordLayer {
         (seq, v)
       })
       .collect()
+  }
+
+  /// SELECT `slot` as the pedal-slide target chord (phase B): return its stored
+  /// pitches (deduped, ascending) to join the slide target set, and mark it selected
+  /// (replacing any prior selection -- at most one chord is selected at a time). An
+  /// empty slot is inert (returns `None`, selection unchanged). Does NOT sound the
+  /// chord: recall-under-slide only supplies targets.
+  pub fn select_for_slide(&mut self, slot: usize) -> Option<Vec<i32>> {
+    let chord = self.slots[slot].as_ref()?;
+    let mut pitches: Vec<i32> = chord.voices.iter().map(|v| v.pitch).collect();
+    pitches.sort_unstable();
+    pitches.dedup();
+    self.slide_selected = Some(slot);
+    Some(pitches)
   }
 
   /// Toggle-OFF bookkeeping: unregister this slot's live voices and return their

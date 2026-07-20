@@ -814,6 +814,13 @@ fn grid_thread(mut rt: GridThread) {
         rt.sink.rekey_drone(r.from, r.to);
       }
     }
+    // A finger-still-down slide voice keeps its CELL key (the pedal keeps driving it),
+    // but the local held cell->pitch mirror must follow the midpoint flip too, or it
+    // would keep reporting the old pitch for that cell (phase-A debt). Update the local
+    // map and re-publish its shared mirror so both agree with the store.
+    if apply_finger_refiles(&slide_refiles, &mut held) {
+      publish_held(&rt.shared.held_all, rt.grid_index, &held);
+    }
     // The TARGET goalpost cells: a 100 ms bright/off flash (no dance), driven from the
     // shared dance clock. Pushed as single-cell buttons so they occlude the play grid
     // and reflect the exact cell(s) that hold the target pitch under this register.
