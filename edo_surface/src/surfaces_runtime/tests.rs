@@ -11,11 +11,7 @@
     let s = resolve_settings(&rig).expect("rig resolves");
     let num_grids = s.grids.len();
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
-    let live = Arc::new(Live {
-      generation: AtomicU64::new(0),
-      params: Mutex::new(live_params(&s)),
-      makeup: Mutex::new(live_makeup(&s)),
-    });
+    let live = Arc::new(Live::new(&s));
     let poly = {
       let mut p = PolyrhythmState::new(num_grids);
       p.set_fixed_tempo(1.0, Instant::now());
@@ -1473,11 +1469,7 @@
     // generation moves, so grid threads and the audio callback pick them up.
     let base = load_named_rig("2-monomes_kmss-drums-mock").expect("rig loads");
     let s = resolve_settings(&base).expect("resolves");
-    let live = Live {
-      generation: AtomicU64::new(0),
-      params: Mutex::new(live_params(&s)),
-      makeup: Mutex::new(live_makeup(&s)),
-    };
+    let live = Live::new(&s);
 
     let source = std::fs::read_to_string(
       crate::rig::mock_rig_dir().join("2-monomes_kmss-drums-mock.org"),

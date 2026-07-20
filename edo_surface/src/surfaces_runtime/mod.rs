@@ -47,7 +47,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -157,11 +157,9 @@ fn run(
   let s = resolve_settings(rig)?;
   let num_grids = s.grids.len();
   // The hot-reloadable parameters ('r' + Enter re-reads the rig; see `Live`).
-  let live = Arc::new(Live {
-    generation: AtomicU64::new(0),
-    params: Mutex::new(live_params(&s)),
-    makeup: Mutex::new(live_makeup(&s)),
-  });
+  // Drum gains are registered onto this later, once the drumkit exists (it is brought
+  // up much further down, after the 'r' thread below is already reading `live`).
+  let live = Arc::new(Live::new(&s));
   if let Some(name) = reload_name {
     let live_for_stdin = Arc::clone(&live);
     let name = name.to_string();
@@ -178,7 +176,7 @@ fn run(
         }
       }
     });
-    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves).");
+    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves / drum volume).");
   }
 
   // Discover whatever grids are actually connected and assign each configured grid a
@@ -419,11 +417,16 @@ fn run(
       s.release,
       audio.sample_rate,
     );
-    Some(drumkit_runtime::start_with_hook(
+    let session = drumkit_runtime::start_with_hook(
       rig,
       drumkit_runtime::tether::session(),
       Some(hook),
-    )?)
+    )?;
+    // Hand the 'r' reload live handles on the drum gains, so drum volume is
+    // revisable mid-play like the synth's. Registered here rather than at `Live`'s
+    // construction because the samplers only exist now.
+    live.register_samplers(session.sampler_amplitudes());
+    Some(session)
   } else {
     None
   };

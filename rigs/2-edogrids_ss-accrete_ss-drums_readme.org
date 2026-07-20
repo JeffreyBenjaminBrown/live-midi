@@ -120,12 +120,16 @@ trimming below it -- pedal 1's crash is a synthesized =crash_electronic.wav=,
 fuller than the rest of the kit, so it is trimmed to 0.5. Balance the kit
 against the grids there.
 
-Two caveats on that knob, neither of them new to this rig:
+It IS hot-reloadable: edit the sink's =amplitude= and press =r= + Enter, and
+the running sampler adopts it -- no restart, no gap in the stream. (It was not,
+until 2026-07-20; =r= reloaded the synth's amplitude but not the sampler's.) It
+applies as a step rather than a ramp, which is right for a between-hits edit;
+voices already ringing keep their own de-zippered per-voice gain. Only the
+scalar is live -- changing a sink's sample rate, or adding one, still rebinds a
+stream and needs a restart, exactly as for layout and ports.
 
-- *It is not hot-reloadable.* Pressing =r= reloads the =cpal_synth= sink's
-  amplitude but not the =cpal_sampler='s, so a drum-volume edit needs a
-  restart. (A general limitation of the sampler sink, noted in
-  =jeff-maybe-review-this.org=; not something this rig introduced.)
+One caveat on the value itself, not new to this rig:
+
 - *1.6 may clip the loudest hits.* The mixer hard-clamps to [-1, 1]. Measured
   against the shipped WAVs, a full-pressure single hit on =kick=, =high_tom=,
   =cowbell= or =open_hat= crosses that ceiling at =amplitude = 1.6=; =hat=,

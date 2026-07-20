@@ -200,13 +200,17 @@ low =shape= -- i.e. exactly where he was headed. Fixed, with regression tests.
 - *Surfaces runtime only.* The looper and sawwave rigs don't reload; same pattern
   would work there but each needs its own plumbing.
 - *What reloads*: amplitude, distortion curve, [[timbres]], tuning, pluck, slide +
-  trail knobs. What doesn't: windows/rects, ports, sample rate, buffer size,
+  trail knobs, and (since 2026-07-20) the drum sampler's amplitude. What doesn't:
+  windows/rects, ports, sample rate, buffer size,
   attack/release (those two could move to the live set easily -- tell me).
 - On an =edo= change the shared trail is cleared (its stored pitch classes are
   mod the old edo); sounding notes keep their struck frequency, and the register
   offset is kept as-is.
-- The drum sampler's amplitude is NOT hot-reloadable yet (that sink's stream was
-  being reworked by the drum-pads task while I built this; easy follow-up).
+- The drum sampler's amplitude WAS not hot-reloadable (that sink's stream was
+  being reworked by the drum-pads task while I built this). Done 2026-07-20: the
+  sink's master gain is now an atomic the audio callback reads each callback, and
+  =adopt_rig= writes it by sink id. An atomic rather than a lock because that
+  callback deliberately takes exactly one (the voice pool).
 
 * feet accrete -- choices where the spec was silent
 - *Pedal -> button order*: 1/8 = clear, 2/9 = needs-holding, 3/0 = accrete (the
