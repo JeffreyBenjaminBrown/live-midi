@@ -21,10 +21,48 @@ The EX-P pedals need =tools/pedals/bridge.sh= running on the HOST (see
 fixed, so its slide range is compressed the same way its volume is -- hardware,
 not code.
 
-Set =PEDAL_SLIDE_LOG=1= in the environment to get a line per pedal move:
-fraction, home side, each managed voice's key, its map pitch, and the frequency
-actually sounding. That is the intended way to settle any "is it the map or the
-wiring?" question without guessing.
+*The on-screen readout* (the same window that shows BPM and the factored pulse)
+now carries a line per grid:
+
+: LOM  pedal 072.4  low +0013.45
+
+- =pedal= is that grid's EX-P on its own =[0,120]= scale. =--= means that pedal
+  has never sent a CC this session -- and while it says =--=, the engine is
+  deliberately agnostic about which side is home.
+- =low= is the LOWEST voice on that grid in 46-EDO steps from the tuning
+  fundamental (0 = the fundamental, 46 = an octave above it), to two decimals --
+  so a slide mid-flight, which sits between cells on no note at all, reads as the
+  fractional thing it is.
+
+Both change continuously when a slide is behaving, so a discontinuity is visible
+as it happens rather than reconstructed from memory afterwards.
+
+For more detail, =PEDAL_SLIDE_LOG=1= prints a line per pedal move: fraction, home
+side, each managed voice's key, its map pitch, and the frequency actually
+sounding. That is the intended way to settle any "is it the map or the wiring?"
+question without guessing.
+
+* the untouched pedal [FIXED, NOT YET PLAYED]
+Jeff, after the first hardware session: "if I haven't used the pedal at all in a
+session, it seems to be assuming a certain point, at which the pedal might not
+be." Correct -- and it was the discontinuity. The published pedal position
+started at 0.0, so the engine took the heel as home. With the foot actually near
+the toe, the first CC to arrive found the map already stretched between the wrong
+ends, and the pitch LEAPT to wherever that CC fell.
+
+Now the engine commits to no home until the pedal first speaks, and the side it
+speaks from becomes home. Measured on the old behaviour the pitch jumped 2.6 EDO
+steps on the first reading and kept climbing; now it does not move at all.
+
+A. *Cold start.* Restart the instrument and do NOT touch the pedal. The readout
+   should show =pedal --= for both grids.
+B. *The first move must be silent.* Edit a note, turn pedal slide on, pick a
+   target -- all without touching the pedal. Now move the pedal a little. *The
+   pitch must not jump*, however far from the heel your foot happened to be.
+C. *That side is home.* From there, travelling AWAY from where the pedal started
+   should slide toward the target and arrive exactly; coming back should return
+   exactly. If your foot started near the toe, that means pushing toward the HEEL
+   goes to the target -- which is correct, not backwards.
 
 * slice 1 -- one voice, one target [NOT YET PLAYED]
 The toggle is each grid's *bottom-left cell*, =[0,15]= (a free play cell on this
