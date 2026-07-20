@@ -339,7 +339,7 @@
     assert_ne!(register, 0, "with no selection, the corner moves the register as ever");
   }
 
-  /// queues/branch-2.org "fine transpose", end to end: toggle on at (1,15), press
+  /// queues/branch-2.org "fine transpose", end to end: toggle on at (0,15), press
   /// transpose keys (live scalar transpose of the whole selection, mono-style with
   /// snap-back, the last release keeping it), move the X with an octave corner,
   /// exit with the transpose still in effect and the grid playing again.
@@ -353,7 +353,7 @@
     let edo = rt.tuning.edo;
     let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
     let step = move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y);
-    let toggle = (1, 15);
+    let toggle = (0, 15);
     let note = (5, 5);
     let pitch = step(note.0, note.1);
     let freq_at = |rt: &GridThread, p: i32| freq_for_pitch(p, rt.tuning.fund, edo);
@@ -436,7 +436,7 @@
     let mut rt = test_grid_thread();
     let mut register = 0;
     let mut held = HashMap::new();
-    let toggle = (1, 15);
+    let toggle = (0, 15);
     let step = {
       let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
       move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y)

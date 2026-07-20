@@ -187,8 +187,10 @@ editmode-clear at (12,0). See TODO/chord-storage-v2/.
 ***** PARAM id = "fine-a"
 ***** PARAM monome = "a"
 ***** PARAM kind = "fine_transpose_toggle"
-***** PARAM rect = [1, 15, 1, 15]
-Next to the lower-leftmost key (which branch 3 is claiming for its slide).
+***** PARAM rect = [0, 15, 0, 15]
+The lower-left CORNER. (The slide pedal that was to claim this key is
+deferred -- "slide pedal was a fiasco"; if it ever lands, fine transpose
+moves one cell right.)
 While on (lit bright): a dancing X marks a center pitch, every play press
 sets the edit selection's transpose to the interval from the pressed pitch
 to that center (mono-style; the last release keeps the transpose), and the
@@ -242,7 +244,7 @@ Grid B's twin of grid A's chord block; its nine slots are its own.
 ***** PARAM id = "fine-b"
 ***** PARAM monome = "b"
 ***** PARAM kind = "fine_transpose_toggle"
-***** PARAM rect = [1, 15, 1, 15]
+***** PARAM rect = [0, 15, 0, 15]
 Grid B's twin of grid A's fine-transpose toggle.
 ** the two softsteps
 Distinguished by ALSA client name, which is reliable: the older board presents
