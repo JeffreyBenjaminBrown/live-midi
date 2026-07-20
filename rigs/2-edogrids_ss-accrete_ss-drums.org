@@ -131,10 +131,15 @@ synth -- which is why the launch line wants pw-jack.
 *** PARAM kind = "cpal_sampler"
 *** PARAM sample_rate = 48000
 *** PARAM buffer_frames = 128
-*** PARAM amplitude = 1.6
+*** PARAM amplitude = 1.2
 The single drum-kit volume knob (linear; a pad's own `gain` trims it below this).
-1.6 carried over from 2-monomes_kmss-drums, where it was the old sink 0.8 x a
-separate drum_sample_amplitude 2.0, since folded into this one knob. The kit has
+Hot-reloadable: edit this, press 'r', and the running sampler adopts it.
+2-monomes_kmss-drums used 1.6 (its old sink 0.8 x a separate
+drum_sample_amplitude 2.0, since folded into one knob), but at 1.6 six of the
+nine samples clip a full-pressure single hit against the mixer's [-1,1] clamp --
+kick and high tom worst, snare marginally. 1.2 clears all nine, the loudest
+landing near -0.9 dBFS. (Simultaneous hits still sum and can clip; that is
+ordinary for a drum bus.) Measurements: the readme's "volume" table. The kit has
 no expression pedal, so this is the only place to balance it against the grids.
 ** the two monomes
 Pinned by SERIAL, not by size. Every softstep pedal below targets a monome BY
@@ -366,11 +371,7 @@ pitch-picker, so there are no new notes to capture.)
 # ... controls always have a base to multiply; the grid pads' tap cells can retap
 # it. Pedals 3 and 8 on this board are now free.
 *** new softstep: the drumkit
-The velocity-sensitive TR-808 kit from 2-monomes_kmss-drums, moved onto THIS
-board because Jeff never touched the factored-pulse pedals that used to live
-here -- and did not need to, since every one of them is duplicated on the
-grids' own upper-right pads. So the pedals are simply gone from this rig; the
-factored pulse is unchanged and entirely hand-driven.
+**** about
 Pressure-sensitive, not MIDI-velocity: the runtime tethers the board on start
 (SysEx over rawmidi), reads each pad's four sensors as CC 40..79, sums them
 into a pressure 0..1 and spreads that over softstep.toml's gain_db_range.
