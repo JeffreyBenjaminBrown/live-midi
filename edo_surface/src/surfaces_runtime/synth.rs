@@ -254,9 +254,8 @@ impl SurfaceSink {
   }
 
   /// This grid's current expression-pedal volume (unity absent a pedal or before
-  /// its first movement). Public within the runtime so the pedal-slide toggle can
-  /// freeze the grid volume at entry.
-  pub(super) fn pedal_gain(&self) -> f32 {
+  /// its first movement).
+  fn pedal_gain(&self) -> f32 {
     let gains = self.pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
     gains.get(self.grid).copied().unwrap_or(1.0)
   }
@@ -331,7 +330,7 @@ impl SurfaceSink {
         timbre,
         fader_gain: fader,
         grid_gain: pedal,
-        grid_gain_target: pedal, slide_freq_target: 0.0,
+        grid_gain_target: pedal,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -565,21 +564,6 @@ impl SurfaceSink {
     true
   }
 
-  /// Re-key a sliding DRONE from struck pitch `from` to `to` at the pedal-slide
-  /// midpoint flip: the note is now painted at the target's pitch, so its pitch-keyed
-  /// drone voice moves under the new key (its live `freq`, `slide_freq_target`, and
-  /// everything else continuing -- it is the same voice). No-op if no drone rings at
-  /// `from`. Overwrites any voice already at `to` (two drones one pitch is one drone).
-  pub fn rekey_drone(&mut self, from: i32, to: i32) {
-    if from == to {
-      return;
-    }
-    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(state) = voices.remove(&sustain_key(self.grid, from)) {
-      voices.insert(sustain_key(self.grid, to), state);
-    }
-  }
-
   /// Release `cell`: its voice rings out (ramps to zero over `release_secs`).
   pub fn note_off(&mut self, cell: (i32, i32)) {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -656,7 +640,7 @@ impl SurfaceSink {
         timbre: v.timbre,
         fader_gain: v.fader_gain,
         grid_gain: v.pedal_gain,
-        grid_gain_target: v.pedal_gain, slide_freq_target: 0.0,
+        grid_gain_target: v.pedal_gain,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -664,56 +648,6 @@ impl SurfaceSink {
         timbre_xfade: None,
       },
     );
-  }
-
-  /// Spawn a pedal-slide FADE-IN voice: a fresh drone at `pitch` that starts SILENT
-  /// (`grid_gain` 0) and swells as the pedal-slide engine drives its `grid_gain_target`
-  /// through the quartic fade map. Its envelope attacks and rings like any note (the
-  /// swell is amplitude on top), and it is keyed as a drone (`SurfaceDrone`) so it is a
-  /// real sustained voice that joins the sustain machinery -- a fade voice IS a drone
-  /// (sustained, fingerless), so the pitch key is exact. Phase B's collision worry (two
-  /// swells onto one pitch) is settled UPSTREAM, not with a dedicated fade key: the
-  /// chord target set is deduped, `pedal_slide::match_targets` REUSES an existing fade
-  /// at a re-requested pitch instead of spawning a second, and the recall wiring skips a
-  /// pitch a plain finger/drone already holds -- so the caller only ever spawns into a
-  /// free pitch. Returns its key so the slide engine can register the pairing.
-  /// No-op-safe: overwrites any voice at the key.
-  pub fn spawn_slide_fade_in(&mut self, pitch: i32, timbre: Timbre) -> VoiceSource {
-    let id = self.next_id;
-    self.next_id += 1;
-    let fader = self.fader_gain();
-    let key = sustain_key(self.grid, pitch);
-    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
-    voices.insert(
-      key,
-      VoiceState {
-        id,
-        freq: freq_for_pitch(pitch, self.fund, self.edo),
-        freq_target: 0.0,
-        glide_per_sample: 1.0,
-        factored_pulse_freq: 0.0,
-        factored_pulse_phase: 0.0,
-        phase: 0.0,
-        env: 0.0,
-        target_env: 1.0,
-        ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
-        pending_attack: None,
-        sustain_env: self.sustain_env,
-        decay_per_sample: self.decay_per_sample,
-        timbre,
-        fader_gain: fader,
-        // Silent until the pedal swells it: the fade drives `grid_gain_target`.
-        grid_gain: 0.0,
-        grid_gain_target: 0.0,
-        slide_freq_target: 0.0,
-        am_phase: 0.0,
-        fm_phase: 0.0,
-        rel_am_phase: 0.0,
-        rel_fm_phase: 0.0,
-        timbre_xfade: None,
-      },
-    );
-    key
   }
 
   /// A manual retrigger of a sustaining pitch: cut THIS grid's drone at `pitch` so
@@ -780,70 +714,6 @@ impl SurfaceSink {
         state.ramp_per_sample = state.env / (DIP_SECS * self.sample_rate).max(1.0);
         state.pending_attack = Some(1.0 / (self.attack_secs * self.sample_rate));
       }
-    }
-  }
-}
-
-/// Convert a fractional EDO-step pitch to Hz -- the pedal-slide flight is mid-glide,
-/// so its pitch is a real number of steps, unlike `freq_for_pitch`'s integer input.
-/// `fund * 2^(pitch / edo)`, log-linear like every other glide here.
-pub(super) fn freq_for_fractional_pitch(pitch: f32, fund: f64, edo: i32) -> f32 {
-  (fund * 2.0_f64.powf(pitch as f64 / edo as f64)) as f32
-}
-
-/// Apply one round of pedal-slide drives (`pedal_slide::PedalSlideState::drives`): aim
-/// each paired voice's pitch through the one-pole `slide_freq_target` smoother, and --
-/// for fade voices only -- its amplitude through `grid_gain_target` (the pitch pairings
-/// leave the grid volume frozen). A drive whose voice has vanished is skipped.
-pub(super) fn apply_slide_drives(
-  voices: &Arc<Mutex<VoiceMap>>,
-  drives: &[super::pedal_slide::Drive],
-  fund: f64,
-  edo: i32,
-) {
-  if drives.is_empty() {
-    return;
-  }
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for d in drives {
-    if let Some(state) = voices.get_mut(&d.voice) {
-      state.slide_freq_target = freq_for_fractional_pitch(d.pitch, fund, edo);
-      if let Some(amp) = d.amp {
-        state.grid_gain_target = amp.clamp(0.0, 1.0);
-      }
-    }
-  }
-}
-
-/// Freeze specific sliding voices (an editmode-clear/sustain-clear cancelled their
-/// pairings): clear `slide_freq_target` so each holds its current `freq`. A voice that
-/// has already ended is simply absent.
-pub fn freeze_slide_voices(voices: &Arc<Mutex<VoiceMap>>, keys: &[VoiceSource]) {
-  if keys.is_empty() {
-    return;
-  }
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for key in keys {
-    if let Some(state) = voices.get_mut(key) {
-      state.slide_freq_target = 0.0;
-    }
-  }
-}
-
-/// Freeze the pedal-slide flight for `grid`: clear `slide_freq_target` on every one of
-/// its voices, so each voice holds its current `freq` (a toggle-off, an editmode-clear,
-/// or a sustain-clear mid-flight). Leaves the pitch exactly where the pedal left it --
-/// smoothness above all; a later drag can tidy an off-grid pitch.
-pub fn freeze_slide(voices: &Arc<Mutex<VoiceMap>>, grid: usize) {
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (src, state) in voices.iter_mut() {
-    let g = match src {
-      VoiceSource::SurfaceFinger { grid, .. } => *grid,
-      VoiceSource::SurfaceDrone { grid, .. } => *grid,
-      _ => continue,
-    };
-    if g == grid {
-      state.slide_freq_target = 0.0;
     }
   }
 }

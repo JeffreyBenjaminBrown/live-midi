@@ -32,7 +32,6 @@ mod grid;
 mod hooks;
 mod keys;
 mod paint;
-mod pedal_slide;
 mod pedal_volume;
 mod polyrhythm;
 mod pulse_window;
@@ -257,14 +256,6 @@ fn run(
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   let mono_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
-  // The per-grid pedal-slide toggle + engine (TODO/pedal-slide). The AtomicBool is the
-  // fast LED/paint flag; the engine (behind its own per-grid lock so the grid thread
-  // and the pedal thread never contend across grids) holds the target set, the
-  // per-voice pairings, the anchored-segment maps, and the home hysteresis.
-  let pedal_slide_on: Arc<Vec<AtomicBool>> =
-    Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
-  let pedal_slide: Arc<Vec<Mutex<pedal_slide::PedalSlideState>>> =
-    Arc::new((0..num_grids).map(|_| Mutex::new(pedal_slide::PedalSlideState::new())).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
@@ -404,12 +395,7 @@ fn run(
     let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
     let gains = Arc::clone(&pedal_gains);
-    let slide_on = Arc::clone(&pedal_slide_on);
-    let slide = Arc::clone(&pedal_slide);
-    let (fund, edo) = (s.fund, s.edo);
-    thread::spawn(move || {
-      expression_pedal_loop(live_for_pedals, voices_for_pedals, gains, slide_on, slide, fund, edo)
-    });
+    thread::spawn(move || expression_pedal_loop(live_for_pedals, voices_for_pedals, gains));
   }
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
@@ -470,8 +456,6 @@ fn run(
     distortion_on: Arc::clone(&distortion_on),
     slide_on: Arc::clone(&slide_on),
     mono_on: Arc::clone(&mono_on),
-    pedal_slide_on: Arc::clone(&pedal_slide_on),
-    pedal_slide: Arc::clone(&pedal_slide),
     poly: Arc::clone(&poly),
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
@@ -602,9 +586,6 @@ struct Shared {
   /// The per-grid slide / mono switches (this grid uses element `grid_index`).
   slide_on: Arc<Vec<AtomicBool>>,
   mono_on: Arc<Vec<AtomicBool>>,
-  /// The per-grid pedal-slide toggle (fast LED/paint flag) and its engine.
-  pedal_slide_on: Arc<Vec<AtomicBool>>,
-  pedal_slide: Arc<Vec<Mutex<pedal_slide::PedalSlideState>>>,
   /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
   /// The hot-reloadable parameters; refreshed into `GridThread`'s own fields when the
@@ -783,53 +764,6 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
     buttons.push(toggle(rt.overlays.mono_rect, &rt.shared.mono_on));
-    buttons.push(toggle(rt.overlays.pedal_slide_rect, &rt.shared.pedal_slide_on));
-    // Pedal-slide (TODO/pedal-slide): drain the midpoint-flip re-files the pedal thread
-    // queued (this thread owns the ring + sink), and collect the TARGET pitches whose
-    // goalpost cell should flash 100 ms bright/off (home pitches are already sustained,
-    // so they paint bright + dance through the ordinary path). No lock nesting: read the
-    // engine, drop it, then touch the ring and sink.
-    // Reconcile the slide pairings against this grid's live edit selection first, so an
-    // editmode-clear or sustain-clear (from either surface) cancels the pairing, freezes
-    // the voice, and unlights its target.
-    let slide_edited: HashSet<i32> = {
-      let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-      rings[rt.grid_index].store.iter(Reason::Edit).collect()
-    };
-    let dropped = rt.shared.pedal_slide[rt.grid_index]
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .reconcile(&slide_edited);
-    synth::freeze_slide_voices(&rt.shared.voices, &dropped);
-    let (slide_refiles, slide_targets): (Vec<pedal_slide::Refile>, Vec<i32>) = {
-      let mut eng = rt.shared.pedal_slide[rt.grid_index].lock().unwrap_or_else(|e| e.into_inner());
-      let (_home, targets) = eng.led_roles();
-      (eng.take_refiles(), targets.into_iter().collect())
-    };
-    for r in &slide_refiles {
-      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-        .store
-        .note_moved(r.from, r.to);
-      if r.voice_old != r.voice_new {
-        rt.sink.rekey_drone(r.from, r.to);
-      }
-    }
-    // A finger-still-down slide voice keeps its CELL key (the pedal keeps driving it),
-    // but the local held cell->pitch mirror must follow the midpoint flip too, or it
-    // would keep reporting the old pitch for that cell (phase-A debt). Update the local
-    // map and re-publish its shared mirror so both agree with the store.
-    if apply_finger_refiles(&slide_refiles, &mut held) {
-      publish_held(&rt.shared.held_all, rt.grid_index, &held);
-    }
-    // The TARGET goalpost cells: a 100 ms bright/off flash (no dance), driven from the
-    // shared dance clock. Pushed as single-cell buttons so they occlude the play grid
-    // and reflect the exact cell(s) that hold the target pitch under this register.
-    let target_level = if dance::target_flash_on(elapsed) { BRIGHT } else { OFF };
-    for pitch in &slide_targets {
-      for (x, y) in cells_for_pitch(&rt, register, *pitch) {
-        buttons.push(([x, y, x, y], target_level));
-      }
-    }
     // The editmode buttons: dim at rest (findable), bright while pressed.
     buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
     buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));

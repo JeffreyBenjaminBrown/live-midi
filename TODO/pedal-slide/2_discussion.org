@@ -182,22 +182,3 @@ terminology-trap note beside the existing one in the readme.
   currently nearest to -- nice property, preserved by the formalization.
 - 100 ms target flash: I'll drive it from the shared dance clock (the
   vision permits it), so it can't drift against the other animations.
-* DONE amendment
-(Jeff wrote this while Claude was
-part of the way through implementing the slide feature.)
-
-The global-ish volume that the pedal applies when slide mode is exited
-should just use the same hysteresis trick: make a kinked x^4 relationship to voluem,
-which reverts to the slightly-linear-mostly-exponential curve
-upon reaching either endpoint. Otherwise I might get confused,
-trying to bring down the volume and not having any effect.
-** DONE [claude] implemented
-The mode-off return is now `pedal_slide::VolumeReturn` -- the SAME anchored-kink
-`Segments` (x^4 shape) the slide fades use: two quartic segments joined at
-`(F_now, V_frozen)`, one to `(0, 0)`, one to `(1, 1)`, so pushing OR pulling the
-pedal changes the volume at once, no dead zone. On reaching either endpoint it
-returns `None` and the pedal thread resumes the ordinary `PedalVolumeCurve`
-taper (continuous -- the segment's endpoints are 0 and 1, as the taper's are).
-The dropped catch-up-pickup code is gone. Covered by the pure-module tests
-`the_volume_return_is_continuous_at_mode_exit_and_immediate_both_ways` and
-`the_volume_return_reverts_to_the_ordinary_taper_at_an_endpoint`.

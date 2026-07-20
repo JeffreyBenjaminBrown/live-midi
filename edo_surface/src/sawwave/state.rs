@@ -116,7 +116,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
       timbre: crate::types::Timbre::default(),
       fader_gain: 1.0,
       grid_gain: 1.0,
-      grid_gain_target: 1.0, slide_freq_target: 0.0,
+      grid_gain_target: 1.0,
       am_phase: 0.0,
       fm_phase: 0.0,
       rel_am_phase: 0.0,

@@ -251,16 +251,6 @@ pub struct VoiceState {
   // runtime.
   pub grid_gain:        f32,
   pub grid_gain_target: f32,
-  // Pedal-slide flight (the surfaces runtime's `pedal_slide_toggle`): while a grid's
-  // slide mode is on, the EX-P pedal drives each paired voice's FREQUENCY here. `freq`
-  // chases `slide_freq_target` per sample with a one-pole smoother
-  // (`voices::SLIDE_SLEW_SECS` ~10 ms, a sibling of the `grid_gain` slew) so the
-  // CC-rate target steps never zipper the pitch. 0.0 = inactive (the overwhelmingly
-  // common case, and every non-surfaces runtime), and the glide integrator
-  // (`glide_per_sample`) owns `freq` instead. The pedal-slide engine sets this target
-  // from its anchored-segment map; on mode-off it is cleared to 0.0 and the voice
-  // freezes at its current `freq`.
-  pub slide_freq_target: f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
   // `am_phase`/`fm_phase` belong to the absolute (Hz-rate) modulators,

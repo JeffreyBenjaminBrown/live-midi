@@ -6,8 +6,10 @@ The post-mortem plan Jeff asked for: diagnosis of the three observed bugs
 the deeper causes, the abstractions a rebuild should stand on, what the spec
 left open, and a slice-by-slice walk-through plan for doing it right,
 manually, with hardware checkpoints. The existing implementation
-(cedc9ad + a16b6dc) is left in place as a corpse to dissect; the walk-through
-assumes we revert or rewrite it rather than patch it.
+(cedc9ad + a16b6dc) has been REVERTED (Jeff's call, below); it now lives in
+=5_diffs.org= and in git history, not in the tree. The walk-through below
+still describes doing it right, manually, with hardware checkpoints, on the
+now-clean tree.
 
 * diagnosis of the three bugs
 
@@ -227,3 +229,7 @@ rig kind, VolumeReturn, and the tests are all liftable from there), or
 rebuild in place? Either works; in-place invites the corpse's structure to
 leak into the rebuild.
 ** DONE yes, revert
+Done: cedc9ad + a16b6dc reverted (bug-2 diagnosis mechanically confirmed
+first -- see "diagnosis verification" above -- then the revert, resolving
+conflicts per the diagnosis's own account of what changed). The tree is
+clean; the corpse survives only in =5_diffs.org= and git history.

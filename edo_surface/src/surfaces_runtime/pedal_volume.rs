@@ -2,7 +2,7 @@
 //! that polls the MPC-20 bridge and aims each mapped grid's gain at it
 //! (`expression_pedal_loop`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -11,7 +11,6 @@ use crate::expression_pedals::NUM_PEDALS;
 
 use crate::types::VoiceMap;
 
-use super::pedal_slide::{PedalSlideState, VolumeReturn};
 use super::synth;
 use super::{Live, STOP};
 
@@ -84,15 +83,10 @@ pub(super) fn apply_pedal_gain(
   synth::set_grid_pedal_gain(voices, grid, gain);
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
-  pedal_slide_on: Arc<Vec<AtomicBool>>,
-  pedal_slide: Arc<Vec<Mutex<PedalSlideState>>>,
-  fund: f64,
-  edo: i32,
 ) {
   use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
   let reader = match PedalReader::connect(DEFAULT_PORT) {
@@ -104,11 +98,6 @@ pub(super) fn expression_pedal_loop(
   };
   println!("expression pedals: connected to {:?}", reader.port_name());
   let mut last = [f32::NAN; NUM_PEDALS];
-  // Per-pedal slide bookkeeping: whether the grid was in slide mode last poll (to catch
-  // the ON->OFF edge that starts the volume return), and the anchored-kink volume
-  // return itself (`None` = the ordinary taper is in charge).
-  let mut mode_was = [false; NUM_PEDALS];
-  let mut vol_return: [Option<VolumeReturn>; NUM_PEDALS] = [None; NUM_PEDALS];
   let mut last_generation = live.generation.load(Ordering::SeqCst);
   while !STOP.load(Ordering::SeqCst) {
     let generation = live.generation.load(Ordering::SeqCst);
@@ -119,60 +108,8 @@ pub(super) fn expression_pedal_loop(
     for (pedal, binding) in map.iter().enumerate() {
       let Some((grid, curve)) = *binding else { continue };
       let p = pedals[pedal];
-      let mode = pedal_slide_on.get(grid).map(|b| b.load(Ordering::Relaxed)).unwrap_or(false);
-      // The ON->OFF edge: begin the anchored-kink volume return from the grid's frozen
-      // volume, so the pedal returning to volume duty changes the loudness immediately
-      // in either direction rather than yanking it to its physical position or going
-      // dead until it crosses (2_discussion amendment).
-      if mode_was[pedal] && !mode {
-        let frozen = pedal_slide
-          .get(grid)
-          .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).frozen_volume())
-          .unwrap_or(1.0);
-        vol_return[pedal] = Some(VolumeReturn::new(p.norm, frozen));
-        last[pedal] = f32::NAN; // force the next ordinary reading to apply
-      }
-      mode_was[pedal] = mode;
-
-      if mode {
-        // Slide duty: the pedal drives this grid's slide engine, not its volume. Feed
-        // the normalized position in and apply the resulting per-voice drives.
-        if p.updates == 0 {
-          continue;
-        }
-        let drives = pedal_slide.get(grid).map(|s| {
-          let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
-          // (`on_pedal` also queues midpoint-flip re-files; the grid thread owns the
-          // ring/sink a re-file touches, so it drains them during its repaint -- the
-          // pedal thread only drives the voices.)
-          st.on_pedal(p.norm);
-          st.drives()
-        });
-        if let Some(drives) = drives {
-          synth::apply_slide_drives(&voices, &drives, fund, edo);
-        }
-        continue;
-      }
-
-      // Volume duty. While the anchored-kink return is active, its map is in charge
-      // (immediate in both directions) until the pedal reaches an endpoint, when it
-      // reverts to the ordinary taper.
-      if let Some(vr) = vol_return[pedal].as_mut() {
-        if p.updates == 0 {
-          continue;
-        }
-        match vr.on_pedal(p.norm) {
-          Some(gain) => {
-            apply_pedal_gain(&voices, &pedal_gains, grid, gain);
-            continue;
-          }
-          None => {
-            // Reverted at an endpoint: fall through to the ordinary taper this poll.
-            vol_return[pedal] = None;
-          }
-        }
-      }
-      // No CC yet = no position to trust; keep unity rather than muting.
+      // No CC yet = no position to trust; keep unity rather than muting the grid.
+      // A reload re-applies a known position through the (possibly new) taper.
       if p.updates == 0 || (!reloaded && last[pedal] == p.norm) {
         continue;
       }
