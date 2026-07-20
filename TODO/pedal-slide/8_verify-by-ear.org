@@ -1,0 +1,222 @@
+#+title: Pedal slide: the by-ear checklist
+#+date: 2026-07-20
+
+The accumulating hardware checklist, one section per slice of =6_plan.org=. Jeff
+plays down the list at the grids; anything that misbehaves gets a note under its
+item and becomes the next session's work.
+
+Everything here is also pinned by an automated wiring-level test (the harness in
+=edo_surface/src/surfaces_runtime/tests.rs=, "pedal slide: the WIRING-LEVEL
+invariant harness"), which runs the real key handler, the real engine step, the
+real voice map and the real block renderer, and asserts the audible frequency.
+So this list is not "does the code work" -- it is *does it feel right*, which is
+the only question the harness cannot answer.
+
+* how to run it
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse
+#+end_src
+The EX-P pedals need =tools/pedals/bridge.sh= running on the HOST (see
+=tools/pedals/README.org=). One pedal reads ~35..127 until its MIN thumbwheel is
+fixed, so its slide range is compressed the same way its volume is -- hardware,
+not code.
+
+*The on-screen readout* (the same window that shows BPM and the factored pulse)
+now carries a line per grid:
+
+: LOM  pedal 072.4  low +0013.45
+
+- =pedal= is that grid's EX-P on its own =[0,120]= scale. =--= means that pedal
+  has never sent a CC this session -- and while it says =--=, the engine is
+  deliberately agnostic about which side is home.
+- =low= is the LOWEST voice on that grid in 46-EDO steps from the tuning
+  fundamental (0 = the fundamental, 46 = an octave above it), to two decimals --
+  so a slide mid-flight, which sits between cells on no note at all, reads as the
+  fractional thing it is.
+
+Both change continuously when a slide is behaving, so a discontinuity is visible
+as it happens rather than reconstructed from memory afterwards.
+
+For more detail, =PEDAL_SLIDE_LOG=1= prints a line per pedal move: fraction, home
+side, each managed voice's key, its map pitch, and the frequency actually
+sounding. That is the intended way to settle any "is it the map or the wiring?"
+question without guessing.
+
+* the untouched pedal [FIXED, NOT YET PLAYED]
+Jeff, after the first hardware session: "if I haven't used the pedal at all in a
+session, it seems to be assuming a certain point, at which the pedal might not
+be." Correct -- and it was the discontinuity. The published pedal position
+started at 0.0, so the engine took the heel as home. With the foot actually near
+the toe, the first CC to arrive found the map already stretched between the wrong
+ends, and the pitch LEAPT to wherever that CC fell.
+
+Now the engine commits to no home until the pedal first speaks, and the side it
+speaks from becomes home. Measured on the old behaviour the pitch jumped 2.6 EDO
+steps on the first reading and kept climbing; now it does not move at all.
+
+A. *Cold start.* Restart the instrument and do NOT touch the pedal. The readout
+   should show =pedal --= for both grids.
+B. *The first move must be silent.* Edit a note, turn pedal slide on, pick a
+   target -- all without touching the pedal. Now move the pedal a little. *The
+   pitch must not jump*, however far from the heel your foot happened to be.
+C. *That side is home.* From there, travelling AWAY from where the pedal started
+   should slide toward the target and arrive exactly; coming back should return
+   exactly. If your foot started near the toe, that means pushing toward the HEEL
+   goes to the target -- which is correct, not backwards.
+
+* the wrong-way fade [NEW, NOT YET PLAYED]
+Jeff's design, after the first hardware session. Picking a target with the pedal
+parked part-way along its travel forces a steeper gear ratio on that first sweep
+-- unavoidably, given that the target must be exact at the far end and the press
+must not move the pitch. The near side of the pick point therefore cannot slide.
+It now holds the home pitch and fades out instead.
+
+D. *The wrong way holds the pitch.* Park the pedal around the middle, edit a
+   note, turn pedal slide on, pick a target. Now move the pedal AWAY from the
+   target. The pitch must not move at all -- and the note should get quieter,
+   quartically, reaching silence at that end of the travel.
+E. *Home comes back exactly.* Wander around below the pick point, then return to
+   it. The note should come back to full volume, at exactly its original pitch.
+   The pick point does not follow your foot -- that is deliberate, and it is what
+   makes the home pitch impossible to lose.
+F. *Arriving hands volume back.* Sweep the right way to the target. On arrival
+   the pedal should stop affecting volume altogether, and the whole travel should
+   now be one clean line between the two pitches.
+G. *The silent end reclaims the range.* Instead, go all the way to the SILENT
+   end. Now sweep back: pitch should slide home -> target and volume 0 -> full
+   across the whole travel, both arriving together at the target.
+
+* slice 1 -- one voice, one target [NOT YET PLAYED]
+The toggle is each grid's *bottom-left cell*, =[0,15]=, on BOTH edogrid rigs.
+(It is the accrete clear on =2-monomes_kmss-drums=, which does not carry this
+feature.) Fine transpose, which briefly held this corner while pedal slide was
+deferred, has moved one cell right to =[1,15]= -- exactly as that rig's own note
+said it would "if [the slide pedal] ever lands". Dim at rest, bright while on.
+
+Setup for every item: strike a note, press the cell BELOW it to edit it (which
+also sustains it), lift your finger. Then press =[0,15]=.
+
+1. *The toggle lights.* Bottom-left goes bright; the grid's volume pedal stops
+   changing volume.
+2. *A pick does not sound.* With the pedal at the heel, press a free pitch
+   somewhere above the edited note. Nothing should sound, and the edited note
+   should NOT jump to it. The pressed cell should start flashing bright/off
+   about five times a second.
+3. *The toe reaches the target.* Push the pedal all the way down. The note
+   should glide smoothly up and *land exactly on the pitch you picked* -- play
+   that pitch on the other grid to check it in unison. (This is the bug from
+   =4_bugs-jeff-ran-into.org=: it used to land about halfway.)
+4. *The roles swap on arrival.* At the toe, the cell you picked should now be
+   lit and dancing (it is the note), and the cell you came FROM should now be
+   the one flashing.
+5. *And back.* Raise the pedal to the heel: the note should glide back and land
+   exactly where it started. (This is the "pedal goes dead on arrival" bug.)
+6. *Indefinitely.* Rock the pedal heel-toe-heel-toe several times. Every arrival
+   should be exact, both ways, forever -- the pedal never "finishes".
+7. *No jumps anywhere.* Move the pedal fast, slow, and reverse it mid-travel.
+   The pitch should never step or click, including right at the moment the
+   colours swap.
+8. *Retarget mid-flight.* With the pedal halfway, pick a DIFFERENT free pitch.
+   The sounding pitch must not budge at the moment you press. Continuing to the
+   toe should land exactly on the new pitch; reversing to the heel should land
+   exactly on the original one.
+9. *Toggling off freezes.* Halfway through a slide, press =[0,15]= again. The
+   note should hold its (probably between-cells) pitch, and the pedal should
+   stop affecting it. Slice 6 is what makes the volume hand-back graceful; until
+   then expect the volume to jump when you next move the pedal.
+10. *Clearing cancels.* Mid-slide, press the editmode-clear (=[12,0]= or its
+    pedal). The note should stay sounding, frozen where it was, and its target
+    should stop flashing.
+
+* slices 2 + 3 -- the kink and the midpoint flip [NOT YET PLAYED]
+Slice 2 (mid-flight retarget) arrived with slice 1 -- see item 8 above, which is
+its whole checklist. Slice 3 moves the home/target swap from the ENDS of the
+pedal's travel to its midpoint, which is what =1_vision= specifies.
+
+11. *The colours swap halfway.* Start a slide and push the pedal slowly past the
+    middle. Somewhere just past halfway the two cells should trade looks: the
+    target stops flashing and starts being lit + danced, and the pitch you came
+    from starts flashing instead. *The sound must not change at all* at that
+    moment -- the swap is about labels, not pitch.
+12. *And back on the way down.* Coming back, they should trade again slightly
+    BELOW halfway (there is a deliberate dead band, so the swap points differ
+    going up and coming down -- that is intended).
+13. *A resting foot does not flicker.* Park the pedal right around the middle and
+    let your foot tremble. The colours must stay put, not strobe.
+14. *Chaining slides -- the point of the whole thing.* Raise the pedal into pitch
+    A. Now pick pitch B and LOWER the pedal into it. Then pick C and raise into
+    that. Each pick should set the end you are heading FOR, and each travel
+    should arrive exactly. This is the workflow =1_vision= opens with.
+15. *With a finger still down.* Strike a note, edit it, and *keep your finger on
+    it*. Pick a target and slide past the middle, then lift the finger. The
+    slide must continue and still arrive exactly. (Lifting hands the voice from
+    its cell to its pitch -- a hand-off with the same shape as the original bug.)
+16. *Retriggering mid-slide.* Mid-slide, press the cell the note is currently
+    lit at. It should re-strike (envelope only) and *keep sliding*.
+
+* slice 4 -- the swell [NOT YET PLAYED]
+With *nothing in edit mode*, a pick no longer does nothing: it makes the pedal a
+swell into that pitch, from silence. (Your call in =2_discussion=: "let's go
+with your favorite... it will definitely have its musical uses".)
+
+17. *Swell into a pitch.* With pedal slide on, nothing edited, and the pedal at
+    the heel: press any free pitch. Nothing should sound at all. Now push the
+    pedal down -- the note should rise out of true silence, gently at first
+    (it is an x^4 curve, so most of the loudness arrives in the last third).
+18. *It is a real note.* At the toe it should be a normal sustained note: it
+    lights, it square-dances, the handles and clears reach it.
+19. *It flashes until it arrives.* The cell should flash while you are swelling
+    it in, and stop flashing once it is fully in.
+20. *Swell started mid-travel.* Park the pedal halfway, then pick. The note
+    should be silent at that moment (no click, no jump) and swell in as you push
+    on from there -- and still reach full exactly at the toe.
+21. *The one you flagged.* =2_discussion=: swelling a note in, then picking a
+    SECOND one while past the midpoint, means the second one takes the near side
+    as home and only swells when you sweep back the other way. You predicted
+    this would be confusing and wanted to try it anyway -- this is the item where
+    you find out.
+
+* slice 5 -- chords [NOT YET PLAYED]
+A chord slot pressed while pedal slide is on does NOT recall the chord. Its
+pitches become the target set, and whatever is already sounding glides into
+them. The slot lights solid to say which chord you are aimed at.
+
+22. *Chord to chord GLIDES.* Recall a chord normally (slide off). Turn pedal
+    slide on, then press a DIFFERENT slot. Nothing should change yet. Now sweep
+    the pedal: the sounding chord should *bend* into the stored one, every voice
+    gliding. (This is bug 1 from =4_bugs-jeff-ran-into.org=: it used to
+    crossfade -- old notes fading out while new ones faded in, no pitch movement
+    at all.)
+23. *No doubling.* Three voices in, three voices out. Aiming at a chord must not
+    spawn a second copy of it.
+24. *A bigger chord.* Aim a 2-note chord at a 4-note one: two voices should
+    glide, and the two spare pitches should swell in from silence as you sweep.
+25. *A smaller chord.* The reverse: the leftovers should fade out as you sweep.
+26. *Already-satisfied pitches stay put.* Aim at a chord that shares a pitch
+    with what is sounding. That voice should not wander off to a different
+    target and come back.
+27. *Aiming again.* Press a different slot mid-sweep. The new chord takes over
+    as the target set with no jump.
+
+* slice 6 -- the volume return [NOT YET PLAYED]
+Toggling pedal slide OFF hands the pedal back to volume through the same kinked
+x^4 construction the fades use, so it is live immediately in both directions.
+
+28. *No jump at mode exit.* With the pedal parked mid-travel, toggle pedal slide
+    off. The volume should NOT leap to wherever the pedal physically is.
+29. *Live in both directions at once.* From there, push the pedal a little: the
+    volume should rise straight away. Pull it back past where it was: it should
+    fall straight away. Neither direction should have a dead patch.
+30. *The taper resumes at the ends.* Run the pedal to either end and then use it
+    normally. From that point on it should feel exactly like the ordinary volume
+    pedal again.
+
+* known rough edges (not bugs -- recorded in 3_progress.org)
+- Toggling pedal slide off while a voice is *mid-swell* hands that voice back to
+  the grid volume, so its loudness ramps (over ~20 ms, no click) to wherever the
+  volume pedal now says. The pedal is uniform once slide mode is off; there is
+  nowhere else for a half-swelled voice to go.
+- If a note gets struck and sustained ON the pitch a slide is heading for, the
+  slide still arrives correctly but that note keeps painting at the cell it came
+  from until the collision clears. Nothing dies. Neither =1_vision= nor
+  =2_discussion= considers this case -- see the question in 3_progress.org.

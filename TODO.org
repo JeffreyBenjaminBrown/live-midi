@@ -24,6 +24,11 @@ Two of them now, same grids, differing only in what the NEWER SS does:
 On the DRUMS rig the New SS rows are instead, as you stand over it:
 | high tom | low tom | wood block | cowbell | crash    |
 | snare    | kick    | ditto      | hat     | open hat |
+* entering slide mode
+should, if there are no notes currently in edit mode,
+add whatever is on the board to the edit-mode set:
+anything fingered, anything sustained, anything retrieved from a chord bank.
+* AWAITS jeff : read TODO/pedal-slide/3_progress.org
 * ONGOING queue/branch-2.org
 * Should the =1 pedal also get the Settle debounce?
 Claude wrote (roughly):

@@ -30,6 +30,11 @@
       distortion_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
       slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
       mono_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      pedal_slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      // NaN = "this pedal has never reported", exactly as `run()` initializes it.
+      pedal_slide_frac: Arc::new(
+        (0..num_grids).map(|_| AtomicU32::new(f32::NAN.to_bits())).collect(),
+      ),
       poly,
       live,
       voices: Arc::clone(&voices),
@@ -68,6 +73,7 @@
       },
       shared,
       slide: SlideCandidates::new(),
+      pedal_slide: pedal_slide::PedalSlideState::new(),
       fine: fine::FineTranspose::new(),
       started: Instant::now(),
       sink: SurfaceSink::new(
@@ -267,6 +273,757 @@
     );
   }
 
+  // ---- pedal slide: the WIRING-LEVEL invariant harness (TODO/pedal-slide/6_plan.org)
+  //
+  // The post-mortem's ranked cause 4: "the pure core was proven and the wiring was
+  // not". 770 green tests pinned the anchored-segment math while all three bugs lived
+  // in the hand-off between the engine, the voice map, and the render. So these tests
+  // run the REAL path end to end -- real key handler, real engine step, real voice map,
+  // real block renderer -- and assert what the EAR would check:
+  //
+  //   * an endpoint means the AUDIBLE frequency is exactly the endpoint's pitch;
+  //   * the audible pitch never jumps, anywhere, including across a role swap;
+  //   * after arrival, reversing reaches the pitch you came from, exactly.
+  //
+  // Each of those three would have failed on the reverted build.
+
+  /// A pedal-slide rig under test: a real `GridThread` with one sustained + edited note
+  /// at `h`, pedal slide ON, and the pedal parked at the heel.
+  struct SlideRigUnderTest {
+    rt: GridThread,
+    register: i32,
+    held: HashMap<(i32, i32), i32>,
+    h: i32,
+  }
+
+  impl SlideRigUnderTest {
+    /// Strike a note, edit it (which sustains it), lift the finger, turn pedal slide on.
+    /// The pedal is treated as already resting at the heel, which is the ordinary case
+    /// once a session has been played in.
+    fn new() -> Self {
+      let mut r = Self::new_untouched_pedal();
+      // A real reading of 0.0 -- distinct from "never touched" (see
+      // `the_first_ever_pedal_reading_settles_home_without_moving_any_pitch`).
+      r.rt.shared.pedal_slide_frac[0].store(0.0_f32.to_bits(), Ordering::Relaxed);
+      pedal_slide_step(&mut r.rt, &mut r.held);
+      r
+    }
+
+    /// The same, but the pedal has never sent a CC -- so nothing is known about where
+    /// the foot is, and the engine must not pretend otherwise.
+    fn new_untouched_pedal() -> Self {
+      let mut rt = test_grid_thread();
+      let mut register = 0;
+      let mut held = HashMap::new();
+      let note = (5, 5);
+      let handle = (5, 6); // the cell directly below: the edit handle
+      let h = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+      handle_key(&mut rt, &mut register, &mut held, note, true);
+      handle_key(&mut rt, &mut register, &mut held, handle, true);
+      handle_key(&mut rt, &mut register, &mut held, handle, false);
+      handle_key(&mut rt, &mut register, &mut held, note, false); // drones, edited
+      handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+      assert!(rt.pedal_slide.mode(), "the engine entered slide mode");
+      SlideRigUnderTest { rt, register, held, h }
+    }
+
+    fn press(&mut self, cell: (i32, i32)) {
+      handle_key(&mut self.rt, &mut self.register, &mut self.held, cell, true);
+      handle_key(&mut self.rt, &mut self.register, &mut self.held, cell, false);
+    }
+
+    /// The cell holding `pitch` under the current register (for picking targets).
+    fn cell_for(&self, pitch: i32) -> (i32, i32) {
+      *cells_for_pitch(&self.rt, self.register, pitch)
+        .first()
+        .unwrap_or_else(|| panic!("pitch {pitch} is on screen"))
+    }
+
+    /// Move the pedal to `f` and run ONE grid-thread step, then render 1 ms of audio so
+    /// the render slew actually advances. Returns the audible pitch in EDO steps.
+    fn pedal_to(&mut self, f: f32) -> f32 {
+      self.rt.shared.pedal_slide_frac[0].store(f.to_bits(), Ordering::Relaxed);
+      pedal_slide_step(&mut self.rt, &mut self.held);
+      self.render_ms(1)
+    }
+
+    /// The loudest sample once the gain slew has settled. `peak_over_ms` alone takes
+    /// the MAX over its window, so it reports whatever the level was on the way IN --
+    /// useless for "is it quieter now". 200 ms is ~10 time constants of GAIN_SLEW_SECS.
+    fn settled_peak(&mut self) -> f32 {
+      self.render_ms(200);
+      self.peak_over_ms(50)
+    }
+
+    /// The loudest sample over `ms` of real rendering -- what "silent" and "present"
+    /// actually mean to an ear, as opposed to what a gain field claims.
+    fn peak_over_ms(&mut self, ms: usize) -> f32 {
+      let mut voices = self.rt.shared.voices.lock().unwrap();
+      let mut data = vec![0.0_f32; 48 * ms];
+      crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
+      data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()))
+    }
+
+    fn render_ms(&mut self, ms: usize) -> f32 {
+      {
+        let mut voices = self.rt.shared.voices.lock().unwrap();
+        let mut data = vec![0.0_f32; 48 * ms];
+        crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
+      }
+      self.audible()
+    }
+
+    /// The slid voice's pitch, in (fractional) EDO steps -- what the ear hears. Read
+    /// through the pairing's own key, so this follows the voice across every re-file
+    /// and re-key; once the slide has ended (a freeze), it falls back to the single
+    /// remaining sounding voice. Release tails (`SurfaceRetired`) are never counted.
+    fn audible(&self) -> f32 {
+      let voices = self.rt.shared.voices.lock().unwrap();
+      let key = self.rt.pedal_slide.pairings().first().map(|p| p.voice);
+      let hz = match key.and_then(|k| voices.get(&k)) {
+        Some(v) => v.freq,
+        None => {
+          let live: Vec<f32> = voices
+            .iter()
+            .filter(|(src, _)| !matches!(src, crate::types::VoiceSource::SurfaceRetired { .. }))
+            .map(|(_, v)| v.freq)
+            .collect();
+          assert_eq!(live.len(), 1, "expected one un-retired voice, found {}", live.len());
+          live[0]
+        }
+      };
+      let (fund, edo) = (self.rt.tuning.fund, self.rt.tuning.edo);
+      (hz as f64 / fund).log2() as f32 * edo as f32
+    }
+
+    /// Sweep the pedal from `from` to `to` in ~100 steps, letting the render advance at
+    /// each one, and assert the audible pitch never JUMPS. Returns the settled pitch.
+    fn sweep(&mut self, from: f32, to: f32) -> f32 {
+      const STEPS: usize = 100;
+      let mut last = self.render_ms(1);
+      for i in 1..=STEPS {
+        let f = from + (to - from) * (i as f32 / STEPS as f32);
+        let now = self.pedal_to(f);
+        assert!(
+          (now - last).abs() < MAX_STEP_JUMP,
+          "the audible pitch jumped {:.3} steps (from {last:.3} to {now:.3}) at f={f:.3} -- \
+           a slide must never be discontinuous",
+          (now - last).abs(),
+        );
+        last = now;
+      }
+      // Let the one-pole smoother settle onto wherever the map now points (300 ms is
+      // ~10 time constants of SLIDE_SLEW_SECS -- the sweep has already walked the pitch
+      // nearly there, so this only closes the last sliver).
+      self.render_ms(300)
+    }
+  }
+
+  /// The largest audible pitch change (EDO steps) tolerated between two 1 ms render
+  /// blocks during a ~1 %-per-step pedal sweep. Generous enough not to be brittle,
+  /// tight enough that any real discontinuity -- the reverted build froze mid-flight
+  /// and its LEDs/pitch parted ways -- blows straight through it.
+  const MAX_STEP_JUMP: f32 = 1.0;
+
+  /// Slice 1, the whole of it: pick a target, sweep the pedal, and the note must ARRIVE
+  /// -- exactly, audibly, through the real render.
+  ///
+  /// This is the assertion the reverted build failed. Its voice froze at
+  /// MIDPOINT + HYSTERESIS_BAND (fraction 0.550) of the travel because the pairing's
+  /// idea of the voice's key and the voice map's actual key parted ways at the role
+  /// swap, and every drive afterwards was silently dropped (6_plan.org "diagnosis
+  /// verification"). Nothing here can do that: the key moves only through a re-file
+  /// this same thread has already applied.
+  #[test]
+  fn pedal_slide_reaches_its_target_exactly_through_the_real_render() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27; // the interval from Jeff's bug report
+    let target_cell = r.cell_for(t);
+    r.press(target_cell);
+    assert_eq!(r.rt.pedal_slide.targets(), vec![t], "the press picked a target");
+    assert!(
+      r.rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, r.h),
+      "and did NOT drag the note -- the pedal does the moving",
+    );
+
+    let landed = r.sweep(0.0, 1.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "the toe must land ON the target: wanted {t}, heard {landed:.3} \
+       (the reverted build stopped at {:.3})",
+      r.h as f32 + 0.55 * 27.0,
+    );
+  }
+
+  /// Bug 3, pinned: arrival is a ROLE SWAP, not a completion. Having reached the
+  /// target, the pedal must slide BACK to the pitch it came from -- and keep doing so,
+  /// indefinitely. The reverted build's pedal went dead on arrival.
+  #[test]
+  fn after_arriving_the_pedal_slides_back_to_the_old_home_and_keeps_going() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+
+    for lap in 0..3 {
+      let up = r.sweep(0.0, 1.0);
+      assert!((up - t as f32).abs() < 0.05, "lap {lap}: toe reaches the target, heard {up:.3}");
+      let down = r.sweep(1.0, 0.0);
+      assert!(
+        (down - r.h as f32).abs() < 0.05,
+        "lap {lap}: heel returns to the pitch we came from, heard {down:.3} (wanted {})",
+        r.h,
+      );
+    }
+  }
+
+  /// Arrival re-files the note, so the ring, the LEDs and the drone's KEY all move to
+  /// the pitch that is now home -- together, in one thread, with the engine only
+  /// learning of the move after it landed.
+  #[test]
+  fn arrival_refiles_the_note_and_swaps_the_led_roles() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    r.sweep(0.0, 1.0);
+
+    let rings = r.rt.shared.ring.lock().unwrap();
+    assert!(rings[0].store.has(Reason::Edit, t), "the note is now filed at the target");
+    assert!(rings[0].store.has(Reason::Sustain, t), "in both sets (edited ⊆ sustained)");
+    assert!(!rings[0].store.has(Reason::Sustain, r.h), "and no longer at the pitch it left");
+    drop(rings);
+
+    let drone_at_target = crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: t };
+    assert!(
+      r.rt.shared.voices.lock().unwrap().contains_key(&drone_at_target),
+      "a drone's key IS its filed pitch, so the voice re-keyed with the filing",
+    );
+    let (home, target) = r.rt.pedal_slide.led_roles();
+    assert!(home.contains(&t), "the arrived-at pitch is lit and dancing as home");
+    assert!(target.contains(&r.h), "and the pitch we came from now flashes as the target");
+  }
+
+  /// Retargeting mid-flight: the goalpost ahead moves, the pitch under the foot does
+  /// not, and the NEW target is still reached exactly. (`1_vision`'s kink, at the
+  /// wiring level rather than in the map's unit tests.)
+  #[test]
+  fn retargeting_mid_flight_never_jumps_and_still_lands_exactly() {
+    let mut r = SlideRigUnderTest::new();
+    let first = r.h + 27;
+    let cell = r.cell_for(first);
+    r.press(cell);
+    r.sweep(0.0, 0.4);
+    let before = r.render_ms(50);
+
+    let second = r.h + 12;
+    let cell = r.cell_for(second);
+    r.press(cell);
+    let after = r.render_ms(1);
+    assert!(
+      (after - before).abs() < MAX_STEP_JUMP,
+      "picking a new target must not move the pitch under the foot ({before:.3} -> {after:.3})",
+    );
+    assert_eq!(r.rt.pedal_slide.targets(), vec![second], "the far goalpost moved");
+
+    let landed = r.sweep(0.4, 1.0);
+    assert!(
+      (landed - second as f32).abs() < 0.05,
+      "and the NEW target is reached exactly: wanted {second}, heard {landed:.3}",
+    );
+  }
+
+  /// Slice 2's hysteresis, at the wiring level: reverse mid-flight and the way back is
+  /// a FRESH straight line home, not a retrace of the way up -- so the pitch at a given
+  /// pedal position is path-dependent, but the endpoints stay exact and nothing ever
+  /// jumps. (The same trick as MIDI knob pickup; `2_discussion` calls this out as the
+  /// point rather than a side effect.)
+  #[test]
+  fn reversing_after_a_mid_flight_retarget_still_lands_home_exactly() {
+    let mut r = SlideRigUnderTest::new();
+    let cell = r.cell_for(r.h + 12);
+    r.press(cell);
+    r.sweep(0.0, 0.5);
+
+    // Retarget far away, pinning a big kink at f = 0.5, and climb a little.
+    let far = r.cell_for(r.h + 40);
+    r.press(far);
+    let up = r.sweep(0.5, 0.75);
+    assert!(up > r.h as f32 + 6.0, "the big new goalpost pulled the pitch up, at {up:.3}");
+
+    // Now reverse all the way home. The descent is a new segment from here, and it
+    // must still arrive exactly -- every step of it checked for jumps by `sweep`.
+    let home = r.sweep(0.75, 0.0);
+    assert!(
+      (home - r.h as f32).abs() < 0.05,
+      "the heel lands exactly home however kinked the way up was, heard {home:.3}",
+    );
+  }
+
+  // ---- slice 3: the midpoint flip ----
+
+  /// `1_vision`: "'home' switches from one side of the pedal to the other every time I
+  /// reach it -- but actually before then. It has to switch when I cross the midpoint."
+  /// The swap re-files the note and swaps the LED roles PART WAY UP, while the pitch is
+  /// still in between -- and must move no pitch at all doing it.
+  #[test]
+  fn crossing_the_midpoint_swaps_the_roles_without_moving_the_pitch() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+
+    // Just below the band's far edge: nothing has swapped yet.
+    r.sweep(0.0, 0.52);
+    let before = r.render_ms(20);
+    assert_eq!(r.rt.pedal_slide.home(), pedal_slide::Home::Low, "inside the band, no swap");
+    assert!(
+      r.rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, r.h),
+      "still filed at the pitch it came from",
+    );
+
+    // Cross it.
+    let after = r.pedal_to(0.58);
+    assert!(
+      (after - before).abs() < MAX_STEP_JUMP,
+      "the swap must move NO pitch -- the map does not mention home ({before:.3} -> {after:.3})",
+    );
+    assert_eq!(r.rt.pedal_slide.home(), pedal_slide::Home::High, "past the band: swapped");
+    let rings = r.rt.shared.ring.lock().unwrap();
+    assert!(rings[0].store.has(Reason::Edit, t), "the note re-filed to the target's pitch");
+    assert!(!rings[0].store.has(Reason::Edit, r.h), "and left the one it came from");
+    drop(rings);
+    let (home, target) = r.rt.pedal_slide.led_roles();
+    assert!(home.contains(&t) && target.contains(&r.h), "the colours swapped with it");
+
+    // And the pitch still arrives exactly, having re-filed mid-flight.
+    let landed = r.sweep(0.58, 1.0);
+    assert!((landed - t as f32).abs() < 0.05, "still lands exactly, heard {landed:.3}");
+  }
+
+  /// The band exists so a foot RESTING near the middle cannot flicker the roles (and
+  /// with them the LED colours and the end a new pick would replace) many times a
+  /// second. Jitter across 0.5 must change nothing.
+  #[test]
+  fn a_foot_trembling_at_the_midpoint_does_not_flicker_the_roles() {
+    let mut r = SlideRigUnderTest::new();
+    let cell = r.cell_for(r.h + 27);
+    r.press(cell);
+    r.sweep(0.0, 0.5);
+    let home_before = r.rt.pedal_slide.home();
+    for f in [0.49, 0.52, 0.48, 0.53, 0.5, 0.47, 0.54] {
+      r.pedal_to(f);
+      assert_eq!(r.rt.pedal_slide.home(), home_before, "jitter at f={f} must not swap roles");
+    }
+  }
+
+  /// A finger still DOWN on the note being slid. When it lifts, the voice moves from
+  /// its cell key to its pitch key (`sustain_note`) -- and if the pairing does not
+  /// follow, the pedal is left driving a key the voice map no longer has and the note
+  /// freezes mid-glide. That is exactly the reverted build's failure, reached by a
+  /// different route, so it is pinned here through the real key handler.
+  #[test]
+  fn lifting_the_finger_mid_slide_hands_the_pairing_to_the_drone() {
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5);
+    let handle = (5, 6);
+    let h = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+    handle_key(&mut rt, &mut register, &mut held, note, true); // strike, finger STAYS down
+    handle_key(&mut rt, &mut register, &mut held, handle, true); // edit it (+ sustain)
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+
+    let mut r = SlideRigUnderTest { rt, register, held, h };
+    let t = h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    assert_eq!(
+      r.rt.pedal_slide.pairings()[0].voice,
+      crate::types::VoiceSource::SurfaceFinger { grid: 0, cell: note },
+      "while fingered, the pairing addresses the CELL",
+    );
+
+    // Slide past the midpoint swap, which re-files a FINGERED voice's pitch (its key
+    // does not move, but the ring and the held map must still follow, or the release
+    // below looks up a pitch nobody is sustaining and cuts the note).
+    r.sweep(0.0, 0.7);
+    assert_eq!(r.held[&note], t, "the held map followed the re-file");
+
+    // Now lift the finger.
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, note, false);
+    assert_eq!(
+      r.rt.pedal_slide.pairings()[0].voice,
+      crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: t },
+      "the pairing followed the voice to its drone key",
+    );
+
+    let landed = r.sweep(0.7, 1.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "and the slide carries on to arrive exactly, heard {landed:.3}",
+    );
+  }
+
+  /// The mirror gesture: a finger LANDS on a sliding drone to retrigger it. The voice
+  /// becomes cell-keyed, and the slide must survive that too.
+  #[test]
+  fn retriggering_a_sliding_note_keeps_it_sliding() {
+    let mut r = SlideRigUnderTest::new();
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    r.sweep(0.0, 0.3);
+
+    // Press the cell the note is filed at: a retrigger, not a pick (the pitch sounds).
+    let home_cell = r.cell_for(r.h);
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, home_cell, true);
+    assert_eq!(
+      r.rt.pedal_slide.pairings()[0].voice,
+      crate::types::VoiceSource::SurfaceFinger { grid: 0, cell: home_cell },
+      "the retrigger took the voice over, and the pairing followed",
+    );
+    let landed = r.sweep(0.3, 1.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "a retriggered note keeps sliding to its target, heard {landed:.3}",
+    );
+  }
+
+  // ---- slice 4: the swell ----
+
+  /// With NOTHING in edit mode, a pick makes the pedal a swell into that pitch --
+  /// Jeff's chosen answer in `2_discussion`. Checked where it matters: the voice is
+  /// really silent at the heel and really at full at the toe, measured as RENDERED
+  /// AMPLITUDE, not as an engine number.
+  #[test]
+  fn a_pick_with_nothing_edited_swells_a_new_voice_in_from_silence() {
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON, nothing edited
+    let mut r = SlideRigUnderTest { rt, register, held, h: 0 };
+
+    let pitch = step_for_cell(r.rt.tuning.x_step, r.rt.tuning.y_step, 0, 7, 7);
+    r.press((7, 7));
+    let key = crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch };
+    assert!(
+      r.rt.shared.voices.lock().unwrap().contains_key(&key),
+      "the pick spawned a real drone voice",
+    );
+    assert!(
+      r.rt.shared.ring.lock().unwrap()[0].store.has(Reason::Sustain, pitch),
+      "and it joined the sustain set, so the clears and handles can reach it",
+    );
+
+    // At the heel it must be genuinely INAUDIBLE, envelope attack notwithstanding.
+    let quiet = r.peak_over_ms(50);
+    assert!(quiet < 1e-4, "silent at the heel, rendered peak {quiet:.6}");
+
+    // Swell it in.
+    for i in 1..=100 {
+      r.pedal_to(i as f32 / 100.0);
+    }
+    let loud = r.peak_over_ms(50);
+    assert!(loud > 0.01, "at the toe it is fully present, rendered peak {loud:.6}");
+    assert!(
+      (r.audible() - pitch as f32).abs() < 0.01,
+      "and it sat at its own pitch throughout -- a swell moves volume, not pitch",
+    );
+  }
+
+  // ---- slice 5: chords ----
+
+  /// BUG 1, pinned: "sliding between two chords from chord storage, there is no pitch
+  /// glide; it just crossfades between them" (`4_bugs-jeff-ran-into.org`).
+  ///
+  /// The cause was membership, not matching: the reverted build asked the EDIT
+  /// SELECTION which voices the pedal managed, and a recalled chord's voices are never
+  /// in it -- so the matcher saw nothing to pair, and every old voice became a fade-out
+  /// and every new pitch a fade-in. Here the candidate list is the managed set, so the
+  /// sounding chord's voices GLIDE into the stored chord's pitches.
+  #[test]
+  fn a_chord_recalled_under_slide_glides_the_sounding_voices_into_it() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+
+    // Two stored chords, three voices each, a clear interval apart.
+    let sv = |pitch| StoredVoice {
+      pitch,
+      timbre: crate::types::Timbre::default(),
+      fader_gain: 1.0,
+      pedal_gain: 1.0,
+      osc_phase: 0.0,
+      pulse_factor: 0.0,
+      pulse_phase: 0.0,
+    };
+    let low = [10, 20, 30];
+    let high = [22, 32, 42];
+    let spawned = {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: low.iter().map(|p| sv(*p)).collect() });
+      rings[0].chord.save(1, StoredChord { voices: high.iter().map(|p| sv(*p)).collect() });
+      rings[0].chord.begin_recall(0)
+    };
+    for (seq, v) in &spawned {
+      rt.sink.spawn_chord_voice(*seq, v, 0.0);
+    }
+    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+
+    // Press slot 1: under slide mode this AIMS at the stored chord rather than
+    // recalling it.
+    let (sx, sy) = chords::slot_cell(rt.overlays.chord_rect, 1);
+    handle_key(&mut rt, &mut register, &mut held, (sx, sy), true);
+
+    let mut r = SlideRigUnderTest { rt, register, held, h: 0 };
+    assert_eq!(r.rt.pedal_slide.target_slot(), Some(1), "slot 1 lights as the target chord");
+    assert_eq!(
+      r.rt.pedal_slide.pairings().len(),
+      3,
+      "all three SOUNDING chord voices are managed -- the ones the reverted build \
+       could not see",
+    );
+    assert!(
+      r.rt.pedal_slide.pairings().iter().all(|p| p.kind == pedal_slide::Kind::Pitch),
+      "and every one of them is a PITCH slide, not a fade -- this is bug 1 exactly",
+    );
+    assert_eq!(
+      r.rt.shared.voices.lock().unwrap().len(),
+      3,
+      "aiming at a chord spawns no voices: three in, three out, none doubled",
+    );
+
+    // Sweep, checking every voice arrives on its matched target. The ascending pass
+    // pairs 10->22, 20->32, 30->42.
+    for i in 1..=100 {
+      r.pedal_to(i as f32 / 100.0);
+    }
+    r.render_ms(200);
+    let voices = r.rt.shared.voices.lock().unwrap();
+    let (fund, edo) = (r.rt.tuning.fund, r.rt.tuning.edo);
+    let mut landed: Vec<i32> = voices
+      .values()
+      .map(|v| ((v.freq as f64 / fund).log2() * edo as f64).round() as i32)
+      .collect();
+    landed.sort_unstable();
+    assert_eq!(landed, high, "every voice GLIDED onto its matched pitch");
+  }
+
+  /// The matcher's spare ends, through the real wiring: more target pitches than
+  /// sounding voices means the extras swell in; the other way round means the leftovers
+  /// fade out. Both are the vision's "just fade in the other voices" / "I guess
+  /// similarly fade them out".
+  #[test]
+  fn a_bigger_target_chord_swells_the_extras_and_a_smaller_one_fades_the_leftovers() {
+    let mut st = pedal_slide::PedalSlideState::new();
+    st.enter(Some(0.0));
+    let v = |p: i32| crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: p };
+
+    // One voice, two targets: it takes the nearer, the other swells in.
+    let out = st.match_targets(&[12, 40], &[(v(10), 10)]);
+    assert_eq!(out.spawn_fade_ins, vec![40], "the voice takes 12 (nearer); 40 swells in");
+
+    // Two voices, one target: the ascending pass gives it to the nearer, the other
+    // fades out.
+    let mut st = pedal_slide::PedalSlideState::new();
+    st.enter(Some(0.0));
+    let out = st.match_targets(&[11], &[(v(10), 10), (v(20), 20)]);
+    assert!(out.spawn_fade_ins.is_empty(), "no spare targets");
+    let kinds: Vec<_> = st.pairings().iter().map(|p| (p.voice, p.kind)).collect();
+    assert!(
+      kinds.contains(&(v(10), pedal_slide::Kind::Pitch)),
+      "the matched voice slides: {kinds:?}",
+    );
+    assert!(
+      kinds.contains(&(v(20), pedal_slide::Kind::Fade)),
+      "the leftover fades out: {kinds:?}",
+    );
+  }
+
+  /// "Already-satisfied pitches stay put" (`6_plan.org`'s slice-5 verify list): a voice
+  /// already aimed at one of the new targets keeps that target rather than being
+  /// re-shuffled onto a different one by the ascending pass.
+  #[test]
+  fn re_aiming_at_an_overlapping_chord_leaves_satisfied_voices_alone() {
+    let mut st = pedal_slide::PedalSlideState::new();
+    st.enter(Some(0.0));
+    let v = |p: i32| crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: p };
+    st.match_targets(&[20, 30], &[(v(10), 10), (v(25), 25)]);
+    let aimed_before = st.targets();
+
+    // The same chord again: nothing should move.
+    st.match_targets(&[20, 30], &[(v(10), 10), (v(25), 25)]);
+    assert_eq!(st.targets(), aimed_before, "re-aiming at the same chord is inert");
+  }
+
+  // ---- the untouched pedal (Jeff: "it seems to be assuming a certain point") ----
+
+  /// An EX-P only sends CCs under a foot, so a session where the pedal has not been
+  /// touched knows NOTHING about where it is resting. Assuming a position is not
+  /// harmless: it decides which side is home, and so which endpoint holds each voice's
+  /// current pitch. Assume the heel while the foot is at the toe and the first CC to
+  /// arrive finds the map stretched between the wrong ends -- so the pitch LEAPS to
+  /// wherever that CC falls. That is the discontinuity.
+  ///
+  /// Here the pedal is untouched, a target is picked, and then the pedal reports for
+  /// the first time from the FAR side. The pitch must not move at all: that reading is
+  /// a fact to adopt, not travel to follow.
+  #[test]
+  fn the_first_ever_pedal_reading_settles_home_without_moving_any_pitch() {
+    let mut r = SlideRigUnderTest::new_untouched_pedal();
+    assert!(!r.rt.pedal_slide.pedal_seen(), "no CC yet: the engine knows nothing");
+
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    let before = r.render_ms(50);
+    assert!((before - r.h as f32).abs() < 0.01, "still at its own pitch, heard {before:.3}");
+
+    // The pedal speaks for the first time, from near the toe.
+    let after = r.pedal_to(0.85);
+    assert!(
+      (after - before).abs() < 0.01,
+      "the FIRST reading must move nothing ({before:.3} -> {after:.3}) -- it says where \
+       the foot has been all along, it is not a sweep",
+    );
+    let settled = r.render_ms(200);
+    assert!((settled - r.h as f32).abs() < 0.01, "and it stays put, heard {settled:.3}");
+
+    // That side is now home, so the target is at the other end and travelling there
+    // arrives exactly -- with no jump anywhere along the way.
+    assert_eq!(r.rt.pedal_slide.home(), pedal_slide::Home::High, "the toe side became home");
+    let landed = r.sweep(0.85, 0.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "and the far (heel) end holds the target, heard {landed:.3} wanted {t}",
+    );
+  }
+
+  /// The sentinel has to distinguish "never touched" from "resting at the heel" -- they
+  /// are different facts and they choose different home sides. A pedal genuinely at 0.0
+  /// makes the LOW side home, where an untouched one commits to nothing.
+  #[test]
+  fn a_pedal_resting_at_the_heel_is_not_the_same_as_one_never_touched() {
+    let mut untouched = pedal_slide::PedalSlideState::new();
+    untouched.enter(None);
+    assert!(!untouched.pedal_seen());
+
+    let mut at_heel = pedal_slide::PedalSlideState::new();
+    at_heel.enter(Some(0.0));
+    assert!(at_heel.pedal_seen(), "a real reading of 0.0 IS a reading");
+    assert_eq!(at_heel.home(), pedal_slide::Home::Low);
+
+    // The untouched one commits only when the pedal speaks -- and then to that side.
+    untouched.on_pedal(0.9);
+    assert!(untouched.pedal_seen());
+    assert_eq!(untouched.home(), pedal_slide::Home::High, "the side it spoke from is home");
+  }
+
+  /// The wrong-way gate through the REAL render (Jeff's design, 2026-07-20): picked
+  /// with the pedal parked mid-travel, going toward home holds the pitch and takes the
+  /// note away in volume instead -- so the home pitch is never lost, and the wrong
+  /// direction is audibly going nowhere.
+  #[test]
+  fn going_the_wrong_way_holds_the_pitch_and_fades_it_out_audibly() {
+    let mut r = SlideRigUnderTest::new_untouched_pedal();
+    // Park the pedal mid-travel and let the engine adopt that as its starting point.
+    r.pedal_to(0.4);
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+
+    // The wrong way: the PITCH must not move at all, and the note must actually get
+    // quieter -- measured as rendered peak, not as a gain field.
+    let loud = r.settled_peak();
+    for f in [0.3, 0.2, 0.1] {
+      let pitch = r.pedal_to(f);
+      assert!(
+        (pitch - r.h as f32).abs() < 0.01,
+        "at f={f} the pitch must hold at home, heard {pitch:.3}",
+      );
+    }
+    let quiet = r.settled_peak();
+    assert!(quiet < loud * 0.2, "going the wrong way must be audibly quieter: {loud} -> {quiet}");
+
+    // Back to the pick point: the pitch is exactly home again, at full volume. The pin
+    // did not follow the foot, so home was never lost.
+    let back = r.pedal_to(0.4);
+    assert!((back - r.h as f32).abs() < 0.01, "home recovered exactly, heard {back:.3}");
+    // Compared against the FADED level, not the original: these notes are plucked, so
+    // the envelope has decayed over the ~700 ms this test spends rendering, and an
+    // absolute comparison would be measuring the pluck rather than the gate.
+    let recovered = r.settled_peak();
+    assert!(
+      recovered > quiet * 5.0,
+      "and the volume comes back at the pick point: {quiet} -> {recovered}",
+    );
+
+    // And onward the right way still arrives exactly.
+    let landed = r.sweep(0.4, 1.0);
+    assert!((landed - t as f32).abs() < 0.05, "arrives at the target, heard {landed:.3}");
+  }
+
+  /// Toggling pedal slide off mid-flight freezes the voice exactly where it is --
+  /// smoothness above all -- and the pedal stops driving it.
+  #[test]
+  fn toggling_off_mid_flight_freezes_the_voice_where_it_is() {
+    let mut r = SlideRigUnderTest::new();
+    let cell = r.cell_for(r.h + 27);
+    r.press(cell);
+    let mid = r.sweep(0.0, 0.4);
+
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, (0, 15), false); // key-up: inert
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, (0, 15), true); // pedal slide OFF
+    assert!(!r.rt.pedal_slide.mode(), "the engine left slide mode");
+    assert!(
+      !r.rt.shared.pedal_slide_on[0].load(Ordering::Relaxed),
+      "and the pedal thread is told to take its volume back",
+    );
+    {
+      let voices = r.rt.shared.voices.lock().unwrap();
+      assert_eq!(
+        voices.values().next().unwrap().slide_freq_target, 0.0,
+        "the voice is frozen: nothing is driving its pitch any more",
+      );
+    }
+    // Moving the pedal now must not move the pitch at all.
+    let after = r.pedal_to(1.0);
+    let after = r.render_ms(200).max(after);
+    assert!(
+      (after - mid).abs() < 0.05,
+      "a frozen voice ignores the pedal ({mid:.3} -> {after:.3})",
+    );
+  }
+
+  /// Clearing the edit selection mid-flight cancels the slide and freezes the voice
+  /// (`2_discussion`: "deselection also cancels their slide pairing"). This is the call
+  /// that, in the reverted build, fired SPURIOUSLY -- it read the ring while a re-key
+  /// was still in flight and cancelled a pairing nobody had touched.
+  #[test]
+  fn deselecting_mid_flight_cancels_the_slide_but_a_live_one_survives_every_step() {
+    let mut r = SlideRigUnderTest::new();
+    let cell = r.cell_for(r.h + 27);
+    r.press(cell);
+    // A full round trip, crossing the role swap in both directions: the pairing must
+    // survive every single step of it.
+    r.sweep(0.0, 1.0);
+    r.sweep(1.0, 0.0);
+    assert!(!r.rt.pedal_slide.is_empty(), "the slide survived the whole round trip");
+
+    // Now really deselect it, through the real editmode-clear button.
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, (12, 0), true);
+    r.pedal_to(0.5);
+    assert!(r.rt.pedal_slide.is_empty(), "deselection cancelled the pairing");
+    let voices = r.rt.shared.voices.lock().unwrap();
+    assert_eq!(
+      voices.values().next().unwrap().slide_freq_target, 0.0,
+      "and the voice was frozen where it stood",
+    );
+  }
+
   /// queues/branch-2.org "in edit mode, octave switchers should edit the edit-moded
   /// voices": with a live edit selection, the octave corners retune EVERY edited
   /// voice (both layers) by an octave -- down-corner lower, up-corner higher -- and
@@ -349,7 +1106,7 @@
     let edo = rt.tuning.edo;
     let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
     let step = move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y);
-    let toggle = (0, 15);
+    let toggle = (1, 15); // one cell right of the pedal-slide toggle, which holds the corner
     let note = (5, 5);
     let pitch = step(note.0, note.1);
     let freq_at = |rt: &GridThread, p: i32| freq_for_pitch(p, rt.tuning.fund, edo);
@@ -432,7 +1189,7 @@
     let mut rt = test_grid_thread();
     let mut register = 0;
     let mut held = HashMap::new();
-    let toggle = (0, 15);
+    let toggle = (1, 15); // one cell right of the pedal-slide toggle, which holds the corner
     let step = {
       let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
       move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y)
@@ -481,9 +1238,94 @@
     );
   }
 
+  /// Jeff: "killing all notes while in fine transpose mode should exit fine transpose
+  /// mode. (Nothing left to transpose.)" The kill comes through the SoftStep sustain
+  /// CLEAR (`drive_accrete`) -- the same call the foot pedal makes, which never touches
+  /// this grid's key handler -- so the exit is decided in the repaint, not at a button.
+  #[test]
+  fn killing_all_the_notes_exits_fine_transpose() {
+    use crate::rig::AccreteControlKind;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let toggle = (1, 15);
+
+    // A sustained, edited drone, then enter fine transpose.
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), true); // edit handle (sustains + selects)
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), false); // drones
+    handle_key(&mut rt, &mut register, &mut held, toggle, true);
+    handle_key(&mut rt, &mut register, &mut held, toggle, false);
+    assert!(rt.fine.on, "fine transpose is on with a live selection");
+
+    // A repaint while the selection stands leaves the mode alone.
+    exit_fine_transpose_if_empty(&mut rt);
+    assert!(rt.fine.on, "still on -- there is something to transpose");
+
+    // The foot's sustain clear: ends every drone AND cascades the edit reason away.
+    let (release_secs, sample_rate) = rt.sink.release_params();
+    drive_accrete(
+      0,
+      AccreteControlKind::Clear,
+      true,
+      &rt.shared.ring,
+      &rt.shared.held_all,
+      &rt.shared.voices,
+      release_secs,
+      sample_rate,
+    );
+    assert!(
+      !rt.shared.ring.lock().unwrap()[0].store.any(Reason::Edit),
+      "the clear emptied the selection",
+    );
+
+    // The next repaint sees nothing to transpose and leaves the mode.
+    exit_fine_transpose_if_empty(&mut rt);
+    assert!(!rt.fine.on, "killing the notes exited fine transpose");
+  }
+
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());
+
+  /// A running `run()` under test, torn down on DROP -- so it happens even if the test
+  /// panics.
+  ///
+  /// This matters more than it looks. The mock rig's grid ports are fixed (9102/9103),
+  /// and a test that fails an assertion unwinds straight past any hand-written
+  /// teardown, leaving `run()` alive with those ports still bound. `MOCK_LOCK` does not
+  /// help: it is released by the unwind too, and it was never the thing holding the
+  /// sockets. Every later mock test then dies on "Address already in use", so ONE real
+  /// failure arrives as a cascade of unrelated ones with the cause buried at the top.
+  /// That is exactly how a rig-layout mistake presented during the branch-2 merge.
+  ///
+  /// Drop order does the rest: declare the lock guard, then the `MockRig`, then this,
+  /// and the runtime is stopped before the mock grids it talks to go away.
+  struct MockRun(Option<thread::JoinHandle<()>>);
+
+  impl Drop for MockRun {
+    fn drop(&mut self) {
+      STOP.store(true, Ordering::SeqCst);
+      if let Some(handle) = self.0.take() {
+        let _ = handle.join();
+      }
+      // Left false for the next test, which expects to start from a stopped world.
+      STOP.store(false, Ordering::SeqCst);
+    }
+  }
+
+  impl MockRun {
+    /// Spawn `run()` against the mock detector and hold it until this guard drops.
+    fn start(rig: Rig, detector_port: u16, what: &'static str) -> MockRun {
+      STOP.store(false, Ordering::SeqCst);
+      MockRun(Some(thread::spawn(move || {
+        if let Err(e) = run(&rig, detector_port, true, None) {
+          eprintln!("mock {what} run error: {e}");
+        }
+      })))
+    }
+  }
 
   #[test]
   fn selector_writes_the_controlled_grids_timbre_slot() {
@@ -594,7 +1436,7 @@
       }
     }
     rig.trail = Some(TrailRig { clobber_radius: 13, max: 3 });
-    rig.slide = Some(SlideRig { candidate_window_ms: 777, duration_ms: 55 });
+    rig.slide = Some(SlideRig { candidate_window_ms: 777, duration_ms: 55, pedal_smoother_ms: 42 });
     rig.tap_tempo = Some(TapTempoRig { window_ms: 1234 });
 
     let s = resolve_settings(&rig).expect("resolves without hardware");
@@ -607,6 +1449,10 @@
     assert_eq!(s.slide_window, Duration::from_millis(777), "slide candidate window");
     assert_eq!(s.tap_window, Duration::from_millis(1234), "tap-tempo window");
     assert!((s.slide_duration_secs - 0.055).abs() < 1e-6, "slide duration, ms -> secs");
+    assert!(
+      (s.slide_pedal_smoother_secs - 0.042).abs() < 1e-6,
+      "pedal-slide smoother travels rig -> Settings, ms -> secs",
+    );
   }
 
   /// The distortion's makeup table must be usable for whatever curve the rig names --
@@ -654,6 +1500,7 @@
     assert_eq!(s.trail_clobber_radius, d_trail.clobber_radius);
     assert_eq!(s.trails_max, d_trail.max);
     assert_eq!(s.slide_window, Duration::from_millis(d_slide.candidate_window_ms));
+    assert!((s.slide_pedal_smoother_secs - d_slide.pedal_smoother_ms as f32 / 1000.0).abs() < 1e-9);
     assert_eq!(s.tap_window, Duration::from_millis(d_tap_tempo.window_ms));
   }
 
@@ -683,6 +1530,7 @@
         distortion_rect: NO_RECT,
         slide_rect: NO_RECT,
         mono_rect: NO_RECT,
+        pedal_slide_rect: NO_RECT,
         poly_rect: NO_RECT,
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
@@ -767,15 +1615,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock surfaces run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "surfaces");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -820,9 +1660,6 @@
     a.release(10, 0);
     assert!(wait_until(secs(3), || a.level_at(10, 0) == 4), "released into the trail");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// Robust-to-missing-gear (TODO.org): a two-grid rig with only ONE grid connected
@@ -839,15 +1676,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock one-grid run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "one-grid");
 
     let a = mock.grid(0);
     let secs = Duration::from_secs;
@@ -862,9 +1691,6 @@
     a.release(5, 5);
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "released note lingers dim");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The shipped two-softstep rig must load and resolve. This is the rig's only
@@ -981,6 +1807,7 @@
         "factored_pulse_pad",
         "editmode_control",
         "chord_block",
+        "pedal_slide_toggle",
         "fine_transpose_toggle",
         "edo_note_grid",
         "waveform_selector",
@@ -988,9 +1815,12 @@
         "factored_pulse_pad",
         "editmode_control",
         "chord_block",
+        "pedal_slide_toggle",
         "fine_transpose_toggle"
       ],
-      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
+      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f); \
+       each grid additionally carries its own pedal_slide_toggle (TODO/pedal-slide) \
+       and fine_transpose_toggle (queues/branch-2.org)",
     );
 
     // The editmode controls mirror the sustain row one row up (queue.org): OSS
@@ -1495,6 +2325,7 @@
       "waveform = \"square\"\n*** PARAM abs_fm_depth_cents = 25.0\n*** PARAM rel_fm_depth = 1.5",
     );
     let edited = must_replace(&edited, "duration_ms = 100", "duration_ms = 250");
+    let edited = must_replace(&edited, "pedal_smoother_ms = 30", "pedal_smoother_ms = 90");
     // "Add" an expression pedal with a non-default taper: the pedal thread re-reads
     // Live every poll, so the curve_* knobs are exactly as live as the rest.
     let edited = format!(
@@ -1517,6 +2348,10 @@
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
     assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
+    assert!(
+      (p.slide_pedal_smoother_secs - 0.09).abs() < 1e-6,
+      "the pedal-slide smoother reloads (ms -> secs), so 'r' retunes the glide feel",
+    );
   }
 
   /// The `[[timbres]]` square entry, replaced by the reload test.
@@ -1646,15 +2481,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock polyrhythm run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "polyrhythm");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -1706,9 +2533,6 @@
     assert!(wait_until(secs(5), || b.level_at(15, 0) == 15), "the tap cell still blinks the tempo");
     assert!(wait_until(secs(5), || a.level_at(15, 0) == 15), "and grid a blinks it too");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The accrete (sustain) banks end-to-end: toggle accrete mode on grid a (its trio
@@ -1726,15 +2550,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock accrete run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "accrete");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -1795,9 +2611,6 @@
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "cleared note drops to the trail on a");
     assert!(wait_until(secs(3), || b.level_at(5, 5) == 4), "and on b");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// The toggles end-to-end: every one (distortion / slide / mono) is PER-GRID --
@@ -1813,15 +2626,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock distortion run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "distortion");
 
     let a = mock.grid(0);
     let b = mock.grid(1);
@@ -1850,9 +2655,6 @@
       assert!(wait_until(secs(3), || b.level_at(x, y) == 4), "grid b's {name} off again");
     }
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }
 
   /// A monobright grid (old Series-256 serial id) can't dim a single LED, so the runtime
@@ -1871,15 +2673,7 @@
     let detector_port = mock.detector_port();
     let rig = load_named_rig("2-monomes_kmss-drums-mock").expect("mock rig loads");
 
-    STOP.store(false, Ordering::SeqCst);
-    let handle = {
-      let rig = rig.clone();
-      thread::spawn(move || {
-        if let Err(e) = run(&rig, detector_port, true, None) {
-          eprintln!("mock monobright run error: {e}");
-        }
-      })
-    };
+    let _run = MockRun::start(rig.clone(), detector_port, "monobright");
 
     let mono = mock.grid(0); // Series-256 serial -> fake-dim by flashing.
     let vari = mock.grid(1); // newer serial -> native levels.
@@ -1894,7 +2688,4 @@
     mono.press(6, 6);
     assert!(wait_until(secs(3), || mono.level_at(6, 6) == 15), "monobright held note bright via map");
 
-    STOP.store(true, Ordering::SeqCst);
-    let _ = handle.join();
-    STOP.store(false, Ordering::SeqCst);
   }

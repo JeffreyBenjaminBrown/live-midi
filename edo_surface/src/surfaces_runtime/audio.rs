@@ -84,8 +84,11 @@ pub(crate) fn start(
     move |data: &mut [f32], _| {
       // The master amplitude + distortion curve are hot-reloadable ('r'), and the
       // per-grid distortion toggles are live -- read everything fresh each callback.
+      // The pedal-slide smoother is live too (`[slide].pedal_smoother_ms`); a cheap
+      // field write keeps 'r' able to retune the glide feel.
       let (amplitude, curve) = {
         let p = live.params.lock().unwrap_or_else(|e| e.into_inner());
+        renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
         (p.amplitude, p.distortion)
       };
       // The makeup table matches that curve; cloning the Arc is one atomic increment.

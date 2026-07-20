@@ -251,6 +251,20 @@ pub struct VoiceState {
   // runtime.
   pub grid_gain:        f32,
   pub grid_gain_target: f32,
+  // Pedal-slide flight (the surfaces runtime's `pedal_slide_toggle`,
+  // TODO/pedal-slide): while a grid's pedal slide is driving this voice, `freq`
+  // chases `slide_freq_target` per sample with a one-pole smoother
+  // (`voices::SLIDE_SLEW_SECS`, ~10 ms -- a sibling of the `grid_gain` slew above)
+  // so the pedal's CC-rate target steps never zipper the pitch. 0.0 = inactive:
+  // the overwhelmingly common case, every non-surfaces runtime, and what a voice is
+  // set back to when its slide ends (freezing it at whatever `freq` it had reached).
+  //
+  // Deliberately NOT the glide integrator (`freq_target` + `glide_per_sample`),
+  // which walks to a FIXED destination and stops. Sized for a live controller its
+  // per-sample ratio lands within a few f32 epsilons of 1.0, where a small pedal
+  // increment rounds to no motion at all and the pitch stair-steps -- the exact
+  // zipper this smoother exists to remove.
+  pub slide_freq_target: f32,
   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
   // `am_phase`/`fm_phase` belong to the absolute (Hz-rate) modulators,

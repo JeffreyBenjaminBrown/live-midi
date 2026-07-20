@@ -10,7 +10,10 @@
 //! the board center again -- "such range changes do not persist").
 //!
 //! Pure state: the caller (keys.rs) applies each transpose CHANGE to the voices
-//! (as a delta through `shift_edited_voices`) and paints the X (mod.rs).
+//! (as a delta through `shift_edited_voices`) and paints the X (mod.rs). The mode
+//! also leaves on its own when its selection empties -- killing all the notes means
+//! there is nothing left to transpose -- which `mod.rs::exit_fine_transpose_if_empty`
+//! decides each repaint (so a sustain clear from the foot pedal ends it too).
 
 /// One grid's fine-transpose state.
 #[derive(Debug, Default)]

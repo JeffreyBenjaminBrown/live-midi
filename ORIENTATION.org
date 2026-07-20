@@ -8,8 +8,8 @@ live only in Claude's memory. Follow the links for depth.
 - This is a *bare* git repo: =/home/ubuntu/host/.bare= is the repo, and the actual
   checkouts are git worktrees under =/home/ubuntu/host/worktrees/=. *=main= is always
   production*; the others are named with *integers* (=2=, then =3=, ...). So today:
-  =worktrees/main= and =worktrees/2=. Run =git worktree list= rather than trusting
-  this line -- the set changes.
+  =worktrees/main=, =worktrees/2= and =worktrees/3=. Run =git worktree list= rather
+  than trusting this line -- the set changes.
 - It's a *Docker container* (UID 1000); Jeff works on the *host* (NixOS), which
   bind-mounts this tree. Worktree links are *relative*, so git/magit work from both
   sides. Separate PR repos live in =./other-projects/= (checked out beside the
@@ -26,6 +26,16 @@ live only in Claude's memory. Follow the links for depth.
   and =tools/= holds the meters, probes and bridges, Rust and Python alike. There
   used to be a =code/rust/= and a =code/python/=, which sorted by the one axis nobody
   ever searches on.
+- *Renamed paths you may still be pointed at.* Older notes (and Jeff's onboarding
+  habit) name files that moved in the cleaning phases. The live locations:
+  | you may be told           | it is now                |
+  | =code/rust/configs/README.org= | [[./rigs/README.org]]        |
+  | =code/rust/rigs/=           | =rigs/=                    |
+  | =code/rust/midi_pulse/=     | =edo_surface/src/= (live) + =buried/midi_pulse/= (legacy) |
+  | =code/python/pedals/=       | =tools/pedals/=            |
+  | =queue.org= (repo root)     | =queues/branch-<N>.org=    |
+  Finished =TODO/= entries keep the old names on purpose -- they are historical
+  records, not directions; don't "fix" them.
 - Background: [[./architecture.org]] (docker setup, audio routing, host system)
   and [[./README.org]] (Jeff's operational notes + MIDI pitfalls).
 
@@ -49,15 +59,22 @@ fails if they drift.
   the drum board, on purpose (duplicated rig docs here drift on every rename).
 - Rigs: =rigs/2-edogrids_ss-accrete_ss-{pulse,drums}.org= (TOML-in-org; heavily
   commented).
-- Runtime: =edo_surface/src/surfaces_runtime/=. =mod.rs= is the shell AND most
-  behavior (large; grep for the window kind you care about); pure pieces live in
-  =edit.rs= (per-voice edit state), =accrete.rs= (sustain banks),
-  =polyrhythm.rs= (tap tempo + factors), =synth.rs= (the (grid,cell)-keyed voice
-  driver), =grid.rs=, =slide.rs=. The shared voice/render engine is
-  =edo_surface/src/sawwave/= (=types.rs=, =voices.rs=), mounted flat in
-  =edo_surface/src/lib.rs= as =edo_surface::{types, voices, ...}=.
+- Runtime: =edo_surface/src/surfaces_runtime/=. Since cleaning phase 3 this is a
+  dozen small modules, not one big =mod.rs=: =mod.rs= keeps only =run()=, the
+  =grid_thread= loop, and the shared STOP/signal machinery. Behavior lives in
+  =keys.rs= (the overlay dispatch + every press path), =paint.rs= (what the LEDs
+  show), =hooks.rs= (the softstep pedal actions), =settings.rs= (rig -> resolved
+  =Overlays=), =reload.rs= ('r'), and the pure pieces: =edit.rs= (per-voice edit
+  state), =accrete.rs= (sustain banks), =ring.rs= (the sustain/edit pitch sets),
+  =chords.rs= + =chords_persist.rs= (chord storage), =polyrhythm.rs= (tap tempo +
+  factors), =synth.rs= (the (grid,cell)-keyed voice driver), =pedal_volume.rs= /
+  =pedal_slide.rs= (the EX-P pedals' two duties), =grid.rs=, =slide.rs=,
+  =dance.rs=. The shared voice/render engine is =edo_surface/src/sawwave/=
+  (=types.rs=, =voices.rs=), mounted flat in =edo_surface/src/lib.rs= as
+  =edo_surface::{types, voices, ...}=.
 - Design history: =TODO/many/= (=1_vision= .. =3_plan=, =progress=); newer
-  features are journaled in =queue.org= DONE entries and commit messages.
+  features are journaled in =queues/branch-<N>.org= DONE entries, in per-feature
+  =TODO/<feature>/= directories, and in commit messages.
 
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.
@@ -72,9 +89,13 @@ A two-grid looping instrument in 58-EDO; still runs.
 
 * build / run / test
 #+begin_src sh
-cargo test -p midi_pulse                                      # fast, no hardware
+cargo test -p edo_surface                    # fast, no hardware
+cargo test --workspace                       # everything
 pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse   # needs the gear
 #+end_src
+The live crate is =edo_surface=, so that is the =-p= you want; =-p midi_pulse=
+tests only the =buried/= legacy crate (the looper/piano/un-12 runtimes and the
+=midi_pulse= dispatch binary), which is still where the =--bin= comes from.
 Most logic is testable without hardware; do that. Running for real needs the
 grids and audio routing (below). Ctrl-C blanks both grids and stops audio.
 

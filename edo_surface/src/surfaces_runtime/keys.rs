@@ -22,7 +22,7 @@ use super::polyrhythm::TempoFactorButton;
 use super::ring::{GridRing, Reason};
 use super::settings::{current_slot, set_slot};
 use super::synth::{self, set_grid_fader_gain};
-use super::{edit, GridThread, VOLUME_DB_RANGE};
+use super::{edit, pedal_slide, GridThread, VOLUME_DB_RANGE};
 
 /// Route one debounced key edge by which overlay (if any) it falls in.
 pub(super) fn handle_key(
@@ -111,6 +111,31 @@ pub(super) fn handle_key(
   if in_overlay(rt.overlays.mono_rect, cell) {
     if press {
       let _ = rt.shared.mono_on[rt.grid_index].fetch_xor(true, Ordering::Relaxed);
+    }
+    return;
+  }
+  // Pedal-slide toggle (TODO/pedal-slide): key-down switches THIS grid's EX-P pedal
+  // between volume duty and the pitch-slide engine. Entering freezes the grid volume
+  // where it is and starts with no managed voices, so the pedal is inert -- and no
+  // pitch is yanked -- until the first pick. Leaving freezes every sliding voice
+  // exactly where it is and drops the maps; the pedal thread resumes volume duty on
+  // its next poll.
+  if in_overlay(rt.overlays.pedal_slide_rect, cell) {
+    if press {
+      let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
+      if now_on {
+        let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
+        // NaN = this pedal has never reported; enter agnostic about which side is home.
+        rt.pedal_slide.enter((!f.is_nan()).then_some(f));
+      } else {
+        let frozen_voices = rt.pedal_slide.exit();
+        synth::freeze_slide_voices(&rt.shared.voices, &frozen_voices);
+      }
+      // The shared flag flips LAST, once the engine is already in its new state. It is
+      // read only by the pedal thread (to know whose volume it is no longer driving)
+      // and by the LED paint; what the grid thread does is gated on the engine's own
+      // `mode()`, so the two can never disagree about whether a step should run.
+      rt.shared.pedal_slide_on[rt.grid_index].store(now_on, Ordering::Relaxed);
     }
     return;
   }
@@ -383,6 +408,7 @@ pub(super) fn handle_key(
           rel_fm: slot.rel_fm,
         };
         rt.sink.note_on_continuing(cell, pitch, timbre, cut);
+        drone_became_fingered(rt, pitch, cell);
         held.insert(cell, pitch);
         let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
         let gr = &mut rings[rt.grid_index];
@@ -477,7 +503,10 @@ pub(super) fn handle_key(
         // oscillator and pulse; with nothing cut, a plain fresh note (phase 0,
         // the grid's onset pulse).
         None => match retrigger {
-          Some(cut) => rt.sink.note_on_continuing(cell, pitch, timbre, cut),
+          Some(cut) => {
+            rt.sink.note_on_continuing(cell, pitch, timbre, cut);
+            drone_became_fingered(rt, pitch, cell);
+          }
           None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
         },
       }
@@ -533,6 +562,8 @@ pub(super) fn chord_block_press(
         .armed;
       if armed {
         chord_save(rt, held, slot);
+      } else if rt.pedal_slide.mode() {
+        chord_slide_to(rt, held, slot);
       } else {
         chord_toggle(rt, slot);
       }
@@ -643,6 +674,74 @@ fn chord_toggle(rt: &mut GridThread, slot: usize) {
   }
 }
 
+/// A slot press while pedal slide is ON does not RECALL the chord -- it aims at it
+/// (`1_vision`: "during slide mode, at most one chord can be selected from storage at a
+/// time. Its voices all join the target set"). The stored chord's pitches become the
+/// target set, and the voices already sounding on this grid glide into them.
+///
+/// This is bug 1. The reverted build offered the matcher only the EDIT-MODE voices, so
+/// a recalled chord found nothing to pair with: every old voice faded out and every new
+/// pitch faded in, which is the crossfade Jeff heard instead of a glide. The candidate
+/// list here is the whole managed set the vision implies -- the chord voices already
+/// sounding AND the edit-mode voices.
+///
+/// The chord LAYER is deliberately untouched: no `begin_recall`, no live registry
+/// entries, no `active` flag. Those describe voices that exist, and under slide mode the
+/// stored chord contributes only pitches. The slot lights through the pedal-slide
+/// engine instead (see `target_slot`), so chord storage's own invariants stay intact.
+fn chord_slide_to(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize) {
+  let grid = rt.grid_index;
+  let (targets, candidates): (Vec<i32>, Vec<(VoiceSource, i32)>) = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &rings[grid];
+    let Some(stored) = gr.chord.slots[slot].as_ref() else {
+      return; // an empty slot is inert, exactly as it is outside slide mode
+    };
+    let targets = stored.voices.iter().map(|v| v.pitch).collect();
+    // Every voice the pedal may move: the chord voices already sounding (seq-keyed,
+    // never in the edit set -- the ones the reverted build could not see) and this
+    // grid's edit-mode voices (cell-keyed while fingered, pitch-keyed as drones).
+    let mut candidates: Vec<(VoiceSource, i32)> = gr
+      .chord
+      .live
+      .iter()
+      .map(|(seq, v)| (VoiceSource::SurfaceChord { grid, seq: *seq }, v.pitch))
+      .collect();
+    for pitch in gr.store.iter(Reason::Edit) {
+      let key = match held.iter().find(|(_, hp)| **hp == pitch) {
+        Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+        None => VoiceSource::SurfaceDrone { grid, pitch },
+      };
+      candidates.push((key, pitch));
+    }
+    (targets, candidates)
+  };
+  let outcome = rt.pedal_slide.match_targets(&targets, &candidates);
+  rt.pedal_slide.set_target_slot(Some(slot));
+  // Spare targets have nobody to glide into them, so they swell in from silence -- the
+  // vision's "just fade in the other voices".
+  for pitch in outcome.spawn_fade_ins {
+    let ts = rt.timbres[current_slot(&rt.shared.selected, grid)];
+    let timbre = Timbre {
+      waveform: ts.waveform,
+      gain: ts.amplitude,
+      am: ts.am,
+      fm: ts.fm,
+      rel_am: ts.rel_am,
+      rel_fm: ts.rel_fm,
+    };
+    if let Some(key) = rt.sink.spawn_slide_swell(pitch, timbre) {
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid]
+        .store
+        .add(Reason::Sustain, pitch);
+      rt.pedal_slide.register_fade(key, pitch, pedal_slide::FadeDir::In);
+    }
+  }
+  let drives = rt.pedal_slide.drives();
+  let frozen = rt.sink.frozen_grid_gain();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, frozen, rt.tuning.fund, rt.tuning.edo);
+}
+
 /// The octave switchers' edit-mode action (queues/branch-2.org): move EVERY edited
 /// voice -- both layers at once, like the multipliers, not the drag's nearest-one --
 /// by `delta` steps (one octave = ±edo). Returns false when nothing is selected, so
@@ -731,6 +830,11 @@ pub(super) fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i
   };
   if sustains {
     rt.sink.sustain_note(cell, pitch);
+    // The voice just moved from its cell key to its pitch key. If the pedal is sliding
+    // it, the pairing has to follow -- otherwise it addresses a key the voice map no
+    // longer has and the note freezes mid-glide (the reverted build's disease, wearing
+    // a different hat).
+    became_a_drone(rt, cell, pitch);
   } else {
     rt.sink.note_off(cell);
     let mono = rt.shared.mono_on[rt.grid_index].load(Ordering::Relaxed);
@@ -760,9 +864,33 @@ pub(super) fn cut_for_legato(
   held.remove(&cell);
   if keep {
     rt.sink.sustain_note(cell, pitch);
+    became_a_drone(rt, cell, pitch);
     return false;
   }
   true
+}
+
+/// A fingered voice at `cell` just became the drone at `pitch` (`sustain_note`). Tell
+/// the pedal-slide engine, so a slide in flight keeps addressing the voice that exists.
+/// Inert when the pedal is not sliding this voice, which is nearly always.
+fn became_a_drone(rt: &mut GridThread, cell: (i32, i32), pitch: i32) {
+  let grid = rt.grid_index;
+  rt.pedal_slide.rekey_voice(
+    VoiceSource::SurfaceFinger { grid, cell },
+    VoiceSource::SurfaceDrone { grid, pitch },
+  );
+}
+
+/// The mirror: a finger landed on a sliding DRONE and took it over (`cut_sustained` +
+/// `note_on_continuing`), so the voice is cell-keyed now. Same reason as
+/// `became_a_drone` -- a retrigger is an envelope event, and it must not quietly
+/// detach the note from the pedal that is sliding it.
+fn drone_became_fingered(rt: &mut GridThread, pitch: i32, cell: (i32, i32)) {
+  let grid = rt.grid_index;
+  rt.pedal_slide.rekey_voice(
+    VoiceSource::SurfaceDrone { grid, pitch },
+    VoiceSource::SurfaceFinger { grid, cell },
+  );
 }
 
 /// Mirror this grid's held map into the shared per-grid registry (for accrete's
@@ -889,7 +1017,16 @@ pub(super) fn handle_edit_press(
     Silent,
     Sustain(i32, bool, Vec<u64>),
     Dragged { from: i32, to: i32, piano_moved: bool, chord_seqs: Vec<u64> },
+    /// Pedal slide (TODO/pedal-slide): a press on a FREE pitch while this grid's slide
+    /// mode is on PICKS a target instead of dragging or sounding. Silent -- the pedal
+    /// does the moving, which is the whole point.
+    SlidePick(i32),
   }
+  // While pedal slide is on, the play surface is a target-picker, exactly as edit mode
+  // already makes it a drag-picker. The gestures that SELECT what to slide (the edit
+  // handles) and the retrigger of an already-sounding pitch are untouched -- only the
+  // outcomes that would have moved or started a note become picks.
+  let slide_mode = rt.pedal_slide.mode();
   let act = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let gr = &mut rings[rt.grid_index];
@@ -906,8 +1043,26 @@ pub(super) fn handle_edit_press(
     // pressed pitch is free of the editing set and the sustain set; otherwise it
     // retriggers (classify also consults `edited_union` for the chord half).
     let is_sustained = |p: i32| sustained.contains(&p);
-    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union)
-    {
+    let press =
+      gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union);
+    // The pedal-slide interception. A Drag (something is edited, this pitch is free)
+    // becomes a pick of that pitch as a TARGET; a plain Play on a genuinely free pitch
+    // becomes a pick too. Everything else falls through unchanged: a press on a
+    // SOUNDING pitch still retriggers, and the edit handles still enter/exit/sustain,
+    // because those are how you choose what the pedal will slide.
+    let slide_pick = if slide_mode {
+      match press {
+        edit::Press::Drag { to, .. } => Some(to),
+        edit::Press::Play if !is_sounding(pitch) => Some(pitch),
+        _ => None,
+      }
+    } else {
+      None
+    };
+    if let Some(target) = slide_pick {
+      Act::SlidePick(target)
+    } else {
+    match press {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
         // One press takes BOTH layers at this pitch into the selection (Jeff: "if
@@ -979,6 +1134,7 @@ pub(super) fn handle_edit_press(
         Act::Dragged { from, to, piano_moved, chord_seqs }
       }
     }
+    }
   };
 
   let (release_secs, sample_rate) = rt.sink.release_params();
@@ -1043,8 +1199,63 @@ pub(super) fn handle_edit_press(
         rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
       );
     }
+    Act::SlidePick(target) => slide_pick(rt, held, target),
   }
   false
+}
+
+/// A pedal-slide pick (`Act::SlidePick`): make `target` the new far goalpost of the
+/// nearest managed-set candidate. Silent by construction -- the press chooses a
+/// destination, the pedal travels there.
+///
+/// The candidates are this grid's EDIT-MODE voices, keyed the way the sink keys them: a
+/// voice still under a finger by its cell, a fingerless (drone) one by its pitch. That
+/// keying is the pairing's identity for the rest of the flight, and it changes only
+/// through a confirmed re-file.
+fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32) {
+  let grid = rt.grid_index;
+  let candidates: Vec<(VoiceSource, i32)> = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings[grid]
+      .store
+      .iter(Reason::Edit)
+      .map(|p| {
+        let key = match held.iter().find(|(_, hp)| **hp == p) {
+          Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+          None => VoiceSource::SurfaceDrone { grid, pitch: p },
+        };
+        (key, p)
+      })
+      .collect()
+  };
+  let outcome = rt.pedal_slide.pick(target, &candidates);
+  // Nothing to pair with: the pick becomes a SWELL into a brand-new voice, born silent
+  // and raised by the pedal (`2_discussion`: "it makes the pedal a swell into any
+  // pitch, and it is exactly the chord case with a one-note chord"). It joins the
+  // sustain set, so it is a real drone the clears and handles can reach.
+  for pitch in outcome.spawn_fade_ins {
+    let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
+    let timbre = Timbre {
+      waveform: slot.waveform,
+      gain: slot.amplitude,
+      am: slot.am,
+      fm: slot.fm,
+      rel_am: slot.rel_am,
+      rel_fm: slot.rel_fm,
+    };
+    if let Some(key) = rt.sink.spawn_slide_swell(pitch, timbre) {
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid]
+        .store
+        .add(Reason::Sustain, pitch);
+      rt.pedal_slide.register_fade(key, pitch, pedal_slide::FadeDir::In);
+    }
+  }
+  // Apply this round of drives now rather than waiting for the next repaint: with the
+  // pedal parked away from home the pick has an immediate audible consequence, and it
+  // should land on the press, not up to a repaint later.
+  let drives = rt.pedal_slide.drives();
+  let frozen = rt.sink.frozen_grid_gain();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, frozen, rt.tuning.fund, rt.tuning.edo);
 }
 
 /// How many held cells sound exactly `pitch` right now -- the derived FINGER count

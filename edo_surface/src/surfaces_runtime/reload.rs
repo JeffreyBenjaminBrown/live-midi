@@ -94,6 +94,9 @@ pub(crate) struct LiveParams {
   pub decay_secs: f32,
   pub slide_window: Duration,
   pub slide_duration_secs: f32,
+  /// The pedal-slide pitch smoother's time constant, in seconds -- read fresh by the
+  /// audio callback each block, so 'r' retunes the glide feel live.
+  pub slide_pedal_smoother_secs: f32,
   pub tap_window: Duration,
   pub trail_clobber_radius: i32,
   pub trails_max: usize,
@@ -126,6 +129,7 @@ pub(super) fn live_params(s: &Settings) -> LiveParams {
     decay_secs: s.decay_secs,
     slide_window: s.slide_window,
     slide_duration_secs: s.slide_duration_secs,
+    slide_pedal_smoother_secs: s.slide_pedal_smoother_secs,
     tap_window: s.tap_window,
     trail_clobber_radius: s.trail_clobber_radius,
     trails_max: s.trails_max,
