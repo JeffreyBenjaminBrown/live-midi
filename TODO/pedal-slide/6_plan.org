@@ -1,0 +1,174 @@
+#+title: Pedal slide: what ought to have happened
+#+date: 2026-07-20
+
+The post-mortem plan Jeff asked for: diagnosis of the three observed bugs
+(from 4_bugs-jeff-ran-into.org + the diffs in 5_diffs.org + 3_progress.org),
+the deeper causes, the abstractions a rebuild should stand on, what the spec
+left open, and a slice-by-slice walk-through plan for doing it right,
+manually, with hardware checkpoints. The existing implementation
+(cedc9ad + a16b6dc) is left in place as a corpse to dissect; the walk-through
+assumes we revert or rewrite it rather than patch it.
+
+* diagnosis of the three bugs
+
+** bug 2 (the halving) and bug 3 (dead pedal after arrival): one disease
+The pure map (=Segments= in pedal_slide.rs) is CORRECT -- endpoint-exact,
+continuous, all 22 unit tests honest. The instrument still lands at half the
+interval because of an IDENTITY hand-off, not math:
+
+- The pedal thread drives voices BY KEY (=apply_slide_drives= looks up
+  =d.voice= and, by design, "a drive whose voice has vanished is skipped").
+- At the midpoint flip, the voice is RE-KEYED (drone key = its filed pitch,
+  so re-filing home from H to T re-keys the voice), and that re-key is
+  DEFERRED: the engine queues it (pedal thread) and the grid thread applies
+  it on its next repaint.
+- After the flip, the pairing's notion of the voice's key and the voice's
+  actual key in the map diverge; every subsequent drive is "skipped". The
+  voice freezes at whatever pitch the slew had reached at the flip -- the
+  hysteresis band puts that at ~0.55 of the travel, i.e. audibly HALF the
+  interval. 27/46 -> ~13.5/46; octave -> tritone. Bug 2, exactly.
+- Bug 3 is the same disease at the next stage: by arrival, pairing state
+  and voice state have parted ways (and the arrival/"kink gone" logic was
+  written in a completion mindset -- see the VolumeReturn's =reverted=
+  latch for the mindset in miniature), so nothing is left driving anything,
+  and the old home is no longer anybody's endpoint.
+
+The confidence here is high but not verified end-to-end: the fingerprint
+(freeze at the hysteresis point, skip-on-missing-key, deferred re-key) all
+sit in the diff. The walk-through should confirm with the logging slice
+(below) before believing me completely.
+
+** bug 1 (chords crossfade instead of gliding): the managed set was wrong
+=match_targets= pairs EDIT-MODE voices only. A chord recalled under slide
+mode brings its pitches in as TARGETS, but the PREVIOUS chord's sounding
+voices (SurfaceChord-keyed, never in the edit set) are invisible to the
+matcher -- so nothing pairs, every new pitch becomes a fade-IN and every old
+voice a fade-OUT. A crossfade: precisely what Jeff heard. The vision's
+words ("its voices all join the target set... target each as-yet untargeted
+voice that's in edit mode") technically permit this reading, which is how it
+survived two careful readings -- the spec never says a recalled chord's
+VOICES become slidable. Jeff's intent obviously includes chord-to-chord
+pitch glides; the spec gap is recorded below.
+
+* the deeper causes (ranked)
+
+1. *A sliding voice's identity was allowed to change mid-flight, across
+   threads, asynchronously.* One logical entity (the sliding voice) had its
+   state split between the pedal thread (pairing, map) and the grid thread
+   (key, ring filing, sink), with its IDENTITY (the pitch-keyed drone key)
+   handed from one filing to another through a queue while both sides kept
+   acting. Everything else wrong is downstream of this.
+2. *"Which voices does the pedal manage" was conflated with "which voices
+   are in edit mode".* Right for the single-note case that the vision
+   opened with; wrong the moment chords arrived. The slide needs its OWN
+   membership concept.
+3. *Arrival semantics were never specified*, and the implementation
+   defaulted to "completion" (the natural reading of "the kink is gone").
+   Jeff's expectation -- arrival = role swap, the far side now holds the OLD
+   home, the pedal lives forever -- is the better design and also the more
+   literal reading of "'home' switches from one side to the other every
+   time I reach it".
+4. *Process: the pure core was proven and the wiring was not.* 770 green
+   tests, all three bugs live. The unit tests pinned Segments; nothing
+   pinned "pedal at 1 => the AUDIBLE frequency equals the target" through
+   the real path (engine -> drives -> voice map -> render). And no hardware
+   checkpoint existed between "empty" and "everything": two phases built
+   the entire feature before the first human ear touched it.
+
+* the abstractions a rebuild should stand on
+
+- *StepPitch newtype* (fractional EDO steps) with explicit conversions to
+  Hz and to cell/filed pitch. Kills the units-confusion class outright and
+  makes "linear here = log-linear in Hz" a property of the type.
+- *Stable voice identity for the duration of a slide.* Either (a) a slide
+  voice's KEY never changes mid-flight -- filing/painting alias through a
+  lookup (filed-pitch -> key) instead of re-keying, and any re-key happens
+  only at slide END, in the thread that owns keys -- or (b) a VoiceRef
+  handle (id-based, not pitch-based) that the map carries independently of
+  filing. (a) is less machinery.
+- *One owner for all slide mutation.* The pedal thread SENDS positions
+  (already ~100 Hz); the grid thread owns the engine, the pairings, the
+  re-filing, and the drives. Latency cost: one repaint cycle, inaudible
+  under the 10 ms render slew (which stays). No queues of identity
+  changes, no skipped drives, no cross-thread races by construction.
+- *Role labels separate from map data.* Home/target/far are LABELS over a
+  pairing whose map is just two anchored segments between two pitches.
+  The midpoint flip relabels (and re-files/paints); it never mutates the
+  map. Arrival relabels and collapses the map to one segment between the
+  two pitches -- the old home is now the far side. Nothing is ever
+  "completed" while slide mode is on.
+- *A slide-managed set*, explicit and per grid: voices the pedal owns.
+  Edit-mode voices join on pick; a chord recalled under slide moves its
+  voices INTO the set (pairable); fade voices are born into it. Matching,
+  fades, LEDs, and reconcile all read this set, not the edit set. (The
+  edit set remains what the multipliers/=1 read -- unchanged.)
+- *The wiring-level invariant harness*: a test fixture that runs engine +
+  drives + voice map + a short render together and asserts, for scripted
+  pedal traces: endpoint => audible pitch exact; no sample-to-sample jump
+  beyond the slew's bound ANYWHERE (including across flip and arrival);
+  after arrival, reverse reaches the old home exactly. Property-ish, cheap,
+  and it would have caught all three bugs before any hardware did.
+
+* what was ill-specified (for the spec's next revision)
+
+- Post-arrival: what the far side holds (now settled: the old home; pedal
+  never dies while mode is on).
+- Slidable membership: what makes a voice pairable (settled direction: an
+  explicit managed set; chords recalled under slide JOIN it -- their voices
+  become the pairing side, not merely their pitches the target side).
+- Whether a new pick after arrival replaces the far side (the old home) or
+  chains somewhere else -- the home-proximity rule presumably answers it
+  (pick replaces the side you are far from), but say it explicitly.
+- Fade+slide coexistence on one voice (a fading-in voice that then gets
+  paired for pitch): allowed? The rebuild should pick one rule.
+- What the =1/multipliers do to a voice that is slide-managed but no longer
+  edit-selected (possible once the sets diverge).
+
+* the walk-through plan (thin slices, hardware checkpoint after each)
+
+Rule for every slice: it ends with Jeff playing it. No slice builds on an
+unverified predecessor. Each slice's "verify" list is what the ear must
+confirm; the wiring harness grows alongside with the same assertions.
+
+** slice 0: instrumentation
+A dev logging switch that prints, per pedal event: fraction, each managed
+voice's (key, map pitch, slewed audible pitch). Ten lines; every later
+slice's disputes get settled by this instead of by guessing. (Also: confirm
+the bug-2 diagnosis against the corpse before burying it.)
+** slice 1: one voice, one target, no flip, no fades
+Toggle + pick + the single anchored segment + the render slew + arrival as
+ROLE SWAP. The managed set exists from day one (contains one voice). No
+midpoint flip yet (roles swap only at endpoints), no LED subtleties beyond
+target flash. Verify by ear: full travel reaches the target exactly; back
+travel reaches the old home exactly; repeat indefinitely; no jumps.
+** slice 2: mid-flight retarget (the kink)
+Pick while between endpoints; far-side goalpost moves; kink at current
+fraction; hysteretic reversal. Verify: no jump at pick; endpoints exact
+both ways; the "catch-up" feel Jeff designed.
+** slice 3: the midpoint flip -- labels, LEDs, filing only
+Hysteresis band; colors swap; ring re-filing via the alias (NO re-key, or
+key-owner-thread re-key -- whichever abstraction was chosen). Verify: LEDs
+swap as specified; audible pitch provably unaffected by the flip (slice-0
+logging); clears from both surfaces cancel cleanly mid-flight.
+** slice 4: fades
+The quartic anchored fades: single-pick swell (no edit voices), fade-out of
+leftover voices. Verify: swell from true silence to sibling level; no
+discontinuity when retargeting mid-fade; toggle-off settles fades as plain
+drones.
+** slice 5: chords
+Chord recall under slide joins the chord's VOICES to the managed set and
+its pitches to the targets; the matcher pairs across; extras fade. Verify:
+chord-to-chord slide GLIDES pitch (bug 1's test, by ear); replacement
+semantics; already-satisfied pitches stay put.
+** slice 6: the volume return
+The amendment's kinked x^4 return (this part of the corpse may actually be
+correct -- VolumeReturn is self-contained; re-verify rather than rewrite).
+Verify: no volume jump at mode exit; both directions live immediately;
+ordinary taper resumes at the endpoints.
+
+* TODO [jeff] one decision before the walk-through starts
+Revert cedc9ad + a16b6dc first (my recommendation: start the walk clean;
+5_diffs.org preserves everything worth salvaging -- the Segments math, the
+rig kind, VolumeReturn, and the tests are all liftable from there), or
+rebuild in place? Either works; in-place invites the corpse's structure to
+leak into the rebuild.
