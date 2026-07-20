@@ -125,9 +125,9 @@ pub(super) fn handle_key(
       let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
       if now_on {
         let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
-        rt.pedal_slide.enter(f, rt.sink.frozen_pedal_gain());
+        rt.pedal_slide.enter(f);
       } else {
-        let (frozen_voices, _volume) = rt.pedal_slide.exit();
+        let frozen_voices = rt.pedal_slide.exit();
         synth::freeze_slide_voices(&rt.shared.voices, &frozen_voices);
       }
       // The shared flag flips LAST, once the engine is already in its new state. It is
@@ -491,6 +491,8 @@ pub(super) fn chord_block_press(
         .armed;
       if armed {
         chord_save(rt, held, slot);
+      } else if rt.pedal_slide.mode() {
+        chord_slide_to(rt, held, slot);
       } else {
         chord_toggle(rt, slot);
       }
@@ -599,6 +601,73 @@ fn chord_toggle(rt: &mut GridThread, slot: usize) {
       synth::end_chord_voices(&rt.shared.voices, rt.grid_index, &seqs, release_secs, sample_rate);
     }
   }
+}
+
+/// A slot press while pedal slide is ON does not RECALL the chord -- it aims at it
+/// (`1_vision`: "during slide mode, at most one chord can be selected from storage at a
+/// time. Its voices all join the target set"). The stored chord's pitches become the
+/// target set, and the voices already sounding on this grid glide into them.
+///
+/// This is bug 1. The reverted build offered the matcher only the EDIT-MODE voices, so
+/// a recalled chord found nothing to pair with: every old voice faded out and every new
+/// pitch faded in, which is the crossfade Jeff heard instead of a glide. The candidate
+/// list here is the whole managed set the vision implies -- the chord voices already
+/// sounding AND the edit-mode voices.
+///
+/// The chord LAYER is deliberately untouched: no `begin_recall`, no live registry
+/// entries, no `active` flag. Those describe voices that exist, and under slide mode the
+/// stored chord contributes only pitches. The slot lights through the pedal-slide
+/// engine instead (see `target_slot`), so chord storage's own invariants stay intact.
+fn chord_slide_to(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize) {
+  let grid = rt.grid_index;
+  let (targets, candidates): (Vec<i32>, Vec<(VoiceSource, i32)>) = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &rings[grid];
+    let Some(stored) = gr.chord.slots[slot].as_ref() else {
+      return; // an empty slot is inert, exactly as it is outside slide mode
+    };
+    let targets = stored.voices.iter().map(|v| v.pitch).collect();
+    // Every voice the pedal may move: the chord voices already sounding (seq-keyed,
+    // never in the edit set -- the ones the reverted build could not see) and this
+    // grid's edit-mode voices (cell-keyed while fingered, pitch-keyed as drones).
+    let mut candidates: Vec<(VoiceSource, i32)> = gr
+      .chord
+      .live
+      .iter()
+      .map(|(seq, v)| (VoiceSource::SurfaceChord { grid, seq: *seq }, v.pitch))
+      .collect();
+    for pitch in gr.store.iter(Reason::Edit) {
+      let key = match held.iter().find(|(_, hp)| **hp == pitch) {
+        Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+        None => VoiceSource::SurfaceDrone { grid, pitch },
+      };
+      candidates.push((key, pitch));
+    }
+    (targets, candidates)
+  };
+  let outcome = rt.pedal_slide.match_targets(&targets, &candidates);
+  rt.pedal_slide.set_target_slot(Some(slot));
+  // Spare targets have nobody to glide into them, so they swell in from silence -- the
+  // vision's "just fade in the other voices".
+  for pitch in outcome.spawn_fade_ins {
+    let ts = rt.timbres[current_slot(&rt.shared.selected, grid)];
+    let timbre = Timbre {
+      waveform: ts.waveform,
+      gain: ts.amplitude,
+      am: ts.am,
+      fm: ts.fm,
+      rel_am: ts.rel_am,
+      rel_fm: ts.rel_fm,
+    };
+    if let Some(key) = rt.sink.spawn_slide_swell(pitch, timbre) {
+      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid]
+        .store
+        .add(Reason::Sustain, pitch);
+      rt.pedal_slide.register_fade(key, pitch, pedal_slide::FadeDir::In);
+    }
+  }
+  let drives = rt.pedal_slide.drives();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
 }
 
 /// The octave switchers' edit-mode action (queues/branch-2.org): move EVERY edited
@@ -1092,7 +1161,7 @@ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32)
   // and raised by the pedal (`2_discussion`: "it makes the pedal a swell into any
   // pitch, and it is exactly the chord case with a one-note chord"). It joins the
   // sustain set, so it is a real drone the clears and handles can reach.
-  if let Some(pitch) = outcome.spawn_fade_in {
+  for pitch in outcome.spawn_fade_ins {
     let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
     let timbre = Timbre {
       waveform: slot.waveform,

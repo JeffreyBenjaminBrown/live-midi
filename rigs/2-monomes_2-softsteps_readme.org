@@ -116,7 +116,14 @@ Here's how to see what's connected:
   else. See "chord voices in edit mode".
 - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
   grid, each a volume pedal: heel silent, toe unity, fader-law taper
-  (exponential + linear splice), slewed. See "the EX-P volume pedals".
+  (exponential + linear splice), slewed. DUAL DUTY: a grid's EX-P drives volume
+  only while that grid's pedal-slide toggle is OFF; on, it drives the pitch slide
+  instead. See "the EX-P volume pedals" and "pedal slide".
+- pedal slide -- a per-grid toggle (bottom-left cell =[0,15]=) that repurposes
+  that grid's EX-P pedal from volume to a smooth pitch SLIDE: pick a target pitch
+  on the grid and the pedal glides the nearest edit-mode voice into it. NOT the
+  note-to-note "slide" (which this rig does not use); the full name is always
+  "pedal slide". See "pedal slide".
 - diamond dance -- the lit cell turning around an edit-mode note's cell(s), above /
   left / below / right. See "the diamond dance".
 - square dance -- the diamond's diagonal twin, marking a sustained or chord
@@ -325,6 +332,56 @@ deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
   recovers; and until a pedal's first CC it contributes unity, so an
   unplugged pedal never mutes its grid.
 
+* pedal slide
+
+Each grid's bottom-left cell (=[0,15]=) is a =pedal_slide_toggle=: dim at rest,
+bright while on. It repurposes that grid's EX-P pedal from VOLUME to a smooth
+pitch SLIDE. See =TODO/pedal-slide/= for the design, and
+=TODO/pedal-slide/8_verify-by-ear.org= for the checklist to play it down.
+
+*Terminology trap*: this is *pedal slide*, always the full name, never bare
+"slide" -- there is an unrelated note-to-note =slide_toggle= in the codebase
+(glide-on-strike) that this rig does not use. Pedal slide is the pedal moving a
+sustained voice's pitch; the other slide is a new note gliding from a released
+one. Different mechanism, one word, so the name is always qualified here.
+
+- *Picking a target.* While pedal slide is on, the grid is a target-picker (the
+  way edit mode makes it a drag-picker): pressing a FREE pitch does not sound a
+  note, it sets a slide TARGET, and the nearest edit-mode voice will be dragged
+  there BY THE PEDAL rather than by the press. With nothing in edit mode, the
+  pick instead swells a NEW voice into being from silence as you push the pedal
+  -- the pedal as a swell into any pitch. Pressing a pitch that already sounds
+  still retriggers it, and the edit handles still work: they are how you choose
+  what to slide.
+- *Always smooth.* The pedal-to-pitch map is two log-linear (cents-space)
+  segments joined at the pedal's current position: one back to where the note
+  started ("home"), one on to the target. Picking a NEW target mid-slide moves
+  only the goalpost you are heading toward -- a kink at the current pedal
+  position -- so the pitch you are nearest never jumps. Reverse the pedal and it
+  takes a fresh straight line home rather than retracing: the same trick as MIDI
+  knob pickup. Under all of it a ~10 ms smoother melts the pedal's CC steps.
+- *Home flips at the middle.* Which pedal half is "home" flips as you cross the
+  midpoint (with a small dead band, so a resting foot cannot flicker it). That is
+  what lets you chain slides: raise the pedal into one pitch, pick another, lower
+  into that. The home cell is lit and danced; the target cell flashes bright/off
+  every 100 ms with no dancer. At the flip they swap. Reaching an end is not an
+  ending -- the far side then holds the pitch you came from, so the pedal keeps
+  working forever.
+- *Chords.* Pressing a chord slot while pedal slide is on does NOT recall the
+  chord: its pitches become the target set, and the voices already sounding glide
+  into them, matched ascending-nearest. Spare target pitches swell in from
+  silence; spare voices fade out. At most one chord is aimed at a time, and its
+  slot lights solid.
+- *Volume freezes; leaving is immediate.* While sliding, that grid has no live
+  volume pedal (the fader and master still work) -- the volume holds where it
+  was. Toggle pedal slide OFF and the pedal returns to volume through the SAME
+  anchored x^4 construction, so pushing or pulling changes the loudness AT ONCE
+  in either direction, with no dead zone waiting to "catch up"; once the pedal
+  reaches an endpoint the ordinary fader taper resumes. Toggling off mid-slide
+  freezes every sliding voice exactly where it is -- possibly between cells, which
+  a later drag can tidy. Clearing the edit selection or the sustain cancels a
+  slide the same way.
+
 * LEDs
 
 Play-grid LEDs follow the usual =surfaces_runtime= rules (shared with the
@@ -337,7 +394,11 @@ bright, the rest dim; the scroll pad's arrows are dim, its octave corners
 dark, and it fully occludes the play grid beneath it. The chord block's
 SLOTS idle DIM (occupied and empty look alike -- empty ones are inert) and
 an active slot is solid BRIGHT; the ARM cell is BLACK until armed, then
-flashes ~150 ms on/off.
+flashes ~150 ms on/off. A pedal-slide TARGET cell flashes BRIGHT/off every 100 ms
+(no dancer), driven off the shared dance clock so it never drifts against the
+other animations; a slide's HOME pitch is just a sustained note, so it lights
+bright and dances as usual, and the chord slot supplying a slide's targets lights
+solid like an active one.
 
 Every CONTROL cell that rests dim -- the unselected waveform cells, the
 scroll arrows, the resting factor cells and editmode buttons, the chord

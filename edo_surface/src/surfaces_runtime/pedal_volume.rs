@@ -11,6 +11,7 @@ use crate::expression_pedals::NUM_PEDALS;
 
 use crate::types::VoiceMap;
 
+use super::pedal_slide::VolumeReturn;
 use super::synth;
 use super::{Live, STOP};
 
@@ -107,6 +108,11 @@ pub(super) fn expression_pedal_loop(
   };
   println!("expression pedals: connected to {:?}", reader.port_name());
   let mut last = [f32::NAN; NUM_PEDALS];
+  // Per-pedal pedal-slide bookkeeping: whether the grid was in slide mode last poll (to
+  // catch the ON->OFF edge), and the anchored-kink volume return itself (`None` = the
+  // ordinary taper is in charge).
+  let mut mode_was = [false; NUM_PEDALS];
+  let mut vol_return: [Option<VolumeReturn>; NUM_PEDALS] = [None; NUM_PEDALS];
   let mut last_generation = live.generation.load(Ordering::SeqCst);
   while !STOP.load(Ordering::SeqCst) {
     let generation = live.generation.load(Ordering::SeqCst);
@@ -123,13 +129,44 @@ pub(super) fn expression_pedal_loop(
       if let Some(slot) = pedal_slide_frac.get(grid) {
         slot.store(p.norm.to_bits(), Ordering::Relaxed);
       }
+      let mode = pedal_slide_on.get(grid).is_some_and(|b| b.load(Ordering::Relaxed));
+      // The ON->OFF edge: begin the anchored-kink return from wherever the volume froze,
+      // so the pedal coming back to volume duty changes the loudness AT ONCE in either
+      // direction -- rather than yanking it to the pedal's physical position, or going
+      // dead until the pedal crosses it (`2_discussion`'s amendment).
+      if mode_was[pedal] && !mode {
+        // The frozen volume is simply this grid's CURRENT pedal gain: nothing writes
+        // it while slide mode is on (the branch below `continue`s), so it still holds
+        // whatever it did when the toggle took the pedal away. No extra channel needed.
+        let frozen = pedal_gains
+          .lock()
+          .unwrap_or_else(|e| e.into_inner())
+          .get(grid)
+          .copied()
+          .unwrap_or(1.0);
+        vol_return[pedal] = Some(VolumeReturn::new(p.norm, frozen));
+        last[pedal] = f32::NAN;
+      }
+      mode_was[pedal] = mode;
       // Slide duty: this grid's pedal is not a volume pedal right now. Publishing above
       // was the whole job; the volume holds where it froze.
-      if pedal_slide_on.get(grid).is_some_and(|b| b.load(Ordering::Relaxed)) {
-        // Force the next reading after the toggle goes back off to re-apply, so volume
-        // duty resumes even if the pedal never moved while it was suspended.
-        last[pedal] = f32::NAN;
+      if mode {
         continue;
+      }
+      // The kinked return is in charge until the pedal reaches an endpoint, where the
+      // segment's value is exactly the taper's (0 at the heel, 1 at the toe) and the
+      // hand-off back is therefore continuous.
+      if let Some(vr) = vol_return[pedal].as_mut() {
+        if p.updates == 0 {
+          continue;
+        }
+        match vr.on_pedal(p.norm) {
+          Some(gain) => {
+            apply_pedal_gain(&voices, &pedal_gains, grid, gain);
+            continue;
+          }
+          None => vol_return[pedal] = None,
+        }
       }
       // No CC yet = no position to trust; keep unity rather than muting the grid.
       // A reload re-applies a known position through the (possibly new) taper.

@@ -114,8 +114,47 @@ with your favorite... it will definitely have its musical uses".)
     this would be confusing and wanted to try it anyway -- this is the item where
     you find out.
 
-** things slices 1-4 deliberately do NOT do yet
-Don't report these as bugs:
-- Recalling a chord while pedal slide is on behaves as it always did. Chords are
-  slice 5.
-- Toggling pedal slide off hands the pedal back to volume bluntly. Slice 6.
+* slice 5 -- chords [NOT YET PLAYED]
+A chord slot pressed while pedal slide is on does NOT recall the chord. Its
+pitches become the target set, and whatever is already sounding glides into
+them. The slot lights solid to say which chord you are aimed at.
+
+22. *Chord to chord GLIDES.* Recall a chord normally (slide off). Turn pedal
+    slide on, then press a DIFFERENT slot. Nothing should change yet. Now sweep
+    the pedal: the sounding chord should *bend* into the stored one, every voice
+    gliding. (This is bug 1 from =4_bugs-jeff-ran-into.org=: it used to
+    crossfade -- old notes fading out while new ones faded in, no pitch movement
+    at all.)
+23. *No doubling.* Three voices in, three voices out. Aiming at a chord must not
+    spawn a second copy of it.
+24. *A bigger chord.* Aim a 2-note chord at a 4-note one: two voices should
+    glide, and the two spare pitches should swell in from silence as you sweep.
+25. *A smaller chord.* The reverse: the leftovers should fade out as you sweep.
+26. *Already-satisfied pitches stay put.* Aim at a chord that shares a pitch
+    with what is sounding. That voice should not wander off to a different
+    target and come back.
+27. *Aiming again.* Press a different slot mid-sweep. The new chord takes over
+    as the target set with no jump.
+
+* slice 6 -- the volume return [NOT YET PLAYED]
+Toggling pedal slide OFF hands the pedal back to volume through the same kinked
+x^4 construction the fades use, so it is live immediately in both directions.
+
+28. *No jump at mode exit.* With the pedal parked mid-travel, toggle pedal slide
+    off. The volume should NOT leap to wherever the pedal physically is.
+29. *Live in both directions at once.* From there, push the pedal a little: the
+    volume should rise straight away. Pull it back past where it was: it should
+    fall straight away. Neither direction should have a dead patch.
+30. *The taper resumes at the ends.* Run the pedal to either end and then use it
+    normally. From that point on it should feel exactly like the ordinary volume
+    pedal again.
+
+* known rough edges (not bugs -- recorded in 3_progress.org)
+- Toggling pedal slide off while a voice is *mid-swell* hands that voice back to
+  the grid volume, so its loudness ramps (over ~20 ms, no click) to wherever the
+  volume pedal now says. The pedal is uniform once slide mode is off; there is
+  nowhere else for a half-swelled voice to go.
+- If a note gets struck and sustained ON the pitch a slide is heading for, the
+  slide still arrives correctly but that note keeps painting at the cell it came
+  from until the collision clears. Nothing dies. Neither =1_vision= nor
+  =2_discussion= considers this case -- see the question in 3_progress.org.

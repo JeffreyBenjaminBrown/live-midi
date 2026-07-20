@@ -174,6 +174,69 @@ impl Segments {
   }
 }
 
+/// The pedal's return to VOLUME duty when slide mode is turned off (`2_discussion`'s
+/// amendment). A plain catch-up pickup would confuse -- you would push the pedal and
+/// nothing would happen until it crossed the frozen volume -- so instead the
+/// pedal-to-volume map becomes the SAME anchored construction as a fade: two quartic
+/// segments joined at `(F_now, V_frozen)`, one down to `(0, 0)` and one up to `(1, 1)`.
+/// Moving the pedal EITHER way therefore changes the volume at once. The moment it
+/// reaches an endpoint the map reverts to the ordinary taper (`PedalVolumeCurve`),
+/// whose endpoints are exactly 0 and 1 -- so the hand-off back is continuous too.
+///
+/// Lifted from the reverted build, where it was self-contained and the post-mortem
+/// judged it likely correct; re-verified here rather than rewritten.
+#[derive(Clone, Copy, Debug)]
+pub struct VolumeReturn {
+  seg: Segments,
+  cur_f: f32,
+  moving_up: bool,
+  reverted: bool,
+}
+
+impl VolumeReturn {
+  /// Begin the return with the pedal at fraction `f` and the volume frozen at
+  /// `v_frozen`.
+  pub fn new(f: f32, v_frozen: f32) -> Self {
+    let f = f.clamp(0.0, 1.0);
+    VolumeReturn {
+      seg: Segments::new(0.0, 1.0, f, v_frozen.clamp(0.0, 1.0), Shape::Quartic),
+      cur_f: f,
+      moving_up: true,
+      reverted: false,
+    }
+  }
+
+  /// Apply a pedal reading. `Some(gain)` while the kinked return map is in charge,
+  /// `None` once the pedal has reached an endpoint and the caller should resume the
+  /// ordinary taper.
+  pub fn on_pedal(&mut self, f: f32) -> Option<f32> {
+    if self.reverted {
+      return None;
+    }
+    let f = f.clamp(0.0, 1.0);
+    let f_old = self.cur_f;
+    if (f - f_old).abs() > EPS {
+      let up = f > f_old;
+      if up != self.moving_up {
+        self.seg.repin(f_old);
+      }
+      self.moving_up = up;
+      self.seg.cur = self.seg.eval(f, up);
+    }
+    self.cur_f = f;
+    if f <= 0.0 || f >= 1.0 {
+      self.reverted = true;
+      return None;
+    }
+    Some(self.seg.cur.clamp(0.0, 1.0))
+  }
+
+  #[cfg(test)]
+  pub fn reverted(&self) -> bool {
+    self.reverted
+  }
+}
+
 /// Which side of the pedal is "home" -- the end the voice is currently filed at. Home
 /// is `Low` (pedal fraction 0) or `High` (fraction 1); it governs (a) which endpoint a
 /// new pick replaces (always the FAR one) and (b) the LED roles and the filed pitch.
@@ -210,6 +273,7 @@ impl Home {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlipPolicy {
   /// Roles swap when the pedal REACHES the far end.
+  #[allow(dead_code)] // constructed only by the tests, via `set_flip_policy`
   AtEndpoints,
   /// Roles swap at the pedal's midpoint, with the hysteresis band (`1_vision`).
   AtMidpoint,
@@ -232,8 +296,27 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FadeDir {
   In,
-  #[allow(dead_code)] // produced by the chord matcher in slice 5
   Out,
+}
+
+/// WHY a voice is in the managed set -- and therefore what takes it back out.
+///
+/// This is `6_plan.org`'s "a slide-managed set, explicit and per grid", made explicit.
+/// The reverted build had no such concept: it asked the EDIT SELECTION who the pedal
+/// managed, which is right for the single-note case the vision opens with and wrong the
+/// moment chords arrive -- a recalled chord's voices are never in the edit set, so the
+/// matcher could not see them, nothing paired, and every note became a fade. That is
+/// bug 1, and it was a membership bug rather than a matching one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tenure {
+  /// Joined by being in the edit selection (the ordinary pick). Deselecting it -- an
+  /// editmode clear, a sustain clear -- cancels the slide, per `2_discussion`: "a slide
+  /// needs its selection".
+  WhileEdited,
+  /// Joined by a chord recall or by being swelled into existence. The edit selection
+  /// never had a say over these, so it does not get one now; they live as long as their
+  /// voice does.
+  WhileSounding,
 }
 
 /// One voice the pedal manages: its identity, where it is FILED, and its map.
@@ -244,6 +327,8 @@ pub enum FadeDir {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pairing {
   pub voice: VoiceSource,
+  /// Why this voice is managed, and so what removes it (see [`Tenure`]).
+  pub tenure: Tenure,
   /// The integer pitch this voice is currently filed and painted at (the ring's sets,
   /// its drone key if it is a drone, the cell the dances mark).
   pub filed: i32,
@@ -299,8 +384,9 @@ pub struct Refile {
 /// only the sink can do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PickOutcome {
-  /// A pitch needing a fresh voice, born silent, for the pedal to swell in.
-  pub spawn_fade_in: Option<i32>,
+  /// Pitches needing a fresh voice, born silent, for the pedal to swell in. A single
+  /// pick produces at most one; a chord recall can produce several.
+  pub spawn_fade_ins: Vec<i32>,
 }
 
 /// One grid's pedal-slide engine.
@@ -321,8 +407,9 @@ pub struct PedalSlideState {
   /// from the edit selection on purpose: the reverted build conflated the two, which
   /// is why a recalled chord's voices were invisible to the matcher (bug 1).
   pairings: Vec<Pairing>,
-  /// The grid volume frozen when mode turned on, handed back when mode turns off.
-  frozen_volume: f32,
+  /// The chord slot currently supplying the target set, for its LED. `1_vision`: "at
+  /// most one chord can be selected from storage at a time".
+  target_slot: Option<usize>,
 }
 
 impl Default for PedalSlideState {
@@ -340,8 +427,17 @@ impl PedalSlideState {
       home: Home::Low,
       flip: FlipPolicy::AtMidpoint,
       pairings: Vec::new(),
-      frozen_volume: 1.0,
+      target_slot: None,
     }
+  }
+
+  /// Which chord slot is supplying the targets (lit solid), if any.
+  pub fn target_slot(&self) -> Option<usize> {
+    self.target_slot
+  }
+
+  pub fn set_target_slot(&mut self, slot: Option<usize>) {
+    self.target_slot = slot;
   }
 
   pub fn mode(&self) -> bool {
@@ -352,10 +448,6 @@ impl PedalSlideState {
     self.home
   }
 
-  pub fn fraction(&self) -> f32 {
-    self.cur_f
-  }
-
   /// Override when home swaps ends. Used by the tests to exercise the arrival
   /// semantics in isolation (`FlipPolicy::AtEndpoints`), where no band is in play.
   #[cfg(test)]
@@ -363,20 +455,22 @@ impl PedalSlideState {
     self.flip = flip;
   }
 
-  pub fn frozen_volume(&self) -> f32 {
-    self.frozen_volume
-  }
-
+  // The three below are read by the TESTS rather than by the runtime, which goes
+  // through `drives()` and `led_roles()`. They are the engine's observable state, and
+  // the harness asserts on them directly.
+  #[allow(dead_code)]
   pub fn is_empty(&self) -> bool {
     self.pairings.is_empty()
   }
 
+  #[allow(dead_code)]
   pub fn pairings(&self) -> &[Pairing] {
     &self.pairings
   }
 
   /// The current target pitches (integer EDO steps) -- the FAR goalpost of each
   /// pairing, i.e. where the pedal is heading.
+  #[allow(dead_code)]
   pub fn targets(&self) -> Vec<i32> {
     self
       .pairings
@@ -386,27 +480,28 @@ impl PedalSlideState {
       .collect()
   }
 
-  /// Enter slide mode with the pedal at fraction `f`, freezing the grid volume at
-  /// `frozen_volume`. Starts with no pairings, so the pedal is inert until the first
-  /// pick (no pitch is yanked). Home follows the pedal's current side, so the first
-  /// pick's far endpoint is the one away from the foot.
-  pub fn enter(&mut self, f: f32, frozen_volume: f32) {
+  /// Enter slide mode with the pedal at fraction `f`. Starts with no pairings, so the
+  /// pedal is inert until the first pick (no pitch is yanked). Home follows the pedal's
+  /// current side, so the first pick's far endpoint is the one away from the foot.
+  ///
+  /// Nothing is recorded about the grid volume: it simply stops being driven, and the
+  /// pedal thread reads the frozen value straight off the shared per-grid gain when it
+  /// takes volume duty back (`pedal_volume.rs`). One fact, one home.
+  pub fn enter(&mut self, f: f32) {
     self.mode = true;
-    self.frozen_volume = frozen_volume;
     self.pairings.clear();
+    self.target_slot = None;
     self.cur_f = f.clamp(0.0, 1.0);
     self.home = if self.cur_f <= MIDPOINT { Home::Low } else { Home::High };
   }
 
-  /// Leave slide mode mid-anything: the managed set empties (voices freeze exactly
-  /// where they are -- smoothness above all; they are sustained voices, a later drag
-  /// can tidy an off-grid pitch), and the frozen grid volume comes back for the
-  /// pedal's return to volume duty. Returns the voices that were being driven, for
-  /// the owner to freeze, and that volume.
-  pub fn exit(&mut self) -> (Vec<VoiceSource>, f32) {
+  /// Leave slide mode mid-anything: the managed set empties and every voice it held is
+  /// returned for the owner to freeze exactly where it is -- smoothness above all; they
+  /// are sustained voices, and a later drag can tidy an off-grid pitch.
+  pub fn exit(&mut self) -> Vec<VoiceSource> {
     self.mode = false;
-    let dropped = self.pairings.drain(..).map(|p| p.voice).collect();
-    (dropped, self.frozen_volume)
+    self.target_slot = None;
+    self.pairings.drain(..).map(|p| p.voice).collect()
   }
 
   /// Reconcile the managed set against the grid's live edit selection (`edited`,
@@ -431,13 +526,12 @@ impl PedalSlideState {
       if !alive(&p.voice) {
         return false;
       }
-      // A PITCH pairing is a slide of an edit-mode voice, so losing the selection ends
-      // it. A FADE voice was never in the edit selection (a swell is not an edit
-      // gesture), so the selection has no say over it: it lives until its voice does.
-      match p.kind {
-        Kind::Fade => true,
-        Kind::Pitch if edited.contains(&p.filed) => true,
-        Kind::Pitch => {
+      // Only a voice that JOINED through the edit selection can be evicted by losing
+      // it. Chord voices and swells joined another way and answer to their voice alone.
+      match p.tenure {
+        Tenure::WhileSounding => true,
+        Tenure::WhileEdited if edited.contains(&p.filed) => true,
+        Tenure::WhileEdited => {
           dropped.push(p.voice);
           false
         }
@@ -568,7 +662,7 @@ impl PedalSlideState {
       .copied();
     match nearest {
       Some((voice, base)) => {
-        let pairing = self.pitch_pairing(voice, base, pitch);
+        let pairing = self.pitch_pairing(voice, base, pitch, Tenure::WhileEdited);
         if let Some(slot) = self.pairings.iter_mut().find(|p| p.voice == pairing.voice) {
           *slot = pairing;
         } else {
@@ -581,7 +675,7 @@ impl PedalSlideState {
       None if self.pairings.iter().any(|p| p.kind == Kind::Fade && p.filed == pitch) => {
         PickOutcome::default()
       }
-      None => PickOutcome { spawn_fade_in: Some(pitch) },
+      None => PickOutcome { spawn_fade_ins: vec![pitch] },
     }
   }
 
@@ -590,20 +684,116 @@ impl PedalSlideState {
   /// where the pedal is -- so a pick made mid-travel pins a kink exactly as a pitch
   /// retarget does, and no amplitude ever jumps.
   pub fn register_fade(&mut self, voice: VoiceSource, pitch: i32, dir: FadeDir) {
-    let (silent, full) = match dir {
-      FadeDir::In => (0.0, 1.0),
-      FadeDir::Out => (1.0, 0.0),
+    self.upsert(self.fade_pairing(voice, pitch, dir, self.fade_start(voice, dir)));
+  }
+
+  /// Where a fade begins: a voice already in the managed set fades from the amplitude
+  /// it is actually at (so a chord recalled twice, or a leftover caught mid-swell, does
+  /// not jump), and a fresh one from the obvious end.
+  fn fade_start(&self, voice: VoiceSource, dir: FadeDir) -> f32 {
+    let existing = self.pairings.iter().find(|p| p.voice == voice).and_then(|p| p.current_amp());
+    existing.unwrap_or(match dir {
+      FadeDir::In => 0.0,
+      FadeDir::Out => 1.0,
+    })
+  }
+
+  fn upsert(&mut self, pairing: Pairing) {
+    if let Some(slot) = self.pairings.iter_mut().find(|p| p.voice == pairing.voice) {
+      *slot = pairing;
+    } else {
+      self.pairings.push(pairing);
+    }
+  }
+
+  fn fade_pairing(&self, voice: VoiceSource, pitch: i32, dir: FadeDir, start: f32) -> Pairing {
+    let end = match dir {
+      FadeDir::In => 1.0,
+      FadeDir::Out => 0.0,
     };
     let far_is_high = self.home.is_low();
-    let (s0, s1) = if far_is_high { (silent, full) } else { (full, silent) };
-    let seg = Segments::new(s0, s1, self.cur_f, silent, Shape::Quartic);
-    self.pairings.push(Pairing { voice, filed: pitch, kind: Kind::Fade, seg });
+    let (s0, s1) = if far_is_high { (start, end) } else { (end, start) };
+    let seg = Segments::new(s0, s1, self.cur_f, start, Shape::Quartic);
+    Pairing { voice, tenure: Tenure::WhileSounding, filed: pitch, kind: Kind::Fade, seg }
+  }
+
+  /// A whole SET of targets arriving at once -- a chord recalled while pedal slide is
+  /// on (`1_vision`: "its voices all join the target set"). This is bug 1's fix.
+  ///
+  /// `candidates` is every voice the pedal may move: the previous chord's sounding
+  /// voices AND this grid's edit-mode voices. The reverted build passed only the latter,
+  /// so a recalled chord found nothing to pair with, every old voice became a fade-out
+  /// and every new pitch a fade-in -- a crossfade, which is exactly what Jeff heard
+  /// instead of a glide.
+  ///
+  /// The pairing rule is `2_discussion`'s, which Jeff confirmed: walk the candidates in
+  /// ASCENDING pitch, each taking its nearest remaining target, ties to the LOWER
+  /// target. Deterministic, cheap, and it matches how the instrument breaks every other
+  /// tie. Then:
+  /// - a candidate that already had a target KEEPS it if it is still in the set (so a
+  ///   pitch already satisfied stays put rather than being re-shuffled);
+  /// - spare targets swell NEW voices in from silence;
+  /// - spare candidates fade OUT.
+  ///
+  /// Voices that are not candidates keep whatever they were doing.
+  pub fn match_targets(
+    &mut self,
+    targets: &[i32],
+    candidates: &[(VoiceSource, i32)],
+  ) -> PickOutcome {
+    let mut ordered: Vec<(VoiceSource, i32)> = candidates.to_vec();
+    ordered.sort_by_key(|(_, pitch)| *pitch);
+    let mut remaining: Vec<i32> = targets.to_vec();
+    remaining.sort_unstable();
+    remaining.dedup();
+
+    // A candidate already aimed at one of these targets keeps it -- claimed first, so
+    // the ascending pass cannot hand it to somebody else.
+    let mut kept: Vec<(VoiceSource, i32)> = Vec::new();
+    for (voice, _) in &ordered {
+      let Some(prev) = self.pairings.iter().find(|p| p.voice == *voice && p.kind == Kind::Pitch)
+      else {
+        continue;
+      };
+      let aimed = StepPitch(prev.seg.side(!self.home.is_low())).filed();
+      if let Some(i) = remaining.iter().position(|t| *t == aimed) {
+        remaining.remove(i);
+        kept.push((*voice, aimed));
+      }
+    }
+
+    let mut fresh: Vec<Pairing> = Vec::new();
+    for (voice, base) in &ordered {
+      if let Some((_, aimed)) = kept.iter().find(|(v, _)| v == voice) {
+        fresh.push(self.pitch_pairing(*voice, *base, *aimed, Tenure::WhileSounding));
+        continue;
+      }
+      if remaining.is_empty() {
+        // More voices than targets: this one fades out from wherever it is.
+        fresh.push(self.fade_pairing(*voice, *base, FadeDir::Out, self.fade_start(*voice, FadeDir::Out)));
+        continue;
+      }
+      let (i, _) = remaining
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, t)| ((*t - base).abs(), **t))
+        .expect("remaining is non-empty");
+      let target = remaining.remove(i);
+      fresh.push(self.pitch_pairing(*voice, *base, target, Tenure::WhileSounding));
+    }
+
+    // Candidates leave their old pairings behind wholesale; anything else the pedal was
+    // managing (a swell from an earlier pick, say) carries on untouched.
+    let involved: Vec<VoiceSource> = ordered.iter().map(|(v, _)| *v).collect();
+    self.pairings.retain(|p| !involved.contains(&p.voice));
+    self.pairings.extend(fresh);
+    PickOutcome { spawn_fade_ins: remaining }
   }
 
   /// Build (or retarget) a pitch pairing for `voice`, currently filed at `base`, aiming
   /// at `target`. A pre-existing pairing keeps its map and only retargets its FAR
   /// endpoint (kink at the current fraction).
-  fn pitch_pairing(&self, voice: VoiceSource, base: i32, target: i32) -> Pairing {
+  fn pitch_pairing(&self, voice: VoiceSource, base: i32, target: i32, tenure: Tenure) -> Pairing {
     let far_is_high = self.home.is_low();
     if let Some(prev) = self.pairings.iter().find(|p| p.voice == voice) {
       let mut seg = prev.seg;
@@ -617,14 +807,14 @@ impl PedalSlideState {
           seg.s0 = target as f32;
         }
       }
-      return Pairing { voice, filed: prev.filed, kind: Kind::Pitch, seg };
+      return Pairing { voice, tenure, filed: prev.filed, kind: Kind::Pitch, seg };
     }
     // A fresh pairing: the home endpoint is the voice's current pitch, the far endpoint
     // the target, anchored where the pedal is.
     let (s0, s1) =
       if far_is_high { (base as f32, target as f32) } else { (target as f32, base as f32) };
     let seg = Segments::new(s0, s1, self.cur_f, base as f32, Shape::Linear);
-    Pairing { voice, filed: base, kind: Kind::Pitch, seg }
+    Pairing { voice, tenure, filed: base, kind: Kind::Pitch, seg }
   }
 
   /// The per-voice drive commands to apply this instant.
@@ -788,16 +978,16 @@ mod tests {
   #[test]
   fn entering_takes_the_pedals_current_side_as_home() {
     let mut st = PedalSlideState::new();
-    st.enter(0.9, 1.0);
+    st.enter(0.9);
     assert_eq!(st.home(), Home::High, "the foot is down, so home is the toe end");
-    st.enter(0.1, 1.0);
+    st.enter(0.1);
     assert_eq!(st.home(), Home::Low);
   }
 
   #[test]
   fn a_pick_targets_the_nearest_candidate_and_a_re_pick_retargets_the_same_voice() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     let voices = [(drone(10), 10), (drone(50), 50)];
     st.pick(46, &voices);
     assert_eq!(st.pairings().len(), 1, "one voice pairs -- the nearer one");
@@ -815,14 +1005,14 @@ mod tests {
   #[test]
   fn a_pick_with_no_candidates_asks_for_a_swell_voice() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
-    assert_eq!(st.pick(25, &[]).spawn_fade_in, Some(25));
+    st.enter(0.0);
+    assert_eq!(st.pick(25, &[]).spawn_fade_ins, vec![25]);
     assert!(st.is_empty(), "nothing is managed until the caller reports the voice back");
 
     st.register_fade(drone(25), 25, FadeDir::In);
     assert_eq!(st.pairings().len(), 1);
     // Re-picking the same pitch must not spawn a second voice on the same drone key.
-    assert_eq!(st.pick(25, &[]).spawn_fade_in, None, "already swelling this pitch");
+    assert_eq!(st.pick(25, &[]).spawn_fade_ins, Vec::<i32>::new(), "already swelling this pitch");
   }
 
   /// The swell: silent at the home end, full at the far end, quartic-eased between, and
@@ -830,7 +1020,7 @@ mod tests {
   #[test]
   fn a_swell_voice_rises_from_silence_to_full_across_the_pedal() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(25, &[]);
     st.register_fade(drone(25), 25, FadeDir::In);
 
@@ -850,7 +1040,7 @@ mod tests {
   #[test]
   fn a_swell_started_mid_travel_does_not_jump() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.on_pedal(0.6);
     st.pick(25, &[]);
     st.register_fade(drone(25), 25, FadeDir::In);
@@ -864,7 +1054,7 @@ mod tests {
   #[test]
   fn reconcile_leaves_fades_alone_but_drops_voices_that_ended() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.register_fade(drone(25), 25, FadeDir::In);
     assert!(st.reconcile(&HashSet::new(), |_| true).is_empty(), "no selection, still swelling");
     assert!(!st.is_empty());
@@ -877,7 +1067,7 @@ mod tests {
   #[test]
   fn a_swelling_voice_flashes_until_it_has_arrived() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.register_fade(drone(25), 25, FadeDir::In);
     let (_, target) = st.led_roles();
     assert!(target.contains(&25), "flashing while it swells in");
@@ -890,7 +1080,7 @@ mod tests {
   #[test]
   fn a_full_flight_drives_the_voice_from_home_to_target_and_back() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(22, &[(drone(10), 10)]);
     assert!((st.drives()[0].pitch.0 - 10.0).abs() < 1e-4, "at the heel the voice is home");
     st.on_pedal(0.5);
@@ -909,7 +1099,7 @@ mod tests {
   #[test]
   fn a_retarget_only_moves_the_far_goalpost_and_never_jumps_the_pitch() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(drone(10), 10)]); // home low 10, far high 30
     st.on_pedal(0.5);
     let before = st.drives()[0].pitch.0;
@@ -928,7 +1118,7 @@ mod tests {
   #[test]
   fn arrival_proposes_a_refile_that_only_takes_effect_once_confirmed() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(drone(10), 10)]);
     let refiles = st.on_pedal(1.0);
     assert_eq!(refiles.len(), 1);
@@ -948,7 +1138,7 @@ mod tests {
   #[test]
   fn a_fingered_voice_keeps_its_cell_key_across_a_refile() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(finger((5, 5)), 10)]);
     let refiles = st.on_pedal(1.0);
     assert_eq!(refiles[0].voice_new, finger((5, 5)), "a finger's identity is its cell");
@@ -963,7 +1153,7 @@ mod tests {
     // must continue under the key the voice map really holds -- the reverted build
     // instead drove a key that did not exist yet and silently lost every step.
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(drone(10), 10)]);
     st.on_pedal(1.0); // proposed, deliberately NOT confirmed
     assert_eq!(st.drives()[0].voice, drone(10), "still addressed by the key that exists");
@@ -977,7 +1167,7 @@ mod tests {
   #[test]
   fn reconcile_drops_a_pairing_whose_note_left_the_edit_selection() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(drone(10), 10)]);
     let edited: HashSet<i32> = [10].into_iter().collect();
     assert!(st.reconcile(&edited, |_| true).is_empty(), "still selected: nothing dropped");
@@ -992,7 +1182,7 @@ mod tests {
     // names the TARGET pitch. Reconcile must read the pairing's own filed pitch, not
     // re-derive one from a stale notion of home.
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(drone(10), 10)]);
     let refiles = st.on_pedal(1.0);
     st.confirm_refile(&refiles[0]);
@@ -1006,7 +1196,7 @@ mod tests {
   #[test]
   fn led_roles_split_home_and_target_and_swap_on_arrival() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     st.pick(30, &[(drone(10), 10)]);
     let (home, target) = st.led_roles();
     assert!(home.contains(&10) && target.contains(&30));
@@ -1018,20 +1208,52 @@ mod tests {
   }
 
   #[test]
-  fn exit_hands_back_every_driven_voice_and_the_frozen_volume() {
+  fn exit_hands_back_every_driven_voice_for_freezing() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 0.42);
+    st.enter(0.0);
     st.pick(20, &[(drone(10), 10)]);
-    let (dropped, vol) = st.exit();
-    assert_eq!(dropped, vec![drone(10)], "the owner freezes exactly these");
-    assert!((vol - 0.42).abs() < 1e-6, "the frozen volume comes back");
+    assert_eq!(st.exit(), vec![drone(10)], "the owner freezes exactly these");
     assert!(!st.mode() && st.is_empty());
+  }
+
+  // ---- the anchored-kink volume return (2_discussion's amendment) ----
+
+  /// The amendment's whole point: leaving slide mode must not leave a dead zone. Push
+  /// or pull and the volume responds AT ONCE, in either direction, from wherever it
+  /// froze.
+  #[test]
+  fn the_volume_return_is_continuous_at_exit_and_immediate_both_ways() {
+    let mut vr = VolumeReturn::new(0.5, 0.5);
+    assert_eq!(vr.on_pedal(0.5), Some(0.5), "continuous at the exit point -- no jump");
+    let up = vr.on_pedal(0.75).unwrap();
+    assert!(up > 0.5, "raising the pedal raises the volume at once, got {up}");
+    // Back down THROUGH the frozen point keeps lowering it -- the reversal re-pins, so
+    // the way down is a fresh segment rather than a retrace with a dead patch.
+    let mid = vr.on_pedal(0.5).unwrap();
+    assert!(mid < up, "coming back down lowers it immediately, got {mid}");
+    let low = vr.on_pedal(0.25).unwrap();
+    assert!(low < mid, "and keeps lowering past the old freeze point, got {low}");
+  }
+
+  /// Reaching either end hands back to the ordinary taper, continuously: the segment is
+  /// exactly 0 at the heel and 1 at the toe, which is where the taper starts and ends.
+  #[test]
+  fn the_volume_return_reverts_to_the_ordinary_taper_at_an_endpoint() {
+    let mut vr = VolumeReturn::new(0.4, 0.6);
+    assert!(vr.on_pedal(0.3).is_some(), "still on the kinked map mid-travel");
+    assert_eq!(vr.on_pedal(0.0), None, "reaching the heel reverts");
+    assert!(vr.reverted());
+    assert_eq!(vr.on_pedal(0.5), None, "and it stays reverted");
+
+    let mut vr = VolumeReturn::new(0.4, 0.6);
+    assert_eq!(vr.on_pedal(1.0), None, "the toe end reverts too");
+    assert!(vr.reverted());
   }
 
   #[test]
   fn the_pedal_is_inert_until_the_first_pick() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0, 1.0);
+    st.enter(0.0);
     assert!(st.on_pedal(1.0).is_empty(), "no pairings: no re-files");
     assert!(st.drives().is_empty(), "and nothing to drive -- no pitch is yanked");
   }

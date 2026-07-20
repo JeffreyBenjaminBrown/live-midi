@@ -713,6 +713,132 @@
     );
   }
 
+  // ---- slice 5: chords ----
+
+  /// BUG 1, pinned: "sliding between two chords from chord storage, there is no pitch
+  /// glide; it just crossfades between them" (`4_bugs-jeff-ran-into.org`).
+  ///
+  /// The cause was membership, not matching: the reverted build asked the EDIT
+  /// SELECTION which voices the pedal managed, and a recalled chord's voices are never
+  /// in it -- so the matcher saw nothing to pair, and every old voice became a fade-out
+  /// and every new pitch a fade-in. Here the candidate list is the managed set, so the
+  /// sounding chord's voices GLIDE into the stored chord's pitches.
+  #[test]
+  fn a_chord_recalled_under_slide_glides_the_sounding_voices_into_it() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+
+    // Two stored chords, three voices each, a clear interval apart.
+    let sv = |pitch| StoredVoice {
+      pitch,
+      timbre: crate::types::Timbre::default(),
+      fader_gain: 1.0,
+      pedal_gain: 1.0,
+      osc_phase: 0.0,
+      pulse_factor: 0.0,
+      pulse_phase: 0.0,
+    };
+    let low = [10, 20, 30];
+    let high = [22, 32, 42];
+    let spawned = {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: low.iter().map(|p| sv(*p)).collect() });
+      rings[0].chord.save(1, StoredChord { voices: high.iter().map(|p| sv(*p)).collect() });
+      rings[0].chord.begin_recall(0)
+    };
+    for (seq, v) in &spawned {
+      rt.sink.spawn_chord_voice(*seq, v, 0.0);
+    }
+    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+
+    // Press slot 1: under slide mode this AIMS at the stored chord rather than
+    // recalling it.
+    let (sx, sy) = chords::slot_cell(rt.overlays.chord_rect, 1);
+    handle_key(&mut rt, &mut register, &mut held, (sx, sy), true);
+
+    let mut r = SlideRigUnderTest { rt, register, held, h: 0 };
+    assert_eq!(r.rt.pedal_slide.target_slot(), Some(1), "slot 1 lights as the target chord");
+    assert_eq!(
+      r.rt.pedal_slide.pairings().len(),
+      3,
+      "all three SOUNDING chord voices are managed -- the ones the reverted build \
+       could not see",
+    );
+    assert!(
+      r.rt.pedal_slide.pairings().iter().all(|p| p.kind == pedal_slide::Kind::Pitch),
+      "and every one of them is a PITCH slide, not a fade -- this is bug 1 exactly",
+    );
+    assert_eq!(
+      r.rt.shared.voices.lock().unwrap().len(),
+      3,
+      "aiming at a chord spawns no voices: three in, three out, none doubled",
+    );
+
+    // Sweep, checking every voice arrives on its matched target. The ascending pass
+    // pairs 10->22, 20->32, 30->42.
+    for i in 1..=100 {
+      r.pedal_to(i as f32 / 100.0);
+    }
+    r.render_ms(200);
+    let voices = r.rt.shared.voices.lock().unwrap();
+    let (fund, edo) = (r.rt.tuning.fund, r.rt.tuning.edo);
+    let mut landed: Vec<i32> = voices
+      .values()
+      .map(|v| ((v.freq as f64 / fund).log2() * edo as f64).round() as i32)
+      .collect();
+    landed.sort_unstable();
+    assert_eq!(landed, high, "every voice GLIDED onto its matched pitch");
+  }
+
+  /// The matcher's spare ends, through the real wiring: more target pitches than
+  /// sounding voices means the extras swell in; the other way round means the leftovers
+  /// fade out. Both are the vision's "just fade in the other voices" / "I guess
+  /// similarly fade them out".
+  #[test]
+  fn a_bigger_target_chord_swells_the_extras_and_a_smaller_one_fades_the_leftovers() {
+    let mut st = pedal_slide::PedalSlideState::new();
+    st.enter(0.0);
+    let v = |p: i32| crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: p };
+
+    // One voice, two targets: it takes the nearer, the other swells in.
+    let out = st.match_targets(&[12, 40], &[(v(10), 10)]);
+    assert_eq!(out.spawn_fade_ins, vec![40], "the voice takes 12 (nearer); 40 swells in");
+
+    // Two voices, one target: the ascending pass gives it to the nearer, the other
+    // fades out.
+    let mut st = pedal_slide::PedalSlideState::new();
+    st.enter(0.0);
+    let out = st.match_targets(&[11], &[(v(10), 10), (v(20), 20)]);
+    assert!(out.spawn_fade_ins.is_empty(), "no spare targets");
+    let kinds: Vec<_> = st.pairings().iter().map(|p| (p.voice, p.kind)).collect();
+    assert!(
+      kinds.contains(&(v(10), pedal_slide::Kind::Pitch)),
+      "the matched voice slides: {kinds:?}",
+    );
+    assert!(
+      kinds.contains(&(v(20), pedal_slide::Kind::Fade)),
+      "the leftover fades out: {kinds:?}",
+    );
+  }
+
+  /// "Already-satisfied pitches stay put" (`6_plan.org`'s slice-5 verify list): a voice
+  /// already aimed at one of the new targets keeps that target rather than being
+  /// re-shuffled onto a different one by the ascending pass.
+  #[test]
+  fn re_aiming_at_an_overlapping_chord_leaves_satisfied_voices_alone() {
+    let mut st = pedal_slide::PedalSlideState::new();
+    st.enter(0.0);
+    let v = |p: i32| crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: p };
+    st.match_targets(&[20, 30], &[(v(10), 10), (v(25), 25)]);
+    let aimed_before = st.targets();
+
+    // The same chord again: nothing should move.
+    st.match_targets(&[20, 30], &[(v(10), 10), (v(25), 25)]);
+    assert_eq!(st.targets(), aimed_before, "re-aiming at the same chord is inert");
+  }
+
   /// Toggling pedal slide off mid-flight freezes the voice exactly where it is --
   /// smoothness above all -- and the pedal stops driving it.
   #[test]

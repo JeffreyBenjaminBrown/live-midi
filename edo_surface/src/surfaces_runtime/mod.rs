@@ -810,6 +810,12 @@ fn grid_thread(mut rt: GridThread) {
     // whatever cell(s) hold that pitch under the current register. The HOME pitch needs
     // nothing here: it is a sustained, edited note, so it is already lit and dancing
     // through the ordinary path.
+    // The chord slot supplying the target set lights SOLID (`1_vision`: at most one
+    // chord selected at a time), so the surface says which chord you are heading for.
+    if let Some(slot) = rt.pedal_slide.target_slot() {
+      let (x, y) = chords::slot_cell(rt.overlays.chord_rect, slot);
+      buttons.push(([x, y, x, y], BRIGHT));
+    }
     if !slide_targets.is_empty() {
       let level = if dance::target_flash_on(elapsed) { BRIGHT } else { OFF };
       for pitch in &slide_targets {
@@ -1005,15 +1011,26 @@ fn pedal_slide_step(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>) ->
 
   // 2. apply + confirm, one at a time
   for r in &refiles {
-    let occupied = rt.sink.drone_exists(r.to);
+    use crate::types::VoiceSource;
+    // A CHORD voice is seq-keyed, so nothing about its identity moves -- only the pitch
+    // its registry entry records. It is filed in the chord layer, not the ring.
+    if let VoiceSource::SurfaceChord { seq, .. } = r.voice_old {
+      let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+      if let Some(v) = rings[rt.grid_index].chord.live.get_mut(&seq) {
+        v.pitch = r.to;
+        drop(rings);
+        rt.pedal_slide.confirm_refile(r);
+      }
+      continue;
+    }
     let landed = match r.voice_old {
       // A pitch-keyed drone: the voice map entry moves with the filing.
-      crate::types::VoiceSource::SurfaceDrone { .. } => rt.sink.rekey_drone(r.from, r.to),
+      VoiceSource::SurfaceDrone { .. } => rt.sink.rekey_drone(r.from, r.to),
       // A cell-keyed fingered voice: its key is the cell and does not move, but its
       // FILED pitch does -- so the ring and the held map still have to follow, or the
       // finger's eventual release looks up a pitch nobody is sustaining and cuts a
       // note mid-slide.
-      _ => !occupied,
+      _ => !rt.sink.drone_exists(r.to),
     };
     if !landed {
       continue;
