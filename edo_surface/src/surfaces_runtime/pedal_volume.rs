@@ -125,9 +125,14 @@ pub(super) fn expression_pedal_loop(
       let p = pedals[pedal];
       // Publish the position for the grid thread whether or not slide mode is on, so
       // that turning the toggle ON knows at once which side of the pedal the foot is
-      // resting on instead of waiting for the next twitch.
-      if let Some(slot) = pedal_slide_frac.get(grid) {
-        slot.store(p.norm.to_bits(), Ordering::Relaxed);
+      // resting on instead of waiting for the next twitch. Only once the pedal has
+      // actually reported, though: before that the slot keeps its NaN sentinel, because
+      // "no CC yet" is not the same fact as "at the heel" and the engine must not
+      // mistake one for the other.
+      if p.updates > 0 {
+        if let Some(slot) = pedal_slide_frac.get(grid) {
+          slot.store(p.norm.to_bits(), Ordering::Relaxed);
+        }
       }
       let mode = pedal_slide_on.get(grid).is_some_and(|b| b.load(Ordering::Relaxed));
       // The ON->OFF edge: begin the anchored-kink return from wherever the volume froze,

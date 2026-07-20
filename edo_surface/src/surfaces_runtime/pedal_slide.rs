@@ -397,6 +397,18 @@ pub struct PedalSlideState {
   mode: bool,
   /// The pedal's last normalized fraction `[0, 1]`.
   cur_f: f32,
+  /// Has this pedal EVER reported a position? Until it has, the instrument has no idea
+  /// where the foot is resting -- an EX-P only sends CCs under a foot, so a session
+  /// where the pedal has not been touched knows nothing about it.
+  ///
+  /// Guessing here is not harmless: it decides which side is home, and therefore which
+  /// endpoint holds each voice's current pitch. Guess wrong and the first CC to arrive
+  /// finds the map already stretched between the wrong ends, and the pitch LEAPS to
+  /// wherever that CC falls -- audible as a jump on the very first pedal move, which is
+  /// exactly the discontinuity Jeff heard. So the engine stays agnostic: no home until
+  /// the pedal speaks, and the side it speaks from becomes home
+  /// (see [`PedalSlideState::adopt_first_reading`]).
+  pedal_seen: bool,
   /// The pedal's last travel direction (true = rising toward `s1`).
   moving_up: bool,
   /// Which side is home right now.
@@ -423,6 +435,7 @@ impl PedalSlideState {
     PedalSlideState {
       mode: false,
       cur_f: 0.0,
+      pedal_seen: false,
       moving_up: true,
       home: Home::Low,
       flip: FlipPolicy::AtMidpoint,
@@ -481,19 +494,61 @@ impl PedalSlideState {
       .collect()
   }
 
-  /// Enter slide mode with the pedal at fraction `f`. Starts with no pairings, so the
-  /// pedal is inert until the first pick (no pitch is yanked). Home follows the pedal's
-  /// current side, so the first pick's far endpoint is the one away from the foot.
+  /// Enter slide mode. `f` is the pedal's position if it has ever reported one, and
+  /// `None` if it has not -- in which case home stays UNDECIDED (provisionally `Low`,
+  /// but nothing is committed) until the first CC arrives and settles it.
+  ///
+  /// Starts with no pairings either way, so the pedal is inert -- and no pitch is
+  /// yanked -- until the first pick.
   ///
   /// Nothing is recorded about the grid volume: it simply stops being driven, and the
   /// pedal thread reads the frozen value straight off the shared per-grid gain when it
   /// takes volume duty back (`pedal_volume.rs`). One fact, one home.
-  pub fn enter(&mut self, f: f32) {
+  pub fn enter(&mut self, f: Option<f32>) {
     self.mode = true;
     self.pairings.clear();
     self.target_slot = None;
-    self.cur_f = f.clamp(0.0, 1.0);
-    self.home = if self.cur_f <= MIDPOINT { Home::Low } else { Home::High };
+    if let Some(f) = f {
+      self.pedal_seen = true;
+      self.cur_f = f.clamp(0.0, 1.0);
+    }
+    self.home = if self.pedal_seen && self.cur_f > MIDPOINT { Home::High } else { Home::Low };
+  }
+
+  /// Whether the pedal has ever reported a position. The on-screen readout answers the
+  /// same question from the published atomic's NaN sentinel (it has no engine to ask),
+  /// so this exists for the tests, which assert on the engine's own view of it.
+  #[allow(dead_code)]
+  pub fn pedal_seen(&self) -> bool {
+    self.pedal_seen
+  }
+
+  /// The pedal's first-ever reading: this is where the foot has been all along, so THIS
+  /// side is home. Adopt the position and re-anchor every pairing to it WITHOUT moving
+  /// a single pitch.
+  ///
+  /// Nothing has moved yet (no reading means no travel), so each voice still sounds its
+  /// base pitch and `cur == anchor_v`. Re-anchoring is therefore lossless: if the
+  /// provisional home was the wrong side, the two endpoints simply swap, so the side
+  /// the foot is actually on holds where each voice IS and the far side holds its
+  /// target. Then the anchor moves to the real position.
+  fn adopt_first_reading(&mut self, f: f32) {
+    let actual = if f > MIDPOINT { Home::High } else { Home::Low };
+    if actual != self.home {
+      // The provisional home was the other side. Swap the goalposts rather than moving
+      // the voice: the pitch a slide is AT must not depend on where the foot turned out
+      // to be resting.
+      for p in &mut self.pairings {
+        std::mem::swap(&mut p.seg.s0, &mut p.seg.s1);
+      }
+      self.home = actual;
+    }
+    for p in &mut self.pairings {
+      p.seg.anchor_f = f;
+      p.seg.anchor_v = p.seg.cur;
+    }
+    self.cur_f = f;
+    self.pedal_seen = true;
   }
 
   /// Leave slide mode mid-anything: the managed set empties and every voice it held is
@@ -549,6 +604,13 @@ impl PedalSlideState {
   /// is on without waiting for it to move.
   pub fn on_pedal(&mut self, f: f32) -> Vec<Refile> {
     let f = f.clamp(0.0, 1.0);
+    if !self.pedal_seen {
+      // The first word from the pedal tells us where the foot is, which is a fact to
+      // ADOPT, not a movement to follow. Following it would sweep every map from a
+      // position that was only ever a guess.
+      self.adopt_first_reading(f);
+      return Vec::new();
+    }
     if !self.mode {
       self.cur_f = f;
       return Vec::new();
@@ -979,16 +1041,16 @@ mod tests {
   #[test]
   fn entering_takes_the_pedals_current_side_as_home() {
     let mut st = PedalSlideState::new();
-    st.enter(0.9);
+    st.enter(Some(0.9));
     assert_eq!(st.home(), Home::High, "the foot is down, so home is the toe end");
-    st.enter(0.1);
+    st.enter(Some(0.1));
     assert_eq!(st.home(), Home::Low);
   }
 
   #[test]
   fn a_pick_targets_the_nearest_candidate_and_a_re_pick_retargets_the_same_voice() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     let voices = [(drone(10), 10), (drone(50), 50)];
     st.pick(46, &voices);
     assert_eq!(st.pairings().len(), 1, "one voice pairs -- the nearer one");
@@ -1006,7 +1068,7 @@ mod tests {
   #[test]
   fn a_pick_with_no_candidates_asks_for_a_swell_voice() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     assert_eq!(st.pick(25, &[]).spawn_fade_ins, vec![25]);
     assert!(st.is_empty(), "nothing is managed until the caller reports the voice back");
 
@@ -1021,7 +1083,7 @@ mod tests {
   #[test]
   fn a_swell_voice_rises_from_silence_to_full_across_the_pedal() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(25, &[]);
     st.register_fade(drone(25), 25, FadeDir::In);
 
@@ -1041,7 +1103,7 @@ mod tests {
   #[test]
   fn a_swell_started_mid_travel_does_not_jump() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.on_pedal(0.6);
     st.pick(25, &[]);
     st.register_fade(drone(25), 25, FadeDir::In);
@@ -1055,7 +1117,7 @@ mod tests {
   #[test]
   fn reconcile_leaves_fades_alone_but_drops_voices_that_ended() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.register_fade(drone(25), 25, FadeDir::In);
     assert!(st.reconcile(&HashSet::new(), |_| true).is_empty(), "no selection, still swelling");
     assert!(!st.is_empty());
@@ -1068,7 +1130,7 @@ mod tests {
   #[test]
   fn a_swelling_voice_flashes_until_it_has_arrived() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.register_fade(drone(25), 25, FadeDir::In);
     let (_, target) = st.led_roles();
     assert!(target.contains(&25), "flashing while it swells in");
@@ -1081,7 +1143,7 @@ mod tests {
   #[test]
   fn a_full_flight_drives_the_voice_from_home_to_target_and_back() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(22, &[(drone(10), 10)]);
     assert!((st.drives()[0].pitch.0 - 10.0).abs() < 1e-4, "at the heel the voice is home");
     st.on_pedal(0.5);
@@ -1100,7 +1162,7 @@ mod tests {
   #[test]
   fn a_retarget_only_moves_the_far_goalpost_and_never_jumps_the_pitch() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(drone(10), 10)]); // home low 10, far high 30
     st.on_pedal(0.5);
     let before = st.drives()[0].pitch.0;
@@ -1119,7 +1181,7 @@ mod tests {
   #[test]
   fn arrival_proposes_a_refile_that_only_takes_effect_once_confirmed() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(drone(10), 10)]);
     let refiles = st.on_pedal(1.0);
     assert_eq!(refiles.len(), 1);
@@ -1139,7 +1201,7 @@ mod tests {
   #[test]
   fn a_fingered_voice_keeps_its_cell_key_across_a_refile() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(finger((5, 5)), 10)]);
     let refiles = st.on_pedal(1.0);
     assert_eq!(refiles[0].voice_new, finger((5, 5)), "a finger's identity is its cell");
@@ -1154,7 +1216,7 @@ mod tests {
     // must continue under the key the voice map really holds -- the reverted build
     // instead drove a key that did not exist yet and silently lost every step.
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(drone(10), 10)]);
     st.on_pedal(1.0); // proposed, deliberately NOT confirmed
     assert_eq!(st.drives()[0].voice, drone(10), "still addressed by the key that exists");
@@ -1168,7 +1230,7 @@ mod tests {
   #[test]
   fn reconcile_drops_a_pairing_whose_note_left_the_edit_selection() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(drone(10), 10)]);
     let edited: HashSet<i32> = [10].into_iter().collect();
     assert!(st.reconcile(&edited, |_| true).is_empty(), "still selected: nothing dropped");
@@ -1183,7 +1245,7 @@ mod tests {
     // names the TARGET pitch. Reconcile must read the pairing's own filed pitch, not
     // re-derive one from a stale notion of home.
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(drone(10), 10)]);
     let refiles = st.on_pedal(1.0);
     st.confirm_refile(&refiles[0]);
@@ -1197,7 +1259,7 @@ mod tests {
   #[test]
   fn led_roles_split_home_and_target_and_swap_on_arrival() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(30, &[(drone(10), 10)]);
     let (home, target) = st.led_roles();
     assert!(home.contains(&10) && target.contains(&30));
@@ -1211,7 +1273,7 @@ mod tests {
   #[test]
   fn exit_hands_back_every_driven_voice_for_freezing() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     st.pick(20, &[(drone(10), 10)]);
     assert_eq!(st.exit(), vec![drone(10)], "the owner freezes exactly these");
     assert!(!st.mode() && st.is_empty());
@@ -1254,7 +1316,7 @@ mod tests {
   #[test]
   fn the_pedal_is_inert_until_the_first_pick() {
     let mut st = PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     assert!(st.on_pedal(1.0).is_empty(), "no pairings: no re-files");
     assert!(st.drives().is_empty(), "and nothing to drive -- no pitch is yanked");
   }

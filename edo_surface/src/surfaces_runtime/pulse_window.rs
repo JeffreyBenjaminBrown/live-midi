@@ -26,7 +26,7 @@
 //! or a host that hasn't run `xhost` yet -- never takes the instrument down with
 //! it; the grids and audio don't depend on this thread existing.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -34,11 +34,15 @@ use minifb::{Key, Window, WindowOptions};
 
 use crate::bitmap_font::{self, GLYPH_H};
 
+use crate::types::VoiceMap;
+
 use super::polyrhythm::PolyrhythmState;
 use super::readout;
 use super::STOP;
 
-const WIN_W: usize = 640;
+/// Wide enough for the pedal-slide line, which is the longest thing here
+/// (`LOM  pedal 072.4  low +0013.45`) at the shared font's 20px cell.
+const WIN_W: usize = 780;
 const MARGIN: usize = 14;
 /// A little breathing room below each text line's glyph height.
 const LINE_H: usize = GLYPH_H + 12;
@@ -47,6 +51,9 @@ const BG_COLOR: u32 = 0x000000;
 /// The blinker's lit color -- distinct from the plain white text, so it reads as
 /// the one thing in the window that moves on its own.
 const BLINK_COLOR: u32 = 0xFF3020;
+/// The pedal-slide lines' colour -- readable, and distinct from the tempo block above
+/// so the eye can find the number it is hunting without reading the labels.
+const SLIDE_COLOR: u32 = 0x60D0FF;
 
 /// Jeff's names for the two grids this rig actually has (`TODO/many/3_plan.org`
 /// "gear and naming": LOM = left/older monome, RNM = right/newer). A hypothetical
@@ -60,27 +67,70 @@ fn grid_name(index: usize) -> String {
   }
 }
 
-/// The window's height for `num_grids` grid lines: one BPM line, one line per
-/// grid, and the blinker, each `LINE_H` tall, with a margin top/bottom and a
-/// second margin's gap setting the blinker apart from the text above it.
+/// The window's height: one BPM line, one factored-pulse line per grid, one
+/// PEDAL SLIDE line per grid, and the blinker -- each `LINE_H` tall, with a margin
+/// top/bottom and a second margin's gap setting the blinker apart from the text.
 fn win_h(num_grids: usize) -> usize {
-  MARGIN * 3 + LINE_H * (num_grids + 2)
+  MARGIN * 3 + LINE_H * (2 * num_grids + 2)
 }
 
 /// Spawn the factored-pulse window on its own thread and return immediately --
 /// opening (or failing to open) the window never blocks or fails the caller.
-pub fn spawn(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
-  std::thread::spawn(move || run(poly, num_grids));
+pub fn spawn(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize, slide: SlideReadout) {
+  std::thread::spawn(move || run(poly, num_grids, slide));
 }
 
-fn run(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
+/// What the pedal-slide lines read from: each grid's published pedal position (the
+/// same atomic the grid threads drive their slides from -- NaN until that pedal has
+/// ever reported) and the shared voice map, plus the tuning needed to say a frequency
+/// as EDO steps.
+///
+/// Read-only and lock-light on purpose: this is a display thread, and it must never be
+/// able to perturb what it is displaying.
+#[derive(Clone)]
+pub struct SlideReadout {
+  pub frac: Arc<Vec<AtomicU32>>,
+  pub voices: Arc<Mutex<VoiceMap>>,
+  pub fund: f64,
+  pub edo: i32,
+}
+
+impl SlideReadout {
+  /// One grid's `(pedal position on its own 0..120 scale, lowest sounding voice in EDO
+  /// steps)`. Either is `None` when there is nothing honest to say: no CC yet from that
+  /// pedal, or no voice on that grid.
+  fn read(&self, grid: usize) -> (Option<f32>, Option<f32>) {
+    let f = self.frac.get(grid).map(|a| f32::from_bits(a.load(Ordering::Relaxed)));
+    let pedal = f.filter(|f| !f.is_nan()).map(|f| f * 120.0);
+    let voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    // The LOWEST voice by frequency, which is what the ear picks out of a slide and
+    // what Jeff asked to watch. Release tails are excluded -- a dying voice is not what
+    // the pedal is moving. Chord and fingered voices count: any of them can be slid.
+    let lowest = voices
+      .iter()
+      .filter(|(src, _)| {
+        matches!(src,
+          crate::types::VoiceSource::SurfaceFinger { grid: g, .. }
+          | crate::types::VoiceSource::SurfaceDrone { grid: g, .. }
+          | crate::types::VoiceSource::SurfaceChord { grid: g, .. } if *g == grid)
+      })
+      .map(|(_, v)| v.freq)
+      .filter(|hz| hz.is_finite() && *hz > 0.0)
+      .fold(f32::INFINITY, f32::min);
+    drop(voices);
+    let pitch = readout::steps_from_hz(lowest, self.fund, self.edo);
+    (pedal, pitch)
+  }
+}
+
+fn run(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize, slide: SlideReadout) {
   // minifb talks X11; on Wayland this ensures DISPLAY is set for XWayland, the
   // same fixup `edo12n_gui` applies (a spawned process doesn't always inherit it).
   if std::env::var("DISPLAY").is_err() {
     std::env::set_var("DISPLAY", ":0");
   }
   let win_h = win_h(num_grids);
-  let mut window = match Window::new("surfaces factored pulse", WIN_W, win_h, WindowOptions::default()) {
+  let mut window = match Window::new("surfaces readout", WIN_W, win_h, WindowOptions::default()) {
     Ok(w) => w,
     Err(e) => {
       // Non-fatal: the instrument plays fine without this window. Name the one
@@ -105,7 +155,7 @@ fn run(poly: Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
   // closing it must not stop the grids or audio. STOP (Ctrl-C / normal exit)
   // ends it from the other direction, so this thread never outlives the run.
   while window.is_open() && !window.is_key_down(Key::Escape) && !STOP.load(Ordering::SeqCst) {
-    render(&mut buf, WIN_W, win_h, &poly, num_grids);
+    render(&mut buf, WIN_W, win_h, &poly, num_grids, &slide);
     if window.update_with_buffer(&buf, WIN_W, win_h).is_err() {
       // The X connection dropped mid-run (server restart, etc.): stop rather than
       // spin against a broken window.
@@ -152,7 +202,14 @@ fn screen_blink_on(phase: Option<f32>, hz: Option<f32>) -> bool {
 /// The LED's duty, mirrored here so the two agree at tempos slow enough for both.
 const LED_BLINK_DUTY: f32 = 0.1;
 
-fn render(buf: &mut [u32], win_w: usize, win_h: usize, poly: &Arc<Mutex<PolyrhythmState>>, num_grids: usize) {
+fn render(
+  buf: &mut [u32],
+  win_w: usize,
+  win_h: usize,
+  poly: &Arc<Mutex<PolyrhythmState>>,
+  num_grids: usize,
+  slide: &SlideReadout,
+) {
   let now = Instant::now();
   let (bpm, blink, lines) = {
     let p = poly.lock().unwrap_or_else(|e| e.into_inner());
@@ -180,6 +237,17 @@ fn render(buf: &mut [u32], win_w: usize, win_h: usize, poly: &Arc<Mutex<Polyrhyt
 
   for line in &lines {
     bitmap_font::draw_text(buf, win_w, win_h, line, MARGIN, y, TEXT_COLOR);
+    y += LINE_H;
+  }
+
+  // The pedal-slide lines (TODO/pedal-slide): where each pedal is, and what the lowest
+  // voice on its grid is actually sounding. Both are read AFTER the poly lock has been
+  // dropped -- this thread holds one lock at a time, never two (the module's rule).
+  // A distinct colour so they read as a separate instrument from the tempo block.
+  for g in 0..num_grids {
+    let (pedal, pitch) = slide.read(g);
+    let line = readout::pedal_slide_line(&grid_name(g), pedal, pitch);
+    bitmap_font::draw_text(buf, win_w, win_h, &line, MARGIN, y, SLIDE_COLOR);
     y += LINE_H;
   }
 

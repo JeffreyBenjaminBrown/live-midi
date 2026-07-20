@@ -125,7 +125,8 @@ pub(super) fn handle_key(
       let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
       if now_on {
         let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
-        rt.pedal_slide.enter(f);
+        // NaN = this pedal has never reported; enter agnostic about which side is home.
+        rt.pedal_slide.enter((!f.is_nan()).then_some(f));
       } else {
         let frozen_voices = rt.pedal_slide.exit();
         synth::freeze_slide_voices(&rt.shared.voices, &frozen_voices);

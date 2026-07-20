@@ -35,8 +35,9 @@
       slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
       mono_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
       pedal_slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+      // NaN = "this pedal has never reported", exactly as `run()` initializes it.
       pedal_slide_frac: Arc::new(
-        (0..num_grids).map(|_| AtomicU32::new(0.0_f32.to_bits())).collect(),
+        (0..num_grids).map(|_| AtomicU32::new(f32::NAN.to_bits())).collect(),
       ),
       poly,
       live,
@@ -300,7 +301,20 @@
 
   impl SlideRigUnderTest {
     /// Strike a note, edit it (which sustains it), lift the finger, turn pedal slide on.
+    /// The pedal is treated as already resting at the heel, which is the ordinary case
+    /// once a session has been played in.
     fn new() -> Self {
+      let mut r = Self::new_untouched_pedal();
+      // A real reading of 0.0 -- distinct from "never touched" (see
+      // `the_first_ever_pedal_reading_settles_home_without_moving_any_pitch`).
+      r.rt.shared.pedal_slide_frac[0].store(0.0_f32.to_bits(), Ordering::Relaxed);
+      pedal_slide_step(&mut r.rt, &mut r.held);
+      r
+    }
+
+    /// The same, but the pedal has never sent a CC -- so nothing is known about where
+    /// the foot is, and the engine must not pretend otherwise.
+    fn new_untouched_pedal() -> Self {
       let mut rt = test_grid_thread();
       let mut register = 0;
       let mut held = HashMap::new();
@@ -799,7 +813,7 @@
   #[test]
   fn a_bigger_target_chord_swells_the_extras_and_a_smaller_one_fades_the_leftovers() {
     let mut st = pedal_slide::PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     let v = |p: i32| crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: p };
 
     // One voice, two targets: it takes the nearer, the other swells in.
@@ -809,7 +823,7 @@
     // Two voices, one target: the ascending pass gives it to the nearer, the other
     // fades out.
     let mut st = pedal_slide::PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     let out = st.match_targets(&[11], &[(v(10), 10), (v(20), 20)]);
     assert!(out.spawn_fade_ins.is_empty(), "no spare targets");
     let kinds: Vec<_> = st.pairings().iter().map(|p| (p.voice, p.kind)).collect();
@@ -829,7 +843,7 @@
   #[test]
   fn re_aiming_at_an_overlapping_chord_leaves_satisfied_voices_alone() {
     let mut st = pedal_slide::PedalSlideState::new();
-    st.enter(0.0);
+    st.enter(Some(0.0));
     let v = |p: i32| crate::types::VoiceSource::SurfaceDrone { grid: 0, pitch: p };
     st.match_targets(&[20, 30], &[(v(10), 10), (v(25), 25)]);
     let aimed_before = st.targets();
@@ -837,6 +851,69 @@
     // The same chord again: nothing should move.
     st.match_targets(&[20, 30], &[(v(10), 10), (v(25), 25)]);
     assert_eq!(st.targets(), aimed_before, "re-aiming at the same chord is inert");
+  }
+
+  // ---- the untouched pedal (Jeff: "it seems to be assuming a certain point") ----
+
+  /// An EX-P only sends CCs under a foot, so a session where the pedal has not been
+  /// touched knows NOTHING about where it is resting. Assuming a position is not
+  /// harmless: it decides which side is home, and so which endpoint holds each voice's
+  /// current pitch. Assume the heel while the foot is at the toe and the first CC to
+  /// arrive finds the map stretched between the wrong ends -- so the pitch LEAPS to
+  /// wherever that CC falls. That is the discontinuity.
+  ///
+  /// Here the pedal is untouched, a target is picked, and then the pedal reports for
+  /// the first time from the FAR side. The pitch must not move at all: that reading is
+  /// a fact to adopt, not travel to follow.
+  #[test]
+  fn the_first_ever_pedal_reading_settles_home_without_moving_any_pitch() {
+    let mut r = SlideRigUnderTest::new_untouched_pedal();
+    assert!(!r.rt.pedal_slide.pedal_seen(), "no CC yet: the engine knows nothing");
+
+    let t = r.h + 27;
+    let cell = r.cell_for(t);
+    r.press(cell);
+    let before = r.render_ms(50);
+    assert!((before - r.h as f32).abs() < 0.01, "still at its own pitch, heard {before:.3}");
+
+    // The pedal speaks for the first time, from near the toe.
+    let after = r.pedal_to(0.85);
+    assert!(
+      (after - before).abs() < 0.01,
+      "the FIRST reading must move nothing ({before:.3} -> {after:.3}) -- it says where \
+       the foot has been all along, it is not a sweep",
+    );
+    let settled = r.render_ms(200);
+    assert!((settled - r.h as f32).abs() < 0.01, "and it stays put, heard {settled:.3}");
+
+    // That side is now home, so the target is at the other end and travelling there
+    // arrives exactly -- with no jump anywhere along the way.
+    assert_eq!(r.rt.pedal_slide.home(), pedal_slide::Home::High, "the toe side became home");
+    let landed = r.sweep(0.85, 0.0);
+    assert!(
+      (landed - t as f32).abs() < 0.05,
+      "and the far (heel) end holds the target, heard {landed:.3} wanted {t}",
+    );
+  }
+
+  /// The sentinel has to distinguish "never touched" from "resting at the heel" -- they
+  /// are different facts and they choose different home sides. A pedal genuinely at 0.0
+  /// makes the LOW side home, where an untouched one commits to nothing.
+  #[test]
+  fn a_pedal_resting_at_the_heel_is_not_the_same_as_one_never_touched() {
+    let mut untouched = pedal_slide::PedalSlideState::new();
+    untouched.enter(None);
+    assert!(!untouched.pedal_seen());
+
+    let mut at_heel = pedal_slide::PedalSlideState::new();
+    at_heel.enter(Some(0.0));
+    assert!(at_heel.pedal_seen(), "a real reading of 0.0 IS a reading");
+    assert_eq!(at_heel.home(), pedal_slide::Home::Low);
+
+    // The untouched one commits only when the pedal speaks -- and then to that side.
+    untouched.on_pedal(0.9);
+    assert!(untouched.pedal_seen());
+    assert_eq!(untouched.home(), pedal_slide::Home::High, "the side it spoke from is home");
   }
 
   /// Toggling pedal slide off mid-flight freezes the voice exactly where it is --

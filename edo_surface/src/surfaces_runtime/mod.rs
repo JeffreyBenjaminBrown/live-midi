@@ -267,8 +267,11 @@ fn run(
   // lock and let both threads mutate it; that is what killed it.
   let pedal_slide_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
+  // NaN is the "this pedal has never reported" sentinel: a real full-heel reading is
+  // 0.0, and the two must not look alike -- which side is home depends on telling them
+  // apart (see `PedalSlideState::adopt_first_reading`).
   let pedal_slide_frac: Arc<Vec<AtomicU32>> =
-    Arc::new((0..num_grids).map(|_| AtomicU32::new(0.0_f32.to_bits())).collect());
+    Arc::new((0..num_grids).map(|_| AtomicU32::new(f32::NAN.to_bits())).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
@@ -295,7 +298,16 @@ fn run(
   // an X11 window on whoever's display happens to be around, which makes the suite
   // depend on DISPLAY and on Jeff's per-login `xhost` grant.
   if plan.any_grid() && !no_audio {
-    pulse_window::spawn(Arc::clone(&poly), num_grids);
+    pulse_window::spawn(
+      Arc::clone(&poly),
+      num_grids,
+      pulse_window::SlideReadout {
+        frac: Arc::clone(&pedal_slide_frac),
+        voices: Arc::clone(&voices),
+        fund: s.fund,
+        edo: s.edo,
+      },
+    );
   }
   // The EX-P volume pedals' per-grid gains: unity until a pedal first moves. The
   // pedal thread writes them (and re-aims sounding voices); note-ons read them
@@ -1006,8 +1018,9 @@ fn pedal_slide_step(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>) ->
   }
   let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
 
-  // 1. advance
-  let refiles = rt.pedal_slide.on_pedal(f);
+  // 1. advance -- unless the pedal has never spoken (NaN), in which case there is no
+  // position to advance along and the maps wait, agnostic, for their first reading.
+  let refiles = if f.is_nan() { Vec::new() } else { rt.pedal_slide.on_pedal(f) };
 
   // 2. apply + confirm, one at a time
   for r in &refiles {
