@@ -1,0 +1,3297 @@
+#+title: Pedal slide: the two commits' diffs (for the post-mortem)
+#+date: 2026-07-20
+
+Saved verbatim for TODO/pedal-slide/6_plan.org's autopsy. Phase A = cedc9ad, phase B = a16b6dc.
+
+* phase A: cedc9ad
+#+begin_src diff
+commit cedc9ad7017a4a7ccea4e718da0314410eb8292e
+Author: Codex <codex@local>
+Date:   Mon Jul 20 05:50:06 2026 +0000
+
+    pedal slide: core -- toggle, targets, anchored-segment map, fades, flight, LEDs (phase A)
+    
+    Phase A of TODO/pedal-slide (everything except the chord-storage interaction,
+    which is phase B).
+    
+    The heart is the new pure module surfaces_runtime/pedal_slide.rs: the
+    anchored-segments map (two segments joined at the pedal's current position,
+    re-derived behind you), which delivers continuity under mid-flight retarget,
+    hysteretic reversal, endpoint exactness, kink-gone-at-endpoint, and the
+    far-side-only retarget rule from one construction. One Shape (Linear for pitch,
+    Quartic for amplitude fades) parametrizes it; pitch interpolates in fractional
+    EDO-step space (log-linear in Hz). PedalSlideState adds the mode flag, per-voice
+    pairings, home/target hysteresis, single-pick home-proximity retarget, the
+    ascending ties-lower batch matcher (built + tested, wired in phase B), and
+    VolumeReturn -- the 2_discussion amendment's kinked-x^4 volume return, reusing
+    Segments. 22 unit tests.
+    
+    Wiring: rig kind pedal_slide_toggle (variant + validation + parse), bound at
+    (0,15) on both grids of 2-monomes_2-softsteps; Overlays.pedal_slide_rect; the
+    toggle + pick play-path in keys.rs; a one-pole-slewed VoiceState.slide_freq_target
+    (SLIDE_SLEW_SECS 10 ms, sibling of the grid_gain slew, distinct from
+    glide_per_sample) in the render; the expression-pedal loop's dual duty (slide vs
+    volume) with the VolumeReturn on mode-off; grid-thread re-file drain (note_moved +
+    drone rekey), 100 ms target flash off the shared dance clock, and per-repaint
+    reconcile so an editmode/sustain clear from either surface cancels + freezes +
+    unlights. Docs: rigs/README.org window-kind + dual-duty note; the rig readme's
+    "pedal slide" section + glossary + terminology-trap note; rig inline comments.
+    
+    cargo test --workspace: 0 failures. Deviations + imperfections in
+    TODO/pedal-slide/3_progress.org.
+    
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+diff --git a/TODO/pedal-slide/2_discussion.org b/TODO/pedal-slide/2_discussion.org
+index b8e056d..167acb9 100644
+--- a/TODO/pedal-slide/2_discussion.org
++++ b/TODO/pedal-slide/2_discussion.org
+@@ -182,3 +182,22 @@ terminology-trap note beside the existing one in the readme.
+   currently nearest to -- nice property, preserved by the formalization.
+ - 100 ms target flash: I'll drive it from the shared dance clock (the
+   vision permits it), so it can't drift against the other animations.
++* DONE amendment
++(Jeff wrote this while Claude was
++part of the way through implementing the slide feature.)
++
++The global-ish volume that the pedal applies when slide mode is exited
++should just use the same hysteresis trick: make a kinked x^4 relationship to voluem,
++which reverts to the slightly-linear-mostly-exponential curve
++upon reaching either endpoint. Otherwise I might get confused,
++trying to bring down the volume and not having any effect.
++** DONE [claude] implemented
++The mode-off return is now `pedal_slide::VolumeReturn` -- the SAME anchored-kink
++`Segments` (x^4 shape) the slide fades use: two quartic segments joined at
++`(F_now, V_frozen)`, one to `(0, 0)`, one to `(1, 1)`, so pushing OR pulling the
++pedal changes the volume at once, no dead zone. On reaching either endpoint it
++returns `None` and the pedal thread resumes the ordinary `PedalVolumeCurve`
++taper (continuous -- the segment's endpoints are 0 and 1, as the taper's are).
++The dropped catch-up-pickup code is gone. Covered by the pure-module tests
++`the_volume_return_is_continuous_at_mode_exit_and_immediate_both_ways` and
++`the_volume_return_reverts_to_the_ordinary_taper_at_an_endpoint`.
+diff --git a/TODO/pedal-slide/3_progress.org b/TODO/pedal-slide/3_progress.org
+new file mode 100644
+index 0000000..c6e8d9f
+--- /dev/null
++++ b/TODO/pedal-slide/3_progress.org
+@@ -0,0 +1,106 @@
++#+title: Pedal slide: progress
++#+date: 2026-07-20
++
++Phase A of pedal slide -- everything except the chord-storage interaction (phase B).
++Written against 1_vision.org + 2_discussion.org (including Jeff's DONE amendment on
++the mode-off volume return).
++
++* what's done and went well
++
++- *The pure heart: `surfaces_runtime/pedal_slide.rs`.* Pure, no I/O, unit-tested like
++  `polyrhythm.rs`. It holds:
++  - `Segments` -- the anchored two-segment map (the invariant): two segments joined at
++    the pedal's current position, `s0` at fraction 0, `s1` at 1, re-derived behind you
++    as the pedal moves. One `Shape` (Linear for pitch, Quartic for amplitude fades)
++    parametrizes it. Endpoint-exact, hysteretic (reverse = fresh segment home,
++    anchor re-pinned), kink-gone-at-endpoint, and far-side-only retarget all fall out
++    of the one construction. Pitch lives in fractional EDO-step space (linear there =
++    log-linear in Hz), so no logs in the segment math.
++  - `PedalSlideState` -- mode flag, per-voice `Pairing`s (pitch slides + quartic
++    amplitude fades), home/target side with midpoint hysteresis (`HYSTERESIS_BAND`
++    0.05), `pick` (single-pick home-proximity retarget or one-note swell),
++    `match_targets` (the ascending, ties-lower batch matcher -- built and tested now,
++    wired to picks in phase B), `on_pedal`/`drives`/`take_refiles`/`reconcile`/
++    `led_roles`.
++  - `VolumeReturn` -- the amendment's kinked-x^4 volume return, reusing `Segments`.
++  22 unit tests here, hammering continuity under mid-flight retarget, the hysteretic
++  reversal, endpoint exactness, kink-gone-at-endpoint, the far-side-only rule, the
++  quartic fade, the home hysteresis, the matcher, and the volume return.
++
++- *Rig kind `pedal_slide_toggle`.* `rig.rs` variant + match arms + validation (single
++  cell, one per monome, needs an `edo_note_grid`; parses from `kind =
++  "pedal_slide_toggle"` via serde). Bound at `(0,15)` on BOTH grids in
++  `rigs/2-monomes_2-softsteps.org` with inline comments; NOT added to any other rig.
++  `Overlays.pedal_slide_rect` + resolve in `settings.rs`.
++
++- *Toggle + play-path + flight.* `keys.rs`: the toggle branch (enter/exit the engine,
++  freeze on exit) and the pick interception (a Drag, or a Play on a free pitch,
++  becomes `Act::SlidePick`; `slide_pick` builds the edit-mode voice list, spawns/
++  registers fade-in voices, applies the first drive). `synth.rs`: `apply_slide_drives`,
++  `freeze_slide`/`freeze_slide_voices`, `spawn_slide_fade_in`, `rekey_drone`, and a new
++  `VoiceState.slide_freq_target` driven by a one-pole smoother (`SLIDE_SLEW_SECS` 10 ms,
++  sibling of `GAIN_SLEW_SECS`) in the render hot path -- distinct from `glide_per_sample`.
++
++- *Pedal routing (dual duty).* `pedal_volume.rs::expression_pedal_loop` now checks each
++  grid's `pedal_slide_on`: ON drives the engine (`on_pedal` + `apply_slide_drives`); the
++  ON->OFF edge starts a `VolumeReturn`; OFF applies it until an endpoint, then reverts to
++  the taper. `mod.rs` holds the per-grid `pedal_slide_on` atomics + `pedal_slide` engines
++  (each its own lock) in `Shared`, and passes them to the pedal thread.
++
++- *LEDs + re-filing.* The grid thread repaint drains the engine's midpoint-flip re-files
++  (ring `note_moved` + drone `rekey_drone`), flashes the TARGET goalpost cells 100 ms
++  bright/off off the shared dance clock (`dance::target_flash_on`), and reconciles the
++  pairings against the live edit set (so an editmode-clear/sustain-clear from EITHER
++  surface cancels + freezes + unlights). Home pitches paint bright + dance through the
++  ordinary sustained path.
++
++- *Docs.* `rigs/README.org` window-kind entry + description + expression-pedal dual-duty
++  note; the rig readme (`2-monomes_2-softsteps_readme.org`) gains a "pedal slide" section,
++  a glossary entry, a terminology-trap note beside the pedal/note slide split, and an
++  LED note; rig inline comments at the toggle cells.
++
++- `cargo test --workspace`: 0 failures (569 edo_surface lib + 159 rig-org + the rest).
++
++* Changes to the plan's envisioned order
++
++- The plan pictured the midpoint-flip re-file happening in the expression-pedal loop
++  (item 5). It can't: the ring and the sink are the grid thread's, and re-keying a
++  pitch-keyed drone needs the sink. So the engine QUEUES re-files in `on_pedal` (pedal
++  thread) and the grid thread DRAINS + applies them each repaint (`take_refiles`). Same
++  net effect, cleaner ownership, no cross-thread sink reach.
++- Item 6's "editmode-clear cancels pairings" is implemented as a per-repaint `reconcile`
++  against the live edit set rather than an event hook, so a clear from ANY surface (grid
++  button OR softstep pedal) is covered uniformly -- I never had to thread the engine into
++  `hooks::editmode_clear`.
++- The amendment (volume return) landed mid-implementation and replaced the catch-up
++  pickup I had already written; `VolumeReturn` reuses the slide's own `Segments`.
++
++* what's imperfect about what's done
++
++- *Fade-in voices are keyed as drones (`SurfaceDrone{grid,pitch}`).* Fine for phase-A
++  single-pick swells (one per pitch), and they join the sustain set as real voices, but
++  two swells into the same pitch would collide on the key. Phase B's chord recall (many
++  targets at once) will want a dedicated fade-voice key or a seq.
++- *Fingered (finger-still-down) slide voices re-file the ring store but not the held
++  map at the midpoint flip.* Their voice key is the CELL (stable, so the pedal keeps
++  driving them correctly) and the store/LEDs follow via `note_moved`; only the grid
++  thread's local `held` cell->pitch mirror lags for such a voice mid-flight. Drones
++  (the common flight case -- an edited voice whose finger lifted) re-key fully. A held
++  finger through a whole pedal sweep is the less common gesture.
++- *The initial-drive latency.* A pick applies one round of drives immediately, but
++  thereafter the pedal thread's ~10 ms poll is the update rate; the render's 10 ms
++  smoother covers it, so this is inaudible, but it is not sample-accurate.
++
++* choices determining the future
++
++- *`slide_freq_target` sentinel (0.0 = inactive) on `VoiceState`*, one-pole slewed in the
++  render, is now the pedal-slide flight mechanism. Fade amplitude reuses `grid_gain_target`
++  (the volume-pedal slew). Neither adds a hot-path branch for non-sliding voices beyond a
++  single `> 0.0` check.
++- *Matching model.* Single picks use the vision's home-proximity rule (nearest voice's
++  far goalpost); target SETS use the ascending ties-lower matcher (`match_targets`). Phase
++  B (chord recall) should call `match_targets` + `register_fade_in` for the recalled
++  chord's voices; the fade-out path and `Kind::FadeOut` are already built and tested for it.
++- *Home re-filing files the note at the home-side pitch and re-keys drones at the flip.*
++  Chord voices are excluded in phase A; phase B will need the same for `SurfaceChord` keys
++  (they are seq-keyed, so no re-key -- only the store/registry follows).
+diff --git a/buried/midi_pulse/looper_runtime/sink.rs b/buried/midi_pulse/looper_runtime/sink.rs
+index cff3950..7861339 100644
+--- a/buried/midi_pulse/looper_runtime/sink.rs
++++ b/buried/midi_pulse/looper_runtime/sink.rs
+@@ -121,7 +121,7 @@ impl SawNoteSink {
+         timbre,
+         fader_gain: 1.0,
+         grid_gain: 1.0,
+-        grid_gain_target: 1.0,
++        grid_gain_target: 1.0, slide_freq_target: 0.0,
+         am_phase: 0.0,
+         fm_phase: 0.0,
+         rel_am_phase: 0.0,
+diff --git a/edo_surface/src/rig.rs b/edo_surface/src/rig.rs
+index e76668c..0baec24 100644
+--- a/edo_surface/src/rig.rs
++++ b/edo_surface/src/rig.rs
+@@ -845,6 +845,16 @@ pub enum MonomeWindowRig {
+     monome: String,
+     rect: [i32; 4],
+   },
++  // A single-cell on/off toggle for PEDAL SLIDE (surfaces runtime; TODO/pedal-slide):
++  // while on, this monome's EX-P expression pedal drives a pitch-slide engine instead
++  // of volume -- picking a free pitch sets a target, and the pedal glides the nearest
++  // edit-mode voice into it (volume freezes, returning via catch-up on toggle-off).
++  // Per-monome (each grid its own), one per monome, dim at rest / bright while on.
++  PedalSlideToggle {
++    id: String,
++    monome: String,
++    rect: [i32; 4],
++  },
+   // A single-cell momentary button (surfaces runtime) driving this monome's EDIT
+   // MODE in bulk, mirroring the accrete (sustain) controls -- see
+   // `EditmodeControlKind` for what `clear` and `accrete` do. The same jobs as the
+@@ -1054,6 +1064,7 @@ impl MonomeWindowRig {
+       | MonomeWindowRig::DistortionToggle { id, .. }
+       | MonomeWindowRig::SlideToggle { id, .. }
+       | MonomeWindowRig::MonoToggle { id, .. }
++      | MonomeWindowRig::PedalSlideToggle { id, .. }
+       | MonomeWindowRig::EditmodeControl { id, .. }
+       | MonomeWindowRig::FactoredPulsePad { id, .. }
+       | MonomeWindowRig::AccreteControl { id, .. }
+@@ -1089,6 +1100,7 @@ impl MonomeWindowRig {
+       | MonomeWindowRig::DistortionToggle { monome, .. }
+       | MonomeWindowRig::SlideToggle { monome, .. }
+       | MonomeWindowRig::MonoToggle { monome, .. }
++      | MonomeWindowRig::PedalSlideToggle { monome, .. }
+       | MonomeWindowRig::EditmodeControl { monome, .. }
+       | MonomeWindowRig::FactoredPulsePad { monome, .. }
+       | MonomeWindowRig::AccreteControl { monome, .. }
+@@ -1124,6 +1136,7 @@ impl MonomeWindowRig {
+       | MonomeWindowRig::DistortionToggle { rect, .. }
+       | MonomeWindowRig::SlideToggle { rect, .. }
+       | MonomeWindowRig::MonoToggle { rect, .. }
++      | MonomeWindowRig::PedalSlideToggle { rect, .. }
+       | MonomeWindowRig::EditmodeControl { rect, .. }
+       | MonomeWindowRig::FactoredPulsePad { rect, .. }
+       | MonomeWindowRig::AccreteControl { rect, .. }
+@@ -1160,6 +1173,7 @@ impl MonomeWindowRig {
+       MonomeWindowRig::DistortionToggle { .. } => "distortion_toggle",
+       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
+       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
++      MonomeWindowRig::PedalSlideToggle { .. } => "pedal_slide_toggle",
+       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
+       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
+       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
+@@ -1971,6 +1985,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
+     MonomeWindowRig::MonoToggle { id, monome, rect } => {
+       Some(("mono_toggle", id, monome, *rect))
+     }
++    MonomeWindowRig::PedalSlideToggle { id, monome, rect } => {
++      Some(("pedal_slide_toggle", id, monome, *rect))
++    }
+     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
+       // Per-control uniqueness: label by control so a monome may carry one clear
+       // AND one accrete button, but not two of either.
+@@ -4296,6 +4313,29 @@ rect = [1, 2, 1, 2]
+     assert!(err.contains("exactly one cell"), "{err}");
+   }
+ 
++  #[test]
++  fn pedal_slide_toggle_validates_like_the_other_single_cell_toggles() {
++    let toggle = r#"
++[[monome_windows]]
++id = "pedal-slide-a"
++monome = "a"
++kind = "pedal_slide_toggle"
++rect = [0, 15, 0, 15]
++"#;
++    let rig = parse_rig(&format!("{SURFACES_MIN}{toggle}")).expect("a single-cell toggle validates");
++    assert!(rig.monome_windows.iter().any(|w| matches!(w, MonomeWindowRig::PedalSlideToggle { .. })));
++    // A 2-cell one fails, and a second on the same monome fails.
++    let err = parse_rig(&format!(
++      "{SURFACES_MIN}{}",
++      toggle.replace("rect = [0, 15, 0, 15]", "rect = [0, 15, 1, 15]"),
++    ))
++    .expect_err("a 2-cell pedal_slide_toggle should fail");
++    assert!(err.contains("exactly one cell"), "{err}");
++    let two = format!("{toggle}{}", toggle.replace("pedal-slide-a", "pedal-slide-a2"));
++    let err = parse_rig(&format!("{SURFACES_MIN}{two}")).expect_err("two on one monome should fail");
++    assert!(err.contains("more than one pedal_slide_toggle"), "{err}");
++  }
++
+   #[test]
+   fn factored_pulse_pad_must_be_three_by_two() {
+     let pad = r#"
+diff --git a/edo_surface/src/sawwave/state.rs b/edo_surface/src/sawwave/state.rs
+index c7c9507..67a69dd 100644
+--- a/edo_surface/src/sawwave/state.rs
++++ b/edo_surface/src/sawwave/state.rs
+@@ -116,7 +116,7 @@ pub fn edo_press(state: &mut AppState, cell: MonomeKey) -> Vec<LedCmd> {
+       timbre: crate::types::Timbre::default(),
+       fader_gain: 1.0,
+       grid_gain: 1.0,
+-      grid_gain_target: 1.0,
++      grid_gain_target: 1.0, slide_freq_target: 0.0,
+       am_phase: 0.0,
+       fm_phase: 0.0,
+       rel_am_phase: 0.0,
+diff --git a/edo_surface/src/sawwave/types.rs b/edo_surface/src/sawwave/types.rs
+index e1a16a8..6becc81 100644
+--- a/edo_surface/src/sawwave/types.rs
++++ b/edo_surface/src/sawwave/types.rs
+@@ -251,6 +251,16 @@ pub struct VoiceState {
+   // runtime.
+   pub grid_gain:        f32,
+   pub grid_gain_target: f32,
++  // Pedal-slide flight (the surfaces runtime's `pedal_slide_toggle`): while a grid's
++  // slide mode is on, the EX-P pedal drives each paired voice's FREQUENCY here. `freq`
++  // chases `slide_freq_target` per sample with a one-pole smoother
++  // (`voices::SLIDE_SLEW_SECS` ~10 ms, a sibling of the `grid_gain` slew) so the
++  // CC-rate target steps never zipper the pitch. 0.0 = inactive (the overwhelmingly
++  // common case, and every non-surfaces runtime), and the glide integrator
++  // (`glide_per_sample`) owns `freq` instead. The pedal-slide engine sets this target
++  // from its anchored-segment map; on mode-off it is cleared to 0.0 and the voice
++  // freezes at its current `freq`.
++  pub slide_freq_target: f32,
+   // Timbre, plus the per-voice AM/FM LFO phases advanced each sample in
+   // render_block. LFO phases reset to 0 at note-on (per-voice retrigger).
+   // `am_phase`/`fm_phase` belong to the absolute (Hz-rate) modulators,
+diff --git a/edo_surface/src/sawwave/voices.rs b/edo_surface/src/sawwave/voices.rs
+index cbaad41..059baac 100644
+--- a/edo_surface/src/sawwave/voices.rs
++++ b/edo_surface/src/sawwave/voices.rs
+@@ -119,6 +119,14 @@ const AM_SQUARE_MAX_GAIN: f32 = 12.5; // TriToSquare: clip gain;   edge ~ 1/(2*g
+ /// the pedal still feels immediate underfoot.
+ pub const GAIN_SLEW_SECS: f32 = 0.02;
+ 
++/// The time constant of the per-voice pedal-slide FREQUENCY smoother (the surfaces
++/// `pedal_slide_toggle`): a paired voice's `freq` closes the gap to its
++/// `slide_freq_target` this fast, per sample -- a sibling of `GAIN_SLEW_SECS`, sized
++/// so the pedal's CC-rate target steps melt into a smooth glide (~10 ms) rather than
++/// zippering the pitch. Deliberately NOT the walk-to-target glide (`glide_per_sample`):
++/// that shape stops at a fixed destination, wrong for a live controller.
++pub const SLIDE_SLEW_SECS: f32 = 0.01;
++
+ /// The slow-AM LFO wave (bipolar, in [-1,1]) at `phase`, morphed by `shape` in
+ /// [0,1] within `family`. shape 0 = the soft end (sine / triangle), shape 1 = a
+ /// near-square (edge-limited so it never clicks); in between it interpolates.
+@@ -493,6 +501,16 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
+         v.glide_per_sample = 1.0;
+       }
+     }
++    // Pedal-slide flight (the surfaces `pedal_slide_toggle`): while `slide_freq_target`
++    // is nonzero the pedal is driving this voice's pitch, and `freq` chases the target
++    // with a one-pole smoother (SLIDE_SLEW_SECS, per sub-sample) so the CC-rate target
++    // steps do not zipper. Inert (and cost-free) for every voice the pedal is not
++    // sliding -- the common case, and every non-surfaces runtime. Distinct from the
++    // glide integrator above (a live controller, not a walk-to-a-fixed-destination).
++    if v.slide_freq_target > 0.0 {
++      let coeff = (frac / (SLIDE_SLEW_SECS * sample_rate)).min(1.0);
++      v.freq += (v.slide_freq_target - v.freq) * coeff;
++    }
+     // The factored pulse: a unipolar triangle in [0,1] -- 1 at the cycle start,
+     // falling to 0 at the half-cycle, rising back to 1 -- at the tempo applied at
+     // this note's onset. Separate from the timbre AM below. Unlike the descending
+@@ -823,7 +841,7 @@ pub fn spawn_accretion_voice(
+     timbre: Timbre::default(),
+     fader_gain: 1.0,
+     grid_gain: 1.0,
+-    grid_gain_target: 1.0,
++    grid_gain_target: 1.0, slide_freq_target: 0.0,
+     am_phase: 0.0,
+     fm_phase: 0.0,
+     rel_am_phase: 0.0,
+@@ -881,7 +899,7 @@ mod tests {
+       sustain_env: 1.0, decay_per_sample: 1.0,
+       // The NEW timbre is silent (gain 0); the OLD full-gain sine fades out.
+       timbre: Timbre { waveform: Waveform::Sine, gain: 0.0, ..Timbre::default() },
+-      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
++      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0,
+       am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
+       timbre_xfade: Some(TimbreXfade {
+         from: Timbre { waveform: Waveform::Sine, gain: 1.0, ..Timbre::default() },
+@@ -918,7 +936,7 @@ mod tests {
+       pending_attack: None,
+       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0,
+       target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let data = render_voice(v, 1024, sr);
+     let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+     // Capped by AMPLITUDE=0.15.
+@@ -936,7 +954,7 @@ mod tests {
+       target_env: 0.0,
+       ramp_per_sample: 1.0 / (RELEASE_SECS * sr),
+       sustain_env: 1.0, decay_per_sample: 1.0,
+-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+     let mut data = vec![0.0_f32; release_samples + 200];
+@@ -967,7 +985,7 @@ mod tests {
+     let mk = |gain: f32| VoiceState {
+       pending_attack: None,
+       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+-      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let peak = |g: f32| render_voice(mk(g), 1024, sr).iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
+     let (full, half) = (peak(1.0), peak(0.5));
+     assert!((half / full - 0.5).abs() < 0.05, "gain 0.5 should ~halve peak: full={full} half={half}");
+@@ -984,7 +1002,7 @@ mod tests {
+         pending_attack: None,
+         id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+         timbre: Timbre { waveform, ..Timbre::default() },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      };
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      };
+       let data = render_voice(v, sr as usize, sr); // ~1 s = many whole periods
+       (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
+     };
+@@ -1103,7 +1121,7 @@ mod tests {
+           rel_fm: RelFm { depth: 0.5, freq: 0.125 },
+           ..Timbre::default()
+         },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      });
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+       let mut data = vec![0.0_f32; 480]; // 10 ms
+       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+       *voices.values().next().unwrap()
+@@ -1133,7 +1151,7 @@ mod tests {
+       id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.25, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+       am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
+-      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 0.0, timbre_xfade: None,
++      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 0.0, slide_freq_target: 0.0, timbre_xfade: None,
+     });
+     let mut down = vec![0.0_f32; 14400]; // 300 ms: many slew time constants
+     render_block_with_amplitude(&mut voices, &mut down, 1, sr, 1.0, AmShapeFamily::default());
+@@ -1168,7 +1186,7 @@ mod tests {
+           rel_fm: RelFm { depth, freq: 0.05 }, // 15 Hz LFO on the 300 Hz voice
+           ..Timbre::default()
+         },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      });
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+       let mut data = vec![0.0_f32; 4800];
+       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+       data
+@@ -1194,7 +1212,7 @@ mod tests {
+           am: Am { depth, freq: 50.0, shape: 0.0 },
+           ..Timbre::default()
+         },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      });
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+       let mut data = vec![0.0_f32; 4800];
+       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::SinToSquare);
+       (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
+@@ -1220,7 +1238,7 @@ mod tests {
+           pending_attack: None,
+           id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+           timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,        },
++          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,        },
+       );
+       let mut data = vec![0.0_f32; 4800];
+       BlockRenderer::new(oversample)
+@@ -1246,7 +1264,7 @@ mod tests {
+         pending_attack: None,
+         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      };
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      };
+       render_voice(v, 1024, sr)
+     };
+     let (fwd, bwd) = (render(300.0), render(-300.0));
+@@ -1266,7 +1284,7 @@ mod tests {
+       pending_attack: None,
+       id: 0, freq: -220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+       timbre: Timbre { waveform: Waveform::Saw, ..Timbre::default() },
+-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+     let mut data = vec![0.0_f32; 4096];
+@@ -1296,7 +1314,7 @@ mod tests {
+       id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0,
+       env: 0.5, target_env: 0.0, ramp_per_sample: dip_ramp, sustain_env: 0.35, decay_per_sample: 1.0,
+       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+     let mut data = vec![0.0_f32; 4096];
+@@ -1334,7 +1352,7 @@ mod tests {
+       // the queued attack within the single sample we render below.
+       env: 1e-6, target_env: 0.0, ramp_per_sample: 1.0, sustain_env: 0.35, decay_per_sample: 1.0,
+       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let expected_dt = v.freq / sr; // no FM in this timbre: this sample's phase step
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+@@ -1380,7 +1398,7 @@ mod tests {
+       ramp_per_sample: 1.0 / (0.003 * sr),
+       sustain_env, decay_per_sample,
+       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+     let mut data = vec![0.0_f32; sr as usize];
+@@ -1419,7 +1437,7 @@ mod tests {
+       target_env: 0.5,
+       ramp_per_sample: 0.5 / (0.05 * sr),
+       sustain_env: 0.5, decay_per_sample: 1.0,
+-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Accreted { chord: 0, pitch: 10 }, v);
+     let mut data = vec![0.0_f32; 9600]; // 200 ms >> the 50 ms ramp
+@@ -1442,7 +1460,7 @@ mod tests {
+       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+       sustain_env: 1.0, decay_per_sample: 1.0,
+       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+     let mut data = vec![0.0_f32; 9600]; // two factored-pulse cycles
+@@ -1495,7 +1513,7 @@ mod tests {
+       id: 0, freq: 220.0, freq_target: 440.0, glide_per_sample: glide, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0,
+       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+       sustain_env: 1.0, decay_per_sample: 1.0,
+-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    };
++      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+     let mut voices: VoiceMap = HashMap::new();
+     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
+     let mut half = vec![0.0_f32; (dur * sr / 2.0) as usize];
+@@ -1556,7 +1574,7 @@ mod tests {
+         pending_attack: None,
+         id: i as u64, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: i as f32 * 0.137, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      });
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+     }
+     voices
+   }
+@@ -1711,7 +1729,7 @@ mod tests {
+       factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+       sustain_env: sustain, decay_per_sample: (-1.0 / (decay_secs * sample_rate)).exp(),
+       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,    });
++      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    });
+     voices
+   }
+ 
+@@ -1946,7 +1964,7 @@ mod tests {
+         pending_attack: None,
+         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
+         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      })
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      })
+     };
+     let render = |sources: &[(VoiceSource, VoiceState)], distortion, dirty: fn(&VoiceSource) -> bool| {
+       let mut voices: VoiceMap = sources.iter().cloned().collect();
+@@ -1989,7 +2007,7 @@ mod tests {
+           fm: Fm { depth_cents, freq: 6.0 },
+           ..Timbre::default()
+         },
+-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, timbre_xfade: None,      });
++        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+       let mut data = vec![0.0_f32; 4800];
+       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+       data
+diff --git a/edo_surface/src/surfaces_runtime/chords.rs b/edo_surface/src/surfaces_runtime/chords.rs
+index d60e8d3..e4c073b 100644
+--- a/edo_surface/src/surfaces_runtime/chords.rs
++++ b/edo_surface/src/surfaces_runtime/chords.rs
+@@ -315,7 +315,7 @@ mod tests {
+       factored_pulse_phase: pulse_phase,
+       fader_gain: 1.0,
+       grid_gain: 1.0,
+-      grid_gain_target: 1.0,
++      grid_gain_target: 1.0, slide_freq_target: 0.0,
+       timbre: Timbre::default(),
+       am_phase: 0.0,
+       fm_phase: 0.0,
+diff --git a/edo_surface/src/surfaces_runtime/dance.rs b/edo_surface/src/surfaces_runtime/dance.rs
+index 5172e98..675ead0 100644
+--- a/edo_surface/src/surfaces_runtime/dance.rs
++++ b/edo_surface/src/surfaces_runtime/dance.rs
+@@ -88,6 +88,16 @@ pub fn flash_on(elapsed: Duration) -> bool {
+   (elapsed.as_millis() as u64 / FLASH_MS) % 2 == 0
+ }
+ 
++/// The pedal-slide TARGET flash half-period: 100 ms (`1_vision` "flashing between
++/// bright and off every 100 ms"). Driven off the same absolute clock as the dances, so
++/// it never drifts against them (`2_discussion` "driven from the shared dance clock").
++pub const TARGET_FLASH_MS: u64 = 100;
++
++/// Is a pedal-slide target cell lit this instant? A 50% square wave at `TARGET_FLASH_MS`.
++pub fn target_flash_on(elapsed: Duration) -> bool {
++  (elapsed.as_millis() as u64 / TARGET_FLASH_MS) % 2 == 0
++}
++
+ /// What the dance may do to a cell that is already lit for another reason.
+ ///
+ /// The dancers paint DIM, like the trails (Jeff's "have the dancers be dim like
+diff --git a/edo_surface/src/surfaces_runtime/keys.rs b/edo_surface/src/surfaces_runtime/keys.rs
+index 4cd971a..895044a 100644
+--- a/edo_surface/src/surfaces_runtime/keys.rs
++++ b/edo_surface/src/surfaces_runtime/keys.rs
+@@ -114,6 +114,31 @@ pub(super) fn handle_key(
+     }
+     return;
+   }
++  // Pedal-slide toggle: key-down flips THIS grid's switch and enters/leaves the slide
++  // engine (TODO/pedal-slide). Entering freezes the grid volume (the pedal switches to
++  // slide duty); leaving freezes every sliding voice where it is, drops the
++  // targets/kinks, and hands the frozen volume back for the pedal's catch-up pickup.
++  if in_overlay(rt.overlays.pedal_slide_rect, cell) {
++    if press {
++      let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
++      rt.shared.pedal_slide_on[rt.grid_index].store(now_on, Ordering::Relaxed);
++      let frozen = rt.sink.pedal_gain();
++      {
++        let mut eng =
++          rt.shared.pedal_slide[rt.grid_index].lock().unwrap_or_else(|e| e.into_inner());
++        if now_on {
++          eng.enter(frozen);
++        } else {
++          eng.exit();
++        }
++      }
++      if !now_on {
++        // Freeze the sliding voices at their current pitch (smoothness above all).
++        synth::freeze_slide(&rt.shared.voices, rt.grid_index);
++      }
++    }
++    return;
++  }
+   // The editmode buttons, through the same `editmode_press` the softstep pedals run:
+   // clear empties THIS grid's edit SELECTION (branch-3 queue item 4: pure deselection --
+   // every cleared note stays sustained, so nothing is silenced), accrete puts every
+@@ -819,7 +844,14 @@ pub(super) fn handle_edit_press(
+     Silent,
+     Sustain(i32, bool, Vec<u64>),
+     Dragged { from: i32, to: i32, piano_moved: bool, chord_seqs: Vec<u64> },
++    // Pedal-slide (TODO/pedal-slide): a press on a FREE pitch while slide mode is on
++    // picks a target instead of dragging/playing. Silent; the pedal does the moving.
++    SlidePick(i32),
+   }
++  // While a grid's pedal-slide mode is on it is a target-picker: a press on a free
++  // pitch sets a slide target (the nearest edit-mode voice's far goalpost, or a swell
++  // into a fresh voice with none) rather than dragging or sounding a note.
++  let slide_mode = rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
+   let act = {
+     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+     let gr = &mut rings[rt.grid_index];
+@@ -836,8 +868,24 @@ pub(super) fn handle_edit_press(
+     // pressed pitch is free of the editing set and the sustain set; otherwise it
+     // retriggers (classify also consults `edited_union` for the chord half).
+     let is_sustained = |p: i32| sustained.contains(&p);
+-    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union)
+-    {
++    let press = gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union);
++    // Pedal-slide interception: a Drag (something is edited, this pitch is free)
++    // becomes a pick, and a plain Play on a genuinely FREE pitch (nothing edited)
++    // becomes a swell pick. A press on a SOUNDING pitch still retriggers, and the edit
++    // triggers (enter/exit/sustain) still work -- they select what to slide.
++    let slide_pick = if slide_mode {
++      match press {
++        edit::Press::Drag { to, .. } => Some(to),
++        edit::Press::Play if !is_sounding(pitch) => Some(pitch),
++        _ => None,
++      }
++    } else {
++      None
++    };
++    if let Some(target) = slide_pick {
++      Act::SlidePick(target)
++    } else {
++    match press {
+       edit::Press::Play => Act::Play,
+       edit::Press::EnterEdit { pitch } => {
+         // One press takes BOTH layers at this pitch into the selection (Jeff: "if
+@@ -909,6 +957,7 @@ pub(super) fn handle_edit_press(
+         Act::Dragged { from, to, piano_moved, chord_seqs }
+       }
+     }
++    }
+   };
+ 
+   let (release_secs, sample_rate) = rt.sink.release_params();
+@@ -973,10 +1022,63 @@ pub(super) fn handle_edit_press(
+         rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
+       );
+     }
++    Act::SlidePick(target) => {
++      slide_pick(rt, held, target);
++    }
+   }
+   false
+ }
+ 
++/// A pedal-slide pick (`Act::SlidePick`): retarget the nearest edit-mode voice's far
++/// goalpost to `target`, or -- with no edit-mode voices -- swell a fresh voice in from
++/// silence (the one-note swell). The engine decides which; here we build its edit-mode
++/// voice list, spawn/register any fade-in voices, and apply the first round of drives so
++/// the pick takes effect before the next pedal poll.
++fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32) {
++  let grid = rt.grid_index;
++  // The grid's edit-mode voices, keyed as the pedal-slide engine drives them: a
++  // fingered voice by its cell, a fingerless (drone) one by its pitch. (Phase A leaves
++  // the chord layer to phase B.)
++  let voices: Vec<(VoiceSource, i32)> = {
++    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
++    rings[grid]
++      .store
++      .iter(Reason::Edit)
++      .map(|p| {
++        let key = match held.iter().find(|(_, hp)| **hp == p) {
++          Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
++          None => VoiceSource::SurfaceDrone { grid, pitch: p },
++        };
++        (key, p)
++      })
++      .collect()
++  };
++  let outcome = {
++    let mut eng = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner());
++    eng.pick(target, &voices)
++  };
++  // Spawn every extra target as a real sustained fade-in voice (the swell), joining the
++  // sustain set, and register the pairing so the pedal drives its quartic amplitude.
++  for pitch in outcome.spawn_fade_ins {
++    let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
++    let timbre = Timbre {
++      waveform: slot.waveform,
++      gain: slot.amplitude,
++      am: slot.am,
++      fm: slot.fm,
++      rel_am: slot.rel_am,
++      rel_fm: slot.rel_fm,
++    };
++    let key = rt.sink.spawn_slide_fade_in(pitch, timbre);
++    rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid].store.add(Reason::Sustain, pitch);
++    rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).register_fade_in(key, pitch);
++  }
++  // Apply the drives now so the pick lands immediately (the pedal poll would otherwise
++  // wait up to a poll interval).
++  let drives = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).drives();
++  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
++}
++
+ /// How many held cells sound exactly `pitch` right now -- the derived FINGER count
+ /// (never stored in the ring). Two colliding cells finger one pitch, so this is a
+ /// count, not a boolean: `remove_sustain` uses it to spare a pitch a finger still holds.
+diff --git a/edo_surface/src/surfaces_runtime/mod.rs b/edo_surface/src/surfaces_runtime/mod.rs
+index dd82225..10f5aef 100644
+--- a/edo_surface/src/surfaces_runtime/mod.rs
++++ b/edo_surface/src/surfaces_runtime/mod.rs
+@@ -32,6 +32,7 @@ mod grid;
+ mod hooks;
+ mod keys;
+ mod paint;
++mod pedal_slide;
+ mod pedal_volume;
+ mod polyrhythm;
+ mod pulse_window;
+@@ -256,6 +257,14 @@ fn run(
+     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
+   let mono_on: Arc<Vec<AtomicBool>> =
+     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
++  // The per-grid pedal-slide toggle + engine (TODO/pedal-slide). The AtomicBool is the
++  // fast LED/paint flag; the engine (behind its own per-grid lock so the grid thread
++  // and the pedal thread never contend across grids) holds the target set, the
++  // per-voice pairings, the anchored-segment maps, and the home hysteresis.
++  let pedal_slide_on: Arc<Vec<AtomicBool>> =
++    Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
++  let pedal_slide: Arc<Vec<Mutex<pedal_slide::PedalSlideState>>> =
++    Arc::new((0..num_grids).map(|_| Mutex::new(pedal_slide::PedalSlideState::new())).collect());
+   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
+   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
+   // tempo-factor controls multiply something from bring-up -- a rig with no tap
+@@ -395,7 +404,12 @@ fn run(
+     let live_for_pedals = Arc::clone(&live);
+     let voices_for_pedals = Arc::clone(&voices);
+     let gains = Arc::clone(&pedal_gains);
+-    thread::spawn(move || expression_pedal_loop(live_for_pedals, voices_for_pedals, gains));
++    let slide_on = Arc::clone(&pedal_slide_on);
++    let slide = Arc::clone(&pedal_slide);
++    let (fund, edo) = (s.fund, s.edo);
++    thread::spawn(move || {
++      expression_pedal_loop(live_for_pedals, voices_for_pedals, gains, slide_on, slide, fund, edo)
++    });
+   }
+ 
+   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
+@@ -456,6 +470,8 @@ fn run(
+     distortion_on: Arc::clone(&distortion_on),
+     slide_on: Arc::clone(&slide_on),
+     mono_on: Arc::clone(&mono_on),
++    pedal_slide_on: Arc::clone(&pedal_slide_on),
++    pedal_slide: Arc::clone(&pedal_slide),
+     poly: Arc::clone(&poly),
+     live: Arc::clone(&live),
+     voices: Arc::clone(&voices),
+@@ -586,6 +602,9 @@ struct Shared {
+   /// The per-grid slide / mono switches (this grid uses element `grid_index`).
+   slide_on: Arc<Vec<AtomicBool>>,
+   mono_on: Arc<Vec<AtomicBool>>,
++  /// The per-grid pedal-slide toggle (fast LED/paint flag) and its engine.
++  pedal_slide_on: Arc<Vec<AtomicBool>>,
++  pedal_slide: Arc<Vec<Mutex<pedal_slide::PedalSlideState>>>,
+   /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
+   poly: Arc<Mutex<PolyrhythmState>>,
+   /// The hot-reloadable parameters; refreshed into `GridThread`'s own fields when the
+@@ -764,6 +783,46 @@ fn grid_thread(mut rt: GridThread) {
+     buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
+     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
+     buttons.push(toggle(rt.overlays.mono_rect, &rt.shared.mono_on));
++    buttons.push(toggle(rt.overlays.pedal_slide_rect, &rt.shared.pedal_slide_on));
++    // Pedal-slide (TODO/pedal-slide): drain the midpoint-flip re-files the pedal thread
++    // queued (this thread owns the ring + sink), and collect the TARGET pitches whose
++    // goalpost cell should flash 100 ms bright/off (home pitches are already sustained,
++    // so they paint bright + dance through the ordinary path). No lock nesting: read the
++    // engine, drop it, then touch the ring and sink.
++    // Reconcile the slide pairings against this grid's live edit selection first, so an
++    // editmode-clear or sustain-clear (from either surface) cancels the pairing, freezes
++    // the voice, and unlights its target.
++    let slide_edited: HashSet<i32> = {
++      let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
++      rings[rt.grid_index].store.iter(Reason::Edit).collect()
++    };
++    let dropped = rt.shared.pedal_slide[rt.grid_index]
++      .lock()
++      .unwrap_or_else(|e| e.into_inner())
++      .reconcile(&slide_edited);
++    synth::freeze_slide_voices(&rt.shared.voices, &dropped);
++    let (slide_refiles, slide_targets): (Vec<pedal_slide::Refile>, Vec<i32>) = {
++      let mut eng = rt.shared.pedal_slide[rt.grid_index].lock().unwrap_or_else(|e| e.into_inner());
++      let (_home, targets) = eng.led_roles();
++      (eng.take_refiles(), targets.into_iter().collect())
++    };
++    for r in &slide_refiles {
++      rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
++        .store
++        .note_moved(r.from, r.to);
++      if r.voice_old != r.voice_new {
++        rt.sink.rekey_drone(r.from, r.to);
++      }
++    }
++    // The TARGET goalpost cells: a 100 ms bright/off flash (no dance), driven from the
++    // shared dance clock. Pushed as single-cell buttons so they occlude the play grid
++    // and reflect the exact cell(s) that hold the target pitch under this register.
++    let target_level = if dance::target_flash_on(elapsed) { BRIGHT } else { OFF };
++    for pitch in &slide_targets {
++      for (x, y) in cells_for_pitch(&rt, register, *pitch) {
++        buttons.push(([x, y, x, y], target_level));
++      }
++    }
+     // The editmode buttons: dim at rest (findable), bright while pressed.
+     buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
+     buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
+diff --git a/edo_surface/src/surfaces_runtime/pedal_slide.rs b/edo_surface/src/surfaces_runtime/pedal_slide.rs
+new file mode 100644
+index 0000000..015522d
+--- /dev/null
++++ b/edo_surface/src/surfaces_runtime/pedal_slide.rs
+@@ -0,0 +1,944 @@
++//! The pedal-slide engine, per grid -- pure logic, no I/O (see
++//! `TODO/pedal-slide/1_vision.org` and `2_discussion.org`). Each grid owns one
++//! [`PedalSlideState`] behind its own lock; the grid thread (toggle, picks, painting)
++//! and the expression-pedal thread (the pedal drive) both reach it.
++//!
++//! *The heart is the ANCHORED-SEGMENTS map* ([`Segments`]). At every instant the
++//! pedal-to-value map is two segments JOINED AT THE PEDAL'S CURRENT POSITION: one from
++//! `(0, s0)` up to `(f_now, cur)`, one on to `(1, s1)`. Moving the pedal follows the
++//! segment in the direction of travel toward that side's endpoint; the segment BEHIND
++//! is re-derived from wherever you now are. That single rule delivers everything the
++//! discussion's formalization asks for:
++//! - *continuity*: `cur` only ever moves along a segment, never jumps (a mid-flight
++//!   retarget pins the anchor at the current point and swaps the FAR endpoint, so the
++//!   value the pedal is at does not move -- only the goalpost ahead does);
++//! - *hysteresis*: reverse mid-sweep and the anchor re-pins at the reversal point, so
++//!   the path back is a fresh straight segment to home, not a retrace;
++//! - *endpoint exactness*: at `f = 0` the map is `s0`, at `f = 1` it is `s1`, always;
++//! - *kink-gone-at-endpoint*: reach an endpoint and `cur == s_that_end`, so the two
++//!   segments fuse into one line for the whole return trip.
++//!
++//! The SAME structure carries amplitude fades ([`Shape::Quartic`]): the segment shape
++//! is the quartic rescaled to its span, so a fading voice is silent at one end and at
++//! full at the other, continuous and hysteretic by exactly the same construction. This
++//! is the discussion's cure for the fade "discontinuity at F" the vision caught itself
++//! on. For a linear (pitch) segment, re-anchoring at every step and evaluating the
++//! whole segment from a fixed anchor give the same trajectory; for the quartic they do
++//! not, and only the fixed-anchor-until-an-event reading is non-degenerate (an
++//! incrementally re-anchored quartic has slope 0 at the anchor and would never move),
++//! so the anchor is re-pinned only on a reversal, a retarget, or reaching an endpoint.
++//!
++//! *Pitch lives in EDO-step space.* A pitch segment interpolates fractional EDO steps
++//! linearly, which IS log-linear in frequency (equal steps = equal cents), so the
++//! wiring converts `cur` to Hz with `freq_for_pitch` and the segment math needs no
++//! logarithms of its own.
++//!
++//! Phase A (this module) covers the toggle, the target set, the per-voice pairings,
++//! the home/target hysteresis, the anchored map, and the fades. The chord-storage
++//! interaction is phase B.
++
++use std::collections::HashSet;
++
++use crate::types::VoiceSource;
++
++/// The pedal's normalized midpoint and the hysteresis band around it. Home/target
++/// flips only on crossing `0.5 +/- BAND` in the direction away from the current home,
++/// so a pedal resting near the middle (sensor noise, foot tremor) cannot flicker the
++/// LED roles and the retarget side many times a second (`2_discussion` "the midpoint
++/// flip wants hysteresis").
++pub const MIDPOINT: f32 = 0.5;
++pub const HYSTERESIS_BAND: f32 = 0.05;
++
++const EPS: f32 = 1e-6;
++
++/// The shape of one segment, rescaled to its span. Pitch segments are linear (equal
++/// EDO steps per equal pedal travel = log-linear in Hz); amplitude fades are quartic
++/// (the vision's `x^4`), so a swell eases out of silence and into full.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Shape {
++  Linear,
++  Quartic,
++}
++
++impl Shape {
++  /// Map a normalized position `t` in `[0, 1]` along a segment to its normalized
++  /// value in `[0, 1]`.
++  fn at(self, t: f32) -> f32 {
++    let t = t.clamp(0.0, 1.0);
++    match self {
++      Shape::Linear => t,
++      Shape::Quartic => t * t * t * t,
++    }
++  }
++}
++
++/// Two segments joined at the pedal's current position -- the anchored-segments map.
++/// `s0` is the value at pedal fraction 0, `s1` at fraction 1. `(anchor_f, anchor_v)`
++/// is the joint the two segments meet at, and `cur` is the value at the pedal's
++/// current fraction (== `anchor_v` immediately after a re-pin, then walking toward
++/// the moving side's endpoint as the pedal travels).
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Segments {
++  pub s0: f32,
++  pub s1: f32,
++  pub anchor_f: f32,
++  pub anchor_v: f32,
++  pub cur: f32,
++  pub shape: Shape,
++}
++
++impl Segments {
++  /// A fresh map anchored at `(f, v)` -- the pedal is at `f` and the value is `v`
++  /// there. `s0`/`s1` are the endpoint values.
++  pub fn new(s0: f32, s1: f32, f: f32, v: f32, shape: Shape) -> Self {
++    Segments { s0, s1, anchor_f: f, anchor_v: v, cur: v, shape }
++  }
++
++  /// The value the map holds at pedal fraction `f`, moving `up` (toward `s1`) or down
++  /// (toward `s0`). Endpoints are exact; between the anchor and the moving-side
++  /// endpoint the segment's shape (rescaled to that span) applies.
++  fn eval(&self, f: f32, up: bool) -> f32 {
++    if f <= 0.0 {
++      return self.s0;
++    }
++    if f >= 1.0 {
++      return self.s1;
++    }
++    let (target, span) = if up {
++      (self.s1, 1.0 - self.anchor_f)
++    } else {
++      (self.s0, self.anchor_f)
++    };
++    if span <= EPS {
++      return target;
++    }
++    let t = if up { (f - self.anchor_f) / span } else { (self.anchor_f - f) / span };
++    self.anchor_v + (target - self.anchor_v) * self.shape.at(t)
++  }
++
++  /// Re-pin the anchor at the current position (a reversal, a retarget, or an
++  /// endpoint): the joint moves to `(f, cur)` so the segment behind re-derives from
++  /// here.
++  fn repin(&mut self, f: f32) {
++    self.anchor_f = f;
++    self.anchor_v = self.cur;
++  }
++}
++
++/// The pedal's return to VOLUME duty when slide mode is turned off (`2_discussion`
++/// amendment): rather than a dead-zone catch-up (which would confuse -- pulling the
++/// pedal down with no effect), the pedal-to-volume map becomes the SAME anchored-kink
++/// construction as a slide fade -- two quartic segments joined at `(F_now, V_frozen)`,
++/// one to `(0, 0)`, one to `(1, 1)` -- so moving the pedal EITHER way changes the
++/// volume immediately. Once the pedal reaches an endpoint the map reverts to the
++/// ordinary volume taper (`PedalVolumeCurve`), whose endpoints are exactly 0 and 1, so
++/// the hand-off is continuous. Reuses [`Segments`] rather than a second machine.
++#[derive(Clone, Copy, Debug)]
++pub struct VolumeReturn {
++  seg: Segments,
++  cur_f: f32,
++  moving_up: bool,
++  reverted: bool,
++}
++
++impl VolumeReturn {
++  /// Begin the return with the pedal at fraction `f` and the volume frozen at
++  /// `v_frozen`. The endpoints match the taper's (0 at the heel, 1 at the toe).
++  pub fn new(f: f32, v_frozen: f32) -> Self {
++    let f = f.clamp(0.0, 1.0);
++    VolumeReturn {
++      seg: Segments::new(0.0, 1.0, f, v_frozen.clamp(0.0, 1.0), Shape::Quartic),
++      cur_f: f,
++      moving_up: true,
++      reverted: false,
++    }
++  }
++
++  /// Apply a pedal reading. Returns `Some(gain)` while the kinked return map is in
++  /// effect, or `None` once the pedal has reached an endpoint and the caller should
++  /// resume the ordinary taper (`PedalVolumeCurve::gain`). Continuous at the hand-off:
++  /// the segment's endpoint value equals the taper's there (0 and 1).
++  pub fn on_pedal(&mut self, f: f32) -> Option<f32> {
++    if self.reverted {
++      return None;
++    }
++    let f = f.clamp(0.0, 1.0);
++    let f_old = self.cur_f;
++    if (f - f_old).abs() > EPS {
++      let up = f > f_old;
++      if up != self.moving_up {
++        self.seg.repin(f_old);
++      }
++      self.moving_up = up;
++      self.seg.cur = self.seg.eval(f, up);
++    }
++    self.cur_f = f;
++    // Reaching either endpoint reverts to the ordinary taper (continuous: the segment
++    // is exactly 0 at f=0 and 1 at f=1, as the taper is).
++    if f <= 0.0 || f >= 1.0 {
++      self.reverted = true;
++      return None;
++    }
++    Some(self.seg.cur.clamp(0.0, 1.0))
++  }
++
++  #[allow(dead_code)] // asserted in the pure-module tests
++  pub fn reverted(&self) -> bool {
++    self.reverted
++  }
++}
++
++/// Which side of the pedal is "home" -- the end the voice is currently nearest to.
++/// Home is `Low` (nearest pedal fraction 0) or `High` (nearest 1); it flips with
++/// hysteresis and governs (a) which endpoint a new pick replaces (always the FAR one)
++/// and (b) the LED roles. The flip never moves any value -- the map does not mention
++/// "home".
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Home {
++  Low,
++  High,
++}
++
++/// What one edit-mode (or faded) voice is doing under the pedal.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Kind {
++  /// A pitch slide: `seg` holds fractional EDO-step pitches; amplitude stays full.
++  Pitch,
++  /// An amplitude swell into a fixed pitch (an extra target, or the one-pick swell):
++  /// `seg` holds amplitude in `[0, 1]`; the pitch is fixed at `pitch`.
++  FadeIn,
++  /// An amplitude fade to silence (a leftover voice with no target): `seg` holds
++  /// amplitude, `pitch` fixed. Produced by the batch matcher (phase B chord recall);
++  /// unit-tested now.
++  #[allow(dead_code)]
++  FadeOut,
++}
++
++/// One voice paired to the pedal: its map, its kind, and (for fades) the fixed pitch
++/// the swell/fade is applied at.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Pairing {
++  pub voice: VoiceSource,
++  pub kind: Kind,
++  pub seg: Segments,
++  /// The fixed pitch of a fade voice (ignored for `Pitch`, whose pitch is `seg.cur`).
++  pub pitch: f32,
++}
++
++impl Pairing {
++  /// The pitch (fractional EDO steps) this voice should sound right now.
++  pub fn current_pitch(&self) -> f32 {
++    match self.kind {
++      Kind::Pitch => self.seg.cur,
++      Kind::FadeIn | Kind::FadeOut => self.pitch,
++    }
++  }
++
++  /// The amplitude in `[0, 1]` a fade voice should sound at right now, or `None` for
++  /// a pitch pairing (whose amplitude the pedal does not drive -- volume is frozen).
++  pub fn current_amp(&self) -> Option<f32> {
++    match self.kind {
++      Kind::Pitch => None,
++      Kind::FadeIn | Kind::FadeOut => Some(self.seg.cur.clamp(0.0, 1.0)),
++    }
++  }
++}
++
++/// One drive command the wiring applies to a voice each pedal reading: the target
++/// pitch (Hz-convertible EDO steps) and, for fades only, the target amplitude.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Drive {
++  pub voice: VoiceSource,
++  pub pitch: f32,
++  pub amp: Option<f32>,
++}
++
++/// A voice re-filed because home flipped across the midpoint: the note is now painted
++/// at the OTHER end's pitch, so the ring's sets/dances/reflections follow
++/// (`ring::RingStore::note_moved`), and a pitch-keyed DRONE voice re-keys from
++/// `voice_old` to `voice_new` (a cell-keyed fingered voice keeps its key, so the two
++/// are equal). Applied by the grid thread, which owns the ring and the sink. Pitches
++/// are rounded to the nearest EDO step (the sets are integer-keyed).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct Refile {
++  pub voice_old: VoiceSource,
++  pub voice_new: VoiceSource,
++  pub from: i32,
++  pub to: i32,
++}
++
++/// The result of a pick while slide mode is on: which pitches need a NEW fade-in voice
++/// spawned from silence (the extra-targets / one-note-swell case), and which existing
++/// voices became fade-outs (their pairing already updated in place). The wiring spawns
++/// the fade-ins and calls [`PedalSlideState::register_fade_in`] with the created voice
++/// keys.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct PickOutcome {
++  /// Pitches (integer EDO steps) that need a fresh fade-in voice spawned.
++  pub spawn_fade_ins: Vec<i32>,
++}
++
++/// One grid's pedal-slide engine.
++#[derive(Debug)]
++pub struct PedalSlideState {
++  /// Is slide mode on for this grid? While on, the EX-P pedal drives this engine
++  /// instead of volume.
++  mode: bool,
++  /// The pedal's last normalized fraction `[0, 1]`.
++  cur_f: f32,
++  /// The pedal's last travel direction (true = rising toward `s1`).
++  moving_up: bool,
++  /// Which side is home right now.
++  home: Home,
++  /// The per-voice pairings.
++  pairings: Vec<Pairing>,
++  /// Midpoint-flip re-files queued by `on_pedal` (the pedal thread) for the grid
++  /// thread to apply against the ring and the sink (`take_refiles`).
++  pending_refiles: Vec<Refile>,
++  /// The grid volume frozen when mode turned on, handed back to the pedal for
++  /// catch-up pickup when mode turns off.
++  frozen_volume: f32,
++}
++
++impl Default for PedalSlideState {
++  fn default() -> Self {
++    PedalSlideState::new()
++  }
++}
++
++impl PedalSlideState {
++  pub fn new() -> Self {
++    PedalSlideState {
++      mode: false,
++      cur_f: 0.0,
++      moving_up: true,
++      home: Home::Low,
++      pairings: Vec::new(),
++      pending_refiles: Vec::new(),
++      frozen_volume: 1.0,
++    }
++  }
++
++  pub fn mode(&self) -> bool {
++    self.mode
++  }
++
++  pub fn home(&self) -> Home {
++    self.home
++  }
++
++  pub fn frozen_volume(&self) -> f32 {
++    self.frozen_volume
++  }
++
++  pub fn is_empty(&self) -> bool {
++    self.pairings.is_empty()
++  }
++
++  /// The current target pitches (integer EDO steps) -- the FAR goalpost of each pitch
++  /// pairing.
++  pub fn targets(&self) -> Vec<i32> {
++    let home_low = self.home == Home::Low;
++    self
++      .pairings
++      .iter()
++      .filter(|p| p.kind == Kind::Pitch)
++      .map(|p| filed_side_pitch(&p.seg, !home_low).round() as i32)
++      .collect()
++  }
++
++  pub fn pairings(&self) -> &[Pairing] {
++    &self.pairings
++  }
++
++  /// Enter slide mode, freezing the grid volume at `frozen_volume`. Starts with no
++  /// targets, so the pedal is inert until the first pick (no pitch is yanked).
++  pub fn enter(&mut self, frozen_volume: f32) {
++    self.mode = true;
++    self.frozen_volume = frozen_volume;
++    self.pairings.clear();
++    // Home follows the pedal's current side, so the first pick's far endpoint is the
++    // one away from it.
++    self.home = if self.cur_f <= MIDPOINT { Home::Low } else { Home::High };
++  }
++
++  /// Leave slide mode mid-anything: voices freeze exactly where they are (targets and
++  /// kinks dropped), and the frozen grid volume is handed back for the pedal's
++  /// catch-up pickup. Returns that volume.
++  pub fn exit(&mut self) -> f32 {
++    self.mode = false;
++    self.pairings.clear();
++    self.frozen_volume
++  }
++
++  /// Reconcile the PITCH pairings against the grid's live edit selection (`edited`,
++  /// integer EDO steps, home-side filed): a pairing whose voice left the selection --
++  /// an editmode-clear deselecting it, or a sustain-clear ending it (which cascades the
++  /// edit reason away) -- is cancelled, and its voice returned for freezing and its
++  /// target unlit. Fade voices are not edit-mode voices, so they persist. Called by the
++  /// grid thread each repaint, so it covers a clear from ANY surface (grid or pedal).
++  pub fn reconcile(&mut self, edited: &std::collections::HashSet<i32>) -> Vec<VoiceSource> {
++    if !self.mode {
++      return Vec::new();
++    }
++    let home_low = self.home == Home::Low;
++    let mut dropped = Vec::new();
++    self.pairings.retain(|p| {
++      if p.kind != Kind::Pitch {
++        return true;
++      }
++      let filed = filed_side_pitch(&p.seg, home_low).round() as i32;
++      if edited.contains(&filed) {
++        true
++      } else {
++        dropped.push(p.voice);
++        false
++      }
++    });
++    dropped
++  }
++
++  /// Apply one pedal reading. Advances every pairing along the anchored map and updates
++  /// the home hysteresis (queueing any midpoint-flip re-files for the grid thread to
++  /// drain via `take_refiles`). Also tracks the fraction while mode is off (so the
++  /// first pick after `enter` knows which side the pedal is on).
++  pub fn on_pedal(&mut self, f: f32) {
++    let f = f.clamp(0.0, 1.0);
++    if !self.mode {
++      self.cur_f = f;
++      return;
++    }
++    let f_old = self.cur_f;
++    if (f - f_old).abs() > EPS {
++      let up = f > f_old;
++      if up != self.moving_up && !self.pairings.is_empty() {
++        // A reversal: re-pin every anchor at the reversal point, so the return path
++        // is a fresh segment to home (the hysteresis).
++        for p in &mut self.pairings {
++          p.seg.repin(f_old);
++        }
++      }
++      self.moving_up = up;
++      for p in &mut self.pairings {
++        p.seg.cur = p.seg.eval(f, up);
++      }
++    }
++    self.cur_f = f;
++    self.update_home(f);
++  }
++
++  /// Drain the midpoint-flip re-files (the grid thread applies them against the ring
++  /// and the sink).
++  pub fn take_refiles(&mut self) -> Vec<Refile> {
++    std::mem::take(&mut self.pending_refiles)
++  }
++
++  /// Flip home if the pedal crossed the far edge of the hysteresis band, queueing the
++  /// pitch pairings whose painted pitch therefore moved to the other side (and re-keying
++  /// their drone voices in the pairing so the pedal keeps driving the right key).
++  fn update_home(&mut self, f: f32) {
++    let flip = match self.home {
++      Home::Low => f > MIDPOINT + HYSTERESIS_BAND,
++      Home::High => f < MIDPOINT - HYSTERESIS_BAND,
++    };
++    if !flip {
++      return;
++    }
++    // Before the flip the note is filed at the OLD home end's pitch; after, at the new
++    // home end's. The flip changes only which endpoint the note is "at" for painting
++    // and re-filing -- not any sounding value.
++    let (old_home_low, new_home_low) = match self.home {
++      Home::Low => (true, false),
++      Home::High => (false, true),
++    };
++    for p in &mut self.pairings {
++      if p.kind != Kind::Pitch {
++        continue;
++      }
++      let from = filed_side_pitch(&p.seg, old_home_low).round() as i32;
++      let to = filed_side_pitch(&p.seg, new_home_low).round() as i32;
++      if from == to {
++        continue;
++      }
++      let voice_old = p.voice;
++      let voice_new = match p.voice {
++        VoiceSource::SurfaceDrone { grid, .. } => VoiceSource::SurfaceDrone { grid, pitch: to },
++        other => other, // a fingered voice keeps its cell key
++      };
++      p.voice = voice_new;
++      self.pending_refiles.push(Refile { voice_old, voice_new, from, to });
++    }
++    self.home = if new_home_low { Home::Low } else { Home::High };
++  }
++
++  /// A pick of a FREE pitch while slide mode is on (`keys.rs` play-path). `voices` is
++  /// the grid's edit-mode voices as `(key, current filed pitch)`. Per the vision's
++  /// home-proximity rule the pick becomes the new target of the NEAREST voice (ties to
++  /// the lower voice), replacing that pairing's FAR goalpost with a kink at the current
++  /// fraction -- never yanking the pitch it is currently nearest to. With NO edit-mode
++  /// voices the pick swells a NEW voice in from silence (the one-note swell), reported
++  /// in `spawn_fade_ins`.
++  pub fn pick(&mut self, pitch: i32, voices: &[(VoiceSource, i32)]) -> PickOutcome {
++    let nearest = voices
++      .iter()
++      .min_by_key(|(_, base)| ((*base - pitch).abs(), *base))
++      .copied();
++    match nearest {
++      Some((voice, base)) => {
++        let pairing = self.pitch_pairing(voice, base, pitch);
++        self.upsert_pairing(pairing);
++        PickOutcome::default()
++      }
++      // Nothing in edit mode: the pedal becomes a swell into this pitch.
++      None => PickOutcome { spawn_fade_ins: vec![pitch] },
++    }
++  }
++
++  /// A whole set of targets arriving at once (the chord-storage case, phase B; the
++  /// deterministic matcher is built and tested now, wired to picks in phase B).
++  /// Ascending pitch pass: each voice takes its nearest remaining target, ties to the
++  /// lower target. Extra targets swell NEW voices in from silence; leftover voices
++  /// (fewer targets) fade out. Returns the pitches needing fresh fade-in voices.
++  #[allow(dead_code)] // wired to chord recall in phase B; unit-tested now
++  pub fn match_targets(&mut self, targets: &[i32], voices: &[(VoiceSource, i32)]) -> PickOutcome {
++    let mut voices: Vec<(VoiceSource, i32)> = voices.to_vec();
++    voices.sort_by_key(|(_, p)| *p);
++    let mut remaining: Vec<i32> = targets.to_vec();
++    let mut new_pairings: Vec<Pairing> = Vec::new();
++    for (voice, base) in &voices {
++      if remaining.is_empty() {
++        // A leftover voice (fewer targets than voices): fade it out from where it is.
++        let prev = self.pairings.iter().find(|p| p.voice == *voice);
++        let start_amp = prev.and_then(|p| p.current_amp()).unwrap_or(1.0);
++        new_pairings.push(self.fade_pairing(*voice, *base as f32, Kind::FadeOut, start_amp, 0.0));
++        continue;
++      }
++      let (idx, _) = remaining
++        .iter()
++        .enumerate()
++        .min_by_key(|(_, t)| ((*t - base).abs(), **t))
++        .unwrap();
++      let target = remaining.remove(idx);
++      new_pairings.push(self.pitch_pairing(*voice, *base, target));
++    }
++    let spawn_fade_ins = remaining;
++    self.pairings = new_pairings;
++    PickOutcome { spawn_fade_ins }
++  }
++
++  /// Replace (or insert) a pairing keyed by its voice.
++  fn upsert_pairing(&mut self, pairing: Pairing) {
++    if let Some(slot) = self.pairings.iter_mut().find(|p| p.voice == pairing.voice) {
++      *slot = pairing;
++    } else {
++      self.pairings.push(pairing);
++    }
++  }
++
++  /// Build (or retarget) a pitch pairing for `voice`, currently at `base`, aiming at
++  /// `target`. A pre-existing pairing keeps its map and only retargets its FAR
++  /// endpoint (kink at the current fraction) -- so a pick never yanks the pitch the
++  /// voice is currently nearest to.
++  fn pitch_pairing(&self, voice: VoiceSource, base: i32, target: i32) -> Pairing {
++    let far_is_high = self.home == Home::Low;
++    if let Some(prev) = self.pairings.iter().find(|p| p.voice == voice && p.kind == Kind::Pitch) {
++      let mut seg = prev.seg;
++      let cur_target = if far_is_high { seg.s1 } else { seg.s0 };
++      if (cur_target - target as f32).abs() > EPS {
++        // Retarget the far side: pin the kink at the current fraction, swap the
++        // goalpost.
++        seg.repin(self.cur_f);
++        if far_is_high {
++          seg.s1 = target as f32;
++        } else {
++          seg.s0 = target as f32;
++        }
++      }
++      return Pairing { voice, kind: Kind::Pitch, seg, pitch: seg.cur };
++    }
++    // A fresh pairing: home endpoint = the voice's current pitch, far endpoint = the
++    // target, anchored where the pedal is (below the anchor it reads home; above it
++    // slides to the target).
++    let (s0, s1) = if far_is_high { (base as f32, target as f32) } else { (target as f32, base as f32) };
++    let seg = Segments::new(s0, s1, self.cur_f, base as f32, Shape::Linear);
++    Pairing { voice, kind: Kind::Pitch, seg, pitch: base as f32 }
++  }
++
++  /// Build a fade pairing (in or out) at fixed `pitch`, amplitude walking from
++  /// `start_amp` toward `end_amp` as the pedal sweeps toward the far side.
++  fn fade_pairing(
++    &self,
++    voice: VoiceSource,
++    pitch: f32,
++    kind: Kind,
++    start_amp: f32,
++    end_amp: f32,
++  ) -> Pairing {
++    // The home side holds `start_amp`, the far side `end_amp`, quartic-shaped and
++    // anchored at the current fraction (so a mid-flight fade pins a kink like a pitch
++    // retarget does).
++    let far_is_high = self.home == Home::Low;
++    let (s0, s1) = if far_is_high { (start_amp, end_amp) } else { (end_amp, start_amp) };
++    let seg = Segments::new(s0, s1, self.cur_f, start_amp, Shape::Quartic);
++    Pairing { voice, kind, seg, pitch }
++  }
++
++  /// Register a fade-in voice the wiring just spawned for extra target `pitch`. The
++  /// swell runs from silence (home) to full (far).
++  pub fn register_fade_in(&mut self, voice: VoiceSource, pitch: i32) {
++    let pairing = self.fade_pairing(voice, pitch as f32, Kind::FadeIn, 0.0, 1.0);
++    self.pairings.push(pairing);
++  }
++
++  /// The per-voice drive commands to apply this instant.
++  pub fn drives(&self) -> Vec<Drive> {
++    self
++      .pairings
++      .iter()
++      .map(|p| Drive { voice: p.voice, pitch: p.current_pitch(), amp: p.current_amp() })
++      .collect()
++  }
++
++  /// The LED roles: the home-side pitches (lit + danced) and the target-side pitches
++  /// (100 ms flash, no dance), as integer EDO steps. Only pitch pairings light a
++  /// target; fades have no goalpost cell.
++  pub fn led_roles(&self) -> (HashSet<i32>, HashSet<i32>) {
++    let mut home = HashSet::new();
++    let mut target = HashSet::new();
++    let home_low = self.home == Home::Low;
++    for p in &self.pairings {
++      if p.kind != Kind::Pitch {
++        continue;
++      }
++      home.insert(filed_side_pitch(&p.seg, home_low).round() as i32);
++      target.insert(filed_side_pitch(&p.seg, !home_low).round() as i32);
++    }
++    (home, target)
++  }
++}
++
++/// The pitch at one end of a segment: the low end (`s0`) or the high end (`s1`).
++fn filed_side_pitch(seg: &Segments, low: bool) -> f32 {
++  if low {
++    seg.s0
++  } else {
++    seg.s1
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::*;
++
++  fn finger(cell: (i32, i32)) -> VoiceSource {
++    VoiceSource::SurfaceFinger { grid: 0, cell }
++  }
++
++  // ---- the anchored-segments map (the heart) ----
++
++  /// A plain pitch slide from home to target: endpoints exact, monotone between.
++  #[test]
++  fn a_pitch_segment_lands_home_at_0_and_target_at_1() {
++    // Home low (s0 = 10), target high (s1 = 20), anchored at the low end.
++    let mut s = Segments::new(10.0, 20.0, 0.0, 10.0, Shape::Linear);
++    assert_eq!(s.eval(0.0, true), 10.0, "exact home at 0");
++    assert_eq!(s.eval(1.0, true), 20.0, "exact target at 1");
++    s.cur = s.eval(0.5, true);
++    assert!((s.cur - 15.0).abs() < 1e-4, "halfway is halfway (linear)");
++  }
++
++  /// Continuity under a mid-flight retarget: pinning the anchor at the current point
++  /// and swapping the far endpoint must not move the value the pedal is at.
++  #[test]
++  fn a_mid_flight_retarget_does_not_move_the_current_pitch() {
++    let mut s = Segments::new(10.0, 20.0, 0.0, 10.0, Shape::Linear);
++    // Sweep to f = 0.6: pitch is 10 + 10*0.6 = 16.
++    s.cur = s.eval(0.6, true);
++    assert!((s.cur - 16.0).abs() < 1e-4);
++    // Retarget the far (high) endpoint to 30, kink pinned at f = 0.6.
++    s.repin(0.6);
++    s.s1 = 30.0;
++    // The value at f = 0.6 is unchanged -- no jump.
++    assert!((s.eval(0.6, true) - 16.0).abs() < 1e-4, "no discontinuity at the retarget");
++    // Onward to f = 1 lands exactly on the NEW target.
++    assert!((s.eval(1.0, true) - 30.0).abs() < 1e-4, "the new goalpost is reached exactly");
++    // Halfway from the kink to the end: 16 + (30-16)*0.5 = 23.
++    let mid = s.eval(0.8, true); // t = (0.8-0.6)/(1-0.6) = 0.5
++    assert!((mid - 23.0).abs() < 1e-4);
++  }
++
++  /// Hysteresis: sweep up along a kinked map, reverse, and the path down is a fresh
++  /// straight segment to home -- not a retrace of the way up.
++  #[test]
++  fn reversing_mid_flight_takes_a_fresh_segment_home() {
++    let mut s = Segments::new(0.0, 12.0, 0.0, 0.0, Shape::Linear);
++    // Up to f = 0.5: pitch 6. Retarget high to 100 (a big kink).
++    s.cur = s.eval(0.5, true);
++    s.repin(0.5);
++    s.s1 = 100.0;
++    // Up a touch to f = 0.75: 6 + (100-6)*0.5 = 53.
++    s.cur = s.eval(0.75, true);
++    assert!((s.cur - 53.0).abs() < 1e-3);
++    // Reverse here: re-pin at (0.75, 53), now descending to s0 = 0.
++    s.repin(0.75);
++    // Back to f = 0.5: NOT 6 (the way up) -- a fresh line from (0.75,53) to (0,0).
++    let down = s.eval(0.5, false); // t = (0.75-0.5)/0.75 = 1/3, 53*(1 - 1/3) = 35.33
++    assert!((down - 53.0 * (2.0 / 3.0)).abs() < 1e-3, "fresh straight segment home, got {down}");
++    assert!((down - 6.0).abs() > 1.0, "definitely not a retrace of the way up");
++    // ...and it still lands home exactly at 0.
++    assert!((s.eval(0.0, false) - 0.0).abs() < 1e-4);
++  }
++
++  /// Kink gone at the endpoint: reach 1, and the whole return trip is one straight
++  /// line from the target back to home.
++  #[test]
++  fn the_kink_dies_at_the_endpoint() {
++    let mut s = Segments::new(0.0, 10.0, 0.0, 0.0, Shape::Linear);
++    s.cur = s.eval(0.4, true);
++    s.repin(0.4);
++    s.s1 = 40.0; // kink at 0.4
++    // Reach the top.
++    s.cur = s.eval(1.0, true);
++    assert!((s.cur - 40.0).abs() < 1e-4);
++    s.repin(1.0);
++    // Descending from the top: a single line (0,0)-(1,40), no kink anywhere.
++    for &(f, want) in &[(0.75_f32, 30.0_f32), (0.5, 20.0), (0.25, 10.0), (0.0, 0.0)] {
++      let got = s.eval(f, false);
++      assert!((got - want).abs() < 1e-3, "at f={f} want {want} got {got} -- one clean line");
++    }
++  }
++
++  /// The quartic fade: silent at one end, full at the other, eased (quartic) between,
++  /// and continuous under a mid-flight kink exactly like the pitch map.
++  #[test]
++  fn a_quartic_fade_is_exact_at_the_ends_and_eased_between() {
++    let s = Segments::new(0.0, 1.0, 0.0, 0.0, Shape::Quartic);
++    assert_eq!(s.eval(0.0, true), 0.0, "silent at home");
++    assert_eq!(s.eval(1.0, true), 1.0, "full at the far end");
++    // Quartic: halfway in pedal is only 0.5^4 = 0.0625 in amplitude -- eased out of
++    // silence.
++    assert!((s.eval(0.5, true) - 0.0625).abs() < 1e-4);
++  }
++
++  #[test]
++  fn a_quartic_fade_pins_a_kink_without_a_jump() {
++    let mut s = Segments::new(0.0, 1.0, 0.0, 0.0, Shape::Quartic);
++    s.cur = s.eval(0.6, true); // 0.6^4 = 0.1296
++    assert!((s.cur - 0.1296).abs() < 1e-4);
++    // Re-pin (a new fade target mid-flight); the value at 0.6 must not jump.
++    s.repin(0.6);
++    assert!((s.eval(0.6, true) - 0.1296).abs() < 1e-4, "continuous across the kink");
++    assert!((s.eval(1.0, true) - 1.0).abs() < 1e-4, "still exact at the top");
++  }
++
++  // ---- home hysteresis ----
++
++  #[test]
++  fn home_flips_only_past_the_hysteresis_band() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.5);
++    // Pick a target so there's a pitch pairing to watch (fingered voice at pitch 10).
++    st.pick(20, &[(finger((0, 0)), 10)]);
++    assert_eq!(st.home(), Home::Low, "started at f=0, home is low");
++    st.on_pedal(0.5); // right at the midpoint: no flip
++    assert_eq!(st.home(), Home::Low, "at exactly 0.5 the band is not yet crossed");
++    st.on_pedal(0.54); // inside the band
++    assert_eq!(st.home(), Home::Low, "still inside the +/-0.05 band");
++    st.on_pedal(0.56); // past 0.55
++    assert_eq!(st.home(), Home::High, "crossed the far edge -> home flips high");
++    // Coming back, it must drop below 0.45 to flip back.
++    st.on_pedal(0.5);
++    assert_eq!(st.home(), Home::High, "hysteresis holds it high near the middle");
++    st.on_pedal(0.44);
++    assert_eq!(st.home(), Home::Low, "past the near edge -> back to low");
++  }
++
++  #[test]
++  fn the_flip_reports_a_refile_but_moves_no_value() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    st.pick(30, &[(finger((0, 0)), 10)]); // home low = 10, target high = 30
++    // Sweep up past the flip.
++    st.on_pedal(0.4);
++    st.on_pedal(0.56);
++    let refiles = st.take_refiles();
++    assert_eq!(refiles.len(), 1, "the one pitch pairing re-files");
++    assert_eq!(refiles[0].from, 10, "was painted at the low (home) pitch");
++    assert_eq!(refiles[0].to, 30, "now painted at the high (new home = target) pitch");
++    assert!(st.take_refiles().is_empty(), "draining consumes them");
++  }
++
++  // ---- target matching ----
++
++  #[test]
++  fn matching_is_ascending_nearest_ties_to_the_lower_target() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    // Voices A=10, B=20; targets X=12, Y=25. Ascending: A takes 12, B takes 25.
++    let voices = [(finger((0, 0)), 10), (finger((1, 1)), 20)];
++    st.match_targets(&[12, 25], &voices);
++    let pa = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap();
++    let pb = st.pairings().iter().find(|p| p.voice == finger((1, 1))).unwrap();
++    // far is high (home low): s1 is the target.
++    assert_eq!(pa.seg.s1, 12.0);
++    assert_eq!(pb.seg.s1, 25.0);
++  }
++
++  #[test]
++  fn a_single_pick_retargets_the_nearest_voice_and_re_picks_re_retarget_it() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    // One voice at 10: picking 40 makes it the target; picking 12 RE-targets the same
++    // voice (the vision's slide-to-one-then-another workflow), not a second fade-in.
++    let out = st.pick(40, &[(finger((0, 0)), 10)]);
++    assert!(out.spawn_fade_ins.is_empty(), "one voice, one pick: a plain pitch pairing");
++    assert_eq!(st.targets(), vec![40]);
++    let out = st.pick(12, &[(finger((0, 0)), 10)]);
++    assert!(out.spawn_fade_ins.is_empty(), "the same voice is re-targeted, nothing swells in");
++    assert_eq!(st.targets(), vec![12]);
++  }
++
++  #[test]
++  fn a_pick_with_no_edit_voices_is_a_one_note_swell() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    let out = st.pick(25, &[]);
++    assert_eq!(out.spawn_fade_ins, vec![25], "no edit voices: the pick swells a new voice in");
++  }
++
++  #[test]
++  fn a_target_set_larger_than_the_voice_set_swells_the_extras_in() {
++    // The batch matcher (chord case, phase B): one voice, two targets -> the voice
++    // takes the nearer, the other swells in.
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    let out = st.match_targets(&[12, 40], &[(finger((0, 0)), 10)]);
++    assert_eq!(out.spawn_fade_ins, vec![40], "the voice takes 12 (nearer); 40 swells in");
++  }
++
++  #[test]
++  fn fewer_targets_than_voices_fades_the_leftovers_out() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    let voices = [(finger((0, 0)), 10), (finger((1, 1)), 20)];
++    st.match_targets(&[11], &voices);
++    let leftover = st.pairings().iter().find(|p| p.voice == finger((1, 1))).unwrap();
++    assert_eq!(leftover.kind, Kind::FadeOut, "the unmatched (higher) voice fades out");
++    let matched = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap();
++    assert_eq!(matched.kind, Kind::Pitch, "the matched voice slides");
++  }
++
++  // ---- the far-side-only retarget rule ----
++
++  #[test]
++  fn a_retarget_only_moves_the_far_goalpost() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    st.pick(30, &[(finger((0, 0)), 10)]); // home low 10, far high 30
++    st.on_pedal(0.5); // slide up but stay inside the hysteresis band; pitch = 10+20*0.5 = 20
++    assert_eq!(st.home(), Home::Low, "still home-low at the midpoint");
++    let before = st.pairings()[0].seg.cur;
++    assert!((before - 20.0).abs() < 1e-3);
++    // Pick a new target (still home low): replaces the FAR (high) endpoint only.
++    st.pick(40, &[(finger((0, 0)), 20)]);
++    let p = &st.pairings()[0];
++    assert_eq!(p.seg.s0, 10.0, "the home (low) goalpost is untouched");
++    assert_eq!(p.seg.s1, 40.0, "only the far (high) goalpost moved");
++    assert!((p.seg.cur - 20.0).abs() < 1e-3, "the current pitch did not jump");
++  }
++
++  // ---- state-level drive + a full flight ----
++
++  #[test]
++  fn a_full_flight_drives_the_voice_from_home_to_target() {
++    let mut st = PedalSlideState::new();
++    st.enter(1.0);
++    st.on_pedal(0.0);
++    st.pick(22, &[(finger((0, 0)), 10)]);
++    st.on_pedal(0.0);
++    let d0 = st.drives();
++    assert_eq!(d0.len(), 1);
++    assert!((d0[0].pitch - 10.0).abs() < 1e-4, "at the bottom the voice is home");
++    assert_eq!(d0[0].amp, None, "a pitch slide does not drive amplitude");
++    st.on_pedal(1.0);
++    let d1 = st.drives();
++    assert!((d1[0].pitch - 22.0).abs() < 1e-4, "at the top it has reached the target");
++  }
++
++  #[test]
++  fn a_fade_in_voice_swells_its_amplitude_with_the_pedal() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    st.pick(25, &[]); // no edit voices: one-note swell
++    st.register_fade_in(finger((9, 9)), 25);
++    st.on_pedal(0.0);
++    let d0 = st.drives();
++    let fade = d0.iter().find(|d| d.voice == finger((9, 9))).unwrap();
++    assert_eq!(fade.amp, Some(0.0), "silent at the bottom");
++    assert!((fade.pitch - 25.0).abs() < 1e-4, "at its fixed pitch");
++    st.on_pedal(1.0);
++    let d1 = st.drives();
++    let fade = d1.iter().find(|d| d.voice == finger((9, 9))).unwrap();
++    assert_eq!(fade.amp, Some(1.0), "full at the top");
++  }
++
++  #[test]
++  fn exit_freezes_and_hands_back_the_frozen_volume() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.42);
++    st.pick(20, &[(finger((0, 0)), 10)]);
++    assert!(!st.is_empty());
++    let vol = st.exit();
++    assert!((vol - 0.42).abs() < 1e-6, "the frozen volume comes back for catch-up");
++    assert!(!st.mode(), "mode is off");
++    assert!(st.is_empty(), "targets and pairings are dropped");
++  }
++
++  // ---- the anchored-kink volume return (2_discussion amendment) ----
++
++  #[test]
++  fn the_volume_return_is_continuous_at_mode_exit_and_immediate_both_ways() {
++    // Slide mode turned off with the pedal at 0.5 and the volume frozen at 0.5.
++    let mut vr = VolumeReturn::new(0.5, 0.5);
++    // A first reading at the same spot holds the frozen volume -- no jump.
++    assert_eq!(vr.on_pedal(0.5), Some(0.5), "continuous at the exit point");
++    // Pushing UP raises the volume immediately (toward 1), quartic-eased.
++    let up = vr.on_pedal(0.75).unwrap();
++    assert!(up > 0.5, "raising the pedal raises the volume at once, got {up}");
++    // Back down THROUGH the frozen point keeps lowering it -- no dead zone (the bug
++    // the amendment fixes): reverse re-pins, so the way down is a fresh segment.
++    let mid = vr.on_pedal(0.5).unwrap();
++    assert!(mid < up, "coming back down lowers the volume immediately, got {mid}");
++    let low = vr.on_pedal(0.25).unwrap();
++    assert!(low < mid, "and keeps lowering past the old freeze point, got {low}");
++  }
++
++  #[test]
++  fn the_volume_return_reverts_to_the_ordinary_taper_at_an_endpoint() {
++    let mut vr = VolumeReturn::new(0.4, 0.6);
++    assert!(vr.on_pedal(0.3).is_some(), "still on the kinked map mid-travel");
++    assert_eq!(vr.on_pedal(0.0), None, "reaching the heel reverts to the taper");
++    assert!(vr.reverted());
++    assert_eq!(vr.on_pedal(0.5), None, "and it stays reverted");
++
++    // The toe end reverts too.
++    let mut vr = VolumeReturn::new(0.4, 0.6);
++    assert_eq!(vr.on_pedal(1.0), None, "reaching the toe reverts");
++    assert!(vr.reverted());
++  }
++
++  #[test]
++  fn led_roles_split_home_and_target() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    st.pick(30, &[(finger((0, 0)), 10)]);
++    let (home, target) = st.led_roles();
++    assert!(home.contains(&10), "home lights the current-side pitch");
++    assert!(target.contains(&30), "the target flashes at the far side");
++  }
++}
+diff --git a/edo_surface/src/surfaces_runtime/pedal_volume.rs b/edo_surface/src/surfaces_runtime/pedal_volume.rs
+index b628634..47177b4 100644
+--- a/edo_surface/src/surfaces_runtime/pedal_volume.rs
++++ b/edo_surface/src/surfaces_runtime/pedal_volume.rs
+@@ -2,7 +2,7 @@
+ //! that polls the MPC-20 bridge and aims each mapped grid's gain at it
+ //! (`expression_pedal_loop`).
+ 
+-use std::sync::atomic::Ordering;
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::{Arc, Mutex};
+ use std::thread;
+ use std::time::Duration;
+@@ -11,6 +11,7 @@ use crate::expression_pedals::NUM_PEDALS;
+ 
+ use crate::types::VoiceMap;
+ 
++use super::pedal_slide::{PedalSlideState, VolumeReturn};
+ use super::synth;
+ use super::{Live, STOP};
+ 
+@@ -83,10 +84,15 @@ pub(super) fn apply_pedal_gain(
+   synth::set_grid_pedal_gain(voices, grid, gain);
+ }
+ 
++#[allow(clippy::too_many_arguments)]
+ pub(super) fn expression_pedal_loop(
+   live: Arc<Live>,
+   voices: Arc<Mutex<VoiceMap>>,
+   pedal_gains: Arc<Mutex<Vec<f32>>>,
++  pedal_slide_on: Arc<Vec<AtomicBool>>,
++  pedal_slide: Arc<Vec<Mutex<PedalSlideState>>>,
++  fund: f64,
++  edo: i32,
+ ) {
+   use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
+   let reader = match PedalReader::connect(DEFAULT_PORT) {
+@@ -98,6 +104,11 @@ pub(super) fn expression_pedal_loop(
+   };
+   println!("expression pedals: connected to {:?}", reader.port_name());
+   let mut last = [f32::NAN; NUM_PEDALS];
++  // Per-pedal slide bookkeeping: whether the grid was in slide mode last poll (to catch
++  // the ON->OFF edge that starts the volume return), and the anchored-kink volume
++  // return itself (`None` = the ordinary taper is in charge).
++  let mut mode_was = [false; NUM_PEDALS];
++  let mut vol_return: [Option<VolumeReturn>; NUM_PEDALS] = [None; NUM_PEDALS];
+   let mut last_generation = live.generation.load(Ordering::SeqCst);
+   while !STOP.load(Ordering::SeqCst) {
+     let generation = live.generation.load(Ordering::SeqCst);
+@@ -108,8 +119,60 @@ pub(super) fn expression_pedal_loop(
+     for (pedal, binding) in map.iter().enumerate() {
+       let Some((grid, curve)) = *binding else { continue };
+       let p = pedals[pedal];
+-      // No CC yet = no position to trust; keep unity rather than muting the grid.
+-      // A reload re-applies a known position through the (possibly new) taper.
++      let mode = pedal_slide_on.get(grid).map(|b| b.load(Ordering::Relaxed)).unwrap_or(false);
++      // The ON->OFF edge: begin the anchored-kink volume return from the grid's frozen
++      // volume, so the pedal returning to volume duty changes the loudness immediately
++      // in either direction rather than yanking it to its physical position or going
++      // dead until it crosses (2_discussion amendment).
++      if mode_was[pedal] && !mode {
++        let frozen = pedal_slide
++          .get(grid)
++          .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).frozen_volume())
++          .unwrap_or(1.0);
++        vol_return[pedal] = Some(VolumeReturn::new(p.norm, frozen));
++        last[pedal] = f32::NAN; // force the next ordinary reading to apply
++      }
++      mode_was[pedal] = mode;
++
++      if mode {
++        // Slide duty: the pedal drives this grid's slide engine, not its volume. Feed
++        // the normalized position in and apply the resulting per-voice drives.
++        if p.updates == 0 {
++          continue;
++        }
++        let drives = pedal_slide.get(grid).map(|s| {
++          let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
++          // (`on_pedal` also queues midpoint-flip re-files; the grid thread owns the
++          // ring/sink a re-file touches, so it drains them during its repaint -- the
++          // pedal thread only drives the voices.)
++          st.on_pedal(p.norm);
++          st.drives()
++        });
++        if let Some(drives) = drives {
++          synth::apply_slide_drives(&voices, &drives, fund, edo);
++        }
++        continue;
++      }
++
++      // Volume duty. While the anchored-kink return is active, its map is in charge
++      // (immediate in both directions) until the pedal reaches an endpoint, when it
++      // reverts to the ordinary taper.
++      if let Some(vr) = vol_return[pedal].as_mut() {
++        if p.updates == 0 {
++          continue;
++        }
++        match vr.on_pedal(p.norm) {
++          Some(gain) => {
++            apply_pedal_gain(&voices, &pedal_gains, grid, gain);
++            continue;
++          }
++          None => {
++            // Reverted at an endpoint: fall through to the ordinary taper this poll.
++            vol_return[pedal] = None;
++          }
++        }
++      }
++      // No CC yet = no position to trust; keep unity rather than muting.
+       if p.updates == 0 || (!reloaded && last[pedal] == p.norm) {
+         continue;
+       }
+diff --git a/edo_surface/src/surfaces_runtime/settings.rs b/edo_surface/src/surfaces_runtime/settings.rs
+index c8d631c..7344b59 100644
+--- a/edo_surface/src/surfaces_runtime/settings.rs
++++ b/edo_surface/src/surfaces_runtime/settings.rs
+@@ -75,6 +75,9 @@ pub(super) struct Overlays {
+   /// The slide / mono toggles' cells, `NO_RECT` when absent (global switches too).
+   pub(super) slide_rect: [i32; 4],
+   pub(super) mono_rect: [i32; 4],
++  /// The pedal-slide toggle's cell, `NO_RECT` when absent (per-monome; drives this
++  /// grid's EX-P pedal between volume and the pitch-slide engine).
++  pub(super) pedal_slide_rect: [i32; 4],
+   /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
+   pub(super) poly_rect: [i32; 4],
+   /// The editmode_control buttons' cells, `NO_RECT` when absent: clear empties
+@@ -296,6 +299,14 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
+         _ => None,
+       })
+       .unwrap_or(NO_RECT);
++    let pedal_slide_rect = rig
++      .monome_windows
++      .iter()
++      .find_map(|w| match w {
++        MonomeWindowRig::PedalSlideToggle { monome, rect, .. } if monome == monome_id => Some(*rect),
++        _ => None,
++      })
++      .unwrap_or(NO_RECT);
+     let poly_rect = rig
+       .monome_windows
+       .iter()
+@@ -338,6 +349,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
+       distortion_rect,
+       slide_rect,
+       mono_rect,
++      pedal_slide_rect,
+       poly_rect,
+       editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
+       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
+diff --git a/edo_surface/src/surfaces_runtime/synth.rs b/edo_surface/src/surfaces_runtime/synth.rs
+index d65d466..e1ff739 100644
+--- a/edo_surface/src/surfaces_runtime/synth.rs
++++ b/edo_surface/src/surfaces_runtime/synth.rs
+@@ -254,8 +254,9 @@ impl SurfaceSink {
+   }
+ 
+   /// This grid's current expression-pedal volume (unity absent a pedal or before
+-  /// its first movement).
+-  fn pedal_gain(&self) -> f32 {
++  /// its first movement). Public within the runtime so the pedal-slide toggle can
++  /// freeze the grid volume at entry.
++  pub(super) fn pedal_gain(&self) -> f32 {
+     let gains = self.pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
+     gains.get(self.grid).copied().unwrap_or(1.0)
+   }
+@@ -330,7 +331,7 @@ impl SurfaceSink {
+         timbre,
+         fader_gain: fader,
+         grid_gain: pedal,
+-        grid_gain_target: pedal,
++        grid_gain_target: pedal, slide_freq_target: 0.0,
+         am_phase: 0.0,
+         fm_phase: 0.0,
+         rel_am_phase: 0.0,
+@@ -564,6 +565,21 @@ impl SurfaceSink {
+     true
+   }
+ 
++  /// Re-key a sliding DRONE from struck pitch `from` to `to` at the pedal-slide
++  /// midpoint flip: the note is now painted at the target's pitch, so its pitch-keyed
++  /// drone voice moves under the new key (its live `freq`, `slide_freq_target`, and
++  /// everything else continuing -- it is the same voice). No-op if no drone rings at
++  /// `from`. Overwrites any voice already at `to` (two drones one pitch is one drone).
++  pub fn rekey_drone(&mut self, from: i32, to: i32) {
++    if from == to {
++      return;
++    }
++    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
++    if let Some(state) = voices.remove(&sustain_key(self.grid, from)) {
++      voices.insert(sustain_key(self.grid, to), state);
++    }
++  }
++
+   /// Release `cell`: its voice rings out (ramps to zero over `release_secs`).
+   pub fn note_off(&mut self, cell: (i32, i32)) {
+     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+@@ -640,7 +656,50 @@ impl SurfaceSink {
+         timbre: v.timbre,
+         fader_gain: v.fader_gain,
+         grid_gain: v.pedal_gain,
+-        grid_gain_target: v.pedal_gain,
++        grid_gain_target: v.pedal_gain, slide_freq_target: 0.0,
++        am_phase: 0.0,
++        fm_phase: 0.0,
++        rel_am_phase: 0.0,
++        rel_fm_phase: 0.0,
++        timbre_xfade: None,
++      },
++    );
++  }
++
++  /// Spawn a pedal-slide FADE-IN voice: a fresh drone at `pitch` that starts SILENT
++  /// (`grid_gain` 0) and swells as the pedal-slide engine drives its `grid_gain_target`
++  /// through the quartic fade map. Its envelope attacks and rings like any note (the
++  /// swell is amplitude on top), and it is keyed as a drone (`SurfaceDrone`) so it is a
++  /// real sustained voice that joins the sustain machinery. Returns its key so the
++  /// slide engine can register the pairing. No-op-safe: overwrites any voice at the key.
++  pub fn spawn_slide_fade_in(&mut self, pitch: i32, timbre: Timbre) -> VoiceSource {
++    let id = self.next_id;
++    self.next_id += 1;
++    let fader = self.fader_gain();
++    let key = sustain_key(self.grid, pitch);
++    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
++    voices.insert(
++      key,
++      VoiceState {
++        id,
++        freq: freq_for_pitch(pitch, self.fund, self.edo),
++        freq_target: 0.0,
++        glide_per_sample: 1.0,
++        factored_pulse_freq: 0.0,
++        factored_pulse_phase: 0.0,
++        phase: 0.0,
++        env: 0.0,
++        target_env: 1.0,
++        ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
++        pending_attack: None,
++        sustain_env: self.sustain_env,
++        decay_per_sample: self.decay_per_sample,
++        timbre,
++        fader_gain: fader,
++        // Silent until the pedal swells it: the fade drives `grid_gain_target`.
++        grid_gain: 0.0,
++        grid_gain_target: 0.0,
++        slide_freq_target: 0.0,
+         am_phase: 0.0,
+         fm_phase: 0.0,
+         rel_am_phase: 0.0,
+@@ -648,6 +707,7 @@ impl SurfaceSink {
+         timbre_xfade: None,
+       },
+     );
++    key
+   }
+ 
+   /// A manual retrigger of a sustaining pitch: cut THIS grid's drone at `pitch` so
+@@ -718,6 +778,70 @@ impl SurfaceSink {
+   }
+ }
+ 
++/// Convert a fractional EDO-step pitch to Hz -- the pedal-slide flight is mid-glide,
++/// so its pitch is a real number of steps, unlike `freq_for_pitch`'s integer input.
++/// `fund * 2^(pitch / edo)`, log-linear like every other glide here.
++pub(super) fn freq_for_fractional_pitch(pitch: f32, fund: f64, edo: i32) -> f32 {
++  (fund * 2.0_f64.powf(pitch as f64 / edo as f64)) as f32
++}
++
++/// Apply one round of pedal-slide drives (`pedal_slide::PedalSlideState::drives`): aim
++/// each paired voice's pitch through the one-pole `slide_freq_target` smoother, and --
++/// for fade voices only -- its amplitude through `grid_gain_target` (the pitch pairings
++/// leave the grid volume frozen). A drive whose voice has vanished is skipped.
++pub(super) fn apply_slide_drives(
++  voices: &Arc<Mutex<VoiceMap>>,
++  drives: &[super::pedal_slide::Drive],
++  fund: f64,
++  edo: i32,
++) {
++  if drives.is_empty() {
++    return;
++  }
++  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
++  for d in drives {
++    if let Some(state) = voices.get_mut(&d.voice) {
++      state.slide_freq_target = freq_for_fractional_pitch(d.pitch, fund, edo);
++      if let Some(amp) = d.amp {
++        state.grid_gain_target = amp.clamp(0.0, 1.0);
++      }
++    }
++  }
++}
++
++/// Freeze specific sliding voices (an editmode-clear/sustain-clear cancelled their
++/// pairings): clear `slide_freq_target` so each holds its current `freq`. A voice that
++/// has already ended is simply absent.
++pub fn freeze_slide_voices(voices: &Arc<Mutex<VoiceMap>>, keys: &[VoiceSource]) {
++  if keys.is_empty() {
++    return;
++  }
++  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
++  for key in keys {
++    if let Some(state) = voices.get_mut(key) {
++      state.slide_freq_target = 0.0;
++    }
++  }
++}
++
++/// Freeze the pedal-slide flight for `grid`: clear `slide_freq_target` on every one of
++/// its voices, so each voice holds its current `freq` (a toggle-off, an editmode-clear,
++/// or a sustain-clear mid-flight). Leaves the pitch exactly where the pedal left it --
++/// smoothness above all; a later drag can tidy an off-grid pitch.
++pub fn freeze_slide(voices: &Arc<Mutex<VoiceMap>>, grid: usize) {
++  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
++  for (src, state) in voices.iter_mut() {
++    let g = match src {
++      VoiceSource::SurfaceFinger { grid, .. } => *grid,
++      VoiceSource::SurfaceDrone { grid, .. } => *grid,
++      _ => continue,
++    };
++    if g == grid {
++      state.slide_freq_target = 0.0;
++    }
++  }
++}
++
+ /// Aim every voice of `grid` -- fingered and sustained alike -- at expression-pedal
+ /// volume `gain` (absolute, 0..1; NOT a ratio, so a pedal parked at 0 recovers).
+ /// Each voice slews there per sample (`voices::GAIN_SLEW_SECS`), which is what
+diff --git a/edo_surface/src/surfaces_runtime/tests.rs b/edo_surface/src/surfaces_runtime/tests.rs
+index 511eb93..a300432 100644
+--- a/edo_surface/src/surfaces_runtime/tests.rs
++++ b/edo_surface/src/surfaces_runtime/tests.rs
+@@ -34,6 +34,10 @@
+       distortion_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+       slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
+       mono_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
++      pedal_slide_on: Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect()),
++      pedal_slide: Arc::new(
++        (0..num_grids).map(|_| Mutex::new(pedal_slide::PedalSlideState::new())).collect(),
++      ),
+       poly,
+       live,
+       voices: Arc::clone(&voices),
+@@ -153,6 +157,59 @@
+     );
+   }
+ 
++  /// Pedal slide end to end through the real key handler (TODO/pedal-slide): edit a
++  /// note, turn the toggle on, then a press on a FREE pitch PICKS a target (it does not
++  /// drag or sound), the pedal now drives the edit-mode voice's pitch, and toggling off
++  /// freezes it. Mirrors the exact hardware sequence.
++  #[test]
++  fn pedal_slide_pick_targets_the_edit_voice_and_the_toggle_freezes_it() {
++    use crate::types::VoiceSource;
++    let mut rt = test_grid_thread();
++    let mut register = 0;
++    let mut held = HashMap::new();
++    let note = (5, 5);
++    let handle = (5, 6); // directly below: the edit handle
++    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
++    handle_key(&mut rt, &mut register, &mut held, note, true); // strike
++    handle_key(&mut rt, &mut register, &mut held, handle, true); // enter edit (+ sustain)
++    handle_key(&mut rt, &mut register, &mut held, handle, false);
++    handle_key(&mut rt, &mut register, &mut held, note, false); // lift: it drones, edited
++
++    // Turn pedal-slide ON at the bottom-left toggle.
++    let toggle = (0, 15);
++    handle_key(&mut rt, &mut register, &mut held, toggle, true);
++    assert!(rt.shared.pedal_slide_on[0].load(Ordering::Relaxed), "the toggle is on");
++    assert!(rt.shared.pedal_slide[0].lock().unwrap().mode(), "the engine entered slide mode");
++
++    // Pick a free pitch: it PICKS a target, does not drag the note or sound anything.
++    let target_cell = (10, 10);
++    let target_pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, target_cell.0, target_cell.1);
++    handle_key(&mut rt, &mut register, &mut held, target_cell, true);
++    handle_key(&mut rt, &mut register, &mut held, target_cell, false);
++    assert_eq!(
++      rt.shared.pedal_slide[0].lock().unwrap().targets(),
++      vec![target_pitch],
++      "the pick set a target",
++    );
++    assert!(
++      rt.shared.ring.lock().unwrap()[0].store.has(Reason::Edit, pitch),
++      "the edited note stayed put -- the press picked, it did not drag it onto the target",
++    );
++    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
++    assert!(
++      rt.shared.voices.lock().unwrap()[&drone].slide_freq_target > 0.0,
++      "the pedal now drives the edit-mode voice's pitch",
++    );
++
++    // Toggle OFF: the voice freezes where it is (slide target cleared).
++    handle_key(&mut rt, &mut register, &mut held, toggle, true);
++    assert!(!rt.shared.pedal_slide_on[0].load(Ordering::Relaxed), "the toggle is off");
++    assert_eq!(
++      rt.shared.voices.lock().unwrap()[&drone].slide_freq_target, 0.0,
++      "toggling off freezes the voice (no more pedal drive)",
++    );
++  }
++
+   /// queues/branch-2.org "for those [kill-sustain] controls, the origin doesn't
+   /// matter": the LOCAL end-sustain (the handle above a note) is origin-blind. The
+   /// full story through the real key handler: recall a chord, layer a finger on the
+@@ -540,6 +597,7 @@
+         distortion_rect: NO_RECT,
+         slide_rect: NO_RECT,
+         mono_rect: NO_RECT,
++        pedal_slide_rect: NO_RECT,
+         poly_rect: NO_RECT,
+         editmode_clear_rect: NO_RECT,
+         editmode_accrete_rect: NO_RECT,
+@@ -837,14 +895,17 @@
+         "factored_pulse_pad",
+         "editmode_control",
+         "chord_block",
++        "pedal_slide_toggle",
+         "edo_note_grid",
+         "waveform_selector",
+         "edo_shift_pad",
+         "factored_pulse_pad",
+         "editmode_control",
+-        "chord_block"
++        "chord_block",
++        "pedal_slide_toggle"
+       ],
+-      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f)",
++      "no distortion/slide/mono/accrete windows on the grids (see 2_discussion 2f); \
++       each grid also carries its own pedal_slide_toggle (TODO/pedal-slide)",
+     );
+ 
+     // The editmode controls mirror the sustain row one row up (queue.org): OSS
+diff --git a/rigs/2-monomes_2-softsteps.org b/rigs/2-monomes_2-softsteps.org
+index 2d45409..2baaf7b 100644
+--- a/rigs/2-monomes_2-softsteps.org
++++ b/rigs/2-monomes_2-softsteps.org
+@@ -183,6 +183,19 @@ Arm (the flashing cell) then press a slot to save every voice this grid is
+ sounding; a disarmed slot press toggles the stored chord on (lit solid) and
+ off. Centered-ish in the free span, with the bigger gap kept next to the
+ editmode-clear at (12,0). See TODO/chord-storage-v2/.
++**** ELEM monome_windows              # grid A: pedal-slide toggle
++***** PARAM id = "pedal-slide-a"
++***** PARAM monome = "a"
++***** PARAM kind = "pedal_slide_toggle"
++***** PARAM rect = [0, 15, 0, 15]
++The bottom-leftmost button (1_vision "the bottom-leftmost button of each
++monome toggles pedal slide mode for it"). While ON, grid A's EX-P pedal drives
++a pitch-slide engine instead of volume: pressing a FREE pitch sets a target
++(the nearest edit-mode voice's far goalpost, or -- with nothing edited -- a
++swell into a fresh voice), and the pedal glides the voice into it, always
++smooth. Volume freezes; toggling OFF returns the pedal to volume through the
++same kinked x^4 map (immediate both ways) until it reaches an endpoint. Dim at
++rest, bright while on. See TODO/pedal-slide/.
+ *** grid B windows
+ **** ELEM monomes
+ ***** PARAM id = "b"
+@@ -228,6 +241,13 @@ Grid B's twin of grid A's editmode-clear button (same job as OSS pedal 0).
+ ***** PARAM kind = "chord_block"
+ ***** PARAM rect = [5, 0, 9, 1]
+ Grid B's twin of grid A's chord block; its nine slots are its own.
++**** ELEM monome_windows              # grid B: pedal-slide toggle
++***** PARAM id = "pedal-slide-b"
++***** PARAM monome = "b"
++***** PARAM kind = "pedal_slide_toggle"
++***** PARAM rect = [0, 15, 0, 15]
++Grid B's twin of grid A's pedal-slide toggle (its own EX-P pedal, its own
++engine). See TODO/pedal-slide/.
+ ** the two softsteps
+ Distinguished by ALSA client name, which is reliable: the older board presents
+ as "SSCOM", the newer as "SoftStep". Their CARD numbers follow plug order and
+diff --git a/rigs/2-monomes_2-softsteps_readme.org b/rigs/2-monomes_2-softsteps_readme.org
+index 9191342..4460227 100644
+--- a/rigs/2-monomes_2-softsteps_readme.org
++++ b/rigs/2-monomes_2-softsteps_readme.org
+@@ -116,7 +116,14 @@ Here's how to see what's connected:
+   else. See "chord voices in edit mode".
+ - EX-P -- the two M-Audio expression pedals (via the MPC-20 bridge), one per
+   grid, each a volume pedal: heel silent, toe unity, fader-law taper
+-  (exponential + linear splice), slewed. See "the EX-P volume pedals".
++  (exponential + linear splice), slewed. DUAL DUTY: a grid's EX-P drives volume
++  only while that grid's pedal-slide toggle is off; on, it drives the pitch
++  slide instead. See "the EX-P volume pedals" and "pedal slide".
++- pedal slide -- a per-grid toggle (bottom-left cell =[0,15]=) that repurposes
++  that grid's EX-P pedal from volume to a smooth pitch SLIDE: pick a target
++  pitch on the grid, and the pedal glides the nearest edit-mode voice into it.
++  NOT the note-to-note "slide" (which this rig does not use); the full name is
++  always "pedal slide". See "pedal slide".
+ - diamond dance -- the lit cell turning around an edit-mode note's cell(s), above /
+   left / below / right. See "the diamond dance".
+ - square dance -- the diamond's diagonal twin, marking a sustained or chord
+@@ -325,6 +332,48 @@ deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
+   recovers; and until a pedal's first CC it contributes unity, so an
+   unplugged pedal never mutes its grid.
+ 
++* pedal slide
++
++Each grid's bottom-left cell (=[0,15]=) is a =pedal_slide_toggle=: dim at rest,
++bright while on. It repurposes that grid's EX-P pedal from VOLUME to a smooth
++pitch SLIDE.
++
++Terminology trap: this is *pedal slide*, always the full name, never bare
++"slide" -- there is an unrelated note-to-note =slide_toggle= in the codebase
++(glide-on-strike) that this rig does not use. Pedal slide is the pedal moving a
++sustained voice's pitch; the other slide is a new note gliding from a released
++one. Different mechanism, one word, so the name is always qualified here.
++
++- *Picking a target.* While pedal slide is on, the grid is a target-picker
++  (like edit mode makes it a drag-picker): pressing a FREE pitch does not sound
++  a note -- it sets a slide TARGET. The nearest edit-mode voice will be dragged
++  to it BY THE PEDAL, not by the press. With nothing in edit mode, the pick
++  instead swells a NEW voice into being from silence as you push the pedal (the
++  pedal as a swell into any pitch). Pressing a pitch that is already sounding
++  still retriggers it, and the edit handles still select voices to slide.
++- *Always smooth.* The pedal-to-pitch map is two log-linear (cents-space)
++  segments joined at the pedal's current position: one back to where it started
++  ("home"), one on to the target. Picking a NEW target mid-slide moves only the
++  goalpost you are heading toward (a kink at the current pedal position); the
++  pitch you are nearest to never jumps. Reverse the pedal and it takes a fresh
++  straight line home rather than retracing -- the same trick as MIDI knob
++  pickup. Under the moment-to-moment map a ~10 ms smoother melts the pedal's CC
++  steps so nothing zippers.
++- *Home flips at the middle.* Which pedal half is "home" flips as you cross the
++  midpoint (with a small dead band so a resting foot cannot flicker it). That
++  lets you chain slides: raise the pedal into one pitch, pick another, lower
++  into that -- home switches so each new pick sets the far end you are heading
++  for. The home cell stays lit and danced; the target cell flashes bright/off
++  every 100 ms (no dancer). At the flip the two swap roles.
++- *Volume freezes; leaving is immediate.* While sliding, that grid has no live
++  volume pedal -- the volume holds where it was. Toggle pedal slide OFF and the
++  pedal returns to volume through the SAME kinked x^4 construction, so pushing
++  or pulling changes the loudness AT ONCE in either direction (no dead zone
++  waiting to "catch up"); once the pedal reaches an endpoint it reverts to the
++  ordinary fader taper. Toggling OFF mid-slide freezes every sliding voice
++  exactly where it is (a later drag can tidy an off-grid pitch); clearing the
++  edit selection or the sustain also ends/freezes the slide.
++
+ * LEDs
+ 
+ Play-grid LEDs follow the usual =surfaces_runtime= rules (shared with the
+@@ -337,7 +386,10 @@ bright, the rest dim; the scroll pad's arrows are dim, its octave corners
+ dark, and it fully occludes the play grid beneath it. The chord block's
+ SLOTS idle DIM (occupied and empty look alike -- empty ones are inert) and
+ an active slot is solid BRIGHT; the ARM cell is BLACK until armed, then
+-flashes ~150 ms on/off.
++flashes ~150 ms on/off. A pedal-slide TARGET cell flashes BRIGHT/off every
++100 ms (no dancer), driven off the shared dance clock so it never drifts; the
++slide's HOME pitch is just a sustained note, so it lights bright and dances as
++usual.
+ 
+ Every CONTROL cell that rests dim -- the unselected waveform cells, the
+ scroll arrows, the resting factor cells and editmode buttons, the chord
+diff --git a/rigs/README.org b/rigs/README.org
+index b937122..1d33c4c 100644
+--- a/rigs/README.org
++++ b/rigs/README.org
+@@ -342,6 +342,7 @@ Built-in unbundled window kinds:
+ - ~distortion_toggle~
+ - ~slide_toggle~
+ - ~mono_toggle~
++- ~pedal_slide_toggle~
+ - ~factored_pulse_pad~
+ - ~editmode_control~
+ - ~chord_block~
+@@ -490,6 +491,23 @@ over ~slide.duration_ms~ (both optional in the ~[slide]~ table; defaults 1000 /
+ grid's switch (and with that grid's slide on, the new note *steals* the cut
+ note's voice and glides it over -- true legato, no attack re-trigger).
+ 
++A ~pedal_slide_toggle~ is the same single-cell, per-monome, dim/bright shape --
++but it is NOT the note-to-note ~slide_toggle~ above (terminology trap: "pedal
++slide" is always the full name). While it is ON, that grid's EX-P expression
++pedal stops driving VOLUME and drives a pitch-SLIDE engine instead: a press on a
++free pitch sets a slide TARGET (the nearest edit-mode voice's far goalpost, or --
++with nothing edited -- a swell into a fresh voice from silence), and the pedal
++glides the voice into it, always smooth (an anchored two-segment cents-space map:
++picking a new target mid-flight moves only the goalpost you are heading toward,
++never the pitch you are nearest). Which pedal half is "home" flips at the pedal's
++midpoint (with hysteresis), so you can chain slides -- raise into one pitch, pick
++another, lower into that. Volume freezes while sliding; toggling OFF returns the
++pedal to volume through the SAME kinked x^4 map (immediate in both directions)
++until it reaches an endpoint, then the ordinary taper resumes. Needs the grid to
++have both an ~edo_note_grid~ and an ~expression_pedal~ (the toggle validates like
++any single-cell one regardless; the pedal is what makes it do anything). See
++~TODO/pedal-slide/~.
++
+ (The ~softstep_accretes_toggle~ kind that used to live here -- an on-grid
+ switch gating a hardcoded KMSS pedal mirror -- was retired 2026-07: see the
+ ~accrete_control~ pedal section below, "SoftStep (KMSS)".)
+@@ -790,6 +808,15 @@ prints a red note and plays on without them. Rejected at load: a channel
+ outside 1..2, the same channel or the same monome claimed twice, and a monome
+ with no ~edo_note_grid~.
+ 
++Dual duty (TODO/pedal-slide): a grid's EX-P pedal is a volume pedal ONLY while
++that grid's ~pedal_slide_toggle~ is off. Toggle it on and the same pedal drives
++the pitch-slide engine instead (see ~pedal_slide_toggle~ above); volume freezes
++where it was, and toggling back off returns the pedal to volume through an
++anchored kinked x^4 map -- immediately effective in either direction, reverting
++to the taper above once it reaches an endpoint -- rather than jumping or going
++dead. So a grid never has a live volume pedal AND a live pitch slide at once;
++the toggle chooses.
++
+ * Optional display
+ 
+ #+begin_src toml
+#+end_src
+
+* phase B: a16b6dc
+#+begin_src diff
+commit a16b6dc2e58d2e29f9ecd413172a6ca2b2b83612
+Author: Codex <codex@local>
+Date:   Mon Jul 20 06:19:19 2026 +0000
+
+    pedal slide: chord targets, fades wired, phase-A debts paid (phase B)
+    
+    Wire the already-built match_targets to chord recall, and pay the two
+    imperfections phase A flagged.
+    
+    Chord recall under slide mode: a disarmed chord-slot press with pedal slide
+    ON no longer sounds the chord -- its pitches (deduped) join the slide target
+    set. At most one chord is selected at a time (ChordLayer::slide_selected,
+    replacing any prior; the slot lights solid). match_targets is rewritten
+    faithful to 1_vision's chord rule: already-targeted voices keep their
+    targets, untargeted edit voices match ascending-nearest-ties-lower to the
+    available targets, extra targets swell fresh fade-in voices from silence, and
+    fewer targets than voices fades the leftovers out. A chord pitch already at a
+    voice's current pitch is satisfied (no drag, no fade); a chord joined
+    mid-slide kinks at the current pedal fraction, so nothing jumps.
+    
+    Imperfection (a) -- fade-voice key: kept the pitch-keyed SurfaceDrone key (a
+    fade voice IS a drone) and made collisions structurally impossible instead of
+    adding a dedicated variant: deduped targets, match_targets REUSES an existing
+    fade at a re-requested pitch (rather than spawning a second) and converts a
+    dropped one to a fade-out, and the recall wiring skips a pitch a plain
+    finger/drone already holds.
+    
+    Imperfection (b) -- finger re-file held mirror: a finger-still-down slide
+    voice keeps its cell key across the midpoint flip, so keys::apply_finger_refiles
+    now updates the grid thread's local held cell->pitch map and re-publishes the
+    shared held_all mirror, so map and store agree.
+    
+    Toggle-off drops un-consumed chord targets (the swelled-in voices settle as
+    the sustained drones they already are). Slide mode OFF recalls normally.
+    
+    Tests: 6 new (4 pure match_targets/replacement/continuity/satisfied + 2
+    end-to-end); cargo test --workspace green (0 failures). Docs: readme's pedal
+    slide section gains the chord paragraph; 3_progress.org gains the phase-B
+    entry with decisions; branch-3 queue item marked DONE.
+    
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+diff --git a/TODO/pedal-slide/3_progress.org b/TODO/pedal-slide/3_progress.org
+index c6e8d9f..7dcf3c4 100644
+--- a/TODO/pedal-slide/3_progress.org
++++ b/TODO/pedal-slide/3_progress.org
+@@ -75,18 +75,19 @@ the mode-off volume return).
+ - The amendment (volume return) landed mid-implementation and replaced the catch-up
+   pickup I had already written; `VolumeReturn` reuses the slide's own `Segments`.
+ 
+-* what's imperfect about what's done
++* what's imperfect about what's done (phase A; the first two are PAID in phase B below)
+ 
+ - *Fade-in voices are keyed as drones (`SurfaceDrone{grid,pitch}`).* Fine for phase-A
+   single-pick swells (one per pitch), and they join the sustain set as real voices, but
+   two swells into the same pitch would collide on the key. Phase B's chord recall (many
+-  targets at once) will want a dedicated fade-voice key or a seq.
++  targets at once) will want a dedicated fade-voice key or a seq. [RESOLVED in phase B --
++  kept the drone key, made collisions structurally impossible instead.]
+ - *Fingered (finger-still-down) slide voices re-file the ring store but not the held
+   map at the midpoint flip.* Their voice key is the CELL (stable, so the pedal keeps
+   driving them correctly) and the store/LEDs follow via `note_moved`; only the grid
+   thread's local `held` cell->pitch mirror lags for such a voice mid-flight. Drones
+   (the common flight case -- an edited voice whose finger lifted) re-key fully. A held
+-  finger through a whole pedal sweep is the less common gesture.
++  finger through a whole pedal sweep is the less common gesture. [RESOLVED in phase B.]
+ - *The initial-drive latency.* A pick applies one round of drives immediately, but
+   thereafter the pedal thread's ~10 ms poll is the update rate; the render's 10 ms
+   smoother covers it, so this is inaudible, but it is not sample-accurate.
+@@ -104,3 +105,59 @@ the mode-off volume return).
+ - *Home re-filing files the note at the home-side pitch and re-keys drones at the flip.*
+   Chord voices are excluded in phase A; phase B will need the same for `SurfaceChord` keys
+   (they are seq-keyed, so no re-key -- only the store/registry follows).
++
++* Phase B -- chord recall + the phase-A debts paid
++
++Written against 1_vision's "chord storage" case and 2_discussion's settled contract.
++Phase B wires the already-built `match_targets` to chord recall, and pays the first two
++imperfections above. `cargo test --workspace`: 0 failures (575 edo_surface lib + 159
++rig-org + the rest; 6 new tests).
++
++** what's done
++
++- *Chord recall as a target set.* `keys.rs::chord_block_press`: a DISARMED slot press
++  with pedal slide ON no longer sounds the chord -- it routes to `chord_slide_select`,
++  which reads the slot's pitches (`ChordLayer::select_for_slide`, deduped) and feeds them
++  to `PedalSlideState::match_targets`. Save (armed) and OFF-mode recall are unchanged.
++- *`match_targets` rewritten faithful to the vision.* Existing PITCH pairings are kept
++  verbatim (already-targeted voices keep their targets); untargeted edit voices match
++  ascending-nearest-ties-lower to the AVAILABLE targets (chord pitches minus the taken
++  ones); extra targets return in `spawn_fade_ins` for the wiring to swell in; fewer
++  targets than voices fades the leftovers OUT. The three phase-A matcher tests still pass
++  unchanged (they reduce to this when there are no prior pairings).
++- *Selection marker + LED.* `ChordLayer::slide_selected: Option<usize>` records the one
++  selected slide chord; the slot paints solid (`paint::chord_view`). Cleared on toggle-off.
++- *Two integration tests + four pure tests* cover: recall-under-slide joins targets and
++  swells the extra in without sounding; the replacement/reuse semantics; the mid-flight
++  join continuity; the "already satisfied" skip; and the finger-refile held update.
++
++** decisions recorded (when-to-stop autonomy)
++
++- *Imperfection (a) -- fade-voice key.* KEPT the drone key (`SurfaceDrone{grid,pitch}`):
++  a fade voice IS a drone (sustained, fingerless), and its pitch is fixed at spawn, so the
++  key is exact, not a shortcut -- PROVIDED no pitch ever carries two fade voices. Made that
++  structurally true instead of adding a dedicated `SurfaceSlideFade` variant (which would
++  have rippled through every voice-map walk and needed a settle-on-arrival re-file): the
++  chord target set is deduped; `match_targets` REUSES an existing fade at a re-requested
++  pitch (anchored at the current amplitude, so no jump) rather than spawning a second, and
++  CONVERTS a no-longer-wanted fade to a fade-OUT; and the recall wiring skips a chord pitch
++  a plain finger/drone already holds. A pitch therefore holds at most one fade voice.
++- *Imperfection (b) -- finger re-file held mirror.* At the midpoint flip a finger-still-down
++  voice keeps its CELL key (`voice_old == voice_new`), so only the grid thread's local
++  `held` cell->pitch mirror lagged. `keys::apply_finger_refiles` now updates the local map
++  from those re-files and re-publishes the shared `held_all` mirror, so map and store agree
++  (drone re-files, which re-key, still go through `rekey_drone` and touch no cell).
++- *Replacement semantics.* "At most one chord selected": selecting a chord marks it
++  `slide_selected` (replacing any prior) and re-runs `match_targets` with its pitches.
++  Already-targeted (consumed) voices keep their slides; the previous chord's un-consumed
++  fades are reused if the new chord re-requests their pitch, else faded out. A single-pick
++  swell is a fade like any other, so a chord recall reuses/recedes it the same way.
++- *Slide mode OFF is unchanged* -- a slot press recalls and sounds normally.
++- *Un-consumed targets on toggle-off DROP* (phase A's freeze-and-drop extends): `exit`
++  clears the pairings, the sliding voices freeze where they are, and the swelled-in fade
++  voices -- already in the sustain set with a drone key -- simply settle as the drones they
++  are, then follow the pedal's volume return like every other voice. No special settle path.
++- *"Already satisfied".* A chord pitch equal to a voice's CURRENT filed pitch needs no
++  pairing and no fade -- the chord already has a voice there; that (untargeted) edit voice
++  is left alone, not faded out. The wiring additionally drops chord pitches a NON-edit
++  live voice already holds, so a fade is only ever spawned into a free pitch.
+diff --git a/edo_surface/src/surfaces_runtime/chords.rs b/edo_surface/src/surfaces_runtime/chords.rs
+index e4c073b..6d25b6f 100644
+--- a/edo_surface/src/surfaces_runtime/chords.rs
++++ b/edo_surface/src/surfaces_runtime/chords.rs
+@@ -88,6 +88,13 @@ pub struct ChordLayer {
+   pub active: [bool; SLOTS],
+   /// The live chord voices, by their key's `seq`.
+   pub live: HashMap<u64, LiveChordVoice>,
++  /// The slot currently SELECTED as this grid's pedal-slide target chord, if any
++  /// (TODO/pedal-slide phase B). While slide mode is on, recalling a slot does not
++  /// sound it -- its pitches join the slide target set -- and at most one slot is
++  /// selected at a time (selecting another replaces it). Purely a selection marker
++  /// (for the slot LED and the one-at-a-time rule); the target math lives in the
++  /// pedal-slide engine. Cleared when slide mode turns off.
++  pub slide_selected: Option<usize>,
+   next_seq: u64,
+ }
+ 
+@@ -178,6 +185,20 @@ impl ChordLayer {
+       .collect()
+   }
+ 
++  /// SELECT `slot` as the pedal-slide target chord (phase B): return its stored
++  /// pitches (deduped, ascending) to join the slide target set, and mark it selected
++  /// (replacing any prior selection -- at most one chord is selected at a time). An
++  /// empty slot is inert (returns `None`, selection unchanged). Does NOT sound the
++  /// chord: recall-under-slide only supplies targets.
++  pub fn select_for_slide(&mut self, slot: usize) -> Option<Vec<i32>> {
++    let chord = self.slots[slot].as_ref()?;
++    let mut pitches: Vec<i32> = chord.voices.iter().map(|v| v.pitch).collect();
++    pitches.sort_unstable();
++    pitches.dedup();
++    self.slide_selected = Some(slot);
++    Some(pitches)
++  }
++
+   /// Toggle-OFF bookkeeping: unregister this slot's live voices and return their
+   /// seqs for the caller to end (release ramp).
+   pub fn end_recall(&mut self, slot: usize) -> Vec<u64> {
+diff --git a/edo_surface/src/surfaces_runtime/keys.rs b/edo_surface/src/surfaces_runtime/keys.rs
+index 895044a..89c68ed 100644
+--- a/edo_surface/src/surfaces_runtime/keys.rs
++++ b/edo_surface/src/surfaces_runtime/keys.rs
+@@ -134,7 +134,13 @@ pub(super) fn handle_key(
+       }
+       if !now_on {
+         // Freeze the sliding voices at their current pitch (smoothness above all).
++        // Un-consumed chord targets drop (the pairings were cleared by `exit`); the
++        // fade voices simply settle as the sustained drones they already are. Clear the
++        // chord's slide selection so its slot LED reverts.
+         synth::freeze_slide(&rt.shared.voices, rt.grid_index);
++        rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
++          .chord
++          .slide_selected = None;
+       }
+     }
+     return;
+@@ -486,8 +492,14 @@ pub(super) fn chord_block_press(
+       let armed = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+         .chord
+         .armed;
++      let slide_mode = rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
+       if armed {
++        // Saving still works in slide mode -- arm captures whatever is sounding.
+         chord_save(rt, held, slot);
++      } else if slide_mode {
++        // Recall under slide mode: the chord's pitches join the slide target set
++        // instead of sounding (TODO/pedal-slide phase B).
++        chord_slide_select(rt, held, slot);
+       } else {
+         chord_toggle(rt, slot);
+       }
+@@ -720,6 +732,29 @@ pub(super) fn cut_for_legato(
+   true
+ }
+ 
++/// Apply the finger-voice half of the pedal-slide midpoint-flip re-files to the grid
++/// thread's local held mirror (TODO/pedal-slide phase B, paying a phase-A debt). A
++/// finger-still-down slide voice keeps its CELL key across the flip (`voice_old ==
++/// voice_new`, a `SurfaceFinger`), so only the local `held` cell->pitch map lags -- the
++/// ring store already followed via `note_moved`. Point the cell at the new pitch so the
++/// two agree. A drone re-file (`voice_old != voice_new`) is handled by `rekey_drone` and
++/// touches no cell. Returns whether the map changed (so the caller re-publishes it).
++pub(super) fn apply_finger_refiles(
++  refiles: &[super::pedal_slide::Refile],
++  held: &mut HashMap<(i32, i32), i32>,
++) -> bool {
++  let mut changed = false;
++  for r in refiles {
++    if r.voice_old == r.voice_new {
++      if let VoiceSource::SurfaceFinger { cell, .. } = r.voice_old {
++        held.insert(cell, r.to);
++        changed = true;
++      }
++    }
++  }
++  changed
++}
++
+ /// Mirror this grid's held map into the shared per-grid registry (for accrete's
+ /// capture-on-activation, which the pedal hook must reach from outside this thread).
+ pub(super) fn publish_held(
+@@ -1036,30 +1071,87 @@ pub(super) fn handle_edit_press(
+ /// the pick takes effect before the next pedal poll.
+ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32) {
+   let grid = rt.grid_index;
+-  // The grid's edit-mode voices, keyed as the pedal-slide engine drives them: a
+-  // fingered voice by its cell, a fingerless (drone) one by its pitch. (Phase A leaves
+-  // the chord layer to phase B.)
+-  let voices: Vec<(VoiceSource, i32)> = {
++  let voices = slide_edit_voices(rt, held, grid);
++  let outcome = {
++    let mut eng = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner());
++    eng.pick(target, &voices)
++  };
++  spawn_slide_fades(rt, grid, &outcome.spawn_fade_ins);
++  apply_slide_now(rt, grid);
++}
++
++/// Chord recall while slide mode is ON (TODO/pedal-slide phase B): the pressed slot is
++/// NOT sounded -- its pitches join the target set. At most one chord is selected at a
++/// time (`select_for_slide` marks it, replacing any prior). The engine's `match_targets`
++/// then keeps every already-targeted voice's target, matches each untargeted edit voice
++/// ascending-nearest-ties-lower, swells extra targets in, and fades leftovers out. An
++/// empty slot is inert.
++fn chord_slide_select(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: usize) {
++  let grid = rt.grid_index;
++  let Some(mut targets) = ({
++    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
++    rings[grid].chord.select_for_slide(slot)
++  }) else {
++    return; // empty slot: inert
++  };
++  let edit_voices = slide_edit_voices(rt, held, grid);
++  // A chord pitch a NON-edit voice already holds (a plain finger or sustained drone) is
++  // already satisfied -- drop it, so we never swell a fade into a pitch a live voice
++  // holds (which would collide on the `SurfaceDrone` key). A pitch held by an existing
++  // slide FADE is kept: `match_targets` reuses that fade rather than spawning a second.
++  let occupied: HashSet<i32> = {
+     let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+-    rings[grid]
+-      .store
+-      .iter(Reason::Edit)
+-      .map(|p| {
+-        let key = match held.iter().find(|(_, hp)| **hp == p) {
+-          Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+-          None => VoiceSource::SurfaceDrone { grid, pitch: p },
+-        };
+-        (key, p)
+-      })
++    let sustained: HashSet<i32> = rings[grid].store.iter(Reason::Sustain).collect();
++    let edited: HashSet<i32> = rings[grid].store.iter(Reason::Edit).collect();
++    drop(rings);
++    let fades: HashSet<i32> = rt.shared.pedal_slide[grid]
++      .lock()
++      .unwrap_or_else(|e| e.into_inner())
++      .fade_pitches()
++      .into_iter()
++      .collect();
++    sustained
++      .into_iter()
++      .chain(held.values().copied())
++      .filter(|p| !edited.contains(p) && !fades.contains(p))
+       .collect()
+   };
++  targets.retain(|p| !occupied.contains(p));
+   let outcome = {
+     let mut eng = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner());
+-    eng.pick(target, &voices)
++    eng.match_targets(&targets, &edit_voices)
+   };
+-  // Spawn every extra target as a real sustained fade-in voice (the swell), joining the
+-  // sustain set, and register the pairing so the pedal drives its quartic amplitude.
+-  for pitch in outcome.spawn_fade_ins {
++  spawn_slide_fades(rt, grid, &outcome.spawn_fade_ins);
++  apply_slide_now(rt, grid);
++}
++
++/// This grid's edit-mode voices as the pedal-slide engine keys them: a fingered voice by
++/// its cell, a fingerless (drone) one by its pitch.
++fn slide_edit_voices(
++  rt: &GridThread,
++  held: &HashMap<(i32, i32), i32>,
++  grid: usize,
++) -> Vec<(VoiceSource, i32)> {
++  let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
++  rings[grid]
++    .store
++    .iter(Reason::Edit)
++    .map(|p| {
++      let key = match held.iter().find(|(_, hp)| **hp == p) {
++        Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
++        None => VoiceSource::SurfaceDrone { grid, pitch: p },
++      };
++      (key, p)
++    })
++    .collect()
++}
++
++/// Spawn each extra target as a real sustained fade-in voice (the swell), joining the
++/// sustain set, and register its pairing so the pedal drives the quartic amplitude. The
++/// caller has ensured no live voice already holds any of these pitches, so the drone key
++/// is free.
++fn spawn_slide_fades(rt: &mut GridThread, grid: usize, pitches: &[i32]) {
++  for &pitch in pitches {
+     let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
+     let timbre = Timbre {
+       waveform: slot.waveform,
+@@ -1073,8 +1165,11 @@ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32)
+     rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid].store.add(Reason::Sustain, pitch);
+     rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).register_fade_in(key, pitch);
+   }
+-  // Apply the drives now so the pick lands immediately (the pedal poll would otherwise
+-  // wait up to a poll interval).
++}
++
++/// Apply the current round of drives now so a pick/recall lands immediately (the pedal
++/// poll would otherwise wait up to a poll interval).
++fn apply_slide_now(rt: &GridThread, grid: usize) {
+   let drives = rt.shared.pedal_slide[grid].lock().unwrap_or_else(|e| e.into_inner()).drives();
+   synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+ }
+diff --git a/edo_surface/src/surfaces_runtime/mod.rs b/edo_surface/src/surfaces_runtime/mod.rs
+index 10f5aef..1c24256 100644
+--- a/edo_surface/src/surfaces_runtime/mod.rs
++++ b/edo_surface/src/surfaces_runtime/mod.rs
+@@ -814,6 +814,13 @@ fn grid_thread(mut rt: GridThread) {
+         rt.sink.rekey_drone(r.from, r.to);
+       }
+     }
++    // A finger-still-down slide voice keeps its CELL key (the pedal keeps driving it),
++    // but the local held cell->pitch mirror must follow the midpoint flip too, or it
++    // would keep reporting the old pitch for that cell (phase-A debt). Update the local
++    // map and re-publish its shared mirror so both agree with the store.
++    if apply_finger_refiles(&slide_refiles, &mut held) {
++      publish_held(&rt.shared.held_all, rt.grid_index, &held);
++    }
+     // The TARGET goalpost cells: a 100 ms bright/off flash (no dance), driven from the
+     // shared dance clock. Pushed as single-cell buttons so they occlude the play grid
+     // and reflect the exact cell(s) that hold the target pitch under this register.
+diff --git a/edo_surface/src/surfaces_runtime/paint.rs b/edo_surface/src/surfaces_runtime/paint.rs
+index 8171ec9..ba1e7ed 100644
+--- a/edo_surface/src/surfaces_runtime/paint.rs
++++ b/edo_surface/src/surfaces_runtime/paint.rs
+@@ -67,7 +67,11 @@ pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverl
+     buttons.push(([ax, ay, ax, ay], arm_level));
+     for slot in 0..chords::SLOTS {
+       let (x, y) = chords::slot_cell(rect, slot);
+-      buttons.push(([x, y, x, y], if layer.active[slot] { BRIGHT } else { DIM }));
++      // Solid for a sounding recall; also solid for the slot SELECTED as the pedal-slide
++      // target chord (phase B) -- it is the one whose pitches the pedal will drag to;
++      // dim otherwise.
++      let lit = layer.active[slot] || layer.slide_selected == Some(slot);
++      buttons.push(([x, y, x, y], if lit { BRIGHT } else { DIM }));
+     }
+   }
+   (buttons, classes)
+diff --git a/edo_surface/src/surfaces_runtime/pedal_slide.rs b/edo_surface/src/surfaces_runtime/pedal_slide.rs
+index 015522d..8475cc0 100644
+--- a/edo_surface/src/surfaces_runtime/pedal_slide.rs
++++ b/edo_surface/src/surfaces_runtime/pedal_slide.rs
+@@ -33,9 +33,16 @@
+ //! wiring converts `cur` to Hz with `freq_for_pitch` and the segment math needs no
+ //! logarithms of its own.
+ //!
+-//! Phase A (this module) covers the toggle, the target set, the per-voice pairings,
+-//! the home/target hysteresis, the anchored map, and the fades. The chord-storage
+-//! interaction is phase B.
++//! Phase A covered the toggle, the target set, the per-voice pairings, the home/target
++//! hysteresis, the anchored map, and the fades. Phase B wires
++//! [`PedalSlideState::match_targets`] to chord recall: a stored chord selected while
++//! slide mode is on does not sound -- its pitches join the target set, existing slides
++//! keep their targets, untargeted edit voices match ascending-nearest-ties-lower,
++//! extra targets swell in,
++//! and leftovers fade out. Fade voices keep the pitch-keyed `SurfaceDrone` key (they
++//! ARE drones -- sustained, fingerless); `match_targets` reuses an existing fade rather
++//! than spawning a second at one pitch, and the wiring skips a chord pitch a plain
++//! finger/drone already holds, so the key never collides.
+ 
+ use std::collections::HashSet;
+ 
+@@ -351,6 +358,20 @@ impl PedalSlideState {
+     &self.pairings
+   }
+ 
++  /// The pitches (integer EDO steps) of the current FADE voices -- the swells the
++  /// engine owns. The chord-recall wiring uses this to tell a chord pitch that
++  /// coincides with an existing slide fade (which `match_targets` will REUSE) apart
++  /// from one that coincides with a plain finger/drone (which it must skip), so it
++  /// filters only the latter.
++  pub fn fade_pitches(&self) -> Vec<i32> {
++    self
++      .pairings
++      .iter()
++      .filter(|p| matches!(p.kind, Kind::FadeIn | Kind::FadeOut))
++      .map(|p| p.pitch.round() as i32)
++      .collect()
++  }
++
+   /// Enter slide mode, freezing the grid volume at `frozen_volume`. Starts with no
+   /// targets, so the pedal is inert until the first pick (no pitch is yanked).
+   pub fn enter(&mut self, frozen_volume: f32) {
+@@ -494,36 +515,116 @@ impl PedalSlideState {
+     }
+   }
+ 
+-  /// A whole set of targets arriving at once (the chord-storage case, phase B; the
+-  /// deterministic matcher is built and tested now, wired to picks in phase B).
+-  /// Ascending pitch pass: each voice takes its nearest remaining target, ties to the
+-  /// lower target. Extra targets swell NEW voices in from silence; leftover voices
+-  /// (fewer targets) fade out. Returns the pitches needing fresh fade-in voices.
+-  #[allow(dead_code)] // wired to chord recall in phase B; unit-tested now
+-  pub fn match_targets(&mut self, targets: &[i32], voices: &[(VoiceSource, i32)]) -> PickOutcome {
+-    let mut voices: Vec<(VoiceSource, i32)> = voices.to_vec();
+-    voices.sort_by_key(|(_, p)| *p);
+-    let mut remaining: Vec<i32> = targets.to_vec();
+-    let mut new_pairings: Vec<Pairing> = Vec::new();
+-    for (voice, base) in &voices {
+-      if remaining.is_empty() {
+-        // A leftover voice (fewer targets than voices): fade it out from where it is.
+-        let prev = self.pairings.iter().find(|p| p.voice == *voice);
+-        let start_amp = prev.and_then(|p| p.current_amp()).unwrap_or(1.0);
+-        new_pairings.push(self.fade_pairing(*voice, *base as f32, Kind::FadeOut, start_amp, 0.0));
++  /// A whole set of targets arriving at once -- the chord-storage case (phase B): a
++  /// recalled chord's pitches all join the target set. Faithful to `1_vision`'s chord
++  /// rule ("don't change the target of any voices that already have targets, target
++  /// each as-yet untargeted voice that's in edit mode to the nearest available target,
++  /// and just fade in the other voices"):
++  ///
++  /// - `chord_pitches` is deduped to a target SET (two chord voices at one pitch are
++  ///   one slide destination).
++  /// - EXISTING pitch pairings keep their targets untouched; their targets are "taken"
++  ///   and their voices are not re-matched.
++  /// - A target already equal to a voice's CURRENT filed pitch is *already satisfied*
++  ///   (decision, `3_progress` phase B): no pairing, no fade -- the chord already has a
++  ///   voice there. Such an untargeted edit voice is left alone (not faded out).
++  /// - EXISTING fade voices are REUSED when the new chord re-requests their pitch
++  ///   (flipped/kept as a swell IN, anchored at the current fraction so a mid-flight
++  ///   re-selection does not jump), and CONVERTED to fade OUT when it does not (the
++  ///   previous selection's un-consumed targets recede). This is what keeps a pitch
++  ///   from ever carrying two fade voices, so the pitch-keyed `SurfaceDrone` key stays
++  ///   collision-free without a dedicated fade key.
++  /// - As-yet untargeted edit voices are matched ascending, each to its nearest
++  ///   remaining AVAILABLE target, ties to the lower target; leftover voices (fewer
++  ///   targets) fade OUT; leftover targets are returned in `spawn_fade_ins` for the
++  ///   wiring to swell fresh voices IN.
++  ///
++  /// `edit_voices` is the grid's whole edit selection as `(key, current filed pitch)`;
++  /// the caller has already dropped any chord pitch that coincides with a NON-edit
++  /// sounding voice (a plain finger or drone), so this only ever spawns a fade into a
++  /// pitch no live voice holds.
++  pub fn match_targets(
++    &mut self,
++    chord_pitches: &[i32],
++    edit_voices: &[(VoiceSource, i32)],
++  ) -> PickOutcome {
++    let home_low = self.home == Home::Low;
++    // The target SET: deduped, ascending.
++    let mut targets: Vec<i32> = chord_pitches.to_vec();
++    targets.sort_unstable();
++    targets.dedup();
++    let target_set: HashSet<i32> = targets.iter().copied().collect();
++
++    // Split the current pairings: pitch slides are kept verbatim (already-targeted
++    // voices keep their targets); fades are reused or receded below.
++    let existing = std::mem::take(&mut self.pairings);
++    let mut kept_pitch: Vec<Pairing> = Vec::new();
++    let mut fades: Vec<Pairing> = Vec::new();
++    for p in existing {
++      match p.kind {
++        Kind::Pitch => kept_pitch.push(p),
++        Kind::FadeIn | Kind::FadeOut => fades.push(p),
++      }
++    }
++
++    // Targets a kept pairing already owns are unavailable; pitches a voice already
++    // sits at are already satisfied.
++    let taken: HashSet<i32> =
++      kept_pitch.iter().map(|p| filed_side_pitch(&p.seg, !home_low).round() as i32).collect();
++    let mut satisfied: HashSet<i32> =
++      kept_pitch.iter().map(|p| filed_side_pitch(&p.seg, home_low).round() as i32).collect();
++    for (_, base) in edit_voices {
++      satisfied.insert(*base);
++    }
++    let mut available: Vec<i32> =
++      targets.iter().copied().filter(|t| !taken.contains(t) && !satisfied.contains(t)).collect();
++
++    // Reuse or recede the existing fades.
++    let mut result_fades: Vec<Pairing> = Vec::new();
++    for f in fades {
++      let pitch = f.pitch.round() as i32;
++      let cur_amp = f.current_amp().unwrap_or(0.0);
++      if let Some(pos) = available.iter().position(|t| *t == pitch) {
++        available.remove(pos);
++        // Re-requested: keep swelling IN from wherever the fade currently sits.
++        result_fades.push(self.fade_pairing(f.voice, f.pitch, Kind::FadeIn, cur_amp, 1.0));
++      } else {
++        // No longer wanted: fade OUT from wherever it currently sits.
++        result_fades.push(self.fade_pairing(f.voice, f.pitch, Kind::FadeOut, cur_amp, 0.0));
++      }
++    }
++
++    // The untargeted edit voices: those with no kept pitch pairing and not already
++    // satisfied (already parked on a chord pitch -> left alone).
++    let kept_voices: HashSet<VoiceSource> = kept_pitch.iter().map(|p| p.voice).collect();
++    let mut matchable: Vec<(VoiceSource, i32)> = edit_voices
++      .iter()
++      .filter(|(v, base)| !kept_voices.contains(v) && !target_set.contains(base))
++      .copied()
++      .collect();
++    matchable.sort_by_key(|(_, p)| *p);
++
++    let mut new_pitch: Vec<Pairing> = Vec::new();
++    for (voice, base) in &matchable {
++      if available.is_empty() {
++        // Fewer targets than voices: fade the leftover edit voice OUT from full.
++        result_fades.push(self.fade_pairing(*voice, *base as f32, Kind::FadeOut, 1.0, 0.0));
+         continue;
+       }
+-      let (idx, _) = remaining
++      let (idx, _) = available
+         .iter()
+         .enumerate()
+         .min_by_key(|(_, t)| ((*t - base).abs(), **t))
+         .unwrap();
+-      let target = remaining.remove(idx);
+-      new_pairings.push(self.pitch_pairing(*voice, *base, target));
++      let target = available.remove(idx);
++      new_pitch.push(self.pitch_pairing(*voice, *base, target));
+     }
+-    let spawn_fade_ins = remaining;
+-    self.pairings = new_pairings;
+-    PickOutcome { spawn_fade_ins }
++
++    self.pairings = kept_pitch;
++    self.pairings.extend(new_pitch);
++    self.pairings.extend(result_fades);
++    // Whatever targets remain need a fresh fade-in voice swelled in from silence.
++    PickOutcome { spawn_fade_ins: available }
+   }
+ 
+   /// Replace (or insert) a pairing keyed by its voice.
+@@ -766,6 +867,11 @@ mod tests {
+     assert_eq!(refiles.len(), 1, "the one pitch pairing re-files");
+     assert_eq!(refiles[0].from, 10, "was painted at the low (home) pitch");
+     assert_eq!(refiles[0].to, 30, "now painted at the high (new home = target) pitch");
++    assert_eq!(
++      refiles[0].voice_old, refiles[0].voice_new,
++      "a finger-still-down voice keeps its CELL key across the flip -- so the held map, \
++       not a re-key, is what must follow it (the phase-B fix)",
++    );
+     assert!(st.take_refiles().is_empty(), "draining consumes them");
+   }
+ 
+@@ -818,6 +924,103 @@ mod tests {
+     assert_eq!(out.spawn_fade_ins, vec![40], "the voice takes 12 (nearer); 40 swells in");
+   }
+ 
++  // ---- chord recall (phase B) ----
++
++  /// The vision's chord rule: a recalled chord's pitches join the target set; a voice
++  /// that already has a target keeps it, an untargeted edit voice matches the nearest
++  /// available target, and an extra target swells in.
++  #[test]
++  fn chord_recall_keeps_targeted_voices_matches_untargeted_and_swells_extras() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    // Voice A=10 is already sliding to 30 (a prior single pick).
++    st.pick(30, &[(finger((0, 0)), 10)]);
++    // Recall chord {12, 30, 50} with edit voices A=10 (targeted) and B=20 (untargeted).
++    let voices = [(finger((0, 0)), 10), (finger((1, 1)), 20)];
++    let out = st.match_targets(&[12, 30, 50], &voices);
++    let pa = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap();
++    assert_eq!(pa.seg.s1, 30.0, "the already-targeted voice keeps its target (30 is taken)");
++    let pb = st.pairings().iter().find(|p| p.voice == finger((1, 1))).unwrap();
++    assert_eq!(pb.kind, Kind::Pitch);
++    assert_eq!(pb.seg.s1, 12.0, "the untargeted voice matches the nearest AVAILABLE target");
++    assert_eq!(out.spawn_fade_ins, vec![50], "the leftover target swells a new voice in");
++  }
++
++  /// Duplicate chord pitches are one destination, and a chord pitch a voice already
++  /// sits on is already satisfied -- no pairing, no fade, the voice left alone.
++  #[test]
++  fn a_chord_pitch_a_voice_already_sits_on_is_already_satisfied() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    // Edit voice A=10; recall chord {10, 10, 20} (a duplicate + a pitch A is already at).
++    let out = st.match_targets(&[10, 10, 20], &[(finger((0, 0)), 10)]);
++    assert!(
++      st.pairings().iter().all(|p| p.voice != finger((0, 0))),
++      "the voice already parked on a chord pitch is left alone -- no pairing, no fade"
++    );
++    assert_eq!(out.spawn_fade_ins, vec![20], "the deduped other pitch swells in once");
++  }
++
++  /// At most one chord selected: selecting a second replaces the first's un-consumed
++  /// targets -- an overlapping pitch's fade is REUSED (stays swelling in, one voice per
++  /// pitch, so the drone key never collides), a dropped pitch recedes, a new one swells.
++  #[test]
++  fn selecting_a_new_chord_replaces_the_previous_chords_un_consumed_fades() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    // Chord A {40, 60}, no edit voices: both swell in; the wiring registers them.
++    let out = st.match_targets(&[40, 60], &[]);
++    assert_eq!(out.spawn_fade_ins, vec![40, 60]);
++    st.register_fade_in(finger((5, 5)), 40);
++    st.register_fade_in(finger((6, 6)), 60);
++    // Chord B {40, 70}: 40 overlaps -> reused, 60 dropped -> recedes, 70 -> fresh swell.
++    let out2 = st.match_targets(&[40, 70], &[]);
++    let f40 = st.pairings().iter().find(|p| p.pitch.round() as i32 == 40).unwrap();
++    assert_eq!(f40.kind, Kind::FadeIn, "the re-requested pitch's fade is reused, not doubled");
++    let f60 = st.pairings().iter().find(|p| p.pitch.round() as i32 == 60).unwrap();
++    assert_eq!(f60.kind, Kind::FadeOut, "the dropped chord's un-consumed target recedes");
++    assert_eq!(out2.spawn_fade_ins, vec![70], "only the genuinely new pitch swells in");
++    // Exactly one voice per pitch -- no drone-key collision.
++    assert_eq!(st.fade_pitches().iter().filter(|p| **p == 40).count(), 1);
++  }
++
++  /// A chord joined mid-flight kinks at the current fraction rather than jumping: a
++  /// kept pitch pairing does not move, and a reused fade keeps its current amplitude.
++  #[test]
++  fn a_mid_flight_chord_join_kinks_without_jumping() {
++    let mut st = PedalSlideState::new();
++    st.enter(0.0);
++    st.on_pedal(0.0);
++    // A pitch voice sliding, and a fade swelling, both partway up.
++    st.pick(30, &[(finger((0, 0)), 10)]);
++    st.match_targets(&[30, 50], &[(finger((0, 0)), 10)]); // A keeps 30, 50 registered next
++    st.register_fade_in(finger((5, 5)), 50);
++    st.on_pedal(0.5);
++    let a_cur = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap().seg.cur;
++    let f_amp = st
++      .pairings()
++      .iter()
++      .find(|p| p.voice == finger((5, 5)))
++      .unwrap()
++      .current_amp()
++      .unwrap();
++    assert!((a_cur - 20.0).abs() < 1e-3, "A slid to 20 at f=0.5");
++    // Re-select an overlapping chord {30, 50, 80} mid-flight.
++    st.match_targets(&[30, 50, 80], &[(finger((0, 0)), 10)]);
++    let a_cur2 = st.pairings().iter().find(|p| p.voice == finger((0, 0))).unwrap().seg.cur;
++    let f_amp2 = st
++      .pairings()
++      .iter()
++      .find(|p| p.voice == finger((5, 5)))
++      .unwrap()
++      .current_amp()
++      .unwrap();
++    assert!((a_cur2 - a_cur).abs() < 1e-6, "the kept pitch slide does not jump");
++    assert!((f_amp2 - f_amp).abs() < 1e-6, "the reused fade does not jump");
++  }
++
+   #[test]
+   fn fewer_targets_than_voices_fades_the_leftovers_out() {
+     let mut st = PedalSlideState::new();
+diff --git a/edo_surface/src/surfaces_runtime/synth.rs b/edo_surface/src/surfaces_runtime/synth.rs
+index e1ff739..21902bd 100644
+--- a/edo_surface/src/surfaces_runtime/synth.rs
++++ b/edo_surface/src/surfaces_runtime/synth.rs
+@@ -670,8 +670,14 @@ impl SurfaceSink {
+   /// (`grid_gain` 0) and swells as the pedal-slide engine drives its `grid_gain_target`
+   /// through the quartic fade map. Its envelope attacks and rings like any note (the
+   /// swell is amplitude on top), and it is keyed as a drone (`SurfaceDrone`) so it is a
+-  /// real sustained voice that joins the sustain machinery. Returns its key so the
+-  /// slide engine can register the pairing. No-op-safe: overwrites any voice at the key.
++  /// real sustained voice that joins the sustain machinery -- a fade voice IS a drone
++  /// (sustained, fingerless), so the pitch key is exact. Phase B's collision worry (two
++  /// swells onto one pitch) is settled UPSTREAM, not with a dedicated fade key: the
++  /// chord target set is deduped, `pedal_slide::match_targets` REUSES an existing fade
++  /// at a re-requested pitch instead of spawning a second, and the recall wiring skips a
++  /// pitch a plain finger/drone already holds -- so the caller only ever spawns into a
++  /// free pitch. Returns its key so the slide engine can register the pairing.
++  /// No-op-safe: overwrites any voice at the key.
+   pub fn spawn_slide_fade_in(&mut self, pitch: i32, timbre: Timbre) -> VoiceSource {
+     let id = self.next_id;
+     self.next_id += 1;
+diff --git a/edo_surface/src/surfaces_runtime/tests.rs b/edo_surface/src/surfaces_runtime/tests.rs
+index a300432..6cd355f 100644
+--- a/edo_surface/src/surfaces_runtime/tests.rs
++++ b/edo_surface/src/surfaces_runtime/tests.rs
+@@ -327,6 +327,94 @@
+     );
+   }
+ 
++  /// Pedal-slide phase B, end to end: a stored chord recalled while slide mode is ON
++  /// does NOT sound -- its pitches join the target set. The edit voice matches the
++  /// nearer chord pitch, the extra pitch swells a fresh (silent) fade-in in, and the
++  /// slot reads as the selected slide chord (not active/sounding).
++  #[test]
++  fn a_chord_recalled_under_slide_mode_joins_the_target_set_instead_of_sounding() {
++    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
++    use crate::types::{Timbre, VoiceSource};
++    let mut rt = test_grid_thread();
++    let mut register = 0;
++    let mut held = HashMap::new();
++    let note = (5, 5);
++    let handle = (5, 6); // the edit handle below
++    let pa = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
++    handle_key(&mut rt, &mut register, &mut held, note, true); // strike
++    handle_key(&mut rt, &mut register, &mut held, handle, true); // enter edit (+ sustain)
++    handle_key(&mut rt, &mut register, &mut held, handle, false);
++    handle_key(&mut rt, &mut register, &mut held, note, false); // lift: it drones, edited
++
++    let toggle = (0, 15);
++    handle_key(&mut rt, &mut register, &mut held, toggle, true); // slide ON
++
++    // Store a two-pitch chord, neither pitch sounding, into slot 0.
++    let (t1, t2) = (pa + 3, pa + 10);
++    let v = |pitch| StoredVoice {
++      pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
++      osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
++    };
++    rt.shared.ring.lock().unwrap()[0].chord.save(0, StoredChord { voices: vec![v(t1), v(t2)] });
++
++    // Recall slot 0 under slide mode -> targets, not sound.
++    handle_key(&mut rt, &mut register, &mut held, (5, 0), true);
++    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
++
++    {
++      let rings = rt.shared.ring.lock().unwrap();
++      assert!(rings[0].chord.live.is_empty(), "the chord did NOT sound -- no live chord voices");
++      assert_eq!(rings[0].chord.slide_selected, Some(0), "the slot is the selected slide chord");
++      assert!(!rings[0].chord.active[0], "and it is not toggled active/sounding");
++    }
++    assert_eq!(
++      rt.shared.pedal_slide[0].lock().unwrap().targets(), vec![t1],
++      "the edit voice targets the NEARER chord pitch",
++    );
++    let a_drone = VoiceSource::SurfaceDrone { grid: 0, pitch: pa };
++    assert!(
++      rt.shared.voices.lock().unwrap()[&a_drone].slide_freq_target > 0.0,
++      "the pedal now drives the edit voice toward its chord target",
++    );
++    let fade = VoiceSource::SurfaceDrone { grid: 0, pitch: t2 };
++    {
++      let voices = rt.shared.voices.lock().unwrap();
++      assert!(voices.contains_key(&fade), "the extra chord pitch swelled a fresh fade-in voice");
++      assert_eq!(voices[&fade].grid_gain_target, 0.0, "silent at the heel -- it swells with the pedal");
++    }
++    assert!(
++      rt.shared.ring.lock().unwrap()[0].store.has(Reason::Sustain, t2),
++      "the fade-in voice joined the sustain set",
++    );
++  }
++
++  /// The phase-A debt paid (phase B): a finger-still-down slide voice keeps its CELL key
++  /// across a midpoint flip, so the local held cell->pitch mirror -- not a re-key -- is
++  /// what must follow it. A drone re-file (a re-key) leaves the held map alone.
++  #[test]
++  fn a_finger_still_down_slide_refile_updates_the_held_mirror() {
++    use crate::surfaces_runtime::pedal_slide::Refile;
++    use crate::types::VoiceSource;
++    let cell = (3, 4);
++    let mut held = HashMap::from([(cell, 10), ((0, 0), 99)]);
++    let finger_refile = Refile {
++      voice_old: VoiceSource::SurfaceFinger { grid: 0, cell },
++      voice_new: VoiceSource::SurfaceFinger { grid: 0, cell },
++      from: 10,
++      to: 30,
++    };
++    let drone_refile = Refile {
++      voice_old: VoiceSource::SurfaceDrone { grid: 0, pitch: 99 },
++      voice_new: VoiceSource::SurfaceDrone { grid: 0, pitch: 40 },
++      from: 99,
++      to: 40,
++    };
++    let changed = apply_finger_refiles(&[finger_refile, drone_refile], &mut held);
++    assert!(changed, "the finger cell's pitch changed");
++    assert_eq!(held[&cell], 30, "the finger cell's struck pitch follows the flip");
++    assert_eq!(held[&(0, 0)], 99, "the drone re-file leaves the held map alone (rekey_drone handles it)");
++  }
++
+   /// queues/branch-2.org "in edit mode, octave switchers should edit the edit-moded
+   /// voices": with a live edit selection, the octave corners retune EVERY edited
+   /// voice (both layers) by an octave -- down-corner lower, up-corner higher -- and
+diff --git a/queues/branch-3.org b/queues/branch-3.org
+index 0321c8a..d0ab782 100644
+--- a/queues/branch-3.org
++++ b/queues/branch-3.org
+@@ -1,5 +1,5 @@
+ These are ordered; please start from the top.
+-* AWAITS (Jeff's turn) : TODO/pedal-slide/
++* DONE : TODO/pedal-slide/
+ To start, please read 1_vision.org,
+ and respond in 2_discussion.org with everything that occurs to you:
+ Is it well-specified? Complete? Awkward? Dangerous? Self-contradictory?
+@@ -7,6 +7,29 @@ Per the pattern already established elsewhere in TODO/ (maybe esp. TODO/DONE/,
+ but maybe outside of that) make the headline that everything
+ that need my attention begin with "TODO ",
+ and things that probably don't "DONE (probably) ".
++** DONE claude: pedal slide implemented, both phases.
++Discussion is in =2_discussion.org= (your vision confirmed + the open questions
++settled); the build log with every decision is =3_progress.org=.
++
++*Phase A* -- the core: the =pedal_slide_toggle= at each grid's =[0,15]=, the pure
++anchored-two-segment map (`surfaces_runtime/pedal_slide.rs` -- continuity, hysteresis,
++endpoint-exactness, kink-gone-at-endpoint, the far-side-only retarget, all from one
++construction), the target picker, the quartic fades, the home/target hysteresis + LED
++roles, the midpoint-flip re-filing, and the kinked-x^4 volume return when you toggle
++off (your DONE amendment). No-edit-voices picks swell a new note in from silence.
++
++*Phase B* -- chord storage: recalling a stored chord while pedal slide is ON does NOT
++sound it -- its pitches join the target set (at most one chord selected at a time; the
++slot lights solid). Already-targeted voices keep their slides, untargeted edit voices
++match nearest-ascending, extra chord pitches swell in, leftovers fade out; a chord
++joined mid-slide kinks at the current pedal position. Also paid two phase-A debts:
++fade voices can no longer collide on their pitch key (deduped targets + reuse), and a
++finger-still-down slide voice's held-map mirror now follows the midpoint flip.
++
++Readme: the "pedal slide" section of =rigs/2-monomes_2-softsteps_readme.org= (now with
++the chord paragraph). Tests: `cargo test --workspace` is green (575 edo_surface lib +
++159 rig-org + the rest). Left INTACT below: the two unrelated queue items (Fast =1,
++monome debouncing) and their TODO children -- untouched.
+ * AWAITS (Jeff's turn) : Fast =1 on monome does not work.
+ There *is* need to debounce that signal on the kmss,
+ but there is no apparent need to debounce on the monome.
+diff --git a/rigs/2-monomes_2-softsteps_readme.org b/rigs/2-monomes_2-softsteps_readme.org
+index 4460227..5e25ebd 100644
+--- a/rigs/2-monomes_2-softsteps_readme.org
++++ b/rigs/2-monomes_2-softsteps_readme.org
+@@ -365,14 +365,29 @@ one. Different mechanism, one word, so the name is always qualified here.
+   into that -- home switches so each new pick sets the far end you are heading
+   for. The home cell stays lit and danced; the target cell flashes bright/off
+   every 100 ms (no dancer). At the flip the two swap roles.
++- *Recalling a chord as a target set.* While pedal slide is on, pressing a
++  stored chord slot does NOT sound the chord -- its pitches join the slide
++  TARGET set (the slot lights solid to show it is the picked one). At most one
++  chord is selected at a time; selecting another replaces the first's still
++  un-consumed targets. Then the same matcher runs: every voice that already has
++  a target keeps it, each as-yet untargeted edit-mode voice takes the nearest
++  remaining chord pitch (ties to the lower), extra chord pitches SWELL new
++  voices in from silence (the quartic fade), and if the chord asks for fewer
++  pitches than there are edit voices the leftovers FADE OUT. A chord pitch a
++  live voice already holds is already satisfied -- no drag, no fade. Recall a
++  chord mid-slide and the new joins kink at the current pedal position, like a
++  target pick does, so nothing jumps. (With pedal slide OFF, a slot press
++  recalls normally -- see "chord storage".)
+ - *Volume freezes; leaving is immediate.* While sliding, that grid has no live
+   volume pedal -- the volume holds where it was. Toggle pedal slide OFF and the
+   pedal returns to volume through the SAME kinked x^4 construction, so pushing
+   or pulling changes the loudness AT ONCE in either direction (no dead zone
+   waiting to "catch up"); once the pedal reaches an endpoint it reverts to the
+   ordinary fader taper. Toggling OFF mid-slide freezes every sliding voice
+-  exactly where it is (a later drag can tidy an off-grid pitch); clearing the
+-  edit selection or the sustain also ends/freezes the slide.
++  exactly where it is (a later drag can tidy an off-grid pitch), and any
++  un-consumed chord targets simply drop (the swelled-in voices settle as the
++  drones they already are); clearing the edit selection or the sustain also
++  ends/freezes the slide.
+ 
+ * LEDs
+ 
+#+end_src

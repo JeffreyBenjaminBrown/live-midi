@@ -1,5 +1,6 @@
 These are ordered; please start from the top.
-* DONE : TODO/pedal-slide/
+* AWAITS : TODO/pedal-slide/
+** DONE start
 To start, please read 1_vision.org,
 and respond in 2_discussion.org with everything that occurs to you:
 Is it well-specified? Complete? Awkward? Dangerous? Self-contradictory?
@@ -30,6 +31,7 @@ Readme: the "pedal slide" section of =rigs/2-monomes_2-softsteps_readme.org= (no
 the chord paragraph). Tests: `cargo test --workspace` is green (575 edo_surface lib +
 159 rig-org + the rest). Left INTACT below: the two unrelated queue items (Fast =1,
 monome debouncing) and their TODO children -- untouched.
+** TODO The result didn't work. The folder has further reports.
 * AWAITS (Jeff's turn) : Fast =1 on monome does not work.
 There *is* need to debounce that signal on the kmss,
 but there is no apparent need to debounce on the monome.

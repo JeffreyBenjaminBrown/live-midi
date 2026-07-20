@@ -1,0 +1,20 @@
+I didn't play with it very long; there might be others.
+
+- Sliding between two chords from chord storage, there is no pitch glide;
+it just crossfades between them.
+
+- If I play a single note, put it into sustain and then edit mode,
+enable slide, pick a new note, and then slide from pedal=0 to pedal=1,
+the new note is not reached.
+Every time the new note is 27/46 above the old one,
+the result when the pedal reaches the other side sounds like it's at about 13.5/46.
+If I then press a new target, back to 0, the audible pitch snaps to 27/46.
+Moving the pedal toward the other side, pitch again lands at around 13.5.
+
+The pattern is consistent for different interval choices:
+If target is an octave away, reaching the other side of the pedal
+puts the autible pitch a tritone away.
+
+- Upon reaching target (making it home), the pedal stops doing anything.
+It seems to forget about the old home, so I can't go back to the old home
+by sliding the pedal back like I expected.
