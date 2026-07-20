@@ -153,6 +153,9 @@ pub(super) struct Settings {
   /// released to be a slide source, and how long the glide takes.
   pub(super) slide_window: Duration,
   pub(super) slide_duration_secs: f32,
+  /// The pedal-slide pitch smoother's time constant (`[slide].pedal_smoother_ms`), in
+  /// seconds -- the render's one-pole slew on the pedal-driven pitch.
+  pub(super) slide_pedal_smoother_secs: f32,
   /// The tap-tempo pairing window (`[tap_tempo].window_ms`).
   pub(super) tap_window: Duration,
   /// Echo each fingered note to stderr (top-level `echo_input`). Off by default so the
@@ -440,6 +443,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     trails_max: trail.max,
     slide_window: Duration::from_millis(slide.candidate_window_ms),
     slide_duration_secs: slide.duration_ms as f32 / 1000.0,
+    slide_pedal_smoother_secs: slide.pedal_smoother_ms as f32 / 1000.0,
     tap_window: Duration::from_millis(tap_tempo.window_ms),
     echo_input: rig.echo_input,
     expression_pedals,

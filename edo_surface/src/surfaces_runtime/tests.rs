@@ -412,9 +412,10 @@
         );
         last = now;
       }
-      // Let the one-pole smoother settle onto wherever the map now points (200 ms is
-      // ~20 time constants of SLIDE_SLEW_SECS).
-      self.render_ms(200)
+      // Let the one-pole smoother settle onto wherever the map now points (300 ms is
+      // ~10 time constants of SLIDE_SLEW_SECS -- the sweep has already walked the pitch
+      // nearly there, so this only closes the last sliver).
+      self.render_ms(300)
     }
   }
 
@@ -1388,7 +1389,7 @@
       }
     }
     rig.trail = Some(TrailRig { clobber_radius: 13, max: 3 });
-    rig.slide = Some(SlideRig { candidate_window_ms: 777, duration_ms: 55 });
+    rig.slide = Some(SlideRig { candidate_window_ms: 777, duration_ms: 55, pedal_smoother_ms: 42 });
     rig.tap_tempo = Some(TapTempoRig { window_ms: 1234 });
 
     let s = resolve_settings(&rig).expect("resolves without hardware");
@@ -1401,6 +1402,10 @@
     assert_eq!(s.slide_window, Duration::from_millis(777), "slide candidate window");
     assert_eq!(s.tap_window, Duration::from_millis(1234), "tap-tempo window");
     assert!((s.slide_duration_secs - 0.055).abs() < 1e-6, "slide duration, ms -> secs");
+    assert!(
+      (s.slide_pedal_smoother_secs - 0.042).abs() < 1e-6,
+      "pedal-slide smoother travels rig -> Settings, ms -> secs",
+    );
   }
 
   /// The distortion's makeup table must be usable for whatever curve the rig names --
@@ -1448,6 +1453,7 @@
     assert_eq!(s.trail_clobber_radius, d_trail.clobber_radius);
     assert_eq!(s.trails_max, d_trail.max);
     assert_eq!(s.slide_window, Duration::from_millis(d_slide.candidate_window_ms));
+    assert!((s.slide_pedal_smoother_secs - d_slide.pedal_smoother_ms as f32 / 1000.0).abs() < 1e-9);
     assert_eq!(s.tap_window, Duration::from_millis(d_tap_tempo.window_ms));
   }
 
@@ -2272,6 +2278,7 @@
       "waveform = \"square\"\n*** PARAM abs_fm_depth_cents = 25.0\n*** PARAM rel_fm_depth = 1.5",
     );
     let edited = must_replace(&edited, "duration_ms = 100", "duration_ms = 250");
+    let edited = must_replace(&edited, "pedal_smoother_ms = 30", "pedal_smoother_ms = 90");
     // "Add" an expression pedal with a non-default taper: the pedal thread re-reads
     // Live every poll, so the curve_* knobs are exactly as live as the rest.
     let edited = format!(
@@ -2294,6 +2301,10 @@
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
     assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
+    assert!(
+      (p.slide_pedal_smoother_secs - 0.09).abs() < 1e-6,
+      "the pedal-slide smoother reloads (ms -> secs), so 'r' retunes the glide feel",
+    );
   }
 
   /// The `[[timbres]]` square entry, replaced by the reload test.

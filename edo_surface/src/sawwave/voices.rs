@@ -119,15 +119,18 @@ const AM_SQUARE_MAX_GAIN: f32 = 12.5; // TriToSquare: clip gain;   edge ~ 1/(2*g
 /// the pedal still feels immediate underfoot.
 pub const GAIN_SLEW_SECS: f32 = 0.02;
 
-/// The time constant of the per-voice pedal-slide FREQUENCY smoother (the surfaces
-/// `pedal_slide_toggle`): a driven voice's `freq` closes the gap to its
+/// The DEFAULT time constant of the per-voice pedal-slide FREQUENCY smoother (the
+/// surfaces `pedal_slide_toggle`): a driven voice's `freq` closes the gap to its
 /// `slide_freq_target` by 1/e every this-many seconds, per sample. A sibling of
 /// `GAIN_SLEW_SECS`, sized so the pedal's CC-rate target steps melt into a smooth
-/// glide (`1_vision`: "10 ms to transition between the two pitches implied by two
-/// adjacent pedal values") without dragging a fast sweep -- a time constant scales
-/// with the sweep, where a fixed rate limit could only de-zipper one step by making
-/// the full 119-step travel crawl.
-pub const SLIDE_SLEW_SECS: f32 = 0.01;
+/// glide without dragging a fast sweep -- a time constant scales with the sweep, where
+/// a fixed rate limit could only de-zipper one step by making the full 119-step travel
+/// crawl. `1_vision` first tried 10 ms; Jeff softened it to 30.
+///
+/// The surfaces runtime overrides this per rig (`[slide].pedal_smoother_ms`, threaded
+/// into `BlockRenderer::slide_slew_secs`); this const is the value every OTHER caller
+/// of the renderer gets, and the fallback when a rig sets no `[slide]` table.
+pub const SLIDE_SLEW_SECS: f32 = 0.03;
 
 /// The slow-AM LFO wave (bipolar, in [-1,1]) at `phase`, morphed by `shape` in
 /// [0,1] within `family`. shape 0 = the soft end (sine / triangle), shape 1 = a
@@ -435,6 +438,7 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
   voices: &mut VoiceMap,
   frac: f32,
   sample_rate: f32,
+  slide_slew_secs: f32,
   amplitude: f32,
   shape_family: AmShapeFamily,
   dirty: &F,
@@ -512,7 +516,7 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     // so that while a slide is live it is the pedal, not a stale glide, that has the
     // last word on `freq`.
     if v.slide_freq_target > 0.0 {
-      v.freq += (v.slide_freq_target - v.freq) * (frac / (SLIDE_SLEW_SECS * sample_rate)).min(1.0);
+      v.freq += (v.slide_freq_target - v.freq) * (frac / (slide_slew_secs * sample_rate)).min(1.0);
     }
     // The factored pulse: a unipolar triangle in [0,1] -- 1 at the cycle start,
     // falling to 0 at the half-cycle, rising back to 1 -- at the tempo applied at
@@ -622,13 +626,18 @@ pub struct BlockRenderer {
   /// `Makeup::slew_secs` can lag it toward its target. Unused (and overwritten every
   /// sub-sample) when the slew is off, which is the default.
   makeup_state: f32,
+  /// The pedal-slide pitch smoother's time constant (`SLIDE_SLEW_SECS` by default; the
+  /// surfaces runtime overwrites it each callback from `[slide].pedal_smoother_ms`).
+  /// A plain field, not a per-call argument, so the ~30 other callers of the renderer
+  /// (the looper, the tests) stay unchanged and keep the default.
+  pub slide_slew_secs: f32,
 }
 
 impl BlockRenderer {
   pub fn new(oversample: usize) -> Self {
     let oversample = oversample.max(1);
     let decimator = (oversample > 1).then(|| Decimator::new(oversample));
-    BlockRenderer { oversample, decimator, makeup_state: 1.0 }
+    BlockRenderer { oversample, decimator, makeup_state: 1.0, slide_slew_secs: SLIDE_SLEW_SECS }
   }
 
   /// Render one cpal callback's worth of audio into `data` from `voices`. Pulled out
@@ -673,6 +682,7 @@ impl BlockRenderer {
     dirty: F,
   ) {
     let oversample = self.oversample;
+    let slide_slew_secs = self.slide_slew_secs;
     // The makeup is stepped at the *sub-sample* rate, since that is where it is applied.
     let sub_rate = sample_rate * oversample as f32;
     let slew_coeff = match distortion {
@@ -702,7 +712,7 @@ impl BlockRenderer {
       None => {
         for frame in data.chunks_mut(channels) {
           let (clean, dirt, dirt_pow) =
-            accumulate_voices(voices, 1.0, sample_rate, amplitude, shape_family, &dirty);
+            accumulate_voices(voices, 1.0, sample_rate, slide_slew_secs, amplitude, shape_family, &dirty);
           let s = post(clean, dirt, dirt_pow);
           for out in frame.iter_mut() {
             *out = s;
@@ -717,7 +727,7 @@ impl BlockRenderer {
         for frame in data.chunks_mut(channels) {
           for _ in 0..oversample {
             let (clean, dirt, dirt_pow) =
-              accumulate_voices(voices, frac, sample_rate, amplitude, shape_family, &dirty);
+              accumulate_voices(voices, frac, sample_rate, slide_slew_secs, amplitude, shape_family, &dirty);
             decim.push(post(clean, dirt, dirt_pow));
           }
           let s = decim.output();
@@ -2019,5 +2029,40 @@ mod tests {
     let vib = render(600.0);
     let diff: f32 = flat.iter().zip(&vib).map(|(a, b)| (a - b).abs()).sum();
     assert!(diff > 1.0, "FM should change the rendered samples: diff={diff}");
+  }
+
+  /// `BlockRenderer::slide_slew_secs` (fed from `[slide].pedal_smoother_ms`) actually
+  /// sets the glide's speed: a bigger time constant lags the pitch further behind a
+  /// step target after a fixed time. The default is `SLIDE_SLEW_SECS`; the surfaces
+  /// audio callback overwrites the field from the rig each block.
+  #[test]
+  fn the_slide_smoother_time_constant_sets_the_glide_speed() {
+    let sr = 48000.0;
+    // Aim a voice sitting at 100 Hz at a 200 Hz target, render 30 ms, report where its
+    // freq got to. A one-pole with time constant tau reaches 1 - e^(-t/tau) of the way.
+    let freq_after = |slew_secs: f32| {
+      let mut voices: VoiceMap = HashMap::new();
+      voices.insert(VoiceSource::Fingered { xy: (0, 0) }, VoiceState {
+        pending_attack: None,
+        id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0,
+        factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
+        sustain_env: 1.0, decay_per_sample: 1.0,
+        timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
+        fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0,
+        // The pedal is driving this voice toward 200 Hz.
+        slide_freq_target: 200.0, timbre_xfade: None,
+      });
+      let mut renderer = BlockRenderer::new(1);
+      renderer.slide_slew_secs = slew_secs;
+      let mut data = vec![0.0_f32; (sr * 0.03) as usize]; // 30 ms
+      renderer.render(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
+      voices.values().next().unwrap().freq
+    };
+    let fast = freq_after(0.01); // 10 ms: 30 ms is ~3 tau, nearly there
+    let slow = freq_after(0.10); // 100 ms: 30 ms is ~0.3 tau, barely moved
+    assert!(fast > 190.0, "a 10 ms smoother is nearly at the 200 Hz target, got {fast}");
+    assert!(slow < 160.0, "a 100 ms smoother lags well behind, got {slow}");
+    assert!(fast > slow + 20.0, "and the bigger constant is unambiguously slower");
   }
 }

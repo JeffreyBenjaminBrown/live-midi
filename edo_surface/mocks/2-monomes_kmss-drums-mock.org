@@ -29,6 +29,8 @@ Slide (the slide_toggle windows): a new note may glide from a note released
 within this many ms...
 *** PARAM duration_ms = 100
 ...taking this long to arrive at the new pitch.
+*** PARAM pedal_smoother_ms = 30
+Pedal-slide pitch smoother time constant (ms); hot-reloadable.
 ** TABLE tap_tempo
 *** PARAM window_ms = 2000
 Tap tempo (the factored_pulse_pad): two taps at most this far apart set the tempo.

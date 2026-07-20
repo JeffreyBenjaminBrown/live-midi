@@ -371,7 +371,8 @@ one. Different mechanism, one word, so the name is always qualified here.
   only the goalpost you are heading toward -- a kink at the current pedal
   position -- so the pitch you are nearest never jumps. Reverse the pedal and it
   takes a fresh straight line home rather than retracing: the same trick as MIDI
-  knob pickup. Under all of it a ~10 ms smoother melts the pedal's CC steps.
+  knob pickup. Under all of it a smoother (=[slide].pedal_smoother_ms=, default
+  30 ms, hot-reloadable) melts the pedal's CC steps.
 - *Going the wrong way fades out.* If you pick a target with the pedal parked
   part-way along its travel, the near side of that point cannot slide -- the note
   is already at its home pitch. So it holds there and says so with VOLUME

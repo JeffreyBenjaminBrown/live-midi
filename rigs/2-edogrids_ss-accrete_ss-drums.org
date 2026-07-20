@@ -54,6 +54,10 @@ How long a glide takes. ALSO the per-voice pitch-edit drag time: dragging an
 edit-mode note to a new pitch reuses this, so 'r' retunes the drag feel live.
 Jeff's starting value; slow enough to hear it move, fast enough not to smear
 the rhythm.
+*** PARAM pedal_smoother_ms = 30
+Pedal slide (TODO/pedal-slide): the one-pole time constant that smooths the
+EX-P pedal's CC steps into a continuous pitch glide. Bigger = softer/laggier.
+1_vision first tried 10; 30 is Jeff's softened value. Hot-reloadable ('r').
 ** TABLE tap_tempo
 *** PARAM window_ms = 2000
 Two taps at most this far apart on a pad's tap cell set the one global tempo.
