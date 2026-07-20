@@ -108,6 +108,14 @@ pub enum Occupancy {
   Bright,
 }
 
+/// The slow flash that marks resting-dim CONTROL cells (queues/branch-2.org
+/// "non-grid buttons should flash slowish"): 200 ms dim, 200 ms off, so a control
+/// at rest is distinguishable from a dim play cell (a trail or a dancer, which
+/// hold steady). Absolute like every clock here, so all controls flash together.
+pub fn overlay_dim_on(elapsed: Duration) -> bool {
+  (elapsed.as_millis() / 200) % 2 == 0
+}
+
 /// Should the dance paint this corner? See [`Occupancy`].
 pub fn draws_over(under: Occupancy) -> bool {
   match under {

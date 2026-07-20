@@ -378,7 +378,13 @@ controls = "a"             # -> sets grid A's own timbre (must have an edo_note_
 
 The ~edo_shift_pad~ scroll pad (below, under the looper) is likewise a
 *generally-valid* window now: it may sit on any grid that has an ~edo_note_grid~,
-not only in a full looper stack.
+not only in a full looper stack. In the surfaces runtime, while that grid has an
+edit selection, the two OCTAVE corners retune the selection by an octave (down
+corner lower, up higher; every edited voice at once, gliding in place) instead
+of scrolling -- the register moves only when nothing is selected. Surfaces LED
+rule, instrument-wide: every control cell that rests dim flashes slowly (200 ms
+dim / 200 ms off, in step), so resting controls read differently from dim play
+cells (trails and dance markers hold steady).
 
 An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Four
 kinds -- set by its ~control~ field: the clear / needs_holding / accrete trio is

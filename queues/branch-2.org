@@ -1,5 +1,47 @@
 * ONGOING TODO/chord-storage-v2
-** ONGOING exit edit mode should not delete the voice
+** DONE non-grid buttons should flash slowish
+Wherever they would currently be dim,
+let's have them flash 200 ms *dim*, 200 ms off.
+That way they are distinguishable from grid notes.
+It should not apply to the octave switchers,
+the arm-write-to-chord-slot button,
+or the tap tempo button -- not because they are that
+(the rule should be more general,
+because the particular treatment of different keys could vary as we develop)
+but rather because those are never 'dim non-grid cells' of the monome.
+*** DONE claude: implemented as exactly the general rule
+One gate in the compositor (=levels_for_grid=): any OVERLAY cell that
+resolves to a resting DIM shows OFF during the flash clock's off half
+(=dance::overlay_dim_on=, 200/200, absolute -- all controls flash in step);
+play-cell dims (trails, dancers) are never gated. Your exclusions fall out
+for free: the octave corners, the arm cell, and the tap blink are never dim
+non-grid cells, so nothing is there to gate -- no per-button special cases
+anywhere. What flashes in this rig: unselected waveform cells, scroll
+arrows, resting factor cells and editmode buttons, and the chord slots.
+Six mock-LED tests that sampled a resting dim at an instant became
+"never bright" checks; a new grid test pins the off half (overlay dims
+blank, play dims hold, brights hold). On monobright grid A the fast
+fake-dim shimmer now gates on/off at the slow clock -- worth an ear/eye on
+the hardware.
+** DONE in edit mode, octave switchers should edit the edit-moded voices
+When edit mode is on, the octave switchers' only effect
+is to drag the voices that are in edit mode:
+the left one (the one that normally moves the range to view lower notes)
+moves them lower, and the other, higher.
+*** DONE claude: octave corners retune the whole selection; register holds
+With a live edit selection, the octave corners move EVERY edited voice
+(both layers -- fingered/droning piano voices glide in place, chord voices
+too) by +/- one octave, like the multipliers act on all rather than the
+drag's nearest-one, with no envelope event (bulk edit controls stay
+click-free); the register does not move, and the four arrows still scroll.
+With nothing selected the corners scroll as ever. Set shifts are computed
+whole and drones re-key end-first, so chains of edited pitches an octave
+apart cannot collapse. One accepted edge: shifting ONTO a pitch that
+already holds an unmoved drone merges/overwrites at that pitch (the
+cell-drag's free-pitch guard has no analogue here) -- rare, and easy to
+revisit if it ever bites. Pinned end to end by
+=octave_switchers_retune_the_edit_selection_instead_of_scrolling=.
+** DONE exit edit mode should not delete the voice
 At least for the voice-specific gesture that is not currently the case.
 The voice must have bee added to the sustained set when it was sustained, I think.
 So there's already the gesture 'remove from sustained set'
@@ -11,7 +53,7 @@ We don't need that concept to exist.
 If it enters sustain via sustain or via edit,
 globally (from the sofstep) or locally (from the monome),
 its reason for existence is sustain.
-*** TODO claude: cannot reproduce on this build -- I think your instrument predates the fix; please restart and retest
+*** DONE claude: cannot reproduce on this build -- I think your instrument predates the fix; please restart and retest
 Your diagnosis is exactly right -- and it is exactly what branch-3 queue item 4
 ("entering edit mode should just add the voice to the sustained set") already
 abolished, in commit =0fe1e25=, which is merged here and predates all of chord
@@ -37,7 +79,8 @@ Please restart it from =worktrees/2= and retest. If it STILL reproduces,
 tell me the exact finger sequence (which grid; entered edit via the handle or
 pedal 7; was the note fingered or already droning; any drag in between; which
 gesture was the exit) and I will chase it with the new harness.
-*** DONE I think the previous sentence can be true even for voices recalled from storage.
+**** DONE whatever, it's good now
+*** DONE I think the previous sentence ("If it enters ... its reason for existence is sustain") can be true even for voices recalled from storage.
 The fact that they came from storage is not relevant --
 they can be ended via the kill-sustain controls,
 so they might as well just be considered sustained.

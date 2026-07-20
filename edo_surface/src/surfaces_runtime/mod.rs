@@ -882,6 +882,7 @@ fn grid_thread(mut rt: GridThread) {
       &trail_classes,
       &dance_cells,
       off,
+      dance::overlay_dim_on(elapsed),
       rt.overlays.edo_rect,
       rt.overlays.selector_rect,
       selector_slot,

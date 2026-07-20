@@ -106,12 +106,22 @@ fn button_level_at(buttons: &[ButtonOverlay], x: i32, y: i32) -> Option<i32> {
 ///
 /// `octave_flash` says which octave-shift corner is blinking this instant because an
 /// edit-mode or sustained note is off-screen that way (4g).
+///
+/// `overlay_dim_on` is the slow control-flash clock (`dance::overlay_dim_on`,
+/// 200 ms dim / 200 ms off): every OVERLAY cell that resolves to a resting DIM --
+/// unselected selector slots, scroll arrows, resting buttons, resting chord slots
+/// -- shows OFF during the off half, so controls at rest read differently from dim
+/// PLAY cells (trails and dancers, which are never gated by this). The rule is
+/// general on purpose (queues/branch-2.org): cells that are never dim -- the
+/// octave corners, the arm cell, the tap cell's black/bright blink, bright
+/// anything -- are untouched simply because nothing dim is there to gate.
 #[allow(clippy::too_many_arguments)]
 pub fn levels_for_grid(
   sounding_classes: &HashSet<i32>,
   trail_classes: &HashSet<i32>,
   dance_cells: &HashSet<(i32, i32)>,
   octave_flash: super::dance::OffScreen,
+  overlay_dim_on: bool,
   edo_rect: [i32; 4],
   selector_rect: OverlayRect,
   selected_slot: usize,
@@ -126,14 +136,17 @@ pub fn levels_for_grid(
   grid_w: i32,
   grid_h: i32,
 ) -> Vec<i32> {
+  // Gate an OVERLAY cell's resting dim by the slow flash clock; every other level
+  // passes through. Applied only in the overlay branches below, never to play cells.
+  let overlay = |level: i32| if level == DIM && !overlay_dim_on { OFF } else { level };
   let mut levels = vec![OFF; (grid_w * grid_h) as usize];
   for y in 0..grid_h {
     for x in 0..grid_w {
       let level = if in_rect(selector_rect, x, y) {
-        match slot_for_selector_cell(selector_rect, (x, y)) {
+        overlay(match slot_for_selector_cell(selector_rect, (x, y)) {
           Some(slot) if slot == selected_slot => BRIGHT,
           _ => DIM,
-        }
+        })
       } else if in_rect(volume_rect, x, y) {
         if x == volume_col {
           BRIGHT
@@ -141,9 +154,9 @@ pub fn levels_for_grid(
           OFF
         }
       } else if let Some(level) = button_level_at(buttons, x, y) {
-        level
+        overlay(level)
       } else if in_rect(scroll_rect, x, y) {
-        match shift_for_cell(scroll_rect, (x, y)) {
+        overlay(match shift_for_cell(scroll_rect, (x, y)) {
           Some(Shift::Up | Shift::Down | Shift::Left | Shift::Right) => DIM,
           // The octave corners rest dark, and flash while a note is off-screen the
           // way they would bring it back. Raising the register raises the visible
@@ -151,7 +164,7 @@ pub fn levels_for_grid(
           Some(Shift::OctaveUp) if octave_flash.above => BRIGHT,
           Some(Shift::OctaveDown) if octave_flash.below => BRIGHT,
           _ => OFF,
-        }
+        })
       } else if in_rect(edo_rect, x, y) {
         let class = step_for_cell(x_step, y_step, register, x, y).rem_euclid(edo);
         let base = if sounding_classes.contains(&class) {
@@ -222,6 +235,9 @@ mod tests {
   }
   const NO_FLASH: super::super::dance::OffScreen =
     super::super::dance::OffScreen { below: false, above: false };
+  /// The overlay-flash clock in its DIM half: the pre-flash behavior these tests
+  /// describe. The off half has its own test.
+  const DIM_ON: bool = true;
 
   fn paint(
     sounding: &HashSet<i32>,
@@ -230,7 +246,7 @@ mod tests {
     volume_col: i32,
   ) -> Vec<i32> {
     levels_for_grid(
-      sounding, trail, &no_dance(), NO_FLASH, FULL, SELECTOR, 1, VOLUME, volume_col, SCROLL,
+      sounding, trail, &no_dance(), NO_FLASH, DIM_ON, FULL, SELECTOR, 1, VOLUME, volume_col, SCROLL,
       &[], register, XS, YS, EDO, 16, 16,
     )
   }
@@ -243,6 +259,43 @@ mod tests {
     step_for_cell(XS, YS, register, x, y).rem_euclid(EDO)
   }
 
+  /// The slow control flash (queues/branch-2.org "non-grid buttons should flash
+  /// slowish"): in the clock's OFF half, every OVERLAY cell that would rest dim
+  /// goes dark -- unselected selector slots, scroll arrows, resting buttons --
+  /// while dim PLAY cells (trails) hold steady, which is the whole point: controls
+  /// at rest are distinguishable from grid notes. Cells that are never dim (the
+  /// octave corners, a bright selection, the volume column) are untouched.
+  #[test]
+  fn the_off_half_of_the_control_flash_blanks_overlay_dims_but_never_play_dims() {
+    let buttons: Vec<ButtonOverlay> = vec![
+      ([0, 15, 0, 15], button_level(false)), // a resting button
+      ([1, 15, 1, 15], button_level(true)),  // a lit one
+    ];
+    let trail: HashSet<i32> = [class_at(0, 6, 6)].into_iter().collect();
+    let off_half = levels_for_grid(
+      &empty(), &trail, &no_dance(), NO_FLASH, false, FULL, SELECTOR, 1, VOLUME, 10, SCROLL,
+      &buttons, 0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&off_half, 0, 0), OFF, "an unselected selector slot goes dark");
+    assert_eq!(at(&off_half, 1, 0), BRIGHT, "the selected slot holds bright");
+    assert_eq!(at(&off_half, 14, 14), OFF, "a scroll arrow goes dark");
+    assert_eq!(at(&off_half, 0, 15), OFF, "a resting button goes dark");
+    assert_eq!(at(&off_half, 1, 15), BRIGHT, "a lit button holds bright");
+    assert_eq!(at(&off_half, 10, 0), BRIGHT, "the volume column holds bright");
+    assert_eq!(at(&off_half, 6, 6), DIM, "a trailed PLAY cell holds its steady dim");
+
+    // The dim half is exactly the old picture (pinned throughout the other tests
+    // via DIM_ON); spot-check the same cells.
+    let dim_half = levels_for_grid(
+      &empty(), &trail, &no_dance(), NO_FLASH, true, FULL, SELECTOR, 1, VOLUME, 10, SCROLL,
+      &buttons, 0, XS, YS, EDO, 16, 16,
+    );
+    assert_eq!(at(&dim_half, 0, 0), DIM);
+    assert_eq!(at(&dim_half, 14, 14), DIM);
+    assert_eq!(at(&dim_half, 0, 15), DIM);
+    assert_eq!(at(&dim_half, 6, 6), DIM);
+  }
+
   #[test]
   fn selector_cells_map_left_to_right() {
     assert_eq!(slot_for_selector_cell(SELECTOR, (0, 0)), Some(0));
@@ -253,7 +306,7 @@ mod tests {
   #[test]
   fn selector_lights_selected_bright_others_dim() {
     let levels = levels_for_grid(
-      &empty(), &empty(), &no_dance(), NO_FLASH, FULL, SELECTOR, 2, NONE, -1, NONE,
+      &empty(), &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, SELECTOR, 2, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 2, 0), BRIGHT, "slot 2 (square) selected");
@@ -273,7 +326,7 @@ mod tests {
     // Make the class under the clear button "sound" -- the button must occlude it.
     let cls: HashSet<i32> = [class_at(0, 0, 15)].into_iter().collect();
     let levels = levels_for_grid(
-      &cls, &empty(), &no_dance(), NO_FLASH, FULL, SELECTOR, 1, VOLUME, 10, SCROLL, &buttons,
+      &cls, &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, SELECTOR, 1, VOLUME, 10, SCROLL, &buttons,
       0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 0, 15), DIM, "clear rests dim even though its class sounds");
@@ -289,7 +342,7 @@ mod tests {
     let buttons: Vec<ButtonOverlay> = vec![([15, 0, 15, 0], OFF)];
     let cls: HashSet<i32> = [class_at(0, 15, 0)].into_iter().collect();
     let levels = levels_for_grid(
-      &cls, &empty(), &no_dance(), NO_FLASH, FULL, NONE, 1, NONE, -1, SCROLL, &buttons,
+      &cls, &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, NONE, 1, NONE, -1, SCROLL, &buttons,
       0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 15, 0), OFF, "blink-off tap cell is black, not dim");
@@ -397,7 +450,7 @@ mod tests {
   fn a_danced_cell_lights_dim_over_nothing() {
     // The dancers are dim, like the trails (Jeff, superseding the bright-dance 4e).
     let levels = levels_for_grid(
-      &empty(), &empty(), &dance_at(&[(5, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &empty(), &dance_at(&[(5, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 5, 4), DIM);
@@ -410,7 +463,7 @@ mod tests {
   fn a_danced_cell_over_a_trail_stays_dim() {
     let trail: HashSet<i32> = [class_at(0, 5, 4)].into_iter().collect();
     let danced = levels_for_grid(
-      &empty(), &trail, &dance_at(&[(5, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &trail, &dance_at(&[(5, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&danced, 5, 4), DIM, "dance + trail = still just dim");
@@ -423,7 +476,7 @@ mod tests {
   fn a_danced_cell_yields_to_a_sounding_note_and_is_simply_skipped() {
     let sounding: HashSet<i32> = [class_at(0, 5, 4)].into_iter().collect();
     let levels = levels_for_grid(
-      &sounding, &empty(), &dance_at(&[(5, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &sounding, &empty(), &dance_at(&[(5, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 5, 4), BRIGHT, "still bright -- but as the NOTE, not the dance");
@@ -443,7 +496,7 @@ mod tests {
   #[test]
   fn a_square_danced_cell_lights_dim_over_nothing() {
     let levels = levels_for_grid(
-      &empty(), &empty(), &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &empty(), &dance_at(&[(6, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&levels, 6, 4), DIM, "the diagonal neighbour, e.g. NE of (5,5)");
@@ -454,14 +507,14 @@ mod tests {
   fn a_square_danced_cell_blends_with_a_trail_and_yields_to_a_sounding_note() {
     let trail: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let danced = levels_for_grid(
-      &empty(), &trail, &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &empty(), &trail, &dance_at(&[(6, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&danced, 6, 4), DIM, "dance + trail = dim, diamond or square alike");
 
     let sounding: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let yielded = levels_for_grid(
-      &sounding, &empty(), &dance_at(&[(6, 4)]), NO_FLASH, FULL, NONE, 0, NONE, -1, NONE,
+      &sounding, &empty(), &dance_at(&[(6, 4)]), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&yielded, 6, 4), BRIGHT, "bright -- as the NOTE, the dance yields");
@@ -481,7 +534,7 @@ mod tests {
     assert_eq!(both.len(), 2, "the two dances are 45 degrees apart, never the same cell");
 
     let levels =
-      levels_for_grid(&empty(), &empty(), &both, NO_FLASH, FULL, NONE, 0, NONE, -1, NONE, &[], 0, XS, YS, EDO, 16, 16);
+      levels_for_grid(&empty(), &empty(), &both, NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE, &[], 0, XS, YS, EDO, 16, 16);
     for (x, y) in both.iter().copied() {
       assert_eq!(at(&levels, x, y), DIM, "({x},{y}) should be lit (dim) by one of the two dances");
     }
@@ -491,7 +544,7 @@ mod tests {
   #[test]
   fn the_octave_corners_rest_dark_and_flash_when_a_note_is_off_screen_that_way() {
     let dark = levels_for_grid(
-      &empty(), &empty(), &no_dance(), NO_FLASH, FULL, NONE, 0, NONE, -1, SCROLL,
+      &empty(), &empty(), &no_dance(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, SCROLL,
       &[], 0, XS, YS, EDO, 16, 16,
     );
     // Find the two octave corners of the scroll pad.
@@ -514,7 +567,7 @@ mod tests {
     // A note ABOVE the window is reached by raising the register -> OctaveUp flashes.
     let above = levels_for_grid(
       &empty(), &empty(), &no_dance(),
-      super::super::dance::OffScreen { below: false, above: true },
+      super::super::dance::OffScreen { below: false, above: true }, DIM_ON,
       FULL, NONE, 0, NONE, -1, SCROLL, &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&above, ux, uy), BRIGHT, "octave-up points at a note above the window");
@@ -523,7 +576,7 @@ mod tests {
     // Both directions at once -> both corners (1_vision).
     let both = levels_for_grid(
       &empty(), &empty(), &no_dance(),
-      super::super::dance::OffScreen { below: true, above: true },
+      super::super::dance::OffScreen { below: true, above: true }, DIM_ON,
       FULL, NONE, 0, NONE, -1, SCROLL, &[], 0, XS, YS, EDO, 16, 16,
     );
     assert_eq!(at(&both, ux, uy), BRIGHT);
@@ -536,7 +589,7 @@ mod tests {
   fn the_scroll_arrows_stay_dim_and_never_flash() {
     let levels = levels_for_grid(
       &empty(), &empty(), &no_dance(),
-      super::super::dance::OffScreen { below: true, above: true },
+      super::super::dance::OffScreen { below: true, above: true }, DIM_ON,
       FULL, NONE, 0, NONE, -1, SCROLL, &[], 0, XS, YS, EDO, 16, 16,
     );
     for y in SCROLL[1]..=SCROLL[3] {

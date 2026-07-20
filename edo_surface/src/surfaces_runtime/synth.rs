@@ -438,10 +438,11 @@ impl SurfaceSink {
   /// never stop. Dragging an edit-mode note back and forth does exactly that.
   ///
   /// Returns false if no voice is at `cell`.
-  // Superseded by `rehome_to_cell`: a drag always adopts the voice onto the drag
-  // finger's cell, so an in-place glide is no longer called. Kept for its tests, which
-  // document the glide integrator's direction-encoding (see the backward-re-aim one).
-  #[allow(dead_code)]
+  ///
+  /// (Once superseded by `rehome_to_cell` for the cell-press drag, which adopts the
+  /// voice onto the drag finger; back in service for the octave switchers'
+  /// edit-mode retune, where no finger is on any play cell and the voice must move
+  /// in place.)
   pub fn glide_voice_to(&mut self, cell: (i32, i32), pitch: i32, glide_secs: f32) -> bool {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) else {
@@ -521,9 +522,8 @@ impl SurfaceSink {
   ///
   /// Returns false if no drone is at `from`.
   ///
-  /// Superseded by `rehome_to_cell` (a drag adopts the drone onto the drag finger's
-  /// cell), so no longer called; kept for its test.
-  #[allow(dead_code)]
+  /// (Once superseded by `rehome_to_cell` for the cell-press drag; back in service
+  /// for the octave switchers' edit-mode retune, same as `glide_voice_to`.)
   pub fn glide_sustained_to(&mut self, from: i32, to: i32, glide_secs: f32) -> bool {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut state) = voices.remove(&sustain_key(self.grid, from)) else {

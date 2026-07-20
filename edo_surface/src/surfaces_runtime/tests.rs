@@ -270,6 +270,74 @@
     );
   }
 
+  /// queues/branch-2.org "in edit mode, octave switchers should edit the edit-moded
+  /// voices": with a live edit selection, the octave corners retune EVERY edited
+  /// voice (both layers) by an octave -- down-corner lower, up-corner higher -- and
+  /// the register does not move; with no selection they scroll as ever.
+  #[test]
+  fn octave_switchers_retune_the_edit_selection_instead_of_scrolling() {
+    use crate::pitch::freq_for_pitch;
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    use crate::types::{Timbre, VoiceSource};
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let edo = rt.tuning.edo;
+    let (up_corner, down_corner) = ((15, 14), (13, 14)); // scroll pad [13,14,15,15]
+    let note = (5, 5);
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+
+    // A fingered note in edit mode, and an edit-flagged chord voice at another pitch.
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), true); // edit handle
+    handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
+    let chord_pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, 8, 8);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![StoredVoice {
+        pitch: chord_pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+        osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+      }] });
+    }
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), true); // recall slot 0
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
+    let seq = *rt.shared.ring.lock().unwrap()[0].chord.live.keys().next().unwrap();
+    rt.shared.ring.lock().unwrap()[0].chord.live.get_mut(&seq).unwrap().edited = true;
+
+    // The octave-up corner: every edited voice a whole octave higher, register still.
+    handle_key(&mut rt, &mut register, &mut held, up_corner, true);
+    handle_key(&mut rt, &mut register, &mut held, up_corner, false);
+    assert_eq!(register, 0, "the register does not move while a selection is live");
+    assert_eq!(held[&note], pitch + edo, "the finger's held entry re-filed an octave up");
+    {
+      let rings = rt.shared.ring.lock().unwrap();
+      assert!(rings[0].store.has(Reason::Edit, pitch + edo), "the selection followed");
+      assert!(rings[0].store.has(Reason::Sustain, pitch + edo));
+      assert!(!rings[0].store.has(Reason::Sustain, pitch), "and vacated the old pitch");
+      assert_eq!(rings[0].chord.live[&seq].pitch, chord_pitch + edo, "the chord voice too");
+    }
+    {
+      let v = rt.shared.voices.lock().unwrap();
+      let finger = &v[&VoiceSource::SurfaceFinger { grid: 0, cell: note }];
+      assert_eq!(
+        finger.freq_target,
+        freq_for_pitch(pitch + edo, rt.tuning.fund, edo),
+        "the fingered voice glides an octave up, in place",
+      );
+      assert!(finger.glide_per_sample > 1.0, "gliding, not jumping");
+      let chord = &v[&VoiceSource::SurfaceChord { grid: 0, seq }];
+      assert_eq!(chord.freq_target, freq_for_pitch(chord_pitch + edo, rt.tuning.fund, edo));
+    }
+
+    // Deselect everything (the editmode-clear button at (12,0)); the corners scroll
+    // again.
+    handle_key(&mut rt, &mut register, &mut held, (12, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (12, 0), false);
+    handle_key(&mut rt, &mut register, &mut held, down_corner, true);
+    handle_key(&mut rt, &mut register, &mut held, down_corner, false);
+    assert_ne!(register, 0, "with no selection, the corner moves the register as ever");
+  }
+
   /// Serialises the mock-rig tests: they share the global `STOP` and the mock rig's
   /// listen ports, so they must not run concurrently.
   static MOCK_LOCK: Mutex<()> = Mutex::new(());
@@ -1470,7 +1538,7 @@
     b.press(14, 0);
     b.release(14, 0);
     assert!(wait_until(secs(3), || b.level_at(14, 0) == 15), "grid b's x2 lit (its tempo factor leans up)");
-    assert_eq!(a.level_at(14, 0), 4, "grid a's x2 stays dim (tempo factors are per-grid)");
+    assert_ne!(a.level_at(14, 0), 15, "grid a's x2 stays unlit (tempo factors are per-grid; its resting dim now slow-flashes)");
 
     // The FIRST =1 press on grid b, with cycling off: it turns cycling ON (=1 lit)
     // and LEAVES the tempo factor alone -- x2 stays lit. Grid a's switch is untouched.
@@ -1478,7 +1546,7 @@
     b.release(15, 1);
     assert!(wait_until(secs(3), || b.level_at(15, 1) == 15), "grid b's =1 lit: cycling on");
     assert_eq!(b.level_at(14, 0), 15, "the switch-on press KEEPS grid b's x2 tempo factor");
-    assert_eq!(a.level_at(15, 1), 4, "grid a's =1 stays dim (the switch is per-grid)");
+    assert_ne!(a.level_at(15, 1), 15, "grid a's =1 stays unlit (the switch is per-grid)");
 
     // Two more =1 presses, back to back after a >400 ms gap. The first of the pair is
     // a lone press on an already-cycling grid, so it zeroes the tempo factor (x2 -> dim)
@@ -1543,7 +1611,7 @@
     a.release(2, 15);
     assert!(wait_until(secs(3), || a.level_at(2, 15) == 15), "accrete lit on grid a");
     thread::sleep(Duration::from_millis(300)); // let grid b repaint before the negative check
-    assert_eq!(b.level_at(2, 15), 4, "grid b's accrete stays dim (its own bank is off)");
+    assert_ne!(b.level_at(2, 15), 15, "grid b's accrete stays unlit (its own bank is off)");
 
     // Play and release a note on grid a: sustained, it stays BRIGHT (not trail-dim)
     // on BOTH grids -- the drone is sounding, so it reflects everywhere.
@@ -1566,14 +1634,14 @@
     b.release(1, 15);
     assert!(wait_until(secs(3), || b.level_at(1, 15) == 15), "needs_holding lit on grid b");
     thread::sleep(Duration::from_millis(300));
-    assert_eq!(a.level_at(1, 15), 4, "grid a's needs_holding stays dim");
+    assert_ne!(a.level_at(1, 15), 15, "grid a's needs_holding stays unlit");
     assert_eq!(a.level_at(2, 15), 15, "grid a's accrete mode survives");
 
     // Clear from grid B: lights there while held, but grid a's drone keeps ringing.
     b.press(0, 15);
     assert!(wait_until(secs(3), || b.level_at(0, 15) == 15), "grid b's clear lit while held");
     thread::sleep(Duration::from_millis(300));
-    assert_eq!(a.level_at(0, 15), 4, "grid a's clear stays dim");
+    assert_ne!(a.level_at(0, 15), 15, "grid a's clear stays unlit");
     b.release(0, 15);
     assert!(wait_until(secs(3), || b.level_at(0, 15) == 4), "clear dims on key-up");
     thread::sleep(Duration::from_millis(300));
@@ -1627,7 +1695,7 @@
       a.release(x, y);
       assert!(wait_until(secs(3), || a.level_at(x, y) == 15), "{name} on: lit on grid a");
       thread::sleep(Duration::from_millis(300));
-      assert_eq!(b.level_at(x, y), 4, "grid b's {name} stays dim (per-grid switch)");
+      assert_ne!(b.level_at(x, y), 15, "grid b's {name} stays unlit (per-grid switch)");
       b.press(x, y);
       b.release(x, y);
       assert!(wait_until(secs(3), || b.level_at(x, y) == 15), "grid b's own {name} turns b on");

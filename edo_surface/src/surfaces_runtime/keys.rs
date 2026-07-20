@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::edo_play::{register_delta, shift_for_cell, step_for_cell};
+use crate::edo_play::{register_delta, shift_for_cell, step_for_cell, Shift};
 use crate::rig::{AccreteControlKind, EditmodeControlKind};
 
 use crate::types::{Timbre, VoiceSource, VoiceState};
@@ -241,9 +241,26 @@ pub(super) fn handle_key(
     }
     return;
   }
-  // Scroll pad: a press moves THIS grid's play register.
+  // Scroll pad: a press moves THIS grid's play register -- except that with an
+  // edit selection live, the OCTAVE switchers retune the selection instead
+  // (queues/branch-2.org: "the octave switchers' only effect is to drag the
+  // voices that are in edit mode" -- the corner that normally views lower notes
+  // moves them an octave lower, the other higher; the register does not move).
+  // The four arrows scroll as ever.
   if let Some(shift) = shift_for_cell(rt.overlays.scroll_rect, cell) {
     if press {
+      let octave = match shift {
+        Shift::OctaveDown => Some(-rt.tuning.edo),
+        Shift::OctaveUp => Some(rt.tuning.edo),
+        _ => None,
+      };
+      if let Some(delta) = octave {
+        if octave_shift_edited(rt, held, delta) {
+          publish_held(&rt.shared.held_all, rt.grid_index, held);
+          publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
+          return;
+        }
+      }
       *register += register_delta(shift, rt.tuning.x_step, rt.tuning.y_step, rt.tuning.edo);
     }
     return;
@@ -554,6 +571,73 @@ fn chord_toggle(rt: &mut GridThread, slot: usize) {
       synth::end_chord_voices(&rt.shared.voices, rt.grid_index, &seqs, release_secs, sample_rate);
     }
   }
+}
+
+/// The octave switchers' edit-mode action (queues/branch-2.org): move EVERY edited
+/// voice -- both layers at once, like the multipliers, not the drag's nearest-one --
+/// by `delta` steps (one octave = ±edo). Returns false when nothing is selected, so
+/// the caller falls through to the ordinary register scroll. The register never
+/// moves here; pitch CLASSES are octave-invariant, so the trail and the bright
+/// reflection stay put -- only the exact-cell markers (the dances) and the
+/// off-screen corners react. A pure glide, no envelope event: the bulk edit
+/// controls (the multipliers) are click-free, and this is one of them.
+fn octave_shift_edited(
+  rt: &mut GridThread,
+  held: &mut HashMap<(i32, i32), i32>,
+  delta: i32,
+) -> bool {
+  // Decide + re-file every registry under the ring lock; glide voices after it
+  // drops. The set shifts are computed WHOLE (discard all, then add all): moving
+  // pitches one at a time would collapse a chain of edited pitches an octave
+  // apart.
+  let (piano, chords): (Vec<i32>, Vec<(u64, i32)>) = {
+    let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &mut rings[rt.grid_index];
+    let piano: Vec<i32> = gr.store.iter(Reason::Edit).collect();
+    let chords: Vec<(u64, i32)> =
+      gr.chord.live.iter().filter(|(_, v)| v.edited).map(|(s, v)| (*s, v.pitch)).collect();
+    if piano.is_empty() && chords.is_empty() {
+      return false;
+    }
+    for p in &piano {
+      gr.store.discard(Reason::Edit, *p);
+      gr.store.discard(Reason::Sustain, *p);
+    }
+    for p in &piano {
+      gr.store.add(Reason::Edit, *p + delta);
+      gr.store.add(Reason::Sustain, *p + delta);
+    }
+    for (seq, pitch) in &chords {
+      if let Some(v) = gr.chord.live.get_mut(seq) {
+        v.pitch = *pitch + delta;
+      }
+    }
+    (piano, chords)
+  };
+  let glide = rt.knobs.slide_duration_secs;
+  // Fingered edited voices glide in place (they are cell-keyed) and re-file `held`.
+  let moved_cells: Vec<((i32, i32), i32)> =
+    held.iter().filter(|(_, p)| piano.contains(p)).map(|(c, p)| (*c, *p)).collect();
+  for (c, p) in &moved_cells {
+    rt.sink.glide_voice_to(*c, *p + delta, glide);
+    held.insert(*c, *p + delta);
+  }
+  // Drones are PITCH-keyed, so a chain of edited drones an octave apart must
+  // re-key starting from the end the move points at (highest first going up,
+  // lowest first going down), or one drone lands on the next one's key.
+  let fingered: HashSet<i32> = moved_cells.iter().map(|(_, p)| *p).collect();
+  let mut drones: Vec<i32> = piano.iter().copied().filter(|p| !fingered.contains(p)).collect();
+  drones.sort_unstable();
+  if delta > 0 {
+    drones.reverse();
+  }
+  for p in drones {
+    rt.sink.glide_sustained_to(p, p + delta, glide);
+  }
+  for (seq, pitch) in chords {
+    rt.sink.glide_chord_voice(seq, pitch + delta, glide);
+  }
+  true
 }
 
 /// The one release path (finger up, or a mono cut): a note in the sustained set --

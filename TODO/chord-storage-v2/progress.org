@@ -187,6 +187,19 @@ origin (Jeff, by chat). An edited chord voice therefore shows the same
 repaint's square-dance loop (the pitches were already snapshotted for the
 off-screen flash); readme dance sections and glossary updated.
 
+* DONE 13. the slow control flash + octave switchers as edit controls
+- Every overlay cell resting DIM now flashes 200 ms dim / 200 ms off (one
+  gate in =levels_for_grid=, clock in =dance::overlay_dim_on=), so resting
+  controls read differently from dim play cells; the exclusions Jeff named
+  are excluded by generality (never dim), not by cases.
+- With an edit selection live, the octave corners retune the WHOLE selection
+  by an octave (both layers, in-place glides -- =glide_voice_to= /
+  =glide_sustained_to= came back from dead-code for this) and the register
+  holds; whole-set shifts + end-first drone re-keying prevent octave-chain
+  collapse. Accepted edge: shifting onto an unmoved drone's pitch can merge
+  there (no free-pitch guard, unlike the cell drag).
+=cargo test --workspace=: 742 passed, 0 failed.
+
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's
   shared LFO phases (advanced at the new timbre's rates) for the fade's

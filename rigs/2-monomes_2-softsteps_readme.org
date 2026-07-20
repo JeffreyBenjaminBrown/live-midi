@@ -86,7 +86,9 @@ Here's how to see what's connected:
   has its own voices and its own scroll register.
 - scroll pad -- a 3x2 pad at a grid's bottom-right (=[13,14,15,15]=) that
   moves that grid's pitch window: the four arrows shift by one cell, the two
-  top corners by an octave.
+  top corners by an octave. With an edit selection live, the octave corners
+  retune the SELECTION by an octave instead of scrolling -- see "the octave
+  switchers in edit mode".
 - waveform strip -- a 4-cell radio at a grid's top-left (=[0,0]..[3,0]=):
   sine / triangle / square / saw, left to right. Each grid's strip sets its
   own timbre (=controls= points at its own =monome=).
@@ -335,7 +337,15 @@ bright, the rest dim; the scroll pad's arrows are dim, its octave corners
 dark, and it fully occludes the play grid beneath it. The chord block's
 SLOTS idle DIM (occupied and empty look alike -- empty ones are inert) and
 an active slot is solid BRIGHT; the ARM cell is BLACK until armed, then
-flashes ~150 ms on/off. On top of that, a grid's
+flashes ~150 ms on/off.
+
+Every CONTROL cell that rests dim -- the unselected waveform cells, the
+scroll arrows, the resting factor cells and editmode buttons, the chord
+slots -- flashes SLOWLY (200 ms dim, 200 ms off, all in step), so a control
+at rest reads differently from a dim PLAY cell: trails and dancers hold
+their dim steady. The rule is general -- "a dim non-grid cell flashes" --
+so cells that are never dim (the octave corners, the arm cell, the tap
+cell's black/bright blink) are simply not in it. On top of that, a grid's
 own edit-mode and sustained notes each get a local marker -- the diamond and
 square dances -- and an off-screen indicator on the scroll pad's octave
 corners; see "per-voice edit" below ("the diamond dance", "the square dance",
@@ -583,6 +593,19 @@ Only the octave corners ever flash -- never the four arrows -- so a note scrolle
 by less than an octave gets no hint. And one signal covers both edit-mode and
 sustained notes, so the LED cannot tell you which kind you are chasing. Both are
 Jeff's calls ("I'll understand").
+
+** the octave switchers in edit mode
+While any voice on a grid is in edit mode, that grid's two octave corners
+stop scrolling and instead DRAG the whole edit selection by an octave: the
+corner that normally moves the window to view lower notes moves the edited
+voices an octave lower, the other an octave higher. Like the multipliers --
+and unlike a cell-press drag, which moves only the nearest -- this acts on
+EVERY edited voice at once, both layers, gliding in place with no envelope
+event. The register itself does not move ("the octave switchers' only
+effect is to drag the voices"); pitch classes are octave-invariant, so the
+bright reflection and the trail stay put -- what moves is the dances, the
+handles' cells, and possibly the off-screen corners' flash. The four arrows
+still scroll as ever, and with nothing selected the corners scroll again.
 
 ** editing a note's factored pulse
 With notes in edit mode on a grid, that grid's =x2= / =x3= / =/2= / =/3= --
