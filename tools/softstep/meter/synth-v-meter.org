@@ -12,20 +12,23 @@ Two programs decode the SoftStep's tether stream into hits with a strike pressur
 
 They share the same *shape* of algorithm (fire on onset, watch for a higher peak over an
 attack window, re-arm on release, de-stick a silent sensor), and -- since the
-=softstep.toml= change -- the same *knobs*: the kit reads them from the shared
-=rigs/softstep.toml=, the meter from its own =config.toml=, with matching defaults. The
-meter now also has the *debounce* it used to lack. What still differs is below.
+=softstep.toml= change -- most of the same *knobs*: the kit reads them from the shared
+=rigs/softstep.toml=, the meter from its own =config.toml=, with matching defaults for
+onset, release, attack, pressure and de-stick. *Debounce is the one exception, and it has
+since gone the other way -- from matching to diverged* (see [[* 1. Debounce -- diverged, not shared]] below): the kit reworked its re-fire guard into something the meter's
+=config.toml= has no equivalent knob for at all. What still differs is below.
 
 * The parameters, side by side
 
-Both sides are config now, with matching defaults:
+Both sides are config now, and most defaults still match -- debounce is the exception,
+flagged in its own row:
 
 | knob                     | kit (rigs/softstep.toml)  | meter (meter/config.toml) |
 |--------------------------+------------------------------+---------------------------|
 | onset threshold          | =on_sum= 20                  | =on-sum= 20               |
 | release threshold        | =off_sum= 20                 | =off-sum= 20              |
 | attack watch window      | =attack_ms= 14               | =attack-ms= 14            |
-| retrigger debounce       | =debounce_ms= 100            | =debounce-ms= 100         |
+| retrigger guard *(diverged -- see section 1 below)* | =factor_release_ms= 25 (quiet gate) + =factor_settle_ms= 150 (Settle pedals only) | =debounce-ms= 100 (fixed min-gap, unchanged) |
 | sum-of-4 -> full pressure 1.0 | =pressure_full_scale= 460    | =pressure-full-scale= 460      |
 | pressure loudness spread | =gain_db_range= 20 dB    | =gain-db-range= 20         |
 | sensor de-stick          | =silence_to_zero_ms= 25 ms   | =silence-to-zero-ms= 25   |
@@ -37,18 +40,45 @@ versa), and the meter's numbers only predict the kit if you keep the two files i
 final unification would be to have the meter read =softstep.toml= directly for the shared
 knobs (see [[* If you want them fully unified]]).
 
-* 1. Debounce (now in both)
+* 1. Debounce -- diverged, not shared
 
-- *Kit:* =debounce_ms= (default 100, in =softstep.toml=). After a pad fires, another fire
-  on the *same* pad whose onset is within 100 ms of the last fired onset is *suppressed* --
-  *in addition to* the requirement that the pad first release below =off_sum=. Per-pad, so
-  two feet hit together both still fire. Purpose: swallow contact-bounce / machine-gunning.
-- *Meter:* now has the same gate -- =debounce-ms= (default 100), onset-to-onset like the
-  kit, in both the live audition and the =.org= =interpret_hits= re-derivation. It used to
-  have none, which over-counted fast rolls; that gap is closed.
-- *Caveat:* the reference instants differ slightly -- the kit debounces from the *onset*
-  fire, the meter also keys off the onset, so the counts track. (The meter still *fires*
-  its audition at window-close; only the debounce clock is onset-based.)
+This used to be the one gap where the meter lacked what the kit had (a fixed
+=debounce_ms= / =debounce-ms= min-gap in both, matching defaults of 100 ms). That gap is
+closed now, but the wrong way round: the *kit* has since moved off the fixed min-gap
+entirely, while the *meter* still has it. They no longer implement the same mechanism --
+=rigs/softstep.toml= does not even have a =debounce_ms= key any more -- so do not read
+this section as "both debounce the same way, just check the numbers." They don't.
+
+- *Kit:* a quiet gate, not a min-gap (=DebounceMode::Standard=, in
+  =edo_surface/src/drumkit_runtime/decode.rs=). A pad may fire again only once its
+  sum-of-4 has gone *quiet (unchanged)* for =factor_release_ms= (default 25 ms, in
+  =softstep.toml=) -- *in addition to* the existing requirement that it first release
+  below =off_sum=. A contact bounce keeps the sum changing, so it never goes quiet and
+  cannot re-fire mid-bounce; a genuine second hit follows a settled release and fires
+  normally, however soon after the first it comes. Per-pad, so two feet hit together both
+  still fire. This replaced the fixed min-gap because a fixed window both leaked (a slow
+  bounce can outlast it and still double-fire) and blocked legitimate fast taps (a real
+  hit landing inside the window was swallowed too).
+  The tempo-factor pulse pedals (x2, x3, div2, div3 -- but *not* the =1/unity= pedal) get
+  a second, stricter mode layered on top, =DebounceMode::Settle=: they fire once on
+  onset, emit no =Revise=, and only re-arm once *both* =factor_settle_ms= (150 ms) has
+  passed since that fire *and* the pad has been inactive for =factor_release_ms= (25 ms).
+  This exists because a rocked or held pulse pedal can re-cross =on_sum= many times per
+  stomp -- one stomp reading as =x2^10= instead of a single =x2= -- in a way the quiet
+  gate alone did not fully catch.
+- *Meter:* unchanged since the debounce it gained earlier -- still the original fixed
+  onset-to-onset min-gap, =debounce-ms= (default 100, in =config.toml=), used in both the
+  live audition and the =.org= =interpret_hits= re-derivation: after a fire, another
+  onset on the *same* pad within 100 ms is *suppressed* outright, still *in addition to*
+  a release below =off-sum=. This is exactly the mechanism the kit has since moved away
+  from, with the same failure modes the kit's doc comments call out: a slow bounce past
+  100 ms still double-fires, and a genuine fast tap inside 100 ms is dropped.
+- *Consequence:* =debounce-ms= in the meter's =config.toml= no longer corresponds to
+  anything in the kit -- there is no dial in =rigs/softstep.toml= it mirrors. Tuning it
+  changes what the meter shows and auditions, but does not predict how the kit handles a
+  bounce or a fast roll; for that, read =factor_release_ms= and =factor_settle_ms=
+  above instead. The meter's Python (=main.py=, =config.toml=) has not been changed to
+  follow the kit's rework -- whether to do that is a separate call, not a doc fix.
 
 * 2. Fire timing and the loudness envelope
 
@@ -104,14 +134,23 @@ peak* over the attack window. What differs is what happens between onset and pea
 
 * If you want them fully unified
 
-Both earlier gaps are closed: the meter now has debounce, and the kit's thresholds are no
-longer hard-coded consts -- they live in =rigs/softstep.toml=. So "calibrate, then hear
-it in the kit" works, as long as you keep the meter's =config.toml= in step with
+The onset/release/attack/pressure/de-stick gap is closed: the meter shares those
+thresholds' *values* with the kit, and the kit's are no longer hard-coded consts -- they
+live in =rigs/softstep.toml=. For those knobs, "calibrate in the meter, then hear it in
+the kit" works, as long as you keep the meter's =config.toml= in step with
 =softstep.toml=.
 
-The one remaining seam is that they are *two files*. The final step -- if the manual sync
-ever bites -- would be to have the Python meter read =rigs/softstep.toml= directly for
-the shared knobs (=on_sum=, =off_sum=, =attack_ms=, =debounce_ms=, =pressure_full_scale=,
-=gain_db_range=, =silence_to_zero_ms=), keeping its own =config.toml= only for
-meter-only settings (grouping, audition, master volume). Then there is a single source of
-truth for the SoftStep and nothing to transcribe.
+Debounce is the exception, and keeping the numbers in step will not fix it: the kit and
+the meter no longer implement the same *algorithm* for it (quiet gate + Settle, vs. a
+fixed onset-to-onset min-gap), so there is no value you can put in =debounce-ms= that
+reproduces the kit's behaviour. Really unifying that seam would mean giving the meter its
+own quiet-gate (and, for parity with the tempo-factor pedals, Settle) implementation, not
+just a shared number -- a code change, not something this doc can paper over.
+
+The other remaining seam is that the still-matching knobs live in *two files*. The final
+step -- if the manual sync of those ever bites -- would be to have the Python meter read
+=rigs/softstep.toml= directly for =on_sum=, =off_sum=, =attack_ms=,
+=pressure_full_scale=, =gain_db_range= and =silence_to_zero_ms=, keeping its own
+=config.toml= only for meter-only settings (grouping, audition, master volume, and its
+own =debounce-ms= unless/until the algorithm itself gets unified). Then there is a single
+source of truth for everything but debounce.

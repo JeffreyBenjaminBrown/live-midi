@@ -115,7 +115,7 @@ rig. Device protocol: [[../learnings/keith-mcmillen-softstep.org]].
 ** volume
 
 The kit has no expression pedal, unlike the grids. Its one knob is the
-=cpal_sampler= sink's =amplitude= (1.6, carried over), with per-pad =gain=
+=cpal_sampler= sink's =amplitude= (1.2), with per-pad =gain=
 trimming below it -- pedal 1's crash is a synthesized =crash_electronic.wav=,
 fuller than the rest of the kit, so it is trimmed to 0.5. Balance the kit
 against the grids there.
@@ -128,16 +128,32 @@ voices already ringing keep their own de-zippered per-voice gain. Only the
 scalar is live -- changing a sink's sample rate, or adding one, still rebinds a
 stream and needs a restart, exactly as for layout and ports.
 
-One caveat on the value itself, not new to this rig:
+*Why 1.2 and not the 1.6 this kit came with.* The mixer hard-clamps each output
+frame to [-1, 1]. Measuring the shipped WAVs' peaks against a full-pressure hit
+(pressure 1.0 = unity gain, so this is the worst case a single pad can produce):
 
-- *1.6 may clip the loudest hits.* The mixer hard-clamps to [-1, 1]. Measured
-  against the shipped WAVs, a full-pressure single hit on =kick=, =high_tom=,
-  =cowbell= or =open_hat= crosses that ceiling at =amplitude = 1.6=; =hat=,
-  =low_tom=, =wood_block= and the trimmed crash do not. This was carried over
-  unexamined from =2-monomes_kmss-drums=, so it may be an accepted trade or
-  simply never measured -- it is written down here so it can be listened for
-  rather than rediscovered. Pull the sink down, or trim the four loud pads,
-  if it reads harsh.
+| sample                 | peak | x1.6  | x1.2 |
+|------------------------+------+-------+------|
+| crash_electronic (x0.5) | 0.900 | 0.720 | 0.540 |
+| kick                   | 0.755 | 1.208 | 0.906 |
+| high_tom               | 0.754 | 1.207 | 0.905 |
+| open_hat               | 0.682 | 1.092 | 0.819 |
+| cowbell                | 0.704 | 1.126 | 0.845 |
+| snare                  | 0.632 | 1.011 | 0.758 |
+| wood_block             | 0.593 | 0.949 | 0.712 |
+| low_tom                | 0.565 | 0.904 | 0.678 |
+| hat                    | 0.560 | 0.896 | 0.672 |
+
+At the inherited 1.6, six of the nine samples clip on a hard single hit --
+kick, high tom, cowbell and open hat comfortably, snare marginally. (The
+crash escapes only because of its 0.5 trim.) At 1.2 every pad in the kit is
+clean at full pressure, with the loudest sitting around -0.9 dBFS.
+
+That is single hits. Two pads struck together still sum, and two loud ones at
+full pressure will clip regardless -- which is ordinary for a drum bus and not
+worth designing around. If it reads harsh under fast two-foot playing, pull the
+sink down further rather than trimming pads, since the trims are there to
+balance the kit against itself.
 
 * what was NOT inherited from 2-monomes_kmss-drums
 

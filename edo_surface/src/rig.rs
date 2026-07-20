@@ -1281,7 +1281,7 @@ fn default_pad_gain() -> f32 {
 // These drive the drumkit decoder. There is no reason for them to vary per rig, so they
 // live in one shared file loaded by `load_softstep_params`, not in each rig's window.
 fn default_on_sum() -> u16 {
-  20
+  40
 }
 fn default_off_sum() -> u16 {
   20
@@ -1300,6 +1300,12 @@ fn default_silence_to_zero_ms() -> u64 {
 }
 fn default_factor_settle_ms() -> u64 {
   150
+}
+fn default_standard_settle_ms() -> u64 {
+  120
+}
+fn default_standard_release_ms() -> u64 {
+  45
 }
 fn default_factor_release_ms() -> u64 {
   25
@@ -1340,13 +1346,29 @@ pub struct SoftstepParams {
   /// Only `Settle` pads use it (see `DebounceMode::Settle`).
   #[serde(default = "default_factor_settle_ms")]
   pub factor_settle_ms: u64,
-  /// How long a pad's sum must stay quiet before it may fire again. BOTH debounce modes
-  /// use it: it is `Standard`'s quiet gate (the sum must hold steady this long, released,
-  /// before a new hit is accepted -- a bounce keeps changing and so never re-arms), and
-  /// the inactivity half of `Settle`'s re-arm rule. Named `factor_release_ms` for its
-  /// original Settle-only role.
+  /// The inactivity half of `Settle`'s re-arm rule: how long a tempo-factor pedal's sum
+  /// must sit below `off_sum` before it may fire again. `Settle` only -- `Standard` has
+  /// its own pair below. (Was shared by both modes until 2026-07-20.)
   #[serde(default = "default_factor_release_ms")]
   pub factor_release_ms: u64,
+  /// `DebounceMode::Standard` (drum pads, and held pedals like accrete): the minimum time
+  /// from a fire until that pad may fire again. The mirror of `factor_settle_ms`, for the
+  /// mode every pad gets by default.
+  ///
+  /// This caps how fast one pad can be re-struck -- at 120 ms, ~8 hits/second on a single
+  /// pad. Two feet on two pads are unaffected: the guard is per-pad, and nothing in the
+  /// decoder couples pads.
+  #[serde(default = "default_standard_settle_ms")]
+  pub standard_settle_ms: u64,
+  /// `DebounceMode::Standard`'s quiet gate: how long a pad's sum must hold UNCHANGED
+  /// before it may fire again. Because the tether stream is on-change, an unchanged sum
+  /// means the pad is literally sending nothing -- so this is a silence requirement.
+  ///
+  /// A contact bounce keeps the sum moving and so never looks quiet; a deliberate second
+  /// hit follows a settled release and does. Watching the signal rather than a clock is
+  /// why this exists alongside `standard_settle_ms` instead of being replaced by it.
+  #[serde(default = "default_standard_release_ms")]
+  pub standard_release_ms: u64,
   /// Sum-of-4 at or above which a strike counts as HARD rather than light -- the
   /// "one pad, two purposes" trick (tap lightly for one job, stomp for another).
   ///
@@ -1375,6 +1397,8 @@ impl Default for SoftstepParams {
       silence_to_zero_ms: default_silence_to_zero_ms(),
       factor_settle_ms: default_factor_settle_ms(),
       factor_release_ms: default_factor_release_ms(),
+      standard_settle_ms: default_standard_settle_ms(),
+      standard_release_ms: default_standard_release_ms(),
       pressure_threshold_sum: default_pressure_threshold_sum(),
     }
   }
@@ -2786,11 +2810,15 @@ mod tests {
   #[test]
   fn softstep_params_parse_and_default() {
     // A missing file -> defaults.
-    assert_eq!(SoftstepParams::default().factor_release_ms, 25, "default quiet window");
-    assert_eq!(SoftstepParams::default().on_sum, 20);
+    assert_eq!(SoftstepParams::default().factor_release_ms, 25, "Settle's inactivity window");
+    assert_eq!(SoftstepParams::default().standard_settle_ms, 120, "Standard's re-strike gap");
+    assert_eq!(SoftstepParams::default().standard_release_ms, 45, "Standard's quiet gate");
+    assert_eq!(SoftstepParams::default().on_sum, 40);
     // The shipped softstep.toml parses and every field is present.
     let params = load_softstep_params().expect("rigs/softstep.toml parses");
     assert!(params.pressure_full_scale > 0 && params.attack_ms > 0);
+    // on_sum > off_sum: a real hysteresis band, not the degenerate 20/20 it once was.
+    assert!(params.on_sum > params.off_sum, "the shipped thresholds are a Schmitt trigger");
     // Partial files fill in defaults; unknown keys are rejected.
     let partial: SoftstepParams = toml::from_str("on_sum = 7").unwrap();
     assert_eq!(partial.on_sum, 7);

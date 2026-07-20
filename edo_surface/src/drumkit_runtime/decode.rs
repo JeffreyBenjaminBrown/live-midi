@@ -96,13 +96,20 @@ fn pressure_from_peak(peak: u16, full_scale: u16) -> f32 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DebounceMode {
   /// Fire on onset, watch the attack window for a higher peak (`Revise`), and re-arm on
-  /// release -- but a pad may only fire once it has gone QUIET (its sum unchanged) for
-  /// `quiet` while released. A bounce keeps the sum changing, so it never goes quiet and
-  /// cannot re-fire mid-bounce; a genuine second hit follows a settled release and does.
-  /// This replaced a fixed min-gap, which both leaked (a slow bounce outlasts the gap --
-  /// the pad-7 x2^10-in-Standard case) and blocked legitimate fast taps. Right for drum
-  /// pads (a fast double-tap is two real hits) and for HELD pedals like accrete.
-  Standard,
+  /// release -- but a pad may only fire again once BOTH hold: at least `since_fire` has
+  /// passed since its last fire, AND its sum has gone QUIET (unchanged) for `quiet`.
+  /// Right for drum pads and for HELD pedals like accrete.
+  ///
+  /// The two guards catch different things, which is why both are here. `quiet` watches
+  /// the SIGNAL: a contact bounce keeps the sum moving and so never looks quiet, however
+  /// long it goes on -- a fixed window alone leaked exactly there (the pad-7 x2^10 case).
+  /// `since_fire` watches the CLOCK: it caps the re-strike rate outright, catching a
+  /// bounce that does briefly hold still. `since_fire = 0` leaves the quiet gate alone,
+  /// which is what this mode was before 2026-07-20.
+  ///
+  /// The cost of `since_fire` is real and worth stating: at 120 ms a single pad cannot
+  /// exceed ~8 strikes/second. It is per-pad, so two feet are unaffected.
+  Standard { since_fire: Duration, quiet: Duration },
   /// Settle debounce for a momentary TIMING pedal (the tempo-factor pedals). Fire once on
   /// onset, emit no `Revise`, then accept no further fire until BOTH conditions hold:
   /// at least `since_fire` has passed since that fire, AND the pad has been inactive (sum
@@ -145,9 +152,6 @@ pub struct TetherDecoder {
   /// Sum-of-4 at or above which a strike reports `hard` (see `is_hard`). Plumbing
   /// only: nothing binds light/hard to behavior yet.
   pressure_threshold_sum: u16,
-  /// How long a pad's sum must hold steady (no change) before it may fire again. Both
-  /// modes use it: `Standard`'s quiet gate, and `Settle`'s inactivity window.
-  quiet: Duration,
   /// A sensor with no CC for longer than this reads 0 (de-stick); `ZERO` disables it.
   /// The tether stream is on-change, so a physically stuck sensor stops sending and its
   /// last value would otherwise linger, pinning a pad Held and blocking its next hit.
@@ -176,13 +180,15 @@ impl TetherDecoder {
       attack: Duration::from_millis(params.attack_ms),
       pressure_full_scale: params.pressure_full_scale,
       pressure_threshold_sum: params.pressure_threshold_sum,
-      quiet: Duration::from_millis(params.factor_release_ms),
       silence: Duration::from_millis(params.silence_to_zero_ms),
       last_seen: [None; 40],
       last_fire: [None; NUM_PADS],
       last_poll_sum: [0; NUM_PADS],
       last_change: [None; NUM_PADS],
-      debounce_mode: [DebounceMode::Standard; NUM_PADS],
+      debounce_mode: [DebounceMode::Standard {
+        since_fire: Duration::from_millis(params.standard_settle_ms),
+        quiet: Duration::from_millis(params.standard_release_ms),
+      }; NUM_PADS],
     }
   }
 
@@ -227,23 +233,31 @@ impl TetherDecoder {
     for slot in 0..NUM_PADS {
       let sum = self.pad_sum(slot, now);
       let label = SLOT_LABEL[slot];
-      // Quiet gate: was the sum quiet (unchanged) for `quiet` up to the START of this
-      // reading? Read the PREVIOUS change time first, THEN record this poll's change -- so
-      // at a rising onset (the sum jumps from its resting value) `stable` reflects the rest
-      // BEFORE the rise, not the rise itself. A constant sum (any level) is quiet; a bounce
-      // keeps changing and so is never quiet. `quiet == 0` makes every onset stable (the
-      // gate is off), which is the pre-quiet-gate behaviour.
-      let stable = self.last_change[slot].map_or(true, |t| now.duration_since(t) >= self.quiet);
+      // Read the PREVIOUS change time BEFORE recording this poll's, so that at a rising
+      // onset (the sum jumps from its resting value) the quiet gate below sees the rest
+      // BEFORE the rise, not the rise itself.
+      let changed_at = self.last_change[slot];
       if sum != self.last_poll_sum[slot] {
         self.last_poll_sum[slot] = sum;
         self.last_change[slot] = Some(now);
       }
       self.pads[slot] = match self.pads[slot] {
         PadState::Idle if sum > self.on_sum => {
-          // Standard fires only if the pad was quiet before this rise -- a bounce is not.
+          // Standard fires only if the pad has both been quiet before this rise (a bounce
+          // has not) and is far enough past its last fire. A constant sum at any level is
+          // quiet; `quiet == 0` makes every onset quiet and `since_fire == 0` disables the
+          // gap, which together are the pre-2026-07-20 behaviour.
           // Settle gates itself via the Settling state, so its onset is always allowed here.
+          //
+          // BOTH guards are per-pad. Nothing here reads another slot's state: two pads
+          // struck together always both fire, in either mode.
           let allowed = match self.debounce_mode[slot] {
-            DebounceMode::Standard => stable,
+            DebounceMode::Standard { since_fire, quiet } => {
+              let quiet_enough = changed_at.map_or(true, |t| now.duration_since(t) >= quiet);
+              let gap_enough =
+                self.last_fire[slot].map_or(true, |t| now.duration_since(t) >= since_fire);
+              quiet_enough && gap_enough
+            }
             DebounceMode::Settle { .. } => true,
           };
           if !allowed {
@@ -260,7 +274,9 @@ impl TetherDecoder {
               DebounceMode::Settle { since_fire, quiet } => {
                 PadState::Settling { inactive_since: None, since_fire, quiet }
               }
-              DebounceMode::Standard => PadState::Watching { onset: now, peak: sum, sent_peak: sum },
+              DebounceMode::Standard { .. } => {
+                PadState::Watching { onset: now, peak: sum, sent_peak: sum }
+              }
             }
           }
         }
@@ -399,12 +415,22 @@ mod tests {
   // decoders with a chosen quiet-gate/silence and otherwise the defaults.
   const ATTACK: Duration = Duration::from_millis(14);
 
-  // `quiet_ms` is the Standard quiet gate (0 = off, the pre-gate behaviour); it maps to
-  // `factor_release_ms`. `silence_to_zero_ms` is the de-stick window.
+  // `quiet_ms` is Standard's quiet gate (0 = off). `standard_settle_ms` is forced to 0 so
+  // these tests exercise the quiet gate ALONE; the re-strike gap has its own tests below.
   fn decoder(quiet_ms: u64, silence_to_zero_ms: u64) -> TetherDecoder {
     TetherDecoder::new(SoftstepParams {
-      factor_release_ms: quiet_ms,
+      standard_release_ms: quiet_ms,
+      standard_settle_ms: 0,
       silence_to_zero_ms,
+      ..SoftstepParams::default()
+    })
+  }
+
+  /// A decoder whose Standard pads carry BOTH shipped guards.
+  fn gapped(since_fire_ms: u64, quiet_ms: u64) -> TetherDecoder {
+    TetherDecoder::new(SoftstepParams {
+      standard_settle_ms: since_fire_ms,
+      standard_release_ms: quiet_ms,
       ..SoftstepParams::default()
     })
   }
@@ -479,7 +505,7 @@ mod tests {
     // window elapses, now COUNTS (the old model dropped it).
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    d.on_cc(44, 40, t0); // sum 40 > ON_SUM
+    d.on_cc(44, 50, t0); // sum 50 > on_sum (40)
     let mut ev = Vec::new();
     d.poll(t0, &mut ev);
     assert_eq!(fires(&ev).len(), 1, "single-sample tap fires");
@@ -604,6 +630,89 @@ mod tests {
     d.on_cc(44, 100, t0 + ATTACK + Duration::from_millis(2)); // re-press 1 ms later
     d.poll(t0 + ATTACK + Duration::from_millis(2), &mut ev);
     assert_eq!(fires(&ev).len(), 1, "with the gate off, an immediate re-press still fires");
+  }
+
+  // ---- Standard's re-strike gap (DebounceMode::Standard { since_fire }) ----
+
+  #[test]
+  fn a_standard_pad_will_not_restrike_inside_the_gap() {
+    // The clock guard, independent of the quiet gate: even a perfectly clean release and
+    // re-press is refused until `since_fire` has passed.
+    let mut d = gapped(120, 45);
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "the first strike fires");
+    // Clean release, then hold still well past the 45 ms quiet gate...
+    d.on_cc(44, 0, t0 + Duration::from_millis(20));
+    d.poll(t0 + Duration::from_millis(20), &mut Vec::new());
+    d.poll(t0 + Duration::from_millis(90), &mut Vec::new()); // quiet for 70 ms: gate satisfied
+    // ...but only 100 ms since the fire, so the gap still refuses it.
+    assert!(
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(100))).is_empty(),
+      "a re-strike inside the 120 ms gap is refused even when the pad is quiet",
+    );
+  }
+
+  #[test]
+  fn a_standard_pad_restrikes_once_both_guards_are_satisfied() {
+    let mut d = gapped(120, 45);
+    let t0 = Instant::now();
+    assert_eq!(fires(&feed(&mut d, 44, 100, t0)).len(), 1, "the first strike fires");
+    d.on_cc(44, 0, t0 + Duration::from_millis(20));
+    d.poll(t0 + Duration::from_millis(20), &mut Vec::new());
+    d.poll(t0 + Duration::from_millis(150), &mut Vec::new()); // quiet 130 ms, fired 150 ms ago
+    assert_eq!(
+      fires(&feed(&mut d, 44, 100, t0 + Duration::from_millis(160))).len(),
+      1,
+      "past both the gap and the quiet gate, the next strike lands",
+    );
+  }
+
+  #[test]
+  fn the_gap_alone_does_not_admit_a_bounce_that_never_settles() {
+    // Why both guards: a bounce that outlasts the gap is still caught, because its sum
+    // keeps moving and so never satisfies the quiet gate. This is the failure mode that
+    // killed the original fixed min-gap.
+    let mut d = gapped(120, 45);
+    let t0 = Instant::now();
+    let mut fires_seen = fires(&feed(&mut d, 44, 100, t0)).len();
+    assert_eq!(fires_seen, 1, "the strike fires");
+    // 300 ms of continuous chatter -- well past the 120 ms gap -- never holding still.
+    for (i, &v) in [0u8, 90, 5, 95, 0, 88, 3, 99, 0, 91, 7, 97, 0, 93, 2].iter().enumerate() {
+      let t = t0 + Duration::from_millis(20 + i as u64 * 20);
+      fires_seen += fires(&feed(&mut d, 44, v, t)).len();
+    }
+    assert_eq!(fires_seen, 1, "chatter past the gap still cannot re-fire: the sum never settles");
+  }
+
+  #[test]
+  fn neither_mode_suppresses_across_pads() {
+    // No cross-pad suppression, in EITHER mode: the guards are per-pad, so a pad in its
+    // gap never silences a different pad. (The device's own key lockout is a STANDALONE
+    // -mode feature; tether mode has none, which is why two feet are reliable here.)
+    let mut d = gapped(120, 45);
+    d.set_debounce_by_label(3, DebounceMode::Settle {
+      since_fire: Duration::from_millis(150),
+      quiet: Duration::from_millis(25),
+    });
+    let t0 = Instant::now();
+    // Label 1 (Standard, base 44) and label 3 (Settle, base 60) both fire together.
+    d.on_cc(44, 100, t0);
+    d.on_cc(60, 100, t0);
+    let mut ev = Vec::new();
+    d.poll(t0, &mut ev);
+    let labels: Vec<u8> = fires(&ev).iter().map(|(l, _)| *l).collect();
+    assert!(labels.contains(&1) && labels.contains(&3), "both fire together: {labels:?}");
+
+    // Both are now inside their own guards. A THIRD pad (label 2, base 52) is untouched
+    // by either and fires immediately.
+    ev.clear();
+    d.on_cc(52, 100, t0 + Duration::from_millis(10));
+    d.poll(t0 + Duration::from_millis(10), &mut ev);
+    assert_eq!(
+      fires(&ev).iter().map(|(l, _)| *l).collect::<Vec<u8>>(),
+      vec![2],
+      "a pad in no guard of its own fires while two others are held off: {ev:?}",
+    );
   }
 
   // ---- Settle debounce for timing pedals (DebounceMode::Settle) ----
@@ -785,7 +894,7 @@ mod tests {
     // the early dip re-armed the pad, and the late peak read as a fresh Fire.
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    assert_eq!(fires(&feed(&mut d, 44, 30, t0)).len(), 1, "onset fires light");
+    assert_eq!(fires(&feed(&mut d, 44, 50, t0)).len(), 1, "onset fires light");
     // The sum dips below off_sum early (a bounce, or the start of a lift), still in window.
     let ev = feed(&mut d, 44, 0, t0 + Duration::from_millis(2));
     assert!(ev.is_empty(), "the dip alone emits nothing: {ev:?}");
@@ -864,8 +973,8 @@ mod tests {
   fn a_hard_stomp_arrives_as_light_then_revises_to_hard() {
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    // Onset: the sum crosses on_sum (20) but is nowhere near the threshold (200).
-    d.on_cc(44, 30, t0);
+    // Onset: the sum crosses on_sum (40) but is nowhere near the threshold (200).
+    d.on_cc(44, 50, t0);
     let mut ev = vec![];
     d.poll(t0, &mut ev);
     assert!(
@@ -889,10 +998,10 @@ mod tests {
   fn a_light_tap_never_reports_hard() {
     let mut d = decoder(0, 0);
     let t0 = Instant::now();
-    d.on_cc(44, 30, t0);
+    d.on_cc(44, 50, t0);
     let mut ev = vec![];
     d.poll(t0, &mut ev);
-    d.on_cc(44, 45, t0 + Duration::from_millis(10));
+    d.on_cc(44, 60, t0 + Duration::from_millis(10));
     d.poll(t0 + Duration::from_millis(10), &mut ev);
     assert!(
       !ev.iter().any(|e| matches!(

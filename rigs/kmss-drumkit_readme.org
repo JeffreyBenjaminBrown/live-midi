@@ -151,10 +151,14 @@ that sample's own pad's =gain= trim (see "the mapping" above).
   one or none; that is what tether mode exists to avoid.)
 - *Foot lifts are real releases.* The decoder reports them, so a pedal can be
   *held*; one-shot samples simply ignore the release.
-- *Per-pedal debounce.* A hard stomp can double-trigger one pedal; the shared
-  =debounce_ms= (in =softstep.toml=, default 100) suppresses a repeat of the *same*
-  pedal within the window. It is per pedal, so two different pedals struck together
-  (two feet within ~1 ms) both fire faithfully.
+- *Per-pedal debounce.* A hard stomp can double-trigger one pedal; the shared quiet
+  gate (=DebounceMode::Standard=, keyed on =factor_release_ms= -- default 25 ms in
+  =softstep.toml=) withholds a repeat of the *same* pedal until its sum-of-4 has gone
+  quiet (unchanged) for that long. A bounce keeps the sum changing, so it never goes
+  quiet and cannot re-fire mid-bounce; a genuine second hit follows a settled release
+  and fires normally. It is per pedal, so two different pedals struck together (two
+  feet within ~1 ms) both fire faithfully. (There is no =debounce_ms= any more --
+  see [[../../../learnings/keith-mcmillen-softstep.org]].)
 - *Polyphonic.* Hits overlap; a ringing crash keeps sounding under later hits
   (up to a 64-voice pool, then the most-finished voice is stolen).
 
