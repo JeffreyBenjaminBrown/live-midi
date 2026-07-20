@@ -1238,6 +1238,50 @@
     );
   }
 
+  /// Entering PEDAL SLIDE with no edit selection first selects everything sounding --
+  /// the same one-shot fine transpose uses (`select_all_sounding_if_empty`), so the
+  /// pedal has voices to glide the instant you pick a target (branch-3 queue "entering
+  /// slide mode"). Fingered, sustained, and chord-layer voices all join.
+  #[test]
+  fn entering_pedal_slide_with_nothing_selected_selects_everything_sounding() {
+    use crate::surfaces_runtime::chords::{StoredChord, StoredVoice};
+    use crate::types::Timbre;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let slide_toggle = (0, 15); // the pedal-slide toggle, the lower-left corner
+    let step = {
+      let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
+      move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y)
+    };
+
+    // Sounding but UNSELECTED: a fingered note, a sustained drone, a chord voice.
+    handle_key(&mut rt, &mut register, &mut held, (3, 12), true); // stays fingered
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), true);
+    handle_key(&mut rt, &mut register, &mut held, (5, 4), true); // sustain handle
+    handle_key(&mut rt, &mut register, &mut held, (5, 4), false);
+    handle_key(&mut rt, &mut register, &mut held, (5, 5), false); // drones
+    let chord_pitch = step(8, 8);
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].chord.save(0, StoredChord { voices: vec![StoredVoice {
+        pitch: chord_pitch, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+        osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+      }] });
+    }
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), true); // recall slot 0
+    handle_key(&mut rt, &mut register, &mut held, (5, 0), false);
+    assert!(!rt.shared.ring.lock().unwrap()[0].store.any(Reason::Edit), "nothing selected yet");
+
+    // Enter pedal slide: everything sounding joins the selection, ready to slide.
+    handle_key(&mut rt, &mut register, &mut held, slide_toggle, true);
+    assert!(rt.pedal_slide.mode(), "pedal slide is on");
+    let rings = rt.shared.ring.lock().unwrap();
+    assert!(rings[0].store.has(Reason::Edit, step(3, 12)), "the fingered note is selected");
+    assert!(rings[0].store.has(Reason::Edit, step(5, 5)), "the drone is selected");
+    assert!(rings[0].chord.live.values().all(|v| v.edited), "the chord voice is selected");
+  }
+
   /// Jeff: "killing all notes while in fine transpose mode should exit fine transpose
   /// mode. (Nothing left to transpose.)" The kill comes through the SoftStep sustain
   /// CLEAR (`drive_accrete`) -- the same call the foot pedal makes, which never touches

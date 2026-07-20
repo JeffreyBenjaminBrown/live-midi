@@ -357,14 +357,21 @@ pitch SLIDE. See =TODO/pedal-slide/= for the design, and
 sustained voice's pitch; the other slide is a new note gliding from a released
 one. Different mechanism, one word, so the name is always qualified here.
 
+- *Entering grabs everything.* Toggling pedal slide on with NOTHING in edit mode
+  first selects everything sounding on that grid -- fingered, sustained, and
+  chord-recalled voices alike -- the same select-everything one-shot fine
+  transpose uses (the editmode-accrete pedal, OSS 7/9). So a bare toggle means
+  "make the pedal ready to slide whatever is playing"; a selection you already
+  made is left as it is. (You can still narrow it afterward with the edit
+  handles.)
 - *Picking a target.* While pedal slide is on, the grid is a target-picker (the
   way edit mode makes it a drag-picker): pressing a FREE pitch does not sound a
   note, it sets a slide TARGET, and the nearest edit-mode voice will be dragged
-  there BY THE PEDAL rather than by the press. With nothing in edit mode, the
-  pick instead swells a NEW voice into being from silence as you push the pedal
-  -- the pedal as a swell into any pitch. Pressing a pitch that already sounds
-  still retriggers it, and the edit handles still work: they are how you choose
-  what to slide.
+  there BY THE PEDAL rather than by the press. With nothing in edit mode -- which,
+  after the grab above, means only a bare board -- the pick instead swells a NEW
+  voice into being from silence as you push the pedal -- the pedal as a swell into
+  any pitch. Pressing a pitch that already sounds still retriggers it, and the
+  edit handles still work: they are how you choose what to slide.
 - *Always smooth.* The pedal-to-pitch map is two log-linear (cents-space)
   segments joined at the pedal's current position: one back to where the note
   started ("home"), one on to the target. Picking a NEW target mid-slide moves
@@ -687,12 +694,22 @@ selects everything sounding on that monome -- the same one-shot as the
 editmode-accrete pedal (OSS 7/9) -- so a bare =FT= press means "fine-transpose
 everything"; a selection you already made is left exactly as it is. While on:
 
-- A big dancing X marks a CENTER pitch, seeded at the board center's pitch
-  ((8,8) under the current register). Pressing any play cell sets the
-  selection's transpose to the interval from the pressed pitch to that
-  center -- applied LIVE, gliding, both layers at once, no envelope event.
+- A big dancing X marks the CENTER pitch (HOME), seeded at the board center's
+  pitch ((8,8) under the current register). It marks the cell that returns you
+  to zero: pressing any play cell sets the selection's transpose to the interval
+  from the pressed pitch to that center -- so pressing the X's own cell is a
+  transpose of 0. Applied LIVE, gliding, both layers at once, no envelope event.
   Transpose presses sound nothing, and no other play gesture exists while
   the mode is on (no notes, no handles, no drags, no retriggers).
+- A second marker, a dancing =+= CROSS, marks WHERE YOU ARE: the currently
+  transposed pitch (center + the shift), so at a glance you see both your
+  position and, at the X, the way home. It appears only once the shift is
+  nonzero, and rides along as you play -- jumping to each pressed cell,
+  following the release-snap. If that pitch has two on-screen representatives
+  (an =x_step= collision puts one pitch on two cells), BOTH get a cross. The
+  cross is display only: it never changes what a press means (still measured
+  from the X's center). Like the X, it is absent whenever its center falls
+  off-screen -- shown whole or not at all, never a stray half-arm.
 - The transpose is a SCALAR, so the keys are mono-style: the newest press
   wins outright; releasing a finger snaps the transpose to the most
   recently pressed key still held; releasing the LAST key leaves the
@@ -710,12 +727,15 @@ everything"; a selection you already made is left exactly as it is. While on:
   the selection without ending the notes does the same; a later =FT= press
   re-grabs everything sounding.
 
-The X itself: a trail of TWO fully-lit dots walking a 5x5 diagonal cross
-around the center's on-screen image(s) -- first one slash end to end, then
-the other, 25 ms per step (a full lap every 250 ms; at the seam one dot
-finishes the old slash while the other starts the new). Where a dot is lit
-it overwrites everything on the play surface -- voices, dances, trails --
-and where the X is dark it hides nothing at all.
+Both figures are drawn the same way: a trail of TWO fully-lit dots walking a
+5x5 shape around the marked pitch's on-screen image(s) -- first one line end to
+end, then the other, 25 ms per step (a full lap every 250 ms; at the seam one
+dot finishes the old line while the other starts the new), on one shared clock
+so the two dance in step. They differ only in shape, so they read apart at a
+glance: the home marker is a diagonal =x= (the X), the shift marker a cardinal
+=+= (the cross). Where a dot is lit it overwrites everything on the play
+surface -- voices, dances, trails -- and where the figure is dark it hides
+nothing at all.
 
 ** the octave switchers in edit mode
 While any voice on a grid is in edit mode, that grid's two octave corners

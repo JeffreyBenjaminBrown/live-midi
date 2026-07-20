@@ -1,4 +1,29 @@
 These are ordered; please start from the top.
+* DONE (probably) entering slide mode
+should, if there are no notes currently in edit mode,
+add whatever is on the board to the edit-mode set:
+anything fingered, anything sustained, anything retrieved from a chord bank.
+** DONE (probably) claude: pedal-slide entry now grabs everything
+Toggling pedal slide on with an empty selection runs the same
+select-everything one-shot fine transpose already used (the editmode-accrete
+one-shot, which takes fingered + sustained + chord-recalled voices). Factored
+that shared step into =keys.rs::select_all_sounding_if_empty= so the two
+entries can't drift. A non-empty selection is left alone. Test:
+=entering_pedal_slide_with_nothing_selected_selects_everything_sounding=.
+Readme: "pedal slide" section, "Entering grabs everything".
+* DONE (probably) move the X
+In edit mode, each time the shift factor is moved, the visible X
+should move with it.
+** DONE (probably) claude: a second marker, the shift cross
+Settled by chat: the X stays put, marking HOME (the center pitch -- the cell a
+press returns to zero). A NEW marker, a dancing =+= cross, marks where the shift
+currently sits (center + applied) and rides along as you play; drawn only once
+the shift is nonzero, at BOTH cells when the pitch has two on-screen
+representatives, and -- like the X -- shown whole or not at all (never a stray
+half-arm when its center is off-screen). Display only: it never changes what a
+press means. Two shapes (=x= home, =+= shift) so they read apart. Paint in
+=mod.rs=; the =+= walk in =fine.rs::cross_walk_cells= (unit-tested). Readme:
+"fine transpose".
 * AWAITS : TODO/pedal-slide/
 ** DONE start
 To start, please read 1_vision.org,

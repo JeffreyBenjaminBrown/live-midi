@@ -48,7 +48,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -939,15 +939,27 @@ fn grid_thread(mut rt: GridThread) {
         dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
       }
     }
-    // The fine-transpose X (queues/branch-2.org, revised by chat): TWO fully-lit
-    // dots trailing each other along one slash of a 5x5 X and then the other,
-    // 25 ms per step, around the center pitch's on-screen image(s). Where lit
-    // they overwrite everything on the play surface; absent while the center is
-    // off-screen.
+    // The fine-transpose markers (queues/branch-2.org; the shift cross by chat), two
+    // distinct 5x5 figures so they read apart at a glance -- each TWO fully-lit dots
+    // trailing each other 25 ms per step and, where lit, overwriting everything on the
+    // play surface:
+    // - the HOME X, a diagonal `x` around the CENTER pitch -- "where I started", the
+    //   pitch a shift returns me to; always shown while the mode is on;
+    // - the SHIFT cross, a cardinal `+` around the CURRENT transposed pitch
+    //   (center + applied) -- "where I am"; shown only while the shift is nonzero
+    //   (branch-3 queue "move the X").
+    // Both come from `cells_for_pitch`, which yields only IN-FIELD images, so a marker
+    // whose center is off-screen is simply not drawn (never a stray half-arm), and one
+    // whose pitch has two on-screen representatives (an x_step collision) gets both.
     let mut x_cells: HashSet<(i32, i32)> = HashSet::new();
     if rt.fine.on {
       for img in cells_for_pitch(&rt, register, rt.fine.center) {
         x_cells.extend(fine::x_walk_cells(img, elapsed));
+      }
+      if rt.fine.applied != 0 {
+        for img in cells_for_pitch(&rt, register, rt.fine.center + rt.fine.applied) {
+          x_cells.extend(fine::cross_walk_cells(img, elapsed));
+        }
       }
     }
     // The visible pitch window, for "is that note off-screen".

@@ -88,28 +88,49 @@ impl FineTranspose {
   }
 }
 
-/// The X's walk path: one slash end to end, then the other, 10 steps around the
-/// loop (25 ms per step -- a full lap every 250 ms). The order of the slashes and
-/// their directions are arbitrary ("the order doesn't matter"); what matters is
-/// that the trail runs each slash whole. `(0, 0)` -- the center -- appears in
-/// both slashes, so the walk passes through it twice per lap.
+/// The two fine-transpose markers are two different 5x5 figures, so you can tell them
+/// apart at a glance: the HOME marker is a diagonal `x` (the X, "where I started"), the
+/// SHIFT marker a cardinal `+` (the cross, "where I am now"). Each walks its own path
+/// end to end -- one line, then the other, 10 steps around the loop (25 ms per step, a
+/// full lap every 250 ms). The order and direction of the two lines are arbitrary;
+/// what matters is that the trail runs each line whole. `(0, 0)` -- the center --
+/// appears in both lines, so the walk passes through it twice per lap.
 const X_PATH: [(i32, i32); 10] = [
   (-2, -2), (-1, -1), (0, 0), (1, 1), (2, 2), // one slash...
   (-2, 2), (-1, 1), (0, 0), (1, -1), (2, -2), // ...then the other
 ];
+const CROSS_PATH: [(i32, i32); 10] = [
+  (0, -2), (0, -1), (0, 0), (0, 1), (0, 2), // the vertical arm...
+  (-2, 0), (-1, 0), (0, 0), (1, 0), (2, 0), // ...then the horizontal
+];
 
-/// The X's two FULLY-LIT dots at `elapsed`, around one on-screen image `(cx, cy)`
-/// of the center pitch: a two-dot trail -- the current step and the one before it
-/// -- walking the path above. Across the seam, one dot sits at the end of the old
-/// slash while the other starts the new one, exactly as specified.
-pub fn x_walk_cells(center: (i32, i32), elapsed: std::time::Duration) -> [(i32, i32); 2] {
+/// Two FULLY-LIT dots at `elapsed`, around one on-screen image `(cx, cy)` of the
+/// marked pitch: a two-dot trail -- the current step and the one before it -- walking
+/// `path`. Across the seam, one dot ends the old line while the other starts the new
+/// one. Both markers share this walker and one clock, so they dance in step.
+fn walk_two_dots(
+  path: &[(i32, i32); 10],
+  center: (i32, i32),
+  elapsed: std::time::Duration,
+) -> [(i32, i32); 2] {
   let step = ((elapsed.as_millis() / 25) % 10) as usize;
   let prev = (step + 9) % 10;
   let (cx, cy) = center;
-  [
-    (cx + X_PATH[step].0, cy + X_PATH[step].1),
-    (cx + X_PATH[prev].0, cy + X_PATH[prev].1),
-  ]
+  [(cx + path[step].0, cy + path[step].1), (cx + path[prev].0, cy + path[prev].1)]
+}
+
+/// The HOME X's two walking dots around one on-screen image of the center pitch. Drawn
+/// while the mode is on, marking the pitch a shift returns you to.
+pub fn x_walk_cells(center: (i32, i32), elapsed: std::time::Duration) -> [(i32, i32); 2] {
+  walk_two_dots(&X_PATH, center, elapsed)
+}
+
+/// The SHIFT cross's two walking dots around one on-screen image of the transposed
+/// pitch (center + applied). Drawn by the caller only while the shift is nonzero
+/// (`FineTranspose::applied != 0`), at every on-screen image of that pitch -- so if it
+/// has two representatives in view (an `x_step`-collision), both get a cross.
+pub fn cross_walk_cells(center: (i32, i32), elapsed: std::time::Duration) -> [(i32, i32); 2] {
+  walk_two_dots(&CROSS_PATH, center, elapsed)
 }
 
 #[cfg(test)]
@@ -184,5 +205,20 @@ mod tests {
     assert_eq!(at(225), [(10, 6), (9, 7)], "the end of the second slash");
     // And around: step 0's trailing dot is the second slash's last cell.
     assert_eq!(at(250), [(6, 6), (10, 6)]);
+  }
+
+  #[test]
+  fn the_cross_walks_two_dots_along_one_arm_then_the_other_at_25ms() {
+    let at = |ms: u64| cross_walk_cells((8, 8), Duration::from_millis(ms));
+    // Two consecutive steps along the vertical arm...
+    assert_eq!(at(25), [(8, 7), (8, 6)]);
+    assert_eq!(at(50), [(8, 8), (8, 7)]);
+    assert_eq!(at(100), [(8, 10), (8, 9)], "...to the end of the vertical arm");
+    // The seam: one dot starts the horizontal arm while the other ends the vertical.
+    assert_eq!(at(125), [(6, 8), (8, 10)]);
+    assert_eq!(at(225), [(10, 8), (9, 8)], "the end of the horizontal arm");
+    // And around: step 0 is the vertical arm's top; its trailing dot is the
+    // horizontal arm's last cell.
+    assert_eq!(at(250), [(8, 6), (10, 8)]);
   }
 }

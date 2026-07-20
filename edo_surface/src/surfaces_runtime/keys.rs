@@ -25,6 +25,31 @@ use super::synth::{self, set_grid_fader_gain};
 use super::{edit, pedal_slide, GridThread, VOLUME_DB_RANGE};
 
 /// Route one debounced key edge by which overlay (if any) it falls in.
+/// If this grid's edit selection is empty, put every voice it is currently sounding --
+/// fingered, sustained, and chord-layer alike -- into edit mode: the editmode-accrete
+/// one-shot, "just as if they had pressed the KMSS select-everything button" (Jeff). A
+/// non-empty selection is left exactly as it is.
+///
+/// Shared by the two modes that need something to act on the instant you enter them:
+/// fine transpose (the transpose keys need a selection) and pedal slide (the pedal
+/// needs voices to glide). Both call this on entry so a bare toggle means "act on
+/// everything sounding".
+fn select_all_sounding_if_empty(rt: &GridThread) {
+  let selection_empty = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let gr = &rings[rt.grid_index];
+    !gr.store.any(Reason::Edit) && !gr.chord.live.values().any(|v| v.edited)
+  };
+  if selection_empty {
+    editmode_press(
+      rt.grid_index,
+      EditmodeControlKind::Accrete,
+      &rt.shared.ring,
+      &rt.shared.held_all,
+    );
+  }
+}
+
 pub(super) fn handle_key(
   rt: &mut GridThread,
   register: &mut i32,
@@ -124,6 +149,10 @@ pub(super) fn handle_key(
     if press {
       let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
       if now_on {
+        // Entering with NOTHING selected first selects everything sounding, so the
+        // pedal has voices to slide the instant you pick a target (branch-3 queue
+        // "entering slide mode") -- the same one-shot fine transpose uses.
+        select_all_sounding_if_empty(rt);
         let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
         // NaN = this pedal has never reported; enter agnostic about which side is home.
         rt.pedal_slide.enter((!f.is_nan()).then_some(f));
@@ -149,23 +178,10 @@ pub(super) fn handle_key(
       if rt.fine.on {
         rt.fine.exit();
       } else {
-        // Entering with NOTHING selected first selects everything sounding on
-        // this monome -- exactly the editmode-accrete one-shot ("just as if they
-        // had pressed the kmss select-everything button", Jeff by chat). A
-        // non-empty selection is left exactly as it is.
-        let selection_empty = {
-          let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-          let gr = &rings[rt.grid_index];
-          !gr.store.any(Reason::Edit) && !gr.chord.live.values().any(|v| v.edited)
-        };
-        if selection_empty {
-          editmode_press(
-            rt.grid_index,
-            EditmodeControlKind::Accrete,
-            &rt.shared.ring,
-            &rt.shared.held_all,
-          );
-        }
+        // Entering with NOTHING selected first selects everything sounding on this
+        // monome -- the same select-everything one-shot pedal slide uses (see
+        // `select_all_sounding_if_empty`). A non-empty selection is left as it is.
+        select_all_sounding_if_empty(rt);
         let center = step_for_cell(
           rt.tuning.x_step,
           rt.tuning.y_step,
