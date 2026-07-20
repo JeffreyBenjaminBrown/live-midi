@@ -218,6 +218,10 @@ live rather than on-exit (vetoable).
 Refinement (chat): entry with an empty selection runs the editmode-accrete
 one-shot first (select everything sounding on that monome); a non-empty
 selection survives entry untouched. 751 passed, 0 failed.
+Refinement (chat): the X redrawn as two fully-lit dots walking slash-then-
+slash at 25 ms/step (=fine::x_walk_cells=, 10-step lap), priority flipped --
+lit dots overwrite everything on the play surface, dark cells nothing;
+overlays still occlude (interpretation flagged in the queue). 751 passed.
 
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's

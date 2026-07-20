@@ -625,11 +625,12 @@ everything"; a selection you already made is left exactly as it is. While on:
   voices were moved live, so nothing snaps back -- and the grid plays
   normally again. The voices stay visible by the normal rules throughout.
 
-The X itself: a 5x5 diagonal cross around the center's on-screen image(s),
-with ONE ring lit dim at a time, cycling outer corners -> inner diagonals ->
-center -> inner -> outer at 50 ms per phase. It paints at the lowest
-priority of anything on the grid -- voices, dances, even trails all clobber
-it -- so it never hides information.
+The X itself: a trail of TWO fully-lit dots walking a 5x5 diagonal cross
+around the center's on-screen image(s) -- first one slash end to end, then
+the other, 25 ms per step (a full lap every 250 ms; at the seam one dot
+finishes the old slash while the other starts the new). Where a dot is lit
+it overwrites everything on the play surface -- voices, dances, trails --
+and where the X is dark it hides nothing at all.
 
 ** the octave switchers in edit mode
 While any voice on a grid is in edit mode, that grid's two octave corners

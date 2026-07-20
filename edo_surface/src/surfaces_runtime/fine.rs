@@ -85,28 +85,28 @@ impl FineTranspose {
   }
 }
 
-/// The X's lit cells for one of its four dance phases, around one on-screen image
-/// `(cx, cy)` of the center pitch. The X is 5x5; a dim light cycles ring
-/// 0-1-2-1-0-... (50 ms per phase, absolute clock): ring 0 = the four outer corner
-/// cells, ring 1 = the four inner diagonals, ring 2 = the center itself.
-pub fn x_ring_cells(center: (i32, i32), ring: u8) -> Vec<(i32, i32)> {
-  let (cx, cy) = center;
-  let offs: &[(i32, i32)] = match ring {
-    0 => &[(-2, -2), (2, -2), (-2, 2), (2, 2)],
-    1 => &[(-1, -1), (1, -1), (-1, 1), (1, 1)],
-    _ => &[(0, 0)],
-  };
-  offs.iter().map(|(dx, dy)| (cx + dx, cy + dy)).collect()
-}
+/// The X's walk path: one slash end to end, then the other, 10 steps around the
+/// loop (25 ms per step -- a full lap every 250 ms). The order of the slashes and
+/// their directions are arbitrary ("the order doesn't matter"); what matters is
+/// that the trail runs each slash whole. `(0, 0)` -- the center -- appears in
+/// both slashes, so the walk passes through it twice per lap.
+const X_PATH: [(i32, i32); 10] = [
+  (-2, -2), (-1, -1), (0, 0), (1, 1), (2, 2), // one slash...
+  (-2, 2), (-1, 1), (0, 0), (1, -1), (2, -2), // ...then the other
+];
 
-/// Which ring the X lights at `elapsed`: 0-1-2-1 repeating, 50 ms per phase.
-pub fn x_ring_at(elapsed: std::time::Duration) -> u8 {
-  match (elapsed.as_millis() / 50) % 4 {
-    0 => 0,
-    1 => 1,
-    2 => 2,
-    _ => 1,
-  }
+/// The X's two FULLY-LIT dots at `elapsed`, around one on-screen image `(cx, cy)`
+/// of the center pitch: a two-dot trail -- the current step and the one before it
+/// -- walking the path above. Across the seam, one dot sits at the end of the old
+/// slash while the other starts the new one, exactly as specified.
+pub fn x_walk_cells(center: (i32, i32), elapsed: std::time::Duration) -> [(i32, i32); 2] {
+  let step = ((elapsed.as_millis() / 25) % 10) as usize;
+  let prev = (step + 9) % 10;
+  let (cx, cy) = center;
+  [
+    (cx + X_PATH[step].0, cy + X_PATH[step].1),
+    (cx + X_PATH[prev].0, cy + X_PATH[prev].1),
+  ]
 }
 
 #[cfg(test)]
@@ -170,15 +170,16 @@ mod tests {
   }
 
   #[test]
-  fn the_x_rings_cycle_out_in_out_at_50ms() {
-    assert_eq!(x_ring_at(Duration::from_millis(0)), 0);
-    assert_eq!(x_ring_at(Duration::from_millis(50)), 1);
-    assert_eq!(x_ring_at(Duration::from_millis(100)), 2);
-    assert_eq!(x_ring_at(Duration::from_millis(150)), 1);
-    assert_eq!(x_ring_at(Duration::from_millis(200)), 0, "and around again");
-    assert_eq!(x_ring_cells((8, 8), 0).len(), 4);
-    assert!(x_ring_cells((8, 8), 0).contains(&(6, 6)));
-    assert!(x_ring_cells((8, 8), 1).contains(&(9, 9)));
-    assert_eq!(x_ring_cells((8, 8), 2), vec![(8, 8)]);
+  fn the_x_walks_two_dots_along_one_slash_then_the_other_at_25ms() {
+    let at = |ms: u64| x_walk_cells((8, 8), Duration::from_millis(ms));
+    // Two consecutive steps along the first slash...
+    assert_eq!(at(25), [(7, 7), (6, 6)]);
+    assert_eq!(at(50), [(8, 8), (7, 7)]);
+    assert_eq!(at(100), [(10, 10), (9, 9)], "...to the end of the first slash");
+    // The seam: one dot starts the new slash while the other ends the old one.
+    assert_eq!(at(125), [(6, 10), (10, 10)]);
+    assert_eq!(at(225), [(10, 6), (9, 7)], "the end of the second slash");
+    // And around: step 0's trailing dot is the second slash's last cell.
+    assert_eq!(at(250), [(6, 6), (10, 6)]);
   }
 }

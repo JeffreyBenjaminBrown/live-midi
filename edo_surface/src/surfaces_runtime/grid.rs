@@ -185,19 +185,16 @@ pub fn levels_for_grid(
           DIM => super::dance::Occupancy::Dim,
           _ => super::dance::Occupancy::Dark,
         };
-        let with_dance = if dance_cells.contains(&(x, y)) && super::dance::draws_over(under) {
+        // The fine-transpose X's walking dots: FULLY LIT, and where lit they
+        // overwrite everything on the play surface -- voices, dances, trails
+        // (Jeff's revision of the original everything-clobbers-it X, which read
+        // poorly). Where the X is dark it overwrites nothing at all.
+        if x_cells.contains(&(x, y)) {
+          BRIGHT
+        } else if dance_cells.contains(&(x, y)) && super::dance::draws_over(under) {
           DIM
         } else {
           base
-        };
-        // The fine-transpose X: the LOWEST priority of anything on the grid -- it
-        // paints (dim) only where nothing else does at all, "clobbered by
-        // everything that could possibly clobber it (voices, diamond dances, even
-        // trails)".
-        if with_dance == OFF && x_cells.contains(&(x, y)) {
-          DIM
-        } else {
-          with_dance
         }
       } else {
         OFF
@@ -311,28 +308,20 @@ mod tests {
     assert_eq!(at(&dim_half, 6, 6), DIM);
   }
 
-  /// The fine-transpose X paints dim at the LOWEST priority: only on cells nothing
-  /// else touches -- a trailed cell, a sounding class, even a dance corner all
-  /// clobber it.
+  /// The fine-transpose X's walking dots are FULLY LIT and, where lit, overwrite
+  /// everything on the play surface -- trails, dances, whatever sounds there.
+  /// Where the X is dark it overwrites nothing.
   #[test]
-  fn the_x_paints_dim_only_where_nothing_else_does() {
-    let x: HashSet<(i32, i32)> = [(6, 6), (7, 7), (8, 8)].into_iter().collect();
-    let trail: HashSet<i32> = [class_at(0, 6, 6)].into_iter().collect();
-    let sounding: HashSet<i32> = [class_at(0, 7, 7)].into_iter().collect();
+  fn the_x_dots_paint_bright_over_everything_where_lit_and_nothing_where_not() {
+    let x: HashSet<(i32, i32)> = [(6, 6), (8, 8)].into_iter().collect();
+    let trail: HashSet<i32> = [class_at(0, 6, 6), class_at(0, 5, 5)].into_iter().collect();
     let levels = levels_for_grid(
-      &sounding, &trail, &dance_at(&[(8, 8)]), &x, NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1,
+      &empty(), &trail, &dance_at(&[(8, 8)]), &x, NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1,
       NONE, &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&levels, 6, 6), DIM, "the trail wins its cell (same level, but ITS dim)");
-    assert_eq!(at(&levels, 7, 7), BRIGHT, "a sounding class wins");
-    assert_eq!(at(&levels, 8, 8), DIM, "the dance wins (as the dance)");
-    // On an untouched cell the X shows.
-    let empty_grid = levels_for_grid(
-      &empty(), &empty(), &no_dance(), &x, NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
-      &[], 0, XS, YS, EDO, 16, 16,
-    );
-    assert_eq!(at(&empty_grid, 6, 6), DIM, "the X paints on empty cells");
-    assert_eq!(at(&empty_grid, 5, 5), OFF, "and nowhere else");
+    assert_eq!(at(&levels, 6, 6), BRIGHT, "a dot overwrites a trailed cell");
+    assert_eq!(at(&levels, 8, 8), BRIGHT, "a dot overwrites a dance corner");
+    assert_eq!(at(&levels, 5, 5), DIM, "where the X is dark, everything shows as ever");
   }
 
   #[test]
