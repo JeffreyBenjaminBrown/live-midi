@@ -415,6 +415,109 @@
     assert_eq!(held[&(0, 0)], 99, "the drone re-file leaves the held map alone (rekey_drone handles it)");
   }
 
+  /// TODO/pedal-slide/6_plan.org's "bug 2 (the halving)" diagnosis, confirmed
+  /// MECHANICALLY against the CURRENT wiring (the corpse), before it is reverted. A
+  /// real sustained+edited voice at pitch H is built through the real key handler
+  /// (exactly like `pedal_slide_pick_targets_the_edit_voice_and_the_toggle_freezes_it`
+  /// above), a target `T = H + 27` is picked, and then the pedal thread's real loop is
+  /// simulated: `on_pedal` + `drives()` + `synth::apply_slide_drives` every step
+  /// (exactly as `pedal_volume.rs`'s `expression_pedal_loop` does), with the grid
+  /// thread's repaint (`reconcile`, `freeze_slide_voices`, draining `take_refiles`,
+  /// `note_moved` + `rekey_drone` -- exactly `mod.rs`'s pedal-slide repaint slice)
+  /// applied every 5th pedal step -- a deliberately coarser cadence than hardware's,
+  /// to force the identity hand-off race the diagnosis describes. See 6_plan.org's
+  /// "diagnosis verification" subsection for the observed outcome this test recorded.
+  #[test]
+  fn pedal_slide_bug2_mechanical_diagnosis_confirmation() {
+    use crate::pitch::freq_for_pitch;
+    use crate::types::VoiceSource;
+    let mut rt = test_grid_thread();
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5);
+    let handle = (5, 6); // directly below: the edit handle
+    let h = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
+    handle_key(&mut rt, &mut register, &mut held, note, true); // strike
+    handle_key(&mut rt, &mut register, &mut held, handle, true); // enter edit (+ sustain)
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    handle_key(&mut rt, &mut register, &mut held, note, false); // lift: sustained + edited drone at H
+
+    let toggle = (0, 15);
+    handle_key(&mut rt, &mut register, &mut held, toggle, true); // pedal-slide ON
+    assert!(rt.shared.pedal_slide[0].lock().unwrap().mode(), "the engine entered slide mode");
+
+    let t = h + 27; // the target, 27 steps away (edo 46 here -- an octave-ish interval)
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch: h };
+    {
+      let mut eng = rt.shared.pedal_slide[0].lock().unwrap();
+      eng.pick(t, &[(drone, h)]);
+    }
+    // Apply the first round immediately, exactly as `keys.rs`'s `apply_slide_now` does
+    // right after a pick (so it lands before the next simulated pedal reading).
+    {
+      let drives = rt.shared.pedal_slide[0].lock().unwrap().drives();
+      synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+    }
+
+    // The pedal thread's loop, simulated: sweep 0.0 -> 1.0 in ~0.01 steps.
+    for i in 0..=100 {
+      let f = i as f32 / 100.0;
+      let drives = {
+        let mut eng = rt.shared.pedal_slide[0].lock().unwrap();
+        eng.on_pedal(f);
+        eng.drives()
+      };
+      synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+
+      // Every 5th pedal step, the grid thread's repaint runs -- exactly the
+      // pedal-slide slice of `mod.rs`'s repaint (LEDs and the held-cell mirror
+      // omitted: inert here, this voice is fingerless and there is no other surface
+      // to reflect).
+      if i % 5 == 0 {
+        let slide_edited: HashSet<i32> = {
+          let rings = rt.shared.ring.lock().unwrap();
+          rings[0].store.iter(Reason::Edit).collect()
+        };
+        let dropped = rt.shared.pedal_slide[0].lock().unwrap().reconcile(&slide_edited);
+        synth::freeze_slide_voices(&rt.shared.voices, &dropped);
+        let refiles = rt.shared.pedal_slide[0].lock().unwrap().take_refiles();
+        for r in &refiles {
+          rt.shared.ring.lock().unwrap()[0].store.note_moved(r.from, r.to);
+          if r.voice_old != r.voice_new {
+            rt.sink.rekey_drone(r.from, r.to);
+          }
+        }
+      }
+    }
+
+    // Settle the render slew (SLIDE_SLEW_SECS = 0.01s): one second at 48 kHz is ~100
+    // time constants of the one-pole smoother -- fully converged.
+    {
+      let mut voices = rt.shared.voices.lock().unwrap();
+      let mut data = vec![0.0_f32; 48000];
+      crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
+    }
+
+    let (landed_hz, remaining) = {
+      let voices = rt.shared.voices.lock().unwrap();
+      (voices.values().next().map(|s| s.freq), voices.len())
+    };
+    assert_eq!(remaining, 1, "the one sustained voice should still be the only voice");
+    let landed_hz = landed_hz.unwrap();
+    let target_hz = freq_for_pitch(t, rt.tuning.fund, rt.tuning.edo);
+    // EXPECTATION per 6_plan.org's diagnosis: this FAILS -- the voice should freeze
+    // near freq(H + ~13.5) instead of reaching freq(T), because the pairing's notion
+    // of the voice's key and the voice's actual key in the map diverge at the
+    // midpoint flip (the re-key is deferred to the next repaint) and every
+    // subsequent drive is silently skipped.
+    assert!(
+      (landed_hz - target_hz).abs() < 0.01 * target_hz,
+      "expected the voice to land at T={t} ({target_hz} Hz), landed at {landed_hz} Hz instead \
+       (H={h}, T={t}, edo={})",
+      rt.tuning.edo,
+    );
+  }
+
   /// queues/branch-2.org "in edit mode, octave switchers should edit the edit-moded
   /// voices": with a live edit selection, the octave corners retune EVERY edited
   /// voice (both layers) by an octave -- down-corner lower, up-corner higher -- and
