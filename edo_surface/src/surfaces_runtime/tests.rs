@@ -1117,12 +1117,23 @@
     handle_key(&mut rt, &mut register, &mut held, (5, 6), false);
     handle_key(&mut rt, &mut register, &mut held, note, false);
 
-    // Enter fine transpose: the X seeds at the board center's pitch.
+    // Enter fine transpose: no X yet -- the first press will place it.
     handle_key(&mut rt, &mut register, &mut held, toggle, true);
     handle_key(&mut rt, &mut register, &mut held, toggle, false);
     assert!(rt.fine.on);
+    assert_eq!(rt.fine.center, None, "no X until the first press places it");
+
+    // The FIRST press places the center (here at board center, for the intervals
+    // below) and transposes NOTHING -- the drone stays where it was struck.
     let center = step(8, 8);
-    assert_eq!(rt.fine.center, center, "the X seeds at the board center");
+    handle_key(&mut rt, &mut register, &mut held, (8, 8), true);
+    handle_key(&mut rt, &mut register, &mut held, (8, 8), false); // tap: don't leave it held
+    assert_eq!(rt.fine.center, Some(center), "the first press placed the X");
+    assert_eq!(rt.fine.applied, 0, "placing the X is not a transpose");
+    assert!(
+      rt.shared.voices.lock().unwrap().contains_key(&VoiceSource::SurfaceDrone { grid: 0, pitch }),
+      "the drone did not move when the X was placed",
+    );
 
     // Press a key: the selection moves to (pressed - center), live.
     let key_a = (8, 11); // interval +3 from the center
@@ -1157,7 +1168,7 @@
     // An octave corner moves the X, not the register and not the voices.
     handle_key(&mut rt, &mut register, &mut held, (13, 14), true); // octave-down corner
     handle_key(&mut rt, &mut register, &mut held, (13, 14), false);
-    assert_eq!(rt.fine.center, center - edo, "the X moved an octave down");
+    assert_eq!(rt.fine.center, Some(center - edo), "the X moved an octave down");
     assert_eq!(register, 0, "the register held");
     assert!(rt.shared.voices.lock().unwrap().contains_key(&drone(pitch + int_a)), "voices held");
 

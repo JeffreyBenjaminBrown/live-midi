@@ -6,8 +6,14 @@
 //! most recent press wins, releasing a finger snaps to the most recently still-
 //! held key, and releasing the LAST key leaves the transpose where it is. Exiting
 //! the mode keeps a nonzero transpose in effect (the voices were moved live, so
-//! there is nothing left to apply) and forgets the center (a re-entry starts at
-//! the board center again -- "such range changes do not persist").
+//! there is nothing left to apply) and forgets the center (a re-entry starts
+//! uncentered again -- "such range changes do not persist").
+//!
+//! The center is placed BY THE PLAYER: on entry there is no X, and the FIRST play
+//! press sets the center to the pitch it lands on (transposing nothing -- it is
+//! only choosing where the X sits) so the player can seat it on, say, the bass
+//! voice for a readable display. Every press after is a transpose relative to that
+//! center. (This replaces the old fixed board-center seed.)
 //!
 //! Pure state: the caller (keys.rs) applies each transpose CHANGE to the voices
 //! (as a delta through `shift_edited_voices`) and paints the X (mod.rs). The mode
@@ -19,9 +25,11 @@
 #[derive(Debug, Default)]
 pub struct FineTranspose {
   pub on: bool,
-  /// The X's center pitch (absolute EDO step). Seeded from the board center at
-  /// entry; the octave corners move it by ±edo, possibly off-screen.
-  pub center: i32,
+  /// The X's center pitch (absolute EDO step), or `None` until the first play press
+  /// places it. While `None` there is no X and no transpose reference; the octave
+  /// corners have nothing to move. Once set, the corners move it by ±edo, possibly
+  /// off-screen.
+  pub center: Option<i32>,
   /// The transpose currently applied to the selection, in EDO steps.
   pub applied: i32,
   /// The transpose keys currently held, in press order (most recent last):
@@ -34,11 +42,11 @@ impl FineTranspose {
     FineTranspose::default()
   }
 
-  /// Enter the mode: the X seeds at `center`, the transpose starts at 0 (nothing
-  /// has been pressed), no keys held.
-  pub fn enter(&mut self, center: i32) {
+  /// Enter the mode UNCENTERED: no X yet, the transpose at 0, no keys held. The
+  /// first play press will place the center (see `press`).
+  pub fn enter(&mut self) {
     self.on = true;
-    self.center = center;
+    self.center = None;
     self.applied = 0;
     self.stack.clear();
   }
@@ -50,11 +58,15 @@ impl FineTranspose {
     self.stack.clear();
   }
 
-  /// A transpose key went down at `cell` sounding `pitch`: the transpose becomes
-  /// the interval from `pitch` to the center. Returns the DELTA the caller must
-  /// apply to the selection (0 when the key lands on the current transpose).
+  /// A transpose key went down at `cell` sounding `pitch`. The FIRST press while
+  /// uncentered PLACES the center at `pitch` -- so it lands on the center, its
+  /// interval is 0, and it transposes nothing; it only decides where the X sits.
+  /// Every press after sets the transpose to the interval from `pitch` to that
+  /// center. Returns the DELTA the caller must apply (0 for the placing press, and
+  /// whenever a key lands on the current transpose).
   pub fn press(&mut self, cell: (i32, i32), pitch: i32) -> i32 {
-    let interval = pitch - self.center;
+    let center = *self.center.get_or_insert(pitch);
+    let interval = pitch - center;
     self.stack.retain(|(c, _)| *c != cell);
     self.stack.push((cell, interval));
     let delta = interval - self.applied;
@@ -79,12 +91,14 @@ impl FineTranspose {
     Some(delta)
   }
 
-  /// An octave corner moved the X: the center shifts by `delta` (±edo). Held keys'
-  /// stored intervals are deliberately NOT recomputed -- a snap-back after this
-  /// lands on the interval each key SET, and the next fresh press reads the new
-  /// center.
+  /// An octave corner moved the X: the center shifts by `delta` (±edo). A no-op while
+  /// uncentered -- there is no X to move until the first press places it. Held keys'
+  /// stored intervals are deliberately NOT recomputed -- a snap-back after this lands
+  /// on the interval each key SET, and the next fresh press reads the new center.
   pub fn move_center(&mut self, delta: i32) {
-    self.center += delta;
+    if let Some(center) = self.center.as_mut() {
+      *center += delta;
+    }
   }
 }
 
@@ -139,19 +153,32 @@ mod tests {
   use std::time::Duration;
 
   #[test]
-  fn presses_set_the_interval_and_report_deltas() {
+  fn the_first_press_places_the_center_and_transposes_nothing() {
     let mut f = FineTranspose::new();
-    f.enter(100);
-    assert_eq!(f.press((3, 3), 103), 3, "first press: +3 from zero");
+    f.enter();
+    assert_eq!(f.center, None, "no X until the first press");
+    assert_eq!(f.press((5, 5), 100), 0, "the first press places the center: no transpose");
+    assert_eq!(f.center, Some(100), "the X now sits at the pressed pitch");
+    assert_eq!(f.applied, 0);
+  }
+
+  #[test]
+  fn presses_after_the_first_set_the_interval_and_report_deltas() {
+    let mut f = FineTranspose::new();
+    f.enter();
+    f.press((5, 5), 100); // places the center at 100
+    assert_eq!(f.press((3, 3), 103), 3, "first transpose: +3 from the placed center");
     assert_eq!(f.applied, 3);
-    assert_eq!(f.press((4, 4), 105), 2, "second press: to +5, delta +2");
+    assert_eq!(f.press((4, 4), 105), 2, "next: to +5, delta +2");
     assert_eq!(f.applied, 5);
   }
 
   #[test]
   fn releases_snap_to_the_most_recent_held_key_and_the_last_release_keeps_it() {
     let mut f = FineTranspose::new();
-    f.enter(100);
+    f.enter();
+    f.press((5, 5), 100); // place the center by a tap...
+    f.release((5, 5)); // ...so it does not linger in the held stack
     f.press((3, 3), 103); // +3
     f.press((4, 4), 105); // +5
     assert_eq!(f.release((4, 4)), Some(-2), "snap back to the still-held +3");
@@ -163,16 +190,27 @@ mod tests {
   #[test]
   fn releasing_a_key_that_was_never_ours_is_none() {
     // A finger that predates the mode: not in the stack, so the caller releases it
-    // through the ordinary path.
+    // through the ordinary path. (Also the case before any press has placed the center.)
     let mut f = FineTranspose::new();
-    f.enter(100);
+    f.enter();
     assert_eq!(f.release((9, 9)), None);
+  }
+
+  #[test]
+  fn moving_the_center_before_a_press_is_a_noop() {
+    let mut f = FineTranspose::new();
+    f.enter();
+    f.move_center(-46); // no X to move yet
+    assert_eq!(f.center, None, "the octave corners do nothing while uncentered");
+    assert_eq!(f.press((5, 5), 100), 0, "the first press still places the center plainly");
+    assert_eq!(f.center, Some(100));
   }
 
   #[test]
   fn moving_the_center_changes_fresh_presses_but_not_the_snap_stack() {
     let mut f = FineTranspose::new();
-    f.enter(100);
+    f.enter();
+    f.press((5, 5), 100); // place the center at 100
     f.press((3, 3), 103); // +3
     f.move_center(-46); // the X an octave lower: intervals grow
     assert_eq!(f.press((4, 4), 105), 48, "105 - 54 = +51, from +3: delta +48");
@@ -181,16 +219,17 @@ mod tests {
   }
 
   #[test]
-  fn exit_keeps_the_applied_transpose_and_reentry_reseeds() {
+  fn exit_keeps_the_applied_transpose_and_reentry_starts_uncentered() {
     let mut f = FineTranspose::new();
-    f.enter(100);
-    f.press((3, 3), 107);
+    f.enter();
+    f.press((5, 5), 100); // place the center at 100
+    f.press((3, 3), 107); // +7
     f.exit();
     assert_eq!(f.applied, 7, "a nonzero transpose remains in effect");
     assert!(!f.on);
-    f.enter(200);
+    f.enter();
     assert_eq!(f.applied, 0, "a fresh entry starts untransposed");
-    assert_eq!(f.center, 200, "and re-seeds the center -- range changes do not persist");
+    assert_eq!(f.center, None, "and uncentered -- the next press re-places the X");
   }
 
   #[test]

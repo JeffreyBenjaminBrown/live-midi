@@ -131,8 +131,9 @@ Here's how to see what's connected:
   "pedal slide". See "pedal slide".
 - fine transpose -- a per-grid mode (the =FT= toggle at =(1,15)=, one cell right
   of the pedal-slide toggle) in which play presses set a live scalar transpose of
-  the edit selection, measured from a dancing X's center pitch. See "fine
-  transpose".
+  the edit selection, measured from a center pitch the first press PLACES (marked
+  by a dancing X); a dancing =+= cross marks the current shifted position. See
+  "fine transpose".
 - diamond dance -- the lit cell turning around an edit-mode note's cell(s), above /
   left / below / right. See "the diamond dance".
 - square dance -- the diamond's diagonal twin, marking a sustained or chord
@@ -694,13 +695,17 @@ selects everything sounding on that monome -- the same one-shot as the
 editmode-accrete pedal (OSS 7/9) -- so a bare =FT= press means "fine-transpose
 everything"; a selection you already made is left exactly as it is. While on:
 
-- A big dancing X marks the CENTER pitch (HOME), seeded at the board center's
-  pitch ((8,8) under the current register). It marks the cell that returns you
-  to zero: pressing any play cell sets the selection's transpose to the interval
-  from the pressed pitch to that center -- so pressing the X's own cell is a
-  transpose of 0. Applied LIVE, gliding, both layers at once, no envelope event.
-  Transpose presses sound nothing, and no other play gesture exists while
-  the mode is on (no notes, no handles, no drags, no retriggers).
+- YOU PLACE THE CENTER. On entry there is no X yet: the FIRST play press sets
+  the center to the pitch it lands on and transposes NOTHING -- it only decides
+  where the X sits. Seat it wherever reads best (on the bass voice, say, so the
+  markers sit clear of the other voices instead of crowding them). Every press
+  after is a transpose.
+- A big dancing X then marks that CENTER pitch (HOME). It marks the cell that
+  returns you to zero: pressing any play cell sets the selection's transpose to
+  the interval from the pressed pitch to that center -- so pressing the X's own
+  cell is a transpose of 0. Applied LIVE, gliding, both layers at once, no
+  envelope event. Transpose presses sound nothing, and no other play gesture
+  exists while the mode is on (no notes, no handles, no drags, no retriggers).
 - A second marker, a dancing =+= CROSS, marks WHERE YOU ARE: the currently
   transposed pitch (center + the shift), so at a glance you see both your
   position and, at the X, the way home. It appears only once the shift is
@@ -716,8 +721,10 @@ everything"; a selection you already made is left exactly as it is. While on:
   transpose where it is (it never reverts to 0 on its own).
 - The octave switchers move the X ITSELF by an octave -- even off-screen
   (the X just isn't drawn there) -- widening or narrowing what a given key
-  means. These moves do not persist: a re-entry re-seeds the X at the board
-  center, untransposed. The four arrows still scroll the window as ever.
+  means. (Before the first press has placed the X they do nothing -- there is
+  no X to move.) These moves do not persist: a re-entry starts uncentered
+  again, its first press re-placing the X. The four arrows still scroll the
+  window as ever.
 - Exiting (press =FT= again) keeps a nonzero transpose in effect -- the
   voices were moved live, so nothing snaps back -- and the grid plays
   normally again. The voices stay visible by the normal rules throughout.

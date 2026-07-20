@@ -951,13 +951,15 @@ fn grid_thread(mut rt: GridThread) {
     // Both come from `cells_for_pitch`, which yields only IN-FIELD images, so a marker
     // whose center is off-screen is simply not drawn (never a stray half-arm), and one
     // whose pitch has two on-screen representatives (an x_step collision) gets both.
+    // (`center` is None until the first play press places the X, so nothing is drawn
+    // on a just-entered, not-yet-placed grid.)
     let mut x_cells: HashSet<(i32, i32)> = HashSet::new();
-    if rt.fine.on {
-      for img in cells_for_pitch(&rt, register, rt.fine.center) {
+    if let (true, Some(center)) = (rt.fine.on, rt.fine.center) {
+      for img in cells_for_pitch(&rt, register, center) {
         x_cells.extend(fine::x_walk_cells(img, elapsed));
       }
       if rt.fine.applied != 0 {
-        for img in cells_for_pitch(&rt, register, rt.fine.center + rt.fine.applied) {
+        for img in cells_for_pitch(&rt, register, center + rt.fine.applied) {
           x_cells.extend(fine::cross_walk_cells(img, elapsed));
         }
       }

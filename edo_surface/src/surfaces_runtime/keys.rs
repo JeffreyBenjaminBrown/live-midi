@@ -169,10 +169,11 @@ pub(super) fn handle_key(
     return;
   }
   // Fine transpose (queues/branch-2.org): key-down toggles THIS grid's mode. On
-  // entry the X seeds at the board center's pitch under the current register and
-  // the transpose starts at 0; on exit a nonzero transpose simply REMAINS in
-  // effect -- the voices were moved live, so there is nothing left to apply --
-  // and the X's position is forgotten ("range changes do not persist").
+  // entry there is no X and the transpose starts at 0 -- the first play press places
+  // the X and transposes nothing (branch-3 queue: seat it on the bass voice for a
+  // readable display); on exit a nonzero transpose simply REMAINS in effect -- the
+  // voices were moved live, so there is nothing left to apply -- and the X's position
+  // is forgotten ("range changes do not persist").
   if in_overlay(rt.overlays.fine_transpose_rect, cell) {
     if press {
       if rt.fine.on {
@@ -182,14 +183,9 @@ pub(super) fn handle_key(
         // monome -- the same select-everything one-shot pedal slide uses (see
         // `select_all_sounding_if_empty`). A non-empty selection is left as it is.
         select_all_sounding_if_empty(rt);
-        let center = step_for_cell(
-          rt.tuning.x_step,
-          rt.tuning.y_step,
-          *register,
-          rt.tuning.grid_w / 2,
-          rt.tuning.grid_h / 2,
-        );
-        rt.fine.enter(center);
+        // Enter UNCENTERED: no X yet. The first play press places the X (on the bass
+        // voice, say, for a readable display) and transposes nothing; see `fine::press`.
+        rt.fine.enter();
       }
     }
     return;

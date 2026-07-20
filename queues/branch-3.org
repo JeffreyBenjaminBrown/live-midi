@@ -24,6 +24,15 @@ half-arm when its center is off-screen). Display only: it never changes what a
 press means. Two shapes (=x= home, =+= shift) so they read apart. Paint in
 =mod.rs=; the =+= walk in =fine.rs::cross_walk_cells= (unit-tested). Readme:
 "fine transpose".
+*** DONE (probably) claude: the center is now PLACED, not fixed at (8,8)
+Follow-up (chat): don't draw the X on entry. =fine.center= is an =Option=,
+=None= until the FIRST play press, which sets it to the pitch it lands on and
+transposes nothing (interval 0 -- it only chooses where the X sits). Lets you
+seat the X on the bass voice so the markers don't crowd the others. Every press
+after is relative to that center, exactly as before; octave corners are inert
+until it is placed; a re-entry starts uncentered. =fine::press= via
+=get_or_insert=; paint guards on =Some=. Tests updated + added
+(=the_first_press_places_the_center_and_transposes_nothing=).
 * AWAITS : TODO/pedal-slide/
 ** DONE start
 To start, please read 1_vision.org,
