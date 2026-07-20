@@ -114,6 +114,30 @@ pub(super) fn handle_key(
     }
     return;
   }
+  // Pedal-slide toggle (TODO/pedal-slide): key-down switches THIS grid's EX-P pedal
+  // between volume duty and the pitch-slide engine. Entering freezes the grid volume
+  // where it is and starts with no managed voices, so the pedal is inert -- and no
+  // pitch is yanked -- until the first pick. Leaving freezes every sliding voice
+  // exactly where it is and drops the maps; the pedal thread resumes volume duty on
+  // its next poll.
+  if in_overlay(rt.overlays.pedal_slide_rect, cell) {
+    if press {
+      let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);
+      if now_on {
+        let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
+        rt.pedal_slide.enter(f, rt.sink.frozen_pedal_gain());
+      } else {
+        let (frozen_voices, _volume) = rt.pedal_slide.exit();
+        synth::freeze_slide_voices(&rt.shared.voices, &frozen_voices);
+      }
+      // The shared flag flips LAST, once the engine is already in its new state. It is
+      // read only by the pedal thread (to know whose volume it is no longer driving)
+      // and by the LED paint; what the grid thread does is gated on the engine's own
+      // `mode()`, so the two can never disagree about whether a step should run.
+      rt.shared.pedal_slide_on[rt.grid_index].store(now_on, Ordering::Relaxed);
+    }
+    return;
+  }
   // The editmode buttons, through the same `editmode_press` the softstep pedals run:
   // clear empties THIS grid's edit SELECTION (branch-3 queue item 4: pure deselection --
   // every cleared note stays sustained, so nothing is silenced), accrete puts every
@@ -819,7 +843,16 @@ pub(super) fn handle_edit_press(
     Silent,
     Sustain(i32, bool, Vec<u64>),
     Dragged { from: i32, to: i32, piano_moved: bool, chord_seqs: Vec<u64> },
+    /// Pedal slide (TODO/pedal-slide): a press on a FREE pitch while this grid's slide
+    /// mode is on PICKS a target instead of dragging or sounding. Silent -- the pedal
+    /// does the moving, which is the whole point.
+    SlidePick(i32),
   }
+  // While pedal slide is on, the play surface is a target-picker, exactly as edit mode
+  // already makes it a drag-picker. The gestures that SELECT what to slide (the edit
+  // handles) and the retrigger of an already-sounding pitch are untouched -- only the
+  // outcomes that would have moved or started a note become picks.
+  let slide_mode = rt.pedal_slide.mode();
   let act = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let gr = &mut rings[rt.grid_index];
@@ -836,8 +869,26 @@ pub(super) fn handle_edit_press(
     // pressed pitch is free of the editing set and the sustain set; otherwise it
     // retriggers (classify also consults `edited_union` for the chord half).
     let is_sustained = |p: i32| sustained.contains(&p);
-    match gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union)
-    {
+    let press =
+      gr.edit.classify(edit_target, sustain_target, pitch, is_sounding, is_sustained, &edited_union);
+    // The pedal-slide interception. A Drag (something is edited, this pitch is free)
+    // becomes a pick of that pitch as a TARGET; a plain Play on a genuinely free pitch
+    // becomes a pick too. Everything else falls through unchanged: a press on a
+    // SOUNDING pitch still retriggers, and the edit handles still enter/exit/sustain,
+    // because those are how you choose what the pedal will slide.
+    let slide_pick = if slide_mode {
+      match press {
+        edit::Press::Drag { to, .. } => Some(to),
+        edit::Press::Play if !is_sounding(pitch) => Some(pitch),
+        _ => None,
+      }
+    } else {
+      None
+    };
+    if let Some(target) = slide_pick {
+      Act::SlidePick(target)
+    } else {
+    match press {
       edit::Press::Play => Act::Play,
       edit::Press::EnterEdit { pitch } => {
         // One press takes BOTH layers at this pitch into the selection (Jeff: "if
@@ -909,6 +960,7 @@ pub(super) fn handle_edit_press(
         Act::Dragged { from, to, piano_moved, chord_seqs }
       }
     }
+    }
   };
 
   let (release_secs, sample_rate) = rt.sink.release_params();
@@ -973,8 +1025,43 @@ pub(super) fn handle_edit_press(
         rt.knobs.trail_clobber_radius, rt.knobs.trails_max,
       );
     }
+    Act::SlidePick(target) => slide_pick(rt, held, target),
   }
   false
+}
+
+/// A pedal-slide pick (`Act::SlidePick`): make `target` the new far goalpost of the
+/// nearest managed-set candidate. Silent by construction -- the press chooses a
+/// destination, the pedal travels there.
+///
+/// The candidates are this grid's EDIT-MODE voices, keyed the way the sink keys them: a
+/// voice still under a finger by its cell, a fingerless (drone) one by its pitch. That
+/// keying is the pairing's identity for the rest of the flight, and it changes only
+/// through a confirmed re-file.
+fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32) {
+  let grid = rt.grid_index;
+  let candidates: Vec<(VoiceSource, i32)> = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings[grid]
+      .store
+      .iter(Reason::Edit)
+      .map(|p| {
+        let key = match held.iter().find(|(_, hp)| **hp == p) {
+          Some((c, _)) => VoiceSource::SurfaceFinger { grid, cell: *c },
+          None => VoiceSource::SurfaceDrone { grid, pitch: p },
+        };
+        (key, p)
+      })
+      .collect()
+  };
+  if !rt.pedal_slide.pick(target, &candidates) {
+    return;
+  }
+  // Apply this round of drives now rather than waiting for the next repaint: with the
+  // pedal parked away from home the pick has an immediate audible consequence, and it
+  // should land on the press, not up to a repaint later.
+  let drives = rt.pedal_slide.drives();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
 }
 
 /// How many held cells sound exactly `pitch` right now -- the derived FINGER count

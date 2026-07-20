@@ -32,6 +32,7 @@ mod grid;
 mod hooks;
 mod keys;
 mod paint;
+mod pedal_slide;
 mod pedal_volume;
 mod polyrhythm;
 mod pulse_window;
@@ -46,7 +47,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -256,6 +257,18 @@ fn run(
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
   let mono_on: Arc<Vec<AtomicBool>> =
     Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
+  // Pedal slide (TODO/pedal-slide). Exactly TWO words cross a thread boundary, both
+  // one-way: `pedal_slide_on` (the grid thread flips it, the pedal thread reads it to
+  // know whose volume it is no longer driving) and `pedal_slide_frac` (the pedal thread
+  // publishes its normalized position as f32 bits, the grid thread reads it each
+  // repaint). The ENGINE itself is not here -- it is a plain field on `GridThread`, so
+  // that "one owner for all slide mutation" (6_plan.org) is a fact about the types
+  // rather than a discipline to remember. The reverted build shared the engine under a
+  // lock and let both threads mutate it; that is what killed it.
+  let pedal_slide_on: Arc<Vec<AtomicBool>> =
+    Arc::new((0..num_grids).map(|_| AtomicBool::new(false)).collect());
+  let pedal_slide_frac: Arc<Vec<AtomicU32>> =
+    Arc::new((0..num_grids).map(|_| AtomicU32::new(0.0_f32.to_bits())).collect());
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
@@ -395,7 +408,11 @@ fn run(
     let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
     let gains = Arc::clone(&pedal_gains);
-    thread::spawn(move || expression_pedal_loop(live_for_pedals, voices_for_pedals, gains));
+    let slide_on = Arc::clone(&pedal_slide_on);
+    let slide_frac = Arc::clone(&pedal_slide_frac);
+    thread::spawn(move || {
+      expression_pedal_loop(live_for_pedals, voices_for_pedals, gains, slide_on, slide_frac)
+    });
   }
 
   // Bring up the drumkit alongside the grids, if the rig declares one. Consumed
@@ -456,6 +473,8 @@ fn run(
     distortion_on: Arc::clone(&distortion_on),
     slide_on: Arc::clone(&slide_on),
     mono_on: Arc::clone(&mono_on),
+    pedal_slide_on: Arc::clone(&pedal_slide_on),
+    pedal_slide_frac: Arc::clone(&pedal_slide_frac),
     poly: Arc::clone(&poly),
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
@@ -509,6 +528,7 @@ fn run(
       knobs,
       shared: shared.clone(),
       slide: SlideCandidates::new(),
+      pedal_slide: pedal_slide::PedalSlideState::new(),
       started: Instant::now(),
       sink: SurfaceSink::new(
         grid_index,
@@ -586,6 +606,13 @@ struct Shared {
   /// The per-grid slide / mono switches (this grid uses element `grid_index`).
   slide_on: Arc<Vec<AtomicBool>>,
   mono_on: Arc<Vec<AtomicBool>>,
+  /// Pedal slide's two cross-thread words (TODO/pedal-slide), each written by one
+  /// thread and read by the other: this grid's toggle (grid thread -> pedal thread,
+  /// "stop driving my volume") and its pedal's normalized position as f32 bits (pedal
+  /// thread -> grid thread, "here is where my foot is"). The engine is NOT shared --
+  /// see `GridThread::pedal_slide`.
+  pedal_slide_on: Arc<Vec<AtomicBool>>,
+  pedal_slide_frac: Arc<Vec<AtomicU32>>,
   /// The shared polyrhythm state (tap tempo + tempo factor) and its pairing window.
   poly: Arc<Mutex<PolyrhythmState>>,
   /// The hot-reloadable parameters; refreshed into `GridThread`'s own fields when the
@@ -666,6 +693,12 @@ struct GridThread {
   shared: Shared,
   /// THIS grid's recently-released notes (slide sources) + the slide knobs.
   slide: SlideCandidates,
+  /// THIS grid's pedal-slide engine (TODO/pedal-slide). Deliberately a plain owned
+  /// field rather than shared state: the grid thread owns the ring, the sink, the held
+  /// map AND this, so a slide's map, its voice keys, and its filing can only ever be
+  /// mutated together, by one thread, in one order. That is the whole fix for the
+  /// reverted build's disease (6_plan.org's ranked cause 1).
+  pedal_slide: pedal_slide::PedalSlideState,
   /// When this runtime started. The diamond dance's phase is a pure function of
   /// elapsed time from here, so every dance on the instrument turns in step -- that
   /// is the whole reason a skipped corner is not allowed to retime its dance.
@@ -764,6 +797,27 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
     buttons.push(toggle(rt.overlays.mono_rect, &rt.shared.mono_on));
+    buttons.push(toggle(rt.overlays.pedal_slide_rect, &rt.shared.pedal_slide_on));
+    // Pedal slide (TODO/pedal-slide): read the pedal's published position and run one
+    // step of THIS grid's engine. Everything the step touches -- the map, the voice
+    // keys, the ring's filing, the held map, the sink -- is owned by this thread, so
+    // the whole step happens in one order with nothing else acting in between. The
+    // target pitches come back for the LED flash below.
+    let slide_targets = pedal_slide_step(&mut rt, &mut held);
+    // The TARGET goalpost cells: a 100 ms bright/off flash, no dancer (`1_vision`),
+    // driven off the same absolute clock as the dances so it cannot drift against
+    // them. Pushed as single-cell buttons so they occlude the play grid and land on
+    // whatever cell(s) hold that pitch under the current register. The HOME pitch needs
+    // nothing here: it is a sustained, edited note, so it is already lit and dancing
+    // through the ordinary path.
+    if !slide_targets.is_empty() {
+      let level = if dance::target_flash_on(elapsed) { BRIGHT } else { OFF };
+      for pitch in &slide_targets {
+        for (x, y) in cells_for_pitch(&rt, register, *pitch) {
+          buttons.push(([x, y, x, y], level));
+        }
+      }
+    }
     // The editmode buttons: dim at rest (findable), bright while pressed.
     buttons.push((rt.overlays.editmode_clear_rect, button_level(rt.editmode_clear_down)));
     buttons.push((rt.overlays.editmode_accrete_rect, button_level(rt.editmode_accrete_down)));
@@ -918,6 +972,108 @@ fn grid_thread(mut rt: GridThread) {
 
   // run() blanks every grid authoritatively after the joins; this is best-effort.
   monome::send_led_all(&rt.sock, device, &rt.prefix, 0);
+}
+
+/// One step of this grid's pedal-slide engine, run once per repaint by the thread that
+/// owns everything it touches. Returns the TARGET pitches to flash.
+///
+/// The order below is the rebuild (`TODO/pedal-slide/6_plan.org`), and every part of it
+/// is load-bearing:
+///
+/// 1. *Advance the map* with the pedal's published position. This proposes re-files but
+///    changes no identity.
+/// 2. *Apply each proposed re-file* to the ring (the sustained/edited sets), the held
+///    map (a finger still on a sliding note), and the sink (a drone's key IS its filed
+///    pitch, so it moves with the filing) -- then CONFIRM it to the engine. A re-file
+///    whose destination is already occupied is declined and never confirmed, so the
+///    engine keeps addressing the voice by the key that really exists. The reverted
+///    build queued this hand-off to another thread and then kept driving the key it
+///    had not yet created; every drive after the flip was silently dropped.
+/// 3. *Reconcile* against the live edit selection, so a clear from either surface
+///    cancels the slide and freezes its voices. Reading the ring only AFTER the re-files
+///    have landed is what stops this from seeing a note "leave" a selection it never
+///    left -- the sharp edge that actually killed the reverted build.
+/// 4. *Drive the voices*, aiming each one's smoother at where the map now says it is.
+fn pedal_slide_step(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i32>) -> Vec<i32> {
+  if !rt.pedal_slide.mode() {
+    return Vec::new();
+  }
+  let f = f32::from_bits(rt.shared.pedal_slide_frac[rt.grid_index].load(Ordering::Relaxed));
+
+  // 1. advance
+  let refiles = rt.pedal_slide.on_pedal(f);
+
+  // 2. apply + confirm, one at a time
+  for r in &refiles {
+    let occupied = rt.sink.drone_exists(r.to);
+    let landed = match r.voice_old {
+      // A pitch-keyed drone: the voice map entry moves with the filing.
+      crate::types::VoiceSource::SurfaceDrone { .. } => rt.sink.rekey_drone(r.from, r.to),
+      // A cell-keyed fingered voice: its key is the cell and does not move, but its
+      // FILED pitch does -- so the ring and the held map still have to follow, or the
+      // finger's eventual release looks up a pitch nobody is sustaining and cuts a
+      // note mid-slide.
+      _ => !occupied,
+    };
+    if !landed {
+      continue;
+    }
+    rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
+      .store
+      .note_moved(r.from, r.to);
+    for (_, p) in held.iter_mut().filter(|(_, p)| **p == r.from) {
+      *p = r.to;
+    }
+    rt.pedal_slide.confirm_refile(r);
+  }
+  if !refiles.is_empty() {
+    publish_held(&rt.shared.held_all, rt.grid_index, held);
+    publish_sounding(&rt.shared.sounding, rt.grid_index, held, rt.tuning.edo);
+  }
+
+  // 3. reconcile against the (now current) edit selection
+  let edited: HashSet<i32> = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    rings[rt.grid_index].store.iter(Reason::Edit).collect()
+  };
+  let dropped = rt.pedal_slide.reconcile(&edited);
+  synth::freeze_slide_voices(&rt.shared.voices, &dropped);
+
+  // 4. drive
+  let drives = rt.pedal_slide.drives();
+  synth::apply_slide_drives(&rt.shared.voices, &drives, rt.tuning.fund, rt.tuning.edo);
+  pedal_slide_log(rt, f, &drives);
+
+  let (_home, targets) = rt.pedal_slide.led_roles();
+  targets.into_iter().collect()
+}
+
+/// The dev logging switch (`PEDAL_SLIDE_LOG=1`), slice 0 of the rebuild plan: per
+/// engine step, the pedal fraction and each managed voice's (key, map pitch, audible
+/// Hz). Every later slice's "is it the map or the wiring?" argument gets settled by
+/// this instead of by reasoning. Silent unless the variable is set, and it prints only
+/// when the fraction actually moved -- the repaint loop runs at ~1 kHz.
+fn pedal_slide_log(rt: &GridThread, f: f32, drives: &[pedal_slide::Drive]) {
+  use std::sync::atomic::AtomicU32;
+  static LAST: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+  if drives.is_empty() || std::env::var_os("PEDAL_SLIDE_LOG").is_none() {
+    return;
+  }
+  let Some(slot) = LAST.get(rt.grid_index) else { return };
+  if f32::from_bits(slot.swap(f.to_bits(), Ordering::Relaxed)) == f {
+    return;
+  }
+  let voices = rt.shared.voices.lock().unwrap_or_else(|e| e.into_inner());
+  for d in drives {
+    let audible = voices.get(&d.voice).map(|v| v.freq).unwrap_or(f32::NAN);
+    eprintln!(
+      "pedal-slide grid={} f={f:.3} home={:?} voice={:?} map_pitch={:.3} audible={audible:.2}Hz",
+      rt.grid_index,
+      rt.pedal_slide.home(),
+      d.voice,
+      d.pitch.0,
+    );
+  }
 }
 
 /// A serialosc serial id that names an old monobright "Series" grid (per-LED on/off

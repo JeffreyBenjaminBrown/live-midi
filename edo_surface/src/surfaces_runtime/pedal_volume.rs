@@ -2,7 +2,7 @@
 //! that polls the MPC-20 bridge and aims each mapped grid's gain at it
 //! (`expression_pedal_loop`).
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -83,10 +83,19 @@ pub(super) fn apply_pedal_gain(
   synth::set_grid_pedal_gain(voices, grid, gain);
 }
 
+/// The pedal thread's pedal-slide duty is deliberately TINY (TODO/pedal-slide): while a
+/// grid's slide toggle is on, this thread stops driving that grid's volume and does
+/// nothing but PUBLISH its normalized position into `pedal_slide_frac`. The grid thread
+/// reads it each repaint and owns everything else -- the map, the pairings, the filing,
+/// the drives. The reverted build instead drove voices from here while the grid thread
+/// re-keyed them, which is the race that broke it (6_plan.org's ranked cause 1); with
+/// the engine unreachable from this thread, that class of bug is no longer expressible.
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
+  pedal_slide_on: Arc<Vec<AtomicBool>>,
+  pedal_slide_frac: Arc<Vec<AtomicU32>>,
 ) {
   use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
   let reader = match PedalReader::connect(DEFAULT_PORT) {
@@ -108,6 +117,20 @@ pub(super) fn expression_pedal_loop(
     for (pedal, binding) in map.iter().enumerate() {
       let Some((grid, curve)) = *binding else { continue };
       let p = pedals[pedal];
+      // Publish the position for the grid thread whether or not slide mode is on, so
+      // that turning the toggle ON knows at once which side of the pedal the foot is
+      // resting on instead of waiting for the next twitch.
+      if let Some(slot) = pedal_slide_frac.get(grid) {
+        slot.store(p.norm.to_bits(), Ordering::Relaxed);
+      }
+      // Slide duty: this grid's pedal is not a volume pedal right now. Publishing above
+      // was the whole job; the volume holds where it froze.
+      if pedal_slide_on.get(grid).is_some_and(|b| b.load(Ordering::Relaxed)) {
+        // Force the next reading after the toggle goes back off to re-apply, so volume
+        // duty resumes even if the pedal never moved while it was suspended.
+        last[pedal] = f32::NAN;
+        continue;
+      }
       // No CC yet = no position to trust; keep unity rather than muting the grid.
       // A reload re-applies a known position through the (possibly new) taper.
       if p.updates == 0 || (!reloaded && last[pedal] == p.norm) {

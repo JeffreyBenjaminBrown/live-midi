@@ -845,6 +845,17 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
   },
+  // A single-cell on/off toggle for PEDAL SLIDE (surfaces runtime; TODO/pedal-slide):
+  // while on, this monome's EX-P expression pedal drives a pitch-slide engine instead
+  // of volume -- picking a free pitch sets a target, and the pedal glides the nearest
+  // edit-mode voice into it (volume freezes, returning through a kinked map on
+  // toggle-off). Per-monome (each grid its own), one per monome, dim at rest / bright
+  // while on. NOT `SlideToggle`, which is the unrelated note-to-note glide-on-strike.
+  PedalSlideToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
   // A single-cell momentary button (surfaces runtime) driving this monome's EDIT
   // MODE in bulk, mirroring the accrete (sustain) controls -- see
   // `EditmodeControlKind` for what `clear` and `accrete` do. The same jobs as the
@@ -1054,6 +1065,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::DistortionToggle { id, .. }
       | MonomeWindowRig::SlideToggle { id, .. }
       | MonomeWindowRig::MonoToggle { id, .. }
+      | MonomeWindowRig::PedalSlideToggle { id, .. }
       | MonomeWindowRig::EditmodeControl { id, .. }
       | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
@@ -1089,6 +1101,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::DistortionToggle { monome, .. }
       | MonomeWindowRig::SlideToggle { monome, .. }
       | MonomeWindowRig::MonoToggle { monome, .. }
+      | MonomeWindowRig::PedalSlideToggle { monome, .. }
       | MonomeWindowRig::EditmodeControl { monome, .. }
       | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
@@ -1124,6 +1137,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::DistortionToggle { rect, .. }
       | MonomeWindowRig::SlideToggle { rect, .. }
       | MonomeWindowRig::MonoToggle { rect, .. }
+      | MonomeWindowRig::PedalSlideToggle { rect, .. }
       | MonomeWindowRig::EditmodeControl { rect, .. }
       | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
@@ -1160,6 +1174,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::DistortionToggle { .. } => "distortion_toggle",
       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
+      MonomeWindowRig::PedalSlideToggle { .. } => "pedal_slide_toggle",
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
@@ -1970,6 +1985,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     }
     MonomeWindowRig::MonoToggle { id, monome, rect } => {
       Some(("mono_toggle", id, monome, *rect))
+    }
+    MonomeWindowRig::PedalSlideToggle { id, monome, rect } => {
+      Some(("pedal_slide_toggle", id, monome, *rect))
     }
     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
       // Per-control uniqueness: label by control so a monome may carry one clear

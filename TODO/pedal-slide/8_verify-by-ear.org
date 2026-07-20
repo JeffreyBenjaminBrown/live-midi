@@ -1,0 +1,77 @@
+#+title: Pedal slide: the by-ear checklist
+#+date: 2026-07-20
+
+The accumulating hardware checklist, one section per slice of =6_plan.org=. Jeff
+plays down the list at the grids; anything that misbehaves gets a note under its
+item and becomes the next session's work.
+
+Everything here is also pinned by an automated wiring-level test (the harness in
+=edo_surface/src/surfaces_runtime/tests.rs=, "pedal slide: the WIRING-LEVEL
+invariant harness"), which runs the real key handler, the real engine step, the
+real voice map and the real block renderer, and asserts the audible frequency.
+So this list is not "does the code work" -- it is *does it feel right*, which is
+the only question the harness cannot answer.
+
+* how to run it
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-monomes_2-softsteps
+#+end_src
+The EX-P pedals need =tools/pedals/bridge.sh= running on the HOST (see
+=tools/pedals/README.org=). One pedal reads ~35..127 until its MIN thumbwheel is
+fixed, so its slide range is compressed the same way its volume is -- hardware,
+not code.
+
+Set =PEDAL_SLIDE_LOG=1= in the environment to get a line per pedal move:
+fraction, home side, each managed voice's key, its map pitch, and the frequency
+actually sounding. That is the intended way to settle any "is it the map or the
+wiring?" question without guessing.
+
+* slice 1 -- one voice, one target [NOT YET PLAYED]
+The toggle is each grid's *bottom-left cell*, =[0,15]= (a free play cell on this
+rig; it is the accrete clear on =2-monomes_kmss-drums=, which does not carry
+this feature). Dim at rest, bright while on.
+
+Setup for every item: strike a note, press the cell BELOW it to edit it (which
+also sustains it), lift your finger. Then press =[0,15]=.
+
+1. *The toggle lights.* Bottom-left goes bright; the grid's volume pedal stops
+   changing volume.
+2. *A pick does not sound.* With the pedal at the heel, press a free pitch
+   somewhere above the edited note. Nothing should sound, and the edited note
+   should NOT jump to it. The pressed cell should start flashing bright/off
+   about five times a second.
+3. *The toe reaches the target.* Push the pedal all the way down. The note
+   should glide smoothly up and *land exactly on the pitch you picked* -- play
+   that pitch on the other grid to check it in unison. (This is the bug from
+   =4_bugs-jeff-ran-into.org=: it used to land about halfway.)
+4. *The roles swap on arrival.* At the toe, the cell you picked should now be
+   lit and dancing (it is the note), and the cell you came FROM should now be
+   the one flashing.
+5. *And back.* Raise the pedal to the heel: the note should glide back and land
+   exactly where it started. (This is the "pedal goes dead on arrival" bug.)
+6. *Indefinitely.* Rock the pedal heel-toe-heel-toe several times. Every arrival
+   should be exact, both ways, forever -- the pedal never "finishes".
+7. *No jumps anywhere.* Move the pedal fast, slow, and reverse it mid-travel.
+   The pitch should never step or click, including right at the moment the
+   colours swap.
+8. *Retarget mid-flight.* With the pedal halfway, pick a DIFFERENT free pitch.
+   The sounding pitch must not budge at the moment you press. Continuing to the
+   toe should land exactly on the new pitch; reversing to the heel should land
+   exactly on the original one.
+9. *Toggling off freezes.* Halfway through a slide, press =[0,15]= again. The
+   note should hold its (probably between-cells) pitch, and the pedal should
+   stop affecting it. Slice 6 is what makes the volume hand-back graceful; until
+   then expect the volume to jump when you next move the pedal.
+10. *Clearing cancels.* Mid-slide, press the editmode-clear (=[12,0]= or its
+    pedal). The note should stay sounding, frozen where it was, and its target
+    should stop flashing.
+
+** things slice 1 deliberately does NOT do yet
+Don't report these as bugs:
+- The home/target colours swap only at the *ends* of the pedal's travel, not at
+  the midpoint. The midpoint flip is slice 3.
+- Picking a pitch with NOTHING in edit mode does nothing at all. The swell-from-
+  silence is slice 4.
+- Recalling a chord while pedal slide is on behaves as it always did. Chords are
+  slice 5.
+- Toggling pedal slide off hands the pedal back to volume bluntly. Slice 6.

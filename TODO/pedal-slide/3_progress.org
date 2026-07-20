@@ -1,0 +1,104 @@
+#+title: Pedal slide: rebuild progress
+#+date: 2026-07-20
+
+The build log for the rebuild specified in =6_plan.org=. (The file of this name
+that logged the FIRST, reverted implementation went away with it; the diffs it
+described survive in =5_diffs.org=.) Structured per =when-to-stop.org=.
+
+* changes to the plan's envisioned order
+** the hardware checkpoints are BATCHED, not blocking
+=6_plan.org= says "Rule for every slice: it ends with Jeff playing it. No slice
+builds on an unverified predecessor." Taken literally that means stopping after
+slice 1 and waiting -- which =when-to-stop.org= forbids ("do not stop... a
+milestone is not a reason"), and Jeff's instruction this session was to execute.
+
+So: the slices stay exactly as planned -- separate, serial, one commit each,
+each with its own wiring-level tests -- but the ear checkpoints accumulate in
+=8_verify-by-ear.org= for one hardware session rather than gating each other.
+What the rule was PROTECTING (never again a mega-phase whose failure is
+undiagnosable) is preserved by the commit-per-slice structure: if slice 4
+misbehaves at the grids, slices 1-3 are still independently verifiable and the
+bisect is one commit wide.
+
+The substitute for Jeff's ear in the meantime is the wiring harness, and it was
+checked the only way a harness can honestly be checked: *the corpse's disease
+was reintroduced deliberately* (confirm the identity hand-off without moving the
+voice-map entry) and 4 harness tests failed, including the exact
+"lands near half the interval" assertion. Then it was reverted and all 573 pass.
+
+* what's done and went well
+** slice 0 -- instrumentation
+=PEDAL_SLIDE_LOG=1= prints, per engine step, the pedal fraction, which side is
+home, and each managed voice's (key, map pitch, audible Hz). Rate-limited to
+actual pedal movement (the repaint loop runs at ~1 kHz). Ten lines, in
+=mod.rs::pedal_slide_log=.
+
+** slice 1 -- one voice, one target, arrival as role swap
+Toggle at each grid's =[0,15]=, the target pick, the anchored single segment,
+the render slew, and arrival-as-role-swap. Green, and the harness pins the three
+things the ear would check: endpoint => audible pitch exact; no discontinuity
+anywhere including across the swap; after arrival, reversing reaches the old
+home exactly.
+
+*** the fix for all three original bugs is ONE structural change
+The engine is a *plain owned field on =GridThread=*, not shared state behind a
+lock. The grid thread already owns the ring, the sink and the held map; giving
+it the engine too makes "one owner for all slide mutation" (=6_plan.org=) a fact
+about the types rather than a discipline. The expression-pedal thread can no
+longer reach the engine at all: it publishes its normalized position into an
+atomic and that is its entire pedal-slide duty. The reverted build's ranked
+cause 1 -- "a sliding voice's identity was allowed to change mid-flight, across
+threads, asynchronously" -- is now unrepresentable.
+
+*** identity moves only on confirmation
+=on_pedal= never mutates a pairing's key or filed pitch. It PROPOSES =Refile=s;
+the owner applies each to the ring, the held map and the sink, and only then
+calls =confirm_refile=. A refile the owner declines leaves the pairing exactly
+as it was. So the engine can only ever learn of a move that actually landed --
+which is the general form of the specific bug, not just a patch for it.
+
+* what's imperfect about what's done
+- *The re-file is declined when its destination pitch is occupied* (something
+  was struck and sustained at the target between the pick and the arrival). The
+  flight continues correctly and audibly; only the FILING lags, so that one note
+  paints at the cell it came from until the collision clears. Nothing dies,
+  which was the alternative (=HashMap::insert= would have silently killed the
+  occupant). Neither =1_vision= nor =2_discussion= considers this case -- see
+  the questions section below.
+- The =Kind= enum has one variant (=Pitch=) until slice 4 adds the fades, and
+  =Shape::Quartic= is proven by unit test but unused until then. Deliberate: the
+  shapes were lifted whole from =5_diffs.org= because that math was never the
+  bug, and splitting them across slices would have meant re-deriving them.
+- Toggling pedal slide off hands the pedal back to volume bluntly (the next CC
+  jumps the volume to the pedal's physical position). Slice 6.
+
+* choices determining the future
+** the drone's KEY still moves with its filed pitch (deviating from 6_plan)
+=6_plan.org= recommended option (a): "a slide voice's KEY never changes
+mid-flight -- filing/painting alias through a lookup". I did the opposite, and
+deliberately: *drone key == filed pitch* is an invariant the entire runtime
+already relies on (=sustain_key=, =end_drones_at=, =cut_sustained=,
+=glide_sustained_to=, the chord save). An alias would have broken that invariant
+globally, for every caller, to serve one rare case -- more machinery, not less.
+
+The reason (a) looked necessary was that re-keying had to cross a thread
+boundary. It no longer does: the re-key, the ring re-file and the held-map
+update are three statements in one function in the thread that owns all three.
+That is the same thing the existing pitch-DRAG path does, and it has never had
+this class of bug.
+
+** the pedal-slide slew is its own field, not a reuse of the glide
+=slide_freq_target= + =voices::SLIDE_SLEW_SECS=, a sibling of the =grid_gain=
+slew. I tried to avoid the new field by reusing =freq_target= /
+=glide_per_sample= (which would have touched no shared engine code and no ~25
+test literals), and it does not work: sized for a live controller, that walk's
+per-sample RATIO lands within a few f32 epsilons of 1.0, so small pedal
+increments round to no motion and the pitch stair-steps -- exactly the zipper
+the smoother exists to remove. =2_discussion='s "DONE (probably)" reading was
+right, and now it is right for a recorded reason.
+
+** StepPitch, a newtype for fractional EDO steps
+=6_plan.org= asked for it and it earns its keep in one specific place: fractional
+steps and Hz are both =f32=, and confusing them is a silent detune rather than a
+compile error. =Segments= itself stays units-free (it carries amplitude for the
+fades), so the newtype appears only at the boundary where the confusion lives.

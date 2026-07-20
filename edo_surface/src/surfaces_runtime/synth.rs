@@ -330,7 +330,7 @@ impl SurfaceSink {
         timbre,
         fader_gain: fader,
         grid_gain: pedal,
-        grid_gain_target: pedal,
+        grid_gain_target: pedal, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -601,6 +601,48 @@ impl SurfaceSink {
     (self.release_secs, self.sample_rate)
   }
 
+  /// This grid's current expression-pedal volume, for the pedal-slide toggle to freeze
+  /// at when it takes the pedal off volume duty.
+  pub(super) fn frozen_pedal_gain(&self) -> f32 {
+    self.pedal_gain()
+  }
+
+  /// Re-key a pedal-slide DRONE from filed pitch `from` to `to`: the voice is now
+  /// painted at the other end's pitch, and a drone's key IS its filed pitch, so the
+  /// two move together. Everything live about the voice continues -- it is the same
+  /// voice, mid-glide, with its `slide_freq_target` intact.
+  ///
+  /// Reports whether it happened. It does NOT happen when `to` is already occupied:
+  /// something else is sounding there (a note struck since the target was picked), and
+  /// a `HashMap::insert` would silently kill it. The caller then leaves the pairing
+  /// filed where it is, which is why this is a request rather than an order -- the
+  /// engine only ever learns of a move that really landed
+  /// (`pedal_slide::PedalSlideState::confirm_refile`).
+  pub fn rekey_drone(&mut self, from: i32, to: i32) -> bool {
+    if from == to {
+      return false;
+    }
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    if voices.contains_key(&sustain_key(self.grid, to)) {
+      return false;
+    }
+    match voices.remove(&sustain_key(self.grid, from)) {
+      Some(state) => {
+        voices.insert(sustain_key(self.grid, to), state);
+        true
+      }
+      None => false,
+    }
+  }
+
+  /// Is a voice keyed here at all? The re-file path asks before moving a FINGERED
+  /// slide voice's filed pitch, which re-keys nothing but must still not collide with
+  /// a drone already ringing at the destination.
+  pub fn drone_exists(&self, pitch: i32) -> bool {
+    let voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    voices.contains_key(&sustain_key(self.grid, pitch))
+  }
+
   /// Recall one stored chord voice (chord-storage-v2): spawn it under
   /// `chord_key(grid, seq)` exactly as saved -- its own timbre and settled
   /// fader/pedal components, its oscillator starting at the stored RELATIVE phase,
@@ -640,7 +682,7 @@ impl SurfaceSink {
         timbre: v.timbre,
         fader_gain: v.fader_gain,
         grid_gain: v.pedal_gain,
-        grid_gain_target: v.pedal_gain,
+        grid_gain_target: v.pedal_gain, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -835,6 +877,47 @@ pub fn end_drones_at(
     {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (release_secs * sample_rate);
+    }
+  }
+}
+
+/// Apply one round of pedal-slide drives (`pedal_slide::PedalSlideState::drives`): aim
+/// each managed voice's pitch through its one-pole `slide_freq_target` smoother, which
+/// is what makes a CC-rate stream of targets sound like a continuous glide.
+///
+/// A drive whose voice is absent is skipped -- but unlike the reverted build, that can
+/// only mean the voice genuinely ended (a release tail, a clear), never that its key
+/// moved out from under the engine: keys change only through a confirmed re-file, in
+/// this same thread, after the map has already been updated.
+pub(super) fn apply_slide_drives(
+  voices: &Arc<Mutex<VoiceMap>>,
+  drives: &[super::pedal_slide::Drive],
+  fund: f64,
+  edo: i32,
+) {
+  if drives.is_empty() {
+    return;
+  }
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for d in drives {
+    if let Some(state) = voices.get_mut(&d.voice) {
+      state.slide_freq_target = d.pitch.to_hz(fund, edo);
+    }
+  }
+}
+
+/// Freeze named pedal-slide voices: clear `slide_freq_target` so each holds the `freq`
+/// it had reached (a toggle-off, a deselection, a clear mid-flight). Smoothness above
+/// all -- a frozen voice may sit microtonally between cells, and a later drag tidies it.
+/// A voice that has already ended is simply absent.
+pub fn freeze_slide_voices(voices: &Arc<Mutex<VoiceMap>>, keys: &[VoiceSource]) {
+  if keys.is_empty() {
+    return;
+  }
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for key in keys {
+    if let Some(state) = voices.get_mut(key) {
+      state.slide_freq_target = 0.0;
     }
   }
 }
