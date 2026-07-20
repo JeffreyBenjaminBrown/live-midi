@@ -223,6 +223,14 @@ slash at 25 ms/step (=fine::x_walk_cells=, 10-step lap), priority flipped --
 lit dots overwrite everything on the play surface, dark cells nothing;
 overlays still occlude (interpretation flagged in the queue). 751 passed.
 
+* DONE 15. dancers toggle trails (chat)
+A dance corner over a TRAILED cell now paints BLACK for its slot (inverse
+video) instead of blending in dim-on-dim -- "when the dancer is over the
+trail, the trail should temporarily become black". Over dark cells the
+dancers stay dim; the yield to bright notes is unchanged. One branch in the
+compositor; the two blend tests flipped to toggle tests.
+=cargo test --workspace=: 751 passed, 0 failed.
+
 * what's imperfect about what's done
 - The timbre crossfade renders the OLD timbre's modulators off the voice's
   shared LFO phases (advanced at the new timbre's rates) for the fade's

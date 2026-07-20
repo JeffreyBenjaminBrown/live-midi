@@ -192,7 +192,14 @@ pub fn levels_for_grid(
         if x_cells.contains(&(x, y)) {
           BRIGHT
         } else if dance_cells.contains(&(x, y)) && super::dance::draws_over(under) {
-          DIM
+          // A dancer TOGGLES a trailed cell (Jeff): dim over dark as ever, but
+          // BLACK over a trail -- dim on dim was invisible, and the dark hole
+          // walking through the trail is what makes the dance legible there.
+          if base == DIM {
+            OFF
+          } else {
+            DIM
+          }
         } else {
           base
         }
@@ -485,16 +492,16 @@ mod tests {
     assert_eq!(at(&levels, 5, 5), OFF, "only the corner, not the note's own cell");
   }
 
-  /// Over a trailed cell the dance still draws, but dim on dim is indistinguishable
-  /// -- the corner blends in for that slot (the accepted price of dim dancers).
+  /// Over a trailed cell the dance draws INVERTED -- the trail goes black for the
+  /// slot (Jeff's "toggle the color of a trail"; dim on dim was invisible).
   #[test]
-  fn a_danced_cell_over_a_trail_stays_dim() {
+  fn a_danced_cell_toggles_a_trailed_cell_black() {
     let trail: HashSet<i32> = [class_at(0, 5, 4)].into_iter().collect();
     let danced = levels_for_grid(
       &empty(), &trail, &dance_at(&[(5, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&danced, 5, 4), DIM, "dance + trail = still just dim");
+    assert_eq!(at(&danced, 5, 4), OFF, "dance over trail = the trail toggles black");
   }
 
   /// ...but it YIELDS to a sounding note, which is real information. The cell simply
@@ -532,13 +539,13 @@ mod tests {
   }
 
   #[test]
-  fn a_square_danced_cell_blends_with_a_trail_and_yields_to_a_sounding_note() {
+  fn a_square_danced_cell_toggles_a_trail_and_yields_to_a_sounding_note() {
     let trail: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let danced = levels_for_grid(
       &empty(), &trail, &dance_at(&[(6, 4)]), &no_x(), NO_FLASH, DIM_ON, FULL, NONE, 0, NONE, -1, NONE,
       &[], 0, XS, YS, EDO, 16, 16,
     );
-    assert_eq!(at(&danced, 6, 4), DIM, "dance + trail = dim, diamond or square alike");
+    assert_eq!(at(&danced, 6, 4), OFF, "dance over trail toggles black, diamond or square alike");
 
     let sounding: HashSet<i32> = [class_at(0, 6, 4)].into_iter().collect();
     let yielded = levels_for_grid(
