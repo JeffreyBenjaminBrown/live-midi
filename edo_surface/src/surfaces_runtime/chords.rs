@@ -315,7 +315,7 @@ mod tests {
       factored_pulse_phase: pulse_phase,
       fader_gain: 1.0,
       grid_gain: 1.0,
-      grid_gain_target: 1.0, slide_freq_target: 0.0,
+      grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0,
       timbre: Timbre::default(),
       am_phase: 0.0,
       fm_phase: 0.0,

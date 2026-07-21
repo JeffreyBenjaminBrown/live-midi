@@ -344,6 +344,17 @@ deliberately dropped (=2_discussion= 1a chose the MPC-20 path).
 - *Absolute and safe.* The position is absolute, so a pedal parked at 0
   recovers; and until a pedal's first CC it contributes unity, so an
   unplugged pedal never mutes its grid.
+- *Edit mode aims it (queues/branch-3.org).* While a grid has an EDIT
+  SELECTION, the pedal stops driving the whole grid and drives ONLY the edited
+  voices -- a per-voice volume trim, with everything else held where it was. Each
+  edited voice records how loud you set it RELATIVE to the grid's held level, and
+  that relative trim then RIDES the pedal once you deselect: from then on the
+  uniform pedal moves everyone, but the voice you trimmed stays that same
+  fraction louder or quieter. So the workflow is "edit a voice, balance it with
+  the pedal, deselect -- and the balance sticks." (Trims are capped at +18 dB so
+  balancing against a near-silent grid can't blow a voice up when you turn the
+  grid back up.) A fresh strike starts untrimmed; see queues/branch-3.org for the
+  handful of edge rulings.
 
 * pedal slide
 
@@ -824,7 +835,11 @@ already ringing on its own reason:
   queues/branch-2.org "the uniform pedal".) A recall starts each voice at
   its SAVED loudness, and it keeps that loudness until the EX-P next moves
   -- the pedal sends nothing untouched -- after which the chord voice
-  follows the pedal like every other voice on the grid, edited or not.
+  follows the pedal like every other voice on the grid. The one exception
+  (queues/branch-3.org, see "the EX-P volume pedals" -> "edit mode aims it"):
+  while something IS edited the pedal drives only the edited voices, so a
+  recalled-and-edited chord voice can be balanced against the rest and keeps
+  that trim afterward.
 - *It dances like a sustained note.* Every chord voice square-dances (the
   playing-while-not-fingered marker, whatever the origin), an EDITED chord
   voice adds the diamond -- the same 8-position circle an edited piano note

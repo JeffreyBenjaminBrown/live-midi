@@ -1,4 +1,66 @@
 These are ordered; please start from the top.
+* DONE (probably) target volume changes at edit-mode voices
+If any voice is in edit mode, the pedal changes only the volume of those voices.
+They receive a per-voice scale factor. Later, when edit mode is off,
+volume changes from the pedal will apply to them too,
+but they will retain their relative volume scale factor.
+** DONE (probably) claude: implemented -- per-voice pedal_scale + edit-only pedal
+This revives edit-targeting (which the "uniform pedal" ruling deleted --
+TODO/DONE.org "The uniform pedal") but with the retention twist you added here.
+
+The model. Every voice grows a =pedal_scale= (default 1.0): a relative multiplier
+on its pedal-volume component. Its applied pedal gain is =base * pedal_scale=,
+where =base= is the grid's shared pedal gain (=pedal_gains[grid]=).
+- No voice edited on a grid: the pedal moves =base= (as the uniform pedal did),
+  and every voice gets =base * its pedal_scale= -- so any trims dialed in earlier
+  ride along, which is the "retain their relative scale" half.
+- Some voice edited: the pedal does NOT move =base=. It sets each EDIT voice's
+  =pedal_scale = V / base= (V = the pedal's tapered value) and drives it to V, and
+  leaves every non-edit voice frozen -- the "changes only those voices" half. When
+  you deselect, the uniform path resumes and the edited voices sit at
+  =base * (V/base_at_edit)=, keeping the ratio you set as the pedal moves everyone.
+
+Continuous at both handoffs (at deselect-time =base= still equals the frozen
+value, so nothing jumps), and the per-sample =grid_gain= slew smooths every move.
+
+Which voices count as "edited" mirrors the factored-pulse multipliers exactly
+(=synth::scale_factored_pulse_rate=): edit-mode drones + fingered cells holding an
+edit pitch + edit-flagged chord voices. The pedal thread gained read access to the
+ring + held map to see them (it deliberately had none under the uniform pedal;
+that premise is what this item overturns).
+
+Files: =pedal_scale= field (=sawwave/types.rs=, threaded through the render's gain
+product implicitly via =grid_gain_target=); =synth::set_grid_pedal_gain= now
+multiplies the scale, =synth::apply_edit_pedal_scale= is the edit path;
+=pedal_volume.rs= chooses between them per pedal move; =mod.rs= hands the thread
+the ring + held map. Tests: unit (both synth fns) + end-to-end through the pedal
+loop (edit -> only the edited voice moves; deselect -> it retains its ratio).
+Readme: "the EX-P volume pedals".
+** TODO claude: three rulings I made by default -- flip any cheaply
+Each is a local rule; say the word and I change it. I went with the reading that
+makes the pedal behave most like the absolute volume fader it already is.
+*** TODO several edited voices at once: they all snap to the pedal's absolute value
+Moving the pedal while two voices are edited sets BOTH to the same tapered value V
+(so they end at the same loudness, each storing scale V/base). It does NOT scale
+them proportionally to preserve a balance they already had between them. Rationale:
+the pedal is an absolute fader everywhere else, so "edit two, ride the pedal" reads
+as "set these two to here." If instead you want the pedal to nudge a GROUP while
+keeping their internal balance, that is a different (relative/ratio) controller and
+I'll build that instead.
+*** TODO editing while the grid volume is near zero gives an ill-defined scale
+=pedal_scale = V / base=. If you enter edit mode with the grid pedal near the heel
+(=base ~ 0=), the relative scale blows up (a voice louder than a silent grid is
+"infinitely" louder). I floor =base= at 0.02 and cap the stored scale at 8x
+(+18 dB) so nothing explodes when you later raise the grid. Both numbers are
+guesses; and an alternative model -- storing a pedal-POSITION offset instead of a
+gain ratio, which is constant-dB in the taper's exponential region and simply has
+no zero to divide by -- would sidestep it entirely. Say if you'd prefer that.
+*** TODO a re-strike resets a trimmed voice to scale 1.0
+Re-fingering a trimmed sustained note (the envelope-only retrigger) spawns a fresh
+voice at =pedal_scale = 1.0=, so its trim is forgotten and it jumps to grid volume.
+Preserving it means threading the scale through =cut_sustained= -> =note_on_continuing=;
+I left it for now since a re-strike reads as "play it again." Flip if you want the
+trim to survive a retrigger.
 * DONE (probably) entering slide mode
 should, if there are no notes currently in edit mode,
 add whatever is on the board to the edit-mode set:
