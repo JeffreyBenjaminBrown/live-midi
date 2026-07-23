@@ -4,6 +4,35 @@ find_casio_client() {
   aconnect -l | grep -B1 'CASIO USB-MIDI MIDI 1' | head -1 | grep -oP 'client \K\d+'
 }
 
+# Kernel-type ALSA clients that are hardware MIDI devices but NOT a piano-style
+# keyboard: the ALSA plumbing itself plus the known pedal boards.
+KEYBOARD_EXCLUDE_REGEX="client 0:|'System'|Midi Through|SSCOM|SoftStep|MPC"
+
+# The keyboard need not be the Casio: find the hardware MIDI client that isn't a
+# known non-keyboard. Prefers the Casio when present (exact legacy behavior);
+# otherwise, if exactly one candidate remains, that's the keyboard. Zero or
+# several candidates print nothing (the caller warns / the user connects by hand).
+find_keyboard_client() {
+  local casio candidates
+  casio=$(find_casio_client)
+  if [[ -n "$casio" ]]; then
+    echo "$casio"
+    return
+  fi
+  candidates=$(aconnect -l \
+    | grep -P "^client \d+: .*type=kernel" \
+    | grep -Ev "$KEYBOARD_EXCLUDE_REGEX" \
+    | grep -oP 'client \K\d+')
+  if [[ $(wc -w <<< "$candidates") -eq 1 ]]; then
+    echo "$candidates"
+  elif [[ -n "$candidates" ]]; then
+    echo "  Warning: several hardware MIDI devices could be the keyboard:" >&2
+    aconnect -l | grep -P "^client \d+: .*type=kernel" \
+      | grep -Ev "$KEYBOARD_EXCLUDE_REGEX" | sed 's/^/    /' >&2
+    echo "  Connect by hand: aconnect <client>:0 <rig-client>:0" >&2
+  fi
+}
+
 find_alsa_client() {
   local name="$1"
   aconnect -l | grep "$name" | grep -oP 'client \K\d+'
@@ -12,18 +41,18 @@ find_alsa_client() {
 connect_keyboard_to_alsa_client() {
   local label="$1"
   local client_name="$2"
-  local casio
+  local keyboard
   local client
 
   echo "=== ALSA Sequencer (keyboard -> $label) ==="
 
-  casio=$(find_casio_client)
+  keyboard=$(find_keyboard_client)
   client=$(find_alsa_client "$client_name")
 
-  echo "  CASIO: $casio, $client_name: $client"
+  echo "  keyboard: $keyboard, $client_name: $client"
 
-  if [[ -n "$casio" && -n "$client" ]]; then
-    if aconnect "$casio:0" "$client:0" 2>/tmp/connect-midi-aconnect.err; then
+  if [[ -n "$keyboard" && -n "$client" ]]; then
+    if aconnect "$keyboard:0" "$client:0" 2>/tmp/connect-midi-aconnect.err; then
       echo "  Connected: keyboard -> $label"
     elif grep -q 'Connection is already subscribed' /tmp/connect-midi-aconnect.err; then
       echo "  Already connected: keyboard -> $label"

@@ -138,6 +138,10 @@ Still needs the real world (check while online if possible):
   floods or discovery misbehaves: host-side ~systemctl --user restart
   serialoscd~, unplug/replug -- see [[file:RUNTIME-NOTES.org]] "Monome and
   serialosc operations".
-- The keyboard -> =...-in= connection (the script matches the keyboard port by
-  name; a different keyboard may need a manual ~aconnect~).
+- The keyboard -> =...-in= connection. The script no longer requires the Casio
+  (2026-07-23): it prefers the Casio when present, else picks the ONE hardware
+  MIDI device that isn't a known non-keyboard (SoftSteps, Midi Through, the
+  MPC-20 bridge). Any single unknown keyboard should therefore just work. If
+  several candidates exist it lists them and you connect by hand:
+  ~aconnect <keyboard-client>:0 <rig-client>:0~ (clients from ~aconnect -l~).
 - Reaper + Pianoteq on the host: that config is outside this repo entirely.
