@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::record::{RecordRuntime, SharedOutputGate};
 use super::render::{
   blank_rendered_cols, led_phases, next_render_wait, render_to_monome, ColorClock, ANCHOR_COLOR,
-  IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR,
+  IMAGE_COLOR, SOUNDING_COLOR, PREIMAGE_ROW_FLASH_COLOR, SLOW_FLASH_COLOR, FAKE_DIM_COLOR,
 };
 use super::state::{PreimageRowState, RemappableEdoState, SoundingPitchCounts};
 use super::window_behavior::{behavior_for_cell, KeyContext, WindowBehavior};
@@ -32,7 +32,8 @@ pub(crate) fn run_monome_thread(
     let mut state = state.lock().unwrap();
     state.rig = state
       .rig
-      .with_grid_size(device_info.grid_w, device_info.grid_h);
+      .with_grid_size(device_info.grid_w, device_info.grid_h)
+      .with_monobright(monome::is_monobright(&device_info.id));
   }
   eprintln!(
     "monome: id={} type={} port={} size={}x{}",
@@ -45,6 +46,8 @@ pub(crate) fn run_monome_thread(
   let mut anchor_clock = ColorClock::new(ANCHOR_COLOR, Instant::now());
   let mut image_clock = ColorClock::new(IMAGE_COLOR, Instant::now());
   let mut preimage_row_flash_clock = ColorClock::new(PREIMAGE_ROW_FLASH_COLOR, Instant::now());
+  let mut slow_flash_clock = ColorClock::new(SLOW_FLASH_COLOR, Instant::now());
+  let mut fake_dim_clock = ColorClock::new(FAKE_DIM_COLOR, Instant::now());
   let mut preimage_row = PreimageRowState::new();
   let now = Instant::now();
   let state_guard = state.lock().unwrap();
@@ -65,6 +68,8 @@ pub(crate) fn run_monome_thread(
       anchor_clock,
       image_clock,
       preimage_row_flash_clock,
+      slow_flash_clock,
+      fake_dim_clock,
     ),
     &mut rendered_cols,
   );
@@ -80,6 +85,8 @@ pub(crate) fn run_monome_thread(
     dirty |= anchor_clock.advance_if_due(now);
     dirty |= image_clock.advance_if_due(now);
     dirty |= preimage_row_flash_clock.advance_if_due(now);
+    dirty |= slow_flash_clock.advance_if_due(now);
+    dirty |= fake_dim_clock.advance_if_due(now);
     {
       let mut recorder_guard = recorder.lock().unwrap();
       if recorder_guard.erase_ons_held {
@@ -105,6 +112,8 @@ pub(crate) fn run_monome_thread(
         anchor_clock,
         image_clock,
         preimage_row_flash_clock,
+        slow_flash_clock,
+        fake_dim_clock,
         &preimage_row.flash_until,
       )))
       .unwrap();
@@ -127,6 +136,8 @@ pub(crate) fn run_monome_thread(
         anchor_clock,
         image_clock,
         preimage_row_flash_clock,
+        slow_flash_clock,
+        fake_dim_clock,
       ),
       &mut rendered_cols,
     );
@@ -170,6 +181,8 @@ pub(crate) fn run_monome_thread(
               anchor_clock,
               image_clock,
               preimage_row_flash_clock,
+              slow_flash_clock,
+              fake_dim_clock,
             ),
             &mut rendered_cols,
           );
@@ -218,6 +231,8 @@ pub(crate) fn run_monome_thread(
           anchor_clock,
           image_clock,
           preimage_row_flash_clock,
+          slow_flash_clock,
+          fake_dim_clock,
         ),
         &mut rendered_cols,
       );

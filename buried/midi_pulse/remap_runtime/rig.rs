@@ -20,6 +20,10 @@ pub(crate) struct RemapRig {
   // has no scale-saving feature.
   pub(crate) scale_slots: Option<[i32; 4]>,
   pub(crate) scale_controls: Vec<(ScaleControl, (i32, i32))>,
+  // A monobright grid (an old Series 256) can't dim a single LED, so rendering
+  // fakes DIM with a fast flash. Stamped from the device id at discovery
+  // (`monome::is_monobright`), like the grid size; false until then.
+  pub(crate) monobright: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +54,7 @@ impl RemapRig {
       record_controls: default_record_controls(),
       scale_slots: None,
       scale_controls: vec![],
+      monobright: false,
     }
   }
 
@@ -66,7 +71,13 @@ impl RemapRig {
       record_controls: self.record_controls.clone(),
       scale_slots: self.scale_slots,
       scale_controls: self.scale_controls.clone(),
+      monobright: self.monobright,
     }
+  }
+
+  pub(crate) fn with_monobright(mut self, monobright: bool) -> Self {
+    self.monobright = monobright;
+    self
   }
 
   pub(crate) fn with_record_controls(

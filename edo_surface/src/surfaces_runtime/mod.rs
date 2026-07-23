@@ -1187,14 +1187,8 @@ fn exit_fine_transpose_if_empty(rt: &mut GridThread) {
   }
 }
 
-/// A serialosc serial id that names an old monobright "Series" grid (per-LED on/off
-/// only, so it thresholds any level <= 7 to off). The newer format (e.g. `m0000102`) is
-/// varibright. Both a monobright 256 and a varibright 16x16 report type "monome 256", so
-/// the id -- not the type string -- is what distinguishes them. Heuristic; the hardware
-/// pass confirms it (a monobright grid drops a level-4 cell to dark).
-fn is_monobright(id: &str) -> bool {
-  ["m40h-", "m64-", "m128-", "m256-"].iter().any(|p| id.starts_with(p))
-}
+// `is_monobright` moved to `crate::monome` so the remap runtime can share it.
+use crate::monome::is_monobright;
 
 /// Block SIGINT/SIGTERM process-wide (so every later-spawned thread inherits the
 /// block) and wait for them on a dedicated thread that sets STOP -- letting the main

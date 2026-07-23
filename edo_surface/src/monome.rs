@@ -17,6 +17,15 @@ pub fn detector_port() -> u16 {
     .unwrap_or(DETECTOR_PORT)
 }
 
+/// A serialosc serial id that names an old monobright "Series" grid (per-LED on/off
+/// only, so it thresholds any level <= 7 to off). The newer format (e.g. `m0000102`) is
+/// varibright. Both a monobright 256 and a varibright 16x16 report type "monome 256", so
+/// the id -- not the type string -- is what distinguishes them. Heuristic; the hardware
+/// pass confirms it (a monobright grid drops a level-4 cell to dark).
+pub fn is_monobright(id: &str) -> bool {
+  ["m40h-", "m64-", "m128-", "m256-"].iter().any(|p| id.starts_with(p))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceInfo {
   pub id: String,

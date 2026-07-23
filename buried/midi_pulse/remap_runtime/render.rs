@@ -34,6 +34,20 @@ pub(crate) const PREIMAGE_ROW_FLASH_COLOR: Color = Color::Duty {
   period: PREIMAGE_ROW_FLASH_WAVELENGTH,
   fraction_on: PREIMAGE_ROW_FLASH_FRACTION_ON,
 };
+/// The slow "I'm here but empty/unarmed" flash: 100 ms on, 100 ms off. Empty
+/// scale slots and unarmed scale-arm buttons wear it so they are visible even
+/// on a monobright grid.
+pub(crate) const SLOW_FLASH_COLOR: Color = Color::Duty {
+  period: Duration::from_millis(200),
+  fraction_on: 0.5,
+};
+/// The monobright fake-dim flash: fast and low-duty, so a full-brightness LED
+/// reads as "dim" on a grid that can't actually dim (15 ms on / 45 ms off --
+/// clearly faster than the slow flash, mostly off so it reads dimmer).
+pub(crate) const FAKE_DIM_COLOR: Color = Color::Duty {
+  period: Duration::from_millis(60),
+  fraction_on: 0.25,
+};
 
 static LED_TRACE_STARTED: OnceLock<Instant> = OnceLock::new();
 
@@ -168,6 +182,8 @@ pub(crate) struct LedPhases {
   pub(crate) anchor_on: bool,
   pub(crate) image_on: bool,
   pub(crate) preimage_row_flash_on: bool,
+  pub(crate) slow_flash_on: bool,
+  pub(crate) fake_dim_on: bool,
 }
 
 pub(crate) fn blank_rendered_cols(rig: &RemapRig) -> Vec<u8> {
@@ -184,12 +200,16 @@ pub(crate) fn led_phases(
   anchor_clock: ColorClock,
   image_clock: ColorClock,
   preimage_row_flash_clock: ColorClock,
+  slow_flash_clock: ColorClock,
+  fake_dim_clock: ColorClock,
 ) -> LedPhases {
   LedPhases {
     sounding_on: sounding_clock.is_on(),
     anchor_on: anchor_clock.is_on(),
     image_on: image_clock.is_on(),
     preimage_row_flash_on: preimage_row_flash_clock.is_on(),
+    slow_flash_on: slow_flash_clock.is_on(),
+    fake_dim_on: fake_dim_clock.is_on(),
   }
 }
 
@@ -199,6 +219,8 @@ pub(crate) fn next_render_wait(
   anchor_clock: ColorClock,
   image_clock: ColorClock,
   preimage_row_flash_clock: ColorClock,
+  slow_flash_clock: ColorClock,
+  fake_dim_clock: ColorClock,
   preimage_row_flash_until: &[Option<Instant>; 12],
 ) -> Duration {
   let next_transition = [
@@ -206,6 +228,8 @@ pub(crate) fn next_render_wait(
     anchor_clock.wait(now),
     image_clock.wait(now),
     preimage_row_flash_clock.wait(now),
+    slow_flash_clock.wait(now),
+    fake_dim_clock.wait(now),
     preimage_row_flash_until
       .iter()
       .flatten()
@@ -411,14 +435,26 @@ pub(crate) fn render_scale_slots(ctx: &mut RenderContext<'_>) {
       continue;
     }
     let level = match ctx.state.scale.slots.get(index).copied().flatten() {
-      // Empty slot: dark.
-      None => LED_LEVEL_OFF,
-      // Filled slot: solid when it is the active scale, otherwise a dim flash.
+      // Empty slot: the slow flash, so the slot grid is visible (even on a
+      // monobright grid, where a steady dim cell would read as dark).
+      None => {
+        if ctx.phases.slow_flash_on {
+          LED_LEVEL_FULL
+        } else {
+          LED_LEVEL_OFF
+        }
+      }
+      // Filled slot: solid when it is the active (last recalled) scale -- and it
+      // STAYS solid if the live map is edited away from it; the player knows.
+      // Otherwise dim: a native dim level on a varibright grid, the fast
+      // fake-dim flash on a monobright one.
       Some(_) => {
         if scale::slot_is_active(ctx.state, index) {
           LED_LEVEL_FULL
-        } else if ctx.phases.preimage_row_flash_on {
+        } else if !ctx.state.rig.monobright {
           LED_LEVEL_IMAGE
+        } else if ctx.phases.fake_dim_on {
+          LED_LEVEL_FULL
         } else {
           LED_LEVEL_OFF
         }
@@ -435,15 +471,14 @@ pub(crate) fn render_scale_control(ctx: &mut RenderContext<'_>, control: ScaleCo
   else {
     return;
   };
-  // Armed: a bright flash. Idle: a dim solid so the button stays discoverable.
+  // Armed: solid full. Unarmed: the slow flash, so the button is visible even
+  // on a monobright grid (where the old dim-solid idle read as dark).
   let level = if ctx.state.scale.armed == Some(control) {
-    if ctx.phases.preimage_row_flash_on {
-      LED_LEVEL_FULL
-    } else {
-      LED_LEVEL_OFF
-    }
+    LED_LEVEL_FULL
+  } else if ctx.phases.slow_flash_on {
+    LED_LEVEL_FULL
   } else {
-    LED_LEVEL_IMAGE
+    LED_LEVEL_OFF
   };
   ctx.levels[(y * ctx.state.rig.grid_w + x) as usize] = level;
 }
@@ -535,6 +570,8 @@ mod tests {
       anchor_on,
       image_on: true,
       preimage_row_flash_on: false,
+      slow_flash_on: false,
+      fake_dim_on: false,
     }
   }
 
@@ -581,6 +618,63 @@ mod tests {
     let levels = render_led_levels(&state, &sounding, &recorder, phases(true, true));
     assert_eq!(level_at_grid_step(&state, &levels, 4), LED_LEVEL_FULL);
     assert_eq!(level_at_grid_step(&state, &levels, 7), LED_LEVEL_FULL);
+  }
+
+  /// Scale-slot and arm-button visibility, on both grid generations: empty slots
+  /// and unarmed arm buttons wear the slow flash; a filled inactive slot is a
+  /// native dim on varibright but the fast fake-dim flash on monobright; the
+  /// active slot and an armed button are solid full either way.
+  #[test]
+  fn scale_leds_flash_empty_slots_and_unarmed_buttons_and_fake_dim_on_monobright() {
+    use super::super::rig::RemapRig;
+    use super::super::scale::ScaleControl;
+    let store_cell = (15, 4);
+    let rig = RemapRig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 8)
+      .with_scale_slots(Some([12, 0, 13, 0])) // slots 0 and 1
+      .with_scale_controls(vec![(ScaleControl::Store, store_cell)]);
+    let slot0 = (12usize, 0usize);
+    let slot1 = (13usize, 0usize);
+    let at = |levels: &[u8], (x, y): (usize, usize)| levels[y * 16 + x];
+
+    for monobright in [false, true] {
+      let mut state = RemappableEdoState::new(rig.clone().with_monobright(monobright));
+      state.scale.slots[1] = Some(state.snapshot()); // slot 1 filled, not active
+      let sounding = SoundingPitchCounts::new(12);
+      let recorder = RecordRuntime::new();
+
+      let mut phase = phases(false, false);
+      phase.slow_flash_on = true;
+      let on = render_led_levels(&state, &sounding, &recorder, phase);
+      phase.slow_flash_on = false;
+      let off = render_led_levels(&state, &sounding, &recorder, phase);
+      // Empty slot 0 and the unarmed store button follow the slow flash.
+      assert_eq!(at(&on, slot0), LED_LEVEL_FULL);
+      assert_eq!(at(&off, slot0), LED_LEVEL_OFF);
+      assert_eq!(at(&on, (15, 4)), LED_LEVEL_FULL);
+      assert_eq!(at(&off, (15, 4)), LED_LEVEL_OFF);
+      // Filled inactive slot 1: native dim, or the fake-dim flash.
+      if monobright {
+        phase.fake_dim_on = true;
+        let dim_on = render_led_levels(&state, &sounding, &recorder, phase);
+        phase.fake_dim_on = false;
+        let dim_off = render_led_levels(&state, &sounding, &recorder, phase);
+        assert_eq!(at(&dim_on, slot1), LED_LEVEL_FULL);
+        assert_eq!(at(&dim_off, slot1), LED_LEVEL_OFF);
+      } else {
+        assert_eq!(at(&off, slot1), LED_LEVEL_IMAGE);
+      }
+
+      // Recall slot 1 (active) and arm store: both go solid full, in every phase.
+      scale::press_slot(&mut state, 1);
+      scale::toggle_arm(&mut state, ScaleControl::Store);
+      let quiet = render_led_levels(&state, &sounding, &recorder, phase);
+      assert_eq!(at(&quiet, slot1), LED_LEVEL_FULL);
+      assert_eq!(at(&quiet, (15, 4)), LED_LEVEL_FULL);
+      // The active slot stays solid even after the live map drifts from it.
+      state.map[0] = (state.map[0] + 1) % 12;
+      let drifted = render_led_levels(&state, &sounding, &recorder, phase);
+      assert_eq!(at(&drifted, slot1), LED_LEVEL_FULL);
+    }
   }
 
   #[test]
