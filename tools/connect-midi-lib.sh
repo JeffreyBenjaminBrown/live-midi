@@ -58,10 +58,13 @@ connect_keyboard_to_alsa_client() {
       echo "  Already connected: keyboard -> $label"
     else
       cat /tmp/connect-midi-aconnect.err
+      echo "  To do it by hand: aconnect $keyboard:0 $client:0"
       return 1
     fi
   else
-    echo "  Warning: Could not find ALSA ports"
+    [[ -z "$keyboard" ]] && echo "  Warning: no keyboard found (aconnect -l shows no hardware MIDI device that isn't a known non-keyboard). Plug it in and rerun, or connect by hand: aconnect <keyboard-client>:0 <rig-client>:0"
+    [[ -z "$client" ]] && echo "  Warning: '$client_name' not found -- is the rig runtime running? Start it, then rerun this script."
+    return 1
   fi
 }
 
@@ -76,6 +79,9 @@ connect_pipewire_midi() {
     echo "  Already connected: $label"
   else
     cat /tmp/connect-midi-pw-link.err
+    echo "  Could not connect $label."
+    echo "  (Is the source's program running? Is Reaper up? pw-link -o / pw-link -i list the live ports.)"
+    echo "  To do it by hand once both ends exist: pw-link \"$source\" \"$dest\""
     return 1
   fi
 }
@@ -126,6 +132,7 @@ connect_reaper_to_primary_audio_out() {
     echo "  Already connected: $reaper_l -> ${sink_label}:playback_FL"
   else
     cat /tmp/connect-midi-pw-link-audio.err
+    echo "  To do it by hand: pw-link $reaper_l ${sink}:playback_FL"
     return 1
   fi
 
@@ -135,6 +142,7 @@ connect_reaper_to_primary_audio_out() {
     echo "  Already connected: $reaper_r -> ${sink_label}:playback_FR"
   else
     cat /tmp/connect-midi-pw-link-audio.err
+    echo "  To do it by hand: pw-link $reaper_r ${sink}:playback_FR"
     return 1
   fi
 }

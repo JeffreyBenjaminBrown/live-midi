@@ -55,8 +55,15 @@ midi_output="$(table_string "midi.output" "virtual_name")"
 
 echo "=== midi_pulse rig: $RIG_NAME ==="
 
+# Robustness: each connection step runs even if an earlier one failed, and a
+# failed step explains itself (and how to do it by hand) rather than killing
+# the script -- so a missing keyboard still gets you the Reaper wiring, and
+# vice versa. FAILED_STEPS collects what to look at.
+FAILED_STEPS=()
+
 if [[ -n "$midi_input" ]]; then
-  connect_keyboard_to_alsa_client "$RIG_NAME" "$midi_input"
+  connect_keyboard_to_alsa_client "$RIG_NAME" "$midi_input" \
+    || FAILED_STEPS+=("keyboard -> $midi_input")
 else
   echo "No [midi.input] virtual_name in rig; skipping keyboard input."
 fi
@@ -67,13 +74,22 @@ if [[ -n "$midi_output" ]]; then
   connect_pipewire_midi \
     "Midi-Bridge:$midi_output:(capture_0) out" \
     "REAPER:MIDI Input 1" \
-    "$midi_output -> REAPER MIDI Input 1"
+    "$midi_output -> REAPER MIDI Input 1" \
+    || FAILED_STEPS+=("$midi_output -> Reaper MIDI")
 else
   echo "No [midi.output] virtual_name in rig; skipping MIDI output."
 fi
 
 echo ""
-connect_reaper_to_primary_audio_out
+connect_reaper_to_primary_audio_out \
+  || FAILED_STEPS+=("Reaper -> audio out")
 
 echo ""
-echo "Done!"
+if [[ ${#FAILED_STEPS[@]} -eq 0 ]]; then
+  echo "Done!"
+else
+  echo "Done, but ${#FAILED_STEPS[@]} step(s) could not connect (details above):"
+  printf '  - %s\n' "${FAILED_STEPS[@]}"
+  echo "Fix the cause (or connect by hand as shown) and rerun; already-made connections are kept."
+  exit 1
+fi

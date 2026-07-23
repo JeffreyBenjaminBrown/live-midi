@@ -59,6 +59,28 @@ must exist) and after Reaper is running.
 Manual equivalents, if the script's guesses are wrong, are in
 [[file:RUNTIME-NOTES.org]] "MIDI connection recipes".
 
+* robustness of the connection script
+~connect-midi.sh~ never dies half-way: every step runs even when an earlier one
+failed, each failed step prints WHY it failed and the exact command to make
+that connection by hand, and the script ends with a summary of what did not
+connect (exit 1) or ~Done!~ (exit 0). Concretely:
+
+- *No keyboard found* (or the runtime's =...-in= port missing because the rig
+  isn't running): a warning names which end is missing; the MIDI-to-Reaper and
+  audio steps still run. Manual fallback:
+  ~aconnect <keyboard-client>:0 <rig-client>:0~ (client numbers from
+  ~aconnect -l~).
+- *Several possible keyboards*: they are listed and none is guessed; connect
+  the right one by hand as above.
+- *Reaper not running* (MIDI or audio link fails): the failing ~pw-link~
+  command is printed verbatim so you can rerun it once Reaper is up -- or just
+  rerun the whole script; connections that already exist are kept
+  ("Already connected"), so rerunning is always safe and idempotent.
+- *Neither Headphones nor Speaker sink present*: the available sinks are
+  listed; pick one and ~pw-link "REAPER:out1" <sink>:playback_FL~ (and ~out2~
+  -> ~playback_FR~). Rerun the script after plugging/unplugging the 1/8" jack
+  -- it moves Reaper's audio to the currently active sink.
+
 * the MIDI output encoding (what Reaper/Pianoteq must expect)
 The rig fields: ~lowest_note = 24~ (C1 on the keyboard is the reference C),
 ~min_channel = 1~, ~min_note = 28~, EDO 58.
@@ -114,6 +136,12 @@ octave, and confirm each comes out at the expected frequency.
   ONE undoable move, and the slot lights solid as "where you last jumped"
   (the highlight persists even after you edit away from it). Empty slots are
   inert. Arming store disarms empty and vice versa.
+- LED legend (2026-07-23): an *empty* slot and an *unarmed* arm button flash
+  slow (100 ms on / 100 off), so they are visible even on the old monobright
+  256. A *full but inactive* slot is dim -- native dim on a varibright grid,
+  faked on the old monome by a fast low-duty flicker (15 ms on / 45 off). The
+  *active* (last recalled) slot and an *armed* button are solid full; the
+  active slot STAYS solid if you then edit the live map away from it.
 
 ** recording rigs only
 Controls at (13..15, 0..2): start/stop/loop, arm/erase-ons/end-all, RSCM.
