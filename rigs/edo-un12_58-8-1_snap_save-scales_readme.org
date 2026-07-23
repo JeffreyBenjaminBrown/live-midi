@@ -7,11 +7,11 @@ Pianoteq. The code makes no sound itself; the receiving synth does.
 
 This one file covers the whole ~edo-un12_*~ family (they differ only in extras):
 
-| rig                            | idiom | layout | extras                        |
+| rig                                | idiom | layout | extras                          |
 | =edo-un12_58-8-1_snap_save-scales= | snap  | 58-8-1 | scale slots (store/recall maps) |
-| =edo-un12_58-8-1_snap_recording=   | snap  | 58-8-1 | one recording slot            |
-| =edo-un12_58-8-5_snap_recording=   | snap  | 58-8-5 | one recording slot            |
-| =edo-un12_31_loose_recording=      | loose | 31-6-1 | one recording slot            |
+| =edo-un12_58-8-1_snap_recording=   | snap  | 58-8-1 | one recording slot              |
+| =edo-un12_58-8-5_snap_recording=   | snap  | 58-8-5 | one recording slot              |
+| =edo-un12_31_loose_recording=      | loose | 31-6-1 | one recording slot              |
 
 The runtime behavior (LED priorities, snap/loose idioms, the recording
 controls) is documented in [[file:RUNTIME-NOTES.org]] under "Remappable un-12
