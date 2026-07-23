@@ -86,7 +86,9 @@ own verification -- is the *manual connection* section below.
 
 * manual connection (worst comes to worst)
 If ~connect-midi.sh~ can't do it, here is every link by hand, with a way to
-verify each. All of this happens on the HOST. The chain, in signal order:
+verify each. Every SHELL command here works from the host AND from inside the
+container alike -- see *in vs out of Docker* at the end of this section; only
+the GUI programs are host-only. The chain, in signal order:
 
 #+begin_example
 keyboard --(1: ALSA seq)--> edo_un12_piano_monome-in
@@ -161,6 +163,27 @@ Press middle C once and look at three places: the rig terminal prints
 ~note-on: input <60, 0> -> output (5, 28)~ (links 0-1 good), the Reaper track
 meter flicks (link 2 good), and you hear a note (link 3 + Pianoteq good). The
 first place that stays quiet names the broken link.
+
+** in vs out of Docker
+There is only ONE ALSA-sequencer graph and ONE PipeWire graph, and both sides
+see and can edit them: the container runs with ~--network host~, shares
+=/dev/snd= (which carries the kernel seq interface), and bind-mounts the
+host's PipeWire socket. Consequences, verified from inside the container
+2026-07-23 (listing, creating, and deleting both an ~aconnect~ connection and
+a ~pw-link~ link):
+
+- *Works identically in and out*: every shell command in this section --
+  ~aconnect~ (list/connect/disconnect), ~aseqdump~, ~aplaymidi~, ~amidi~,
+  ~pw-link~ (list/link/unlink, including the sink listing) -- plus
+  ~./tools/connect-midi.sh~ itself, which uses only those tools. It is
+  documented as a host script, but it runs the same from the container.
+- *Host only*: the GUIs -- QJackCtl, Reaper, and Pianoteq inside it are not
+  installed in the container -- and physically plugging hardware in.
+- *Container only* (in practice): the rig runtime (~cargo run~) and therefore
+  the terminal with the note-on trace that link 1's verification watches.
+
+So if you are already in a container shell, connect and verify from there;
+you only need a host shell (or the QJackCtl window) for Reaper itself.
 
 * the MIDI output encoding (what Reaper/Pianoteq must expect)
 Reference values (hardcoded in ~remap_runtime.rs~ as ~LOWEST_C = 24~,
