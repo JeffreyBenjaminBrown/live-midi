@@ -1,0 +1,143 @@
+#+title: The edo-un12 piano rigs -- detune a 12-key keyboard into 58-EDO, MIDI out to Pianoteq
+
+The player's reference for the *piano-detuning* rig family: a MIDI keyboard plays
+into the runtime, the twelve pitch classes are remapped onto an arbitrary EDO
+(58 here), and the result leaves as MIDI -- historically into Reaper hosting
+Pianoteq. The code makes no sound itself; the receiving synth does.
+
+This one file covers the whole ~edo-un12_*~ family (they differ only in extras):
+
+| rig                            | idiom | layout | extras                        |
+| =edo-un12_58-8-1_snap_save-scales= | snap  | 58-8-1 | scale slots (store/recall maps) |
+| =edo-un12_58-8-1_snap_recording=   | snap  | 58-8-1 | one recording slot            |
+| =edo-un12_58-8-5_snap_recording=   | snap  | 58-8-5 | one recording slot            |
+| =edo-un12_31_loose_recording=      | loose | 31-6-1 | one recording slot            |
+
+The runtime behavior (LED priorities, snap/loose idioms, the recording
+controls) is documented in [[file:RUNTIME-NOTES.org]] under "Remappable un-12
+monome"; this file is the *operating manual* -- how to bring it up and wire it.
+Code: =buried/midi_pulse/remap_runtime/= (dispatched by the ~remappable_un12~
+piano mapping + a ~remappable_un12_grid~ window; see =buried/midi_pulse/midi_pulse.rs=).
+
+* hardware needed
+- A MIDI keyboard (e.g. the Casio), plugged into the host. It shows up as an
+  ALSA device; ~amidi -l~ / ~aconnect -l~ list it.
+- ONE monome 256 (16x16). The rigs pin ~select.size = [16, 16]~. Without a grid
+  the MIDI transform still starts, but the monome thread panics ("no monome
+  found") and you lose the remap UI -- so treat the grid as required.
+- The host running Reaper with Pianoteq (or any synth that will interpret the
+  multi-channel output; see *the MIDI output encoding* below).
+
+* to run it
+** in the container
+#+begin_src sh
+cargo run --bin midi_pulse -- edo-un12_58-8-1_snap_save-scales
+#+end_src
+No ~pw-jack~ strictly needed: these rigs have no audio sink (0 ~[[sinks]]~), so
+nothing grabs the sound card. (Using ~pw-jack~ anyway is harmless.)
+
+Exit: press Enter, or Ctrl-C. NOTE: stdin EOF also quits -- don't run it with
+~< /dev/null~ or backgrounded without a terminal, or it exits immediately.
+
+On startup it prints the rig summary, "58-EDO remappable un-12 runtime
+started", and then (once the grid is found) a ~monome: id=... size=16x16~ line.
+It creates two virtual ALSA-seq MIDI ports, visible in ~aconnect -l~ in the
+container and, on the host, through PipeWire's Midi-Bridge:
+- =edo_un12_piano_monome-in= -- connect the keyboard INTO this
+- =edo_un12_piano_monome-out= -- connect this into Reaper
+
+** on the host
+#+begin_src sh
+./tools/connect-midi.sh edo-un12_58-8-1_snap_save-scales
+#+end_src
+That reads the rig's ~[midi.input]~ / ~[midi.output]~ ~virtual_name~ values and
+connects keyboard -> =...-in=, =...-out= -> "REAPER: MIDI Input 1", and Reaper's
+audio out -> the best built-in output (prefers Headphones; rerun after plugging
+or unplugging the 1/8" jack). Run it AFTER the runtime is up (the virtual ports
+must exist) and after Reaper is running.
+
+Manual equivalents, if the script's guesses are wrong, are in
+[[file:RUNTIME-NOTES.org]] "MIDI connection recipes".
+
+* the MIDI output encoding (what Reaper/Pianoteq must expect)
+The rig fields: ~lowest_note = 24~ (C1 on the keyboard is the reference C),
+~min_channel = 1~, ~min_note = 28~, EDO 58.
+
+A keyboard note maps to an absolute EDO step: its pitch class goes through the
+current 12->58 map (plus the tracked signed lift, so remaps move by the short
+way around the ring), and its octave above note 24 supplies whole octaves.
+Then:
+
+#+begin_example
+channel = min_channel + step div 58    (one MIDI channel per octave)
+note    = min_note    + step mod 58    (notes 28..85 = the 58 steps)
+#+end_example
+
+Verified example: keyboard note 60 (middle C, initial "even" map, C -> step 0)
+comes out as *channel 4, note 28*.
+
+So the receiving side must treat channel c, note n as frequency
+
+#+begin_example
+f = f_C1 * 2 ^ ( (c - 1) + (n - 28)/58 )
+#+end_example
+
+where f_C1 is whatever you tune the bottom C to (the rig's
+~fundamental_hz = 80~ is only used by audio-sink rigs; the MIDI side leaves the
+reference to the receiver). In practice that means Pianoteq loads a 58-EDO
+scala tuning with its keyboard mapping anchored so note 28 = the reference
+pitch, and the per-channel octave (c - 1) is applied per channel -- e.g. one
+Pianoteq/track per used channel in Reaper, each transposed a whole octave from
+the last, all fed from the same input filtered by channel.
+
+*NOTE: the Reaper project / Pianoteq preset is NOT in this repo* and no notes
+about its exact configuration survive here. If your old Reaper project still
+exists on the host, it is the ground truth; the encoding above is what it must
+implement. Sanity-check the chain while online: run the rig, play one note per
+octave, and confirm each comes out at the expected frequency.
+
+* the monome UI (quick recap; details in RUNTIME-NOTES.org)
+- Row 0, x 0..11: the *preimage row* -- the twelve piano pitch classes C..B.
+- Below it: the *EDO map*, cell (x,y) = step ~8x + 1y mod 58~ (the "8-1" in the
+  rig name; the 58-8-5 rig uses ~y_step = 5~). Lit cells are the current images
+  of the twelve pitch classes.
+- Bottom-right (15,15): *undo* -- reverts the last remap (or scale recall).
+- *snap idiom*: tap a dark cell and the nearest image (distance in the EDO
+  ring) moves there.
+
+** save-scales rig only: scale slots
+- (12..15, 0..3): a 4x4 grid of *scale slots*, each holding a full 12->58 map.
+- (15,4) *store*: press it (it arms; press again to disarm), then press a slot
+  to write the current map there. Storing never highlights the slot.
+- (14,4) *empty*: same arm-then-slot gesture; empties the slot.
+- A bare slot press *recalls* its map -- the whole 12-value map is imposed as
+  ONE undoable move, and the slot lights solid as "where you last jumped"
+  (the highlight persists even after you edit away from it). Empty slots are
+  inert. Arming store disarms empty and vice versa.
+
+** recording rigs only
+Controls at (13..15, 0..2): start/stop/loop, arm/erase-ons/end-all, RSCM.
+Full semantics in [[file:RUNTIME-NOTES.org]] "Remappable un-12 monome".
+
+* verified working 2026-07-23 (offline pre-flight)
+Everything testable without hardware was tested on this date, on this branch:
+- ~cargo test -p midi_pulse~: all green (196 tests).
+- All three 58-EDO rigs load, print their summaries, and route to the remap
+  runtime.
+- Full end-to-end run against the mock monome ([[file:../MOCK-MONOME.org]]):
+  discovery, registration, LED render all fine. (~MIDI_PULSE_DETECTOR_PORT=17002~
+  + ~cargo run --bin mock_monome -- --detector-port 17002~.)
+- Virtual MIDI ports appear in ~aconnect -l~; a note played into
+  =edo_un12_piano_monome-in= (via ~aplaymidi~) came out of
+  =...-out= correctly remapped (60 -> ch 4 note 28).
+- ~tools/connect-midi.sh~ correctly extracts both virtual port names from the
+  .org rig.
+
+Still needs the real world (check while online if possible):
+- The real grid over serialosc (mock only fakes the protocol). If the grid
+  floods or discovery misbehaves: host-side ~systemctl --user restart
+  serialoscd~, unplug/replug -- see [[file:RUNTIME-NOTES.org]] "Monome and
+  serialosc operations".
+- The keyboard -> =...-in= connection (the script matches the keyboard port by
+  name; a different keyboard may need a manual ~aconnect~).
+- Reaper + Pianoteq on the host: that config is outside this repo entirely.

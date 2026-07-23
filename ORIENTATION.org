@@ -87,6 +87,14 @@ A two-grid looping instrument in 58-EDO; still runs.
 - Design history: =TODO/DONE/monome-looper/= (=1_vision= .. =6_plan=, =progress=).
   The *last* plan supersedes earlier ones (see its =README.org=).
 
+* the piano-detuning rigs: edo-un12 (58-EDO into Pianoteq)
+The pre-looper instrument: a MIDI keyboard remapped into 58-EDO, out as
+multi-channel MIDI to Reaper/Pianoteq on the host (no in-code audio), with one
+monome as the remap UI. Rigs =rigs/edo-un12_*.org=; runtime
+=buried/midi_pulse/remap_runtime/=. Operating manual (hardware, bring-up,
+host wiring, the output encoding):
+[[./rigs/edo-un12_58-8-1_snap_save-scales_readme.org]] -- it covers the whole family.
+
 * build / run / test
 #+begin_src sh
 cargo test -p edo_surface                    # fast, no hardware

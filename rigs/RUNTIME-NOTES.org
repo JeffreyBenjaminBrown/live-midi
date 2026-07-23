@@ -83,7 +83,10 @@ brightness for about 30 ms.
 * Remappable un-12 monome
 
 The ~edo-un12-*~ rigs map the twelve piano pitch classes into an
-arbitrary EDO. The monome grid size is inferred from serialosc's device
+arbitrary EDO. The operating manual -- hardware, bring-up, host wiring,
+the MIDI output encoding Pianoteq/Reaper must expect, and the
+save-scales rig's scale slots -- is
+[[file:edo-un12_58-8-1_snap_save-scales_readme.org]]; it covers the whole family. The monome grid size is inferred from serialosc's device
 type when possible. Known sizes include 16x8 for monome 128 and 16x16
 for monome 256.
 
