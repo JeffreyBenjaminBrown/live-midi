@@ -628,12 +628,15 @@ mod tests {
   fn scale_leds_flash_empty_slots_and_unarmed_buttons_and_fake_dim_on_monobright() {
     use super::super::rig::RemapRig;
     use super::super::scale::ScaleControl;
+    // Cells chosen clear of the test rig's default record controls (x 13..15,
+    // y 0..2) and the preimage row (y 0), so these assertions exercise the
+    // scale LED logic alone, not the window stacking order.
     let store_cell = (15, 4);
     let rig = RemapRig::new(80.0, 12, 1, 0, RemapIdiom::Snap, 16, 8)
-      .with_scale_slots(Some([12, 0, 13, 0])) // slots 0 and 1
+      .with_scale_slots(Some([12, 4, 13, 4])) // slots 0 and 1
       .with_scale_controls(vec![(ScaleControl::Store, store_cell)]);
-    let slot0 = (12usize, 0usize);
-    let slot1 = (13usize, 0usize);
+    let slot0 = (12usize, 4usize);
+    let slot1 = (13usize, 4usize);
     let at = |levels: &[u8], (x, y): (usize, usize)| levels[y * 16 + x];
 
     for monobright in [false, true] {

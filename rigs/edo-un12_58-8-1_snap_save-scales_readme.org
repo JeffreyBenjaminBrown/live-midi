@@ -82,8 +82,13 @@ connect (exit 1) or ~Done!~ (exit 0). Concretely:
   -- it moves Reaper's audio to the currently active sink.
 
 * the MIDI output encoding (what Reaper/Pianoteq must expect)
-The rig fields: ~lowest_note = 24~ (C1 on the keyboard is the reference C),
-~min_channel = 1~, ~min_note = 28~, EDO 58.
+Reference values (hardcoded in ~remap_runtime.rs~ as ~LOWEST_C = 24~,
+~MIN_CHANNEL_OUT = 1~, ~MIN_NOTE_OUT = 28~ -- the rig's ~lowest_note~ /
+~[midi.output]~ ~min_channel~ / ~min_note~ carry the same values but the un-12
+runtime does NOT read the latter two, nor the rig's ~virtual_name~ strings:
+port names are hardcoded to =edo_un12_piano_monome-in/-out=. Don't rename them
+in the rig or ~connect-midi.sh~ -- which DOES read the rig -- will look for
+ports that don't exist).
 
 A keyboard note maps to an absolute EDO step: its pitch class goes through the
 current 12->58 map (plus the tracked signed lift, so remaps move by the short
@@ -91,26 +96,43 @@ way around the ring), and its octave above note 24 supplies whole octaves.
 Then:
 
 #+begin_example
-channel = min_channel + step div 58    (one MIDI channel per octave)
-note    = min_note    + step mod 58    (notes 28..85 = the 58 steps)
+nibble = 1 + step div 58    (one MIDI channel per octave; this is the RAW
+                             status-byte channel nibble, 0-based)
+note   = 28 + step mod 58   (notes 28..85 = the 58 steps)
 #+end_example
 
-Verified example: keyboard note 60 (middle C, initial "even" map, C -> step 0)
-comes out as *channel 4, note 28*.
+*Channel numbering -- read this twice.* The formula's channel is the raw wire
+nibble (what ~aseqdump~ prints). Reaper, Pianoteq, and the runtime's own
+note-on terminal trace all number channels 1..16, i.e. *nibble + 1*. Verified
+example: keyboard note 60 (middle C, initial "even" map, C -> step 0) comes
+out as nibble 4 = ~aseqdump~ "channel 4" = *channel 5 in Reaper* (and the
+runtime echoes ~output (5, 28)~).
 
-So the receiving side must treat channel c, note n as frequency
+So the receiving side must treat a note ~n~ on wire nibble ~c~ (= Reaper
+channel ~c + 1~) as frequency
 
 #+begin_example
-f = f_C1 * 2 ^ ( (c - 1) + (n - 28)/58 )
+f = f_ref * 2 ^ ( (c - 1) + (n - 28)/58 )      c = wire nibble (aseqdump)
+  = f_ref * 2 ^ ( (R - 2) + (n - 28)/58 )      R = Reaper/Pianoteq channel 1..16
 #+end_example
 
-where f_C1 is whatever you tune the bottom C to (the rig's
+where f_ref is whatever you tune keyboard-C1's image to (the rig's
 ~fundamental_hz = 80~ is only used by audio-sink rigs; the MIDI side leaves the
 reference to the receiver). In practice that means Pianoteq loads a 58-EDO
 scala tuning with its keyboard mapping anchored so note 28 = the reference
-pitch, and the per-channel octave (c - 1) is applied per channel -- e.g. one
-Pianoteq/track per used channel in Reaper, each transposed a whole octave from
-the last, all fed from the same input filtered by channel.
+pitch, and the octave offset is applied per channel -- e.g. one Pianoteq/track
+per used channel in Reaper, each transposed a whole octave from the last, all
+fed from the same input filtered by channel.
+
+Range facts (all verified in the code, not just on paper):
+- An 88-key keyboard (bottom A0 = note 21) spans wire nibbles 0..8 = Reaper
+  channels 1..9. Keys below note 24 are handled correctly (signed math with
+  euclidean div/mod): A0 comes out one octave down on nibble 0, not garbage.
+- Remapping can push a note across a channel boundary (a downward-lifted
+  bottom-octave pitch lands on nibble 0); the receiver needs those channels
+  wired, or those notes are silently missing.
+- A step whose channel would leave 0..15 is silently dropped by the transform
+  (guarded, no crash).
 
 *NOTE: the Reaper project / Pianoteq preset is NOT in this repo* and no notes
 about its exact configuration survive here. If your old Reaper project still
@@ -157,7 +179,7 @@ Everything testable without hardware was tested on this date, on this branch:
   + ~cargo run --bin mock_monome -- --detector-port 17002~.)
 - Virtual MIDI ports appear in ~aconnect -l~; a note played into
   =edo_un12_piano_monome-in= (via ~aplaymidi~) came out of
-  =...-out= correctly remapped (60 -> ch 4 note 28).
+  =...-out= correctly remapped (60 -> wire nibble 4 = Reaper ch 5, note 28).
 - ~tools/connect-midi.sh~ correctly extracts both virtual port names from the
   .org rig.
 

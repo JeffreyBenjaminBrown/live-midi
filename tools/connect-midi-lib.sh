@@ -5,8 +5,9 @@ find_casio_client() {
 }
 
 # Kernel-type ALSA clients that are hardware MIDI devices but NOT a piano-style
-# keyboard: the ALSA plumbing itself plus the known pedal boards.
-KEYBOARD_EXCLUDE_REGEX="client 0:|'System'|Midi Through|SSCOM|SoftStep|MPC"
+# keyboard: the ALSA plumbing itself plus the known pedal boards. "MPC-20" (not
+# the broader "MPC") so a borrowed Akai MPC-series keyboard is not excluded.
+KEYBOARD_EXCLUDE_REGEX="client 0:|'System'|Midi Through|SSCOM|SoftStep|MPC-20"
 
 # The keyboard need not be the Casio: find the hardware MIDI client that isn't a
 # known non-keyboard. Prefers the Casio when present (exact legacy behavior);
@@ -35,7 +36,9 @@ find_keyboard_client() {
 
 find_alsa_client() {
   local name="$1"
-  aconnect -l | grep "$name" | grep -oP 'client \K\d+'
+  # head -1: if two runtime instances are up, connect to the first rather than
+  # producing a two-line value that breaks the aconnect call below.
+  aconnect -l | grep "$name" | grep -oP 'client \K\d+' | head -1
 }
 
 connect_keyboard_to_alsa_client() {
@@ -114,7 +117,9 @@ connect_reaper_to_primary_audio_out() {
     echo "  Warning: neither Headphones nor Speaker sink found."
     echo "  Available sinks:"
     pw-link -i 2>/dev/null | grep 'sink:playback' | sort -u | sed 's/^/    /' || true
-    return 0
+    echo "  To do it by hand: pw-link \"$reaper_l\" <sink>:playback_FL ; pw-link \"$reaper_r\" <sink>:playback_FR"
+    # return 1 so the caller's failed-steps summary reports the audio as unconnected.
+    return 1
   fi
 
   echo "  Found: $sink_label"
