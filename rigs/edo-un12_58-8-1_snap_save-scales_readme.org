@@ -81,6 +81,87 @@ connect (exit 1) or ~Done!~ (exit 0). Concretely:
   -> ~playback_FR~). Rerun the script after plugging/unplugging the 1/8" jack
   -- it moves Reaper's audio to the currently active sink.
 
+The full by-hand procedure -- every link, in shell AND QJackCtl, each with its
+own verification -- is the *manual connection* section below.
+
+* manual connection (worst comes to worst)
+If ~connect-midi.sh~ can't do it, here is every link by hand, with a way to
+verify each. All of this happens on the HOST. The chain, in signal order:
+
+#+begin_example
+keyboard --(1: ALSA seq)--> edo_un12_piano_monome-in
+  [rig transform]
+edo_un12_piano_monome-out --(2: PipeWire MIDI)--> REAPER:MIDI Input 1
+  [Pianoteq inside Reaper]
+REAPER:out1/out2 --(3: PipeWire audio)--> the active sink
+#+end_example
+
+Ports only exist while their programs run, so first: start the rig runtime
+(container) and Reaper (host). Step 0, confirm the rig's ports exist:
+~aconnect -l | grep edo_un12~ -- nothing means the runtime isn't up (or died).
+
+In QJackCtl's Graph view (per the repo README's color convention): ALSA-seq
+MIDI ports are *purple*, JACK/PipeWire MIDI ports are *red*, audio ports are
+the remaining (non-MIDI) kind. A made connection is a visible edge between
+ports; that verifies the LINK exists, the per-link checks below verify data
+actually FLOWS.
+
+** link 1: keyboard -> rig input (ALSA sequencer)
+- Make, shell: find both client numbers in ~aconnect -l~ (the keyboard is a
+  ~[type=kernel]~ client; the rig is =edo_un12_piano_monome-in=), then
+  ~aconnect <keyboard>:0 <rig-in>:0~ (sender first, receiver second).
+- Make, QJackCtl: Graph view, purple ports -- drag the keyboard's output port
+  onto =edo_un12_piano_monome-in:in=.
+- Verify the link: ~aconnect -l~ -- the keyboard's port now shows
+  ~Connecting To: <rig-in>:0~.
+- Verify keys flow at all (independent of the rig):
+  ~timeout 10s aseqdump -p <keyboard-client>:0 2>&1 | head -20~ and press keys
+  -- note-on/off lines should appear. (Always aseqdump with timeout+head, per
+  the repo README pitfall; never read the raw =/dev/midi*= device, that
+  blocks. aseqdump is an extra subscriber, so it does NOT steal events from
+  the rig.)
+- Verify the rig receives: press a key and watch the rig's terminal -- every
+  note prints ~note-on: input <60, 0> -> output (5, 28)~ (input note,
+  pitch class -> output channel 1-based, note). No line = link 1 broken.
+
+** link 2: rig output -> Reaper MIDI in (PipeWire)
+- Make, shell:
+  ~pw-link "Midi-Bridge:edo_un12_piano_monome-out:(capture_0) out" "REAPER:MIDI Input 1"~
+  If the names have drifted, list live ports: ~pw-link -o | grep -i midi~
+  (sources) and ~pw-link -i | grep -i reaper~ (destinations).
+- Make, QJackCtl: Graph view, red ports -- drag the
+  =edo_un12_piano_monome-out= port (under the *Midi-Bridge* node) onto
+  REAPER's *MIDI Input 1*.
+- Verify the link: ~pw-link -l~ -- under the Midi-Bridge source port you
+  should see ~|-> REAPER:MIDI Input 1~.
+- Verify the rig emits (independent of Reaper):
+  ~timeout 10s aseqdump -p edo_un12_piano_monome-out 2>&1 | head -20~, press a
+  key -- expect the REMAPPED events (middle C: channel 4 in aseqdump's 0-based
+  display, note 28).
+- Verify Reaper receives: record-arm the Pianoteq track with its input set to
+  All MIDI / that channel -- its input meter should flick on each key press.
+
+** link 3: Reaper -> audio out (PipeWire)
+- Make, shell: list the current sinks -- they change when the 1/8" jack is
+  (un)plugged: ~pw-link -i | grep 'sink:playback'~. Then
+  ~pw-link "REAPER:out1" "<sink>:playback_FL"~ and
+  ~pw-link "REAPER:out2" "<sink>:playback_FR"~.
+- Make, QJackCtl: Graph view -- drag REAPER's *out1*/*out2* audio ports onto
+  the sink node's *playback_FL*/*playback_FR*.
+- Verify the link: ~pw-link -l~ -- REAPER:out1 shows ~|-> <sink>:playback_FL~
+  (and out2 -> FR).
+- Verify audio flows: play a key (or any item in Reaper) -- Reaper's master
+  meter should move AND you should hear it. Meter moving but silence = wrong
+  sink (jack plugged/unplugged since linking); relist the sinks and relink, or
+  just rerun ~./tools/connect-midi.sh <rig>~, which moves Reaper to the
+  currently active sink.
+
+** whole-chain check (10 seconds)
+Press middle C once and look at three places: the rig terminal prints
+~note-on: input <60, 0> -> output (5, 28)~ (links 0-1 good), the Reaper track
+meter flicks (link 2 good), and you hear a note (link 3 + Pianoteq good). The
+first place that stays quiet names the broken link.
+
 * the MIDI output encoding (what Reaper/Pianoteq must expect)
 Reference values (hardcoded in ~remap_runtime.rs~ as ~LOWEST_C = 24~,
 ~MIN_CHANNEL_OUT = 1~, ~MIN_NOTE_OUT = 28~ -- the rig's ~lowest_note~ /
