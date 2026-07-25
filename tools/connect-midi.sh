@@ -61,9 +61,14 @@ echo "=== midi_pulse rig: $RIG_NAME ==="
 # vice versa. FAILED_STEPS collects what to look at.
 FAILED_STEPS=()
 
+# Discover the keyboards once; the count also decides whether the second
+# input/output pair (two-keyboard piano rigs) gets wired.
+KEYBOARDS=()
+mapfile -t KEYBOARDS < <(find_keyboard_clients)
+
 if [[ -n "$midi_input" ]]; then
-  connect_keyboard_to_alsa_client "$RIG_NAME" "$midi_input" \
-    || FAILED_STEPS+=("keyboard -> $midi_input")
+  connect_keyboards_to_rig "$RIG_NAME" "$midi_input" "${KEYBOARDS[@]}" \
+    || FAILED_STEPS+=("keyboard(s) -> $midi_input")
 else
   echo "No [midi.input] virtual_name in rig; skipping keyboard input."
 fi
@@ -71,11 +76,48 @@ fi
 if [[ -n "$midi_output" ]]; then
   echo ""
   echo "=== JACK/PipeWire MIDI ($midi_output -> Reaper) ==="
-  connect_pipewire_midi \
-    "Midi-Bridge:$midi_output:(capture_0) out" \
-    "REAPER:MIDI Input 1" \
-    "$midi_output -> REAPER MIDI Input 1" \
-    || FAILED_STEPS+=("$midi_output -> Reaper MIDI")
+  if aconnect -l 2>/dev/null | grep -qF "Midi Through Port-1"; then
+    # Kernel-thru route (make-2-midi-inputs.sh): snd-seq-dummy has 2 ports,
+    # which Reaper reads directly -- they are the only port kind its Linux
+    # MIDI-device list shows (kernel clients get port.physical, user-space
+    # ports never do). Port-0 = 58-edo 1 (left), Port-1 = 58-edo 2.
+    echo "  kernel-thru route (Midi Through has two ports; Reaper reads them directly)."
+    connect_alsa_by_names "$midi_output" 0 "Midi Through" 0 \
+      "$midi_output -> Midi Through Port-0 (58-edo 1)" \
+      || FAILED_STEPS+=("$midi_output -> Midi Through Port-0")
+    if [[ ${#KEYBOARDS[@]} -ge 2 ]]; then
+      connect_alsa_by_names "$midi_output-2" 0 "Midi Through" 1 \
+        "$midi_output-2 -> Midi Through Port-1 (58-edo 2)" \
+        || FAILED_STEPS+=("$midi_output-2 -> Midi Through Port-1")
+    fi
+  else
+    # Prefer a Reaper port named for the rig ("58-edo 1"), else the first MIDI input.
+    dest1="$(find_reaper_midi_input "58-edo 1" 1)"
+    if [[ -z "$dest1" ]]; then
+      echo "  Warning: no REAPER MIDI input port found -- is Reaper running? Start it and rerun."
+      FAILED_STEPS+=("$midi_output -> Reaper MIDI")
+    else
+      connect_pipewire_midi \
+        "Midi-Bridge:$midi_output:(capture_0) out" \
+        "$dest1" \
+        "$midi_output -> ${dest1#REAPER:}" \
+        || FAILED_STEPS+=("$midi_output -> Reaper MIDI")
+    fi
+    if [[ ${#KEYBOARDS[@]} -ge 2 ]]; then
+      dest2="$(find_reaper_midi_input "58-edo 2" 2)"
+      if [[ -z "$dest2" || "$dest2" == "$dest1" ]]; then
+        echo "  Warning: no second REAPER MIDI input for 58-edo 2 -- enable (or rename) it in Reaper, then rerun."
+        echo "  Once it exists: pw-link \"Midi-Bridge:$midi_output-2:(capture_0) out\" \"REAPER:<its name>\""
+        FAILED_STEPS+=("$midi_output-2 -> Reaper MIDI")
+      else
+        connect_pipewire_midi \
+          "Midi-Bridge:$midi_output-2:(capture_0) out" \
+          "$dest2" \
+          "$midi_output-2 -> ${dest2#REAPER:}" \
+          || FAILED_STEPS+=("$midi_output-2 -> Reaper MIDI")
+      fi
+    fi
+  fi
 else
   echo "No [midi.output] virtual_name in rig; skipping MIDI output."
 fi
