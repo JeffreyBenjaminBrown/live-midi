@@ -1,5 +1,6 @@
 #+title: The edo-un12 piano rigs -- detune a 12-key keyboard into 58-EDO, MIDI out to Pianoteq
 
+* overview
 The player's reference for the *piano-detuning* rig family: a MIDI keyboard plays
 into the runtime, the twelve pitch classes are remapped onto an arbitrary EDO
 (58 here), and the result leaves as MIDI -- historically into Reaper hosting
@@ -20,8 +21,15 @@ Code: =buried/midi_pulse/remap_runtime/= (dispatched by the ~remappable_un12~
 piano mapping + a ~remappable_un12_grid~ window; see =buried/midi_pulse/midi_pulse.rs=).
 
 * hardware needed
-- A MIDI keyboard (e.g. the Casio), plugged into the host. It shows up as an
-  ALSA device; ~amidi -l~ / ~aconnect -l~ list it.
+- ONE or TWO MIDI keyboards (e.g. the Casio, or a pair of identical AK490s),
+  plugged into the host. Each shows up as an ALSA device; ~amidi -l~ /
+  ~aconnect -l~ list them. With two, each keyboard gets its own Reaper input
+  ("58-edo 1" / "58-edo 2") -- see *two keyboards* below.
+- Optional: sustain pedal hardware -- either the two M-Audio EX-P expression
+  pedals on the DOREMiDi MPC-20 (preferred; needs the host-side bridge
+  running), or a KMSS (SoftStep) board. A startup question picks which; see
+  *sustain pedals* below. Absent gear gets a red note and a background retry,
+  so plugging in later just works.
 - ONE monome 256 (16x16). The rigs pin ~select.size = [16, 16]~. Without a grid
   the MIDI transform still starts, but the monome thread panics ("no monome
   found") and you lose the remap UI -- so treat the grid as required.
@@ -29,6 +37,22 @@ piano mapping + a ~remappable_un12_grid~ window; see =buried/midi_pulse/midi_pul
   multi-channel output; see *the MIDI output encoding* below).
 
 * to run it
+** ALL STEPS REQUIRED
+*** why
+Two steps, BOTH required: start the runtime (this section), then make the
+connections (next section). The runtime only *creates* its MIDI ports -- it
+connects nothing to them, and no other program does either. A rig that is
+"running" (rig summary printed, monome found) but was never connected is
+silent and shows no MIDI activity in Reaper; that is the expected symptom of
+a skipped step 2, not a broken rig (bitten for real 2026-07-25).
+
+Everything host-side beyond Reaper itself -- the two persistent Reaper
+inputs, the a2j export that lets Reaper's device list see them, and the EX-P
+pedal bridge -- comes from ONE script, ~./make-2-midi-inputs.sh~ (see
+*giving Reaper two MIDI inputs*), run BEFORE Reaper so Reaper's
+startup-only device scan finds the ports. The dependency-safe full order:
+
+: ./make-2-midi-inputs.sh (host)  ->  Reaper  ->  the runtime (docker)  ->  connect-midi.sh
 ** in the container
 #+begin_src sh
 cargo run --bin midi_pulse -- edo-un12_58-8-1_snap_save-scales
@@ -36,28 +60,211 @@ cargo run --bin midi_pulse -- edo-un12_58-8-1_snap_save-scales
 No ~pw-jack~ strictly needed: these rigs have no audio sink (0 ~[[sinks]]~), so
 nothing grabs the sound card. (Using ~pw-jack~ anyway is harmless.)
 
-Exit: press Enter, or Ctrl-C. NOTE: stdin EOF also quits -- don't run it with
-~< /dev/null~ or backgrounded without a terminal, or it exits immediately.
+Exit: press Enter -- any line except ~l~, which is the left-keyboard
+identification (see *two keyboards*) -- or Ctrl-C. NOTE: stdin EOF also quits --
+don't run it with ~< /dev/null~ or backgrounded without a terminal, or it
+exits immediately.
 
 On startup it prints the rig summary, "58-EDO remappable un-12 runtime
 started", and then (once the grid is found) a ~monome: id=... size=16x16~ line.
-It creates two virtual ALSA-seq MIDI ports, visible in ~aconnect -l~ in the
+It creates two virtual ALSA-seq MIDI port PAIRS (since 2026-07-25; with one
+keyboard the second pair just sits idle), visible in ~aconnect -l~ in the
 container and, on the host, through PipeWire's Midi-Bridge:
-- =edo_un12_piano_monome-in= -- connect the keyboard INTO this
-- =edo_un12_piano_monome-out= -- connect this into Reaper
+- =edo_un12_piano_monome-in= / =-in-2= -- connect a keyboard INTO each
+- =edo_un12_piano_monome-out= / =-out-2= -- connect these into Reaper
+Pair 1 is "58-edo 1": the LEFT keyboard, the recorder (recording rigs), and
+sustain (EX-P pedal 1, or the SoftStep pad) all live there. Pair 2 is
+"58-edo 2", the right keyboard, sustained by EX-P pedal 2.
 
-** on the host
+The sustain-hardware question (see *sustain pedals*) is asked AFTER the ports
+are up, and "Press Enter to exit..." prints only once it is answered. An
+unanswered question blocks nothing but sustain: step 2 runs fine against a
+runtime still sitting at the prompt. (Learned 2026-07-25: the question
+originally ran FIRST, and ~connect-midi.sh~ met a portless runtime -- every
+MIDI step "not found".)
+
+** on the host (or the container -- the script runs the same from either)
 #+begin_src sh
 ./tools/connect-midi.sh edo-un12_58-8-1_snap_save-scales
 #+end_src
-That reads the rig's ~[midi.input]~ / ~[midi.output]~ ~virtual_name~ values and
-connects keyboard -> =...-in=, =...-out= -> "REAPER: MIDI Input 1", and Reaper's
+This is step 2 of 2 -- without it nothing reaches the rig or Reaper (see the
+note at the top of *to run it*). It works from inside the container too
+(see *in vs out of Docker* below), so a container shell can do the whole
+MIDI bring-up. It reads the rig's ~[midi.input]~ / ~[midi.output]~ ~virtual_name~ values and
+connects keyboard(s) -> =...-in=(=-2=), =...-out=(=-2=) -> Reaper, and Reaper's
 audio out -> the best built-in output (prefers Headphones; rerun after plugging
-or unplugging the 1/8" jack). Run it AFTER the runtime is up (the virtual ports
-must exist) and after Reaper is running.
+or unplugging the 1/8" jack). With ONE keyboard found it behaves as it always
+did (keyboard -> =-in=, =-out= -> Reaper's first MIDI input); with TWO it also
+wires the second pair (see *two keyboards*). The Reaper MIDI targets prefer
+ports named "58-edo 1" / "58-edo 2" when PipeWire can see those names, else
+fall back to Reaper's 1st and 2nd MIDI inputs in sorted order -- today that is
+"MIDI Input 1" and "MIDI Input 4", because in-Reaper device renames don't
+reach PipeWire. Run it AFTER the runtime is up (the virtual ports must exist)
+and after Reaper is running.
+
+Preferred: with ~./make-2-midi-inputs.sh~ having run (see *giving Reaper two
+MIDI inputs*), this script takes the kernel-thru route instead -- plain
+~aconnect~ of the rig outputs into "Midi Through Port-0"/"Port-1" -- and the
+Reaper-port hunting above never happens.
 
 Manual equivalents, if the script's guesses are wrong, are in
 [[file:RUNTIME-NOTES.org]] "MIDI connection recipes".
+
+** only for the sustain pedals via EX-P pedals
+on host, from project root
+
+tools/pedals/bridge.sh
+
+(Already covered if ~./make-2-midi-inputs.sh~ is running -- the setup script
+starts the bridge as one of its pieces; run it alone only when you want just
+the pedals.)
+* two keyboards (since 2026-07-25)
+Plug both in (the same model is fine -- they are told apart by ALSA client
+number, not name) and run both steps as usual. ~connect-midi.sh~ connects the
+first keyboard (client-number order, i.e. plug order) to =-in= and the second
+to =-in-2=. Client order says nothing about which keyboard physically sits on
+the LEFT, so the runtime owns that decision:
+
+1. In the runtime's terminal, type ~l~ then Enter.
+2. It answers "play a note from the left keyboard to identify it".
+3. Play any note on the LEFT keyboard. That keyboard becomes "58-edo 1" (and
+   the sustain pedal's target); the other becomes "58-edo 2". It prints what
+   it decided, e.g. ~left keyboard identified: edo_un12_piano_monome-in-2 ->
+   58-edo 1; the other -> 58-edo 2 (routing swapped)~.
+
+The identifying note itself already sounds on 58-edo 1. Type ~l~ again any
+time (say, after replugging swapped the client order). Notes HELD through the
+swap are safe: a note-off always follows its note-on to whichever output that
+note-on used, so nothing sticks. Both keyboards share the ONE live 12->58 map
+and monome remap UI -- they are two hands of the same instrument, not two
+instruments -- and each stream carries the same channel-per-octave encoding
+(see *the MIDI output encoding*), so Reaper needs the same Pianoteq octave
+stack on both inputs.
+
+* giving Reaper two MIDI inputs (=make-2-midi-inputs.sh=, since 2026-07-25)
+THE fact that shapes this design, established empirically (pw-dump, same
+day): Reaper's Linux MIDI-device list shows only ports flagged
+~port.physical = True~, and only KERNEL ALSA clients get that flag. Every
+user-space port -- the rig runtime's midir ports, rtmidi ports, the pedal
+bridge's -- is invisible to Reaper NO MATTER WHAT it is named (a first
+attempt at this feature exported nicely-named user-space thrus and Reaper
+ignored them all). Two further constraints: Reaper scans devices only at
+STARTUP (or "Reset all MIDI devices"), and the runtime's ports die with
+every restart -- so Reaper must never read the runtime directly anyway.
+
+The answer to all three at once: KERNEL thru ports -- ~snd-seq-dummy~
+loaded with ~ports=2~. "Midi Through Port-0" is 58-edo 1 (the left
+keyboard), "Midi Through Port-1" is 58-edo 2. They are physical-flagged (so
+Reaper lists them), permanent (so restart order never matters), and true
+thrus (whatever the rig writes in, subscribers read out). On the HOST,
+FIRST -- before Reaper:
+
+#+begin_src sh
+./make-2-midi-inputs.sh
+#+end_src
+
+One run does three things and holds the daemons until Ctrl-C (each piece is
+skipped if already up, so rerunning is safe):
+1. Reloads ~snd-seq-dummy~ with ~ports=2~ (the sudo prompt covers this and
+   the bridge). To make it permanent so this step always self-skips, put in
+   the NixOS config and reboot:
+   : boot.extraModprobeConfig = "options snd-seq-dummy ports=2";
+2. Runs ~a2jmidid~, whose a2j-named export of the kernel ports is what
+   Reaper's list shows. (Each port exports as "(capture)" and "(playback)"
+   -- the same port readable and writable; the input list shows capture.)
+3. Runs the MPC-20 pedal bridge (see *sustain pedals*, "the bridge").
+
+Then, ONCE in Reaper (persists): Options > Preferences > MIDI Devices ->
+enable inputs *"Midi Through Port-0"* (58-edo 1) and *"Port-1"* (58-edo 2),
+and point each Pianoteq octave-stack's tracks at the matching device,
+channel-filtered as before. A stale "Port-1 (not found)" entry from an old
+setup is THIS device -- it springs back to life once the port exists.
+
+~connect-midi.sh~ closes the loop: when "Midi Through Port-1" exists it
+takes the kernel-thru route -- plain ~aconnect~ of
+=edo_un12_piano_monome-out= -> Port-0 (and =-out-2= -> Port-1 with two
+keyboards) -- and skips its legacy pw-link-to-REAPER step (both routes at
+once would double every note). Without Port-1 it falls back to the legacy
+route.
+
+* sustain pedals (since 2026-07-25)
+On startup -- after its MIDI ports are up, so leaving the prompt unanswered
+never blocks the connection step -- the runtime asks:
+: sustain pedals: EX-P via the MPC-20 bridge (e) or SoftStep pad 0 (s)? [e]
+~e~ -- or bare Enter, or EOF -- picks the EX-P pedals; ~s~ picks the SoftStep;
+anything else re-asks. Either way, foot down = an ordinary piano damper
+(CC 64 = 127; foot up = 0), sent to EVERY MIDI channel of the target output,
+because the encoding spreads octaves over channels and the pedal must hold
+them all. Gear missing at startup: a red note prints and discovery retries
+every ~2 s, so plugging it in mid-session just works.
+
+** EX-P pedals (the default)
+The two M-Audio EX-P expression pedals on the DOREMiDi MPC-20:
+- MPC-20 *Pedal 1* (MIDI channel 1) -> *58-edo 1*, the LEFT keyboard.
+- MPC-20 *Pedal 2* (MIDI channel 2) -> *58-edo 2*, the right keyboard.
+EVERY pedal CC sends a sustain event: raw value at or above 60 sends ON
+(ties to on), below 60 sends OFF. No edge detection, no window, no
+hysteresis -- deliberately STATELESS, because the bridge's USB stream can
+drop messages (observed live 2026-07-25: under an earlier
+send-only-on-transitions design, a dropped release sweep froze sustain ON
+with the foot off). Resending on every message means the next pedal movement
+always resynchronizes Pianoteq, whatever was lost; a stuck sustain can
+outlive at most one still pedal. 60 is mid-travel of the pedals' reliable
+~1..119 range; the threshold is ~EXP_SUSTAIN_ON_AT~ in
+=buried/midi_pulse/remap_runtime/sustain.rs= -- a top-of-file const, like the
+travel bounds in =edo_surface/src/expression_pedals.rs=.
+
+*** the bridge (=tools/pedals/bridge.sh=) -- required for EX-P sustain
+The MPC-20 never becomes an ALSA MIDI device on Linux: its WCH CH345 chip
+ships broken MIDI descriptors and the kernel's CH345 quirk doesn't take on
+this composite device, so no port is created -- =amidi -l= / =aconnect -l=
+showing nothing is EXPECTED, not the fault. The bridge is the workaround:
+=bridge.py= claims the MPC-20's raw USB endpoint and re-emits its MIDI on a
+virtual ALSA-seq port named *"MPC-20 pedals"*, which the container shares and
+the runtime subscribes to by name -- there is no ~connect-midi.sh~ step for
+the pedals. Full story, plus pedal calibration (the MIN trim knob, polarity
+switch, the once-clipped 35..127 pedal): [[file:../tools/pedals/README.org]].
+
+Run it on the HOST -- it needs the raw USB device and root, and the container
+has neither (~./make-2-midi-inputs.sh~ runs it for you as one of its pieces):
+#+begin_src sh
+tools/pedals/bridge.sh
+#+end_src
+- It prompts for the sudo password (root is what detaches the MPC-20's USB
+  interface from =snd-usb-audio=) and wraps =bridge.py= in the nix shell that
+  has its dependencies (=bridge.nix=: pyusb, python-rtmidi, libusb). Don't
+  hand-roll the ~nix-shell --run sudo ...~ line: the wrapper exists to dodge
+  two real quoting/PATH traps, documented in its header.
+- Leave it running for the whole session; Ctrl-C stops it (and sustain with
+  it). It survives unplugging and replugging the MPC-20.
+- Start order vs the rig runtime does not matter: the runtime prints its red
+  note and retries every ~2 s until the "MPC-20 pedals" port appears.
+
+Verify (container or host alike):
+~timeout 10s aseqdump -p 'MPC-20 pedals' 2>&1 | head -20~ and move a pedal --
+expect CC 21 lines on channels 0/1 (aseqdump's 0-based names for the MPC-20's
+Pedal 1/2). No lines = bridge side broken. Lines here but no sustain =
+runtime side: did it print ~sustain pedals: EX-P (...)~ after the startup
+question? ~cargo run --bin pedal_monitor~ shows the decoded 0.0..1.0
+positions live.
+
+** SoftStep pad 0
+With a SoftStep plugged in (either board; matched by "SSCOM" or "SoftStep" in
+the port name), the runtime puts it in tether mode and pad printed *0* -- the
+RIGHTMOST TOP pad -- becomes the damper for *58-edo 1* only. Standalone mode
+is restored on exit, Ctrl-C included.
+
+"Foot on" is a hold WINDOW, not the drumkit's strike detector, with its own
+two knobs in =rigs/softstep.toml= (the shared params file; a restart picks up
+edits, no rebuild):
+- ~sustain_on_sum~ (40): a pad-0 CC whose 4-sensor sum is at least this counts
+  as pedal pressure; anything below is no signal at all.
+- ~sustain_window_ms~ (150): sustain stays on while the last qualifying signal
+  is at most this old. The window lapsing IS the release and the debounce;
+  there is deliberately no off threshold. (The tether stream is on-change: a
+  resting foot keeps jittering CCs out, a lifted foot goes silent. If a very
+  still foot ever drops sustain early, raise ~sustain_window_ms~ -- or use the
+  EX-P pedals, whose absolute positions have no such failure mode.)
 
 * robustness of the connection script
 ~connect-midi.sh~ never dies half-way: every step runs even when an earlier one
@@ -123,14 +330,17 @@ actually FLOWS.
   blocks. aseqdump is an extra subscriber, so it does NOT steal events from
   the rig.)
 - Verify the rig receives: press a key and watch the rig's terminal -- every
-  note prints ~note-on: input <60, 0> -> output (5, 28)~ (input note,
-  pitch class -> output channel 1-based, note). No line = link 1 broken.
+  note prints ~note-on: input <60, 0> -> output (5, 28) [kb 1 -> 58-edo 1]~
+  (input note, pitch class -> output channel 1-based, note; the suffix names
+  the keyboard port it came in on and the 58-edo stream it left on). No line =
+  link 1 broken.
 
 ** link 2: rig output -> Reaper MIDI in (PipeWire)
 - Make, shell:
   ~pw-link "Midi-Bridge:edo_un12_piano_monome-out:(capture_0) out" "REAPER:MIDI Input 1"~
   If the names have drifted, list live ports: ~pw-link -o | grep -i midi~
-  (sources) and ~pw-link -i | grep -i reaper~ (destinations).
+  (sources) and ~pw-link -i | grep -i reaper~ (destinations). Second keyboard:
+  the same shape with =...-out-2= and the 58-edo 2 Reaper port.
 - Make, QJackCtl: Graph view, red ports -- drag the
   =edo_un12_piano_monome-out= port (under the *Midi-Bridge* node) onto
   REAPER's *MIDI Input 1*.
@@ -160,7 +370,8 @@ actually FLOWS.
 
 ** whole-chain check (10 seconds)
 Press middle C once and look at three places: the rig terminal prints
-~note-on: input <60, 0> -> output (5, 28)~ (links 0-1 good), the Reaper track
+~note-on: input <60, 0> -> output (5, 28) [kb 1 -> 58-edo 1]~ (links 0-1
+good), the Reaper track
 meter flicks (link 2 good), and you hear a note (link 3 + Pianoteq good). The
 first place that stays quiet names the broken link.
 
@@ -190,9 +401,10 @@ Reference values (hardcoded in ~remap_runtime.rs~ as ~LOWEST_C = 24~,
 ~MIN_CHANNEL_OUT = 1~, ~MIN_NOTE_OUT = 28~ -- the rig's ~lowest_note~ /
 ~[midi.output]~ ~min_channel~ / ~min_note~ carry the same values but the un-12
 runtime does NOT read the latter two, nor the rig's ~virtual_name~ strings:
-port names are hardcoded to =edo_un12_piano_monome-in/-out=. Don't rename them
-in the rig or ~connect-midi.sh~ -- which DOES read the rig -- will look for
-ports that don't exist).
+port names are hardcoded to =edo_un12_piano_monome-in/-out= plus the second
+keyboard's =-in-2/-out-2=. Don't rename them in the rig or ~connect-midi.sh~
+-- which DOES read the rig, deriving the =-2= names from the same values --
+will look for ports that don't exist).
 
 A keyboard note maps to an absolute EDO step: its pitch class goes through the
 current 12->58 map (plus the tracked signed lift, so remaps move by the short
@@ -298,4 +510,73 @@ Still needs the real world (check while online if possible):
   MPC-20 bridge). Any single unknown keyboard should therefore just work. If
   several candidates exist it lists them and you connect by hand:
   ~aconnect <keyboard-client>:0 <rig-client>:0~ (clients from ~aconnect -l~).
+  CONFIRMED 2026-07-25, live, from inside the container: with an unknown
+  keyboard (an "AK490 Pro") as the only hardware device, the script picked it
+  and made all three links; a note injected into =...-in= came out of =...-out=
+  correctly remapped (60 -> wire nibble 4 = Reaper ch 5, note 28).
 - Reaper + Pianoteq on the host: that config is outside this repo entirely.
+
+* verified working 2026-07-25 (two keyboards + sustain, offline)
+Tested on this date against a second live runtime instance (isolated from the
+playing one -- dead serialosc detector port, monome thread deliberately
+sacrificed to the port collision), with the real pair of AK490s connected:
+- ~cargo test --workspace~: all green (840, including the routing, KMSS-window,
+  EX-P-threshold, and startup-question units).
+- Both port pairs come up; a note into =-in= left on =-out= and a note into
+  =-in-2= left on =-out-2=, each correctly remapped (60 -> wire nibble 4,
+  note 28).
+- The ~l~ identification, live: it prompted, took the next note-on (fed via
+  =-in-2=), printed "routing swapped", and subsequent notes crossed over --
+  =-in-2= to =-out= and =-in= to =-out-2=.
+- ~connect-midi.sh~ found both AK490s and the Reaper fallback targets
+  ("MIDI Input 1"/"MIDI Input 4"), connected everything that existed, and
+  explained each absent port with the exact by-hand command.
+- The sustain startup question, live: an unrecognized answer re-asks; ~e~
+  proceeded to the red "no EX-P pedal bridge found" note (it lists the live
+  ports and the bridge command); ~s~ proceeded to the red no-KMSS note.
+- The a2j facts, live: a2jmidid (run by Jeff on the host) exported user-space
+  ALSA ports into the graph under a2j naming, including the rig's ports once
+  the runtime was up, and Reaper's device list showed an a2j-named port --
+  while never showing any Midi-Bridge port. These two observations are what
+  the thru design in *giving Reaper two MIDI inputs* is built on.
+- The ~port.physical~ discovery (2026-07-25, later the same day; the reason
+  the kernel-thru design exists): a first version of the setup used
+  user-space rtmidi thrus named "58-edo 1"/"58-edo 2". Everything on the
+  graph side verified live -- the thru clients existed, forwarded injected
+  notes end-to-end, and a2jmidid exported them -- yet Reaper's device list
+  showed the a2j "Midi Through" port and NOT the identically-shaped 58-edo
+  ports. ~pw-dump~ found the one difference: the kernel client's ports carry
+  ~port.physical = True~ / ~port.terminal = True~; the user-space ports have
+  no such flags. Conclusion (fits every observation all day): Reaper lists
+  only physical-flagged ports. Hence snd-seq-dummy ports=2.
+- BOTH KEYBOARDS SOUNDED through the kernel-thru route, live, and the EX-P
+  pedals worked -- with a stuck-sustain bug: the bridge's flaky USB stream
+  (=Pipe error= reconnect loops) dropped pedal sweeps, and the then
+  edge-triggered sustain froze on the last value seen. Fixed the same day by
+  making EX-P sustain stateless (see *sustain pedals*): every pedal CC
+  resends the state, so any movement resynchronizes.
+- Of the kernel-thru version: scripts syntax-check;
+  ~find_alsa_client_exact~ verified against live clients (full names
+  resolve, prefixes correctly do not); ~connect-midi.sh~ stays on the legacy
+  route while "Midi Through Port-1" is absent. NOT yet tested (needs host
+  root + Reaper): the snd-seq-dummy reload itself (rmmod may refuse if the
+  module is pinned -- the script prints the NixOS-permanent fallback), and
+  Reaper listing/keeping Port-0/Port-1. First host run: Ctrl-C any old setup
+  script, ~./make-2-midi-inputs.sh~, THEN Reaper (enable Port-0/Port-1),
+  then the runtime + ~connect-midi.sh~, play -- then restart just the
+  runtime, rerun ~connect-midi.sh~, confirm Reaper still hears both.
+
+Still needs the real world:
+- The EX-P sustain path beyond discovery: the MPC-20 was unplugged and the
+  bridge down, so nothing was tested with real pedal values. First session:
+  run ~tools/pedals/bridge.sh~ on the host, answer ~e~, press each pedal past
+  halfway and back -- pedal 1 should damper the left keyboard, pedal 2 the
+  right.
+- The KMSS was not plugged in: tether entry, the pad-0 CC stream, and the FELT
+  sustain timing (40 / 150 ms) are untested against hardware. First session:
+  step on pad 0, hold a chord on the left keyboard, lift the fingers -- it
+  should ring until the foot lifts. If a motionless foot drops sustain early,
+  raise ~sustain_window_ms~.
+- The script's "58-edo 1"/"58-edo 2" name-matching is untested against renamed
+  Reaper ports (the renames may never reach PipeWire; the ordinal fallback is
+  what actually fired today).
