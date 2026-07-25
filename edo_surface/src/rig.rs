@@ -1315,6 +1315,13 @@ fn default_pressure_threshold_sum() -> u16 {
   200
 }
 
+fn default_sustain_on_sum() -> u16 {
+  40
+}
+fn default_sustain_window_ms() -> u64 {
+  150
+}
+
 /// Hit-detection & pressure parameters for the SoftStep, shared by every rig that uses
 /// it. Loaded once from `rigs/softstep.toml` (not from any per-rig window), so one
 /// set of numbers drives the drumkit. Every field is optional; a missing file or key uses
@@ -1384,6 +1391,19 @@ pub struct SoftstepParams {
   /// standing -- meaningless for a pedal you HOLD (accrete), correct for a tap.
   #[serde(default = "default_pressure_threshold_sum")]
   pub pressure_threshold_sum: u16,
+  /// The un-12 SUSTAIN pedal's signal threshold: a pad-sensor CC whose sum-of-4 is at
+  /// least this counts as "the foot is on the pedal". Below it a CC is no signal at
+  /// all. Independent of `on_sum` on purpose -- the sustain pedal is a held level, not
+  /// a strike, and it has no off threshold: silence is what ends it (see
+  /// `sustain_window_ms`). Used only by the remap (un-12 piano) runtime.
+  #[serde(default = "default_sustain_on_sum")]
+  pub sustain_on_sum: u16,
+  /// The un-12 sustain pedal's hold window: sustain stays on while the last
+  /// at-threshold signal is at most this many ms old, and turns off when the window
+  /// empties. This is the whole debounce -- the tether stream is on-change, so a foot
+  /// on the pad keeps refreshing the window and a lifted foot lets it lapse.
+  #[serde(default = "default_sustain_window_ms")]
+  pub sustain_window_ms: u64,
 }
 
 impl Default for SoftstepParams {
@@ -1400,6 +1420,8 @@ impl Default for SoftstepParams {
       standard_settle_ms: default_standard_settle_ms(),
       standard_release_ms: default_standard_release_ms(),
       pressure_threshold_sum: default_pressure_threshold_sum(),
+      sustain_on_sum: default_sustain_on_sum(),
+      sustain_window_ms: default_sustain_window_ms(),
     }
   }
 }

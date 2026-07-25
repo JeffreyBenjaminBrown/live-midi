@@ -19,8 +19,10 @@ mod monome_runtime;
 mod record;
 mod remap;
 mod render;
+mod routing;
 mod scale;
 mod state;
+mod sustain;
 mod window_behavior;
 
 const LOWEST_C: u8 = 24;
@@ -60,6 +62,22 @@ const WHITE_KEYS: [bool; 12] = [
 ];
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Two keyboards, two port pairs. Pair 0 is "58-edo 1" in Reaper (the LEFT keyboard
+// and the sustain pedal); pair 1 is "58-edo 2". One keyboard uses pair 0 alone --
+// the second pair sits idle, which is harmless. Hardcoded like the original pair:
+// the un-12 runtime does not read the rig's virtual_name (see the family readme).
+const INPUT_CLIENT_NAMES: [&str; routing::NUM_KEYBOARDS] =
+  ["edo_un12_piano_monome-in", "edo_un12_piano_monome-in-2"];
+const OUTPUT_CLIENT_NAMES: [&str; routing::NUM_KEYBOARDS] =
+  ["edo_un12_piano_monome-out", "edo_un12_piano_monome-out-2"];
+
+/// Input i routes to output i normally, crossed while this is true. Set only at
+/// startup (false) and by the 'l' identification gesture.
+static SWAPPED: AtomicBool = AtomicBool::new(false);
+/// True between 'l' Enter and the identifying note: the next note-on names the
+/// LEFT keyboard's input port.
+static IDENTIFYING: AtomicBool = AtomicBool::new(false);
 
 pub fn run_from_rig(rig: &Rig) -> Result<(), Box<dyn std::error::Error>> {
   if rig.monome_windows.is_empty() {
@@ -212,71 +230,106 @@ fn run(
   select_size: Option<[i32; 2]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   STOP_REQUESTED.store(false, Ordering::Relaxed);
+  SWAPPED.store(false, Ordering::Relaxed);
+  IDENTIFYING.store(false, Ordering::Relaxed);
+  let softstep_params = edo_surface::rig::load_softstep_params()?;
   let state: Arc<Mutex<state::RemappableEdoState>> =
     Arc::new(Mutex::new(state::RemappableEdoState::new(runtime_rig.clone())));
   let sounding: Arc<Mutex<state::SoundingPitchCounts>> =
     Arc::new(Mutex::new(state::SoundingPitchCounts::new(runtime_rig.edo)));
-  let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
-    Arc::new(Mutex::new(HashMap::new()));
   let recorder: Arc<Mutex<record::RecordRuntime>> =
     Arc::new(Mutex::new(record::RecordRuntime::new()));
 
-  let midi_in = MidiInput::new("edo_un12_piano_monome-in")?;
-  let midi_out = MidiOutput::new("edo_un12_piano_monome-out")?;
-  let conn_out = midi_out.create_virtual("out")?;
-  let (tx, rx): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) = mpsc::channel();
-  let _out_thread = thread::spawn(move || midi::run_output_thread(conn_out, rx));
-  let output_gate = record::SharedOutputGate::new(tx.clone());
+  // One output thread + gate per Reaper input. Gate 0 ("58-edo 1") is also the one
+  // the recorder, the monome runtime, and the sustain pedal drive.
+  let mut gates: Vec<record::SharedOutputGate> = Vec::new();
+  for name in OUTPUT_CLIENT_NAMES {
+    let midi_out = MidiOutput::new(name)?;
+    let conn_out = midi_out.create_virtual("out")?;
+    let (tx, rx): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) = mpsc::channel();
+    let _out_thread = thread::spawn(move || midi::run_output_thread(conn_out, rx));
+    gates.push(record::SharedOutputGate::new(tx));
+  }
+  let output_gate = gates[0].clone();
 
-  let state_for_midi = Arc::clone(&state);
-  let sounding_for_midi = Arc::clone(&sounding);
-  let ongoing_for_midi = Arc::clone(&ongoing);
-  let recorder_for_midi = Arc::clone(&recorder);
-  let output_gate_for_midi = output_gate.clone();
-  let _conn_in = midi_in.create_virtual(
-    "in",
-    move |_timestamp, message, _| {
-      midi_runtime::update_sounding(message, &state_for_midi, &sounding_for_midi);
-      {
-        let recorder = recorder_for_midi.lock().unwrap();
-        record::trace_midi_event("midi-input live", message, &recorder, std::time::Instant::now());
-      }
-      let original_note = if message.len() >= 3 && midi::is_note_event(message) {
-        Some(message[1])
-      } else {
-        None
-      };
-      let transformed = piano_transform::transform_message(
-        message,
-        &ongoing_for_midi,
-        |original_note| midi_runtime::edo_un12_instruction(original_note, &state_for_midi),
-      );
-      if let Some(original_note) = original_note {
-        if let Some(event) = record::recorded_event_from_live_message(
-          message,
-          original_note,
-          &transformed,
-          &recorder_for_midi,
-        ) {
-          recorder_for_midi.lock().unwrap().record_live_event(event);
-        }
-      }
-      for msg in transformed {
-        midi_runtime::print_note_on_trace(message, &msg);
+  let mut input_connections = Vec::new();
+  for (source, name) in INPUT_CLIENT_NAMES.iter().enumerate() {
+    let midi_in = MidiInput::new(name)?;
+    let state_for_midi = Arc::clone(&state);
+    let sounding_for_midi = Arc::clone(&sounding);
+    let recorder_for_midi = Arc::clone(&recorder);
+    let gates_for_midi = gates.clone();
+    // Per input: its own held-note transform memory and note-off destination
+    // memory. Two keyboards can hold the same note number at once; sharing either
+    // map would cross one keyboard's note-offs onto the other's notes.
+    let ongoing: Arc<Mutex<HashMap<u8, piano_transform::TransformedNote>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let mut router = routing::DestRouter::new();
+    let conn_in = midi_in.create_virtual(
+      "in",
+      move |_timestamp, message, _| {
+        if midi::is_note_on(message)
+          && IDENTIFYING
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
         {
-          let recorder = recorder_for_midi.lock().unwrap();
-          record::trace_midi_event(
-            "midi-output live",
-            &msg,
-            &recorder,
-            std::time::Instant::now(),
+          let swapped = routing::swapped_after_identify(source);
+          SWAPPED.store(swapped, Ordering::Relaxed);
+          println!(
+            "left keyboard identified: {} -> 58-edo 1; the other -> 58-edo 2{}",
+            INPUT_CLIENT_NAMES[source],
+            if swapped { " (routing swapped)" } else { " (routing unchanged)" },
           );
         }
-        output_gate_for_midi.send_raw(msg);
-      }
-    },
-    (),
-  )?;
+        let current = routing::dest_of_source(source, SWAPPED.load(Ordering::Relaxed));
+        let dest = router.dest_for(message, current);
+        midi_runtime::update_sounding(message, &state_for_midi, &sounding_for_midi);
+        if dest == 0 {
+          let recorder = recorder_for_midi.lock().unwrap();
+          record::trace_midi_event("midi-input live", message, &recorder, std::time::Instant::now());
+        }
+        let original_note = if message.len() >= 3 && midi::is_note_event(message) {
+          Some(message[1])
+        } else {
+          None
+        };
+        let transformed = piano_transform::transform_message(
+          message,
+          &ongoing,
+          |original_note| midi_runtime::edo_un12_instruction(original_note, &state_for_midi),
+        );
+        // The recorder hears only the 58-edo 1 stream: playback replays through
+        // gate 0, so recording the other keyboard would move its notes across.
+        if dest == 0 {
+          if let Some(original_note) = original_note {
+            if let Some(event) = record::recorded_event_from_live_message(
+              message,
+              original_note,
+              &transformed,
+              &recorder_for_midi,
+            ) {
+              recorder_for_midi.lock().unwrap().record_live_event(event);
+            }
+          }
+        }
+        for msg in transformed {
+          midi_runtime::print_note_on_trace(message, &msg, source, dest);
+          if dest == 0 {
+            let recorder = recorder_for_midi.lock().unwrap();
+            record::trace_midi_event(
+              "midi-output live",
+              &msg,
+              &recorder,
+              std::time::Instant::now(),
+            );
+          }
+          gates_for_midi[dest].send_raw(msg);
+        }
+      },
+      (),
+    )?;
+    input_connections.push(conn_in);
+  }
 
   let state_for_monome = Arc::clone(&state);
   let sounding_for_monome = Arc::clone(&sounding);
@@ -302,11 +355,36 @@ fn run(
 
   install_sigint_handler();
   print_startup_message(&runtime_rig);
+
+  // The question comes AFTER every port exists: an unanswered question must
+  // never block the bring-up -- connect-midi.sh needs the ports, and only the
+  // sustain thread waits on the answer. (Bitten for real 2026-07-25: with the
+  // question first, the script ran against a portless runtime and connected
+  // nothing.)
+  let sustain_hardware = ask_sustain_hardware();
+  let sustain_gates = gates.clone();
+  let sustain_thread = thread::spawn(move || {
+    sustain::run_sustain_thread(sustain_hardware, softstep_params, sustain_gates)
+  });
+
+  println!("Press Enter to exit...");
   let (quit_tx, quit_rx): (mpsc::Sender<()>, mpsc::Receiver<()>) = mpsc::channel();
   thread::spawn(move || {
-    let mut input = String::new();
-    let _ = io::stdin().read_line(&mut input);
-    let _ = quit_tx.send(());
+    // Bare Enter (or EOF, or any other line) exits, as before; 'l' Enter starts
+    // the left-keyboard identification instead of exiting.
+    loop {
+      let mut input = String::new();
+      match io::stdin().read_line(&mut input) {
+        Ok(n) if n > 0 && input.trim().eq_ignore_ascii_case("l") => {
+          IDENTIFYING.store(true, Ordering::Relaxed);
+          println!("play a note from the left keyboard to identify it");
+        }
+        _ => {
+          let _ = quit_tx.send(());
+          return;
+        }
+      }
+    }
   });
   while !STOP_REQUESTED.load(Ordering::Relaxed) {
     if quit_rx.try_recv().is_ok() {
@@ -317,7 +395,26 @@ fn run(
   STOP_REQUESTED.store(true, Ordering::Relaxed);
   let _ = monome_thread.join();
   let _ = playback_thread.join();
+  let _ = sustain_thread.join();
   Ok(())
+}
+
+/// The startup question: which pedal hardware sustains this session. Asked after
+/// the port bring-up (see the call site) so waiting on it blocks nothing but
+/// sustain; EOF (running without a terminal) takes the EX-P default rather than
+/// blocking.
+fn ask_sustain_hardware() -> sustain::SustainHardware {
+  println!("sustain pedals: EX-P via the MPC-20 bridge (e) or SoftStep pad 0 (s)? [e]");
+  loop {
+    let mut input = String::new();
+    match io::stdin().read_line(&mut input) {
+      Ok(n) if n > 0 => match sustain::parse_hardware_answer(&input) {
+        Some(choice) => return choice,
+        None => println!("type e (EX-P) or s (SoftStep), or bare Enter for EX-P"),
+      },
+      _ => return sustain::SustainHardware::ExP,
+    }
+  }
 }
 
 fn install_sigint_handler() {
@@ -331,5 +428,9 @@ fn install_sigint_handler() {
 
 fn print_startup_message(rig: &rig::RemapRig) {
   println!("{}-EDO remappable un-12 runtime started", rig.edo);
-  println!("Press Enter to exit...");
+  println!(
+    "MIDI port pairs: {}/{} (58-edo 1, left) and {}/{} (58-edo 2, right)",
+    INPUT_CLIENT_NAMES[0], OUTPUT_CLIENT_NAMES[0], INPUT_CLIENT_NAMES[1], OUTPUT_CLIENT_NAMES[1],
+  );
+  println!("Type 'l' then Enter to identify which keyboard is on the LEFT (-> 58-edo 1).");
 }

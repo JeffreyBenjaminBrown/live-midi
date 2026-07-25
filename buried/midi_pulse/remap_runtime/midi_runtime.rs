@@ -24,7 +24,7 @@ fn edo_un12_absolute_step(original_note: u8, state: &Arc<Mutex<RemappableEdoStat
   channel_offset * state.rig.edo + state.rig.initial_map[pc] + state.deltas[pc]
 }
 
-pub(crate) fn print_note_on_trace(input: &[u8], output: &[u8]) {
+pub(crate) fn print_note_on_trace(input: &[u8], output: &[u8], source: usize, dest: usize) {
   if input.len() < 3 || output.len() < 3 {
     return;
   }
@@ -36,8 +36,8 @@ pub(crate) fn print_note_on_trace(input: &[u8], output: &[u8]) {
   let output_channel = (output[0] & 0x0f) + 1;
   let output_note = output[1];
   println!(
-    "note-on: input <{}, {}> -> output ({}, {})",
-    input_note, input_pc, output_channel, output_note,
+    "note-on: input <{}, {}> -> output ({}, {}) [kb {} -> 58-edo {}]",
+    input_note, input_pc, output_channel, output_note, source + 1, dest + 1,
   );
 }
 

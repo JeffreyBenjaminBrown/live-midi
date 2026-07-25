@@ -7,8 +7,8 @@
 #
 # All keys are optional; a missing key uses the default shown. Reject-on-typo is on.
 
-on_sum              = 40    # a hit fires when a pad's sum-of-4 exceeds this
-off_sum             = 20    # the pad re-arms once its sum-of-4 falls below this
+on_sum              = 25    # a hit fires when a pad's sum-of-4 exceeds this
+off_sum             = 10    # the pad re-arms once its sum-of-4 falls below this
 #
 # on_sum > off_sum is a Schmitt trigger: a pad must fall back to 20 before it can fire
 # again at 40, so a sum hovering at the threshold cannot chatter. These were EQUAL (20/20)
@@ -47,3 +47,15 @@ standard_release_ms = 45    # ...and its sum must ALSO have held UNCHANGED this 
 # Reads the ATTACK PEAK -- i.e. how fast you stomp, not how hard you end up standing. Right
 # for a tap; meaningless for a pedal you HOLD, like accrete.
 pressure_threshold_sum = 200
+
+# The un-12 piano runtime's SUSTAIN pedal (pad printed "0", the rightmost top pad):
+# any pad-0 sensor CC whose sum-of-4 is at least sustain_on_sum counts as "foot on the
+# pedal" and refreshes a window; sustain (CC 64 to the 58-edo 1 Reaper input) is on
+# while the window is fresh and off once it has been sustain_window_ms without a
+# qualifying signal. There is deliberately no off threshold: the tether stream is
+# on-change, so a lifted foot goes silent and the window lapsing IS the release --
+# that lapse is also the debounce. Independent of on_sum/off_sum above, which are
+# strike detection for drums; this is a held level. Only the remap (un-12) runtime
+# reads these.
+sustain_on_sum    = 40    # sum-of-4 at/above which a pad-0 CC counts as pedal pressure
+sustain_window_ms = 150   # sustain holds this long past the last qualifying signal
