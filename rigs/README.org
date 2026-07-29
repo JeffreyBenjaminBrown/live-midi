@@ -44,6 +44,7 @@ alternatives lately:
 
 # on host, once per login
 xhost +local:
+
 # in docker -- the current instrument, in its two forms (identical but for
 # what the NEWER SoftStep does: the factored pulse, or a drumkit):
 pw-jack cargo run --bin midi_pulse \

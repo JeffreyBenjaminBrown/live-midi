@@ -1,5 +1,7 @@
+* what this is
 These are my instructions to self.
 They are not instructions to you, Claude -- those are in queued/ or TODO/.
+* ONGOING in main : TODO/fix-latest-nixos.org
 * PINNED : how to do some things
 ** the new rig
 *** to run
