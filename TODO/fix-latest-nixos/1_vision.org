@@ -1,12 +1,10 @@
-* TODO jeff to jeff
-This might work on an older NixOS. WIll try now.
 * welcome
 Welcome, Claude! Please read the following to get acquainted:
 - ORIENTATION.org
 - code/rust/configs/README.org
 Also please read whatever ORIENTATION.org points to (recursively).
 Then:
-
+* problem
 This just failed:
 ```
 jeff 2026-07-28 19:37:16 ~/code/midi/worktrees/main$ xhost --run 'xhost +local:'   # per login, not per use of a rig
@@ -25,3 +23,12 @@ That was from these notes of mine:
    -- 2-edogrids_ss-accrete_ss-pulse
 
 Are my notes bad? What went wrong?
+* more request
+Please write your response to TODO/xhost-startup-problem/2_response.org
+* DONE discarded hypothesis
+I thought something like this might have happened earlier.
+Whatever that thing was, I was able to solve by reverting to
+an earlier saved NixOS config on the host outside of docker.
+
+But for this I have tried an earlier config and the problem persisted,
+and I have not rebuilt my system in the interim.
