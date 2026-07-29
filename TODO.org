@@ -1,13 +1,27 @@
 * what this is
 These are my instructions to self.
 They are not instructions to you, Claude -- those are in queued/ or TODO/.
-* ONGOING in main : TODO/fix-latest-nixos.org
+* ONGOING in main : TODO/xhost-startup-problem/
+* LATEST : run it at Priceless
+host (leave running):
+  ./make-2-midi-inputs.sh
+host:
+  - start Reaper
+  - (once, persists: Preferences → MIDI Devices → enable "58-edo 1" and "58-edo 2",
+    point each Pianoteq stack at its device)
+docker
+  cargo run --bin midi_pulse -- edo-un12_58-8-1_snap_save-scales
+Answer the questions in that script!
+  e for ex-p
+  l to indicate which is left
+either
+  ./tools/connect-midi.sh edo-un12_58-8-1_snap_save-scales
 * PINNED : how to do some things
 ** the new rig
 *** to run
 serial
 **** outside of docker
-xhost --run 'xhost +local:'   # per login, not per use of a rig
+xhost +local:   # per login, not per use of a rig
 **** in docker
 pw-jack cargo run --bin midi_pulse \
  -- 2-edogrids_ss-accrete_ss-pulse
@@ -26,6 +40,7 @@ Two of them now, same grids, differing only in what the NEWER SS does:
 On the DRUMS rig the New SS rows are instead, as you stand over it:
 | high tom | low tom | wood block | cowbell | crash    |
 | snare    | kick    | ditto      | hat     | open hat |
+* TODO ? percussive attack at pulse cycle boundary
 * AWAITS jeff : read TODO/pedal-slide/3_progress.org
 * ONGOING queue/branch-2.org
 * Should the =1 pedal also get the Settle debounce?
@@ -73,7 +88,7 @@ at a volume equivalent to the midpoint of the softstep pressure range.
 ** to run the new rig
 serial
 *** outside of docker
-xhost --run 'xhost +local:'   # per login, not per use of a rig
+xhost +local:   # per login, not per use of a rig
 *** in docker
 pw-jack cargo run --bin midi_pulse \
  -- 2-edogrids_ss-accrete_ss-pulse

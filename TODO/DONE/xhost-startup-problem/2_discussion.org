@@ -1,0 +1,87 @@
+#+title: Discussion: the xhost startup problem
+#+date: 2026-07-29
+
+* the answer up front
+Yes, the note is bad -- and nothing on your host broke. The line
+
+#+begin_example
+xhost --run 'xhost +local:'   # per login, not per use of a rig
+#+end_example
+
+is a *truncated copy of a =nix-shell= one-liner*. The original, from our July
+conversation ([[file:../many/2_discussion.org::*DONE run =xhost +local:= on the host (installing it is not enough -- see below)][TODO/many/2_discussion.org, the "run xhost" thread]], line 695), was:
+
+#+begin_src sh
+nix-shell -p xorg.xhost --run 'xhost +local:'   # one-off, per login
+#+end_src
+
+=--run= is *nix-shell's* flag ("run this command inside the shell"), not
+xhost's. When the =nix-shell -p xorg.xhost= prefix fell off in the copy to your
+notes, what remained hands =--run= and the literal string =xhost +local:= to
+=xhost= itself as arguments -- and =xhost= parses every argument as a
+=[+|-][family:]name= host spec. Hence the three errors, one per misread token:
+
+- =bad hostname "-run"= :: leading =-= means "revoke access for host ...", so it
+  tried to resolve a host named =-run=.
+- =unknown address family "xhost +local"= :: the quoted string contains a colon,
+  so everything before the colon is read as an address family.
+- =bad hostname "xhost +local:"= :: the fallback: the whole string as a hostname.
+
+So the command *never worked as written, under any system config*. That is also
+why your discarded hypothesis was rightly discarded: reverting to an earlier
+NixOS generation couldn't help, because no generation was at fault.
+
+* the second wrinkle: the nix-shell wrapper was never needed anyway
+The July thread went one step further after that one-liner was prescribed: it
+turned out =xhost= *was installed on your host all along* -- your =packages.nix=
+already had the top-level =xhost= package, which is a nixpkgs alias for
+=xorg.xhost= (that's the same thread, around line 782; it's also why your
+"add =xorg.xhost=" rebuild changed nothing -- same derivation). The =nix-shell=
+wrapper was proposed under the mistaken belief that the binary was missing.
+
+So the command your notes /should/ contain is the one the repo docs already
+prescribe ([[file:../../rigs/README.org][rigs/README.org]] line 46, [[file:../../rigs/RUNTIME-NOTES.org][rigs/RUNTIME-NOTES.org]] line 52):
+
+#+begin_src sh
+xhost +local:            # or the tighter: xhost +si:localuser:jeff
+#+end_src
+
+Run it in a terminal *inside your Plasma session* (so it inherits the session's
+=DISPLAY= and cookie), once per login. It mutates the running X server's access
+list, which is rebuilt at every server start -- that's the "per login" part.
+
+* current status (I probed just now)
+From the container, the X11 socket is mounted and =DISPLAY=:0.0= is set, but the
+handshake fails:
+
+#+begin_example
+first byte: 0  (0 = FAILED)
+reason: "Authorization required, but no authorization protocol specified"
+#+end_example
+
+That's the expected state, since this login's grant never happened. Run the
+plain =xhost +local:= and it should flip to success immediately -- no restarts,
+no rebuilds. Tell me and I'll re-probe to confirm.
+
+Note the stakes are low either way: the grant only gates the *optional* minifb
+pitch-class window. The instrument warns once and plays on without a display
+(=TODO/many/progress.org=, "the on-screen window is optional and non-fatal") --
+"no window" is a normal state, not an error.
+
+* what to fix
+Three copies of the bad line exist in your personal notes; I haven't touched
+them since they're yours:
+
+- =TODO.org= line 24 (under "PINNED : how to do some things")
+- =TODO.org= line 96 (under "focus on pitch")
+- =temp.org= line 6
+
+Each should become =xhost +local:=. Happy to make those edits if you'd like.
+
+* optional: make it survive logins
+Standing offer from the July thread still stands: since the grant is
+per-session, the durable version is a Plasma autostart entry
+(=~/.config/autostart/=) or a small systemd *user* service running
+=xhost +si:localuser:jeff= after =graphical-session.target=. Say the word and
+I'll write it into =other-projects/nix-jbb/config/= -- it's your host config, so
+I won't touch it unasked.
