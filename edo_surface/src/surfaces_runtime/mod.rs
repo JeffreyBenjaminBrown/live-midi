@@ -616,6 +616,7 @@ fn run(
         s.release,
         s.sustain_level,
         s.decay_secs,
+        s.retrigger_tail_detune_cents,
         Arc::clone(&pedal_gains),
         Arc::clone(&gains),
       ),

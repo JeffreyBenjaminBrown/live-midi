@@ -36,8 +36,8 @@ The dB labels show the default coarse/fine steps.  The rig fields
 
 * The two timbre targets
 
-TARGET starts dim: the waveform and dB buttons address this grid's
-fingered/sustained layer.  Press TARGET and it becomes bright: those controls
+TARGET starts black: the waveform and dB buttons address this grid's
+fingered/sustained layer.  Press TARGET and it becomes solid bright: those controls
 now address recalled chord voices.  Each layer remembers its own selected
 waveform.  Changing it immediately crossfades every voice already sounding in
 that layer and also changes future notes/recalls.
@@ -46,7 +46,7 @@ Each of the four waveforms remembers a fingered/sustained base volume, initially
 -12 dB.  Its chord volume is a remembered offset from that same base, initially
 0 dB.  Therefore:
 
-- with TARGET dim, a dB press moves that waveform's base and both layers follow;
+- with TARGET black, a dB press moves that waveform's base and both layers follow;
 - with TARGET bright, a dB press changes only that waveform's chord offset.
 
 Resulting levels clamp to -60..0 dB.  Changes use the synth's short gain slew,
@@ -58,7 +58,9 @@ Hold ACCRETE while fingering notes.  Every note played or already held joins
 this grid's sustained set and keeps ringing after release.  ACCRETE is always
 momentary; there is no latch-mode button.  CLEAR ends this grid's sustained
 notes and any momentary chord voices currently ringing, without touching the
-other monome.
+other monome.  Re-fingering a sustained note shifts only its outgoing release
+tail six cents sharp; =retrigger_tail_detune_cents= in the rig changes that
+offset live on =r= reload, and zero disables it.
 
 * The eight momentary chord slots
 
@@ -92,7 +94,7 @@ serialosc enumeration order does not move its stored chords to the other grid.
 The four arrows always scroll the playable region.  The octave corners depend
 on TARGET:
 
-- TARGET dim: scroll the playable region by an octave;
+- TARGET black: scroll the playable region by an octave;
 - TARGET bright: glide every currently held chord voice by an octave, leaving
   the playable region still.  With no chord sounding they do nothing.
 

@@ -667,6 +667,11 @@ pub enum SinkRig {
     /// <= 0 disables). Default 0.5.
     #[serde(default = "default_decay_secs")]
     decay_secs: f32,
+    /// Detune applied only to the outgoing release tail when a sustained surfaces
+    /// note is re-fingered, in cents. The replacing note and all logical/stored
+    /// pitches remain exact. Signed; 0 disables. Default 0.
+    #[serde(default = "default_retrigger_tail_detune_cents")]
+    retrigger_tail_detune_cents: f32,
   },
   /// A one-shot sample player: each trigger plays a loaded WAV to completion,
   /// mixed polyphonically. Drives the `drumkit` softstep window. Uses the same
@@ -709,6 +714,10 @@ fn default_sustain_level() -> f32 {
 
 fn default_decay_secs() -> f32 {
   0.5 // a guitar-ish decay time constant
+}
+
+fn default_retrigger_tail_detune_cents() -> f32 {
+  0.0 // preserve exact-pitch retriggers unless a rig asks for de-correlation
 }
 
 impl SinkRig {
@@ -1782,6 +1791,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       oversample,
       distortion_makeup,
       distortion_makeup_slew_ms,
+      retrigger_tail_detune_cents,
       ..
     } = sink {
       if *sample_rate == 0 || *buffer_frames == 0 {
@@ -1805,6 +1815,14 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       }
       if !distortion_makeup_slew_ms.is_finite() || *distortion_makeup_slew_ms < 0.0 {
         return Err(format!("sink {:?} distortion_makeup_slew_ms must be nonnegative", sink.id()));
+      }
+      if !retrigger_tail_detune_cents.is_finite()
+        || retrigger_tail_detune_cents.abs() > 1200.0
+      {
+        return Err(format!(
+          "sink {:?} retrigger_tail_detune_cents must be finite and within -1200..1200",
+          sink.id(),
+        ));
       }
     }
     if let SinkRig::CpalSampler { sample_rate, buffer_frames, amplitude, .. } = sink {
@@ -3021,6 +3039,24 @@ mod tests {
           .unwrap_or_else(|e| panic!("{} should parse: {e}", path.display()));
       }
     }
+  }
+
+  #[test]
+  fn retrigger_tail_detune_must_be_finite_and_within_one_octave() {
+    let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
+    let SinkRig::CpalSynth { retrigger_tail_detune_cents, .. } = &mut rig.sinks[0] else {
+      panic!("test rig should use cpal_synth");
+    };
+    *retrigger_tail_detune_cents = f32::NAN;
+    let err = validate_rig(&rig).expect_err("NaN detune should fail");
+    assert!(err.contains("retrigger_tail_detune_cents"), "{err}");
+
+    let SinkRig::CpalSynth { retrigger_tail_detune_cents, .. } = &mut rig.sinks[0] else {
+      unreachable!();
+    };
+    *retrigger_tail_detune_cents = 1200.1;
+    let err = validate_rig(&rig).expect_err("more than an octave should fail");
+    assert!(err.contains("-1200..1200"), "{err}");
   }
 
   #[test]

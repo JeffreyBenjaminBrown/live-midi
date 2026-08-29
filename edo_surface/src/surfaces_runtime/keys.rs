@@ -537,11 +537,12 @@ pub(super) fn handle_key(
     // replacing note re-drones it. After the mono block, so a colliding-pitch
     // drone a mono cut just captured is cut like any other.
     //
-    // `cut_sustained` hands back the outgoing drone's oscillator phase AND its
-    // factored pulse (`None` when no drone rang here) so the plain-note branch
-    // below can CONTINUE both instead of restarting them -- the retrigger is an
-    // envelope event only (branch-3 item 5 for the phase; queues/branch-2.org
-    // for the pulse).
+    // The cut hands back the outgoing drone's oscillator phase AND its factored
+    // pulse (`None` when no drone rang here) so the plain-note branch below can
+    // CONTINUE both instead of restarting them -- the retrigger is an envelope
+    // event only (branch-3 item 5 for the phase; queues/branch-2.org for the pulse).
+    // The sink rig may additionally detune only the retired tail; a zero setting
+    // retains the historical exact-pitch cut.
     let retrigger = rt.sink.cut_sustained(pitch);
     let layered = {
       let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());

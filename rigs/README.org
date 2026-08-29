@@ -267,6 +267,10 @@ release_secs = 0.050
 # sustained note sounds exactly like the same note held under a finger:
 sustain_level = 0.35
 decay_secs = 0.5
+# Optional, default 0. On a sustained-note retrigger, detune only the outgoing
+# release tail by this many cents; signed, -1200..1200. The replacing/live and
+# stored pitches remain exact. Surfaces rigs adopt edits on `r` reload.
+retrigger_tail_detune_cents = 0
 # Optional. Global distortion curve, heard only under a distortion_toggle window:
 distortion_scale = 1.0
 distortion_shape = 2.0
@@ -654,7 +658,8 @@ rect = [11, 0, 15, 1]
 #+end_src
 
 TARGET selects whether this grid's waveform and ~volume_delta~ controls address
-fingered/sustained voices or recalled chord voices.  A disarmed slot sounds only
+fingered/sustained voices (TARGET black) or recalled chord voices (TARGET solid
+bright).  A disarmed slot sounds only
 while held, and several slots may layer.  ARM followed by a destination stores
 the sorted unique pitches currently sounding on this grid; ARM pressed while
 source slots are held overwrites those sources in place.  Silence never erases a

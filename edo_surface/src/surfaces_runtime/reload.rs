@@ -92,6 +92,7 @@ pub(crate) struct LiveParams {
   pub fund: f64,
   pub sustain_level: f32,
   pub decay_secs: f32,
+  pub retrigger_tail_detune_cents: f32,
   pub slide_window: Duration,
   pub slide_duration_secs: f32,
   /// The pedal-slide pitch smoother's time constant, in seconds -- read fresh by the
@@ -127,6 +128,7 @@ pub(super) fn live_params(s: &Settings) -> LiveParams {
     fund: s.fund,
     sustain_level: s.sustain_level,
     decay_secs: s.decay_secs,
+    retrigger_tail_detune_cents: s.retrigger_tail_detune_cents,
     slide_window: s.slide_window,
     slide_duration_secs: s.slide_duration_secs,
     slide_pedal_smoother_secs: s.slide_pedal_smoother_secs,
@@ -154,7 +156,7 @@ pub(super) fn live_makeup(s: &Settings) -> Arc<Makeup> {
 pub(super) fn reload_live(name: &str, live: &Live) {
   match load_named_rig(name).and_then(|rig| adopt_rig(&rig, live)) {
     Ok(()) => println!(
-      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / slide / trail / pedal curves / drum volume applied (layout + ports need a restart)",
+      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / retrigger detune / slide / trail / pedal curves / drum volume applied (layout + ports need a restart)",
     ),
     Err(e) => eprintln!("reload of {name} failed; keeping the running parameters: {e}"),
   }
@@ -195,7 +197,13 @@ pub(super) fn refresh_live(rt: &mut GridThread) {
   rt.knobs.slide_duration_secs = p.slide_duration_secs;
   rt.knobs.tap_window = p.tap_window;
   rt.timbres = p.timbres;
-  rt.sink.retune(p.fund, p.edo, p.sustain_level, p.decay_secs);
+  rt.sink.retune(
+    p.fund,
+    p.edo,
+    p.sustain_level,
+    p.decay_secs,
+    p.retrigger_tail_detune_cents,
+  );
 }
 
 #[cfg(test)]

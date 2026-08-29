@@ -102,10 +102,26 @@
         s.release,
         s.sustain_level,
         s.decay_secs,
+        s.retrigger_tail_detune_cents,
         Arc::new(Mutex::new(vec![1.0; num_grids])),
         Arc::new(Mutex::new(vec![1.0; num_grids])),
       ),
     }
+  }
+
+  #[test]
+  fn retrigger_tail_detune_is_configured_per_rig_and_defaults_to_zero() {
+    let configured = resolve_settings(
+      &load_named_rig("monomes_two-timbres_sustain_chords").expect("two-layer rig loads"),
+    )
+    .expect("two-layer rig resolves");
+    assert_eq!(configured.retrigger_tail_detune_cents, 6.0);
+
+    let legacy = resolve_settings(
+      &load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("legacy rig loads"),
+    )
+    .expect("legacy rig resolves");
+    assert_eq!(legacy.retrigger_tail_detune_cents, 0.0, "omission preserves exact-pitch tails");
   }
 
   #[test]
@@ -212,6 +228,37 @@
       pitch + rt.tuning.edo,
       "recall uses the newly saved octave",
     );
+  }
+
+  #[test]
+  fn two_layer_sustain_retrigger_detunes_only_the_outgoing_tail() {
+    use crate::types::VoiceSource;
+
+    let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5);
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, note.0, note.1);
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
+
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    handle_key(&mut rt, &mut register, &mut held, (1, 15), true);
+    handle_key(&mut rt, &mut register, &mut held, (1, 15), false);
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    let exact_freq = rt.shared.voices.lock().unwrap()[&drone].freq;
+
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    let voices = rt.shared.voices.lock().unwrap();
+    let finger = &voices[&VoiceSource::SurfaceFinger { grid: 0, cell: note }];
+    assert_eq!(finger.freq, exact_freq, "the newly fingered pitch stays exact");
+    let tail = voices
+      .iter()
+      .find_map(|(source, voice)| {
+        matches!(source, VoiceSource::SurfaceRetired { grid: 0, .. }).then_some(voice)
+      })
+      .expect("the old drone continues as a retired tail");
+    let cents = 1200.0 * (tail.freq / exact_freq).log2();
+    assert!((cents - 6.0).abs() < 1e-3, "retired tail offset was {cents} cents");
   }
 
   #[test]
@@ -1921,6 +1968,7 @@
       let solo = mock.grid(0);
       assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
       assert!(wait_until(secs(3), || solo.level_at(1, 0) == 15), "triangle is selected");
+      assert_eq!(solo.level_at(11, 0), 0, "fingered TARGET is black, not dim-flashing");
       solo.tap(11, 0);
       assert!(wait_until(secs(3), || solo.level_at(11, 0) == 15), "TARGET works with one grid");
     }
@@ -2306,7 +2354,7 @@
 
     // A finger goes down: a voice sounds, and held_all carries it (what the grid
     // thread publishes on note-on, and what the pedal hook reads).
-    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut sink = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     sink.note_on((3, 3), 20, Timbre::default(), None);
     held_all.lock().unwrap()[0].insert((3, 3), 20);
 
@@ -2354,7 +2402,7 @@
     let held_all = Arc::new(Mutex::new(vec![HashMap::new(); 2]));
 
     // Two notes, both sustained on grid 0, one of them also in edit mode.
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
       a.sustain_note(cell, pitch);
@@ -2391,7 +2439,7 @@
     use crate::types::{Timbre, VoiceSource};
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new_momentary())]));
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 1])), Arc::new(Mutex::new(vec![1.0; 1])));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 46, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0, Arc::new(Mutex::new(vec![1.0; 1])), Arc::new(Mutex::new(vec![1.0; 1])));
     // Both edited (so both sustained, via `enter`). They are fingerless drones.
     for (cell, pitch) in [((1, 1), 10), ((2, 2), 20)] {
       a.note_on(cell, pitch, Timbre::default(), None);
@@ -2597,6 +2645,11 @@
     );
     let edited = must_replace(&edited, "duration_ms = 100", "duration_ms = 250");
     let edited = must_replace(&edited, "pedal_smoother_ms = 30", "pedal_smoother_ms = 90");
+    let edited = must_replace(
+      &edited,
+      "*** PARAM decay_secs = 0.5",
+      "*** PARAM decay_secs = 0.5\n*** PARAM retrigger_tail_detune_cents = 7.0",
+    );
     // "Add" an expression pedal with a non-default taper: the pedal thread re-reads
     // Live every poll, so the curve_* knobs are exactly as live as the rest.
     let edited = format!(
@@ -2618,6 +2671,7 @@
     );
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
     assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
+    assert_eq!(p.retrigger_tail_detune_cents, 7.0, "retrigger detune reloads live");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
     assert!(
       (p.slide_pedal_smoother_secs - 0.09).abs() < 1e-6,
@@ -2703,8 +2757,8 @@
     // bank and drone are cleared.
     assert!(hook("feet2", 0, true), "pedal 0 = grid 1's accrete, consumed");
     hook("feet2", 0, false);
-    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
-    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut a = SurfaceSink::new(0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
+    let mut b = SurfaceSink::new(1, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0, Arc::new(Mutex::new(vec![1.0; 2])), Arc::new(Mutex::new(vec![1.0; 2])));
     a.note_on((5, 5), 20, Timbre::default(), None);
     a.sustain_note((5, 5), 20);
     b.note_on((6, 6), 31, Timbre::default(), None);

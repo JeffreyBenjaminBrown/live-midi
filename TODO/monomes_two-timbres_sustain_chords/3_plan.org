@@ -174,7 +174,7 @@ Extend the painter with the new overlays and no legacy/edit animations:
   dim;
 - dB buttons: resting dim, bright while physically held (no false absolute
   “position” display for relative controls);
-- target: dim for fingered/sustained, bright for chord;
+- target: black for fingered/sustained, solid bright for chord;
 - ARM: dark at rest, flashing while armed;
 - slots: dim at rest (empty and occupied intentionally alike), bright while
   physically sounding;

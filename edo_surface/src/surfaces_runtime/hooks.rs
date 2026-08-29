@@ -401,7 +401,7 @@ mod tests {
       rings[0].store.add(Reason::Edit, 10);
     }
     let mut sink = synth::SurfaceSink::new(
-      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0,
       Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
     );
     sink.note_on((0, 0), 10, Timbre::default(), None); // edited: struck with cycling off
@@ -454,7 +454,7 @@ mod tests {
       Arc::new(Mutex::new(vec![HashMap::new()]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let mut sink = synth::SurfaceSink::new(
-      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0,
       Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
     );
     // Two pulsed chord voices from one slot; flag only the first.
@@ -507,7 +507,7 @@ mod tests {
       Arc::new(Mutex::new(vec![HashMap::new()]));
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
     let mut sink = synth::SurfaceSink::new(
-      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0,
       Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
     );
     // A sustained drone + a recalled chord (one voice edited, one not).
@@ -569,7 +569,7 @@ mod tests {
       rings[0].store.add(Reason::Edit, 10);
     }
     let mut sink = synth::SurfaceSink::new(
-      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0,
       Arc::new(Mutex::new(vec![1.0])), Arc::new(Mutex::new(vec![1.0])),
     );
     sink.note_on((0, 0), 10, Timbre::default(), None); // no pulse: x2 must not start one

@@ -102,7 +102,7 @@ pub(super) fn momentary_chord_view(
   };
   let mut buttons = Vec::new();
   let (tx, ty) = momentary_chords::target_cell(rect);
-  buttons.push(([tx, ty, tx, ty], button_level(targets_chords)));
+  buttons.push(([tx, ty, tx, ty], if targets_chords { BRIGHT } else { OFF }));
   let (ax, ay) = momentary_chords::arm_cell(rect);
   let arm_level = if armed && dance::flash_on(elapsed) { BRIGHT } else { OFF };
   buttons.push(([ax, ay, ax, ay], arm_level));

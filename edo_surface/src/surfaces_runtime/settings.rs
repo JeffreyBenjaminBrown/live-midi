@@ -136,6 +136,8 @@ pub(super) struct Settings {
   /// peak, then decay toward the sustain so they ring out over held notes.
   pub(super) sustain_level: f32,
   pub(super) decay_secs: f32,
+  /// Cents applied only to a retired sustain-retrigger tail. Zero disables.
+  pub(super) retrigger_tail_detune_cents: f32,
   /// The four selectable timbres (rig `[[timbres]]`, or the plain waveforms).
   pub(super) timbres: [TimbreSlot; SELECTOR_CELLS],
   /// The instrument-wide AM LFO morph family (rig `[am]`).
@@ -213,7 +215,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
   let SinkRig::CpalSynth {
     sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
     distortion_scale, distortion_shape, distortion_makeup, distortion_auto_makeup,
-    distortion_makeup_slew_ms, sustain_level, decay_secs, ..
+    distortion_makeup_slew_ms, sustain_level, decay_secs, retrigger_tail_detune_cents, ..
   } = sink
   else {
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
@@ -481,6 +483,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     release: *release_secs,
     sustain_level: *sustain_level,
     decay_secs: *decay_secs,
+    retrigger_tail_detune_cents: *retrigger_tail_detune_cents,
     timbres: resolve_timbre_slots(rig),
     am_shape_family: match rig.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
       AmShapeFamilyRig::SinToSquare => AmShapeFamily::SinToSquare,

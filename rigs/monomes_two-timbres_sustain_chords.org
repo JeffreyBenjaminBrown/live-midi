@@ -35,8 +35,12 @@ Unused: this rig has no expression pedals.
 **** PARAM release_secs = 0.050
 **** PARAM sustain_level = 0.35
 **** PARAM decay_secs = 0.5
+**** PARAM retrigger_tail_detune_cents = 6
 The waveform selector uses the built-in sine / triangle / square / saw choices.
 Loudness belongs to the layer-volume state below, initially -12 dB.
+When a sustained note is re-fingered, only its outgoing release tail is shifted
+six cents sharp.  Edit this parameter and reload with =r= to audition another
+offset; zero restores an exact-pitch tail.
 ** grid A: the first available 16x16 monome
 *** ELEM monomes
 **** PARAM id = "a"

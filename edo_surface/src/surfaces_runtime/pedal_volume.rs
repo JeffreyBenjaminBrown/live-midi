@@ -309,7 +309,7 @@ mod tests {
     let ring = Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new())]));
     let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32]));
     let mut sink = synth::SurfaceSink::new(
-      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0,
       Arc::clone(&pedal_gains), Arc::new(Mutex::new(vec![1.0])),
     );
     sink.note_on((0, 0), 30, Timbre::default(), None);

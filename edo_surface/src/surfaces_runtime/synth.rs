@@ -209,6 +209,8 @@ pub struct SurfaceSink {
   /// The pluck envelope for every struck note (see `voices::pluck_envelope`).
   sustain_env: f32,
   decay_per_sample: f32,
+  /// Rig-configured cents applied only to a same-pitch retrigger's retired tail.
+  retrigger_tail_detune_cents: f32,
   /// The per-grid expression-pedal volumes (shared with the pedal thread, which
   /// writes them). A fresh note starts at ITS grid's current pedal volume --
   /// already settled, no slew-in. Unity when the rig has no pedals.
@@ -233,6 +235,7 @@ impl SurfaceSink {
     release_secs: f32,
     sustain_level: f32,
     decay_secs: f32,
+    retrigger_tail_detune_cents: f32,
     pedal_gains: Arc<Mutex<Vec<f32>>>,
     fader_gains: Arc<Mutex<Vec<f32>>>,
   ) -> Self {
@@ -248,6 +251,7 @@ impl SurfaceSink {
       release_secs,
       sustain_env,
       decay_per_sample,
+      retrigger_tail_detune_cents,
       pedal_gains,
       fader_gains,
     }
@@ -358,15 +362,23 @@ impl SurfaceSink {
     );
   }
 
-  /// Adopt hot-reloaded tuning + pluck parameters (the 'r' reload). Future notes
-  /// use them; sounding voices keep their struck frequency and envelope.
-  pub fn retune(&mut self, fund: f64, edo: i32, sustain_level: f32, decay_secs: f32) {
+  /// Adopt hot-reloaded tuning, pluck, and retrigger-tail parameters (the 'r'
+  /// reload). Future transitions use them; sounding voices keep their struck state.
+  pub fn retune(
+    &mut self,
+    fund: f64,
+    edo: i32,
+    sustain_level: f32,
+    decay_secs: f32,
+    retrigger_tail_detune_cents: f32,
+  ) {
     self.fund = fund;
     self.edo = edo;
     let (sustain_env, decay_per_sample) =
       pluck_envelope(sustain_level, decay_secs, 1.0, self.sample_rate);
     self.sustain_env = sustain_env;
     self.decay_per_sample = decay_per_sample;
+    self.retrigger_tail_detune_cents = retrigger_tail_detune_cents;
   }
 
   /// `note_on`, but the voice STARTS at `from_pitch` and glides into `pitch` over
@@ -836,6 +848,11 @@ impl SurfaceSink {
     };
     state.target_env = 0.0;
     state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
+    let tail_ratio = 2.0_f32.powf(self.retrigger_tail_detune_cents / 1200.0);
+    state.freq *= tail_ratio;
+    if state.freq_target != 0.0 {
+      state.freq_target *= tail_ratio;
+    }
     // A retired voice is a dying tail nobody addresses any more, so it must not carry
     // on a pedal slide: freeze its pitch where the cut found it. (Without this, cutting
     // a drone the pedal was sliding leaves the tail gliding on toward a target it is no
@@ -1172,11 +1189,20 @@ mod tests {
   }
 
   fn sink(grid: usize, voices: &Arc<Mutex<VoiceMap>>) -> SurfaceSink {
+    sink_with_tail_detune(grid, voices, 0.0)
+  }
+
+  fn sink_with_tail_detune(
+    grid: usize,
+    voices: &Arc<Mutex<VoiceMap>>,
+    retrigger_tail_detune_cents: f32,
+  ) -> SurfaceSink {
     // sustain_level 1.0 = no pluck decay, so target_env assertions stay exact.
     let pedal_gains = Arc::new(Mutex::new(vec![1.0; 2]));
     let fader_gains = Arc::new(Mutex::new(vec![1.0; 2]));
     SurfaceSink::new(
-      grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, pedal_gains, fader_gains,
+      grid, Arc::clone(voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      retrigger_tail_detune_cents, pedal_gains, fader_gains,
     )
   }
 
@@ -1429,7 +1455,7 @@ mod tests {
     let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; 2]));
     let fader_gains = Arc::new(Mutex::new(vec![1.0_f32; 2]));
     let mut a = SurfaceSink::new(
-      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5,
+      0, Arc::clone(&voices), 80.0, 58, 48000.0, 0.003, 0.05, 1.0, 0.5, 0.0,
       Arc::clone(&pedal_gains), Arc::clone(&fader_gains),
     );
     let mut b = sink(1, &voices);
@@ -1514,12 +1540,16 @@ mod tests {
     let mut a = sink(0, &voices);
     a.note_on((3, 4), 20, Timbre::default(), None);
     a.sustain_note((3, 4), 20);
+    let drone_freq = voices.lock().unwrap()[&sustain_key(0, 20)].freq;
     a.cut_sustained(20);
     {
       let v = voices.lock().unwrap();
       assert!(v.get(&sustain_key(0, 20)).is_none(), "the sustain key frees immediately");
       assert_eq!(v.len(), 1, "the drone moved (retired), not vanished");
-      assert_eq!(v.values().next().map(|s| s.target_env), Some(0.0), "and it is ramping out");
+      let (source, tail) = v.iter().next().unwrap();
+      assert!(matches!(source, VoiceSource::SurfaceRetired { grid: 0, .. }));
+      assert_eq!(tail.target_env, 0.0, "the retired voice is ramping out");
+      assert_eq!(tail.freq, drone_freq, "ordinary rigs keep the retired tail in tune");
     }
     // The replacing note: strike the same pitch, release it under a live accrete.
     a.note_on((3, 4), 20, Timbre::default(), None);
@@ -1527,6 +1557,26 @@ mod tests {
     let v = voices.lock().unwrap();
     assert_eq!(v.get(&sustain_key(0, 20)).map(|s| s.target_env), Some(1.0), "the new drone rings");
     assert_eq!(v.len(), 2, "old tail still fading beside it");
+  }
+
+  #[test]
+  fn hot_reloaded_retrigger_detunes_only_the_retired_tail_by_six_cents() {
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.retune(80.0, 58, 1.0, 0.5, 6.0);
+    a.note_on((3, 4), 20, Timbre::default(), None);
+    a.sustain_note((3, 4), 20);
+    let drone_freq = voices.lock().unwrap()[&sustain_key(0, 20)].freq;
+
+    a.cut_sustained(20);
+    let v = voices.lock().unwrap();
+    let (source, tail) = v.iter().next().unwrap();
+    assert!(matches!(source, VoiceSource::SurfaceRetired { grid: 0, .. }));
+    let cents = 1200.0 * (tail.freq / drone_freq).log2();
+    assert!(
+      (cents - 6.0).abs() < 1e-3,
+      "tail offset was {cents} cents",
+    );
   }
 
   /// Branch-3 queue item 5: "retrigger should not reset the phase of a voice", pinned

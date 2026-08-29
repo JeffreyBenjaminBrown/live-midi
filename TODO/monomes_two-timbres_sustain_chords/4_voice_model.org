@@ -1,0 +1,398 @@
+#+title: monomes, two timbre layers, sustain, and momentary chords -- note/voice model
+
+* Scope and the central distinction
+
+This describes the note model actually implemented for
+=monomes_two-timbres_sustain_chords=.  Timbre and volume routing are deliberately
+out of scope.  The report follows note identity, ownership, lifetime, accretion,
+storage, recall, shifting, collisions, and release.
+
+The player's useful three-way vocabulary is:
+
+1. a *fingered note*: a play-surface cell is physically held;
+2. a *sustained note*: an absolute pitch belongs to this grid's accrete set, so
+   it may continue without a finger;
+3. a *stored chord note*: an absolute pitch is present in one of this grid's
+   eight chord slots.
+
+Those are not three parallel kinds of live audio voice.  In particular, a
+stored note is dormant data and makes no sound.  Holding its slot creates a
+fourth useful concept, a *recalled chord voice*.  A recalled voice is live and
+independently releasable; the slot entry from which it came remains unchanged.
+
+There is also a hidden implementation category, the *release tail*.  A tail is
+still temporarily audible, but it has already ceased to be fingered, sustained,
+or live-recalled for the purposes of buttons, LEDs, capture, and later musical
+operations.
+
+#+begin_example
+physical cell down        accrete pitch membership       chord-slot data
+       |                           |                           |
+       v                           v                           | slot down
+  FINGER VOICE  -- key up -->  DRONE VOICE                    v
+       |             if sustained       |              RECALLED VOICE
+       |                                |                     |
+       +------ ordinary key up ---------+------ clear --------+
+                         |                                    |
+                         v                                    v
+                    RELEASE TAIL <------- slot up / clear -----+
+                         |
+                         v
+                       reaped
+#+end_example
+
+The arrow from a finger to a drone moves the same audio voice; it does not
+restrike it.  Every other ending uses a short release before the audio object is
+reaped.
+
+* Four separate records of reality
+
+The apparent complexity mostly comes from keeping four different questions in
+four different data structures.  No one structure is the complete truth.
+
+| Question | Per-grid record | Identity |
+|----------+-----------------+----------|
+| Which play cells are physically down, and what did each strike? | =held= map | cell -> absolute pitch |
+| Which pitches are entitled to ring after all fingers lift? | =RingStore::Sustain= | absolute pitch set |
+| What does each chord slot contain? | =MomentaryChordLayer::slots= | eight optional sorted pitch sets |
+| Which recalled voices are live right now? | =MomentaryChordLayer::live= | unique sequence -> source slot + current pitch |
+
+The shared audio map is a fifth, lower-level record.  Its key says who can
+address a voice:
+
+- =SurfaceFinger { grid, cell }= is controlled by one physical play cell;
+- =SurfaceDrone { grid, pitch }= is the one addressable sustain voice at that
+  pitch on that grid;
+- =SurfaceChord { grid, seq }= is one recalled voice, independently of its
+  pitch and independently of every other recall;
+- =SurfaceRetired { grid, seq }= is an unaddressed tail left by cutting a
+  drone for a retrigger.
+
+The grid number is part of all four live identities.  Two grids may therefore
+have completely independent voices at the same absolute pitch.  Their controls,
+held maps, sustain sets, live recalls, and slot data are independent.  Only the
+visual pitch-class reflection is unioned across grids.
+
+* Fingered notes
+
+** Identity
+
+A finger is keyed by its cell, not by its pitch.  The pitch is calculated at
+key-down and recorded in the held map.  Later scrolling does not alter that
+struck pitch or orphan the release.
+
+Cell identity also permits tuning collisions.  In this 41-EDO layout, several
+different cells can denote the same absolute pitch.  Holding two such cells
+creates two independent finger voices.  Consequently “is pitch P fingered?” is
+really a count, not a boolean.
+
+** Ordinary lifecycle
+
+On an ordinary key-down, a fresh finger voice attacks and the held map records
+=cell -> pitch=.  On key-up:
+
+- if the pitch is not sustained, the finger voice begins its release and the
+  held entry disappears;
+- if the pitch is sustained, the same audio state is moved from its cell key to
+  the pitch-keyed drone key, without a new attack;
+- if a drone already occupies that pitch, the extra finger voice releases
+  instead of replacing it.  One drone is sufficient for a pitch-keyed sustain
+  set.
+
+Thus an audible release tail is no longer “fingered”: it has no held-map entry
+and is excluded from a later chord capture.
+
+* Sustained notes and ACCRETE
+
+** Membership and voice are different things
+
+The sustain bank is a set of absolute pitches.  Membership is a reason for a
+note to survive finger release; it is not itself an audio voice.
+
+While a sustained pitch is still under a finger, the live voice normally
+remains a =SurfaceFinger=.  It becomes a =SurfaceDrone= only when a finger
+lifts.  This distinction explains why the same pitch may be in the sustain set
+without there yet being a drone key, and why CLEAR can remove sustain from a
+held note without ending the finger's voice.
+
+There can be only one addressable drone at a given =(grid, pitch)=.  The pitch
+set is likewise deduplicated.  Multiple fingers at that pitch remain distinct
+until release, but they do not create multiple sustained copies.
+
+** ACCRETE is permanently momentary in this rig
+
+The ACCRETE condition is true only while this grid's ACCRETE button is down.
+Its edges and note edges behave as follows:
+
+- ACCRETE down immediately adds every currently fingered pitch on this grid to
+  the sustain set.
+- A play note pressed while ACCRETE is down joins immediately.
+- A play note released while ACCRETE is down also joins before the release
+  decision.  This covers a note whose relevant down edge predates the current
+  accrete hold.
+- ACCRETE up merely stops further capture.  It removes no pitch already in the
+  sustain set and ends no voice.
+
+ACCRETE only captures play-surface fingers in this rig.  It does not convert
+held recalled chord voices into drones, and it does not copy dormant slot data.
+A recalled chord still ends when its slot is released even if ACCRETE is held.
+
+** CLEAR
+
+CLEAR down performs two independent live-state operations on this grid:
+
+1. remove every pitch from the sustain set and release the corresponding
+   fingerless drones;
+2. unregister and release every currently recalled momentary-chord voice.
+
+CLEAR does not:
+
+- end a currently held finger voice;
+- erase or edit any of the eight stored pitch sets;
+- release the physical-held bookkeeping for a chord slot;
+- cancel an armed-next-save state;
+- alter the other grid.
+
+The held-button details have useful consequences:
+
+- If CLEAR ends a recall while its slot key is still down, that slot stays
+  marked physically held but has no live voices.  Its eventual key-up is
+  harmless.  It must be released and pressed again before it can recall again.
+- If CLEAR removes sustain from a fingered pitch, that finger continues.  Its
+  later key-up releases normally, unless ACCRETE is still down at that moment;
+  in that case the release adds the pitch back and makes it a drone again.
+- If ARM was flashing, CLEAR leaves it flashing.  The next destination press
+  is still a save.
+
+* Stored chord notes and recalled chord voices
+
+** Dormant slot data
+
+Each physical monome owns eight optional chord slots.  A nonempty slot is a
+sorted, deduplicated vector of absolute 41-EDO pitches.  It stores neither the
+cells which produced them nor a register-relative shape.  Duplicate instances
+of a pitch are deliberately collapsed during saving.
+
+Slots persist under
+=state/chord-slots/monomes_two-timbres_sustain_chords.toml=, keyed by physical
+monome serial id.  Reordering or connecting only one of the two devices does
+not swap their chord spaces.
+
+** Momentary recall
+
+With ARM off, slot down does the following once:
+
+1. mark the source slot physically held;
+2. allocate a fresh sequence identity for each stored pitch;
+3. record =(sequence, source slot, current pitch)= in the live-recall registry;
+4. spawn one recalled voice for every sequence.
+
+Slot up removes and releases only the live sequences whose source is that
+slot.  Several slots may be held at once.  Their voices are independent even
+when the slots contain the same pitch.  One slot cannot contain a duplicate
+pitch internally, but two slots can each contribute a voice at that pitch.
+
+An empty slot still becomes physically held, but spawns nothing.  It remains
+visually dim.  Repeated down edges while already held do not duplicate a
+recall.
+
+Releasing or clearing recalled voices does not change their stored source.
+The release tails remain briefly audible but leave the live registry
+immediately, so they are neither shown as a sounding slot nor included in a
+save made during their fade.
+
+** What “currently sounding” means during save
+
+The pitch set captured for a destination is the normalized union, on this grid,
+of:
+
+- every pitch value in the physical held map;
+- every pitch in the sustain set;
+- every pitch in the live momentary-recall registry.
+
+This is logical sounding state, not a measurement of nonzero audio.  It
+includes a sustained pitch even while its voice is still finger-keyed.  It
+excludes dormant slots, ordinary release tails, retired drone tails, and chord
+tails already unregistered by slot-up or CLEAR.  Multiple fingers, sustain
+membership, and several recalled copies of the same pitch all collapse to one
+stored pitch.
+
+** ARM with no slot held: save the next destination
+
+ARM down toggles the armed state when no slot key is physically held.  While
+armed, a destination slot down captures the union above, writes it to that
+slot, and disarms without recalling the destination.
+
+If the captured union is empty, ARM still disarms but the destination is left
+unchanged.  Pressing ARM again before choosing a destination simply unarms.
+
+** ARM with one or more slots held: overwrite the sources now
+
+If any slot key is physically held, ARM does not toggle next-destination mode.
+It immediately captures the same union and writes that complete set to *every*
+held slot, then disarms.  This is the in-place save gesture for shifted
+momentary chords.
+
+“Held” here is physical, not audible.  It includes an empty held slot and a
+slot whose voices were just ended by CLEAR.  If the union is empty, no held
+slot changes.  If several source slots are held, they all receive the same
+combined union, including all their live pitches and any simultaneous fingers
+or sustained pitches.
+
+Overwriting storage does not alter the live voices created by the current
+hold.  It changes what the next recall will instantiate.
+
+** Octave shift
+
+When the chord target is selected, either octave corner changes every live
+momentary-recall pitch on this grid by one EDO octave.  Both the live registry
+and the corresponding voice frequencies move.  The stored slots do not.
+
+Consequently an unsaved shifted chord returns to its stored octave after
+slot-up and the next slot-down.  Pressing ARM while its source slot remains held
+captures the shifted live pitch and makes that octave persistent.  If several
+slots are held, the shift and subsequent overwrite act on their combined live
+voices.
+
+The non-octave arrows merely move the visible play register.  Register motion
+never rewrites held, sustained, stored, or recalled absolute pitches.
+
+* Same-pitch interactions
+
+The following table is the compact collision rule for the current reduced
+momentary-chord rig.
+
+| New event at pitch P | Existing finger at P | Existing drone at P | Existing recalled voice at P |
+|----------------------+----------------------+---------------------+--------------------------------|
+| another play-cell down | a second independent finger voice | cut drone to a tail; create a replacing finger voice | create an independent finger voice; recalled voice continues |
+| slot recall | create an independent recalled voice | create an independent recalled voice | create another independent recalled voice |
+| finger key-up, P not sustained | release only that finger | not normally this combination | recalled voice is untouched |
+| finger key-up, P sustained | move finger to drone, or release it if a drone key is already occupied | keep the existing drone and release the extra finger | recalled voice is untouched |
+| slot key-up | finger is untouched | drone is untouched | release only recalled sequences born from that slot |
+| CLEAR | held finger survives | sustain membership is removed and the fingerless drone releases | all live recalled voices release; slot data survives |
+
+Two direction-dependent facts are worth making explicit:
+
+- Recall onto an already fingered or sustained pitch always layers another
+  voice.
+- In this new rig, fingering a pitch already sounding from a *momentary* slot
+  also layers another voice.  The nearby key-handler code has an older special
+  case in which fingering a legacy =chord_block= voice restrikes that chord
+  voice and creates no finger voice, but that lookup consults only the legacy
+  chord registry.  The new =momentary_chord_block= deliberately has a separate
+  registry, so it does not take that path.
+
+ACCRETE and storage remain orthogonal across all of these collisions.  ACCRETE
+controls pitch membership for the fingered/sustained side only.  A save may
+copy the pitch of either side into dormant slot data, but doing so does not
+consume, merge, sustain, or otherwise alter the source voices.
+
+* Re-fingering a sustained pitch
+
+This is the only transition that deliberately replaces an addressable live
+voice rather than simply layering:
+
+1. the pitch remains present in the sustain set;
+2. the old =SurfaceDrone { pitch }= is moved to a unique =SurfaceRetired=
+   identity, shifted by the rig's configured retrigger-tail detune (initially
+   six cents sharp), and begins its release;
+3. its oscillator position is handed to a new =SurfaceFinger { cell }=;
+4. the new finger voice performs a fresh envelope attack while continuing that
+   oscillator cycle;
+5. key-up later turns the replacement back into the pitch-keyed drone, because
+   sustain membership was never removed.
+
+Moving the old voice aside is necessary: it lets the replacement own the
+unique drone key after release while the old tail finishes, and avoids an
+instant waveform discontinuity from deleting the old object.  Only this 50 ms
+tail is detuned.  The fingered voice, the sustain-set pitch, stored slot data,
+and the eventual replacement drone remain on the exact EDO pitch.  The
+=cpal_synth= parameter =retrigger_tail_detune_cents= is signed, accepts
+-1200..1200, and is applied to future retriggers on =r= reload; zero disables
+the offset.
+
+** Why the present implementation clicks here
+
+The outgoing tail starts offset by six cents as a deliberately small
+de-correlation experiment.  Six cents accumulates limited relative phase during
+a 50 ms release, however, and the new rig still enters the replacement through
+the older phase-continuing note-on helper.  That helper initializes
+the replacement at unity layer gain.  The handler then changes only its target
+to this rig's normal fingered/sustained gain, which is initially about 0.251
+(-12 dB).  The correction uses a 20 ms slew, while the attack reaches its peak
+in 3 ms.  The replacement is therefore much too loud during the attack, on top
+of the old drone's 50 ms retired tail.  The resulting narrow excess transient
+is the reported click.
+
+A fresh, nonsustained note does not have this mismatch: its layered constructor
+starts both current and target gain at the correct value.  The clean repair is
+a layer-aware phase-continuing constructor which also initializes both gain
+fields to the current fingered/sustained layer value.  That preserves the
+existing oscillator-continuation and release-tail model.
+
+* Invariants, consequences, and one collision hazard
+
+The intended invariants are:
+
+- fingers are cell-keyed and may have pitch multiplicity;
+- sustain is pitch-keyed and has at most one addressable drone per grid/pitch;
+- stored slots are normalized pitch sets and are never live state;
+- recalled voices are sequence-keyed and may have arbitrary pitch
+  multiplicity;
+- a source ending enters release without becoming capturable live state;
+- all ownership and destructive controls are per-grid.
+
+There is one current edge case where these rules do not compose cleanly.  It
+requires colliding cells at one pitch:
+
+1. hold two cells for P while P is sustained;
+2. release one, producing a P drone while the other P finger remains;
+3. press CLEAR.
+
+The clear code asks whether P has any remaining finger and, because it does,
+does not release the drone.  It assumes the finger is the voice to spare, but
+at this point a separate drone also exists.  Sustain membership is nevertheless
+removed.  When the last finger later lifts with ACCRETE off, its own voice
+releases while the now-reasonless drone can continue indefinitely.
+
+So the state model correctly records a finger *count*, but the clear-to-audio
+handoff currently treats “some finger exists” as proof that no drone needs
+ending.  A robust clear should independently end any actual drone at every
+cleared pitch while leaving all cell-keyed fingers alone.  This is separate
+from the ordinary sustained-retrigger click above.
+
+* Button/LED summary for this state model
+
+- ACCRETE is bright exactly while its momentary capture condition is live.
+- CLEAR is bright while physically held; its destructive work occurs on
+  key-down.
+- ARM is black when idle and flashes when next-destination save is armed.
+- A slot is dim at rest whether empty or occupied, and bright only while that
+  slot owns at least one registered live recalled voice.
+- The top-left TARGET cell is black in the default fingered/sustained state and
+  solid bright in the chord state.  Apart from choosing the octave-corner
+  behavior described above, its timbre/volume role is outside this report.
+- Fingered, sustained, and live-recalled pitch classes reflect brightly across
+  both grids.  That visual union does not merge their audio ownership or make
+  one grid's buttons act on the other.
+
+* Code map
+
+- Musical source identities and per-voice lifetime:
+  [[file:../../edo_surface/src/sawwave/types.rs]]
+- Sustain membership and the per-grid ring:
+  [[file:../../edo_surface/src/surfaces_runtime/ring.rs]]
+- Momentary ACCRETE condition:
+  [[file:../../edo_surface/src/surfaces_runtime/accrete.rs]]
+- Eight-slot stored/live state:
+  [[file:../../edo_surface/src/surfaces_runtime/momentary_chords.rs]]
+- Key transitions, capture, ARM, recall, shift, and release:
+  [[file:../../edo_surface/src/surfaces_runtime/keys.rs]]
+- CLEAR shared by grid and pedal paths:
+  [[file:../../edo_surface/src/surfaces_runtime/hooks.rs]]
+- Voice re-keying, retrigger, and release:
+  [[file:../../edo_surface/src/surfaces_runtime/synth.rs]]
+- Pitch-only persistence:
+  [[file:../../edo_surface/src/surfaces_runtime/momentary_chords_persist.rs]]
+- Button and pitch-class views:
+  [[file:../../edo_surface/src/surfaces_runtime/paint.rs]]
