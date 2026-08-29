@@ -15,6 +15,7 @@ use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Waveform};
 use crate::voices::Distortion;
 
 use super::grid::SELECTOR_CELLS;
+use super::layer_controls::LayerVolumeConfig;
 use super::pedal_volume::PedalVolumeCurve;
 use super::NO_RECT;
 
@@ -64,8 +65,9 @@ pub(super) struct Overlays {
   pub(super) scroll_rect: [i32; 4],
   pub(super) selector_rect: [i32; 4],
   pub(super) volume_rect: [i32; 4],
+  pub(super) volume_delta_rect: [i32; 4],
   /// The accrete (sustain) buttons' cells, `NO_RECT` when absent. Each grid's
-  /// trio (+ optional erase) drives its own per-monome accrete bank.
+  /// reduced pair or full set (+ optional erase) drives its own per-monome bank.
   pub(super) clear_rect: [i32; 4],
   pub(super) needs_holding_rect: [i32; 4],
   pub(super) accrete_rect: [i32; 4],
@@ -87,6 +89,8 @@ pub(super) struct Overlays {
   /// The 5x2 chord-storage block (slots 1..5 over arm + slots 6..9), `NO_RECT`
   /// when absent.
   pub(super) chord_rect: [i32; 4],
+  /// Pitch-only target/arm/eight-slot block.
+  pub(super) momentary_chord_rect: [i32; 4],
   /// The fine-transpose toggle's cell, `NO_RECT` when absent.
   pub(super) fine_transpose_rect: [i32; 4],
 }
@@ -106,6 +110,8 @@ pub(super) struct GridSettings {
   pub(super) controls_index: usize,
   /// The grid index this grid's volume strip sets (self if it has no volume strip).
   pub(super) volume_controls_index: usize,
+  pub(super) volume_delta_controls_index: usize,
+  pub(super) layer_volume: Option<LayerVolumeConfig>,
   pub(super) overlays: Overlays,
 }
 
@@ -262,8 +268,40 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       }
       None => (NO_RECT, index_of(monome_id).unwrap()),
     };
-    // The accrete (sustain) buttons, one rect per control kind (validation already
-    // guarantees a monome has either the whole trio or none of it).
+    let volume_delta = rig.monome_windows.iter().find_map(|w| match w {
+      MonomeWindowRig::VolumeDelta {
+        monome,
+        rect,
+        controls,
+        volume_coarse,
+        volume_fine,
+        initial_db,
+        min_db,
+        max_db,
+        ..
+      } if monome == monome_id => Some((
+        *rect,
+        controls.clone(),
+        LayerVolumeConfig {
+          coarse_db: *volume_coarse,
+          fine_db: *volume_fine,
+          initial_db: *initial_db,
+          min_db: *min_db,
+          max_db: *max_db,
+        },
+      )),
+      _ => None,
+    });
+    let (volume_delta_rect, volume_delta_controls_index, layer_volume) = match volume_delta {
+      Some((rect, controls, config)) => {
+        let idx = index_of(&controls)
+          .ok_or("volume_delta controls a monome that is not a play grid")?;
+        (rect, idx, Some(config))
+      }
+      None => (NO_RECT, index_of(monome_id).unwrap(), None),
+    };
+    // The accrete (sustain) buttons, one rect per control kind (validation accepts
+    // either the reduced fixed-momentary pair or the full switchable set).
     let accrete_rect_on = |kind: AccreteControlKind| {
       rig
         .monome_windows
@@ -328,6 +366,16 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let momentary_chord_rect = rig
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowRig::MomentaryChordBlock { monome, rect, .. } if monome == monome_id => {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
     let fine_transpose_rect = rig
       .monome_windows
       .iter()
@@ -357,6 +405,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       scroll_rect,
       selector_rect,
       volume_rect,
+      volume_delta_rect,
       clear_rect: accrete_rect_on(AccreteControlKind::Clear),
       needs_holding_rect: accrete_rect_on(AccreteControlKind::NeedsHolding),
       accrete_rect: accrete_rect_on(AccreteControlKind::Accrete),
@@ -369,6 +418,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
       chord_rect,
+      momentary_chord_rect,
       fine_transpose_rect,
     };
     grids.push(GridSettings {
@@ -378,6 +428,8 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       prefix: monome_cfg.prefix.clone(),
       controls_index,
       volume_controls_index,
+      volume_delta_controls_index,
+      layer_volume,
       overlays,
     });
   }

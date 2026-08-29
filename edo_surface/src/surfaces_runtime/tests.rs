@@ -7,7 +7,11 @@
   /// the accrete bank is momentary, exactly as `run()` builds it for this rig
   /// (no needs_holding control is bound anywhere).
   fn test_grid_thread() -> GridThread {
-    let rig = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("rig loads");
+    test_grid_thread_for("2-edogrids_ss-accrete_ss-pulse")
+  }
+
+  fn test_grid_thread_for(rig_name: &str) -> GridThread {
+    let rig = load_named_rig(rig_name).expect("rig loads");
     let s = resolve_settings(&rig).expect("rig resolves");
     let num_grids = s.grids.len();
     let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
@@ -19,6 +23,15 @@
     };
     let shared = Shared {
       selected: Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids])),
+      layer_controls: Arc::new(Mutex::new(
+        s.grids
+          .iter()
+          .map(|g| match (g.overlays.momentary_chord_rect != NO_RECT, g.layer_volume) {
+            (true, Some(config)) => LayerControls::new(true, config),
+            _ => LayerControls::disabled(),
+          })
+          .collect(),
+      )),
       sounding: Arc::new(Mutex::new(vec![HashSet::new(); num_grids])),
       trail: Arc::new(Mutex::new(VecDeque::new())),
       volume_pos: Arc::new(Mutex::new(vec![0; num_grids])),
@@ -39,6 +52,7 @@
       live,
       voices: Arc::clone(&voices),
       persist: None,
+      momentary_persist: None,
     };
     let g = &s.grids[0];
     GridThread {
@@ -53,6 +67,7 @@
       overlays: g.overlays,
       editmode_clear_down: false,
       editmode_accrete_down: false,
+      volume_delta_down: [false; SELECTOR_CELLS],
       tuning: Tuning {
         x_step: s.x_step,
         y_step: s.y_step,
@@ -70,6 +85,7 @@
         echo_input: false,
         controls_index: 0,
         volume_controls_index: 0,
+        volume_delta_controls_index: 0,
       },
       shared,
       slide: SlideCandidates::new(),
@@ -90,6 +106,139 @@
         Arc::new(Mutex::new(vec![1.0; num_grids])),
       ),
     }
+  }
+
+  #[test]
+  fn two_layer_rig_routes_live_timbre_volume_momentary_save_and_octave_shift() {
+    use crate::surfaces_runtime::layer_controls::{db_to_gain, LayerTarget};
+    use crate::surfaces_runtime::momentary_chords::{slot_cell, SLOTS};
+    use crate::types::{VoiceSource, Waveform};
+
+    let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    assert_eq!(rt.overlays.selector_rect, [0, 0, 3, 0]);
+    assert_eq!(rt.overlays.volume_delta_rect, [0, 1, 3, 1]);
+    assert_eq!(rt.overlays.momentary_chord_rect, [11, 0, 15, 1]);
+    assert_eq!(rt.overlays.scroll_rect, [13, 14, 15, 15]);
+    assert_eq!(rt.shared.ring.lock().unwrap()[0].momentary_chord.slots.len(), SLOTS);
+
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let note = (5, 5);
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, note.0, note.1);
+    let finger = VoiceSource::SurfaceFinger { grid: 0, cell: note };
+
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    {
+      let voices = rt.shared.voices.lock().unwrap();
+      assert_eq!(voices[&finger].timbre.waveform, Waveform::Triangle);
+      assert!((voices[&finger].grid_gain_target - db_to_gain(-12.0)).abs() < 1e-6);
+    }
+
+    // TARGET -> chord, then ARM + slot 0 saves the currently sounding pitch.
+    handle_key(&mut rt, &mut register, &mut held, (11, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (11, 0), false);
+    handle_key(&mut rt, &mut register, &mut held, (15, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (15, 0), false);
+    let slot0 = slot_cell(rt.overlays.momentary_chord_rect, 0);
+    handle_key(&mut rt, &mut register, &mut held, slot0, true);
+    handle_key(&mut rt, &mut register, &mut held, slot0, false);
+    assert_eq!(
+      rt.shared.ring.lock().unwrap()[0].momentary_chord.slots[0].as_deref(),
+      Some([pitch].as_slice()),
+    );
+    assert_eq!(
+      rt.shared.layer_controls.lock().unwrap()[0].selected_for(LayerTarget::FingeredSustained),
+      1,
+      "the chord-layer selector leaves the fingered layer on triangle",
+    );
+
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    handle_key(&mut rt, &mut register, &mut held, slot0, true);
+    let first_seq = *rt.shared.ring.lock().unwrap()[0]
+      .momentary_chord
+      .live
+      .keys()
+      .next()
+      .expect("momentary recall is live");
+    let first_chord = VoiceSource::SurfaceChord { grid: 0, seq: first_seq };
+    {
+      let voices = rt.shared.voices.lock().unwrap();
+      assert_eq!(voices[&first_chord].timbre.waveform, Waveform::Triangle);
+      assert!((voices[&first_chord].grid_gain_target - db_to_gain(-12.0)).abs() < 1e-6);
+      assert_eq!(voices[&first_chord].factored_pulse_freq, 0.0);
+      assert_eq!(voices[&first_chord].phase, 0.0);
+    }
+
+    // A chord-layer waveform press re-timbres the already sounding recall with
+    // an equal-power fade, without changing the fingered layer's selection.
+    handle_key(&mut rt, &mut register, &mut held, (3, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (3, 0), false);
+    {
+      let voices = rt.shared.voices.lock().unwrap();
+      assert_eq!(voices[&first_chord].timbre.waveform, Waveform::Saw);
+      assert_eq!(
+        voices[&first_chord].timbre_xfade.unwrap().from.waveform,
+        Waveform::Triangle,
+      );
+    }
+
+    // Chord-target +2 dB touches the live chord. Octave-up glides it but does not
+    // scroll; ARM while the source remains held saves that shifted pitch in place.
+    handle_key(&mut rt, &mut register, &mut held, (2, 1), true);
+    handle_key(&mut rt, &mut register, &mut held, (2, 1), false);
+    assert!(
+      (rt.shared.voices.lock().unwrap()[&first_chord].grid_gain_target - db_to_gain(-10.0)).abs()
+        < 1e-6
+    );
+    handle_key(&mut rt, &mut register, &mut held, (15, 14), true);
+    handle_key(&mut rt, &mut register, &mut held, (15, 14), false);
+    assert_eq!(register, 0, "chord-target octave leaves the play register still");
+    assert_eq!(
+      rt.shared.ring.lock().unwrap()[0].momentary_chord.live[&first_seq].pitch,
+      pitch + rt.tuning.edo,
+    );
+    handle_key(&mut rt, &mut register, &mut held, (15, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (15, 0), false);
+    assert_eq!(
+      rt.shared.ring.lock().unwrap()[0].momentary_chord.slots[0].as_deref(),
+      Some([pitch + rt.tuning.edo].as_slice()),
+    );
+
+    handle_key(&mut rt, &mut register, &mut held, slot0, false);
+    assert_eq!(rt.shared.voices.lock().unwrap()[&first_chord].target_env, 0.0);
+    handle_key(&mut rt, &mut register, &mut held, slot0, true);
+    assert_eq!(
+      rt.shared.ring.lock().unwrap()[0].momentary_chord.live.values().next().unwrap().pitch,
+      pitch + rt.tuning.edo,
+      "recall uses the newly saved octave",
+    );
+  }
+
+  #[test]
+  fn one_grid_save_preserves_an_absent_physical_grids_persisted_slots() {
+    let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    let nonce = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+      "midi-pulse-two-layer-preserve-{}-{nonce}.toml",
+      std::process::id()
+    ));
+    let mut existing = momentary_chords_persist::AllSlots::new();
+    existing.insert("absent-physical-grid".to_string(), vec![Some(vec![99])]);
+    rt.shared.momentary_persist = Some(Arc::new(MomentaryPersistTarget {
+      path: path.clone(),
+      device_ids: vec![Some("present-physical-grid".to_string()), None],
+      all: Mutex::new(existing),
+    }));
+    rt.shared.ring.lock().unwrap()[0].momentary_chord.save(0, &[7, 3]);
+
+    persist_momentary(&rt);
+    let saved = momentary_chords_persist::load(&path);
+    assert_eq!(saved["present-physical-grid"][0].as_deref(), Some([3, 7].as_slice()));
+    assert_eq!(saved["absent-physical-grid"][0].as_deref(), Some([99].as_slice()));
+    std::fs::remove_file(path).unwrap();
   }
 
   /// queues/branch-2.org "exit edit mode should not delete the voice", pinned as the
@@ -1573,11 +1722,14 @@
       prefix: format!("/{id}"),
       controls_index,
       volume_controls_index: controls_index,
+      volume_delta_controls_index: controls_index,
+      layer_volume: None,
       overlays: Overlays {
         edo_rect: [0, 0, 15, 15],
         scroll_rect: NO_RECT,
         selector_rect: if has_selector { [0, 0, 3, 0] } else { NO_RECT },
         volume_rect: NO_RECT,
+        volume_delta_rect: NO_RECT,
         clear_rect: NO_RECT,
         needs_holding_rect: NO_RECT,
         accrete_rect: NO_RECT,
@@ -1590,6 +1742,7 @@
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
         chord_rect: NO_RECT,
+        momentary_chord_rect: NO_RECT,
         fine_transpose_rect: NO_RECT,
       },
     }
@@ -1746,6 +1899,69 @@
     a.release(5, 5);
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "released note lingers dim");
 
+  }
+
+  /// The new unpinned rig's actual device seam: one arbitrary 16x16 grid is a
+  /// complete instrument, while adding a second binds a distinct second surface
+  /// with independent target state and working momentary chord controls.
+  #[test]
+  fn two_layer_rig_runs_against_one_and_two_mock_grids() {
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
+
+    let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let secs = Duration::from_secs;
+
+    {
+      let mock = MockRig::start(0, &[GridSpec::grid_256("physical-solo")])
+        .expect("start one mock grid");
+      let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
+      rig.monomes[0].listen_port = 19220;
+      rig.monomes[1].listen_port = 19221;
+      let _run = MockRun::start(rig, mock.detector_port(), "one-grid two-layer rig");
+      let solo = mock.grid(0);
+      assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
+      assert!(wait_until(secs(3), || solo.level_at(1, 0) == 15), "triangle is selected");
+      solo.tap(11, 0);
+      assert!(wait_until(secs(3), || solo.level_at(11, 0) == 15), "TARGET works with one grid");
+    }
+
+    {
+      let mock = MockRig::start(
+        0,
+        &[GridSpec::grid_256("physical-left"), GridSpec::grid_256("physical-right")],
+      )
+      .expect("start two mock grids");
+      let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
+      rig.monomes[0].listen_port = 19222;
+      rig.monomes[1].listen_port = 19223;
+      let _run = MockRun::start(rig, mock.detector_port(), "two-grid two-layer rig");
+      let a = mock.grid(0);
+      let b = mock.grid(1);
+      assert!(wait_until(secs(5), || a.registered() && b.registered()), "both distinct grids register");
+      assert!(wait_until(secs(3), || a.level_at(1, 0) == 15 && b.level_at(1, 0) == 15));
+
+      a.tap(11, 0);
+      assert!(wait_until(secs(3), || a.level_at(11, 0) == 15), "a targets chords");
+      thread::sleep(Duration::from_millis(300));
+      assert_ne!(b.level_at(11, 0), 15, "b keeps its independent fingered target");
+
+      // Save a held pitch into slot 0 and recall it momentarily through real OSC.
+      a.press(5, 5);
+      assert!(wait_until(secs(3), || a.level_at(5, 5) == 15));
+      a.tap(15, 0); // arm
+      assert!(wait_until(secs(3), || a.level_at(15, 0) == 15), "ARM flashes while armed");
+      a.tap(12, 0); // destination slot 0
+      assert!(wait_until(secs(3), || a.level_at(15, 0) == 0), "save disarms ARM");
+      a.release(5, 5);
+      assert!(wait_until(secs(3), || a.level_at(5, 5) != 15), "the finger releases");
+      a.press(12, 0);
+      assert!(
+        wait_until(secs(3), || a.level_at(12, 0) == 15 && a.level_at(5, 5) == 15),
+        "slot hold recalls and lights the pitch",
+      );
+      a.release(12, 0);
+      assert!(wait_until(secs(3), || a.level_at(12, 0) != 15), "slot release ends the recall");
+    }
   }
 
   /// The shipped two-softstep rig must load and resolve. This is the rig's only

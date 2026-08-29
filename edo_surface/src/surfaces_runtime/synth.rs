@@ -303,9 +303,27 @@ impl SurfaceSink {
     factored_pulse_hz: Option<f32>,
     phase: f32,
   ) {
+    let gain = self.pedal_gain();
+    self.note_on_with_phase_and_gain(cell, pitch, timbre, factored_pulse_hz, phase, gain);
+  }
+
+  /// Fresh fingered note for the two-layer instrument. The layer gain occupies
+  /// the normally-pedal-owned slewed component; this rig has no expression pedal.
+  pub fn note_on_layered(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, gain: f32) {
+    self.note_on_with_phase_and_gain(cell, pitch, timbre, None, 0.0, gain);
+  }
+
+  fn note_on_with_phase_and_gain(
+    &mut self,
+    cell: (i32, i32),
+    pitch: i32,
+    timbre: Timbre,
+    factored_pulse_hz: Option<f32>,
+    phase: f32,
+    grid_gain: f32,
+  ) {
     let id = self.next_id;
     self.next_id += 1;
-    let pedal = self.pedal_gain();
     let fader = self.fader_gain();
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     voices.insert(
@@ -329,8 +347,8 @@ impl SurfaceSink {
         // components multiplied in at render time.
         timbre,
         fader_gain: fader,
-        grid_gain: pedal,
-        grid_gain_target: pedal, pedal_scale: 1.0, slide_freq_target: 0.0,
+        grid_gain,
+        grid_gain_target: grid_gain, pedal_scale: 1.0, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -746,6 +764,49 @@ impl SurfaceSink {
     );
   }
 
+  /// Pitch-only momentary recall: current chord-layer timbre and gain, fresh
+  /// oscillator/LFO phases, no pulse, normal click-free attack.
+  pub fn spawn_momentary_chord_voice(
+    &mut self,
+    seq: u64,
+    pitch: i32,
+    timbre: Timbre,
+    gain: f32,
+  ) {
+    let id = self.next_id;
+    self.next_id += 1;
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    voices.insert(
+      chord_key(self.grid, seq),
+      VoiceState {
+        id,
+        freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
+        factored_pulse_freq: 0.0,
+        factored_pulse_phase: 0.0,
+        phase: 0.0,
+        env: 0.0,
+        target_env: 1.0,
+        ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        pending_attack: None,
+        sustain_env: self.sustain_env,
+        decay_per_sample: self.decay_per_sample,
+        timbre,
+        fader_gain: 1.0,
+        grid_gain: gain,
+        grid_gain_target: gain,
+        pedal_scale: 1.0,
+        slide_freq_target: 0.0,
+        am_phase: 0.0,
+        fm_phase: 0.0,
+        rel_am_phase: 0.0,
+        rel_fm_phase: 0.0,
+        timbre_xfade: None,
+      },
+    );
+  }
+
   /// A manual retrigger of a sustaining pitch: cut THIS grid's drone at `pitch` so
   /// the incoming strike replaces it instead of doubling it (misc.org "retriggering
   /// a sustaining note replaces it"). The dying voice is re-keyed under a unique
@@ -942,11 +1003,59 @@ pub fn retimbre_voices(
       || chord_keys.contains(src)
       || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
                   if *g == grid && edited.contains(pitch));
-    if wanted && state.timbre != timbre {
+    if wanted && state.target_env > 0.0 && state.timbre != timbre {
       // A press mid-crossfade restarts the fade from the current target -- the
       // half-faded old-old timbre is dropped rather than chained.
       state.timbre_xfade = Some(TimbreXfade { from: state.timbre, progress: 0.0, step });
       state.timbre = timbre;
+    }
+  }
+}
+
+/// Re-timbre an entire live layer on one grid. Release tails are deliberately
+/// excluded: only fingered/droning or registered chord voices are musically live.
+pub fn retimbre_layer(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  chord_layer: bool,
+  timbre: Timbre,
+  sample_rate: f32,
+) {
+  let step = 1.0 / (TIMBRE_XFADE_SECS * sample_rate).max(1.0);
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    let wanted = if chord_layer {
+      matches!(src, VoiceSource::SurfaceChord { grid: g, .. } if *g == grid)
+    } else {
+      matches!(src,
+        VoiceSource::SurfaceFinger { grid: g, .. } | VoiceSource::SurfaceDrone { grid: g, .. }
+          if *g == grid)
+    };
+    if wanted && state.target_env > 0.0 && state.timbre != timbre {
+      state.timbre_xfade = Some(TimbreXfade { from: state.timbre, progress: 0.0, step });
+      state.timbre = timbre;
+    }
+  }
+}
+
+/// Aim the existing 20 ms gain slew at every voice in one live layer.
+pub fn set_layer_gain(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  chord_layer: bool,
+  gain: f32,
+) {
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    let wanted = if chord_layer {
+      matches!(src, VoiceSource::SurfaceChord { grid: g, .. } if *g == grid)
+    } else {
+      matches!(src,
+        VoiceSource::SurfaceFinger { grid: g, .. } | VoiceSource::SurfaceDrone { grid: g, .. }
+          if *g == grid)
+    };
+    if wanted && state.target_env > 0.0 {
+      state.grid_gain_target = gain;
     }
   }
 }

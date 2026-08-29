@@ -32,6 +32,9 @@ mod fine;
 mod grid;
 mod hooks;
 mod keys;
+mod layer_controls;
+mod momentary_chords;
+mod momentary_chords_persist;
 mod paint;
 mod pedal_slide;
 mod pedal_volume;
@@ -71,6 +74,7 @@ use crate::rig::{AccreteControlKind, MonomeWindowRig, SinkRig};
 use crate::voices::Distortion;
 
 use accrete::AccreteState;
+use layer_controls::LayerControls;
 use ring::{GridRing, Reason};
 use polyrhythm::{TempoFactorButton, PolyrhythmState};
 use slide::SlideCandidates;
@@ -330,6 +334,15 @@ fn run(
   // Per-grid selected timbre slot (index = grid index). Each element is written only
   // by the grid whose selector controls it; every grid reads all of it.
   let selected = Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids]));
+  let layer_controls = Arc::new(Mutex::new(
+    s.grids
+      .iter()
+      .map(|g| match (g.overlays.momentary_chord_rect != NO_RECT, g.layer_volume) {
+        (true, Some(config)) => LayerControls::new(true, config),
+        _ => LayerControls::disabled(),
+      })
+      .collect::<Vec<_>>(),
+  ));
   // Per-grid sounding pitch-classes (union drives cross-grid note reflection), the
   // shared recent-note trail (dim backdrop), and the per-grid volume state (position +
   // linear gain), each defaulting to column `VOLUME_DEFAULT_COL` of its own strip.
@@ -351,7 +364,7 @@ fn run(
   let volume_pos = Arc::new(Mutex::new(volume_pos_init));
   let gains = Arc::new(Mutex::new(gains_init));
   // The accrete (sustain) banks -- one per monome, under one lock (misc.org "two
-  // monome-specific accrete banks"): a grid's trio drives only its own bank, and only
+  // monome-specific accrete banks"): a grid's controls drive only its own bank, and only
   // that grid's notes can join it. Alongside: a mirror of every grid's held notes
   // (cell -> struck pitch), so a bank's activation can capture what is fingered on
   // its grid even from the pedal hook.
@@ -389,7 +402,8 @@ fn run(
   // chord layers, and hand every grid thread the write target (a save-to-slot
   // rewrites the whole file). `no_audio` gates it like every other real resource --
   // headless/mock runs must not read or write state on disk.
-  let persist: Option<Arc<PersistTarget>> = if no_audio {
+  let has_legacy_chords = s.grids.iter().any(|g| g.overlays.chord_rect != NO_RECT);
+  let persist: Option<Arc<PersistTarget>> = if no_audio || !has_legacy_chords {
     None
   } else {
     let path = chords_persist::path_for(&rig.id);
@@ -410,6 +424,39 @@ fn run(
     }
     Some(Arc::new(PersistTarget { path, monome_ids }))
   };
+
+  // The reduced momentary block has its own pitch-only file. Key it by the
+  // discovered serial id, not logical a/b, so either physical grid can run alone
+  // without its stored space moving when enumeration order changes.
+  let has_momentary_chords =
+    s.grids.iter().any(|g| g.overlays.momentary_chord_rect != NO_RECT);
+  let momentary_persist: Option<Arc<MomentaryPersistTarget>> =
+    if no_audio || !has_momentary_chords {
+      None
+    } else {
+      let path = momentary_chords_persist::path_for(&rig.id);
+      let loaded = momentary_chords_persist::load(&path);
+      let device_ids: Vec<Option<String>> =
+        assigned.iter().map(|d| d.as_ref().map(|d| d.id.clone())).collect();
+      if !loaded.is_empty() {
+        let mut rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+        let mut restored = 0;
+        for (i, id) in device_ids.iter().enumerate() {
+          let Some(id) = id else { continue };
+          let Some(slots) = loaded.get(id) else { continue };
+          for (slot, stored) in slots.iter().enumerate().take(momentary_chords::SLOTS) {
+            rings[i].momentary_chord.slots[slot] = stored.clone();
+            restored += usize::from(stored.is_some());
+          }
+        }
+        println!("momentary chord slots: restored {restored} from {}", path.display());
+      }
+      Some(Arc::new(MomentaryPersistTarget {
+        path,
+        device_ids,
+        all: Mutex::new(loaded),
+      }))
+    };
 
   // The EX-P volume-pedal thread. The pedal is uniform UNTIL a grid has an edit
   // selection, when it targets only the edited voices and records a per-voice trim
@@ -488,6 +535,7 @@ fn run(
   // the whole bundle (cheap: it's all `Arc::clone`) instead of naming every field.
   let shared = Shared {
     selected: Arc::clone(&selected),
+    layer_controls: Arc::clone(&layer_controls),
     sounding: Arc::clone(&sounding),
     trail: Arc::clone(&trail),
     volume_pos: Arc::clone(&volume_pos),
@@ -503,6 +551,7 @@ fn run(
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
     persist,
+    momentary_persist,
   };
 
   // Spawn one key/LED loop per PRESENT grid (absent grids have `None` for both their
@@ -532,6 +581,7 @@ fn run(
       echo_input: s.echo_input,
       controls_index: g.controls_index,
       volume_controls_index: g.volume_controls_index,
+      volume_delta_controls_index: g.volume_delta_controls_index,
     };
     let rt = GridThread {
       grid_index,
@@ -548,6 +598,7 @@ fn run(
       overlays,
       editmode_clear_down: false,
       editmode_accrete_down: false,
+      volume_delta_down: [false; SELECTOR_CELLS],
       tuning,
       knobs,
       shared: shared.clone(),
@@ -608,6 +659,9 @@ fn run(
 struct Shared {
   /// Per-grid selected timbre slot; written by whichever grid's selector controls it.
   selected: Arc<Mutex<Vec<usize>>>,
+  /// The per-grid dual-layer timbre and relative-dB state. Disabled entries keep
+  /// existing rigs on their old single-selector path.
+  layer_controls: Arc<Mutex<Vec<LayerControls>>>,
   /// Per-grid sounding pitch-classes; the union drives cross-grid note reflection.
   sounding: Arc<Mutex<Vec<HashSet<i32>>>>,
   /// Shared recent-note trail (pitch classes), newest first.
@@ -617,7 +671,7 @@ struct Shared {
   gains: Arc<Mutex<Vec<f32>>>,
   /// The per-grid ring: each `GridRing` bundles a monome's accrete bank, its edit-mode
   /// machine, and the shared store of which pitches ring (for sustain and for edit),
-  /// all under ONE lock. This grid's trio + edit gestures drive `ring[grid_index]`
+  /// all under ONE lock. This grid's accrete controls + edit gestures drive `ring[grid_index]`
   /// only. Absorbs what used to be two separate `Vec<AccreteState>` /
   /// `Vec<EditState>` handles (cleaning phase 6), so sustain and edit can never
   /// disagree about what sounds and there is no cross-lock ordering to get wrong.
@@ -648,12 +702,21 @@ struct Shared {
   /// Chord-slot persistence target (`None` on headless/mock runs): a save-to-slot
   /// rewrites the whole state file for this rig.
   persist: Option<Arc<PersistTarget>>,
+  momentary_persist: Option<Arc<MomentaryPersistTarget>>,
 }
 
 /// Where (and for which monomes, in grid-index order) the chord slots persist.
 struct PersistTarget {
   path: PathBuf,
   monome_ids: Vec<String>,
+}
+
+struct MomentaryPersistTarget {
+  path: PathBuf,
+  device_ids: Vec<Option<String>>,
+  /// The complete file, including physical grids absent from this run. Keeping
+  /// those entries prevents a one-grid save from erasing the other grid's slots.
+  all: Mutex<momentary_chords_persist::AllSlots>,
 }
 
 /// The tuning inputs, identical across every grid in one run (one instrument-wide
@@ -688,6 +751,7 @@ struct Knobs {
   controls_index: usize,
   /// The grid index this grid's volume strip sets the loudness of.
   volume_controls_index: usize,
+  volume_delta_controls_index: usize,
 }
 
 /// Everything one grid thread owns for the run. Grouped from first principles
@@ -713,6 +777,8 @@ struct GridThread {
   /// so it stays out of the `Overlays` shared with `GridSettings`.
   editmode_clear_down: bool,
   editmode_accrete_down: bool,
+  /// Momentary press LEDs for the four relative dB cells.
+  volume_delta_down: [bool; SELECTOR_CELLS],
   tuning: Tuning,
   knobs: Knobs,
   shared: Shared,
@@ -811,15 +877,32 @@ fn grid_thread(mut rt: GridThread) {
     // (its own, in the current rigs); the play cells reflect the union of both grids'
     // sounding classes (bright; sustained notes count -- you hear them) and the shared
     // trail (dim), through the current register.
-    let selector_slot = current_slot(&rt.shared.selected, rt.knobs.controls_index);
+    let selector_slot = {
+      let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+      controls
+        .get(rt.knobs.controls_index)
+        .filter(|state| state.enabled)
+        .map(LayerControls::selected_target)
+        .unwrap_or_else(|| current_slot(&rt.shared.selected, rt.knobs.controls_index))
+    };
     let volume_col = volume_active_col(&rt);
     let elapsed = rt.started.elapsed();
     let (mut buttons, sustained_classes) = accrete_view(&rt);
     // The chord block's cells (arm + 9 slots) and every grid's live chord pitches
     // (they are sounding notes, so they reflect bright on both grids like the
     // sustained classes).
-    let (chord_buttons, chord_classes) = chord_view(&rt, elapsed);
+    let (chord_buttons, mut chord_classes) = chord_view(&rt, elapsed);
     buttons.extend(chord_buttons);
+    let (momentary_buttons, momentary_classes) = momentary_chord_view(&rt, elapsed);
+    buttons.extend(momentary_buttons);
+    chord_classes.extend(momentary_classes);
+    for (i, down) in rt.volume_delta_down.iter().copied().enumerate() {
+      if rt.overlays.volume_delta_rect != NO_RECT {
+        let x = rt.overlays.volume_delta_rect[0] + i as i32;
+        let y = rt.overlays.volume_delta_rect[1];
+        buttons.push(([x, y, x, y], button_level(down)));
+      }
+    }
     let toggle = |rect, on: &[AtomicBool]| (rect, button_level(on[rt.grid_index].load(Ordering::Relaxed)));
     buttons.push(toggle(rt.overlays.distortion_rect, &rt.shared.distortion_on));
     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
@@ -942,9 +1025,11 @@ fn grid_thread(mut rt: GridThread) {
     // CHORD voices square-dance exactly like sustained ones (Jeff: same dance for
     // both) -- they are the other kind of playing-while-not-fingered voice, and the
     // marker reads the same either way.
-    for pitch in sustained.iter().copied().chain(chord_pitches.iter().copied()) {
-      for (x, y) in cells_for_pitch(&rt, register, pitch) {
-        dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
+    if rt.overlays.momentary_chord_rect == NO_RECT {
+      for pitch in sustained.iter().copied().chain(chord_pitches.iter().copied()) {
+        for (x, y) in cells_for_pitch(&rt, register, pitch) {
+          dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
+        }
       }
     }
     // The fine-transpose markers (queues/branch-2.org; the shift cross by chat), two
@@ -979,7 +1064,9 @@ fn grid_thread(mut rt: GridThread) {
       step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, ex1, ey1),
     ];
     let (lo, hi) = (corners[0].min(corners[1]), corners[0].max(corners[1]));
-    let off = if dance::flash_on(elapsed) {
+    let off = if rt.overlays.momentary_chord_rect != NO_RECT {
+      dance::OffScreen::default()
+    } else if dance::flash_on(elapsed) {
       // One signal for edit-mode, sustained, AND chord-layer notes -- Jeff's call
       // ("in both cases"; the flash stays which-kind-blind). A chord voice you
       // cannot scroll to cannot be edited, so the hint matters for it too.

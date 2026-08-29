@@ -343,6 +343,7 @@ Built-in unbundled window kinds:
 - ~remap_undo_button~
 - ~waveform_selector~
 - ~volume_strip~
+- ~volume_delta~
 - ~accrete_control~
 - ~distortion_toggle~
 - ~slide_toggle~
@@ -352,6 +353,7 @@ Built-in unbundled window kinds:
 - ~editmode_control~
 - ~fine_transpose_toggle~
 - ~chord_block~
+- ~momentary_chord_block~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -364,6 +366,32 @@ A ~volume_strip~ is a one-row fader (log-spaced, top cell = unity) that sets the
 loudness of the monome named by its ~controls~ field (again usually its own grid)
 and is *live* -- moving it rescales that grid's sounding voices, not just future
 notes. The active cell is lit, the rest dark.
+
+A ~volume_delta~ is a four-cell horizontal relative-volume control for the EDO
+grid named by ~controls~.  From left to right its cells subtract the coarse
+step, subtract the fine step, add the fine step, and add the coarse step, all in
+dB.  Unlike ~volume_strip~, it has no absolute position to display: resting
+cells are dim and only a held cell is bright.
+
+#+begin_src toml
+[[monome_windows]]
+id = "volume-a"
+monome = "a"
+kind = "volume_delta"
+rect = [0, 1, 3, 1]       # exactly four cells in one row
+controls = "a"
+volume_coarse = 12.0      # defaults shown
+volume_fine = 2.0
+initial_db = -12.0
+min_db = -60.0
+max_db = 0.0
+#+end_src
+
+In the two-layer instrument this control follows the adjacent
+~momentary_chord_block~ target.  Fingered/sustained targeting changes the
+selected waveform's base and therefore moves both layers; chord targeting
+changes only the chord layer's offset from that base.  Each of the four
+waveforms remembers its own values.  Live voices slew to the new level.
 
 #+begin_src toml
 [[monome_windows]]
@@ -394,8 +422,9 @@ dim / 200 ms off, in step), so resting controls read differently from dim play
 cells (trails and dance markers hold steady).
 
 An ~accrete_control~ is a single-cell sustain button (surfaces runtime). Four
-kinds -- set by its ~control~ field: the clear / needs_holding / accrete trio is
-all-or-nothing per monome, and ~erase~ is optional on top of it. Each monome's
+kinds are set by its ~control~ field.  A monome may use either the reduced
+~clear~ + ~accrete~ pair (permanently momentary), or the full
+~clear~ + ~needs_holding~ + ~accrete~ set with optional ~erase~. Each monome's
 buttons drive its OWN accrete bank: only notes fingered on that grid can join
 its sustained set, and its ~clear~ leaves the other bank ringing:
 
@@ -606,6 +635,35 @@ an active slot bright; the arm cell is black until armed, then flashes. The
 full player's
 reference: [[./2-edogrids_ss-accrete_ss-pulse_readme.org]] "chord storage" and "chord
 voices in edit mode".
+
+A ~momentary_chord_block~ (surfaces runtime) is the pitch-only counterpart used
+by the reduced two-layer instrument.  It is also exactly 5x2, but contains a
+TARGET button, eight momentary slots, and ARM:
+
+#+begin_example
+TARGET  slot  slot  slot  ARM
+slot    slot  slot  slot  slot
+#+end_example
+
+#+begin_src toml
+[[monome_windows]]
+id = "chords-a"
+monome = "a"
+kind = "momentary_chord_block"
+rect = [11, 0, 15, 1]
+#+end_src
+
+TARGET selects whether this grid's waveform and ~volume_delta~ controls address
+fingered/sustained voices or recalled chord voices.  A disarmed slot sounds only
+while held, and several slots may layer.  ARM followed by a destination stores
+the sorted unique pitches currently sounding on this grid; ARM pressed while
+source slots are held overwrites those sources in place.  Silence never erases a
+slot.  Storage contains only absolute EDO pitches: recalls always use the chord
+layer's current timbre and volume.  The octave corners glide held chord voices
+when TARGET is bright, while arrows continue to scroll.  Slots persist per
+physical monome serial id.  This kind cannot coexist with legacy ~chord_block~
+in the same rig; its full player reference is
+[[./monomes_two-timbres_sustain_chords_readme.org]].
 
 The bundled 12-EDO offset/root board is:
 

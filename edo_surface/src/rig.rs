@@ -833,6 +833,26 @@ pub enum MonomeWindowRig {
     /// The monome id whose play voices this strip sets the volume of.
     controls: String,
   },
+  // Four relative dB buttons for the two-layer surfaces instrument. Left to right:
+  // -coarse, -fine, +fine, +coarse. The momentary chord block on the controlled
+  // grid decides whether the buttons edit the fingered/sustained base or the
+  // chord-only offset.
+  VolumeDelta {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    controls: String,
+    #[serde(default = "default_volume_coarse_db")]
+    volume_coarse: f32,
+    #[serde(default = "default_volume_fine_db")]
+    volume_fine: f32,
+    #[serde(default = "default_layer_initial_db")]
+    initial_db: f32,
+    #[serde(default = "default_layer_min_db")]
+    min_db: f32,
+    #[serde(default)]
+    max_db: f32,
+  },
   // A single-cell on/off toggle for the GLOBAL distortion (surfaces runtime): the
   // summed synth mix runs through the soft-clipper while on. The scale/shape live on
   // the cpal_synth sink (`distortion_scale` / `distortion_shape`); this button is
@@ -893,8 +913,9 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
   },
   // A single-cell sustain ("accrete") button overlaid on the edo grid (surfaces
-  // runtime). Three of these per grid -- clear / needs_holding / accrete -- let
-  // notes join a sustained set that rings after the fingers lift, until cleared.
+  // runtime). A reduced clear + accrete pair is fixed-momentary; adding
+  // needs_holding makes accrete switchable between momentary and toggle behavior.
+  // Notes in the bank ring after the fingers lift, until cleared.
   AccreteControl {
     id: String,
     monome: String,
@@ -917,6 +938,13 @@ pub enum MonomeWindowRig {
   // sounding into that slot; a disarmed slot press toggles the stored chord on
   // (recall) and off. Each monome's nine slots are independent of the other's.
   ChordBlock {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // The pitch-only 5x2 chord block: target + 3 slots + arm over 5 slots.
+  // Slot presses are momentary; see TODO/monomes_two-timbres_sustain_chords.
+  MomentaryChordBlock {
     id: String,
     monome: String,
     rect: [i32; 4],
@@ -995,6 +1023,22 @@ pub enum MonomeWindowRig {
   },
 }
 
+fn default_volume_coarse_db() -> f32 {
+  12.0
+}
+
+fn default_volume_fine_db() -> f32 {
+  2.0
+}
+
+fn default_layer_initial_db() -> f32 {
+  -12.0
+}
+
+fn default_layer_min_db() -> f32 {
+  -60.0
+}
+
 // Per-row default ranges (6_plan 5). Used when a `timbre_editor` omits a row.
 fn default_amplitude_row() -> RowRangeRig {
   RowRangeRig::LogRange { least: 0.0009, greatest: 0.15 }
@@ -1052,7 +1096,7 @@ pub enum AccreteControlKind {
   Accrete,
   /// Hold (or toggle, per `needs_holding`) to REMOVE pressed/held pitches from
   /// the sustained set -- each keeps sounding until its finger lifts. When both
-  /// erase and accrete are live, erase wins. Optional (the trio is not).
+  /// erase and accrete are live, erase wins. Optional in the full switchable set.
   Erase,
 }
 
@@ -1085,6 +1129,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::ScaleControl { id, .. }
       | MonomeWindowRig::WaveformSelector { id, .. }
       | MonomeWindowRig::VolumeStrip { id, .. }
+      | MonomeWindowRig::VolumeDelta { id, .. }
       | MonomeWindowRig::DistortionToggle { id, .. }
       | MonomeWindowRig::SlideToggle { id, .. }
       | MonomeWindowRig::MonoToggle { id, .. }
@@ -1094,6 +1139,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::AccreteControl { id, .. }
       | MonomeWindowRig::FineTransposeToggle { id, .. }
       | MonomeWindowRig::ChordBlock { id, .. }
+      | MonomeWindowRig::MomentaryChordBlock { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
       | MonomeWindowRig::LoopControl { id, .. }
@@ -1122,6 +1168,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::ScaleControl { monome, .. }
       | MonomeWindowRig::WaveformSelector { monome, .. }
       | MonomeWindowRig::VolumeStrip { monome, .. }
+      | MonomeWindowRig::VolumeDelta { monome, .. }
       | MonomeWindowRig::DistortionToggle { monome, .. }
       | MonomeWindowRig::SlideToggle { monome, .. }
       | MonomeWindowRig::MonoToggle { monome, .. }
@@ -1131,6 +1178,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::AccreteControl { monome, .. }
       | MonomeWindowRig::FineTransposeToggle { monome, .. }
       | MonomeWindowRig::ChordBlock { monome, .. }
+      | MonomeWindowRig::MomentaryChordBlock { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
       | MonomeWindowRig::LoopControl { monome, .. }
@@ -1159,6 +1207,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::ScaleControl { rect, .. }
       | MonomeWindowRig::WaveformSelector { rect, .. }
       | MonomeWindowRig::VolumeStrip { rect, .. }
+      | MonomeWindowRig::VolumeDelta { rect, .. }
       | MonomeWindowRig::DistortionToggle { rect, .. }
       | MonomeWindowRig::SlideToggle { rect, .. }
       | MonomeWindowRig::MonoToggle { rect, .. }
@@ -1168,6 +1217,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::AccreteControl { rect, .. }
       | MonomeWindowRig::FineTransposeToggle { rect, .. }
       | MonomeWindowRig::ChordBlock { rect, .. }
+      | MonomeWindowRig::MomentaryChordBlock { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
       | MonomeWindowRig::LoopControl { rect, .. }
@@ -1197,6 +1247,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::ScaleControl { .. } => "scale_control",
       MonomeWindowRig::WaveformSelector { .. } => "waveform_selector",
       MonomeWindowRig::VolumeStrip { .. } => "volume_strip",
+      MonomeWindowRig::VolumeDelta { .. } => "volume_delta",
       MonomeWindowRig::DistortionToggle { .. } => "distortion_toggle",
       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
@@ -1206,6 +1257,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
       MonomeWindowRig::FineTransposeToggle { .. } => "fine_transpose_toggle",
       MonomeWindowRig::ChordBlock { .. } => "chord_block",
+      MonomeWindowRig::MomentaryChordBlock { .. } => "momentary_chord_block",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
       MonomeWindowRig::LoopControl { .. } => "loop_control",
@@ -1851,10 +1903,12 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_shift_pads(rig)?;
   validate_waveform_selectors(rig)?;
   validate_volume_strips(rig)?;
+  validate_volume_deltas(rig)?;
   validate_accrete_controls(rig)?;
   validate_single_cell_toggles(rig)?;
   validate_factored_pulse_pads(rig)?;
   validate_chord_blocks(rig)?;
+  validate_momentary_chord_blocks(rig)?;
   validate_timbres(rig)?;
   validate_expression_pedals(rig)?;
   validate_looper(rig)?;
@@ -2043,6 +2097,71 @@ fn validate_chord_blocks(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
+/// A `momentary_chord_block` is exactly 5x2 cells on an EDO grid. It is
+/// intentionally a separate kind from the legacy nine-slot toggle block.
+fn validate_momentary_chord_blocks(rig: &Rig) -> Result<(), String> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::MomentaryChordBlock { id, monome, rect } = window else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x1 - x0 != 4 || y1 - y0 != 1 {
+      return Err(format!(
+        "momentary_chord_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 5x2 cells",
+      ));
+    }
+    let has_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    if !has_grid {
+      return Err(format!(
+        "momentary_chord_block window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    if rig
+      .monome_windows
+      .iter()
+      .any(|w| matches!(w, MonomeWindowRig::ChordBlock { .. }))
+    {
+      return Err(format!(
+        "rig cannot declare both chord_block and momentary_chord_block (found momentary block {id:?})",
+      ));
+    }
+    let has_selector = rig.monome_windows.iter().any(
+      |w| matches!(w, MonomeWindowRig::WaveformSelector { monome: m, controls, .. }
+        if m == monome && controls == monome),
+    );
+    let has_volume_delta = rig.monome_windows.iter().any(
+      |w| matches!(w, MonomeWindowRig::VolumeDelta { monome: m, controls, .. }
+        if m == monome && controls == monome),
+    );
+    if !has_selector || !has_volume_delta {
+      return Err(format!(
+        "momentary_chord_block window {id:?} requires self-controlling waveform_selector \
+         and volume_delta windows on monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = rig
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "momentary_chord_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!(
+        "monome {monome:?} declares more than one momentary_chord_block (window {id:?})"
+      ));
+    }
+  }
+  Ok(())
+}
+
 /// The single-cell per-monome buttons (`distortion_toggle`, `slide_toggle`,
 /// `mono_toggle`, ..., plus the momentary `editmode_control` buttons): each is one cell on
 /// a monome that has an `edo_note_grid`, at most one of each kind per monome (a
@@ -2116,10 +2235,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
 
 /// The `accrete_control` sustain buttons (surfaces runtime). Each is a single cell on
 /// a monome that has an `edo_note_grid` (the play surface whose notes it sustains).
-/// Per monome the trio is all-or-nothing -- declaring any accrete_control requires
-/// clear / needs_holding / accrete, each at most once -- since the trio only makes
-/// sense together (accrete with no clear would be an un-silenceable drone). The
-/// `erase` kind is optional on top of the trio (misc.org "erase button").
+/// Per monome, accept either the reduced fixed-momentary clear + accrete pair or
+/// the full clear + needs_holding + accrete set, each at most once. `erase` is
+/// optional on top of the full set (misc.org "erase button").
 fn validate_accrete_controls(rig: &Rig) -> Result<(), String> {
   let mut per_monome: HashMap<&str, Vec<AccreteControlKind>> = HashMap::new();
   for window in &rig.monome_windows {
@@ -2160,15 +2278,18 @@ fn validate_accrete_controls(rig: &Rig) -> Result<(), String> {
     kinds.push(*control);
   }
   for (monome, kinds) in &per_monome {
-    for required in
-      [AccreteControlKind::Clear, AccreteControlKind::NeedsHolding, AccreteControlKind::Accrete]
-    {
-      if !kinds.contains(&required) {
-        return Err(format!(
-          "monome {monome:?} declares accrete_control windows but is missing kind {required:?} \
-           (the clear / needs_holding / accrete trio is all-or-nothing per monome)",
-        ));
-      }
+    // The reduced clear+accrete pair is the fixed-momentary form: without a
+    // needs_holding control the runtime deliberately starts that bank momentary.
+    // Erase only makes sense with the full switchable trio.
+    let clear = kinds.contains(&AccreteControlKind::Clear);
+    let accrete = kinds.contains(&AccreteControlKind::Accrete);
+    let mode = kinds.contains(&AccreteControlKind::NeedsHolding);
+    let erase = kinds.contains(&AccreteControlKind::Erase);
+    if !clear || !accrete || (erase && !mode) {
+      return Err(format!(
+        "monome {monome:?} accrete controls must be clear+accrete (fixed momentary), \
+         or clear+needs_holding+accrete with optional erase",
+      ));
     }
   }
   Ok(())
@@ -2208,6 +2329,79 @@ fn validate_volume_strips(rig: &Rig) -> Result<(), String> {
     if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
       return Err(format!(
         "volume_strip window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+  }
+  Ok(())
+}
+
+/// A `volume_delta` is exactly four horizontal cells and targets an EDO grid.
+fn validate_volume_deltas(rig: &Rig) -> Result<(), String> {
+  let monome_ids: HashSet<&str> = rig.monomes.iter().map(|m| m.id.as_str()).collect();
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::VolumeDelta {
+      id,
+      monome,
+      rect,
+      controls,
+      volume_coarse,
+      volume_fine,
+      initial_db,
+      min_db,
+      max_db,
+    } = window
+    else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if y1 != y0 || x1 - x0 != 3 {
+      return Err(format!(
+        "volume_delta window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 4 cells in one row",
+      ));
+    }
+    require_ref("volume_delta.controls", controls, &monome_ids)?;
+    let controlled_has_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == controls)
+    });
+    if !controlled_has_grid {
+      return Err(format!(
+        "volume_delta window {id:?} controls monome {controls:?}, which has no edo_note_grid",
+      ));
+    }
+    let [gw, gh] = rig
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "volume_delta window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !volume_coarse.is_finite()
+      || !volume_fine.is_finite()
+      || *volume_coarse <= 0.0
+      || *volume_fine <= 0.0
+    {
+      return Err(format!(
+        "volume_delta window {id:?}: volume_coarse and volume_fine must be finite and > 0",
+      ));
+    }
+    if !initial_db.is_finite()
+      || !min_db.is_finite()
+      || !max_db.is_finite()
+      || min_db > initial_db
+      || initial_db > max_db
+    {
+      return Err(format!(
+        "volume_delta window {id:?}: require finite min_db <= initial_db <= max_db",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!(
+        "monome {monome:?} declares more than one volume_delta (window {id:?})"
       ));
     }
   }
@@ -4186,9 +4380,96 @@ controls = "a"
     assert!(err.contains("no edo_note_grid"), "{err}");
   }
 
+  // ---- volume_delta + momentary_chord_block (two-layer surfaces rig) ----
+
+  const TWO_LAYER_WINDOWS: &str = r#"
+[[monome_windows]]
+id = "volume-a"
+monome = "a"
+kind = "volume_delta"
+rect = [0, 1, 3, 1]
+controls = "a"
+
+[[monome_windows]]
+id = "momentary-a"
+monome = "a"
+kind = "momentary_chord_block"
+rect = [11, 0, 15, 1]
+"#;
+
+  fn two_layer_rig_source() -> String {
+    format!(
+      "{}{}",
+      SURFACES_MIN.replacen("controls = \"b\"", "controls = \"a\"", 1),
+      TWO_LAYER_WINDOWS,
+    )
+  }
+
+  #[test]
+  fn two_layer_windows_parse_with_documented_defaults() {
+    let rig = parse_rig(&two_layer_rig_source()).expect("the paired windows should validate");
+    let volume = rig
+      .monome_windows
+      .iter()
+      .find(|w| matches!(w, MonomeWindowRig::VolumeDelta { .. }))
+      .unwrap();
+    match volume {
+      MonomeWindowRig::VolumeDelta {
+        volume_coarse,
+        volume_fine,
+        initial_db,
+        min_db,
+        max_db,
+        ..
+      } => {
+        assert_eq!((*volume_coarse, *volume_fine), (12.0, 2.0));
+        assert_eq!((*initial_db, *min_db, *max_db), (-12.0, -60.0, 0.0));
+      }
+      _ => unreachable!(),
+    }
+  }
+
+  #[test]
+  fn volume_delta_validates_geometry_bounds_and_uniqueness() {
+    let bad_rect = two_layer_rig_source().replace("rect = [0, 1, 3, 1]", "rect = [0, 1, 2, 1]");
+    assert!(parse_rig(&bad_rect).unwrap_err().contains("exactly 4 cells in one row"));
+
+    let bad_bounds = two_layer_rig_source().replace(
+      "controls = \"a\"\n\n[[monome_windows]]\nid = \"momentary-a\"",
+      "controls = \"a\"\ninitial_db = 1\n\n[[monome_windows]]\nid = \"momentary-a\"",
+    );
+    assert!(parse_rig(&bad_bounds).unwrap_err().contains("min_db <= initial_db <= max_db"));
+
+    let duplicate = format!(
+      "{}\n[[monome_windows]]\nid = \"volume-a-2\"\nmonome = \"a\"\nkind = \"volume_delta\"\nrect = [4, 1, 7, 1]\ncontrols = \"a\"\n",
+      two_layer_rig_source(),
+    );
+    assert!(parse_rig(&duplicate).unwrap_err().contains("more than one volume_delta"));
+  }
+
+  #[test]
+  fn momentary_chord_block_validates_geometry_and_paired_controls() {
+    let bad_rect =
+      two_layer_rig_source().replace("rect = [11, 0, 15, 1]", "rect = [11, 0, 14, 1]");
+    assert!(parse_rig(&bad_rect).unwrap_err().contains("exactly 5x2 cells"));
+
+    let missing_volume = two_layer_rig_source().replace(TWO_LAYER_WINDOWS, &TWO_LAYER_WINDOWS
+      .replace(
+        "[[monome_windows]]\nid = \"volume-a\"\nmonome = \"a\"\nkind = \"volume_delta\"\nrect = [0, 1, 3, 1]\ncontrols = \"a\"\n\n",
+        "",
+      ));
+    assert!(parse_rig(&missing_volume).unwrap_err().contains("requires self-controlling"));
+
+    let legacy_too = format!(
+      "{}\n[[monome_windows]]\nid = \"legacy-b\"\nmonome = \"b\"\nkind = \"chord_block\"\nrect = [5, 0, 9, 1]\n",
+      two_layer_rig_source(),
+    );
+    assert!(parse_rig(&legacy_too).unwrap_err().contains("cannot declare both"));
+  }
+
   // ---- accrete_control (surfaces sustain buttons) ----
 
-  /// The clear / needs_holding / accrete trio on monome "a", bottom row left.
+  /// The full clear / needs_holding / accrete set on monome "a", bottom row left.
   const ACCRETE_TRIO: &str = r#"
 [[monome_windows]]
 id = "acc-clear"
@@ -4231,12 +4512,25 @@ control = "accrete"
   }
 
   #[test]
-  fn accrete_control_trio_is_all_or_nothing_per_monome() {
-    // Drop the accrete button: the trio is incomplete, so the rig must fail.
+  fn accrete_controls_accept_the_reduced_clear_and_accrete_pair() {
+    let hold_start = ACCRETE_TRIO.find("\n[[monome_windows]]\nid = \"acc-hold\"").unwrap();
+    let accrete_start = ACCRETE_TRIO.find("\n[[monome_windows]]\nid = \"acc-accrete\"").unwrap();
+    let toml = format!(
+      "{SURFACES_MIN}{}{}",
+      &ACCRETE_TRIO[..hold_start],
+      &ACCRETE_TRIO[accrete_start..]
+    );
+    parse_rig(&toml).expect("a fixed-momentary clear + accrete pair should validate");
+  }
+
+  #[test]
+  fn accrete_controls_reject_other_partial_sets() {
+    // Drop the accrete button, leaving clear + needs_holding: this is neither
+    // the reduced pair nor the full legacy set.
     let cut = ACCRETE_TRIO.find("\n[[monome_windows]]\nid = \"acc-accrete\"").unwrap();
     let toml = format!("{SURFACES_MIN}{}", &ACCRETE_TRIO[..cut]);
-    let err = parse_rig(&toml).expect_err("a partial trio should fail");
-    assert!(err.contains("missing kind Accrete"), "{err}");
+    let err = parse_rig(&toml).expect_err("an unsupported partial set should fail");
+    assert!(err.contains("clear+accrete"), "{err}");
   }
 
   #[test]

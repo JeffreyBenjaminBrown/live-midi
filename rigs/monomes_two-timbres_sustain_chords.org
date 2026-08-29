@@ -1,0 +1,147 @@
+* monomes_two-timbres_sustain_chords
+** about
+TOML-in-org format reference: [[file:README.org]]
+Player reference: [[file:monomes_two-timbres_sustain_chords_readme.org]]
+Run from the repository root:
+=pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords=
+** identity
+*** PARAM version = 1
+*** PARAM id = "monomes_two-timbres_sustain_chords"
+*** PARAM title = "Monomes: two timbres, sustain, and momentary chords"
+** tuning
+*** ELEM tunings
+**** PARAM id = "main"
+**** PARAM edo = 41
+**** PARAM x_step = 8
+**** PARAM y_step = 1
+**** PARAM fundamental_hz = 110
+Pitch rises by 8 EDO steps to the right and 1 step downward. Pitch 0 is 110 Hz.
+** motion
+*** TABLE slide
+**** PARAM candidate_window_ms = 1000
+Unused by this rig, but retained as the shared slide table's ordinary default.
+**** PARAM duration_ms = 100
+The octave corners use this glide time when moving held chord voices.
+**** PARAM pedal_smoother_ms = 30
+Unused: this rig has no expression pedals.
+** audio
+*** ELEM sinks
+**** PARAM id = "synth"
+**** PARAM kind = "cpal_synth"
+**** PARAM sample_rate = 48000
+**** PARAM buffer_frames = 128
+**** PARAM amplitude = 0.15
+**** PARAM attack_secs = 0.003
+**** PARAM release_secs = 0.050
+**** PARAM sustain_level = 0.35
+**** PARAM decay_secs = 0.5
+The waveform selector uses the built-in sine / triangle / square / saw choices.
+Loudness belongs to the layer-volume state below, initially -12 dB.
+** grid A: the first available 16x16 monome
+*** ELEM monomes
+**** PARAM id = "a"
+**** PARAM listen_port = 9000
+**** PARAM prefix = "/two-timbres-a"
+**** PARAM select.size = [16, 16]
+No serial pin: whichever matching monome serialosc reports first may fill A.
+The persistent chord space is still keyed by the physical serial id.
+*** ELEM monome_windows
+**** PARAM id = "grid-a"
+**** PARAM monome = "a"
+**** PARAM kind = "edo_note_grid"
+**** PARAM rect = [0, 0, 15, 15]
+**** PARAM tuning = "main"
+**** PARAM sink = "synth"
+*** ELEM monome_windows
+**** PARAM id = "timbre-a"
+**** PARAM monome = "a"
+**** PARAM kind = "waveform_selector"
+**** PARAM rect = [0, 0, 3, 0]
+**** PARAM controls = "a"
+*** ELEM monome_windows
+**** PARAM id = "volume-a"
+**** PARAM monome = "a"
+**** PARAM kind = "volume_delta"
+**** PARAM rect = [0, 1, 3, 1]
+**** PARAM controls = "a"
+**** PARAM volume_coarse = 12
+**** PARAM volume_fine = 2
+**** PARAM initial_db = -12
+**** PARAM min_db = -60
+**** PARAM max_db = 0
+*** ELEM monome_windows
+**** PARAM id = "chords-a"
+**** PARAM monome = "a"
+**** PARAM kind = "momentary_chord_block"
+**** PARAM rect = [11, 0, 15, 1]
+*** ELEM monome_windows
+**** PARAM id = "sustain-clear-a"
+**** PARAM monome = "a"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [0, 15, 0, 15]
+**** PARAM control = "clear"
+*** ELEM monome_windows
+**** PARAM id = "sustain-accrete-a"
+**** PARAM monome = "a"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [1, 15, 1, 15]
+**** PARAM control = "accrete"
+With no needs_holding control, this bank is permanently momentary.
+*** ELEM monome_windows
+**** PARAM id = "shift-a"
+**** PARAM monome = "a"
+**** PARAM kind = "edo_shift_pad"
+**** PARAM rect = [13, 14, 15, 15]
+** grid B: the second available 16x16 monome
+If only one grid is connected, this whole logical surface is skipped and A plays on.
+*** ELEM monomes
+**** PARAM id = "b"
+**** PARAM listen_port = 9001
+**** PARAM prefix = "/two-timbres-b"
+**** PARAM select.size = [16, 16]
+*** ELEM monome_windows
+**** PARAM id = "grid-b"
+**** PARAM monome = "b"
+**** PARAM kind = "edo_note_grid"
+**** PARAM rect = [0, 0, 15, 15]
+**** PARAM tuning = "main"
+**** PARAM sink = "synth"
+*** ELEM monome_windows
+**** PARAM id = "timbre-b"
+**** PARAM monome = "b"
+**** PARAM kind = "waveform_selector"
+**** PARAM rect = [0, 0, 3, 0]
+**** PARAM controls = "b"
+*** ELEM monome_windows
+**** PARAM id = "volume-b"
+**** PARAM monome = "b"
+**** PARAM kind = "volume_delta"
+**** PARAM rect = [0, 1, 3, 1]
+**** PARAM controls = "b"
+**** PARAM volume_coarse = 12
+**** PARAM volume_fine = 2
+**** PARAM initial_db = -12
+**** PARAM min_db = -60
+**** PARAM max_db = 0
+*** ELEM monome_windows
+**** PARAM id = "chords-b"
+**** PARAM monome = "b"
+**** PARAM kind = "momentary_chord_block"
+**** PARAM rect = [11, 0, 15, 1]
+*** ELEM monome_windows
+**** PARAM id = "sustain-clear-b"
+**** PARAM monome = "b"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [0, 15, 0, 15]
+**** PARAM control = "clear"
+*** ELEM monome_windows
+**** PARAM id = "sustain-accrete-b"
+**** PARAM monome = "b"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [1, 15, 1, 15]
+**** PARAM control = "accrete"
+*** ELEM monome_windows
+**** PARAM id = "shift-b"
+**** PARAM monome = "b"
+**** PARAM kind = "edo_shift_pad"
+**** PARAM rect = [13, 14, 15, 15]

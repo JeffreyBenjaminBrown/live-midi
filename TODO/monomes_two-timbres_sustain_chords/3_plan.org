@@ -1,0 +1,250 @@
+#+title: monomes, two timbre layers, sustain, and momentary chords -- plan
+
+This plan implements =1_vision.org= as settled in =2_discussion.org=.  It is a
+new surfaces-runtime rig, not a change to either daily two-edogrid rig.  One or
+two arbitrary 16x16 monomes may be present; both expose the same instrument,
+but every grid owns an independent fingered/sustained space, chord space,
+timbre state, volume state, register, accretion bank, and stored slots.
+
+Terminology in this plan deliberately follows the instrument rather than the
+current code's occasional “piano layer” shorthand:
+
+- the *fingered/sustained layer* contains notes played on the monome and notes
+  retained by its accrete bank;
+- the *chord layer* contains voices recalled while one of this grid's momentary
+  chord-slot keys is held.
+
+* 1. Add two explicit rig window kinds
+
+Extend =MonomeWindowRig= and its validation/documentation with:
+
+** =volume_delta=
+
+A four-cell horizontal control targeting an EDO grid by monome id.  Its rig
+fields are:
+
+#+begin_src toml
+kind = "volume_delta"
+rect = [0, 1, 3, 1]
+controls = "a"
+volume_coarse = 12.0
+volume_fine = 2.0
+initial_db = -12.0
+min_db = -60.0
+max_db = 0.0
+#+end_src
+
+The cells apply =[-coarse, -fine, +fine, +coarse]= dB.  Validate a four-cell
+single row, finite positive step sizes, and
+=min_db <= initial_db <= max_db=.  Defaults are the values above.  Resolve the
+rect, target-grid index, and numbers into =GridSettings=/=Overlays=.
+
+** =momentary_chord_block=
+
+A 5x2 control on the same monome as an EDO grid:
+
+#+begin_example
+target  slot-1 slot-2 slot-3 arm
+slot-4  slot-5 slot-6 slot-7 slot-8
+#+end_example
+
+The target cell toggles which layer the waveform and volume-delta controls
+address; it starts off (fingered/sustained).  ARM is dark until armed, then
+flashes.  Slot coordinates, rather than a public numbering contract, are the
+stable identity; row-major numbering of the eight non-control cells is only an
+internal/persistence ordering.
+
+Keep the existing =chord_block= kind, its nine slots, detailed snapshots, and
+toggle behavior unchanged for existing rigs.
+
+* 2. Introduce the per-grid “two and a half dimensions” control state
+
+Add a small pure module/state type, one instance per configured EDO grid:
+
+- current target: fingered/sustained or chord (starts fingered/sustained);
+- one selected timbre index per layer (both start at the existing default,
+  triangle);
+- four fingered/sustained base levels, all initially =-12 dB=;
+- four chord-only offsets, all initially =0 dB=.
+
+The base levels clamp to =[-60, 0] dB=.  Chord offsets are adjusted only far
+enough that the currently effective chord level remains in =[-60, 0] dB=;
+effective chord dB is =clamp(base[timbre] + offset[timbre], -60, 0)=.  Thus a
+base edit moves both layers for that timbre, while a chord-target edit moves
+only the chord layer.  Retain the offset when a later base edit reaches a
+boundary, so moving the base back restores the relative balance.
+
+Make this state active only for a grid carrying a =momentary_chord_block= and
+=volume_delta=.  Existing grids continue to use the single selected-timbre
+vector and absolute volume-strip gain exactly as before.
+
+* 3. Route timbre selection and dB buttons by the selected layer
+
+For the new rig mode:
+
+- the waveform strip's lit radio cell is the selected timbre of the currently
+  targeted layer;
+- pressing a waveform cell updates that layer's selected timbre and immediately
+  retimbres every currently sounding voice in that layer on that grid;
+- future fingered/sustained note-ons and future chord recalls use their layer's
+  selected timbre;
+- pressing a dB cell changes the currently selected timbre's base or chord
+  offset according to the target, then updates every affected live voice.
+
+Factor the existing equal-power timbre crossfade into a layer-wide helper so a
+waveform change never pops and does not restart envelopes or oscillator phase.
+Use the voice engine's existing 20 ms gain target slew for volume changes.  New
+notes start at the settled effective gain instead of slewing from unity.
+
+A fingered/sustained base edit also retargets chord voices when the chord layer
+currently uses the same timbre index.  A chord-offset edit never touches the
+fingered/sustained voices.  Neither operation changes the stored pitch sets.
+
+* 4. Add a pitch-only, momentary chord layer beside legacy chord storage
+
+Keep legacy =StoredVoice=/=ChordLayer= intact and add a focused pitch-only
+state machine for =momentary_chord_block=:
+
+- eight optional stored chords, each a sorted, deduplicated vector of absolute
+  EDO pitches;
+- armed-next-destination state;
+- the set of physically held slot keys;
+- live recalled voices keyed by sequence id, recording source slot and current
+  pitch.
+
+No timbre, gain, envelope, oscillator phase, pulse rate, pulse phase, cell, or
+register is stored.  Recall supplies the chord layer's current timbre and
+effective gain and starts each oscillator fresh through the normal short
+attack.  This is the intentional simplification recorded in the discussion.
+
+Key behavior:
+
+- disarmed slot down: spawn that slot's pitches; slot up: release only that
+  press's voices through the normal release ramp;
+- several held slots layer freely, including equal pitches as independent
+  voices;
+- ARM with no held slots toggles “save the next slot”; the next slot down saves
+  the sorted unique pitches currently sounding on this grid (fingered,
+  sustained, and held chord voices), then disarms without recalling the
+  destination;
+- ARM while one or more source slots are held immediately overwrites every held
+  source slot with that same current sounding pitch set.  This is how an
+  octave-shifted momentary chord is saved back in place;
+- saving silence disarms but leaves destination contents unchanged;
+- sustain clear releases every chord voice on that grid in addition to clearing
+  its accretion bank.  A later key-up for a cleared slot is harmless.
+
+Reuse =VoiceSource::SurfaceChord= and the existing release machinery, but keep
+the pitch-only registry separate from legacy chord state so toggle/edit/pedal
+semantics cannot leak into this rig.
+
+* 5. Give the shift pad its chord-target octave behavior
+
+The four arrow cells always scroll the grid normally.  The two octave corners:
+
+- with fingered/sustained targeting, scroll the visible register normally;
+- with chord targeting, glide every currently held chord voice on that grid by
+  =+-edo= without moving the register;
+- with chord targeting and no chord voice sounding, do nothing.
+
+Update the pitch-only live registry and voice frequencies together.  Do not
+change stored slot pitches until ARM is pressed by the overwrite gesture above;
+releasing and recalling an unsaved slot therefore returns to its stored octave.
+
+* 6. Persist only the eight pitch sets, per physical monome
+
+Add a small versioned TOML persistence format under
+=state/chord-slots/monomes_two-timbres_sustain_chords.toml=.  It contains only
+eight pitch arrays per monome serial id.  Writes use the existing atomic
+temporary-file-plus-rename discipline; missing/bad state reports and degrades
+to empty slots rather than preventing the instrument from starting.
+
+Key by the discovered physical monome serial id, not by the rig's arbitrary
+=a=/=b= slot.  Consequently either grid can run alone, adding the second grid
+creates a separate space, and serialosc enumeration changes cannot swap their
+stored chords.
+
+Headless/mock test runs do not read or write real state.
+
+* 7. Paint the reduced interface without edit dances
+
+Extend the painter with the new overlays and no legacy/edit animations:
+
+- waveform radio: selected layer's active timbre bright, other cells resting
+  dim;
+- dB buttons: resting dim, bright while physically held (no false absolute
+  “position” display for relative controls);
+- target: dim for fingered/sustained, bright for chord;
+- ARM: dark at rest, flashing while armed;
+- slots: dim at rest (empty and occupied intentionally alike), bright while
+  physically sounding;
+- clear and accrete: standard momentary control levels;
+- sounding fingered, sustained, and chord pitches retain ordinary bright note
+  reflection across connected grids.
+
+Because the rig declares no edit-mode controls, fine transpose, pedal slide,
+or factored pulse, no square dance, diamond dance, X, target flash, or off-screen
+edit indicator participates.
+
+* 8. Add the rig and its short operating reference
+
+Create =rigs/monomes_two-timbres_sustain_chords.org= with two unpinned 16x16
+monome declarations.  Existing distinct-device assignment binds whichever one
+or two grids serialosc reports, never binds one physical id twice, and the
+surfaces runtime already loads around an absent second grid.
+
+For both logical grids declare identical, self-targeting windows:
+
+- whole-grid EDO surface: =[0,0,15,15]=;
+- waveform selector: =[0,0,3,0]=;
+- volume deltas: =[0,1,3,1]=;
+- momentary chord block: =[11,0,15,1]=;
+- clear / momentary accrete: =(0,15)= / =(1,15)=;
+- shift pad: =[13,14,15,15]=.
+
+Initial tuning: =edo= 41, =x_step= 8, =y_step= 1=,
+=fundamental_hz= 110=.  Use the standard sine/triangle/square/saw timbres with
+unit timbre amplitudes (the new dB state owns loudness), a CPAL synth sink, no
+SoftSteps, no expression pedals, and no pulse/edit/dance windows.
+
+Create =rigs/monomes_two-timbres_sustain_chords_readme.org= explaining the
+layout, two target states, relative-volume rule, momentary save/overwrite
+gestures, octave behavior, optional second grid, persistence, and run command.
+Link it from =README_USER.org= and the appropriate rig index/orientation map.
+
+* 9. Tests and completion criteria
+
+Add pure/unit tests before relying on hardware:
+
+- rig parsing/defaults/validation for both new kinds and exact overlay geometry;
+- unpinned one/two-grid assignment remains distinct and tolerant of one missing;
+- layer selection is independent per grid and per layer;
+- dB base/delta arithmetic, bounds, same-timbre coupling, and other-timbre
+  isolation;
+- layer-wide retimbre and gain updates touch exactly the intended live voices
+  and use crossfade/slew targets;
+- 5x2 mapping has target, ARM, and exactly eight invertible slot coordinates;
+- momentary down/up, simultaneous slots, clear, armed destination save,
+  save-silence, and held-source overwrite;
+- octave shift moves all and only live momentary chord voices, leaves stored
+  pitches unchanged, does nothing without a held chord, and recalls the saved
+  octave after release;
+- pitch-only persistence round-trip, eight-slot normalization, physical-id
+  separation, malformed-file fallback, and absence of timbre/gain/phase/pulse
+  fields;
+- the existing nine-slot =chord_block= tests and the two daily rig-equivalence
+  test remain unchanged and green.
+
+Run:
+
+#+begin_src sh
+cargo fmt --all -- --check
+cargo test -p edo_surface
+cargo test --workspace
+#+end_src
+
+Then run the new rig against mock monomes (one and two devices) to confirm
+startup, independent assignment, overlay routing, and clean Ctrl-C teardown.
+Real-hardware verification remains Jeff's final check: button positions,
+monobright/varibright LED readability, click-free timbre/volume changes, and
+the musical feel of the =-12/-2/+2/+12 dB= steps.

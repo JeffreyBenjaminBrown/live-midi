@@ -12,9 +12,9 @@ use crate::monome;
 
 use super::grid::{button_level, volume_cells, ButtonOverlay, BRIGHT, DIM, OFF};
 use super::ring::Reason;
-use super::{chords, dance, GridThread, NO_RECT};
+use super::{chords, dance, momentary_chords, GridThread, NO_RECT};
 
-/// One lock: this grid's accrete-trio LED view (its OWN bank's state) plus the
+/// One lock: this grid's accrete-control LED view (its OWN bank's state) plus the
 /// union of every grid's sustained pitch classes (which paint bright on every
 /// grid -- they are all sounding, like the cross-grid note reflection).
 pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
@@ -69,6 +69,46 @@ pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverl
       let (x, y) = chords::slot_cell(rect, slot);
       buttons.push(([x, y, x, y], if layer.active[slot] { BRIGHT } else { DIM }));
     }
+  }
+  (buttons, classes)
+}
+
+/// The pitch-only block: target + three slots + arm over five slots. Slots are
+/// bright only while their momentary recall actually sounds.
+pub(super) fn momentary_chord_view(
+  rt: &GridThread,
+  elapsed: Duration,
+) -> (Vec<ButtonOverlay>, HashSet<i32>) {
+  let rect = rt.overlays.momentary_chord_rect;
+  if rect == NO_RECT {
+    return (Vec::new(), HashSet::new());
+  }
+  let (armed, sounding, classes) = {
+    let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+    let mut classes = HashSet::new();
+    for gr in rings.iter() {
+      classes.extend(
+        gr.momentary_chord.live_pitches().map(|pitch| pitch.rem_euclid(rt.tuning.edo)),
+      );
+    }
+    let layer = &rings[rt.grid_index].momentary_chord;
+    let sounding: [bool; momentary_chords::SLOTS] =
+      std::array::from_fn(|slot| layer.slot_sounding(slot));
+    (layer.armed, sounding, classes)
+  };
+  let targets_chords = {
+    let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+    controls.get(rt.grid_index).is_some_and(|state| state.targets_chords())
+  };
+  let mut buttons = Vec::new();
+  let (tx, ty) = momentary_chords::target_cell(rect);
+  buttons.push(([tx, ty, tx, ty], button_level(targets_chords)));
+  let (ax, ay) = momentary_chords::arm_cell(rect);
+  let arm_level = if armed && dance::flash_on(elapsed) { BRIGHT } else { OFF };
+  buttons.push(([ax, ay, ax, ay], arm_level));
+  for (slot, is_sounding) in sounding.into_iter().enumerate() {
+    let (x, y) = momentary_chords::slot_cell(rect, slot);
+    buttons.push(([x, y, x, y], if is_sounding { BRIGHT } else { DIM }));
   }
   (buttons, classes)
 }

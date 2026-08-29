@@ -41,7 +41,7 @@ still need from Jeff before writing that plan.
 - Square and diamond dances are optional presentation behavior, not required
   for voices to sound or be edited; omitting them is straightforward.
 
-* TODO 1. Which concrete rig and hardware should this be?
+* ONGOING 1. Which concrete rig and hardware should this be?
 
 The directory name says “one monome,” but the vision does not name the new rig,
 which physical grid it selects, its tuning, sink, SoftStep/EX-P participation,
@@ -65,7 +65,7 @@ Tuning should be configurable but to start:
 41 edo
 pitch = (+8)x + (+1)y + some constant
 
-* TODO 2. The physical layout names two different things in the same corners
+* ONGOING 2. The physical layout names two different things in the same corners
 
 The vision puts the timbre buttons and four volume deltas at the top-right, and
 also puts the 2x5 chord block at the top-right.  At bottom-left it puts clear +
@@ -80,7 +80,13 @@ Please give rectangles or a little 16x16 sketch.  At minimum I need to know:
 - where the 2x5 chord block goes;
 - where clear, momentary accrete, and the shift pad go.
 
-* TODO 3. Confirm that this is eight chord slots, and define their order
+** TODO D'oh!
+Top left: timbre, and just below them, volume.
+Top right: Stored chords.
+Bottom left: Sustain.
+Bottom right: Shift.
+
+* ONGOING 3. Confirm that this is eight chord slots, and define their order
 
 In a 2x5 block, reserving the top-left cell for the target switch and the
 top-right cell for ARM leaves eight slots.  The existing block instead has ARM
@@ -90,7 +96,12 @@ Is eight the intended count?  If so, how are they numbered across the remaining
 cells, and should this rig use a new eight-slot persistence file rather than try
 to read an existing nine-slot file?
 
-* TODO 4. Precisely what the two timbre/volume states own
+** TODO eight slots is fine. I don't care how they're numbered.
+They could even be identified by x-y pairs.
+Maybe that would be most natural.
+You're likely the only one who'll read the code anyway.
+
+* ONGOING 4. Precisely what the two timbre/volume states own
 
 I read the intended targets as:
 
@@ -112,7 +123,21 @@ The proposed =volume_coarse = 12= and =volume_fine = 2= are naturally dB
 amounts, producing =[-coarse, -fine, +fine, +coarse]=.  Please confirm they are
 dB, not linear gain units.
 
-* TODO 5. What a saved chord retains under the new global chord state
+** TODO
+Do something to quickly smooth the transition so no pops.
+Yes, current and future.
+
+Ah good point about the three dimensions.
+That's too many. Really I want, like, two and a half. Hear me out:
+When the controls are controlling the sustained chords,
+they should control not the absolute volume,
+but a delta relative to the fingered volume of the same timbre.
+That is, if my chords and finger volumes have diverged for timbre T,
+and I change the finger volume, I'm actually changing both volumes;
+it's just when I'm changing the stored chord volume
+that I don't affect the other volume.
+
+* ONGOING 5. What a saved chord retains under the new global chord state
 
 Current chord snapshots retain timbre and settled loudness per voice.  The
 vision says they should not: recalled chords instead use the one global chord
@@ -124,7 +149,15 @@ Please confirm that assumption.  In particular, should saving a currently
 ringing chord into another slot discard its present chord-layer timbre and
 loudness, while preserving its pitches/pulse/phase?
 
-* TODO 6. Which chord receives an octave shift when slots can layer?
+** TODO
+Factored pulse data only matters for the tap-tempo LFO controls.
+We can omit that. (Might introduce it in the future,
+but it seems cleaner not to keep unused fields around in case we do.)
+
+I think phase can be dropped too?
+But maybe I've forgotten. What do you mean by phase?
+
+* ONGOING 6. Which chord receives an octave shift when slots can layer?
 
 The current chord slots are toggles and several can ring simultaneously; there
 is no navigated “current slot.”  The vision refers to “the active stored chord”
@@ -142,7 +175,14 @@ ARM then the same slot (overwrite it with the shifted pitches), or ARM then any
 destination slot?  Until saved, should toggling the slot off and on restore its
 stored octave, or keep its temporary shift until another slot is selected?
 
-* TODO 7. Interaction with edit mode
+** TODO
+Let's change those from toggles to momentary.
+They ring when held, otherwise don't.
+Multiple can be held simultaneously.
+The octave shifts target all the ones ringing.
+If none are rining, it does nothing (still doesn't shift the grid).
+
+* ONGOING 7. Interaction with edit mode
 
 The vision removes the dances but does not say whether it removes per-voice edit
 mode itself.  This matters because the current timbre selector edits selected
@@ -152,6 +192,9 @@ retune the edit selection instead of scrolling.
 Should this rig have per-voice edit mode at all?  If yes, which precedence wins
 when an edit selection exists: the new layer target for timbre/volume and chord
 octave shift, or the existing edit-selection behavior?
+
+** TODO
+Yeah just drop all that stuff.
 
 * Settled unless Jeff says otherwise
 
@@ -168,3 +211,51 @@ octave shift, or the existing edit-selection behavior?
 Once the seven TODO decisions are answered, the plan can be concrete rather
 than encoding accidental assumptions into the rig, persistence format, and
 interaction tests.
+
+* New questions found in the pre-plan check
+
+** ONGOING 8. Initial volumes and bounds
+
+The “two and a half dimensions” answer resolves the state model cleanly: each
+of the four timbres has a piano-layer base volume, and each timbre also has a
+chord-only delta.  Changing a piano base changes both layers for that timbre;
+changing a chord delta changes only the chord layer.  The chord delta starts at
+0 dB.  What should each piano base start at, and how far may repeated button
+presses move either value?  We need finite bounds both to make the control
+musically predictable and to prevent an accidental run of =+12 dB= presses
+from creating enormous gains.
+
+A concrete answer could be “all piano bases start at 0 dB; clamp the resulting
+layer volume to -60..0 dB,” or different limits if boost is intentional.
+
+*** TODO
+What piano? This is all monome.
+
+Let's make the initial volume -12 db, and the minimum -60 db.
+
+** ONGOING 9. Saving an octave-shifted momentary chord
+
+With momentary slots, a chord stops as soon as its slot is released.  Therefore
+the existing ARM-then-destination gesture can save a shifted sounding chord to
+a /different/ free slot (hold source, shift it, tap ARM, press destination), but
+cannot overwrite the source slot: releasing it to press it again first removes
+the shifted voices from the capture.
+
+Is “save it there the usual way” satisfied by saving to another slot, or must
+there be a way to overwrite the held source slot?  If overwrite is required,
+the clean gesture is: while one or more shifted slots are held, press ARM to
+write the current sounding result back to every held source slot immediately;
+ARM with no slot held retains its usual “arm the next destination” behavior.
+
+*** TODO agreed, perfect
+
+** Phase clarification; no question unless you want to preserve it
+
+“Phase” here meant the point within each oscillator's repeating waveform cycle.
+The current chord-storage-v2 code records those points relative to the lowest
+voice, so recall can recreate the chord's instantaneous wave alignment.  That
+matters for deliberately replaying a captured beating/waveform relationship,
+but it is extra state and ceremony for this simpler pitch-set chord model.
+Given your “I think phase can be dropped,” the plan will drop oscillator phase:
+each momentary recall starts fresh through the normal short attack, which avoids
+a click.  Pulse phase disappears too because this rig has no factored pulse.

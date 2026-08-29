@@ -1,0 +1,108 @@
+#+title: Monomes: two timbres, sustain, and momentary chords
+
+* Run
+
+Connect either one or two 16x16 monomes, then from the repository root inside
+the container run:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords
+#+end_src
+
+Either physical grid may be the only one connected.  With two, both carry the
+same controls but have independent played notes, sustain, registers, timbre and
+volume states, chord voices, and stored chord slots.  Ctrl-C blanks every grid
+and stops audio.
+
+The tuning begins at 110 Hz in 41-EDO.  Moving right adds 8 steps; moving down
+adds 1.  Edit mode, SoftSteps, expression pedals, factored pulse, and the square
+and diamond dances are not part of this rig.
+
+* Layout
+
+#+begin_example
+top-left                                top-right
+sin tri square saw          TARGET slot slot slot ARM
+-12 -2   +2   +12           slot   slot slot slot slot
+
+                 41-EDO play surface
+
+CLEAR ACCRETE                             3x2 SHIFT
+bottom-left                            bottom-right
+#+end_example
+
+The dB labels show the default coarse/fine steps.  The rig fields
+=volume_coarse= and =volume_fine= configure them.
+
+* The two timbre targets
+
+TARGET starts dim: the waveform and dB buttons address this grid's
+fingered/sustained layer.  Press TARGET and it becomes bright: those controls
+now address recalled chord voices.  Each layer remembers its own selected
+waveform.  Changing it immediately crossfades every voice already sounding in
+that layer and also changes future notes/recalls.
+
+Each of the four waveforms remembers a fingered/sustained base volume, initially
+-12 dB.  Its chord volume is a remembered offset from that same base, initially
+0 dB.  Therefore:
+
+- with TARGET dim, a dB press moves that waveform's base and both layers follow;
+- with TARGET bright, a dB press changes only that waveform's chord offset.
+
+Resulting levels clamp to -60..0 dB.  Changes use the synth's short gain slew,
+so a button does not pop or restart a voice.
+
+* Sustain
+
+Hold ACCRETE while fingering notes.  Every note played or already held joins
+this grid's sustained set and keeps ringing after release.  ACCRETE is always
+momentary; there is no latch-mode button.  CLEAR ends this grid's sustained
+notes and any momentary chord voices currently ringing, without touching the
+other monome.
+
+* The eight momentary chord slots
+
+An unarmed slot sounds only while held; release it and its voices take the
+ordinary short release ramp.  Several slots may be held and layered.  Empty and
+occupied slots both rest dim; a slot is bright only while it actually sounds.
+
+To save into a destination:
+
+1. Press ARM with no chord slot held; ARM flashes.
+2. Finger, sustain, and/or hold the chord voices to capture.
+3. Press a destination slot.
+
+The slot receives the sorted set of pitches currently sounding on this grid and
+ARM disarms.  Saving silence leaves the destination unchanged.  Slots store
+only absolute pitches—not timbre, gain, phase, pulse, cells, or register.
+Recall always uses the chord layer's current waveform and relative volume.
+
+To replace a held source after shifting it, keep one or more source slots held,
+use the octave corners, then press ARM.  ARM immediately overwrites every held
+source slot with the whole current sounding pitch set.  This avoids having to
+release a momentary source before saving it back into itself.
+
+Slots persist atomically in
+=state/chord-slots/monomes_two-timbres_sustain_chords.toml=.  Each space is
+keyed by the physical monome serial id, so connecting one grid alone or changing
+serialosc enumeration order does not move its stored chords to the other grid.
+
+* Shift pad
+
+The four arrows always scroll the playable region.  The octave corners depend
+on TARGET:
+
+- TARGET dim: scroll the playable region by an octave;
+- TARGET bright: glide every currently held chord voice by an octave, leaving
+  the playable region still.  With no chord sounding they do nothing.
+
+The chord shift is temporary until saved.  Release and re-hold an unsaved slot
+and it returns at the octave stored in that slot.
+
+* More detail
+
+- Rig data and configurable values: [[file:monomes_two-timbres_sustain_chords.org]]
+- Rig format and general window meanings: [[file:README.org]]
+- Design decisions and implementation plan:
+  [[file:../TODO/monomes_two-timbres_sustain_chords/2_discussion.org]] and
+  [[file:../TODO/monomes_two-timbres_sustain_chords/3_plan.org]]
