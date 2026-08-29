@@ -1,0 +1,1233 @@
+Let's put our initials ("indicate the speaker")
+right before each branch we write.
+It's often important to add branches in the other's writing,
+but the label propagates recursively
+except through a speaker-labeled descendent.
+* Jeff : vision
+top-left : timbre, volume as already
+top-right: the pitch shift keys
+
+bottom-left : the chord storage, 2 tall by 8 high
+bottom-right : loop storage, 2 tall by 8 high
+overwritten above both of them,
+the two sustain buttons, alternately flashing.
+
+Looping is defined somewhere.
+* Jeff : questions
+** What are the loop controls?
+*** Codex : what the implemented looper has
+There are two useful answers: the small transport, and the much larger editing
+interface around it.
+
+The core controls are:
+
+- a bank of slot buttons, one of which is /active/;
+- START, which begins recording into the active slot and overwrites its old
+  contents;
+- STOP, which finishes a recording without playing it, or stops the active slot
+  if it is playing;
+- PLAY, which finishes a recording and plays it, or starts an already-recorded
+  active slot.
+
+Selecting a slot only changes which slot those controls address.  It does not
+start or stop anything.  In the present looper, only one loop can sound at a
+time, PLAY replaces the previously sounding loop, there is no overdub, and
+there is no erase gesture: recording over a slot replaces it.  The slot LEDs
+are active solid > sounding-but-not-active flashing > occupied dim > empty
+black.
+
+The existing 4x4 slot rectangle puts START, STOP, and PLAY over three cells in
+its bottom row.  Thus it allocates sixteen slots but only thirteen can actually
+be pressed.  The proposed 2x8 rectangle can use exactly the same trick: sixteen
+nominal cells, three transport overlays, thirteen reachable slots before a
+sustain-button overlay is counted.
+
+The full looper additionally has:
+
+- COPY (press COPY, a source slot, then a destination);
+- a fine/group-transpose remap toggle;
+- undo-last-remap;
+- a time-by-pitch loop display whose top row, left column, and body select time
+  columns, pitch rows, and individual events for remapping; and
+- the note grid as the destination-pitch picker during a remap.
+
+Those editing controls occupy much more than 2x8.  In fact, the current config
+requires a =loop_display= in addition to slots and transport.  So the compact
+layout can inherit the core transport, but cannot inherit the whole current
+looper interface without a second mode, a fold/unfold operation, or another
+surface.  The plain implementation is documented in
+[[file:../../rigs/monome-looper-58-8-1_readme.org][monome-looper-58-8-1_readme.org]];
+the newer timbre looper uses the same controls in a 16x2 slot strip, documented
+in [[file:../../rigs/monome-looper-58-8-1-timbre_readme.org][monome-looper-58-8-1-timbre_readme.org]].
+
+*** Codex : what I would infer for this layout
+The natural compact subset is slots + START + STOP + PLAY, with the three
+transport cells overlaid on one row exactly as before.  I would omit copy,
+display, remapping, and remap undo from this instrument unless you want a mode
+that temporarily takes over the note surface.
+
+One current project note conflicts with the old single-sounding behavior:
+=TODO.org= says "loops must be overlappable."  If that still governs this
+instrument, PLAY should start the active loop /without/ stopping other loops,
+and STOP should stop only the active loop.  Slot selection would remain silent.
+That is a real loop-engine change, not merely a relayout.
+
+**** Jeff
+START and PLAY as first and second at the top left,
+STOP third just under them at the bottom left.
+Yes omit those you said.
+Let's keep it for now that only one loop slot can speak at a time.
+**** Codex : settled
+Understood.  In local coordinates within the 2x8 loop region, that is:
+
+#+begin_example
+START  PLAY  slot  slot  slot  slot  slot  slot
+STOP   slot  slot  slot  slot  slot  slot  slot
+#+end_example
+
+One of those remaining slot cells will be covered by a sustain button, leaving
+twelve reachable loop slots.  PLAY makes the active slot the sole sounding
+slot, replacing any other sounding loop; selecting a slot remains silent.  I
+have removed the full-editor and overlapping-loop questions below.
+
+*** How do the loop controls work? Can playback and record overlap in time?
+**** Codex : compact loop-control state machine
+Yes: one slot may play while a different slot records.  There is at most one
+sounding loop and one recording loop per monome.
+
+First, a loop-slot press selects that slot as the /loop-control target/.  This
+is what the old looper called the /active/ slot; "selected" is clearer.  Merely
+selecting a slot never starts, stops, or restarts sound.  The three transport
+buttons then mean:
+
+- START LOOP RECORDING: immediately begin freehand recording into the selected
+  slot.  It replaces that slot when the recording is finalized.  If the same
+  slot was sounding, stop it first.  A different sounding slot continues, but
+  its playback is excluded from the new recording.
+- STOP LOOP RECORDING/PLAYBACK: if the selected slot is recording, finalize it
+  without playing it.  Otherwise, if the selected slot is sounding, stop it.
+  Otherwise do nothing.
+- PLAY LOOP: if the selected slot is recording, finalize it, stop the old
+  sounding loop, and start the newly recorded loop at phase zero.  Otherwise,
+  if the selected slot is populated, stop the old sounding loop and start the
+  selected loop at phase zero.  An empty selected slot does nothing.
+
+So with A sounding and B selected, START LOOP RECORDING records B while A
+continues.  STOP LOOP RECORDING/PLAYBACK stores B and leaves A sounding; PLAY
+LOOP stores B, stops A, and makes B the sole sounding loop.  START LOOP
+RECORDING and PLAY LOOP both flash during the overlap.
+
+I recommend pinning the selected target to B while B records: other loop-slot
+presses and a second START LOOP RECORDING are ignored until STOP LOOP
+RECORDING/PLAYBACK or PLAY LOOP closes B.  One final transport edge was not
+previously stated: I have treated PLAY LOOP on an already sounding selected
+slot as an immediate restart from phase zero, not a no-op.  Please correct
+either default if you want selection to move during recording or PLAY LOOP not
+to retrigger.
+***** DONE Jeff : Let's make the way to playback a loop to touch its slot.
+Slot playback is toggle, not momentary -- you touch it to turn it on,
+finger can wander away; touch it again to turn it off.
+So multiple loops can sound.
+
+There's a 'select record target' button
+(let's not use 'select' without specifying for what,
+now that we see it's ambiguous).
+Pressing that makes the next touch of a slot select it for recording,
+but does not change its playback state.
+
+Then start record and stop record.
+Those buttons no longer have to play double duty controlling playback.
+***** Codex : new loop-control model restated
+This removes the old /selected loop slot/ concept.  A normal loop-slot touch
+now toggles that slot's playback directly; key-up does nothing, and any number
+of populated slots may sound simultaneously.
+
+Recording has a separate /record target/:
+
+1. Press SELECT RECORD TARGET.  It flashes while waiting for a destination.
+   Press it again to cancel.
+2. The next loop-slot touch becomes the record target and is consumed by that
+   operation: it does not toggle the slot's playback.  The chosen record target
+   keeps flashing until another target is chosen.
+3. START LOOP RECORDING begins recording immediately into that target.  STOP
+   LOOP RECORDING ends it.  Neither button changes any slot's playback gate.
+
+I infer that the record target remains selected after a recording; SELECT
+RECORD TARGET is needed only to move it.  START LOOP RECORDING and STOP LOOP
+RECORDING do nothing until a record target exists, so I recommend starting with
+/no/ record target after program launch rather than silently targeting the
+first slot.
+
+The control count stays unchanged: SELECT RECORD TARGET replaces PLAY LOOP at
+=(9,15)=.  The latest bottom-right layout is therefore:
+
+#+begin_example
+y=14   CLEAR-SUSTAIN  START-RECORD   L L L L L L
+y=15   STOP-RECORD    SELECT-TARGET  L L L L L L
+#+end_example
+
+The prior PLAY LOOP button and every old meaning of "active loop slot" are
+superseded.
+
+For recording, I infer two cases:
+
+- An empty record target receives its /first recording/.  START LOOP RECORDING
+  establishes phase zero; STOP LOOP RECORDING establishes its freehand duration
+  and closes the first cycle.
+- A populated record target receives an /overdub/.  Its stored duration and
+  cycle boundaries do not change; incoming non-loop voices are folded into its
+  existing phase.  This is true whether its playback gate is currently on or
+  off.  Loop playback remains excluded from recording, including the target's
+  own playback.
+
+The record target's slot flashes whether merely targeted or actively recording;
+START LOOP RECORDING flashes separately while capture is active.  A sounding
+non-target slot is solid.  If the record target is also sounding, record-target
+flash takes visual precedence over sounding solid, and the audio is the ordinary
+playback plus the live performance being overdubbed.
+** What are the chord storage controls?
+*** Codex : what this instrument has now
+The present 5x2 pitch-only chord block has two controls and eight slots:
+
+- TARGET, at top-left, chooses whether timbre/volume and the octave corners
+  address the fingered/sustained layer or the recalled-chord layer.  It is black
+  for fingered/sustained and solid for chord.
+- ARM CHORD STORAGE, at top-right, is black normally and flashes while waiting
+  for a save destination.  ARM CHORD STORAGE then a slot stores the current
+  pitch union there.  Pressing ARM CHORD STORAGE while one or more source slots
+  are physically held instead overwrites all
+  those held sources in place.  Saving silence leaves storage unchanged.
+- A disarmed slot is currently momentary: down recalls it, up releases the
+  voices born from that press, and several slots can be held together.  Slots
+  persist per physical monome serial.
+
+CLEAR and the octave corners are related but are not storage controls.  CLEAR
+ends live recalled voices but does not erase any slot.  With TARGET solid, an
+octave corner shifts every currently recalled chord voice; ARM CHORD STORAGE
+while its source is still held is how that shifted result is made persistent.
+**** Jeff
+Let's move target to be at the top right next to the timbre selectors,
+It needs to have three values: Played and sustained voices, stored chord voices, stored loop voices. It toggles between them: solid when loops, dim when stored chords, black when fingered + sustained notes.
+**** Codex : understood, with one coordinate inference
+TARGET no longer consumes a chord-storage cell.  I read "next to the timbre
+selectors" as the cell immediately to the right of their four-cell row,
+probably =(4,0)=, rather than the grid's literal top-right (which contains the
+shift pad).  Its cycle is:
+
+#+begin_example
+fingered/sustained (black) -> chords (dim) -> loops (solid) -> black ...
+#+end_example
+
+On a monobright grid, "dim" will use the existing rapid low-duty flash that
+simulates dimness; on a varibright grid it is a steady low level.
+
+This settles that loops are a third target of the shared timbre and volume
+controls.  I narrowed the remaining sound-state question below to ask what
+that loop target controls and what loop storage retains.
+*** Codex : the enlarged block and the missing mode control
+You briefly wrote, while revising the layout, that you wanted a
+MOMENTARY/TOGGLE mode button at the bottom-right of the chord-storage region,
+below ARM CHORD STORAGE.  That sentence was replaced by the present layout and
+is not in this document, so I do not know whether the choice survives.  Its
+apparent meaning is:
+
+- momentary mode: the current down-to-recall, up-to-release behavior;
+- toggle mode: pressing a slot alternately starts and stops it, with multiple
+  slots allowed to remain sounding.
+
+If it survives, the chord half has three non-sustain controls: TARGET, ARM
+CHORD STORAGE, and MOMENTARY/TOGGLE.  A 2x8 half has sixteen cells; subtract those three and one
+overlaid sustain button and exactly twelve reachable chord slots remain.  The
+loop half likewise has sixteen cells; subtract START, STOP, PLAY and its
+overlaid sustain button and exactly twelve reachable loop slots remain.  That
+12-and-12 symmetry looks intentional, but I would like it confirmed.
+
+Toggle mode also needs one interaction rule: does ARM CHORD STORAGE with
+sources held mean the physically depressed slots only (as now), or all toggled-on slots?  The
+latter is probably more useful in toggle mode, but it changes the meaning of
+"held source."
+**** Jeff
+I would like that momentary-toggle toggle too.
+But note that the target control moved elsewhere and became ternary, above.
+**** Codex : corrected count
+Yes.  I retain the earlier proposed placement: ARM CHORD STORAGE at the chord
+region's top-right and MOMENTARY/TOGGLE immediately below it at bottom-right.
+With TARGET moved out, the 2x8 chord region has ARM CHORD STORAGE + mode + one
+overlaid sustain button, leaving thirteen reachable chord slots.  The loop side has its three
+transport controls + one sustain button, leaving twelve loop slots.  So the
+earlier 12-and-12 inference was wrong; the new count is 13 chords and 12 loops.
+
+I assume the mode starts momentary.  (The later final layout corrects this
+button's levels: solid for momentary, black for toggle.)  The remaining
+question is what "source held for overwrite" means for a latched chord; that
+remains below.
+** What else needs decising before this can be implemented?
+*** DONE I still read "2 tall by 8 high" as 2 rows high by 8 columns wide
+with chord
+storage at =[0,14..7,15]=, loop storage at =[8,14..15,15]=, timbre/volume at
+the upper-left, and the 3x2 shift pad at the upper-right.
+
+**** Jeff : agreed
+*** DONE 1. What does recording listen to?
+The old looper records only physical note-grid down/up events because it has no
+sustain or chord layer.  Here there are at least two coherent choices:
+
+- record physical play-cell gestures only; or
+- record the logical audible note edges produced by fingers, ACCRETE/CLEAR, and
+  chord recall/release, but never record loop playback into itself.
+
+I favor the second: a held chord then records as a chord, and accretion changes
+the recorded note's duration just as it changes what was heard.  Notes still
+alive at the recording boundary should be cut there, as in the old looper.
+But this choice means CLEAR and slot releases are recordable musical events,
+which should be intentional.
+
+**** Jeff : Yes, looper records them all but not itself.
+
+*** DONE Should ARM CHORD STORAGE include pitches emitted by loops?
+I would exclude loop playback from chord capture by default; including it
+turns ARM CHORD STORAGE into a way to snapshot a time-slice of a loop.
+
+**** Jeff : arm what? Arm chord storage or arm loop record?
+Let's never use the term arm in isolation:
+Arm chord storage or arm loop storage.
+**** Codex : ARM CHORD STORAGE
+I meant ARM CHORD STORAGE.  This layout has no ARM LOOP STORAGE button: START
+LOOP RECORDING begins loop capture immediately.  The still-open question is:
+when ARM CHORD STORAGE captures the grid's currently sounding pitch union,
+does that union include pitches being emitted at that instant by loop
+playback?  I still recommend /no/; then chord capture includes fingers,
+accreted sustain, and live chord recalls, but never a time-slice of a loop.
+***** Jeff
+Ah. No, agreed, don't recapture stored chord from the loop.
+***** Codex : settled
+ARM CHORD STORAGE excludes every loop-playback voice.  It may capture fingers,
+accreted sustain, and live recalled chord voices, but never reconstructs a
+stored chord from the instantaneous phase of a loop.
+*** DONE 2. What does the new loop target own?
+The ternary TARGET settles that loops have their own sound-control state.  Two
+models remain:
+
+1. one loop-layer timbre and volume per monome, parallel to the chord layer;
+   loop slots store only pitches and timing, and changing the controls changes
+   every currently sounding loop voice plus future loop attacks; or
+2. each recorded note stores its own timbre/volume, as in the existing timbre
+   looper; with no time-by-pitch selection UI, we would then need to decide
+   whether the controls rewrite the active slot, the sounding slot, or every
+   slot.
+
+I recommend model 1.  It gives the ternary selector a direct meaning and keeps
+the compact loop slots free of hidden per-note state.
+**** Jeff : yes (1)
+*** DONE TARGET currently also determines what the octave corners do: move the play
+register in fingered/sustained mode, or transpose live recalled voices in chord
+mode.  In loop mode, should the octave corners transpose the active loop's
+stored pitches, transpose only its current playback non-persistently, or still
+move the play register?  I lean toward transposing the active slot's stored
+pitches in RAM; it would provide one useful loop edit despite omitting the full
+remap UI.
+**** Jeff : yes
+For now, let's make those octave edits permanent --
+they are still in effect the next time the loop is triggered.
+They do not apply to other loops.
+(Timbre and volume changes are still all loops or none, though.)
+**** Codex : scope inferred
+An octave corner therefore adds or subtracts the tuning's configured =edo=
+steps (currently 41) from every event in the /active/ loop slot and writes that
+edit to persistence.  If that active loop is
+currently sounding, its live voices glide immediately as well; if another loop
+is sounding, that other loop is untouched.  Timbre and volume remain per-grid
+loop-layer state, affecting every slot on that monome rather than editing one
+slot's stored events.  The implementation must read this delta from the active
+tuning, just as the existing chord octave path already does; 41 is a rig value,
+never a looper constant.
+*** DONE 3. Are loop banks per monome, and are their clocks shared?
+The current instrument gives each physical monome independent fingers,
+sustain, chords, target, and register.  I would likewise give each one an
+independent twelve-slot loop bank.  I would nevertheless use one shared
+metronome so loops from both monomes can align.  Please say if loops should
+instead be one shared bank visible on both grids, or if each grid should have
+an independent clock.
+
+The old timing default is a free-running 200 ms quantum (=clock_bpm = 300=,
+described there as =4 * 75=), with transport snapped to the nearest quantum, loop
+length constrained to a whole number of quanta, and note-ons within 50 ms of a
+boundary snapped onto it.  We can inherit those configurable defaults unless
+you want unquantized transport or a tempo control on the grid.
+**** Jeff
+Yes, separate loop storage spaces for the two monomes.
+Let's ditch the metronome; I'll just freehand the cycle barries.
+**** Codex : freehand transport restated
+Then START LOOP RECORDING takes effect immediately; STOP LOOP RECORDING and
+PLAY LOOP close the recording exactly when pressed, making that elapsed time
+the loop length; PLAY LOOP starts the new cycle immediately at its beginning.
+There is no transport quantization, whole-quantum constraint, or 50 ms
+note-on snapping, and the =clock_bpm= setting goes away.  The two monomes'
+freehand loops therefore have no automatic phase relationship.
+*** DONE 4. Do loops survive restart?
+Chord slots are persistent.  The existing loop slots are RAM-only and begin
+empty after every run.  I would retain that behavior unless "storage" here
+means persistent storage too.
+**** Jeff : yeah might as well keep them
+**** Codex : persistence inferred
+I read "keep them" as: persist each physical monome's loop-slot contents
+(pitch/time events and exact freehand duration), but start the program silent;
+do not persist which slot was active, sounding, or recording.  Recording over
+a slot and permanently octave-shifting a slot both update its persisted data.
+*** DONE 5. Where exactly are CLEAR and ACCRETE, and what wins visually?
+**** DONE where
+The transport is now placed.  I infer TARGET at =(4,0)=, ARM CHORD STORAGE at
+the chord region's top-right, and MOMENTARY/TOGGLE below ARM CHORD STORAGE.
+That leaves only the two
+sustain cells unspecified.  Which one overlays the chord half, which one the
+loop half, and at which coordinates?  Each makes its underlying slot
+unreachable.
+***** Jeff
+Please list all the controls I'm trying to stick in the bottom two rows:
+sustain buttons, chord buttons and loop buttons.
+***** DONE Codex : complete bottom-two-row inventory
+There are 32 cells total and seven non-slot controls, leaving 25 storage slots.
+
+- sustain controls (2): CLEAR SUSTAIN and ACCRETE;
+- chord controls (2): ARM CHORD STORAGE and MOMENTARY/TOGGLE;
+- chord slots (13);
+- loop controls (3): START LOOP RECORDING, PLAY LOOP, and STOP LOOP
+  RECORDING/PLAYBACK; and
+- loop slots (12).
+
+TARGET is not in these rows; it moved beside the timbre selector.  There is no
+ARM LOOP STORAGE control.
+
+With =C= and =L= denoting cells not yet displaced by the sustain controls, the
+known map is:
+
+#+begin_example
+       chord half, x=0..7              loop half, x=8..15
+y=14   C C C C C C C  ARM-CHORD       START-LOOP PLAY-LOOP L L L L L L
+y=15   C C C C C C C  CHORD-MODE      STOP-LOOP       L L L L L L L
+#+end_example
+
+Replace one =C= and one =L= with CLEAR SUSTAIN and ACCRETE, in either
+assignment.  The other thirteen =C= cells are chord slots and the other twelve
+=L= cells are loop slots.  Thus the one remaining layout branch is exactly:
+which two cells do CLEAR SUSTAIN and ACCRETE occupy, and which is which?
+****** DONE Jeff : clear should only silence the accreted voices
+and not if the finger that triggered the voice is still on that key
+as part of the same gesture.
+****** DONE Jeff : layout
+       chord half, x=0..7                   loop half, x=8..15
+y=14   C C C C C C C          ACCRETE       CLEAR      START-LOOP  L L L L L L
+y=15   C C C C C C CHORD-MODE ARM-CHORD     STOP-LOOP  PLAY-LOOP   L L L L L L
+
+Accrete and clear flash out of phase as settled elsewhere.
+All the Ls and Cs are black until populated, then dim unless in use, otherwise solid.
+Arm-chord flashes fast (200 ms on, 200 off) if armed.
+Chord mode is black when toggle, solid when momentary.
+
+Start-loop flashes when recording.
+Play-loop flashes during playback.
+****** Codex : final layout restated
+This final diagram supersedes the earlier provisional transport map.  The
+control coordinates are:
+
+- ACCRETE =(7,14)=;
+- CLEAR SUSTAIN =(8,14)=;
+- START LOOP RECORDING =(9,14)=;
+- MOMENTARY/TOGGLE =(6,15)=;
+- ARM CHORD STORAGE =(7,15)=;
+- STOP LOOP RECORDING/PLAYBACK =(8,15)=; and
+- PLAY LOOP =(9,15)=.
+
+The thirteen chord slots are =(0..6,14)= then =(0..5,15)=.  The twelve loop
+slots are =(10..15,14)= then =(10..15,15)=.  MOMENTARY/TOGGLE starts solid in
+momentary mode and is black in toggle mode, correcting my earlier reversed LED
+assumption.
+
+The persistence migration should retain the rig's existing eight stored chord
+slots as the first eight cells in that row-major chord order and initialize the
+five new slots empty.  Nothing in this relayout should discard the chords
+already saved under either physical monome's serial id.
+****** Codex : yes, when they are different slots
+That is supported by the extant loop model and remains coherent with "only one
+loop slot can speak at a time":
+
+1. Let loop A be sounding, select silent slot B, and press START LOOP
+   RECORDING.  A continues sounding while B records.  A's playback is excluded
+   from B's recording.
+2. STOP LOOP RECORDING/PLAYBACK finalizes B silently; A keeps sounding.
+3. PLAY LOOP instead finalizes B, stops A, and starts B as the sole sounding
+   loop.
+
+START LOOP RECORDING on A itself first stops A and then replaces its contents;
+one slot cannot simultaneously play and be re-recorded.  There is at most one
+recording and one sounding loop per monome.  During the allowed A-playing /
+B-recording overlap, both START LOOP RECORDING and PLAY LOOP should flash.
+
+One interaction remains: while B records, may a slot press move the active
+target away from B?  I recommend pinning B as active and ignoring other loop
+slot presses until STOP LOOP RECORDING or PLAY LOOP closes the recording.  That
+keeps every transport control directed at one unambiguous slot.
+
+****** Codex : what does "in use" mean for a loop-slot LED?
+For a chord slot it plainly means "its recalled voices are sounding."  A loop
+slot has two independent distinctions: /active/ (the transport target) and
+/sounding/.  I recommend retaining the old readable priority: active solid >
+sounding-but-not-active flashing > populated dim > empty black.  Recording is
+always on the active slot, so active solid already covers it.  If "in use ...
+solid" meant active and sounding should both be solid, those two states would
+be visually indistinguishable and this remains open.
+
+******* Jeff : sure but what does 'active' mean there?
+******* DONE Codex : selected as the loop-control target
+"Active" is inherited terminology from the old looper.  It means only "the
+loop slot most recently selected, to which START LOOP RECORDING, STOP LOOP
+RECORDING/PLAYBACK, PLAY LOOP, and loop-target octave shifts are directed."
+It does /not/ mean sounding, recording, populated, or physically held.
+Selecting a different slot changes no sound.  I propose calling it the
+/selected loop slot/ everywhere in the new plan.
+
+That leaves the LED choice in concrete form.  I recommend:
+
+- selected slot: solid, even when empty;
+- sounding but not selected: flashing;
+- populated but neither: dim; and
+- empty and unselected: black.
+
+The solid empty case is the one exception to "black until populated," and it
+is useful: otherwise the player cannot see which empty destination START LOOP
+RECORDING will overwrite.  During recording the selected slot remains solid;
+START LOOP RECORDING separately flashes to show the recording state.  On
+startup I would select the first loop slot =(10,14)=, as the old looper selects
+its first slot.  I would flash a sounding-but-unselected slot in phase with PLAY
+LOOP at the same 200 ms on / 200 ms off rate.
+******** Jeff
+The sounding slot(s) should be solid.
+The targeted-for-record one should flash.
+  (If it's also sounding, that's weird ... I guess that would be overdub?
+  Yeah, sure, that seems like a legitimate mode of use.)
+Otherwise as you said:
+- populated but neither: dim; and
+- empty and unselected: black.
+******** Codex : superseded terminology, settled LED priority
+There is no longer an active/selected playback slot.  Under the new record-target
+model the slot priority is:
+
+1. record target: flashing, whether empty, populated, silent, sounding, or
+   actively recording;
+2. sounding: solid;
+3. populated but silent: dim;
+4. empty and not the record target: black.
+
+So a sounding record target flashes rather than appearing solid.  That case is
+the overdub case described above.  Any number of other sounding slots are solid.
+**** DONE what wins
+"The two sustain buttons, alternately flashing" also needs an edge rule.  I
+read it as CLEAR and ACCRETE taking opposite phases while idle.  I suggest that
+a physically held button become solid, overriding the alternating idle flash;
+ACCRETE's musical action remains momentary and CLEAR still acts on key-down.
+Please confirm the rate (or say to reuse the ordinary control-flash clock) and
+whether CLEAR should also stop sounding loops.  My default is that CLEAR ends
+sustain and live chord recalls as now, but does not operate loop transport.
+***** Jeff
+Clear just stops the sustained chord, not a loop.
+1 second cycles at 50/50 duty seems good.
+***** Codex : behavior restated, with one wording check
+The two controls use opposite halves of the same one-second cycle: each is on
+for 500 ms and off for 500 ms.  A physically held control is solid, overriding
+the idle alternation.  CLEAR never stops loop transport or loop voices.
+
+I read "stops the sustained chord" as preserving the current broad CLEAR
+behavior: clear the accreted sustain set /and/ stop all live chord-slot voices
+(including latched chords), while leaving chord and loop storage intact.  If
+you meant it should clear only accreted sustain and leave chord-slot voices
+sounding, that branch is not closed yet.
+****** Jeff : let's only stop the notes that were accreted into the sustained set
+not notes played from a loop or from a stored chord
+****** Codex : settled -- CLEAR SUSTAIN is source-specific
+This changes the current rig's broad clear behavior.  CLEAR SUSTAIN removes
+the accreted sustain membership and releases only the corresponding fingerless
+sustain voices.  If the original finger is still holding its voice as part of
+the same gesture, that voice remains sounding but loses its right to survive
+the later finger-up.  A separate sustained drone at the same pitch still ends;
+the decision follows voice ownership, not pitch alone.
+
+CLEAR SUSTAIN does not stop or unlatch recalled chord voices, stop loop voices,
+erase either kind of storage, or end physically held finger voices.  The final
+name should therefore be CLEAR SUSTAIN, not CLEAR SUSTAIN/CHORD.
+*** DONE 6. How does ARM CHORD STORAGE work in toggle mode?
+In momentary mode, ARM CHORD STORAGE pressed while source slots are physically
+held overwrites those held sources.  In toggle mode, should it overwrite all
+toggled-on/sounding source slots, or only slots physically down at that instant?
+I recommend all toggled-on slots.
+**** Jeff : yes
+*** DONE Also, if some chords are latched on and the mode is switched from toggle back
+to momentary, should those chords stop immediately?  I recommend yes: the mode
+button would leave no invisible latched state behind.
+
+**** Jeff : yes
+
+*** Codex : post-answer audit
+The answers above expose three small decisions that were not in the earlier
+list, plus one implementation consequence.  These were settled before the
+later direct-slot-playback redesign, which supersedes the single-sounding-loop
+assumption wherever the newer branch says so.
+
+**** DONE What is loop volume relative to the other two targets?
+"One loop-layer volume" says which voices move together, but not how its value
+relates to the existing per-timbre fingered base and chord delta.  I recommend
+the exact chord idiom: each timbre gets a loop-only dB delta relative to the
+fingered/sustained base, initially 0 dB.  Changing a fingered/sustained base
+then moves all three targets for that timbre; changing the loop target moves
+only the loop delta; changing the chord target moves only the chord delta.
+
+***** Jeff : agreed
+
+**** DONE What do the transport LEDs do without a metronome?
+The old looper strobes one of START/STOP/PLAY on its metronome boundary.  With
+the metronome removed, I recommend a steady state indicator instead:
+
+- START LOOP RECORDING solid while recording;
+- PLAY LOOP solid while any loop is sounding;
+- STOP LOOP solid while neither is happening; and
+- the other two controls dim so all three remain findable.
+
+Recording takes visual precedence if one loop is sounding while another slot
+is being recorded.
+
+***** Jeff : Did I settle this above, under 'Jeff : layout'?
+***** DONE Codex : partly
+You settled the active indications: START LOOP RECORDING flashes while
+recording and PLAY LOOP flashes while a loop plays.  With recording/playback
+overlap allowed above, both flash at once.  Three visual details remain:
+
+- their flash period and duty;
+- their resting levels when inactive; and
+- STOP LOOP RECORDING/PLAYBACK's resting and pressed levels.
+
+My suggested completion is: START LOOP RECORDING and PLAY LOOP use the same
+200 ms on / 200 ms off flash as ARM CHORD STORAGE and are black while inactive;
+STOP LOOP RECORDING/PLAYBACK is black at rest and solid only while physically
+pressed.  This makes every light communicate live state and leaves the fixed
+layout to make the dormant controls findable.
+****** Jeff sure
+****** Codex : settled
+START LOOP RECORDING and PLAY LOOP are black while inactive and flash at
+200 ms on / 200 ms off while recording and playing respectively.  Both flash
+during playback/record overlap.  STOP LOOP RECORDING/PLAYBACK is black at rest
+and solid only while physically held.
+****** Codex : superseded by direct slot playback
+The later loop redesign removes PLAY LOOP entirely.  START LOOP RECORDING keeps
+the settled 200 ms on / 200 ms off recording flash.  STOP LOOP RECORDING is
+black except while held.  SELECT RECORD TARGET occupies the old PLAY LOOP cell;
+I recommend that it flash at 200 ms on / 200 ms off only while awaiting the
+next slot, while the chosen record-target /slot/ continues flashing at that
+same rate until retargeted.
+**** DONE Does START LOOP RECORDING include voices already sounding?
+We settled that recording receives every later logical edge from fingers,
+sustain, and chord recall, but not loop playback.  A voice already sounding
+when START LOOP RECORDING is pressed has no later note-on edge.  The old looper
+therefore omits it.  For this instrument I instead recommend seeding every
+currently sounding non-loop voice at time zero; a pre-existing drone or latched
+chord can then become a whole-cycle loop.  Either behavior is coherent, so this
+needs an explicit choice.
+
+***** Jeff seems good but
+Suppose we play voice V at time -5,
+then begin recording at time 0, and record for 10 seconds.
+If we release V before time 5, say at time 3, then it was on for less than 10 seconds,
+i.e. less than a full cycle, so it should last from 5 in each cycle to 3 in the next.
+However if we release it at time 6, it was on for more than 10 seconds,
+so it should just drone endlessly in the loop. (That drone only starts, though,
+when the loop is launched, and it ends when the loop is terminated.)
+***** Codex : wrap-duration rule restated
+This supersedes my simpler "seed it at time zero" proposal.  Let =D= be the
+freehand loop duration, =a= the voice's actual onset relative to START LOOP
+RECORDING (possibly negative), and =b= its release:
+
+- if =b - a < D=, store a finite interval beginning at =a mod D= and ending at
+  =b mod D=, wrapping through the cycle boundary when the end phase precedes
+  the start phase;
+- if =b - a >= D=, store a full-cycle drone, sounding from loop launch until
+  loop termination.
+
+Thus your =a=-5, =b=3, =D=10 voice sounds during phases 0..3 and 5..10 on the
+first and every later cycle.  With =b=6 it has lived eleven seconds, so it is a
+full-cycle drone.  I take exactly one complete cycle (=b - a == D=) as a drone
+too.
+
+If a voice is still held when recording closes, use what is already knowable:
+a pre-recording voice whose observed lifetime has reached =D= is a drone;
+otherwise cut it at the closing boundary, as previously settled.  This rule
+requires retaining the actual onset time of every live non-loop source, not
+merely taking an instantaneous pitch snapshot at START LOOP RECORDING.
+
+**** DONE Consequence: same-pitch multiplicity must be recorded
+"Record them all" means the recording cannot use the old looper's pitch-only
+held set.  A finger, a sustained voice, and a recalled chord voice may coexist
+at the same pitch and end independently.  The loop events therefore need a
+recorded voice identity: two voices at the same pitch become two loop voices,
+and one source's release cannot cut the other.  This follows from the settled
+voice model rather than requiring another choice, unless you deliberately want
+loop recording to deduplicate same-pitch voices.
+
+***** Jeff agreed
+
+**** DONE How can a persistent loop slot be emptied?
+The old looper has no erase gesture; recording only overwrites.  Now that loop
+contents survive restart and empty/populated have distinct LEDs, that means a
+slot can never become empty again after its first recording.  If that is
+intentional, there is nothing to add.  Otherwise this compact layout needs an
+erase gesture rather than another dedicated cell.  A possible gesture is hold
+STOP LOOP RECORDING/PLAYBACK and press a loop slot to empty that slot; it should
+also stop that slot first if it is sounding.
+
+***** Jeff : yes, no need to be able to empty them
+***** Codex : settled
+A populated loop slot can be overwritten but never returned to empty.  It
+therefore remains present across restarts until replaced; no erase gesture or
+extra control is needed.
+***** Codex : superseded by the new clear gesture
+The later rule deliberately reopens this: START LOOP RECORDING followed by STOP
+LOOP RECORDING in under the configured clear threshold (initially 300 ms) now
+empties the record-target slot and resets its duration/phase.  No separate erase
+control is needed.
+
+*** DONE Codex : implementation consequence already established
+This cannot currently be achieved only by moving rig rectangles.  The looper
+and this instrument run through separate top-level runtimes: declaring the
+full loop window set selects the looper, which does not implement ACCRETE,
+three-target controls, or one-identical-surface-per-monome behavior.  The
+implementation will need to factor the useful loop primitives into the
+surfaces runtime (or make a new composed runtime), but its old =LoopStore=
+state machine is no longer the target: that store assumes one sounding slot, a
+single active control target, destructive replacement recording, and playback
+start as the phase epoch.  The new engine needs per-slot free-running phase and
+playback gates, simultaneous multi-slot playback, a separate record-target
+state, first-record versus overdub behavior, the configurable sub-threshold
+clear gesture,
+per-serial persistence, and identity-bearing voice intervals.  Octave deltas
+must still come from the configured =edo=.  That work is bounded once the
+remaining phase/target choices above are made.
+
+*** Codex : superseded snapshot before the loop-corner answers
+
+This snapshot records the state before Jeff's top-level loop-control-corner
+pass.  The later =latest loop layout and control model= heading supersedes its
+twelve-slot count, startup target, phase behavior, and silent-loop proposal.
+
+- The bottom-row coordinates are fixed by Jeff's final diagram: thirteen chord
+  slots, twelve loop slots, two sustain controls, two chord controls, and three
+  loop controls.  In that superseded model SELECT RECORD TARGET replaces PLAY LOOP
+  at =(9,15)=; START LOOP RECORDING and STOP LOOP RECORDING retain their cells.
+  The complete current map is:
+
+  #+begin_example
+         chord half, x=0..7                  loop half, x=8..15
+  y=14   C C C C C C C ACCRETE              CLEAR-SUSTAIN START-RECORD L L L L L L
+  y=15   C C C C C C CHORD-MODE ARM-CHORD   STOP-RECORD SELECT-RECORD-TARGET L L L L L L
+  #+end_example
+- CLEAR SUSTAIN affects only accreted sustain ownership/voices.  It never ends
+  fingers still physically held, recalled chords, or loops, and never erases
+  storage.
+- MOMENTARY/TOGGLE is solid for momentary and black for toggle.  Returning to
+  momentary stops every latched chord.  ARM CHORD STORAGE overwrites all
+  toggled-on chords in toggle mode.
+- TARGET cycles fingered/sustained (black), chord (dim), and loop (solid).
+  Chord and loop gains are separate per-timbre deltas from the shared
+  fingered/sustained base.
+- Each monome owns independent persistent chord and loop banks.  Program startup
+  recalls their contents but starts silent.
+- ARM CHORD STORAGE never captures loop playback.  Loop timing is unquantized
+  and freehand.  Touching a populated loop slot toggles its playback gate, key-up
+  does nothing, and multiple slots may sound simultaneously.
+- SELECT RECORD TARGET consumes the next slot touch without changing playback.
+  START LOOP RECORDING and STOP LOOP RECORDING then operate only on that record
+  target.  An empty target gets a first recording; the proposed populated-target
+  behavior is overdub against its existing duration and phase.  START without a
+  target and STOP without an active recording are no-ops; neither control is a
+  playback transport.
+- Loop slots store pitch/timing/voice identity, not timbre or volume.  Loop
+  timbre/volume controls affect the whole per-monome loop layer.  The proposed
+  octave-edit target is the record target, shifted permanently by the tuning's
+  configured =edo=.
+- A record-target slot flashes with highest LED priority; other sounding slots
+  are solid, populated silent slots dim, and empty untargeted slots black.
+  START LOOP RECORDING flashes while recording; STOP LOOP RECORDING is black
+  except while held.  SELECT RECORD TARGET flashes while waiting for a slot.
+- START LOOP RECORDING then STOP LOOP RECORDING in under the configured clear
+  threshold clears the record target, stops its playback, deletes its
+  persistence and phase, and cancels the attempted recording.  The strict
+  threshold is a rig parameter initially set to 300 ms, so exactly 300 ms is
+  initially a recording and 300 ms is initially the minimum possible duration
+  of a new loop.
+- Recording preserves same-pitch multiplicity and pre-recording onset times.
+  A finite voice interval may wrap through the cycle boundary; a voice lasting
+  at least one whole cycle becomes a loop-lifetime drone.
+- Slot playback gates and voices are independent, including when different
+  slots contain the same pitch.  Populated slots free-run while muted.  A normal
+  empty-slot touch is a no-op; during that slot's first recording only, touches
+  may toggle a proposed play-on-completion request.
+- Recording commits atomically and captures only same-monome non-loop source
+  voices.  A normal-length silent first take is proposed to establish a
+  populated timing shell.  Loop octave edits are proposed to be disabled during
+  active recording.
+
+The remaining explicit decisions are now the record-target/phase questions
+listed in the new loop-control branch:
+
+1. SELECT RECORD TARGET's placement, startup/cancel/retention behavior;
+2. whether every populated-target recording is an overdub;
+3. muted free-running phase and its restart re-anchoring;
+4. pending playback during an empty target's first recording;
+5. loop-target octave corners addressing the record target and being ignored
+   during capture;
+6. whether "loop playback never records itself" excludes /all/ sounding loop
+   slots (recommended), or only the record target's own playback;
+7. whether recording is local to the performing monome; and
+8. whether a normal-length silent first recording creates a populated timing
+   shell.
+* Jeff : loop control corner cases
+There are choices, I believe, regarding how to handle
+simultaneous or nearly simultaneous
+record stop|start and playback on|off commands.
+For instance, if we start the loop and start recording to it at the same time,
+but start the loop slightly after pressing 'start record',
+we should not change the loop's cycle boundaries.
+
+Oh but that means the cycle boundaries will be fixed forever.
+That's no good. We do, then, need a clear-loop gesture.
+Let's make that pressing 'record' and then 'stop' in under 300 ms.
+
+I imagine there are more. Please list the corners you can think of.
+** Codex : clear gesture and the phase model
+Agreed.  START LOOP RECORDING followed by STOP LOOP RECORDING in less than the
+configured clear threshold (initially 300 ms) clears the record-target slot
+instead of committing a recording or overdub.  Clearing immediately gates off
+that slot, releases all of its playback voices, deletes its persistent contents
+and phase anchor, and leaves the empty slot as the flashing record target.  Its
+next non-clear recording defines a new duration and phase zero.  Exactly matching the
+threshold duration results in recording; only =elapsed < threshold= clears.  A
+consequence is that a new loop shorter than the configured threshold cannot be
+made.
+
+For a populated slot in the default KEEP-RUNNING mode, its cycle clock remains
+at phase zero until first triggered.  Once triggered, it keeps advancing even
+while playback is off.  A later slot touch changes only whether that clock is
+audible and does not reset phase.  LOOP PHASE MODE also defines a RESTART
+alternative.  In either mode, overdub and playback toggles never alter the
+stored duration.
+*** Jeff : longer should be impossible, too
+**** Codex : I cannot safely infer what "longer" denotes
+Read literally against the preceding sentence, this says a new loop may be
+neither shorter /nor/ longer than the clear threshold, so the performer would
+have to hit exactly 300 ms to create any loop.  The strict timestamp comparison
+makes that effectively impossible.  If instead you mean that loop recordings
+need a configurable maximum duration, or that the clear gesture needs an upper
+window as well as a lower one, please give me that rule or bound.
+***** DONE Jeff haha never mind
+I hallucinated.
+*** DONE Jeff : ooh the phase question is interesting
+Let's throw in a toggle on the other side of the loop controls
+(far corner, surprise me for which side)
+for whether phase keeps evolving
+when the trigger is toggled. It should flash when phase would keep advancing,
+be black when phase would restart from 0, and begins in the flashing mode.
+**** DONE Codex : LOOP PHASE MODE restated
+I choose the far bottom-right corner, =(15,15)=.  This replaces one loop-slot
+cell, so the layout now has eleven loop slots: six at =(10..15,14)= and five at
+=(10..14,15)=.  LOOP PHASE MODE is per monome, applies to all eleven of that
+monome's slots, is not persisted, and starts in KEEP-RUNNING mode on every program
+launch.
+
+***** DONE *KEEP-RUNNING mode (flashing).*
+A populated slot begins dormant at phase zero.  Its first playback trigger
+starts the clock and the loop at phase zero.  Thereafter its phase advances
+whether its playback gate is on or off, and a later playback trigger
+reconstructs the voices active at the continuously advancing phase.
+
+***** DONE *RESTART mode (black).*
+A muted slot has no advancing phase.  Toggling playback on establishes phase
+zero and begins advancing it; toggling playback off releases its voices and
+discards that phase.  The stored duration never changes.
+
+***** DONE *Changing LOOP PHASE MODE while loops already exist.*
+Changing to RESTART discards every slot's old phase and returns it to phase
+zero.  A sounding slot is reconstructed at phase zero through the settled
+release/attack ramps and continues sounding; a muted slot remains dormant.
+Changing to KEEP-RUNNING leaves a muted slot dormant at phase zero until it is
+triggered.  A sounding slot is already triggered, so it continues advancing
+from its current phase without a jump.
+
+****** DONE Jeff
+On switching to RESTART, yes, discard, restart from phase 0.
+But on switching to KEEP-RUNNING (let's call it that),
+phase is still 0; it only starts running once the loop is triggered.
+
+***** DONE *Recording interaction.*
+An empty target always gets phase zero at START LOOP RECORDING and gets its
+duration from STOP LOOP RECORDING; a slot touch during that first recording is
+only the already settled play-on-completion toggle.  For a populated target,
+overdub never changes its duration.  In KEEP-RUNNING mode it records against
+the current phase once that clock has been triggered.  In RESTART mode, START
+LOOP RECORDING on a muted target begins
+its recording phase at zero, while an already sounding target uses its current
+audible phase.  If playback is toggled on during that overdub, your caveat below
+says to restart phase zero; this moves the epoch but still cannot change the
+stored duration.  Events before and after that ordered reset are folded against
+the phase that was in force when they occurred.
+
+That last reset is the deliberate RESTART-mode exception to the earlier wish
+that a near-simultaneous playback-on not move phase boundaries.  Please mark it
+done if that is the intended exception.
+****** DONE Codex : recording does not count as the first trigger
+I read "triggered" as a playback-slot touch, not START LOOP RECORDING.  Under
+that reading, overdubbing a dormant populated target uses a temporary phase
+starting at zero; if no playback trigger occurs, STOP returns the muted slot to
+its dormant phase zero.  If playback is triggered during capture, that begins
+the persistent KEEP-RUNNING clock.  Thus recording alone never activates that
+persistent clock.
+* DONE Codex : interaction corners and recommended rules
+
+** DONE *SELECT RECORD TARGET then a slot.*  While target selection is armed, the
+   next slot-down is consumed solely as target selection and never toggles
+   playback.  SELECT RECORD TARGET a second time cancels.  During an active
+   recording, SELECT RECORD TARGET and all attempts to retarget are ignored.
+
+*** Jeff agree
+
+** DONE *A second START LOOP RECORDING while recording.*  Ignore it.  It neither
+   restarts the clear timer nor moves the punch-in boundary.
+
+*** Jeff agree
+
+** DONE *Playback toggled while overdubbing a populated slot.*  Toggle its audible
+   gate immediately.  Recording continues and loop playback is not fed back
+   into the overdub.  In KEEP-RUNNING mode the first playback trigger begins at
+   phase zero; later triggers join the advancing phase, and the START/toggle
+   orders otherwise commute.  In RESTART mode playback-on establishes phase
+   zero, so exact event order can change phase placement but never duration.
+
+*** Jeff : agree, with the caveat that
+we start at its latest phase only if its phase is advancing;
+if in the other mode, we restart from phase 0
+**** Codex : settled with the two modes
+In KEEP-RUNNING mode, the first playback trigger begins at phase zero and later
+triggers join the target's advancing phase.  In RESTART mode, playback starts
+at phase zero.  This changes the target's phase epoch but never its stored
+duration; the more detailed recording consequence is exposed under LOOP PHASE
+MODE above.
+
+** DONE *STOP LOOP RECORDING near a playback toggle on a populated slot.*  Committing
+   the overdub and toggling its audible gate are independent.  Process exact
+   timestamp/order.  STOP never changes phase or duration; playback-on changes
+   phase only in RESTART mode.  Their order can therefore affect the final
+   captured phase placement in RESTART mode, but never the stored duration.
+
+*** Jeff : smart!
+The duration needs to be determined by one of them, though.
+Let's have the record end button's timing do it, not the playback start button's.
+**** Codex : settled duration rule
+For an empty target, duration is exactly =STOP timestamp - START timestamp=;
+the pending playback request contributes neither endpoint.  For a populated
+target, the existing duration is immutable during overdub, so neither STOP nor
+playback-on changes it.
+
+** DONE *Playback requested while making an empty slot's first recording.*  The slot
+   has no completed material to play yet.  I recommend treating its touch as a
+   pending "play when complete" toggle.  On a normal STOP LOOP RECORDING it
+   begins at the newly closed boundary (phase zero); on a sub-threshold clear
+   the pending request is discarded.  This makes slot-touch just before versus
+   just after STOP LOOP RECORDING behave alike.
+
+*** Jeff agree
+
+** DONE *Clear while the target is sounding.*  The sub-threshold gesture wins over
+   every playback state: release its voices, cancel pending playback, clear it,
+   and leave it silent.  Other sounding slots are untouched.
+
+*** Jeff agree
+I guess I'll just mark it done if I agree henceforth.
+** DONE *Several playback-slot touches together.*  Apply every toggle independently;
+   multiple loops are allowed.  Each slot retains its own duration and phase.
+
+** DONE *Playback on at an event boundary or in the middle of a held interval.*
+   Reconstruct the slot's state at its current phase.  Start every voice whose
+   interval contains that phase (including wraparound voices and full-cycle
+   drones), and treat an onset exactly at that phase as on.  Playback off
+   releases all voices from that slot immediately.  A rapid off/on therefore
+   joins the current phase in KEEP-RUNNING mode or starts phase zero in RESTART
+   mode.
+
+*** Jef yes but those phase resumptions should not be sudden enough to cause clicks.
+Do some kind of fast ramp.
+**** Codex : settled click-free gate
+Every voice reconstructed when playback turns on enters through the rig's
+ordinary configured attack ramp, and every voice removed when playback turns
+off uses its ordinary release ramp.  There is no instantaneous amplitude step;
+with the current envelope those ramps begin with the existing 3 ms attack and
+50 ms release settings.
+** DONE *A live note edge at START or STOP LOOP RECORDING.*  Use monotonic timestamp
+   and event order with half-open recording bounds: an edge processed before
+   START is pre-existing, one at/after START is recorded, one processed through
+   STOP is included, and one after STOP is not.  There is no timing-grace window
+   or quantization.
+
+** DONE *Overdub lasting several target cycles.*  Fold each recorded voice interval
+    modulo the fixed duration.  Preserve every occurrence and same-pitch voice
+    identity; repeated performances on successive laps layer rather than
+    deduplicate.  A voice lasting at least one target cycle becomes a
+    loop-lifetime drone under the already settled rule.
+
+** DONE *Process restart.*  Duration and events persist, but a monotonic phase epoch
+    cannot.  Every populated slot therefore returns to dormant phase zero when
+    the program starts.  It does not begin advancing until its first trigger.
+    Preserving literal wall-clock phase across downtime would require persisting
+    civil time and seems musically surprising.
+
+*** Codex : settled by the new startup rules
+On each program launch, playback starts silent, loop slot 1 is the record
+target, LOOP PHASE MODE starts flashing in KEEP-RUNNING mode, and every
+populated slot waits at phase zero for its first trigger.  No phase or
+playback-gate state is reconstructed from wall time or persistence.
+
+** DONE *Octave editing.*  With the old selected-loop concept gone, I recommend that
+    loop-target octave corners permanently shift the /record target/.  They do
+    nothing when no record target exists.  The edit changes pitch, not duration
+    or phase, and glides that slot's live voices immediately if it is sounding.
+
+** DONE *START or STOP without the required state.*  START LOOP RECORDING with no
+    record target is a no-op.  STOP LOOP RECORDING when no recording is active
+    is also a no-op; in particular, it never stops playback.  Clearing leaves
+    the emptied slot as the record target, so the next valid START addresses it.
+
+*** Jeff : yes but begin each session with slot 1 as the target
+As a result there will always be a target.
+**** Codex : settled startup target
+Slot 1 means the first row-major loop cell, =(10,14)=.  It is the record target
+after startup whether empty or populated, starts silent, and therefore flashes.
+START LOOP RECORDING always has a target; STOP LOOP RECORDING with no active
+recording remains a no-op.
+** DONE *Selecting a new record target while an old one exists.*  Pressing SELECT
+    RECORD TARGET does not provisionally discard the old target: the old target
+    slot and the selection button both flash until a destination is touched.
+    Cancelling leaves the old target in place.  Choosing the old target again is
+    legal and still consumes the slot touch without toggling playback.  During
+    recording, SELECT RECORD TARGET is ignored, but ordinary slot touches remain
+    available as playback toggles.
+** DONE *Touching an empty slot outside its first recording.*  It is a no-op and
+    does not leave a hidden playback-on latch that could surprise us later.  The
+    only exception is the already proposed pending playback toggle while that
+    very slot's first recording is active.  Repeated touches during that first
+    recording toggle the pending state by parity: once means play on completion,
+    twice means remain silent.
+
+** DONE *A normal-length but silent first recording.*  If a normal STOP closes an
+    empty target's first recording with no resulting voice intervals, discard
+    the duration and phase and leave the slot empty.  It does not create a
+    silent timing shell.
+
+*** Jeff : nah, that's confusing
+If its loop, once recorded, has no events, erase the loop,
+treat the slot as still unpopulated.
+(I would have no way to sense the boundary --
+I need to hear something, my vision doesn't have good rhythmic timing.)
+
+**** Codex : settled -- no silent timing shells
+If a normal STOP closes an empty target's first recording and the resulting
+loop contains no voice intervals, the slot remains empty and any pending
+play-on-completion request is cancelled.  The empty slot remains the flashing
+record target.  An eventless overdub of an already populated slot is simply a
+no-op and preserves its prior contents.
+
+** DONE *Which monome's live sources enter a recording.*  I recommend local
+    ownership: a monome records its own fingers, accreted sustain, and recalled
+    chord voices.  It does not record non-loop gestures from the other monome,
+    and no loop-playback voice from either monome enters either recorder.  Live
+    source voices are already audible, so capture itself emits no extra
+    monitoring voice; an overdub is not heard a second time until playback later
+    reaches the stored occurrence.
+
+** DONE *Two slots emit the same pitch.*  Their playback voices remain independently
+    owned by slot and event occurrence.  Turning off or clearing one slot cannot
+    release the same-pitch voice of another slot.  This is the playback analogue
+    of the already settled same-pitch multiplicity inside one recording.
+
+*** Jeff : yes but
+every time a new voice would appear at the same pitch,
+choose a random float uniformly from [-4,4], square it,
+and deviate the newcomer's pitch by that many cents.
+On a tie (started literally at the same time), pick one at random.
+
+**** DONE Codex : superseded random proposal and scope checks
+For voices with the same nominal pitch, the incumbent keeps its current tuning.
+Each newcomer draws =u ~ Uniform[-4,4]= and keeps an offset of =u^2= cents for
+that voice's lifetime.  The draw is performance state, not stored in a chord or
+loop, so a later attack draws again.  If several voices begin on the same input
+timestamp, randomly order that group: the first is the incumbent and each later
+voice is a newcomer.  Voice ownership remains independent, so one voice ending
+never ends or retunes another.
+
+Two consequences need to be explicit:
+
+- Squaring removes the sign, so the requested offset is always sharp, in
+  =[0,16]= cents, and is concentrated toward zero.  If you intended a symmetric
+  result, the formula would instead be =sign(u) * u^2=.
+- Because you wrote "every time a new voice," I read this as one global rule
+  across fingered, sustained, chord, and loop voices sharing a nominal pitch.
+  That supersedes the special fixed =retrigger_tail_detune_cents = 6= behavior:
+  on re-fingering a sustained pitch, the old tail remains the incumbent and the
+  new finger is the randomly detuned newcomer.  If you intended this only for
+  collisions among loop-playback voices, the existing six-cent retrigger-tail
+  rule instead remains separate.
+
+I would expose the numeric 4 as a rig parameter rather than hard-code it.  The
+literal always-sharp formula and global-versus-loop-only scope are the two parts
+that still need confirmation.
+
+***** Jeff : ahh it's complicated
+The point is for the voices to pack efficiently so that they don't
+step on each other. The best solution I can think of is this:
+Priority-order the deviation amounts: [0, +4, -4, +8, -8, ...] to infinity.
+Each new voice at the same pitch takes the first deviation value in that list
+that is not already occupied.
+Thus if voice A is sounding pitch P,
+and B starts before A ends, B gets deviation +4.
+If A then ends, and then C starts, C gets deviation 0.
+If D then starts while B and C continue, D gets -4.
+ETc.
+
+The Planck distance in that series, 4 cents,
+should be a configurable parameter.
+Call it 'crowded_pitch_planck_deviation',
+and indicate in the comment that it's in cents.
+
+Actually let's start with 5 cents, not 4.
+
+Yes, let's do this for all kinds of voices --
+fingered, sustained, retrieved chord, loop.
+
+****** Codex : settled crowded-pitch allocator
+Group currently live voices by their exact nominal pitch, before any crowded
+pitch offset.  With =p = crowded_pitch_planck_deviation=, assign a new voice the
+first unoccupied member of
+
+#+begin_example
+0, +p, -p, +2p, -2p, +3p, -3p, ...
+#+end_example
+
+The parameter starts at 5, and its rig comment states explicitly that its unit
+is cents.  The assignment applies globally to fingered, sustained, recalled
+chord, and loop voices.  It is chosen at voice creation, held for that voice's
+lifetime, and not stored in chord or loop data.  When a voice ends, its offset
+becomes available immediately, but already sounding voices are never reshuffled
+or retuned to fill the gap.  Voices born on the same input timestamp are
+randomly ordered before allocation, retaining the earlier tie rule.
+
+This supersedes both the squared-random proposal and the special fixed
+=retrigger_tail_detune_cents = 6= behavior.  On re-fingering a sustained pitch,
+for example, the outgoing incumbent keeps its allocation and the new finger
+takes the first free one.
+
+** DONE *Interruption during recording or persistence.*  Build a first recording or
+    overdub in temporary state and atomically publish it at a normal STOP LOOP
+    RECORDING.  If the process dies first, a populated target retains its old
+    contents and an empty target remains empty.  A completed clear atomically
+    removes the persisted slot.  Playback may use the in-memory committed state
+    while it is being overdubbed; it must never see a half-written event list.
+
+** DONE *The clear timing boundary.*  Measure from the accepted START event to the
+    accepted STOP event with the monotonic input timestamps, not wall time or
+    delayed audio callbacks.  Make the threshold a rig parameter (for example
+    =loop_clear_tap_ms=) whose initial value is 300, and retain the strict
+    =elapsed < threshold= rule.
+
+** DONE *Octave editing during capture.*  Permanently shifting the target midway
+    through an overdub would leave an obscure mixture of shifted old events and
+    differently treated new events.  I recommend ignoring loop-target octave
+    corners while recording.  While SELECT RECORD TARGET is merely waiting for
+    a new slot, the corners still address the old record target because it has
+    not yet been replaced.
+
+** DONE *Playback-on exactly at a cycle event.*  Perform the gate change and state
+    reconstruction once at a single monotonic timestamp.  An onset at that phase
+    is included, but the scheduler must not also deliver it as a second attack.
+    This is an implementation invariant rather than a new musical choice.
+
+** DONE Codex : the old eight choices reconciled
+Seven are settled by the answers above; the old free-running-only phase choice
+is superseded by LOOP PHASE MODE.
+
+*** DONE Jeff interrupts
+Are any of these already cleared by the above?
+
+**** Codex : yes
+The reconciled results follow.
+
+*** DONE SELECT RECORD TARGET remains at =(9,15)=, slot 1 is the startup
+record target, the target remains after recording or clearing, and a second
+SELECT RECORD TARGET press cancels only the pending retarget operation.
+
+*** DONE An empty target gets a first recording; a populated target gets an
+overdub whether sounding or silent.
+
+*** DONE The former always-free-running choice is replaced by per-monome LOOP
+PHASE MODE at =(15,15)=: flashing KEEP-RUNNING or black RESTART, initially
+KEEP-RUNNING.  Only the effect of recording on a never-triggered clock remains
+a granular TODO child in that earlier branch.
+
+*** DONE During an empty target's first recording, slot touches toggle pending
+play-on-completion.  At every other time an empty slot touch is a no-op.
+
+*** DONE Loop-target octave corners permanently edit the record target and are
+ignored during active recording.
+
+*** DONE Neither recorder captures playback from any loop slot on either
+monome.
+
+*** DONE Each recorder captures only its own monome's finger, sustain, and
+recalled-chord source voices.
+
+*** DONE A normal-length first recording with no stored voice intervals leaves
+the slot empty; it does not create a silent timing shell.
+
+** DONE Codex : prior issues reconciled
+
+*** DONE Jeff interrupts
+These are covered above, yes?
+
+**** Codex : yes
+The mode-transition rule and crowded-pitch allocator are both settled above.
+The distinct recording-versus-first-trigger question is marked TODO directly
+under LOOP PHASE MODE.
+
+*** DONE The LOOP PHASE MODE transition behavior is settled by the
+KEEP-RUNNING correction above.
+
+*** DONE The =u^2= proposal is superseded by the global priority allocator with
+configurable =crowded_pitch_planck_deviation=, initially 5 cents.
+** Codex : latest loop layout and control model
+
+#+begin_example
+       chord half, x=0..7                  loop half, x=8..15
+y=14   C C C C C C C ACCRETE              CLEAR-SUSTAIN START-RECORD L L L L L L
+y=15   C C C C C C CHORD-MODE ARM-CHORD   STOP  SELECT-RECORD L L L L L PHASE-MODE
+#+end_example
+
+There are thirteen chord slots and now eleven loop slots.  Loop slot 1 is
+=(10,14)= and is the record target at startup.  A normal populated-slot touch
+toggles only that slot's playback; any number may sound.  SELECT RECORD TARGET
+causes the next slot touch to retarget recording without changing playback.
+START LOOP RECORDING and STOP LOOP RECORDING control recording only.
+
+An empty target's duration is =STOP - START=.  A populated target is overdubbed
+without changing its duration.  A sub-threshold START/STOP clears the target;
+a normal first take containing no intervals also leaves it empty.  Playback
+never feeds either recorder.  Reconstructed voices attack through the ordinary
+envelope and stopped voices release through it, so slot gating has no hard
+amplitude discontinuity.
+
+The PHASE MODE corner flashes in KEEP-RUNNING and is black in RESTART.  Every
+slot starts dormant at phase zero.  KEEP-RUNNING preserves an advancing phase
+after the first trigger when playback is later toggled off; RESTART returns it
+to phase zero.  Stored loop contents persist, but playback starts silent and
+phase returns to dormant zero on every program launch.

@@ -1,5 +1,8 @@
 #+title: monomes, two timbre layers, sustain, and momentary chords -- note/voice model
 
+Ducked for now -- trying 5 cents deviation every time a new voice joins a pitch;
+might sound cool.
+
 * Scope and the central distinction
 
 This describes the note model actually implemented for
