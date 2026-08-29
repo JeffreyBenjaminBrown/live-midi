@@ -1,0 +1,27 @@
+#+title: README for AI collaborators
+
+* Start here
+Read [[file:ORIENTATION.org][ORIENTATION.org]] first.  It is the canonical, maintained map of this
+repository: the worktree/container arrangement, which code is live versus legacy,
+the active and previous instruments, build and test commands, hardware facts, and
+links into the detailed documentation.
+
+Then follow whichever of these its task calls for:
+
+- [[file:rigs/README.org][rigs/README.org]] describes the TOML-in-Org rig format and the runtime data
+  model.  A rig-specific =rigs/<name>_readme.org= is its operating and layout
+  reference when one exists.
+- [[file:architecture.org][architecture.org]] describes the Docker, host, MIDI, and audio architecture.
+- [[file:MOCK-MONOME.org][MOCK-MONOME.org]] explains hardware-free monome/device-layer work.
+- [[file:how-to-parallelize-dev.org][how-to-parallelize-dev.org]] explains the bare repository and parallel worktrees.
+- [[file:PITFALLS.org][PITFALLS.org]] and the =learnings/= directory record known traps.
+- Active design work is under =TODO/=; completed design history is under
+  =TODO/DONE/=.  For a sequence of numbered design documents, later plans
+  supersede earlier plans unless its local README says otherwise.
+
+The older [[file:README.org][README.org]] is muddled: it mixes a few user operations, architecture
+notes, and AI/developer reminders, so it is not exactly a README for either kind
+of reader.  Treat it as supplementary historical/operational notes, not as the
+orientation authority.
+
+For a short human-facing run index, see [[file:README_USER.org][README_USER.org]].

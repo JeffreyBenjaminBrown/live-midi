@@ -1,0 +1,170 @@
+#+title: one monome, two timbre states, sustain/accrete -- discussion
+
+This responds to =1_vision.org=.  I read =ORIENTATION.org=, =rigs/README.org=,
+the current two-edogrid rig and its reference, the chord-storage-v2 discussion
+and plan, and the live surfaces runtime (especially =keys.rs=, =grid.rs=,
+=settings.rs=, =synth.rs=, =chords.rs=, and =chords_persist.rs=).
+
+Verdict up front: nearly all of the machinery exists, but this is not just a
+one-monome rearrangement of the current rig.  The vision changes the chord
+model in musically important ways: chord voices stop retaining their captured
+timbre and loudness, the chord controls apparently shrink from nine slots to
+eight, and octave shift becomes a temporary per-slot chord transformation.
+Those choices are coherent, but a plan would have to guess at the layout and
+at several interaction rules.  The TODO headings below are the decisions I
+still need from Jeff before writing that plan.
+
+* What already exists and can be reused
+
+- A whole-monome EDO play surface, a four-cell timbre selector, the shift pad,
+  momentary accretion, sustain clear, and chord storage are all live rig window
+  kinds.  This work should compose those pieces rather than revive the older
+  =sawwave/state.rs= chord implementation.
+- The selector already has the useful split behavior that changing timbre
+  applies live to an edit selection when there is one, with a short crossfade;
+  otherwise it changes future notes.  The new two-target switch is a different
+  split (piano layer versus chord layer), but the live retimbre path exists.
+- The synth already separates a timbre slot's =gain=, a per-grid volume-fader
+  gain, and an expression-pedal gain.  It can therefore change this new control
+  without baking the EX-P or master gain into it.
+- A horizontal =volume_fader= window exists, but it maps absolute positions
+  over a fixed 30 dB range.  The proposed four buttons are relative dB steps,
+  so they need a small new window/control kind rather than a differently sized
+  existing fader.
+- Chord slots already persist atomically under =state/chord-slots/=.  Today a
+  stored voice snapshot includes pitch, timbre, loudness, pulse, and phase, and
+  different slots can sound at once.  The new shared chord timbre/volume rule
+  deliberately supersedes part of that format/recall behavior.
+- Current shift-pad octave corners retune the entire edit selection whenever
+  one exists; otherwise they scroll the visible register.  Routing them to a
+  chosen chord slot is new, but the in-place octave glide exists.
+- Square and diamond dances are optional presentation behavior, not required
+  for voices to sound or be edited; omitting them is straightforward.
+
+* TODO 1. Which concrete rig and hardware should this be?
+
+The directory name says “one monome,” but the vision does not name the new rig,
+which physical grid it selects, its tuning, sink, SoftStep/EX-P participation,
+or whether it is derived from one half of
+=2-edogrids_ss-accrete_ss-pulse=.  These determine the rig file and even which
+controls are available off-grid.
+
+Please specify the desired rig name and the starting hardware: which monome,
+which EDO/layout, and whether any SoftStep or expression pedal is part of it.
+
+** TODO A new rig! Call it monomes_two-timbres_sustain_chords/
+It shouldn't matter which monome; detect either one.
+If there are two have them both do the same thing,
+but in separate spaces for fingered voices, sustain (accrete),
+and stored chords.
+
+No pedals.
+
+Tuning should be configurable but to start:
+110 Hz
+41 edo
+pitch = (+8)x + (+1)y + some constant
+
+* TODO 2. The physical layout names two different things in the same corners
+
+The vision puts the timbre buttons and four volume deltas at the top-right, and
+also puts the 2x5 chord block at the top-right.  At bottom-left it puts clear +
+momentary accrete, and also “the usual shift buttons.”  These cannot literally
+occupy the same cells unless one set is an overlay selected by a mode, which is
+not otherwise described.
+
+Please give rectangles or a little 16x16 sketch.  At minimum I need to know:
+
+- where the four timbre cells and four volume-delta cells go, and whether they
+  are two horizontal rows in the order described;
+- where the 2x5 chord block goes;
+- where clear, momentary accrete, and the shift pad go.
+
+* TODO 3. Confirm that this is eight chord slots, and define their order
+
+In a 2x5 block, reserving the top-left cell for the target switch and the
+top-right cell for ARM leaves eight slots.  The existing block instead has ARM
+at bottom-left and nine slots, numbered top row 1..5 then bottom row 6..9.
+
+Is eight the intended count?  If so, how are they numbered across the remaining
+cells, and should this rig use a new eight-slot persistence file rather than try
+to read an existing nine-slot file?
+
+* TODO 4. Precisely what the two timbre/volume states own
+
+I read the intended targets as:
+
+1. the piano layer: fingered notes plus ordinary sustained/accreted notes;
+2. the chord layer: every voice recalled from any chord slot.
+
+I also read “there are just two states” as each target having one selected
+timbre and one loudness value, with the four delta buttons changing that
+target's loudness immediately and cumulatively.  Two details remain unclear:
+
+- Does selecting a timbre or changing volume immediately retimbre/rescale all
+  voices currently sounding in the chosen layer, as well as future voices?
+- Are the loudness values one per layer, or one per timbre slot within each
+  layer?  “Changes the volume only of timbre currently in use” could mean
+  either “the selected layer's current sound” or four remembered gains per
+  layer.  What are the initial gains and the permitted min/max?
+
+The proposed =volume_coarse = 12= and =volume_fine = 2= are naturally dB
+amounts, producing =[-coarse, -fine, +fine, +coarse]=.  Please confirm they are
+dB, not linear gain units.
+
+* TODO 5. What a saved chord retains under the new global chord state
+
+Current chord snapshots retain timbre and settled loudness per voice.  The
+vision says they should not: recalled chords instead use the one global chord
+timbre and volume.  I assume slots should still retain pitch, phase, and
+factored-pulse data, and that changing the chord target's controls transforms
+all currently ringing chord voices without modifying slot contents.
+
+Please confirm that assumption.  In particular, should saving a currently
+ringing chord into another slot discard its present chord-layer timbre and
+loudness, while preserving its pitches/pulse/phase?
+
+* TODO 6. Which chord receives an octave shift when slots can layer?
+
+The current chord slots are toggles and several can ring simultaneously; there
+is no navigated “current slot.”  The vision refers to “the active stored chord”
+and to navigating away from it, which suggests a new selected-slot concept.
+
+What selects the octave-shift target?
+
+- the most recently pressed sounding slot;
+- exactly one slot may sound at a time;
+- a slot remains selected even while silent;
+- or some other rule?
+
+Also, when the shifted chord is saved “the usual way,” is the intended gesture
+ARM then the same slot (overwrite it with the shifted pitches), or ARM then any
+destination slot?  Until saved, should toggling the slot off and on restore its
+stored octave, or keep its temporary shift until another slot is selected?
+
+* TODO 7. Interaction with edit mode
+
+The vision removes the dances but does not say whether it removes per-voice edit
+mode itself.  This matters because the current timbre selector edits selected
+voices instead of changing the future-note timbre, and the shift-pad corners
+retune the edit selection instead of scrolling.
+
+Should this rig have per-voice edit mode at all?  If yes, which precedence wins
+when an edit selection exists: the new layer target for timbre/volume and chord
+octave shift, or the existing edit-selection behavior?
+
+* Settled unless Jeff says otherwise
+
+- The target switch begins off, so the piano layer is selected at startup.
+- Clear ends ordinary sustain and all live chord voices, matching the current
+  widened sustain-clear behavior.
+- Accrete is momentary only: key-down captures currently fingered piano-layer
+  notes into sustain; key-up merely ends capture mode.
+- Timbre changes should crossfade and volume changes should use the existing
+  gain slew so neither operation clicks.
+- “No square dance, no diamond dance” affects only LED animation; sounding
+  notes and overlay controls still paint normally.
+
+Once the seven TODO decisions are answered, the plan can be concrete rather
+than encoding accidental assumptions into the rig, persistence format, and
+interaction tests.

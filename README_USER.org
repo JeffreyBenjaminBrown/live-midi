@@ -1,0 +1,131 @@
+#+title: Running the instruments and tools
+
+* Maybe see also [[file:README.org][README.org]], but it's muddled.
+It mixes user operations with architecture and
+AI/developer notes, so it is not exactly a README
+for either kind of reader.
+Use this file for commands,
+and the rig readmes it links to for details.
+
+* things this repo can do
+Run Rust commands from the repository root,
+inside the Docker container, unless a command says *host*.
+Most synth and sampler rigs should run through =pw-jack=
+so they share the host's PipeWire audio device.
+Stop a runtime with Ctrl-C.
+
+** The current two-grid instruments
+
+The daily instrument has two variants.  They are identical except that the newer
+SoftStep controls either the factored pulse or the drumkit:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-pulse
+pw-jack cargo run --bin midi_pulse -- 2-edogrids_ss-accrete_ss-drums
+#+end_src
+
+Read [[file:rigs/2-edogrids_ss-accrete_ss-pulse_readme.org][the shared edogrids manual]] for setup, grid layout, sustain/accretion,
+editing, pedals, pulse, and chord storage.  Read [[file:rigs/2-edogrids_ss-accrete_ss-drums_readme.org][the drums supplement]] for the
+newer board's drum controls.
+
+The previous two-grid drum instrument still runs:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- 2-monomes_kmss-drums
+#+end_src
+
+Its full reference is [[file:rigs/2-monomes_kmss-drums_readme.org][rigs/2-monomes_kmss-drums_readme.org]].
+
+** Looper instruments
+
+Both the plain 58-EDO looper and its timbre-editing version need two 16x16 grids:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1
+pw-jack cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre
+#+end_src
+
+Read [[file:rigs/monome-looper-58-8-1_readme.org][the plain looper manual]] or [[file:rigs/monome-looper-58-8-1-timbre_readme.org][the timbre looper manual]].
+
+** Piano-to-MIDI and edo-un12 rigs
+
+These produce MIDI for Reaper/Pianoteq rather than in-code audio.  Start a rig in
+the container, then run the matching connection command on the host (or in the
+container):
+
+#+begin_src sh
+cargo run --bin midi_pulse -- edo-un12_58-8-1_snap_save-scales
+./tools/connect-midi.sh edo-un12_58-8-1_snap_save-scales
+#+end_src
+
+Replace that name with another =edo-un12_*.org= filename from =rigs/=, without
+the extension.  [[file:rigs/edo-un12_58-8-1_snap_save-scales_readme.org][The edo-un12 manual]] covers the whole family, including required
+keyboard/Reaper wiring, two-input setup, sustain pedals, recording variants, and
+manual recovery.  In particular, its full setup may also require
+=./make-2-midi-inputs.sh= and the expression-pedal bridge described below.
+
+The simpler =edo12n-piano=, =edo12n-piano-monome=, and =monome-edo-midi_*= rigs
+use the same general pattern:
+
+#+begin_src sh
+cargo run --bin midi_pulse -- RIG_NAME
+./tools/connect-midi.sh RIG_NAME
+#+end_src
+
+Their rig files are the most specific documentation; [[file:rigs/README.org][rigs/README.org]] explains
+how to read them.
+
+** Other self-contained rigs
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- kmss-drumkit
+pw-jack cargo run --bin midi_pulse -- monome-edo-sawwave
+#+end_src
+
+Read [[file:rigs/kmss-drumkit_readme.org][the KMSS drumkit manual]] for its mapping.  The heavily commented
+=rigs/monome-edo-sawwave.org= is the reference for the single-grid synth.
+Generally, any rig in =rigs/= can be launched as
+=cargo run --bin midi_pulse -- RIG_NAME=; add =pw-jack= when it has an audio sink.
+
+** Hardware-free monome run
+
+Use two terminals:
+
+#+begin_src sh
+# terminal A
+cargo run --bin mock_monome -- --detector-port 17002
+
+# terminal B (silent; omit MIDI_PULSE_NO_AUDIO=1 to hear it)
+MIDI_PULSE_NO_AUDIO=1 MIDI_PULSE_DETECTOR_PORT=17002 \
+  cargo run --bin midi_pulse -- monome-looper-58-8-1-timbre-mock
+#+end_src
+
+[[file:MOCK-MONOME.org][MOCK-MONOME.org]] documents the interactive commands, alternate mock rig, port
+isolation, and automated device-layer tests.
+
+** Pedals, routing, and diagnostics
+
+- On the *host*, run =tools/pedals/bridge.sh= to expose the two EX-P pedals as
+  the virtual MIDI port =MPC-20 pedals=.  [[file:tools/pedals/README.org][tools/pedals/README.org]] has setup,
+  calibration, monitoring, and USB troubleshooting details.
+- Run =cargo run --bin pedal_monitor= to see the expression-pedal values received
+  by the Rust device layer.
+- Run =cargo run --bin softstep_meter= to inspect SoftStep input.  Its background
+  and display notes are in [[file:buried/midi_pulse/softstep_meter.org][buried/midi_pulse/softstep_meter.org]].
+- Run =./tools/connect-midi.sh RIG_NAME= to connect a rig's declared MIDI ports
+  and Reaper audio.  Rerun it after changing the audio jack or restarting a rig.
+- The older standalone probes and demos live under =tools/=.  Their focused
+  instructions are beside them, especially
+  [[file:tools/demos-and-explorations/monome/for-jeff-to-run.org][tools/demos-and-explorations/monome/for-jeff-to-run.org]].
+
+** Tests
+
+These need no hardware:
+
+#+begin_src sh
+cargo test -p edo_surface
+cargo test --workspace
+#+end_src
+
+Read [[file:ORIENTATION.org][ORIENTATION.org]] for the code map and operational caveats, or
+[[file:architecture.org][architecture.org]] when the question is about Docker, host MIDI, or audio routing.
