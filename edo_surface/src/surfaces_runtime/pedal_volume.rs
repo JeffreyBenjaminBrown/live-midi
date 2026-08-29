@@ -2,6 +2,7 @@
 //! that polls the MPC-20 bridge and aims each mapped grid's gain at it
 //! (`expression_pedal_loop`).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -9,11 +10,44 @@ use std::time::Duration;
 
 use crate::expression_pedals::NUM_PEDALS;
 
-use crate::types::VoiceMap;
+use crate::types::{VoiceMap, VoiceSource};
 
 use super::pedal_slide::VolumeReturn;
+use super::ring::{GridRing, Reason};
 use super::synth;
 use super::{Live, STOP};
+
+/// This grid's edit selection as the pedal-volume path needs it: the edit-mode pitches
+/// and the edit-flagged chord voices' keys, snapshotted under the ring lock. Empty when
+/// nothing is edited (the common case), in which case the pedal is uniform.
+struct EditSelection {
+  pitches: HashSet<i32>,
+  chord_keys: HashSet<VoiceSource>,
+}
+
+impl EditSelection {
+  fn is_empty(&self) -> bool {
+    self.pitches.is_empty() && self.chord_keys.is_empty()
+  }
+
+  /// Snapshot grid `grid`'s edit selection from the ring.
+  fn snapshot(ring: &Arc<Mutex<Vec<GridRing>>>, grid: usize) -> EditSelection {
+    let rings = ring.lock().unwrap_or_else(|e| e.into_inner());
+    match rings.get(grid) {
+      Some(gr) => EditSelection {
+        pitches: gr.store.iter(Reason::Edit).collect(),
+        chord_keys: gr
+          .chord
+          .live
+          .iter()
+          .filter(|(_, v)| v.edited)
+          .map(|(seq, _)| VoiceSource::SurfaceChord { grid, seq: *seq })
+          .collect(),
+      },
+      None => EditSelection { pitches: HashSet::new(), chord_keys: HashSet::new() },
+    }
+  }
+}
 
 /// One volume pedal's taper: the standard fader law, exponential with a linear
 /// splice at the heel (rig `curve_initial_lin_frac` / `curve_remainder_exp_db`).
@@ -91,12 +125,15 @@ pub(super) fn apply_pedal_gain(
 /// the drives. The reverted build instead drove voices from here while the grid thread
 /// re-keyed them, which is the race that broke it (6_plan.org's ranked cause 1); with
 /// the engine unreachable from this thread, that class of bug is no longer expressible.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
   pedal_slide_on: Arc<Vec<AtomicBool>>,
   pedal_slide_frac: Arc<Vec<AtomicU32>>,
+  ring: Arc<Mutex<Vec<GridRing>>>,
+  held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
 ) {
   use crate::expression_pedals::{PedalReader, DEFAULT_PORT};
   let reader = match PedalReader::connect(DEFAULT_PORT) {
@@ -179,7 +216,34 @@ pub(super) fn expression_pedal_loop(
         continue;
       }
       last[pedal] = p.norm;
-      apply_pedal_gain(&voices, &pedal_gains, grid, curve.gain(p.norm));
+      let gain = curve.gain(p.norm);
+      // Edit-mode targeting (queues/branch-3.org): while this grid has an edit
+      // selection, the pedal drives ONLY the edited voices, recording each a per-voice
+      // trim relative to the grid's frozen base (`pedal_gains[grid]`). With nothing
+      // edited it is the plain uniform pedal, which also carries each voice's stored
+      // trim (`set_grid_pedal_gain` multiplies `pedal_scale`).
+      let selection = EditSelection::snapshot(&ring, grid);
+      if selection.is_empty() {
+        apply_pedal_gain(&voices, &pedal_gains, grid, gain);
+      } else {
+        // Freeze the base (do NOT write `pedal_gains[grid]`); trim the edited voices
+        // against it.
+        let base = pedal_gains
+          .lock()
+          .unwrap_or_else(|e| e.into_inner())
+          .get(grid)
+          .copied()
+          .unwrap_or(1.0);
+        let held = held_all
+          .lock()
+          .unwrap_or_else(|e| e.into_inner())
+          .get(grid)
+          .cloned()
+          .unwrap_or_default();
+        synth::apply_edit_pedal_scale(
+          &voices, grid, base, gain, &selection.pitches, &held, &selection.chord_keys,
+        );
+      }
     }
     thread::sleep(Duration::from_millis(10));
   }
@@ -193,6 +257,47 @@ mod tests {
   use crate::surfaces_runtime::ring::GridRing;
   use crate::types::{Timbre, VoiceSource};
   use std::collections::HashMap;
+
+  /// The pedal thread's edit-detection: nothing edited -> empty (the pedal stays
+  /// uniform); an edit-mode pitch or an edit-flagged chord voice -> the snapshot
+  /// carries it (the pedal targets only those). This is what routes each pedal move
+  /// between the uniform path and the edit path.
+  #[test]
+  fn the_edit_selection_snapshot_sees_edited_pitches_and_chord_voices() {
+    use crate::surfaces_runtime::ring::Reason;
+    let ring: Arc<Mutex<Vec<GridRing>>> =
+      Arc::new(Mutex::new(vec![GridRing::new(AccreteState::new())]));
+
+    // Nothing edited: empty, so the pedal is uniform.
+    assert!(EditSelection::snapshot(&ring, 0).is_empty(), "no selection -> uniform pedal");
+
+    // An edited piano pitch and an edit-flagged chord voice.
+    let chord_seq = {
+      let mut rings = ring.lock().unwrap();
+      let gr = &mut rings[0];
+      gr.store.add(Reason::Edit, 42);
+      let spawned = {
+        gr.chord.save(0, StoredChord {
+          voices: vec![StoredVoice {
+            pitch: 10, timbre: Timbre::default(), fader_gain: 1.0, pedal_gain: 1.0,
+            osc_phase: 0.0, pulse_factor: 0.0, pulse_phase: 0.0,
+          }],
+        });
+        gr.chord.begin_recall(0)
+      };
+      let seq = spawned[0].0;
+      gr.chord.live.get_mut(&seq).unwrap().edited = true;
+      seq
+    };
+
+    let sel = EditSelection::snapshot(&ring, 0);
+    assert!(!sel.is_empty(), "an edit selection -> the pedal targets it");
+    assert!(sel.pitches.contains(&42), "the edited pitch");
+    assert!(
+      sel.chord_keys.contains(&VoiceSource::SurfaceChord { grid: 0, seq: chord_seq }),
+      "and the edit-flagged chord voice",
+    );
+  }
 
   /// The UNIFORM pedal (queues/branch-2.org): one pedal reading re-aims every
   /// voice on the grid, chord voices included -- edited or not. A recalled chord

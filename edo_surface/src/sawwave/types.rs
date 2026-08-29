@@ -251,6 +251,15 @@ pub struct VoiceState {
   // runtime.
   pub grid_gain:        f32,
   pub grid_gain_target: f32,
+  // Per-voice RELATIVE trim on the pedal-volume component (the surfaces runtime's
+  // edit-mode pedal targeting, queues/branch-3.org "target volume changes at
+  // edit-mode voices"): the applied pedal gain is `base * pedal_scale`, where `base`
+  // is the grid's shared pedal gain. 1.0 = untrimmed (the overwhelmingly common case,
+  // and every non-surfaces runtime). Editing a voice and moving the pedal sets this so
+  // the voice sits at the pedal's value while the rest of the grid holds; the trim then
+  // RIDES the uniform pedal afterward. It folds into `grid_gain_target` (not a separate
+  // render input), so the render is unchanged: `grid_gain` still slews to the target.
+  pub pedal_scale:      f32,
   // Pedal-slide flight (the surfaces runtime's `pedal_slide_toggle`,
   // TODO/pedal-slide): while a grid's pedal slide is driving this voice, `freq`
   // chases `slide_freq_target` per sample with a one-pole smoother

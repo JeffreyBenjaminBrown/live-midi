@@ -411,18 +411,26 @@ fn run(
     Some(Arc::new(PersistTarget { path, monome_ids }))
   };
 
-  // The EX-P volume-pedal thread. The pedal is UNIFORM (queues/branch-2.org): a
-  // CC re-aims every voice on the grid, chord voices included, through
-  // `set_grid_pedal_gain` -- so the thread needs no ring access. `no_audio` gates
-  // it like the cpal stream -- a headless/mock run must not open MIDI.
+  // The EX-P volume-pedal thread. The pedal is uniform UNTIL a grid has an edit
+  // selection, when it targets only the edited voices and records a per-voice trim
+  // that then rides the uniform pedal (queues/branch-3.org "target volume changes at
+  // edit-mode voices"). Seeing the edit selection is why the thread now takes the ring
+  // + held map -- the uniform-pedal ruling that said it needed neither is what this
+  // overturns. `no_audio` gates it like the cpal stream -- a headless/mock run must not
+  // open MIDI.
   if !s.expression_pedals.is_empty() && !no_audio {
     let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
     let gains = Arc::clone(&pedal_gains);
     let slide_on = Arc::clone(&pedal_slide_on);
     let slide_frac = Arc::clone(&pedal_slide_frac);
+    let ring_for_pedals = Arc::clone(&ring);
+    let held_for_pedals = Arc::clone(&held_all);
     thread::spawn(move || {
-      expression_pedal_loop(live_for_pedals, voices_for_pedals, gains, slide_on, slide_frac)
+      expression_pedal_loop(
+        live_for_pedals, voices_for_pedals, gains, slide_on, slide_frac,
+        ring_for_pedals, held_for_pedals,
+      )
     });
   }
 

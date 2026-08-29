@@ -330,7 +330,7 @@ impl SurfaceSink {
         timbre,
         fader_gain: fader,
         grid_gain: pedal,
-        grid_gain_target: pedal, slide_freq_target: 0.0,
+        grid_gain_target: pedal, pedal_scale: 1.0, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -669,7 +669,7 @@ impl SurfaceSink {
         // `grid_gain` starts level with it so there is no slew-in from the pedal's
         // ordinary volume.
         grid_gain: 0.0,
-        grid_gain_target: 0.0,
+        grid_gain_target: 0.0, pedal_scale: 1.0,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -736,7 +736,7 @@ impl SurfaceSink {
         timbre: v.timbre,
         fader_gain: v.fader_gain,
         grid_gain: v.pedal_gain,
-        grid_gain_target: v.pedal_gain, slide_freq_target: 0.0,
+        grid_gain_target: v.pedal_gain, pedal_scale: 1.0, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -842,6 +842,68 @@ pub fn set_grid_pedal_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32
       _ => continue,
     };
     if voice_grid == grid {
+      // `gain` is the grid's shared pedal BASE; each voice's applied target is
+      // `base * pedal_scale`, so a trim dialed in via edit mode (queues/branch-3.org)
+      // rides the uniform pedal. `pedal_scale` is 1.0 for the vast majority, making
+      // this exactly the old uniform behaviour for them.
+      state.grid_gain_target = (gain * state.pedal_scale).clamp(0.0, MAX_PEDAL_GAIN);
+    }
+  }
+}
+
+/// The largest pedal-driven gain a trimmed voice may reach, so a trim set against a
+/// near-silent grid (a tiny `base`, giving a huge `pedal_scale`) cannot explode when
+/// the grid is later turned up. 8x is +18 dB over the base -- generous headroom for
+/// "make this voice stand out" without runaway.
+pub(super) const MAX_PEDAL_GAIN: f32 = 8.0;
+
+/// The floor `base` is held to when deriving a trim, so editing while the grid pedal
+/// sits at the heel does not divide by ~0. 0.02 is just under the volume strip's -30 dB
+/// bottom.
+const MIN_PEDAL_BASE: f32 = 0.02;
+
+/// The EDIT-MODE pedal path (queues/branch-3.org "target volume changes at edit-mode
+/// voices"): while a grid has an edit selection, the pedal drives ONLY the edited
+/// voices, and each records a per-voice `pedal_scale` (relative to the grid's frozen
+/// `base`) that survives into the uniform pedal afterward.
+///
+/// `edited` are the edit-mode pitches; `held` the grid's cell->pitch map (a fingered
+/// edited voice is cell-keyed, so its pitch is found here); `chord_keys` the
+/// edit-flagged chord voices' keys. This is the same selection the factored-pulse
+/// multipliers use (`scale_factored_pulse_rate`), so hands and feet agree on who is
+/// edited. Non-edited voices are left exactly as they were -- the pedal does not touch
+/// them while editing.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_edit_pedal_scale(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  base: f32,
+  gain: f32,
+  edited: &HashSet<i32>,
+  held: &HashMap<(i32, i32), i32>,
+  chord_keys: &HashSet<VoiceSource>,
+) {
+  if !gain.is_finite() {
+    return;
+  }
+  let gain = gain.clamp(0.0, 1.0);
+  // The relative trim: where the pedal now sits, as a multiple of the grid's frozen
+  // base. Capped so a near-silent base cannot store a runaway scale.
+  let scale = (gain / base.max(MIN_PEDAL_BASE)).clamp(0.0, MAX_PEDAL_GAIN);
+  // Fingered edited voices, by cell key (their pitch lives in `held`, not the key).
+  let cells: HashSet<VoiceSource> = held
+    .iter()
+    .filter(|(_, pitch)| edited.contains(pitch))
+    .map(|(cell, _)| voice_key(grid, *cell))
+    .collect();
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    let wanted = cells.contains(src)
+      || chord_keys.contains(src)
+      || matches!(src, VoiceSource::SurfaceDrone { grid: g, pitch }
+                  if *g == grid && edited.contains(pitch));
+    if wanted {
+      state.pedal_scale = scale;
       state.grid_gain_target = gain;
     }
   }
@@ -1147,6 +1209,109 @@ mod tests {
     let state = v.get(&sustain_key(0, 20)).expect("re-keyed under the sustain key");
     assert_eq!(state.target_env, 1.0, "still ringing (no release ramp)");
     assert!(v.get(&voice_key(0, (3, 4))).is_none(), "the finger key is gone");
+  }
+
+  #[test]
+  fn the_uniform_pedal_carries_each_voices_retained_trim() {
+    // queues/branch-3.org: a voice trimmed via edit mode keeps its RELATIVE scale as
+    // the uniform pedal moves everyone. Here, set a voice's pedal_scale by hand and
+    // confirm `set_grid_pedal_gain` applies base * scale, not base.
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((0, 0), 20, Timbre::default(), None); // untrimmed (scale 1.0)
+    a.note_on((1, 1), 22, Timbre::default(), None);
+    voices.lock().unwrap().get_mut(&voice_key(0, (1, 1))).unwrap().pedal_scale = 0.5;
+
+    set_grid_pedal_gain(&voices, 0, 0.8);
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&voice_key(0, (0, 0))].grid_gain_target, 0.8, "untrimmed voice = base");
+    assert_eq!(
+      v[&voice_key(0, (1, 1))].grid_gain_target, 0.4,
+      "the trimmed voice rides at base * 0.5",
+    );
+  }
+
+  #[test]
+  fn the_edit_pedal_path_targets_only_the_edited_voices_and_records_their_trim() {
+    use std::collections::HashSet;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    // A drone we will edit, a drone we will not, and a fingered edited voice.
+    let drone = |a: &mut SurfaceSink, cell, pitch| {
+      a.note_on(cell, pitch, Timbre::default(), None);
+      a.sustain_note(cell, pitch);
+    };
+    drone(&mut a, (0, 0), 20); // a drone at pitch 20 (edited below)
+    drone(&mut a, (1, 1), 30); // a drone at pitch 30 (NOT edited)
+    a.note_on((2, 2), 40, Timbre::default(), None); // fingered at cell (2,2), pitch 40 (edited)
+
+    let edited: HashSet<i32> = [20, 40].into_iter().collect();
+    let held: HashMap<(i32, i32), i32> = [((2, 2), 40)].into_iter().collect();
+    let chord_keys = HashSet::new();
+    // Base 0.5 (the grid's frozen pedal), pedal now at 1.0 -> the edited voices go to
+    // full, each recording scale 1.0/0.5 = 2.0.
+    apply_edit_pedal_scale(&voices, 0, 0.5, 1.0, &edited, &held, &chord_keys);
+
+    let v = voices.lock().unwrap();
+    let drone20 = &v[&sustain_key(0, 20)];
+    assert_eq!(drone20.grid_gain_target, 1.0, "the edited drone follows the pedal");
+    assert_eq!(drone20.pedal_scale, 2.0, "and records its trim relative to the base");
+    let finger = &v[&voice_key(0, (2, 2))];
+    assert_eq!(finger.grid_gain_target, 1.0, "the edited FINGERED voice too");
+    assert_eq!(finger.pedal_scale, 2.0);
+    let drone30 = &v[&sustain_key(0, 30)];
+    assert_eq!(drone30.grid_gain_target, 1.0, "the UNedited drone is untouched (still its note-on value)");
+    assert_eq!(drone30.pedal_scale, 1.0, "and keeps its default trim");
+  }
+
+  #[test]
+  fn a_trim_survives_into_the_uniform_pedal_continuously() {
+    // The whole feature end to end at the synth layer: edit a voice against a base,
+    // then deselect and move the uniform pedal -- the voice keeps its ratio, and there
+    // is no jump at the hand-off (at deselect time the base still equals the frozen
+    // value the trim was taken against).
+    use std::collections::HashSet;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    for (cell, pitch) in [((0, 0), 20), ((1, 1), 30)] {
+      a.note_on(cell, pitch, Timbre::default(), None);
+      a.sustain_note(cell, pitch);
+    }
+
+    // The grid base is 0.5 (both voices there). Edit voice 20 and pull the pedal to
+    // full: it goes to 1.0, records scale 2.0. Voice 30 (unedited) stays at 0.5.
+    set_grid_pedal_gain(&voices, 0, 0.5);
+    let edited: HashSet<i32> = [20].into_iter().collect();
+    apply_edit_pedal_scale(&voices, 0, 0.5, 1.0, &edited, &HashMap::new(), &HashSet::new());
+    assert_eq!(voices.lock().unwrap()[&sustain_key(0, 30)].grid_gain_target, 0.5, "30 frozen while editing");
+
+    // Deselect: the uniform pedal resumes AT the frozen base (0.5) -- no jump.
+    set_grid_pedal_gain(&voices, 0, 0.5);
+    assert_eq!(voices.lock().unwrap()[&sustain_key(0, 20)].grid_gain_target, 1.0, "20 unchanged at hand-off");
+
+    // Now the uniform pedal sweeps down to 0.25: both fall, 20 staying 2x of 30.
+    set_grid_pedal_gain(&voices, 0, 0.25);
+    let v = voices.lock().unwrap();
+    assert_eq!(v[&sustain_key(0, 30)].grid_gain_target, 0.25, "30 follows the pedal");
+    assert_eq!(v[&sustain_key(0, 20)].grid_gain_target, 0.5, "20 stays twice 30 -- its retained ratio");
+  }
+
+  #[test]
+  fn a_trim_against_a_near_silent_grid_cannot_explode() {
+    // Editing while the grid pedal is at the heel (base ~ 0) would give an unbounded
+    // scale; it is floored/capped so raising the grid later cannot blow the voice up.
+    use std::collections::HashSet;
+    let voices = shared();
+    let mut a = sink(0, &voices);
+    a.note_on((0, 0), 20, Timbre::default(), None);
+    a.sustain_note((0, 0), 20);
+    let edited: HashSet<i32> = [20].into_iter().collect();
+    apply_edit_pedal_scale(&voices, 0, 0.0, 1.0, &edited, &HashMap::new(), &HashSet::new());
+    let scale = voices.lock().unwrap()[&sustain_key(0, 20)].pedal_scale;
+    assert!(scale <= MAX_PEDAL_GAIN, "the trim is capped at {MAX_PEDAL_GAIN}, got {scale}");
+    // And the uniform pedal then keeps the voice bounded too.
+    set_grid_pedal_gain(&voices, 0, 1.0);
+    assert!(voices.lock().unwrap()[&sustain_key(0, 20)].grid_gain_target <= MAX_PEDAL_GAIN);
   }
 
   #[test]
