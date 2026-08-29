@@ -1,0 +1,30 @@
+Almost all of these ideas are already at least roughly implemented elsewhere.
+* Main area : edo grid.
+* Top right: The usual 4 timbres, and just below them, 4 volume deltas.
+  Volume control sizes are configurable via two config gile values:
+  volume_coarse, initially 12,
+  and volume_fine, initially 2.
+  Controls are, left to right, (-12 db, -2 db, 2 db, 12 db).
+  Volume control changes the volume only of timbre currently in use.
+* Bottom left: Pitch accretion.
+  From left to right: Clear accretion, momentary accrete.
+  Pushing accrete adds all fingered notes to the sustained set if not already there.
+  There is no button to change accrete from momentary to toggle.
+* Top-right: 10 sustain buttons, 2 tall by 5 wide.
+  The top-right of them is to arm, and the others are slots.
+    (Previously it was the bottom right.)
+  The top-left of them toggles whether the timbre and volume controls
+    affect fingered and sustained notes, or of stored chords.
+    It begins off, indicating the default, which is fingered and sustained notes.
+  It is not the case that each chord holds onto timbre and volume.
+    Rather, there are just two states:
+    the global fingered-and-sustained-notes timbre,
+    and the global retrieved-chord timbre.
+* Bottom left: The usual shift buttons.
+  But unusually, if the timbre controls affect the saved chord voice,
+  then the octave shifts should shift not the visible playable region,
+  but the sounding octave of the active stored chord.
+  And this *is* a change specific to that chord slot, not global.
+  It is not saved when the user navigates away fromt hat chord,
+  but can be saved there the usual way.
+* no square dance, no diamond dance
