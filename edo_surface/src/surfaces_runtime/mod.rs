@@ -1140,13 +1140,18 @@ fn grid_thread(mut rt: GridThread) {
       dance::OffScreen::default()
     };
 
+    let overlay_dim_on = if rt.overlays.compact_loop_rect != NO_RECT {
+      status_flash_on(elapsed)
+    } else {
+      dance::overlay_dim_on(elapsed)
+    };
     let levels = levels_for_grid(
       &sounding_classes,
       &trail_classes,
       &dance_cells,
       &x_cells,
       off,
-      dance::overlay_dim_on(elapsed),
+      overlay_dim_on,
       rt.overlays.edo_rect,
       rt.overlays.selector_rect,
       selector_slot,

@@ -17,6 +17,13 @@ use super::ring::Reason;
 use super::tone_controls::ToneTarget;
 use super::{chords, compact_loops, dance, momentary_chords, GridThread, NO_RECT};
 
+/// Half-period shared by semantic status flashes in the compact tone-target rig.
+const STATUS_FLASH_MS: u128 = 150;
+
+pub(super) fn status_flash_on(elapsed: Duration) -> bool {
+  (elapsed.as_millis() / STATUS_FLASH_MS) % 2 == 0
+}
+
 /// One lock: this grid's accrete-control LED view (its OWN bank's state) plus the
 /// union of every grid's sustained pitch classes (which paint bright on every
 /// grid -- they are all sounding, like the cross-grid note reflection).
@@ -24,7 +31,7 @@ pub(super) fn accrete_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOve
   let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
   let s = &rings[rt.grid_index].accrete;
   let buttons = if rt.overlays.compact_loop_rect != NO_RECT {
-    let first_half = (elapsed.as_millis() / 500) % 2 == 0;
+    let first_half = status_flash_on(elapsed);
     vec![
       (
         rt.overlays.clear_rect,
@@ -125,7 +132,9 @@ pub(super) fn momentary_chord_view(
   if rt.overlays.tone_target_rect != NO_RECT {
     let target_level = match tone_target {
       Some(ToneTarget::FingeredSustained) | None => OFF,
-      Some(ToneTarget::Chord) => DIM,
+      Some(ToneTarget::Chord) => {
+        if status_flash_on(elapsed) { STEADY_DIM } else { OFF }
+      }
       Some(ToneTarget::Loop) => BRIGHT,
     };
     buttons.push((rt.overlays.tone_target_rect, target_level));
@@ -135,7 +144,7 @@ pub(super) fn momentary_chord_view(
     if chord_mode == momentary_chords::ChordMode::Momentary { BRIGHT } else { OFF };
   buttons.push(([mx, my, mx, my], mode_level));
   let (ax, ay) = momentary_chords::arm_cell(rect);
-  let arm_level = if armed && (elapsed.as_millis() / 200) % 2 == 0 {
+  let arm_level = if armed && status_flash_on(elapsed) {
     BRIGHT
   } else {
     OFF
@@ -148,7 +157,7 @@ pub(super) fn momentary_chord_view(
     let level = if is_sounding {
       BRIGHT
     } else if is_populated {
-      DIM
+      STEADY_DIM
     } else {
       OFF
     };
@@ -165,28 +174,30 @@ pub(super) fn compact_loop_view(
   if rect == NO_RECT {
     return (Vec::new(), HashSet::new());
   }
-  let flash = (elapsed.as_millis() / 200) % 2 == 0;
-  let record_play_bright = (elapsed.as_millis() / 80) % 2 == 0;
+  let flash = status_flash_on(elapsed);
   let mut buttons = Vec::new();
   for slot in 0..compact_loops::SLOTS {
     let (x, y) = compact_loops::slot_cell(rect, slot);
-    let recording_and_playing = rt.compact_loops.recording()
-      && slot == rt.compact_loops.target_loop_slot
-      && rt.compact_loops.slot_sounding(slot);
-    let level = if recording_and_playing {
-      if record_play_bright {
+    let populated = rt.compact_loops.slots[slot].is_some();
+    let playing = rt.compact_loops.slot_sounding(slot);
+    let targeted = slot == rt.compact_loops.target_loop_slot;
+    let recording_and_playing = rt.compact_loops.recording() && targeted && playing;
+    let level = if !populated {
+      OFF
+    } else if recording_and_playing {
+      if flash {
         BRIGHT
       } else {
         STEADY_DIM
       }
-    } else if slot == rt.compact_loops.target_loop_slot {
+    } else if playing && targeted {
       if flash { BRIGHT } else { OFF }
-    } else if rt.compact_loops.slot_sounding(slot) {
+    } else if playing {
       BRIGHT
-    } else if rt.compact_loops.slots[slot].is_some() {
-      DIM
+    } else if targeted {
+      if flash { STEADY_DIM } else { OFF }
     } else {
-      OFF
+      STEADY_DIM
     };
     buttons.push(([x, y, x, y], level));
   }

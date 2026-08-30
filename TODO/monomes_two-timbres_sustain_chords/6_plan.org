@@ -100,9 +100,9 @@ clears either persistent bank, or ends a physically held finger voice.  The
 existing broader clear behavior remains available to other rigs and pedal
 paths; this rig's cell invokes the source-specific operation.
 
-At rest ACCRETE and CLEAR SUSTAIN display opposite halves of one one-second,
-50/50-duty cycle.  A physically held control is solid and overrides the idle
-animation.
+At rest ACCRETE and CLEAR SUSTAIN display opposite halves of the shared 150 ms
+status-flash half-period.  A physically held control is solid and overrides the
+idle animation.
 
 * Chord bank
 
@@ -120,7 +120,7 @@ slots may be latched simultaneously.  Empty slot presses do nothing.  Changing
 from toggle mode to momentary mode immediately releases every latched recall
 through the normal release ramp and leaves no hidden latch state.
 
-ARM CHORD STORAGE flashes at 200 ms on / 200 ms off while armed.  In momentary
+ARM CHORD STORAGE flashes at 150 ms on / 150 ms off while armed.  In momentary
 mode it overwrites all physically held source chord slots; in toggle mode it
 overwrites all latched-on source chord slots.  If no source chord slot is in
 use, the arm state remains available for the next destination press according
@@ -175,13 +175,13 @@ Loop slot 1, =(10,14)=, is the record target at every program start whether it
 is empty or populated.  The target remains selected after recording, clearing,
 or playback changes.
 
-SELECT RECORD TARGET enters a waiting state and flashes at 200 ms on / 200 ms
-off.  The existing target continues flashing too.  The next loop-slot key-down
-is consumed solely as the new record-target choice, even when it chooses the
-same slot, and never toggles playback.  Pressing SELECT RECORD TARGET again
-cancels only the waiting state and retains the old target.  During recording,
-SELECT RECORD TARGET and all retarget attempts are ignored; ordinary slot
-presses remain playback controls.
+SELECT RECORD TARGET enters a waiting state and flashes at 150 ms on / 150 ms
+off.  An existing populated target continues flashing too; an empty target
+remains black.  The next loop-slot key-down is consumed solely as the new
+record-target choice, even when it chooses the same slot, and never toggles
+playback.  Pressing SELECT RECORD TARGET again cancels only the waiting state
+and retains the old target.  During recording, SELECT RECORD TARGET and all
+retarget attempts are ignored; ordinary slot presses remain playback controls.
 
 START LOOP RECORDING begins one capture transaction.  A second START during the
 transaction is ignored and cannot restart timing or move a boundary.  STOP with
@@ -204,7 +204,7 @@ If elapsed time from accepted START to accepted STOP is strictly less than
 =loop_clear_tap_ms=, STOP performs a clear instead of a commit.  The parameter
 defaults to 300 ms.  Clear releases the target slot's playback voices, turns
 off its gate, cancels pending playback, discards its content and phase, removes
-its persisted entry atomically, and leaves the same empty target flashing.
+its persisted entry atomically, and leaves the same empty target black.
 Other slots are untouched.  Equality with the threshold is a normal recording,
 so the threshold is also the minimum duration for a new populated loop.
 
@@ -230,7 +230,7 @@ ordinary release ramp.  Rapid off/on therefore produces a new ramped attack,
 not an instantaneous amplitude step.
 
 LOOP PHASE MODE is per monome, is not persisted, begins in KEEP-RUNNING mode,
-and applies to all eleven slots.  It flashes at 200 ms on / 200 ms off in
+and applies to all eleven slots.  It flashes at 150 ms on / 150 ms off in
 KEEP-RUNNING and is black in RESTART.
 
 Every populated slot starts silent and dormant at phase zero on program launch.
@@ -265,19 +265,20 @@ double-trigger it.
 
 Loop slot LEDs have this strict priority:
 
-1. being recorded to and playing back: alternating 80 ms bright / 80 ms dim,
+1. being recorded to and playing back: alternating 150 ms bright / 150 ms dim,
    never black;
-2. record target: flashing at 200 ms on / 200 ms off;
-3. sounding: solid;
-4. populated and silent: dim; and
-5. empty and untargeted: black.
+2. empty: black, including an empty record target;
+3. playing record target: flashing at 150 ms bright / 150 ms black;
+4. playing non-target: solid bright;
+5. populated silent record target: flashing at 150 ms dim / 150 ms black; and
+6. populated silent non-target: solid dim.
 
-Except for the faster record-plus-play indication, the target flashes even when
-it is sounding or being overdubbed.  Multiple non-target sounding slots are all
-solid.  START LOOP RECORDING flashes at the same rate while a transaction is
-active and is otherwise black.  STOP LOOP RECORDING is solid only while
-physically held.  SELECT RECORD TARGET flashes only while awaiting a slot.  LOOP
-PHASE MODE uses its mode indication described above.
+Thus brightness shows playback versus silent population, and flashing shows a
+populated slot's record-target status.  The record-plus-play indication uses the
+same period but never goes black.  All semantic status flashes in this compact
+instrument use a 150 ms half-period: ARM CHORD STORAGE, the loop target, START
+LOOP RECORDING, SELECT RECORD TARGET, and LOOP PHASE MODE.  STOP LOOP RECORDING
+is solid only while physically held.
 
 * Loop persistence
 

@@ -322,7 +322,7 @@
   }
 
   #[test]
-  fn recording_a_playing_loop_uses_the_fast_bright_dim_slot_signal() {
+  fn recording_a_playing_loop_uses_the_never_black_bright_dim_slot_signal() {
     use crate::surfaces_runtime::compact_loops::{LoopInterval, LoopSlot};
     use crate::surfaces_runtime::grid::{BRIGHT, OFF, STEADY_DIM};
 
@@ -343,11 +343,91 @@
     };
 
     assert_eq!(level_at(0), BRIGHT);
-    assert_eq!(level_at(79), BRIGHT);
-    assert_eq!(level_at(80), STEADY_DIM);
-    assert_eq!(level_at(159), STEADY_DIM);
-    assert_eq!(level_at(160), BRIGHT);
-    assert_ne!(level_at(240), OFF, "the dim half never becomes the target's black half");
+    assert_eq!(level_at(149), BRIGHT);
+    assert_eq!(level_at(150), STEADY_DIM);
+    assert_eq!(level_at(299), STEADY_DIM);
+    assert_eq!(level_at(300), BRIGHT);
+    assert_ne!(level_at(450), OFF, "the dim half never becomes the target loop's black half");
+  }
+
+  #[test]
+  fn compact_rig_semantic_statuses_share_one_150_ms_half_period() {
+    use crate::surfaces_runtime::grid::{ButtonOverlay, BRIGHT, OFF, STEADY_DIM};
+
+    assert!(status_flash_on(Duration::from_millis(0)));
+    assert!(status_flash_on(Duration::from_millis(149)));
+    assert!(!status_flash_on(Duration::from_millis(150)));
+    assert!(!status_flash_on(Duration::from_millis(299)));
+    assert!(status_flash_on(Duration::from_millis(300)));
+
+    let rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    {
+      let mut rings = rt.shared.ring.lock().unwrap();
+      rings[0].momentary_chords.save(0, &[8]);
+      rings[0].momentary_chords.armed = true;
+    }
+    rt.shared.tone_controls.lock().unwrap()[0].cycle_tone_target();
+    let level_at = |buttons: &[ButtonOverlay], cell: (i32, i32)| {
+      buttons
+        .iter()
+        .find_map(|(rect, level)| (rect == &[cell.0, cell.1, cell.0, cell.1]).then_some(*level))
+        .expect("control has an LED overlay")
+    };
+    let chord_slot = momentary_chords::slot_cell(rt.overlays.momentary_chord_rect, 0);
+    let arm = momentary_chords::arm_cell(rt.overlays.momentary_chord_rect);
+    let tone_target_cell = (rt.overlays.tone_target_rect[0], rt.overlays.tone_target_rect[1]);
+    let (on, _) = momentary_chord_view(&rt, Duration::from_millis(0));
+    let (off, _) = momentary_chord_view(&rt, Duration::from_millis(150));
+    assert_eq!(level_at(&on, arm), BRIGHT);
+    assert_eq!(level_at(&off, arm), OFF, "ARM uses the shared off half");
+    assert_eq!(level_at(&on, tone_target_cell), STEADY_DIM);
+    assert_eq!(
+      level_at(&off, tone_target_cell),
+      OFF,
+      "the chord tone target uses the shared off half",
+    );
+    assert_eq!(level_at(&on, chord_slot), STEADY_DIM);
+    assert_eq!(level_at(&off, chord_slot), STEADY_DIM, "an idle populated chord is solid dim");
+  }
+
+  #[test]
+  fn loop_slot_leds_show_population_playback_and_target_loop_selection_independently() {
+    use crate::surfaces_runtime::compact_loops::{LoopInterval, LoopSlot};
+    use crate::surfaces_runtime::grid::{BRIGHT, OFF, STEADY_DIM};
+
+    let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    let populated = || LoopSlot {
+      duration_ns: 1_000_000_000,
+      intervals: vec![LoopInterval { pitch: 8, start_ns: 0, duration_ns: None }],
+    };
+    rt.compact_loops.slots[0] = Some(populated());
+    rt.compact_loops.slots[1] = Some(populated());
+    rt.compact_loops.target_loop_slot = 1;
+    let level_at = |rt: &GridThread, slot: usize, elapsed_ms: u64| {
+      let cell = compact_loops::slot_cell(rt.overlays.compact_loop_rect, slot);
+      compact_loop_view(rt, Duration::from_millis(elapsed_ms))
+        .0
+        .into_iter()
+        .find_map(|(rect, level)| (rect == [cell.0, cell.1, cell.0, cell.1]).then_some(level))
+        .expect("slot has an LED overlay")
+    };
+
+    assert_eq!(level_at(&rt, 0, 0), STEADY_DIM, "idle non-target loop is solid dim");
+    assert_eq!(level_at(&rt, 0, 150), STEADY_DIM, "solid dim ignores target-loop phase");
+    assert_eq!(level_at(&rt, 1, 0), STEADY_DIM, "idle target loop's dim flash is on");
+    assert_eq!(level_at(&rt, 1, 149), STEADY_DIM);
+    assert_eq!(level_at(&rt, 1, 150), OFF, "idle target loop's dim flash is off");
+    assert_eq!(level_at(&rt, 1, 300), STEADY_DIM, "target-loop flash repeats every 300 ms");
+
+    assert!(!rt.compact_loops.slot_press(0, 0).is_empty());
+    assert_eq!(level_at(&rt, 0, 150), BRIGHT, "playing non-target loop is solid bright");
+    assert!(!rt.compact_loops.slot_press(1, 0).is_empty());
+    assert_eq!(level_at(&rt, 1, 0), BRIGHT, "playing target loop's bright flash is on");
+    assert_eq!(level_at(&rt, 1, 150), OFF, "playing target loop's bright flash is off");
+
+    rt.compact_loops.target_loop_slot = 2;
+    assert_eq!(level_at(&rt, 2, 0), OFF, "an empty target loop remains black");
+    assert_eq!(level_at(&rt, 2, 150), OFF);
   }
 
   #[test]

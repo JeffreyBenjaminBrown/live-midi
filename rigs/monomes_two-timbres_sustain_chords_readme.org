@@ -47,7 +47,8 @@ used for selection never changes playback.
 *** PHASE : Toggles KEEP RUNNING or RESTART mode.
 *** L1 is special
 because it is initially the target loop slot for recording,
-which is why it flashes
+so after it is populated its dim or bright state flashes.
+It remains black while empty.
 * Claude's lengthier description
 ** Run
 
@@ -95,20 +96,20 @@ described below.
 TONE TARGET cycles through three tone targets:
 
 - black: fingered and sustained voices;
-- dim: recalled chord voices; and
+- flashing dim: recalled chord voices; and
 - solid: compact-loop playback voices.
 
 Each tone target remembers its own waveform choice. Each waveform remembers a
 base finger/sustain volume plus separate chord and loop offsets. Thus a volume
 change while TONE TARGET is black also carries the other two tone targets'
-bases with it; a change while TONE TARGET is dim or solid moves only that tone
-target relative to the
-base.  Changes affect sounding voices immediately without restarting them.
+bases with it; a change while TONE TARGET is flashing dim or solid moves only
+that tone target relative to the base. Changes affect sounding voices
+immediately without restarting them.
 
 With TONE TARGET black, the two octave corners scroll the keyboard.  With TONE
-TARGET dim, they temporarily glide all sounding chord recalls by one configured EDO
-octave.  With TONE TARGET solid, they permanently transpose the target loop
-slot, save it, and glide that slot if it is playing.  Loop octave edits do
+TARGET flashing dim, they temporarily glide all sounding chord recalls by one
+configured EDO octave.  With TONE TARGET solid, they permanently transpose the
+target loop slot, save it, and glide that slot if it is playing.  Loop octave edits do
 nothing while recording.
 
 ** Sustain
@@ -118,8 +119,8 @@ held, join this grid's sustained set and keep ringing after finger release.
 CLEAR removes only sustain: it does not end a held finger, a recalled chord, or
 loop playback, and does not erase either stored bank.
 
-At rest ACCRETE and CLEAR alternate in opposite halves of a one-second flash.
-Holding either button makes that button solid.
+At rest ACCRETE and CLEAR alternate in opposite 150 ms halves.  Holding either
+button makes that button solid.
 
 ** Chords
 
@@ -146,9 +147,9 @@ files retain their first eight slots and gain five empty ones.
 ** Compact loops
 
 Loop slot 1 (the first =L= cell at =(10,14)=) is the target loop slot at startup
-and flashes.  Press SELECT and then any loop slot to choose another target loop;
-SELECT flashes while waiting, and pressing SELECT again cancels.  A slot touch
-used for selection never changes playback.
+and remains black while empty. Press SELECT and then any loop slot to choose
+another target loop; SELECT flashes while waiting, and pressing SELECT again
+cancels. A slot touch used for selection never changes playback.
 
 To make a first loop:
 
@@ -157,11 +158,21 @@ To make a first loop:
 3. Press STOP at the cycle boundary.
 
 START flashes while recording.  The first take's START-to-STOP span becomes its
-fixed duration.  A populated target loop receives an overdub instead; its duration
-and phase stay fixed.  Recording includes sources that were already sounding
+fixed duration. A populated target loop receives an overdub instead; its
+duration and phase stay fixed. Recording includes sources that were already sounding
 at START, but excludes every loop-playback voice, so it cannot feed back.
 When the target loop is also playing back during recording, its slot alternates
-quickly between bright and dim (80 ms each) and never goes black.
+between bright and dim (150 ms each) and never goes black.
+
+An otherwise inactive populated slot is solid dim. Selecting it as the target
+loop makes that dim state flash at 150 ms dim / 150 ms black. Playback changes
+a non-target loop to solid bright or the target loop to 150 ms bright / 150 ms
+black. Empty slots remain black even when selected as the target loop.
+
+ARM, START, SELECT, PHASE, TONE TARGET's chord indication, the target loop slot,
+and the idle ACCRETE/CLEAR alternation all use the same 150 ms flash half-period.
+The fast pulses used to simulate solid dimness on an older monobright grid are
+only a rendering technique, not another musical status.
 
 A quick START then STOP shorter than =loop_clear_tap_ms= (300 ms initially)
 clears only the target loop.  A longer take with no captured notes makes no
@@ -169,8 +180,8 @@ loop.  Interrupted recordings are not published.
 
 Touch a populated loop slot to turn its playback on or off.  Many slots can
 play together, each with its own duration and phase.  Touching the empty target
-loop slot while its first take is being recorded toggles a pending request to begin
-playing at STOP.  At other times an empty slot does nothing.
+loop slot while its first take is being recorded toggles a pending request to
+begin playing at STOP. At other times an empty slot does nothing.
 
 PHASE begins flashing in KEEP-RUNNING mode.  Once a slot has first played, its
 clock keeps moving while muted, so a later touch rejoins its current phase.

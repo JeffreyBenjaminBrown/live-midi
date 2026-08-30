@@ -1,6 +1,40 @@
-* what this is
-These are my instructions to self.
-They are not instructions to you, Claude -- those are in queued/ or TODO/.
+* This file is my instructions to self.
+By contrast, plans for Codex or Claude are in queued/ or TODO/.
+* can't use Codex in midi project
+** the error Codex ran into
+• I’ll look for orientation materials, then trace how the rig launched by run.sh
+  chooses which trail moves to a played note.
+
+• I’m blocked before I can read the orientation materials or code: the tool runner
+  fails to start because its codex-code-mode-host executable is missing. No files have
+  been changed.
+
+  Please restart or repair the Codex session so workspace tools can run. Once restored,
+  I can trace run.sh and fix trail selection to measure nearness in EDO note space
+  before mapping to grid lights, using your 27-EDO example as a regression case.
+
+  19:36
+Token usage: total=10,823 input=10,552 (+ 42,752 cached) output=271 (reasoning 21)
+To continue this session, run:
+  codex resume 01a0da0d-dea5-7582-8dcd-736def5d1a3c
+
+** what I asked
+› Welcome, Codex! I can't remember if there are orientation materials for you; if so
+  please read them :) After that, there's a bug in the latest rig, the one that run.sh
+  runs. It affects at least some of the other rigs too. It's this: There are (usually
+  seven) 'trails' displayed on the edo grid, to indicate the last notes played --
+  something like a scale guide. The way a played note causes a nearby trail light to
+  snap to it depends on the grid arrangement. I believe nearness is being computed
+  based on the grid. It should instead be computed in the edo space, and only
+  thereafter translated into grid lights. So for instance, if the tuning is 27-edo,
+  with an x-gap of 9 and a y-gap of 2, and I play note 0, and then later play note 1,
+  even though those two notes are on different columns and different rows, it might
+  cause the trail that was at 0 to disappear when the trail at 1 appears.
+* TODO make cramped trails disappear
+If a 3-cluster has a diameter too small, remove its middle member.
+* start the three regions with different timbres
+* TODO persist the timbre and volumes of the three voice kinds across sessions
+* ONGOING in branch 2 : simple 1-monome rig
 * ONGOING in main : TODO/xhost-startup-problem/
 * LATEST : run it at Priceless
 host (leave running):
@@ -40,6 +74,8 @@ Two of them now, same grids, differing only in what the NEWER SS does:
 On the DRUMS rig the New SS rows are instead, as you stand over it:
 | high tom | low tom | wood block | cowbell | crash    |
 | snare    | kick    | ditto      | hat     | open hat |
+* TODO make xhost part of startup
+Modify nixos config to run "xhost +local:" at each (login?).
 * TODO ? percussive attack at pulse cycle boundary
 * AWAITS jeff : read TODO/pedal-slide/3_progress.org
 * ONGOING queue/branch-2.org
