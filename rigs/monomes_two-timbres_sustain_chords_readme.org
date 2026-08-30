@@ -46,7 +46,8 @@ used for selection never changes playback.
 *** PHASE : Toggles KEEP RUNNING or RESTART mode.
 *** L1 is special
 because it is the loop slot initially targeted for record,
-which is why it flashes
+so after it is populated its dim or bright state flashes.
+It remains black while empty.
 * Claude's lengthier description
 ** Run
 
@@ -115,8 +116,8 @@ held, join this grid's sustained set and keep ringing after finger release.
 CLEAR removes only sustain: it does not end a held finger, a recalled chord, or
 loop playback, and does not erase either stored bank.
 
-At rest ACCRETE and CLEAR alternate in opposite halves of a one-second flash.
-Holding either button makes that button solid.
+At rest ACCRETE and CLEAR alternate in opposite 150 ms halves.  Holding either
+button makes that button solid.
 
 ** Chords
 
@@ -141,10 +142,10 @@ files retain their first eight slots and gain five empty ones.
 
 ** Compact loops
 
-Loop slot 1 (the first =L= cell at =(10,14)=) is the record target at startup
-and flashes.  Press SELECT and then any loop slot to choose another target;
-SELECT flashes while waiting, and pressing SELECT again cancels.  A slot touch
-used for selection never changes playback.
+Loop slot 1 (the first =L= cell at =(10,14)=) is the record target at startup.
+It remains black while empty.  Press SELECT and then any loop slot to choose
+another target; SELECT flashes while waiting, and pressing SELECT again cancels.
+A slot touch used for selection never changes playback.
 
 To make a first loop:
 
@@ -157,7 +158,17 @@ fixed duration.  A populated target receives an overdub instead; its duration
 and phase stay fixed.  Recording includes sources that were already sounding
 at START, but excludes every loop-playback voice, so it cannot feed back.
 When the target is also playing back during recording, its slot alternates
-quickly between bright and dim (80 ms each) and never goes black.
+between bright and dim (150 ms each) and never goes black.
+
+An otherwise inactive populated slot is solid dim.  Targeting it makes that dim
+state flash at 150 ms dim / 150 ms black.  Playback changes a non-target slot to
+solid bright or a targeted slot to 150 ms bright / 150 ms black.  Empty slots
+remain black even when targeted.
+
+ARM, START, SELECT, PHASE, TARGET's chord indication, targeted loop slots, and
+the idle ACCRETE/CLEAR alternation all use the same 150 ms flash half-period.
+The fast pulses used to simulate solid dimness on an older monobright grid are
+only a rendering technique, not another musical status.
 
 A quick START then STOP shorter than =loop_clear_tap_ms= (300 ms initially)
 clears only the target loop.  A longer take with no captured notes makes no
