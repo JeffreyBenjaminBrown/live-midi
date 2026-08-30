@@ -1,0 +1,347 @@
+#+title: Sustained-pitch refinger volume spike
+
+* Reproduction boundary
+
+With =monomes_two-timbres_sustain_chords= at its shipped settings, accrete a
+note, release its play cell so that the pitch is sounding as a drone, then press
+a play cell for the same absolute pitch.  The replacement attack is much louder
+than an ordinary attack at the same tone-target volume.  Chords and loops need not be
+active, the second monome is irrelevant, and the fault is not tied to an
+enharmonic second cell: pressing the original cell reproduces it.
+
+“Pitch belongs to the sustained set” is slightly broader than the failing
+condition.  The hot path requires an actual fingerless =SurfaceDrone= at that
+pitch.  If the pitch has sustain membership but its original finger is still
+down, there is no drone to cut and another equal-pitch cell takes the ordinary
+tone-target-aware note-on path.  The defect disappears when the fingered/sustained
+tone target is exactly 0 dB, and grows as that tone target is attenuated; both facts follow
+from the gain mismatch below.
+
+* Cause
+
+The play-cell handler in
+[[file:edo_surface/src/surfaces_runtime/keys.rs][=surfaces_runtime/keys.rs=]]
+computes the current fingered/sustained tone target's timbre slot and gain, then calls
+=SurfaceSink::cut_sustained(pitch)=.  In
+[[file:edo_surface/src/surfaces_runtime/synth.rs][=surfaces_runtime/synth.rs=]],
+=cut_sustained= removes =SurfaceDrone { grid, pitch }= from its addressable key,
+rekeys it as a unique =SurfaceRetired= voice, starts its normal release ramp,
+and returns its oscillator and factored-pulse state.  This is intentional: the
+old sound reaches silence without a discontinuity, the sustain key is free for
+the replacement, and the replacement can continue the old oscillator cycle.
+
+Before the repair, the mismatch occurred at the next two calls:
+
+1. =keys.rs= called =note_on_continuing(cell, pitch, timbre, cut)=.  That generic
+   helper called =note_on_with_phase=, which initialized both =grid_gain= and
+   =grid_gain_target= from =pedal_gain()=.  This rig has no expression pedal, so
+   the value is unity.
+2. After the voice has been inserted, =keys.rs= called
+   =set_tone_target_gain(..., gain)= with the correct fingered/sustained tone-target gain.
+   =set_tone_target_gain= deliberately changes only =grid_gain_target=; the applied
+   =grid_gain= remains at unity and approaches the destination through the renderer's
+   20 ms gain slew.
+
+Fresh notes did not do this. With no drone cut, the same handler called
+=note_on_with_tone_gain(..., gain)=, which reaches =note_on_with_phase_and_gain=
+and initializes both gain fields to the tone-target value. Momentary chord and
+compact-loop attacks likewise started both fields at their respective tone-target
+gains. The bug was therefore one missed tone-target-aware constructor on the
+sustained-retrigger branch, not a general fault in tone-control arithmetic or rendering.
+
+The voice's amplitude coefficient is multiplied in
+[[file:edo_surface/src/sawwave/voices.rs][=sawwave/voices.rs=]] as
+
+#+begin_example
+envelope * timbre gain * fader gain * grid gain * modulation * master amplitude
+#+end_example
+
+so the erroneous unity value directly multiplies the new attack; no later stage
+normalizes it back to the selected tone target.
+
+* Magnitude with the shipped rig
+
+[[file:rigs/monomes_two-timbres_sustain_chords.org][The rig]] starts every tone target
+at -12 dB, hence the intended linear gain is
+
+#+begin_example
+g = 10^(-12/20) = 0.2511886.
+#+end_example
+
+The replacement starts at 1.0 and the renderer applies a 20 ms one-pole slew
+toward =g=.  Its attack reaches the peak after 3 ms.  At that point the applied
+gain is approximately
+
+#+begin_example
+g + (1 - g) exp(-3/20) = 0.8956,
+#+end_example
+
+which is 3.566 times, or 11.04 dB, above the correct replacement attack.  The
+old drone is simultaneously only 3 ms into its 50 ms release.  If it had
+settled at the configured 0.35 sustain envelope, its remaining envelope is
+about 0.329; near the onset, where the two continued oscillator phases are
+still close, their possible summed coefficient is about 0.978 rather than the
+0.334 produced by a correctly gained replacement plus the same tail.  That is
+another way to describe the heard transient: the intended overlap is present,
+but one member is roughly 11 dB too hot.
+
+The global crowded-pitch allocator added later does not cause the fault.  With
+the shipped 5-cent spacing, the incumbent retired tail keeps the zero lane and
+the replacement receives the +5-cent lane.  The small frequency difference
+decorrelates them only over time; it cannot correct the replacement's gain and
+they begin with the continued phase nearly aligned.  Setting the spacing to
+zero would leave the gain error intact.  Conversely, deleting the release tail
+would still leave the new voice near unity.  The older
+[[file:TODO/monomes_two-timbres_sustain_chords/4_DUCKED_voice-model.org][ducked voice-model note]]
+correctly identified the gain bug, but its description of a specially
+six-cent-detuned old tail is obsolete: the current rig leaves
+=retrigger_tail_detune_cents= at its zero default and obtains separation from
+global crowded-pitch allocation instead.
+
+* Repair
+
+The repair adds =SurfaceSink::note_on_continuing_with_gain= without changing
+the generic =note_on_continuing= contract. It invokes
+=note_on_with_phase_and_gain= with the supplied tone-target gain, then restores
+the oscillator-adjacent factored-pulse state carried by =CutVoice=:
+
+#+begin_src rust
+pub fn note_on_continuing_with_gain(
+  &mut self,
+  cell: (i32, i32),
+  pitch: i32,
+  timbre: Timbre,
+  gain: f32,
+  cut: CutVoice,
+) {
+  self.note_on_with_phase_and_gain(cell, pitch, timbre, None, cut.phase, gain);
+  self.restore_cut_pulse(cell, cut);
+}
+#+end_src
+
+The =Some(cut)= branch in =keys.rs= now calls that variant when tone-target
+state supplies a gain and retains the generic variant for rigs whose gain
+component is owned by an expression pedal. The replacement is therefore
+inserted atomically with =grid_gain == grid_gain_target == gain=; the audio
+thread has no interval in which it can observe unity.
+
+The existing =set_tone_target_gain= call after note creation remains. It is
+redundant for the newly inserted replacement, but still enforces the selected
+tone-target gain on every other live finger/drone and preserves the slide/mono
+paths. It still assigns only =grid_gain_target=: live volume-button changes need
+the 20 ms slew, whereas note onset needs correct initialization of both fields.
+The retired tail, oscillator phase, pulse state, and crowded-pitch ownership
+remain unchanged because they are orthogonal and deliberate.
+
+* Regression coverage
+
+The direct integration regression is
+[[file:edo_surface/src/surfaces_runtime/tests.rs][=surfaces_runtime/tests.rs=]]:
+=crowded_pitch_retrigger_keeps_the_incumbent_lane_and_offsets_the_new_finger= runs
+the real rig's key path through strike, accrete, release-to-drone, and same-cell
+refinger. It now computes =db_to_gain(-12.0)= and, immediately after the
+refinger, asserts both
+
+#+begin_example
+finger.grid_gain        == expected_gain
+finger.grid_gain_target == expected_gain
+#+end_example
+
+within the existing floating-point tolerance. The old code failed the first
+assertion with =1.0= and passed the second with about =0.2511886=. The test
+therefore pins the fault without waveform samples or wall-clock audio while its
+existing assertions independently pin the retired tail's zero lane and the
+replacement's +5-cent lane.
+
+The synth-level =tone_target_retrigger_starts_at_its_attenuated_gain= test uses
+a non-unity gain and asserts that oscillator phase and pulse rate/phase still
+continue while both gain fields begin at the supplied value. The renderer
+already has separate gain-slew tests; these state-boundary assertions are more
+diagnostic than an audio-peak test.
+
+After Cargo recovered from repeated crates.io connection resets and downloaded
+the missing dependencies, =cargo test -p edo_surface --no-run= compiled the
+library and test executable successfully. Separate focused runs passed the
+integration regression, the synth-level regression, and the renamed rig's
+broader tone-target integration test. The full =cargo test -p edo_surface= run
+reported 665 passed and 11 failed; the failures are in the pre-existing
+46-EDO/pedal-slide fixture and follow the unrelated dirty-worktree edit that
+changes =rigs/2-edogrids_ss-accrete_ss-pulse.org= from 46/9/80 to 41/8/110.
+The clearest failure says “same 46-EDO tuning” while observing 41 versus 46.
+
+* Glossary
+
+** Audio voice
+
+One independently owned oscillator plus its envelope, gain, timbre, and
+lifetime state.  Several voices may have one nominal pitch.
+
+** Drone
+
+The fingerless audio voice that realizes one pitch in the sustained set.
+Sustain membership alone is not a drone.
+
+** Tone
+
+The combined timbre and volume setting. This is deliberately broader than the
+ordinary use of “tone” as timbre alone.
+
+** Tone target
+
+One control group whose voices receive the same timbre and volume edits. This
+rig has fingered/sustained, chord, and loop tone targets. A tone target groups
+voices; it is not the source identity of an individual voice.
+
+** =ToneTarget=
+
+The enum in
+[[file:edo_surface/src/surfaces_runtime/tone_controls.rs][=tone_controls.rs=]]
+encoding the three tone targets. Its =matches_source= method maps
+=SurfaceFinger=, =SurfaceDrone=, and =SurfaceRetired= to
+=FingeredSustained=; =SurfaceChord= to =Chord=; and =SurfaceLoop= to =Loop=,
+always for one specified grid. The comment beside its definition explicitly
+defines tone as including timbre and volume.
+
+** =ToneControls=
+
+The per-grid state holding the current =ToneTarget= plus each tone target's
+selected timbre slot and volume state.
+
+** =VoiceSource=
+
+The enum used as the key of the shared voice map. A value says which musical
+source owns and can address a voice. The tone-target classifier uses its five
+=Surface*= variants.
+
+** =SurfaceFinger=
+
+The source-key variant for a voice owned by a physically held play cell.  Its
+fields identify the grid and cell.
+
+** =SurfaceDrone=
+
+The source-key variant for the one addressable fingerless sustain voice at a
+particular grid and pitch.  In source code and this report its value is often
+written =SurfaceDrone { grid, pitch }=.  =SurfaceDrone= is a =VoiceSource=
+variant, not a separate Rust type.
+
+** =SurfaceRetired=
+
+The source-key variant for a displaced drone completing its release.  Its
+sequence field makes each retired key unique, so a replacement can immediately
+take ownership of the pitch's =SurfaceDrone= key.  =SurfaceRetired= is a
+=VoiceSource= variant, not a separate Rust type.
+
+** =SurfaceChord=
+
+The =VoiceSource= variant for one recalled chord voice, keyed by grid and a
+unique recall sequence number so equal-pitch chord voices remain independent.
+
+** =SurfaceLoop=
+
+The =VoiceSource= variant for one compact-loop playback occurrence, keyed by
+grid and a unique scheduled-attack sequence number.
+
+** Source key
+
+The =VoiceSource= value used to find and control a voice in the shared voice
+map.
+
+** Rekey
+
+Move the same =VoiceState= from one source key to another without restarting
+its sound.  Finger-to-drone and drone-to-retired transitions use this.
+
+** Retired voice / release tail
+
+A drone displaced by a refinger, no longer addressable as sustain but still
+fading to silence under a unique =SurfaceRetired= key.
+
+** =VoiceState=
+
+The struct holding one audio voice's live synthesis state: identity, frequency,
+oscillator and modulation phases, envelope, glide, gains, timbre, and related
+targets.  The bug is the inconsistent initialization of two fields in a new
+=VoiceState=: =grid_gain= and =grid_gain_target=.
+
+** =SurfaceSink=
+
+The surfaces runtime's per-grid voice driver. It creates, rekeys, retunes, and
+releases entries in the audio thread's shared voice map. The generic and
+tone-target-aware constructors are methods on this struct.
+
+** =CutVoice=
+
+The small struct returned by =SurfaceSink::cut_sustained=.  It carries the
+outgoing drone's oscillator phase and factored-pulse rate and phase into the
+replacement voice; it does not carry gain.
+
+** =Timbre=
+
+The struct describing a voice's waveform, timbre-local gain, and AM/FM
+settings. It is distinct from the tone-target gain whose bad initialization
+caused this bug.
+
+** =i32= and =f32=
+
+Rust's signed 32-bit integer and 32-bit floating-point types. The added method
+signature uses =i32= for grid coordinates and pitches and =f32= for
+gain.  They are language primitives, unlike the project-domain types above.
+
+** Envelope
+
+The time-varying multiplier that supplies a note's attack, pluck decay,
+sustained level, and release.
+
+** Attack
+
+The envelope's rise from silence to its strike peak; configured as 3 ms in this
+rig.
+
+** Current / applied gain
+
+=VoiceState::grid_gain=, the gain the renderer multiplies into the present
+sample.
+
+** Destination gain
+
+=VoiceState::grid_gain_target=, the destination toward which the applied gain
+moves.
+
+** Slew / one-pole slew
+
+A smooth exponential approach from a current value to a destination, used here to
+prevent abrupt volume-control steps.  Its 20 ms value is a time constant, not a
+fixed completion time.
+
+** Unity gain
+
+Linear gain 1.0, or 0 dB: neither amplification nor attenuation.
+
+** Oscillator phase
+
+Position within the repeating waveform cycle.  Continuing it avoids a
+discontinuous waveform restart on refinger.
+
+** Factored pulse
+
+Older rigs' rhythmic amplitude modulation carried by the shared retrigger
+helper.  This rig does not use it, but the fix must preserve the generic
+helper's continuation semantics.
+
+** Crowded-pitch lane
+
+A stable small detuning assigned to one of several simultaneous voices at the
+same nominal pitch; the current sequence is 0, +5, -5, +10, -10 cents, and so
+on.
+
+** Coherent addition
+
+Two similar waveforms with nearly aligned phases add their instantaneous
+amplitudes rather than merely their average powers; this makes the brief
+two-voice overlap more conspicuous.
+
+** Regression test
+
+A test that fails for this specific old behavior and passes after the repair,
+preventing the bug from returning unnoticed.

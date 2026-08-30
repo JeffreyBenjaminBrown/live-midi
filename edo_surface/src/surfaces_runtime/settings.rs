@@ -15,8 +15,8 @@ use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Waveform};
 use crate::voices::Distortion;
 
 use super::grid::SELECTOR_CELLS;
-use super::layer_controls::LayerVolumeConfig;
 use super::pedal_volume::PedalVolumeCurve;
+use super::tone_controls::ToneVolumeConfig;
 use super::NO_RECT;
 
 /// One selectable timbre behind a selector cell: the resolved form of a rig
@@ -89,10 +89,10 @@ pub(super) struct Overlays {
   /// The 5x2 chord-storage block (slots 1..5 over arm + slots 6..9), `NO_RECT`
   /// when absent.
   pub(super) chord_rect: [i32; 4],
-  /// Pitch-only target/arm/eight-slot block.
+  /// Pitch-only chord-mode/arm/thirteen-slot block.
   pub(super) momentary_chord_rect: [i32; 4],
-  /// The separate three-way FS/chord/loop TARGET cell.
-  pub(super) layer_target_rect: [i32; 4],
+  /// The separate three-way finger+sustain/chord/loop TONE TARGET cell.
+  pub(super) tone_target_rect: [i32; 4],
   /// The surfaces-only compact-loop half-grid.
   pub(super) compact_loop_rect: [i32; 4],
   /// The fine-transpose toggle's cell, `NO_RECT` when absent.
@@ -115,7 +115,7 @@ pub(super) struct GridSettings {
   /// The grid index this grid's volume strip sets (self if it has no volume strip).
   pub(super) volume_controls_index: usize,
   pub(super) volume_delta_controls_index: usize,
-  pub(super) layer_volume: Option<LayerVolumeConfig>,
+  pub(super) tone_volume: Option<ToneVolumeConfig>,
   pub(super) loop_clear_tap_ms: u64,
   pub(super) overlays: Overlays,
 }
@@ -292,7 +292,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       } if monome == monome_id => Some((
         *rect,
         controls.clone(),
-        LayerVolumeConfig {
+        ToneVolumeConfig {
           coarse_db: *volume_coarse,
           fine_db: *volume_fine,
           initial_db: *initial_db,
@@ -302,7 +302,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       )),
       _ => None,
     });
-    let (volume_delta_rect, volume_delta_controls_index, layer_volume) = match volume_delta {
+    let (volume_delta_rect, volume_delta_controls_index, tone_volume) = match volume_delta {
       Some((rect, controls, config)) => {
         let idx = index_of(&controls)
           .ok_or("volume_delta controls a monome that is not a play grid")?;
@@ -386,11 +386,11 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         _ => None,
       })
       .unwrap_or(NO_RECT);
-    let layer_target_rect = rig
+    let tone_target_rect = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowRig::LayerTargetControl { monome, rect, .. } if monome == monome_id => {
+        MonomeWindowRig::ToneTargetControl { monome, rect, .. } if monome == monome_id => {
           Some(*rect)
         }
         _ => None,
@@ -449,7 +449,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
       chord_rect,
       momentary_chord_rect,
-      layer_target_rect,
+      tone_target_rect,
       compact_loop_rect,
       fine_transpose_rect,
     };
@@ -461,7 +461,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       controls_index,
       volume_controls_index,
       volume_delta_controls_index,
-      layer_volume,
+      tone_volume,
       loop_clear_tap_ms,
       overlays,
     });

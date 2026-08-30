@@ -21,7 +21,7 @@ pub enum SourceKey {
 pub enum BlockCell {
   Start,
   Stop,
-  SelectTarget,
+  SelectTargetLoop,
   PhaseMode,
   Slot(usize),
 }
@@ -36,7 +36,7 @@ pub fn block_cell(rect: [i32; 4], cell: (i32, i32)) -> Option<BlockCell> {
   }
   let dx = (x - x0) as usize;
   match (y - y0, dx) {
-    (0, 1) => Some(BlockCell::SelectTarget),
+    (0, 1) => Some(BlockCell::SelectTargetLoop),
     (0, 2..=7) => Some(BlockCell::Slot(dx - 2)),
     (1, 0) => Some(BlockCell::Stop),
     (1, 1) => Some(BlockCell::Start),
@@ -170,8 +170,8 @@ pub struct StopResult {
 #[derive(Debug)]
 pub struct CompactLoops {
   pub slots: [Option<LoopSlot>; SLOTS],
-  pub target: usize,
-  pub selecting_target: bool,
+  pub target_loop_slot: usize,
+  pub selecting_target_loop: bool,
   pub phase_mode: PhaseMode,
   pub clear_tap_ns: u64,
   playback: [Playback; SLOTS],
@@ -184,8 +184,8 @@ impl CompactLoops {
   pub fn new(clear_tap_ms: u64) -> Self {
     Self {
       slots: std::array::from_fn(|_| None),
-      target: 0,
-      selecting_target: false,
+      target_loop_slot: 0,
+      selecting_target_loop: false,
       phase_mode: PhaseMode::KeepRunning,
       clear_tap_ns: clear_tap_ms.saturating_mul(1_000_000),
       playback: std::array::from_fn(|_| Playback::default()),
@@ -268,19 +268,19 @@ impl CompactLoops {
     self.source_on(key, pitch, now_ns);
   }
 
-  pub fn select_press(&mut self) {
+  pub fn select_target_loop_press(&mut self) {
     if self.recording.is_none() {
-      self.selecting_target = !self.selecting_target;
+      self.selecting_target_loop = !self.selecting_target_loop;
     }
   }
 
-  /// Returns true when the slot press was consumed as target selection.
-  pub fn choose_target(&mut self, slot: usize) -> bool {
-    if !self.selecting_target || self.recording.is_some() || slot >= SLOTS {
+  /// Returns true when the slot press was consumed as target-loop selection.
+  pub fn choose_target_loop(&mut self, slot: usize) -> bool {
+    if !self.selecting_target_loop || self.recording.is_some() || slot >= SLOTS {
       return false;
     }
-    self.target = slot;
-    self.selecting_target = false;
+    self.target_loop_slot = slot;
+    self.selecting_target_loop = false;
     true
   }
 
@@ -288,7 +288,7 @@ impl CompactLoops {
     if self.recording.is_some() {
       return;
     }
-    let slot = self.target;
+    let slot = self.target_loop_slot;
     let first_take = self.slots[slot].is_none();
     let phase_epoch_ns = if first_take {
       now_ns
@@ -372,7 +372,7 @@ impl CompactLoops {
   }
 
   pub fn slot_press(&mut self, slot: usize, now_ns: u64) -> Vec<VoiceAction> {
-    if slot >= SLOTS || self.choose_target(slot) {
+    if slot >= SLOTS || self.choose_target_loop(slot) {
       return Vec::new();
     }
     if let Some(recording) = self.recording.as_mut() {
@@ -449,11 +449,11 @@ impl CompactLoops {
     actions
   }
 
-  pub fn shift_target(&mut self, delta: i32) -> (Vec<(u64, i32)>, bool) {
+  pub fn shift_target_loop(&mut self, delta: i32) -> (Vec<(u64, i32)>, bool) {
     if self.recording.is_some() {
       return (Vec::new(), false);
     }
-    let Some(slot) = self.slots[self.target].as_mut() else {
+    let Some(slot) = self.slots[self.target_loop_slot].as_mut() else {
       return (Vec::new(), false);
     };
     for interval in &mut slot.intervals {
@@ -465,7 +465,7 @@ impl CompactLoops {
       .enumerate()
       .map(|(index, interval)| (index, interval.pitch))
       .collect();
-    let moved = self.playback[self.target]
+    let moved = self.playback[self.target_loop_slot]
       .live
       .iter()
       .filter_map(|(occurrence, seq)| pitches.get(&occurrence.interval).map(|p| (*seq, *p)))
@@ -645,7 +645,7 @@ mod tests {
     assert_eq!(start_cell(RECT), (9, 15));
     assert_eq!(block_cell(RECT, start_cell(RECT)), Some(BlockCell::Start));
     assert_eq!(block_cell(RECT, stop_cell(RECT)), Some(BlockCell::Stop));
-    assert_eq!(block_cell(RECT, select_cell(RECT)), Some(BlockCell::SelectTarget));
+    assert_eq!(block_cell(RECT, select_cell(RECT)), Some(BlockCell::SelectTargetLoop));
     assert_eq!(block_cell(RECT, phase_cell(RECT)), Some(BlockCell::PhaseMode));
   }
 
@@ -673,7 +673,7 @@ mod tests {
   }
 
   #[test]
-  fn sub_threshold_stop_clears_target() {
+  fn sub_threshold_stop_clears_target_loop() {
     let mut loops = CompactLoops::new(300);
     loops.slots[0] = Some(LoopSlot {
       duration_ns: 1_000,
@@ -709,16 +709,16 @@ mod tests {
   }
 
   #[test]
-  fn selecting_a_target_consumes_the_slot_press_without_toggling_playback() {
+  fn selecting_a_target_loop_consumes_the_slot_press_without_toggling_playback() {
     let mut loops = CompactLoops::new(300);
     loops.slots[1] = Some(LoopSlot {
       duration_ns: 100,
       intervals: vec![LoopInterval { pitch: 4, start_ns: 0, duration_ns: None }],
     });
-    loops.select_press();
+    loops.select_target_loop_press();
     assert!(loops.slot_press(1, 20).is_empty());
-    assert_eq!(loops.target, 1);
-    assert!(!loops.selecting_target);
+    assert_eq!(loops.target_loop_slot, 1);
+    assert!(!loops.selecting_target_loop);
     assert!(!loops.slot_sounding(1));
   }
 

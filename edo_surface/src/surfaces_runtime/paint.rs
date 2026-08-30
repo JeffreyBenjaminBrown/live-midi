@@ -13,8 +13,8 @@ use crate::monome;
 use super::grid::{
   button_level, volume_cells, ButtonOverlay, BRIGHT, DIM, OFF, STEADY_DIM,
 };
-use super::layer_controls::LayerTarget;
 use super::ring::Reason;
+use super::tone_controls::ToneTarget;
 use super::{chords, compact_loops, dance, momentary_chords, GridThread, NO_RECT};
 
 /// One lock: this grid's accrete-control LED view (its OWN bank's state) plus the
@@ -92,8 +92,8 @@ pub(super) fn chord_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverl
   (buttons, classes)
 }
 
-/// The pitch-only block: target + three slots + arm over five slots. Slots are
-/// bright only while their momentary recall actually sounds.
+/// The pitch-only block: tone target + chord mode + thirteen slots + arm. Slots
+/// are bright only while their momentary recall actually sounds.
 pub(super) fn momentary_chord_view(
   rt: &GridThread,
   elapsed: Duration,
@@ -102,36 +102,37 @@ pub(super) fn momentary_chord_view(
   if rect == NO_RECT {
     return (Vec::new(), HashSet::new());
   }
-  let (armed, mode, populated, sounding, classes) = {
+  let (armed, chord_mode, populated, sounding, classes) = {
     let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let mut classes = HashSet::new();
     for gr in rings.iter() {
       classes.extend(
-        gr.momentary_chord.live_pitches().map(|pitch| pitch.rem_euclid(rt.tuning.edo)),
+        gr.momentary_chords.live_pitches().map(|pitch| pitch.rem_euclid(rt.tuning.edo)),
       );
     }
-    let layer = &rings[rt.grid_index].momentary_chord;
+    let chords = &rings[rt.grid_index].momentary_chords;
     let sounding: [bool; momentary_chords::SLOTS] =
-      std::array::from_fn(|slot| layer.slot_sounding(slot));
+      std::array::from_fn(|slot| chords.slot_sounding(slot));
     let populated: [bool; momentary_chords::SLOTS] =
-      std::array::from_fn(|slot| layer.slots[slot].is_some());
-    (layer.armed, layer.mode, populated, sounding, classes)
+      std::array::from_fn(|slot| chords.slots[slot].is_some());
+    (chords.armed, chords.chord_mode, populated, sounding, classes)
   };
-  let target = {
-    let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
-    controls.get(rt.grid_index).map(|state| state.target())
+  let tone_target = {
+    let controls = rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
+    controls.get(rt.grid_index).map(|state| state.tone_target())
   };
   let mut buttons = Vec::new();
-  if rt.overlays.layer_target_rect != NO_RECT {
-    let target_level = match target {
-      Some(LayerTarget::FingeredSustained) | None => OFF,
-      Some(LayerTarget::Chord) => DIM,
-      Some(LayerTarget::Loop) => BRIGHT,
+  if rt.overlays.tone_target_rect != NO_RECT {
+    let target_level = match tone_target {
+      Some(ToneTarget::FingeredSustained) | None => OFF,
+      Some(ToneTarget::Chord) => DIM,
+      Some(ToneTarget::Loop) => BRIGHT,
     };
-    buttons.push((rt.overlays.layer_target_rect, target_level));
+    buttons.push((rt.overlays.tone_target_rect, target_level));
   }
-  let (mx, my) = momentary_chords::mode_cell(rect);
-  let mode_level = if mode == momentary_chords::RecallMode::Momentary { BRIGHT } else { OFF };
+  let (mx, my) = momentary_chords::chord_mode_cell(rect);
+  let mode_level =
+    if chord_mode == momentary_chords::ChordMode::Momentary { BRIGHT } else { OFF };
   buttons.push(([mx, my, mx, my], mode_level));
   let (ax, ay) = momentary_chords::arm_cell(rect);
   let arm_level = if armed && (elapsed.as_millis() / 200) % 2 == 0 {
@@ -170,7 +171,7 @@ pub(super) fn compact_loop_view(
   for slot in 0..compact_loops::SLOTS {
     let (x, y) = compact_loops::slot_cell(rect, slot);
     let recording_and_playing = rt.compact_loops.recording()
-      && slot == rt.compact_loops.target
+      && slot == rt.compact_loops.target_loop_slot
       && rt.compact_loops.slot_sounding(slot);
     let level = if recording_and_playing {
       if record_play_bright {
@@ -178,7 +179,7 @@ pub(super) fn compact_loop_view(
       } else {
         STEADY_DIM
       }
-    } else if slot == rt.compact_loops.target {
+    } else if slot == rt.compact_loops.target_loop_slot {
       if flash { BRIGHT } else { OFF }
     } else if rt.compact_loops.slot_sounding(slot) {
       BRIGHT
@@ -199,7 +200,7 @@ pub(super) fn compact_loop_view(
   let (qx, qy) = compact_loops::select_cell(rect);
   buttons.push((
     [qx, qy, qx, qy],
-    if rt.compact_loops.selecting_target && flash { BRIGHT } else { OFF },
+    if rt.compact_loops.selecting_target_loop && flash { BRIGHT } else { OFF },
   ));
   let (px, py) = compact_loops::phase_cell(rect);
   buttons.push((

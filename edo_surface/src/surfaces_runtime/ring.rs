@@ -48,7 +48,7 @@ use std::collections::HashSet;
 use super::accrete::AccreteState;
 use super::chords::ChordLayer;
 use super::edit::EditState;
-use super::momentary_chords::MomentaryChordLayer;
+use super::momentary_chords::MomentaryChords;
 
 /// A stored pitch set. Only [`Reason::Sustain`] keeps a note alive; [`Reason::Edit`] is
 /// a selection over the sustained (or fingered) voices, never life-support (see the
@@ -178,7 +178,7 @@ pub struct GridRing {
   pub edit: EditState,
   pub store: RingStore,
   pub chord: ChordLayer,
-  pub momentary_chord: MomentaryChordLayer,
+  pub momentary_chords: MomentaryChords,
 }
 
 impl GridRing {
@@ -189,7 +189,7 @@ impl GridRing {
       edit: EditState::new(),
       store: RingStore::new(),
       chord: ChordLayer::new(),
-      momentary_chord: MomentaryChordLayer::new(),
+      momentary_chords: MomentaryChords::new(),
     }
   }
 }

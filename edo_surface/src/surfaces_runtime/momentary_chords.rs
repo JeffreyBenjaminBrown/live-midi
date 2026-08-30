@@ -1,4 +1,4 @@
-//! Pitch-only momentary/toggle chord slots for the three-layer monome instrument.
+//! Pitch-only momentary/toggle chord slots for the tone-target monome instrument.
 
 use std::collections::HashMap;
 
@@ -6,13 +6,13 @@ pub const SLOTS: usize = 13;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockCell {
-  Mode,
+  ChordMode,
   Arm,
   Slot(usize),
 }
 
 /// Top row: slots 0..6 then the separate ACCRETE cell. Bottom row: slots
-/// 7..12, MODE, ARM. The ACCRETE hole belongs to its own overlay.
+/// 7..12, CHORD MODE, ARM. The ACCRETE hole belongs to its own overlay.
 pub fn block_cell(rect: [i32; 4], cell: (i32, i32)) -> Option<BlockCell> {
   let [x0, y0, x1, y1] = rect;
   let (x, y) = cell;
@@ -23,7 +23,7 @@ pub fn block_cell(rect: [i32; 4], cell: (i32, i32)) -> Option<BlockCell> {
   match (y - y0, dx) {
     (0, 0..=6) => Some(BlockCell::Slot(dx)),
     (1, 0..=5) => Some(BlockCell::Slot(7 + dx)),
-    (1, 6) => Some(BlockCell::Mode),
+    (1, 6) => Some(BlockCell::ChordMode),
     (1, 7) => Some(BlockCell::Arm),
     _ => None,
   }
@@ -38,7 +38,7 @@ pub fn slot_cell(rect: [i32; 4], slot: usize) -> (i32, i32) {
   }
 }
 
-pub fn mode_cell(rect: [i32; 4]) -> (i32, i32) {
+pub fn chord_mode_cell(rect: [i32; 4]) -> (i32, i32) {
   (rect[0] + 6, rect[1] + 1)
 }
 
@@ -47,7 +47,7 @@ pub fn arm_cell(rect: [i32; 4]) -> (i32, i32) {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RecallMode {
+pub enum ChordMode {
   Momentary,
   Toggle,
 }
@@ -59,29 +59,29 @@ pub struct LiveVoice {
 }
 
 #[derive(Debug)]
-pub struct MomentaryChordLayer {
+pub struct MomentaryChords {
   pub slots: [Option<Vec<i32>>; SLOTS],
   pub armed: bool,
-  pub mode: RecallMode,
+  pub chord_mode: ChordMode,
   held: [bool; SLOTS],
   pub live: HashMap<u64, LiveVoice>,
   next_seq: u64,
 }
 
-impl Default for MomentaryChordLayer {
+impl Default for MomentaryChords {
   fn default() -> Self {
     Self {
       slots: std::array::from_fn(|_| None),
       armed: false,
-      mode: RecallMode::Momentary,
+      chord_mode: ChordMode::Momentary,
       held: [false; SLOTS],
       live: HashMap::new(),
-      next_seq: 1 << 63, // disjoint from the legacy chord layer if a bad rig mixes them
+      next_seq: 1 << 63, // disjoint from legacy chord voices if a bad rig mixes them
     }
   }
 }
 
-impl MomentaryChordLayer {
+impl MomentaryChords {
   pub fn new() -> Self {
     Self::default()
   }
@@ -91,9 +91,9 @@ impl MomentaryChordLayer {
   }
 
   pub fn storage_source_slots(&self) -> Vec<usize> {
-    match self.mode {
-      RecallMode::Momentary => self.held_slots(),
-      RecallMode::Toggle => (0..SLOTS).filter(|slot| self.slot_sounding(*slot)).collect(),
+    match self.chord_mode {
+      ChordMode::Momentary => self.held_slots(),
+      ChordMode::Toggle => (0..SLOTS).filter(|slot| self.slot_sounding(*slot)).collect(),
     }
   }
 
@@ -129,7 +129,7 @@ impl MomentaryChordLayer {
   /// Key-up: end only voices born from this slot's current hold.
   pub fn release(&mut self, slot: usize) -> Vec<u64> {
     self.held[slot] = false;
-    if self.mode == RecallMode::Toggle {
+    if self.chord_mode == ChordMode::Toggle {
       return Vec::new();
     }
     self.end_slot(slot)
@@ -144,7 +144,7 @@ impl MomentaryChordLayer {
     seqs
   }
 
-  /// A toggle-mode key-down either ends this slot or starts a fresh recall.
+  /// A toggle-chord-mode key-down either ends this slot or starts a fresh recall.
   pub fn toggle(&mut self, slot: usize) -> (Vec<(u64, i32)>, Vec<u64>) {
     if self.slot_sounding(slot) {
       return (Vec::new(), self.end_slot(slot));
@@ -167,14 +167,14 @@ impl MomentaryChordLayer {
       .collect()
   }
 
-  /// Change mode. Toggle -> momentary ends every latch immediately; momentary ->
-  /// toggle adopts any physically held recalls as latches.
-  pub fn toggle_mode(&mut self) -> Vec<u64> {
-    self.mode = match self.mode {
-      RecallMode::Momentary => RecallMode::Toggle,
-      RecallMode::Toggle => RecallMode::Momentary,
+  /// Change chord mode. Toggle -> momentary ends every latch immediately;
+  /// momentary -> toggle adopts any physically held recalls as latches.
+  pub fn toggle_chord_mode(&mut self) -> Vec<u64> {
+    self.chord_mode = match self.chord_mode {
+      ChordMode::Momentary => ChordMode::Toggle,
+      ChordMode::Toggle => ChordMode::Momentary,
     };
-    if self.mode == RecallMode::Momentary {
+    if self.chord_mode == ChordMode::Momentary {
       self.end_all()
     } else {
       Vec::new()
@@ -232,7 +232,7 @@ mod tests {
 
   #[test]
   fn mapping_has_two_controls_and_thirteen_invertible_slots() {
-    assert_eq!(block_cell(RECT, mode_cell(RECT)), Some(BlockCell::Mode));
+    assert_eq!(block_cell(RECT, chord_mode_cell(RECT)), Some(BlockCell::ChordMode));
     assert_eq!(block_cell(RECT, arm_cell(RECT)), Some(BlockCell::Arm));
     assert_eq!(block_cell(RECT, (7, 14)), None, "ACCRETE owns the one block hole");
     for slot in 0..SLOTS {
@@ -241,68 +241,68 @@ mod tests {
   }
 
   #[test]
-  fn recalls_are_momentary_and_can_layer() {
-    let mut layer = MomentaryChordLayer::new();
-    layer.save(0, &[9, 5]);
-    layer.save(1, &[12]);
-    assert_eq!(layer.press(0).len(), 2);
-    assert_eq!(layer.press(1).len(), 1);
-    assert_eq!(layer.live.len(), 3);
-    assert_eq!(layer.release(0).len(), 2);
-    assert_eq!(layer.live.len(), 1);
+  fn recalls_are_momentary_and_can_sound_together() {
+    let mut chords = MomentaryChords::new();
+    chords.save(0, &[9, 5]);
+    chords.save(1, &[12]);
+    assert_eq!(chords.press(0).len(), 2);
+    assert_eq!(chords.press(1).len(), 1);
+    assert_eq!(chords.live.len(), 3);
+    assert_eq!(chords.release(0).len(), 2);
+    assert_eq!(chords.live.len(), 1);
   }
 
   #[test]
-  fn toggle_slots_layer_independently_and_returning_to_momentary_releases_them() {
-    let mut layer = MomentaryChordLayer::new();
-    layer.save(0, &[5]);
-    layer.save(1, &[9]);
-    assert!(layer.toggle_mode().is_empty());
-    assert_eq!(layer.mode, RecallMode::Toggle);
+  fn toggle_slots_sound_independently_and_returning_to_momentary_releases_them() {
+    let mut chords = MomentaryChords::new();
+    chords.save(0, &[5]);
+    chords.save(1, &[9]);
+    assert!(chords.toggle_chord_mode().is_empty());
+    assert_eq!(chords.chord_mode, ChordMode::Toggle);
 
-    assert_eq!(layer.toggle(0).0.len(), 1);
-    assert_eq!(layer.toggle(1).0.len(), 1);
-    assert!(layer.slot_sounding(0) && layer.slot_sounding(1));
-    assert_eq!(layer.toggle(0).1.len(), 1);
-    assert!(!layer.slot_sounding(0));
-    assert!(layer.slot_sounding(1));
+    assert_eq!(chords.toggle(0).0.len(), 1);
+    assert_eq!(chords.toggle(1).0.len(), 1);
+    assert!(chords.slot_sounding(0) && chords.slot_sounding(1));
+    assert_eq!(chords.toggle(0).1.len(), 1);
+    assert!(!chords.slot_sounding(0));
+    assert!(chords.slot_sounding(1));
 
-    let released = layer.toggle_mode();
-    assert_eq!(layer.mode, RecallMode::Momentary);
+    let released = chords.toggle_chord_mode();
+    assert_eq!(chords.chord_mode, ChordMode::Momentary);
     assert_eq!(released.len(), 1);
-    assert!(layer.live.is_empty());
+    assert!(chords.live.is_empty());
   }
 
   #[test]
   fn toggle_storage_sources_are_the_latched_slots() {
-    let mut layer = MomentaryChordLayer::new();
-    layer.save(2, &[1]);
-    layer.save(4, &[2]);
-    layer.toggle_mode();
-    layer.toggle(2);
-    layer.toggle(4);
-    assert_eq!(layer.storage_source_slots(), vec![2, 4]);
-    assert!(layer.overwrite_held(&[8, 8, 3]));
-    assert_eq!(layer.slots[2].as_deref(), Some([3, 8].as_slice()));
-    assert_eq!(layer.slots[4].as_deref(), Some([3, 8].as_slice()));
+    let mut chords = MomentaryChords::new();
+    chords.save(2, &[1]);
+    chords.save(4, &[2]);
+    chords.toggle_chord_mode();
+    chords.toggle(2);
+    chords.toggle(4);
+    assert_eq!(chords.storage_source_slots(), vec![2, 4]);
+    assert!(chords.overwrite_held(&[8, 8, 3]));
+    assert_eq!(chords.slots[2].as_deref(), Some([3, 8].as_slice()));
+    assert_eq!(chords.slots[4].as_deref(), Some([3, 8].as_slice()));
   }
 
   #[test]
   fn held_source_overwrite_uses_sorted_unique_pitches() {
-    let mut layer = MomentaryChordLayer::new();
-    layer.save(0, &[1]);
-    layer.press(0);
-    assert!(layer.overwrite_held(&[9, 5, 9]));
-    assert_eq!(layer.slots[0].as_deref(), Some([5, 9].as_slice()));
+    let mut chords = MomentaryChords::new();
+    chords.save(0, &[1]);
+    chords.press(0);
+    assert!(chords.overwrite_held(&[9, 5, 9]));
+    assert_eq!(chords.slots[0].as_deref(), Some([5, 9].as_slice()));
   }
 
   #[test]
   fn shifting_live_does_not_change_storage() {
-    let mut layer = MomentaryChordLayer::new();
-    layer.save(0, &[3, 7]);
-    layer.press(0);
-    layer.shift_live(41);
-    assert_eq!(layer.slots[0].as_deref(), Some([3, 7].as_slice()));
-    assert!(layer.live.values().all(|v| [44, 48].contains(&v.pitch)));
+    let mut chords = MomentaryChords::new();
+    chords.save(0, &[3, 7]);
+    chords.press(0);
+    chords.shift_live(41);
+    assert_eq!(chords.slots[0].as_deref(), Some([3, 7].as_slice()));
+    assert!(chords.live.values().all(|v| [44, 48].contains(&v.pitch)));
   }
 }

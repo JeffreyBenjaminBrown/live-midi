@@ -68,7 +68,7 @@ pub(super) fn drive_accrete(
         // so the block's LEDs agree with the silence. A rig with no chord block has
         // an empty registry, so this is a no-op there.
         let mut chord_seqs = gr.chord.end_all();
-        chord_seqs.extend(gr.momentary_chord.end_all());
+        chord_seqs.extend(gr.momentary_chords.end_all());
         (ended, chord_seqs)
       }
       (AccreteControlKind::Clear, false) => {

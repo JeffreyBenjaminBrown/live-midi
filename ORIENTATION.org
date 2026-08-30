@@ -76,16 +76,16 @@ fails if they drift.
   features are journaled in =queues/branch-<N>.org= DONE entries, in per-feature
   =TODO/<feature>/= directories, and in commit messages.
 
-* the reduced three-layer instrument
+* the reduced tone-target instrument
 =monomes_two-timbres_sustain_chords= is a separate surfaces-runtime rig for one
 or two unpinned 16x16 grids, with no pedals or edit/pulse interface.  Each grid
 has independent fingered/sustained, recalled-chord, and compact-loop
-timbre/volume state, thirteen pitch-only chord slots, and eleven freehand loop
-slots persisted by physical serial id.  Player reference:
+tone targets ("tone" includes timbre and volume), thirteen pitch-only chord
+slots, and eleven freehand loop slots persisted by physical serial id.  Player reference:
 [[./rigs/monomes_two-timbres_sustain_chords_readme.org]]; rig:
 =rigs/monomes_two-timbres_sustain_chords.org=; design:
 =TODO/monomes_two-timbres_sustain_chords/=.  Its focused runtime pieces are
-=layer_controls.rs=, =momentary_chords.rs=, =momentary_chords_persist.rs=,
+=tone_controls.rs=, =momentary_chords.rs=, =momentary_chords_persist.rs=,
 =compact_loops.rs=, and =compact_loops_persist.rs=; dispatch remains in =keys.rs=,
 LEDs in =paint.rs=, and global equal-pitch packing in =synth.rs=.
 

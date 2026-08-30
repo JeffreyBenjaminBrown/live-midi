@@ -18,13 +18,13 @@ use super::chords;
 use super::compact_loops::{self, SourceKey, VoiceAction};
 use super::grid::{slot_for_selector_cell, volume_cells, volume_gain_for_pos};
 use super::hooks::{drive_accrete, editmode_press, factored_pulse_press};
-use super::layer_controls::LayerTarget;
 use super::momentary_chords;
 use super::paint::publish_sounding;
 use super::polyrhythm::TempoFactorButton;
 use super::ring::{GridRing, Reason};
 use super::settings::{current_slot, set_slot};
 use super::synth::{self, set_grid_fader_gain};
+use super::tone_controls::ToneTarget;
 use super::{edit, pedal_slide, GridThread, VOLUME_DB_RANGE};
 
 fn timbre_at(rt: &GridThread, slot: usize) -> Timbre {
@@ -72,12 +72,13 @@ pub(super) fn handle_key(
   cell: (i32, i32),
   press: bool,
 ) {
-  // The three-way layer target is a separate cell from both storage blocks.
-  if in_overlay(rt.overlays.layer_target_rect, cell) {
+  // The three-way tone target is a separate cell from both storage blocks.
+  if in_overlay(rt.overlays.tone_target_rect, cell) {
     if press {
-      let mut controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+      let mut controls =
+        rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
       if let Some(state) = controls.get_mut(rt.grid_index).filter(|state| state.enabled) {
-        state.cycle_target();
+        state.cycle_tone_target();
       }
     }
     return;
@@ -90,50 +91,41 @@ pub(super) fn handle_key(
   // the future-note timbre (moot while edit mode blocks new notes anyway).
   if let Some(slot) = slot_for_selector_cell(rt.overlays.selector_rect, cell) {
     if press {
-      let target = rt.knobs.controls_index;
-      let layered = {
-        let mut controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
-        controls.get_mut(target).filter(|state| state.enabled).map(|state| {
-          state.set_selected_target(slot);
-          (state.target(), state.gain_for(state.target()))
+      let controlled_grid = rt.knobs.controls_index;
+      let tone_state = {
+        let mut controls =
+          rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
+        controls.get_mut(controlled_grid).filter(|state| state.enabled).map(|state| {
+          state.set_selected_for_tone_target(slot);
+          (state.tone_target(), state.gain_for(state.tone_target()))
         })
       };
-      if let Some((layer, gain)) = layered {
+      if let Some((tone_target, gain)) = tone_state {
         let timbre = timbre_at(rt, slot);
         let (_, sample_rate) = rt.sink.release_params();
-        match layer {
-          LayerTarget::FingeredSustained => {
-            synth::retimbre_layer(&rt.shared.voices, target, false, timbre, sample_rate);
-            synth::set_layer_gain(&rt.shared.voices, target, false, gain);
-          }
-          LayerTarget::Chord => {
-            synth::retimbre_layer(&rt.shared.voices, target, true, timbre, sample_rate);
-            synth::set_layer_gain(&rt.shared.voices, target, true, gain);
-          }
-          LayerTarget::Loop => {
-            synth::retimbre_loop_layer(&rt.shared.voices, target, timbre, sample_rate);
-            synth::set_loop_layer_gain(&rt.shared.voices, target, gain);
-          }
-        }
+        synth::retimbre_tone_target(
+          &rt.shared.voices, controlled_grid, tone_target, timbre, sample_rate,
+        );
+        synth::set_tone_target_gain(&rt.shared.voices, controlled_grid, tone_target, gain);
         return;
       }
       let (edited, chord_keys): (HashSet<i32>, HashSet<VoiceSource>) = {
         let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        match rings.get(target) {
+        match rings.get(controlled_grid) {
           Some(gr) => (
             gr.store.iter(Reason::Edit).collect(),
             gr.chord
               .live
               .iter()
               .filter(|(_, v)| v.edited)
-              .map(|(seq, _)| VoiceSource::SurfaceChord { grid: target, seq: *seq })
+              .map(|(seq, _)| VoiceSource::SurfaceChord { grid: controlled_grid, seq: *seq })
               .collect(),
           ),
           None => Default::default(),
         }
       };
       if edited.is_empty() && chord_keys.is_empty() {
-        set_slot(&rt.shared.selected, target, slot);
+        set_slot(&rt.shared.selected, controlled_grid, slot);
       } else {
         let timbre = timbre_at(rt, slot);
         let held_target: HashMap<(i32, i32), i32> = rt
@@ -141,18 +133,19 @@ pub(super) fn handle_key(
           .held_all
           .lock()
           .unwrap_or_else(|e| e.into_inner())
-          .get(target)
+          .get(controlled_grid)
           .cloned()
           .unwrap_or_default();
         let (_, sample_rate) = rt.sink.release_params();
         synth::retimbre_voices(
-          &rt.shared.voices, target, &edited, &held_target, &chord_keys, timbre, sample_rate,
+          &rt.shared.voices, controlled_grid, &edited, &held_target, &chord_keys, timbre,
+          sample_rate,
         );
       }
     }
     return;
   }
-  // Relative dB buttons for the two-layer instrument. Press LEDs are local to
+  // Relative dB buttons for the three tone targets. Press LEDs are local to
   // this surface; the state and live gain updates apply to the controlled grid.
   if in_overlay(rt.overlays.volume_delta_rect, cell) {
     let pos = (cell.0 - rt.overlays.volume_delta_rect[0]) as usize;
@@ -162,32 +155,51 @@ pub(super) fn handle_key(
     if press {
       let target_grid = rt.knobs.volume_delta_controls_index;
       let update = {
-        let mut controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+        let mut controls =
+          rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
         controls.get_mut(target_grid).filter(|state| state.enabled).map(|state| {
-          let layer = state.target();
+          let tone_target = state.tone_target();
           let changed_slot = state.apply_delta_cell(pos);
-          let finger_gain = state.gain_for(LayerTarget::FingeredSustained);
-          let chord_gain = state.gain_for(LayerTarget::Chord);
-          let loop_gain = state.gain_for(LayerTarget::Loop);
+          let finger_gain = state.gain_for(ToneTarget::FingeredSustained);
+          let chord_gain = state.gain_for(ToneTarget::Chord);
+          let loop_gain = state.gain_for(ToneTarget::Loop);
           let chord_shares_base =
-            state.selected_for(LayerTarget::Chord) == changed_slot;
-          let loop_shares_base = state.selected_for(LayerTarget::Loop) == changed_slot;
-          (layer, finger_gain, chord_gain, loop_gain, chord_shares_base, loop_shares_base)
+            state.selected_for(ToneTarget::Chord) == changed_slot;
+          let loop_shares_base = state.selected_for(ToneTarget::Loop) == changed_slot;
+          (tone_target, finger_gain, chord_gain, loop_gain, chord_shares_base, loop_shares_base)
         })
       };
-      if let Some((layer, finger_gain, chord_gain, loop_gain, chord_shares_base, loop_shares_base)) = update {
-        if layer == LayerTarget::FingeredSustained {
-          synth::set_layer_gain(&rt.shared.voices, target_grid, false, finger_gain);
+      if let Some((
+        tone_target,
+        finger_gain,
+        chord_gain,
+        loop_gain,
+        chord_shares_base,
+        loop_shares_base,
+      )) = update
+      {
+        if tone_target == ToneTarget::FingeredSustained {
+          synth::set_tone_target_gain(
+            &rt.shared.voices, target_grid, ToneTarget::FingeredSustained, finger_gain,
+          );
           if chord_shares_base {
-            synth::set_layer_gain(&rt.shared.voices, target_grid, true, chord_gain);
+            synth::set_tone_target_gain(
+              &rt.shared.voices, target_grid, ToneTarget::Chord, chord_gain,
+            );
           }
           if loop_shares_base {
-            synth::set_loop_layer_gain(&rt.shared.voices, target_grid, loop_gain);
+            synth::set_tone_target_gain(
+              &rt.shared.voices, target_grid, ToneTarget::Loop, loop_gain,
+            );
           }
-        } else if layer == LayerTarget::Chord {
-          synth::set_layer_gain(&rt.shared.voices, target_grid, true, chord_gain);
+        } else if tone_target == ToneTarget::Chord {
+          synth::set_tone_target_gain(
+            &rt.shared.voices, target_grid, ToneTarget::Chord, chord_gain,
+          );
         } else {
-          synth::set_loop_layer_gain(&rt.shared.voices, target_grid, loop_gain);
+          synth::set_tone_target_gain(
+            &rt.shared.voices, target_grid, ToneTarget::Loop, loop_gain,
+          );
         }
       }
     }
@@ -348,7 +360,7 @@ pub(super) fn handle_key(
   if in_overlay(rt.overlays.clear_rect, cell) {
     if rt.overlays.compact_loop_rect == super::NO_RECT {
       // Existing surfaces instruments retain the historical origin-blind
-      // sustain+chord clear.  Only the compact three-layer rig narrows its
+      // sustain+chord clear. Only the compact tone-target rig narrows its
       // dedicated on-grid button below.
       let (release_secs, sample_rate) = rt.sink.release_params();
       drive_accrete(
@@ -455,19 +467,20 @@ pub(super) fn handle_key(
         _ => None,
       };
       if let Some(delta) = octave {
-        let layer_target = {
-          let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+        let tone_target = {
+          let controls =
+            rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
           controls
             .get(rt.grid_index)
             .filter(|state| state.enabled)
-            .map(|state| state.target())
+            .map(|state| state.tone_target())
         };
-        match layer_target {
-          Some(LayerTarget::Chord) => {
+        match tone_target {
+          Some(ToneTarget::Chord) => {
             shift_momentary_chords(rt, delta);
             return;
           }
-          Some(LayerTarget::Loop) => {
+          Some(ToneTarget::Loop) => {
             shift_compact_loop(rt, delta);
             return;
           }
@@ -617,16 +630,17 @@ pub(super) fn handle_key(
     // The sink rig may additionally detune only the retired tail; a zero setting
     // retains the historical exact-pitch cut.
     let retrigger = rt.sink.cut_sustained(pitch);
-    let layered = {
-      let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+    let tone_state = {
+      let controls =
+        rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
       controls.get(rt.grid_index).filter(|state| state.enabled).map(|state| {
         (
-          state.selected_for(LayerTarget::FingeredSustained),
-          state.gain_for(LayerTarget::FingeredSustained),
+          state.selected_for(ToneTarget::FingeredSustained),
+          state.gain_for(ToneTarget::FingeredSustained),
         )
       })
     };
-    let slot = layered
+    let slot = tone_state
       .map(|(slot, _)| slot)
       .unwrap_or_else(|| current_slot(&rt.shared.selected, rt.grid_index));
     let timbre = timbre_at(rt, slot);
@@ -663,21 +677,27 @@ pub(super) fn handle_key(
         // the grid's onset pulse).
         None => match retrigger {
           Some(cut) => {
-            rt.sink.note_on_continuing(cell, pitch, timbre, cut);
+            match tone_state {
+              Some((_, gain)) =>
+                rt.sink.note_on_continuing_with_gain(cell, pitch, timbre, gain, cut),
+              None => rt.sink.note_on_continuing(cell, pitch, timbre, cut),
+            }
             drone_became_fingered(rt, pitch, cell);
           }
-          None => match layered {
-            Some((_, gain)) => rt.sink.note_on_layered(cell, pitch, timbre, gain),
+          None => match tone_state {
+            Some((_, gain)) => rt.sink.note_on_with_tone_gain(cell, pitch, timbre, gain),
             None => rt.sink.note_on(cell, pitch, timbre, factored_pulse),
           },
         },
       }
     }
-    if let Some((_, gain)) = layered {
+    if let Some((_, gain)) = tone_state {
       // Covers the sustaining-retrigger and dormant slide/mono paths as well as
       // fresh notes; this rig declares neither slide nor mono, but keeping the
-      // layer invariant here makes the code robust to a later rig edit.
-      synth::set_layer_gain(&rt.shared.voices, rt.grid_index, false, gain);
+      // tone-target invariant here makes the code robust to a later rig edit.
+      synth::set_tone_target_gain(
+        &rt.shared.voices, rt.grid_index, ToneTarget::FingeredSustained, gain,
+      );
     }
     held.insert(cell, pitch);
     let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
@@ -722,7 +742,7 @@ fn capture_momentary_pitches(
     .values()
     .copied()
     .chain(gr.store.iter(Reason::Sustain))
-    .chain(gr.momentary_chord.live_pitches())
+    .chain(gr.momentary_chords.live_pitches())
     .collect();
   momentary_chords::normalized(&pitches)
 }
@@ -736,7 +756,7 @@ pub(super) fn persist_momentary(rt: &GridThread) {
     let mut present = Vec::new();
     for (i, id) in target.device_ids.iter().enumerate() {
       if let Some(id) = id {
-        present.push((id.clone(), rings[i].momentary_chord.slots.to_vec()));
+        present.push((id.clone(), rings[i].momentary_chords.slots.to_vec()));
       }
     }
     present
@@ -765,11 +785,12 @@ pub(super) fn apply_compact_actions(rt: &mut GridThread, actions: Vec<VoiceActio
     return;
   }
   let (slot, gain) = {
-    let controls = rt.shared.layer_controls.lock().unwrap_or_else(|error| error.into_inner());
+    let controls =
+      rt.shared.tone_controls.lock().unwrap_or_else(|error| error.into_inner());
     let state = &controls[rt.grid_index];
     (
-      state.selected_for(LayerTarget::Loop),
-      state.gain_for(LayerTarget::Loop),
+      state.selected_for(ToneTarget::Loop),
+      state.gain_for(ToneTarget::Loop),
     )
   };
   let timbre = timbre_at(rt, slot);
@@ -813,9 +834,9 @@ fn compact_loop_key(rt: &mut GridThread, cell: (i32, i32), press: bool) {
         }
       }
     }
-    compact_loops::BlockCell::SelectTarget => {
+    compact_loops::BlockCell::SelectTargetLoop => {
       if press {
-        rt.compact_loops.select_press();
+        rt.compact_loops.select_target_loop_press();
       }
     }
     compact_loops::BlockCell::PhaseMode => {
@@ -833,7 +854,7 @@ fn compact_loop_key(rt: &mut GridThread, cell: (i32, i32), press: bool) {
   }
 }
 
-/// Target/arm/eight-slot key edges for the pitch-only momentary block.
+/// Chord-mode/arm/slot key edges for the pitch-only momentary block.
 fn momentary_chord_key(
   rt: &mut GridThread,
   held: &HashMap<(i32, i32), i32>,
@@ -844,13 +865,13 @@ fn momentary_chord_key(
     return;
   };
   match hit {
-    momentary_chords::BlockCell::Mode => {
+    momentary_chords::BlockCell::ChordMode => {
       if !press {
         return;
       }
       let seqs = {
         let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        rings[rt.grid_index].momentary_chord.toggle_mode()
+        rings[rt.grid_index].momentary_chords.toggle_chord_mode()
       };
       let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
       for seq in &seqs {
@@ -865,35 +886,35 @@ fn momentary_chord_key(
       }
       let has_held_sources = {
         let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        !rings[rt.grid_index].momentary_chord.storage_source_slots().is_empty()
+        !rings[rt.grid_index].momentary_chords.storage_source_slots().is_empty()
       };
       if has_held_sources {
         let pitches = capture_momentary_pitches(rt, held);
         {
           let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-          let layer = &mut rings[rt.grid_index].momentary_chord;
-          layer.overwrite_held(&pitches);
-          layer.armed = false;
+          let chords = &mut rings[rt.grid_index].momentary_chords;
+          chords.overwrite_held(&pitches);
+          chords.armed = false;
         }
         if !pitches.is_empty() {
           persist_momentary(rt);
         }
       } else {
         let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        let layer = &mut rings[rt.grid_index].momentary_chord;
-        layer.armed = !layer.armed;
+        let chords = &mut rings[rt.grid_index].momentary_chords;
+        chords.armed = !chords.armed;
       }
     }
     momentary_chords::BlockCell::Slot(slot) => {
       if press {
         let armed = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[rt.grid_index]
-          .momentary_chord
+          .momentary_chords
           .armed;
         if armed {
           let pitches = capture_momentary_pitches(rt, held);
           {
             let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-            rings[rt.grid_index].momentary_chord.save(slot, &pitches);
+            rings[rt.grid_index].momentary_chords.save(slot, &pitches);
           }
           if !pitches.is_empty() {
             persist_momentary(rt);
@@ -901,10 +922,10 @@ fn momentary_chord_key(
         } else {
           let (spawned, ended) = {
             let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-            let layer = &mut rings[rt.grid_index].momentary_chord;
-            match layer.mode {
-              momentary_chords::RecallMode::Momentary => (layer.press(slot), Vec::new()),
-              momentary_chords::RecallMode::Toggle => layer.toggle(slot),
+            let chords = &mut rings[rt.grid_index].momentary_chords;
+            match chords.chord_mode {
+              momentary_chords::ChordMode::Momentary => (chords.press(slot), Vec::new()),
+              momentary_chords::ChordMode::Toggle => chords.toggle(slot),
             }
           };
           let (release, sample_rate) = rt.sink.release_params();
@@ -920,11 +941,12 @@ fn momentary_chord_key(
             sample_rate,
           );
           let (timbre, gain) = {
-            let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+            let controls =
+              rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
             let state = &controls[rt.grid_index];
             (
-              timbre_at(rt, state.selected_for(LayerTarget::Chord)),
-              state.gain_for(LayerTarget::Chord),
+              timbre_at(rt, state.selected_for(ToneTarget::Chord)),
+              state.gain_for(ToneTarget::Chord),
             )
           };
           for (seq, pitch) in spawned {
@@ -935,7 +957,7 @@ fn momentary_chord_key(
       } else {
         let seqs = {
           let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-          rings[rt.grid_index].momentary_chord.release(slot)
+          rings[rt.grid_index].momentary_chords.release(slot)
         };
         let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         for seq in &seqs {
@@ -957,7 +979,7 @@ fn momentary_chord_key(
 fn shift_momentary_chords(rt: &mut GridThread, delta: i32) {
   let moved = {
     let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-    rings[rt.grid_index].momentary_chord.shift_live(delta)
+    rings[rt.grid_index].momentary_chords.shift_live(delta)
   };
   for (seq, pitch) in moved {
     rt.sink.glide_chord_voice(seq, pitch, rt.knobs.slide_duration_secs);
@@ -967,7 +989,7 @@ fn shift_momentary_chords(rt: &mut GridThread, delta: i32) {
 }
 
 fn shift_compact_loop(rt: &mut GridThread, delta: i32) {
-  let (moved, changed) = rt.compact_loops.shift_target(delta);
+  let (moved, changed) = rt.compact_loops.shift_target_loop(delta);
   for (seq, pitch) in moved {
     rt.sink.glide_loop_voice(seq, pitch, rt.knobs.slide_duration_secs);
   }

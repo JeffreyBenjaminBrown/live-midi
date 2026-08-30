@@ -850,10 +850,10 @@ pub enum MonomeWindowRig {
     /// The monome id whose play voices this strip sets the volume of.
     controls: String,
   },
-  // Four relative dB buttons for the two-layer surfaces instrument. Left to right:
-  // -coarse, -fine, +fine, +coarse. The momentary chord block on the controlled
-  // grid decides whether the buttons edit the fingered/sustained base or the
-  // chord-only offset.
+  // Four relative dB buttons for the tone-target surfaces instrument. Left to right:
+  // -coarse, -fine, +fine, +coarse. The tone-target control on the controlled
+  // grid decides whether the buttons edit the fingered/sustained base or a
+  // chord/loop offset.
   VolumeDelta {
     id: String,
     monome: String,
@@ -863,9 +863,9 @@ pub enum MonomeWindowRig {
     volume_coarse: f32,
     #[serde(default = "default_volume_fine_db")]
     volume_fine: f32,
-    #[serde(default = "default_layer_initial_db")]
+    #[serde(default = "default_tone_initial_db")]
     initial_db: f32,
-    #[serde(default = "default_layer_min_db")]
+    #[serde(default = "default_tone_min_db")]
     min_db: f32,
     #[serde(default)]
     max_db: f32,
@@ -959,15 +959,16 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
   },
-  // The pitch-only 5x2 chord block: target + 3 slots + arm over 5 slots.
-  // Slot presses are momentary; see TODO/monomes_two-timbres_sustain_chords.
+  // The pitch-only 8x2 chord block: thirteen slots, chord mode, and arm, with
+  // one hole for the separate accrete control. See the rig's player reference.
   MomentaryChordBlock {
     id: String,
     monome: String,
     rect: [i32; 4],
   },
-  // A single-cell three-way layer target for the pitch-only chord/loop surface.
-  LayerTargetControl {
+  // A single-cell three-way tone target for the pitch-only chord/loop surface.
+  // "Tone" includes both timbre and volume.
+  ToneTargetControl {
     id: String,
     monome: String,
     rect: [i32; 4],
@@ -1067,11 +1068,11 @@ fn default_volume_fine_db() -> f32 {
   2.0
 }
 
-fn default_layer_initial_db() -> f32 {
+fn default_tone_initial_db() -> f32 {
   -12.0
 }
 
-fn default_layer_min_db() -> f32 {
+fn default_tone_min_db() -> f32 {
   -60.0
 }
 
@@ -1176,7 +1177,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::FineTransposeToggle { id, .. }
       | MonomeWindowRig::ChordBlock { id, .. }
       | MonomeWindowRig::MomentaryChordBlock { id, .. }
-      | MonomeWindowRig::LayerTargetControl { id, .. }
+      | MonomeWindowRig::ToneTargetControl { id, .. }
       | MonomeWindowRig::CompactLoopBlock { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
@@ -1217,7 +1218,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::FineTransposeToggle { monome, .. }
       | MonomeWindowRig::ChordBlock { monome, .. }
       | MonomeWindowRig::MomentaryChordBlock { monome, .. }
-      | MonomeWindowRig::LayerTargetControl { monome, .. }
+      | MonomeWindowRig::ToneTargetControl { monome, .. }
       | MonomeWindowRig::CompactLoopBlock { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
@@ -1258,7 +1259,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::FineTransposeToggle { rect, .. }
       | MonomeWindowRig::ChordBlock { rect, .. }
       | MonomeWindowRig::MomentaryChordBlock { rect, .. }
-      | MonomeWindowRig::LayerTargetControl { rect, .. }
+      | MonomeWindowRig::ToneTargetControl { rect, .. }
       | MonomeWindowRig::CompactLoopBlock { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
@@ -1300,7 +1301,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::FineTransposeToggle { .. } => "fine_transpose_toggle",
       MonomeWindowRig::ChordBlock { .. } => "chord_block",
       MonomeWindowRig::MomentaryChordBlock { .. } => "momentary_chord_block",
-      MonomeWindowRig::LayerTargetControl { .. } => "layer_target_control",
+      MonomeWindowRig::ToneTargetControl { .. } => "tone_target_control",
       MonomeWindowRig::CompactLoopBlock { .. } => "compact_loop_block",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
@@ -2257,12 +2258,12 @@ fn validate_compact_loop_blocks(rig: &Rig) -> Result<(), String> {
     let has_chords = rig.monome_windows.iter().any(|w| {
       matches!(w, MonomeWindowRig::MomentaryChordBlock { monome: m, .. } if m == monome)
     });
-    let has_target = rig.monome_windows.iter().any(|w| {
-      matches!(w, MonomeWindowRig::LayerTargetControl { monome: m, .. } if m == monome)
+    let has_tone_target = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::ToneTargetControl { monome: m, .. } if m == monome)
     });
-    if !has_grid || !has_chords || !has_target {
+    if !has_grid || !has_chords || !has_tone_target {
       return Err(format!(
-        "compact_loop_block window {id:?} requires an edo_note_grid, momentary_chord_block, and layer_target_control on monome {monome:?}",
+        "compact_loop_block window {id:?} requires an edo_note_grid, momentary_chord_block, and tone_target_control on monome {monome:?}",
       ));
     }
     let [gw, gh] = rig
@@ -2307,8 +2308,8 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     MonomeWindowRig::FineTransposeToggle { id, monome, rect } => {
       Some(("fine_transpose_toggle", id, monome, *rect))
     }
-    MonomeWindowRig::LayerTargetControl { id, monome, rect } => {
-      Some(("layer_target_control", id, monome, *rect))
+    MonomeWindowRig::ToneTargetControl { id, monome, rect } => {
+      Some(("tone_target_control", id, monome, *rect))
     }
     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
       // Per-control uniqueness: label by control so a monome may carry one clear
@@ -2341,7 +2342,7 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
         "{kind} window {id:?} needs an edo_note_grid on the same monome {monome:?}",
       ));
     }
-    if kind == "layer_target_control"
+    if kind == "tone_target_control"
       && !rig.monome_windows.iter().any(|window| {
         matches!(
           window,
@@ -2350,7 +2351,7 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
       })
     {
       return Err(format!(
-        "layer_target_control window {id:?} needs a momentary_chord_block on the same monome {monome:?}",
+        "tone_target_control window {id:?} needs a momentary_chord_block on the same monome {monome:?}",
       ));
     }
     let [gw, gh] = rig
@@ -4551,9 +4552,9 @@ controls = "a"
     assert!(err.contains("no edo_note_grid"), "{err}");
   }
 
-  // ---- volume_delta + momentary_chord_block (two-layer surfaces rig) ----
+  // ---- volume_delta + momentary_chord_block (tone-target surfaces rig) ----
 
-  const TWO_LAYER_WINDOWS: &str = r#"
+  const TONE_CONTROL_WINDOWS: &str = r#"
 [[monome_windows]]
 id = "volume-a"
 monome = "a"
@@ -4568,17 +4569,17 @@ kind = "momentary_chord_block"
 rect = [0, 14, 7, 15]
 "#;
 
-  fn two_layer_rig_source() -> String {
+  fn tone_control_rig_source() -> String {
     format!(
       "{}{}",
       SURFACES_MIN.replacen("controls = \"b\"", "controls = \"a\"", 1),
-      TWO_LAYER_WINDOWS,
+      TONE_CONTROL_WINDOWS,
     )
   }
 
   #[test]
-  fn two_layer_windows_parse_with_documented_defaults() {
-    let rig = parse_rig(&two_layer_rig_source()).expect("the paired windows should validate");
+  fn tone_control_windows_parse_with_documented_defaults() {
+    let rig = parse_rig(&tone_control_rig_source()).expect("the paired windows should validate");
     let volume = rig
       .monome_windows
       .iter()
@@ -4602,10 +4603,10 @@ rect = [0, 14, 7, 15]
 
   #[test]
   fn volume_delta_validates_geometry_bounds_and_uniqueness() {
-    let bad_rect = two_layer_rig_source().replace("rect = [0, 1, 3, 1]", "rect = [0, 1, 2, 1]");
+    let bad_rect = tone_control_rig_source().replace("rect = [0, 1, 3, 1]", "rect = [0, 1, 2, 1]");
     assert!(parse_rig(&bad_rect).unwrap_err().contains("exactly 4 cells in one row"));
 
-    let bad_bounds = two_layer_rig_source().replace(
+    let bad_bounds = tone_control_rig_source().replace(
       "controls = \"a\"\n\n[[monome_windows]]\nid = \"momentary-a\"",
       "controls = \"a\"\ninitial_db = 1\n\n[[monome_windows]]\nid = \"momentary-a\"",
     );
@@ -4613,7 +4614,7 @@ rect = [0, 14, 7, 15]
 
     let duplicate = format!(
       "{}\n[[monome_windows]]\nid = \"volume-a-2\"\nmonome = \"a\"\nkind = \"volume_delta\"\nrect = [4, 1, 7, 1]\ncontrols = \"a\"\n",
-      two_layer_rig_source(),
+      tone_control_rig_source(),
     );
     assert!(parse_rig(&duplicate).unwrap_err().contains("more than one volume_delta"));
   }
@@ -4621,10 +4622,10 @@ rect = [0, 14, 7, 15]
   #[test]
   fn momentary_chord_block_validates_geometry_and_paired_controls() {
     let bad_rect =
-      two_layer_rig_source().replace("rect = [0, 14, 7, 15]", "rect = [0, 14, 6, 15]");
+      tone_control_rig_source().replace("rect = [0, 14, 7, 15]", "rect = [0, 14, 6, 15]");
     assert!(parse_rig(&bad_rect).unwrap_err().contains("exactly 8x2 cells"));
 
-    let missing_volume = two_layer_rig_source().replace(TWO_LAYER_WINDOWS, &TWO_LAYER_WINDOWS
+    let missing_volume = tone_control_rig_source().replace(TONE_CONTROL_WINDOWS, &TONE_CONTROL_WINDOWS
       .replace(
         "[[monome_windows]]\nid = \"volume-a\"\nmonome = \"a\"\nkind = \"volume_delta\"\nrect = [0, 1, 3, 1]\ncontrols = \"a\"\n\n",
         "",
@@ -4633,29 +4634,31 @@ rect = [0, 14, 7, 15]
 
     let legacy_too = format!(
       "{}\n[[monome_windows]]\nid = \"legacy-b\"\nmonome = \"b\"\nkind = \"chord_block\"\nrect = [5, 0, 9, 1]\n",
-      two_layer_rig_source(),
+      tone_control_rig_source(),
     );
     assert!(parse_rig(&legacy_too).unwrap_err().contains("cannot declare both"));
   }
 
   #[test]
-  fn layer_target_is_one_cell_and_requires_the_pitch_only_chord_layer() {
+  fn tone_target_is_one_cell_and_requires_the_pitch_only_chord_bank() {
     let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
-    let target = rig
+    let tone_target_control = rig
       .monome_windows
       .iter_mut()
-      .find(|window| matches!(window, MonomeWindowRig::LayerTargetControl { .. }))
+      .find(|window| matches!(window, MonomeWindowRig::ToneTargetControl { .. }))
       .expect("target exists");
-    let MonomeWindowRig::LayerTargetControl { rect, .. } = target else { unreachable!() };
+    let MonomeWindowRig::ToneTargetControl { rect, .. } = tone_target_control else {
+      unreachable!()
+    };
     *rect = [4, 0, 5, 0];
-    let err = validate_rig(&rig).expect_err("a two-cell target should fail");
-    assert!(err.contains("layer_target_control") && err.contains("exactly one cell"), "{err}");
+    let err = validate_rig(&rig).expect_err("a two-cell tone target should fail");
+    assert!(err.contains("tone_target_control") && err.contains("exactly one cell"), "{err}");
 
     let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
     rig
       .monome_windows
       .retain(|window| !matches!(window, MonomeWindowRig::MomentaryChordBlock { .. }));
-    let err = validate_rig(&rig).expect_err("an orphan target should fail");
+    let err = validate_rig(&rig).expect_err("an orphan tone target should fail");
     assert!(err.contains("needs a momentary_chord_block"), "{err}");
   }
 

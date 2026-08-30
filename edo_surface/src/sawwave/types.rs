@@ -84,11 +84,11 @@ pub enum VoiceSource {
   // the drone key so the pitch can re-drone immediately. `seq` is an
   // arbitrary uniquifier (the sink's voice-id counter), not a pitch.
   SurfaceRetired { grid: usize, seq: u64 },
-  // A surfaces-runtime CHORD-layer voice (chord-storage-v2): recalled from a
+  // A surfaces-runtime chord voice (chord-storage-v2): recalled from a
   // chord slot, keyed by an arbitrary per-recall seq -- never by pitch or cell,
-  // since chord voices coexist with the piano layer at the same pitch and any
-  // number may share one pitch. Its pitch/slot/edit-flag live in the chord
-  // layer's registry (`surfaces_runtime::chords::LiveChordVoice`). The PEDAL walk
+  // since chord voices coexist with fingered/sustained voices at the same pitch
+  // and any number may share one pitch. Its pitch/slot/edit-flag live in the chord
+  // registry (`surfaces_runtime::chords::LiveChordVoice`). The PEDAL walk
   // (`set_grid_pedal_gain`) matches it -- the pedal is uniform, origin-blind --
   // but the FADER walk does not: a recalled voice keeps its saved fader
   // component.

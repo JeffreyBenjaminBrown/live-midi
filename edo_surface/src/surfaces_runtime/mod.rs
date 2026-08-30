@@ -34,7 +34,6 @@ mod fine;
 mod grid;
 mod hooks;
 mod keys;
-mod layer_controls;
 mod momentary_chords;
 mod momentary_chords_persist;
 mod paint;
@@ -48,6 +47,7 @@ mod ring;
 mod settings;
 mod slide;
 mod synth;
+mod tone_controls;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -77,7 +77,6 @@ use crate::voices::Distortion;
 
 use accrete::AccreteState;
 use compact_loops::CompactLoops;
-use layer_controls::LayerControls;
 use ring::{GridRing, Reason};
 use polyrhythm::{TempoFactorButton, PolyrhythmState};
 use slide::SlideCandidates;
@@ -86,6 +85,7 @@ use grid::{
   SELECTOR_CELLS,
 };
 use synth::SurfaceSink;
+use tone_controls::ToneControls;
 
 // The submodules below are the phase-3 split of what used to be one 2.7k-line
 // mod.rs (see TODO/cleaning/2_plan.org phase 3); mod.rs itself keeps run(),
@@ -340,12 +340,12 @@ fn run(
   // Per-grid selected timbre slot (index = grid index). Each element is written only
   // by the grid whose selector controls it; every grid reads all of it.
   let selected = Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids]));
-  let layer_controls = Arc::new(Mutex::new(
+  let tone_controls = Arc::new(Mutex::new(
     s.grids
       .iter()
-      .map(|g| match (g.overlays.momentary_chord_rect != NO_RECT, g.layer_volume) {
-        (true, Some(config)) => LayerControls::new(true, config),
-        _ => LayerControls::disabled(),
+      .map(|g| match (g.overlays.momentary_chord_rect != NO_RECT, g.tone_volume) {
+        (true, Some(config)) => ToneControls::new(true, config),
+        _ => ToneControls::disabled(),
       })
       .collect::<Vec<_>>(),
   ));
@@ -451,7 +451,7 @@ fn run(
           let Some(id) = id else { continue };
           let Some(slots) = loaded.get(id) else { continue };
           for (slot, stored) in slots.iter().enumerate().take(momentary_chords::SLOTS) {
-            rings[i].momentary_chord.slots[slot] = stored.clone();
+            rings[i].momentary_chords.slots[slot] = stored.clone();
             restored += usize::from(stored.is_some());
           }
         }
@@ -560,7 +560,7 @@ fn run(
   // the whole bundle (cheap: it's all `Arc::clone`) instead of naming every field.
   let shared = Shared {
     selected: Arc::clone(&selected),
-    layer_controls: Arc::clone(&layer_controls),
+    tone_controls: Arc::clone(&tone_controls),
     sounding: Arc::clone(&sounding),
     trail: Arc::clone(&trail),
     volume_pos: Arc::clone(&volume_pos),
@@ -700,9 +700,9 @@ fn run(
 struct Shared {
   /// Per-grid selected timbre slot; written by whichever grid's selector controls it.
   selected: Arc<Mutex<Vec<usize>>>,
-  /// The per-grid dual-layer timbre and relative-dB state. Disabled entries keep
+  /// Per-grid tone-target state: "tone" includes timbre and volume. Disabled entries keep
   /// existing rigs on their old single-selector path.
-  layer_controls: Arc<Mutex<Vec<LayerControls>>>,
+  tone_controls: Arc<Mutex<Vec<ToneControls>>>,
   /// Per-grid sounding pitch-classes; the union drives cross-grid note reflection.
   sounding: Arc<Mutex<Vec<HashSet<i32>>>>,
   /// Shared recent-note trail (pitch classes), newest first.
@@ -932,11 +932,11 @@ fn grid_thread(mut rt: GridThread) {
     // sounding classes (bright; sustained notes count -- you hear them) and the shared
     // trail (dim), through the current register.
     let selector_slot = {
-      let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+      let controls = rt.shared.tone_controls.lock().unwrap_or_else(|e| e.into_inner());
       controls
         .get(rt.knobs.controls_index)
         .filter(|state| state.enabled)
-        .map(LayerControls::selected_target)
+        .map(ToneControls::selected_for_tone_target)
         .unwrap_or_else(|| current_slot(&rt.shared.selected, rt.knobs.controls_index))
     };
     let volume_col = volume_active_col(&rt);

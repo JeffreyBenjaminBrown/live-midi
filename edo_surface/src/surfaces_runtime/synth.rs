@@ -24,6 +24,8 @@ use crate::pitch::freq_for_pitch;
 use crate::types::{Timbre, TimbreXfade, VoiceId, VoiceMap, VoiceSource, VoiceState};
 use crate::voices::pluck_envelope;
 
+use super::tone_controls::ToneTarget;
+
 /// How long the edit-mode timbre switch's equal-power crossfade takes.
 pub const TIMBRE_XFADE_SECS: f32 = 0.05;
 
@@ -433,9 +435,15 @@ impl SurfaceSink {
     self.note_on_with_phase_and_gain(cell, pitch, timbre, factored_pulse_hz, phase, gain);
   }
 
-  /// Fresh fingered note for the two-layer instrument. The layer gain occupies
+  /// Fresh fingered note for the tone-target instrument. Tone-target volume occupies
   /// the normally-pedal-owned slewed component; this rig has no expression pedal.
-  pub fn note_on_layered(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, gain: f32) {
+  pub fn note_on_with_tone_gain(
+    &mut self,
+    cell: (i32, i32),
+    pitch: i32,
+    timbre: Timbre,
+    gain: f32,
+  ) {
     self.note_on_with_phase_and_gain(cell, pitch, timbre, None, 0.0, gain);
   }
 
@@ -1083,7 +1091,27 @@ impl SurfaceSink {
   /// retriggered in the envelope sense only (queues/branch-2.org). Contrast
   /// `note_on`/`note_on_with_phase`, whose pulse is the grid's at onset.
   pub fn note_on_continuing(&mut self, cell: (i32, i32), pitch: i32, timbre: Timbre, cut: CutVoice) {
-    self.note_on_with_phase(cell, pitch, timbre, None, cut.phase);
+    let gain = self.pedal_gain();
+    self.note_on_continuing_with_gain(cell, pitch, timbre, gain, cut);
+  }
+
+  /// The tone-target variant of `note_on_continuing`: preserve oscillator and pulse
+  /// state while initializing both the applied and target gain to `gain`. Starting
+  /// both fields together is essential at note onset; aiming the 20 ms live-control
+  /// slew afterward would make an attenuated tone target attack at unity first.
+  pub fn note_on_continuing_with_gain(
+    &mut self,
+    cell: (i32, i32),
+    pitch: i32,
+    timbre: Timbre,
+    gain: f32,
+    cut: CutVoice,
+  ) {
+    self.note_on_with_phase_and_gain(cell, pitch, timbre, None, cut.phase, gain);
+    self.restore_cut_pulse(cell, cut);
+  }
+
+  fn restore_cut_pulse(&mut self, cell: (i32, i32), cut: CutVoice) {
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
       state.factored_pulse_freq = cut.pulse_freq;
@@ -1242,64 +1270,20 @@ pub fn retimbre_voices(
   }
 }
 
-/// Re-timbre an entire live layer on one grid. Release tails are deliberately
-/// excluded: only fingered/droning or registered chord voices are musically live.
-pub fn retimbre_layer(
+/// Re-timbre every musically live voice in one tone target on one grid. A tone
+/// includes both timbre and volume; this function edits its timbre half. Release
+/// tails are excluded by `target_env` even though `ToneTarget` can classify them.
+pub fn retimbre_tone_target(
   voices: &Arc<Mutex<VoiceMap>>,
   grid: usize,
-  chord_layer: bool,
+  tone_target: ToneTarget,
   timbre: Timbre,
   sample_rate: f32,
 ) {
   let step = 1.0 / (TIMBRE_XFADE_SECS * sample_rate).max(1.0);
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for (src, state) in voices.iter_mut() {
-    let wanted = if chord_layer {
-      matches!(src, VoiceSource::SurfaceChord { grid: g, .. } if *g == grid)
-    } else {
-      matches!(src,
-        VoiceSource::SurfaceFinger { grid: g, .. } | VoiceSource::SurfaceDrone { grid: g, .. }
-          if *g == grid)
-    };
-    if wanted && state.target_env > 0.0 && state.timbre != timbre {
-      state.timbre_xfade = Some(TimbreXfade { from: state.timbre, progress: 0.0, step });
-      state.timbre = timbre;
-    }
-  }
-}
-
-/// Aim the existing 20 ms gain slew at every voice in one live layer.
-pub fn set_layer_gain(
-  voices: &Arc<Mutex<VoiceMap>>,
-  grid: usize,
-  chord_layer: bool,
-  gain: f32,
-) {
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (src, state) in voices.iter_mut() {
-    let wanted = if chord_layer {
-      matches!(src, VoiceSource::SurfaceChord { grid: g, .. } if *g == grid)
-    } else {
-      matches!(src,
-        VoiceSource::SurfaceFinger { grid: g, .. } | VoiceSource::SurfaceDrone { grid: g, .. }
-          if *g == grid)
-    };
-    if wanted && state.target_env > 0.0 {
-      state.grid_gain_target = gain;
-    }
-  }
-}
-
-pub fn retimbre_loop_layer(
-  voices: &Arc<Mutex<VoiceMap>>,
-  grid: usize,
-  timbre: Timbre,
-  sample_rate: f32,
-) {
-  let step = 1.0 / (TIMBRE_XFADE_SECS * sample_rate).max(1.0);
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (source, state) in voices.iter_mut() {
-    if matches!(source, VoiceSource::SurfaceLoop { grid: g, .. } if *g == grid)
+    if tone_target.matches_source(src, grid)
       && state.target_env > 0.0
       && state.timbre != timbre
     {
@@ -1309,20 +1293,24 @@ pub fn retimbre_loop_layer(
   }
 }
 
-pub fn set_loop_layer_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+/// Aim the existing 20 ms gain slew at every live voice in one tone target.
+pub fn set_tone_target_gain(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  tone_target: ToneTarget,
+  gain: f32,
+) {
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (source, state) in voices.iter_mut() {
-    if matches!(source, VoiceSource::SurfaceLoop { grid: g, .. } if *g == grid)
-      && state.target_env > 0.0
-    {
+  for (src, state) in voices.iter_mut() {
+    if tone_target.matches_source(src, grid) && state.target_env > 0.0 {
       state.grid_gain_target = gain;
     }
   }
 }
 
-/// End -- by the ordinary release ramp -- the chord-layer voices of `grid` named by
+/// End -- by the ordinary release ramp -- the chord voices of `grid` named by
 /// `seqs` (a slot toggling OFF, or the widened clear's "and chord" half). The chord
-/// layer has already unregistered them; the ramping voices are reaped by the render
+/// registry has already unregistered them; the ramping voices are reaped by the render
 /// at silence, like any release tail.
 pub fn end_chord_voices(
   voices: &Arc<Mutex<VoiceMap>>,
@@ -1532,9 +1520,9 @@ mod tests {
     let mut a = make_sink(0);
     let mut b = make_sink(1);
 
-    a.note_on_layered((0, 8), 8, Timbre::default(), 1.0);
-    a.note_on_layered((1, 0), 8, Timbre::default(), 1.0);
-    b.note_on_layered((0, 8), 8, Timbre::default(), 1.0);
+    a.note_on_with_tone_gain((0, 8), 8, Timbre::default(), 1.0);
+    a.note_on_with_tone_gain((1, 0), 8, Timbre::default(), 1.0);
+    b.note_on_with_tone_gain((0, 8), 8, Timbre::default(), 1.0);
 
     let base = freq_for_pitch(8, 80.0, 58);
     let cents_from_base = |freq: f32| 1200.0 * (freq / base).log2();
@@ -1936,6 +1924,30 @@ mod tests {
     assert_eq!(new_state.factored_pulse_freq, 3.0, "the pulse keeps its OLD rate");
     assert_eq!(new_state.factored_pulse_phase, old_pulse_phase, "and its phase");
     assert_eq!(new_state.env, 0.0, "the envelope still starts fresh -- no click");
+  }
+
+  #[test]
+  fn tone_target_retrigger_starts_at_its_attenuated_gain() {
+    let voices = shared();
+    let mut sink = sink(0, &voices);
+    sink.note_on((3, 4), 20, Timbre::default(), Some(3.0));
+    sink.sustain_note((3, 4), 20);
+    {
+      let mut states = voices.lock().unwrap();
+      let drone = states.get_mut(&sustain_key(0, 20)).unwrap();
+      drone.phase = 0.4;
+      drone.factored_pulse_phase = 0.6;
+    }
+    let cut = sink.cut_sustained(20).expect("a drone was cut");
+    sink.note_on_continuing_with_gain((3, 4), 20, Timbre::default(), 0.25, cut);
+
+    let states = voices.lock().unwrap();
+    let finger = &states[&voice_key(0, (3, 4))];
+    assert_eq!(finger.grid_gain, 0.25, "no unity-gain attack transient");
+    assert_eq!(finger.grid_gain_target, 0.25, "no post-construction correction needed");
+    assert_eq!(finger.phase, 0.4, "the oscillator still continues");
+    assert_eq!(finger.factored_pulse_freq, 3.0, "the old pulse rate still continues");
+    assert_eq!(finger.factored_pulse_phase, 0.6, "the old pulse phase still continues");
   }
 
   /// A finger landing on a chord voice's pitch restrikes IT (queues/branch-2.org):
