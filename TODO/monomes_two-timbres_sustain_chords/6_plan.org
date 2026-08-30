@@ -1,0 +1,384 @@
+#+title: Unitary implementation plan: sustain, chords, and compact loops
+
+* Authority and scope
+
+This plan is the single declarative specification for the next revision of
+=monomes_two-timbres_sustain_chords=.  It incorporates the settled decisions in
+=5_layout-and-loops.org= and supersedes the layout and behavior portions of
+=3_plan.org= where they differ.  The implementation remains in the surfaces
+runtime; it does not select or embed the older metronomic looper runtime.
+
+The two physical monomes remain identical, independent instruments.  Each owns
+its own sustain state, chord bank, compact-loop bank, loop clocks, phase mode,
+record target, recording state, layer selections, and LEDs.  Chord and loop
+storage is keyed by physical serial id.  Audio synthesis and crowded-pitch
+allocation remain shared so collisions between otherwise independent sources
+are still handled globally.
+
+* Final grid layout
+
+The top two rows contain the timbre, target, volume, and register controls:
+
+#+begin_example
+y=0  W W W W TARGET . . . . . . . .  ^  ^  ^
+y=1  V V V V      . . . . . . . .  ^  ^  ^
+#+end_example
+
+The waveform selector remains =(0..3,0)=, the volume selector remains
+=(0..3,1)=, the single three-state TARGET control is =(4,0)=, and the six
+register-navigation cells move to =(13..15,0..1)=.  The four corner arrows in
+that six-cell block always perform register navigation.  Their delta is the
+rig's configured =edo=; no octave size is hard-coded.
+
+The bottom two rows are exactly:
+
+#+begin_example
+       chord half, x=0..7                  loop half, x=8..15
+y=14   C C C C C C C ACCRETE              CLEAR-SUSTAIN SELECT-RECORD L L L L L L
+y=15   C C C C C C CHORD-MODE ARM-CHORD   STOP START-RECORD L L L L L PHASE-MODE
+#+end_example
+
+The thirteen chord slots are row-major =(0..6,14)= followed by =(0..5,15)=.
+The eleven loop slots are row-major =(10..15,14)= followed by =(10..14,15)=.
+The fixed controls are:
+
+- ACCRETE =(7,14)=;
+- CLEAR SUSTAIN =(8,14)=;
+- SELECT RECORD TARGET =(9,14)=;
+- MOMENTARY/TOGGLE CHORD MODE =(6,15)=;
+- ARM CHORD STORAGE =(7,15)=;
+- STOP LOOP RECORDING =(8,15)=;
+- START LOOP RECORDING =(9,15)=; and
+- LOOP PHASE MODE =(15,15)=.
+
+The rig schema exposes these regions to the surfaces runtime without invoking
+legacy loop dispatch.  Geometry validation checks their exact dimensions,
+non-overlap, grid bounds, and required pairing with the EDO note grid and
+self-controlling timbre and volume selectors.
+
+* Three layer targets
+
+TARGET cycles in this order:
+
+1. fingered/sustained, shown black;
+2. recalled chord, shown dim; and
+3. compact loop, shown solid.
+
+Each target remembers its own selected timbre.  The waveform selector reads and
+changes the selected target only.  Each timbre has one fingered/sustained base
+gain, one chord dB delta from that base, and one loop dB delta from that base.
+Changing the base moves all three effective gains for that timbre; changing a
+chord or loop delta moves only that layer.  The volume selector displays and
+edits the effective gain of the selected target.
+
+Layer changes update live voices immediately.  Chord target edits affect every
+currently recalled chord voice on that monome.  Loop target edits affect every
+currently sounding compact-loop voice on that monome and become the timbre and
+gain used for future loop attacks.  Stored chords and loops contain pitch and
+timing information only, never timbre, gain, envelope, or crowded-pitch offset.
+
+With fingered/sustained selected, the register corners move the playing
+register.  With chord selected, they glide currently recalled chord voices but
+do not rewrite stored pitches.  With loop selected, they permanently transpose
+the current record target's stored nominal pitches by one configured EDO step,
+persist the change atomically, and glide that slot's live voices if it is
+sounding.  Loop-target register edits are ignored while a recording is active.
+While record-target selection is merely awaiting a destination, they still
+address the existing record target.
+
+* Sustain controls
+
+ACCRETE keeps its existing musical semantics.  CLEAR SUSTAIN removes only
+accreted sustain membership and releases only fingerless sustain voices.  A
+finger still physically holding the originating note continues to sound, but
+that voice loses its right to survive its later key-up.  The decision follows
+voice ownership rather than pitch, so a separate sustained voice at the same
+nominal pitch may end without ending the held finger voice.
+
+CLEAR SUSTAIN never releases or unlatches recalled chords, stops loop playback,
+clears either persistent bank, or ends a physically held finger voice.  The
+existing broader clear behavior remains available to other rigs and pedal
+paths; this rig's cell invokes the source-specific operation.
+
+At rest ACCRETE and CLEAR SUSTAIN display opposite halves of one one-second,
+50/50-duty cycle.  A physically held control is solid and overrides the idle
+animation.
+
+* Chord bank
+
+The chord bank contains thirteen pitch-only slots.  Existing version-one
+persistence retains the former first eight slots in the same row-major order
+and pads slots nine through thirteen as empty.  Loading, normalization, and
+atomic saving continue to be keyed by physical monome serial id; mock/headless
+runs do not write hardware persistence.
+
+CHORD MODE begins solid in momentary mode.  In momentary mode a slot key-down
+recalls an occupied chord and its key-up releases exactly that recall.  In
+toggle mode CHORD MODE is black and an occupied slot key-down independently
+toggles that slot's recall; key-up has no musical effect and any number of
+slots may be latched simultaneously.  Empty slot presses do nothing.  Changing
+from toggle mode to momentary mode immediately releases every latched recall
+through the normal release ramp and leaves no hidden latch state.
+
+ARM CHORD STORAGE flashes at 200 ms on / 200 ms off while armed.  In momentary
+mode it overwrites all physically held source chord slots; in toggle mode it
+overwrites all latched-on source chord slots.  If no source chord slot is in
+use, the arm state remains available for the next destination press according
+to the existing storage gesture.  Capture takes the normalized nominal pitches
+currently emitted by local fingered, sustained, and eligible recalled-chord
+sources.  It never captures compact-loop playback or crowded-pitch deviations.
+
+A chord slot is black while empty, dim while populated and silent, and solid
+while any recall owned by that slot is sounding.  A source release, mode
+transition, clear operation, or another slot's action releases only voices it
+owns; equal-pitch recalls remain independent.
+
+* Compact-loop data model
+
+Each monome owns eleven compact-loop slots.  A populated slot contains an
+immutable positive cycle duration and a multiset of identity-bearing nominal
+pitch intervals.  An interval is either finite, with a normalized start phase
+and duration less than the cycle, or a full-cycle drone.  Equal pitches and
+repeated performances remain separate occurrences.  A loop voice is owned by
+its monome, slot, and occurrence, so gating or clearing one slot cannot release
+another source at the same pitch.
+
+The runtime maintains a per-monome registry of every live, recordable logical
+source voice: fingered, accreted sustain, and recalled chord.  Each registry
+entry has a stable identity, exact nominal pitch, and actual monotonic onset
+time, and survives the ownership transitions needed by the sustain model.
+Compact-loop playback voices are never entered in this registry.  Recording
+therefore observes logical source lifetimes rather than audio-envelope tails
+and never feeds playback from any loop on either monome back into either
+recorder.
+
+For cycle duration =D= and a source lifetime =[a,b)=, actual onset may precede
+START LOOP RECORDING.  If =b-a < D=, recording stores a finite interval starting
+at =a mod D= with its true duration, including wraparound.  If =b-a >= D=, it
+stores a full-cycle drone.  Equality is a drone.  A source still live at STOP is
+cut at STOP unless its actual lifetime has already reached =D=, in which case it
+is a drone.  An overdub lasting several cycles folds every performed occurrence
+modulo the fixed cycle and preserves successive-lap layering without
+deduplication.
+
+All input and playback boundaries use monotonic timestamps plus event order.
+There is no quantization, metronome, grace window, or wall-clock phase.  Events
+accepted before START remain eligible through their remembered actual onset;
+events accepted at or after START are recorded; events processed through STOP
+are included; later events are not.  At an exact playback phase boundary an
+onset is included once and is not also delivered by the scheduler as a second
+attack.
+
+* Record target and capture transaction
+
+Loop slot 1, =(10,14)=, is the record target at every program start whether it
+is empty or populated.  The target remains selected after recording, clearing,
+or playback changes.
+
+SELECT RECORD TARGET enters a waiting state and flashes at 200 ms on / 200 ms
+off.  The existing target continues flashing too.  The next loop-slot key-down
+is consumed solely as the new record-target choice, even when it chooses the
+same slot, and never toggles playback.  Pressing SELECT RECORD TARGET again
+cancels only the waiting state and retains the old target.  During recording,
+SELECT RECORD TARGET and all retarget attempts are ignored; ordinary slot
+presses remain playback controls.
+
+START LOOP RECORDING begins one capture transaction.  A second START during the
+transaction is ignored and cannot restart timing or move a boundary.  STOP with
+no transaction is a no-op and never stops playback.
+
+For an empty target, accepted START establishes phase zero and accepted STOP
+establishes duration exactly as =STOP - START=.  A normal first take that
+contains no resulting voice intervals is discarded: the slot remains empty,
+dormant, and targeted, and any pending playback request is cancelled.  For a
+populated target, recording is an overdub against its immutable existing
+duration and current recording phase; the committed interval multiset is
+extended rather than replaced.  An eventless overdub is a no-op.
+
+The transaction records local fingered, sustained, and recalled-chord logical
+sources whether the target is audible or muted.  Their already audible live
+voices are not doubled for monitoring.  Playback gates may change during an
+overdub, but playback is excluded from capture.
+
+If elapsed time from accepted START to accepted STOP is strictly less than
+=loop_clear_tap_ms=, STOP performs a clear instead of a commit.  The parameter
+defaults to 300 ms.  Clear releases the target slot's playback voices, turns
+off its gate, cancels pending playback, discards its content and phase, removes
+its persisted entry atomically, and leaves the same empty target flashing.
+Other slots are untouched.  Equality with the threshold is a normal recording,
+so the threshold is also the minimum duration for a new populated loop.
+
+First takes and overdubs are accumulated in temporary state and are published
+to memory and persistence only by a normal STOP.  A process interruption before
+STOP leaves an old populated target unchanged or an empty target empty.
+Playback reads only committed contents and can never see a half-built overdub.
+
+* Playback gates and phase modes
+
+A populated loop-slot key-down toggles that slot's playback gate; key-up has no
+musical effect.  Any number of slots may sound simultaneously.  An empty slot
+press is normally a no-op.  During that same empty target's first recording,
+each press toggles a pending play-on-completion bit.  A normal populated commit
+with the bit on begins playback at the newly closed boundary and phase zero;
+an empty result or clear discards the bit.
+
+Playback-on reconstructs every interval containing the selected current phase,
+including wrapping intervals and full-cycle drones.  An onset exactly at that
+phase is on.  All reconstructed and scheduled voices use the rig's ordinary
+attack ramp.  Playback-off releases all voices owned by that slot through the
+ordinary release ramp.  Rapid off/on therefore produces a new ramped attack,
+not an instantaneous amplitude step.
+
+LOOP PHASE MODE is per monome, is not persisted, begins in KEEP-RUNNING mode,
+and applies to all eleven slots.  It flashes at 200 ms on / 200 ms off in
+KEEP-RUNNING and is black in RESTART.
+
+Every populated slot starts silent and dormant at phase zero on program launch.
+In KEEP-RUNNING, its first playback trigger begins the clock and playback at
+phase zero.  Thereafter the phase advances while its playback gate is either on
+or off, and later triggers reconstruct at the advancing phase.  In RESTART, a
+muted slot has no advancing phase; playback-on establishes phase zero and
+playback-off releases its voices and returns it to dormant phase zero.
+
+Changing to RESTART discards every slot's old phase.  Sounding slots release and
+reconstruct at phase zero through the normal ramps and continue; muted slots
+become dormant at zero.  Changing to KEEP-RUNNING leaves muted slots dormant at
+zero until triggered and lets already sounding slots continue from their
+current phase without a jump.
+
+Recording alone never counts as the first KEEP-RUNNING playback trigger.  An
+overdub of a dormant populated target uses a temporary phase beginning at zero
+and returns to dormant zero on STOP unless playback was triggered.  Once
+triggered, the persistent KEEP-RUNNING clock advances normally.  In RESTART, a
+muted target records from phase zero, an already sounding target records at its
+audible phase, and playback-on during capture deliberately re-establishes phase
+zero.  Exact command order may therefore change overdub phase placement in
+RESTART but never changes stored duration.
+
+The per-grid event loop advances clocks and schedules interval boundaries from
+absolute monotonic time.  It handles elapsed spans crossing multiple cycles
+without dropping or duplicating occurrences.  Gate reconstruction and the
+scheduler share one ordered boundary rule so a gate-on at an onset cannot
+double-trigger it.
+
+* Loop LEDs
+
+Loop slot LEDs have this strict priority:
+
+1. being recorded to and playing back: alternating 80 ms bright / 80 ms dim,
+   never black;
+2. record target: flashing at 200 ms on / 200 ms off;
+3. sounding: solid;
+4. populated and silent: dim; and
+5. empty and untargeted: black.
+
+Except for the faster record-plus-play indication, the target flashes even when
+it is sounding or being overdubbed.  Multiple non-target sounding slots are all
+solid.  START LOOP RECORDING flashes at the same rate while a transaction is
+active and is otherwise black.  STOP LOOP RECORDING is solid only while
+physically held.  SELECT RECORD TARGET flashes only while awaiting a slot.  LOOP
+PHASE MODE uses its mode indication described above.
+
+* Loop persistence
+
+Compact-loop persistence is separate from legacy looper and chord files.  Its
+versioned format stores, per physical serial id, eleven slots containing only
+duration and nominal-pitch interval occurrences.  It does not store playback
+gate, record target, phase epoch, phase mode, layer timbre/gain, envelope, or
+crowded-pitch allocation.
+
+Writes use the repository's existing temp-file, flush, and atomic-rename
+pattern.  A successful normal STOP, clear, or loop-target octave edit writes a
+complete new per-rig image while retaining other connected grids' entries.
+Malformed entries are rejected or normalized without panicking, and a missing
+or older file yields empty compact-loop slots.  Persistence is disabled when
+no physical serial identity/audio runtime is present, matching chord storage.
+
+* Global crowded-pitch allocation
+
+The CPAL synth exposes =crowded_pitch_planck_deviation=, documented in the rig
+as cents and initially set to =5=.  Zero disables separation.  This rule
+supersedes this rig's special =retrigger_tail_detune_cents = 6= behavior; the
+older parameter remains backward-compatible for rigs that still use it.
+
+All currently live surface voices are grouped by exact nominal pitch before
+detuning, across both monomes and across fingered, sustained, recalled-chord,
+and compact-loop sources.  With configured step =p=, each new voice receives
+the first unoccupied lane in:
+
+#+begin_example
+0, +p, -p, +2p, -2p, +3p, -3p, ...
+#+end_example
+
+The lane is converted to a frequency ratio only at synthesis.  It remains
+attached to that voice for its whole audible lifetime, including its release
+tail, and becomes available when the audio voice is actually reaped.  Existing
+voices are never moved to fill a newly vacant lane.  Voices sharing one exact
+input timestamp are randomly ordered before lane allocation.  Allocation is
+performance state: it is absent from chord and loop persistence, and every new
+recall or playback attack is allocated afresh.
+
+Distinct play-grid cells that are enharmonic under the configured =x_step= and
+=y_step= remain distinct finger voices.  If, for example, =(x,y)= and
+=(x+1,y-k)= resolve to the same absolute EDO step, holding both invokes the same
+crowded-pitch lane allocation as any other exact-nominal-pitch collision;
+releasing either cell leaves the other voice untouched.
+
+Every voice source has an independent synthesis key.  Sustain ownership
+transfers and nominal-pitch glides preserve that voice's lifetime allocation;
+they never allow one source's release to remove another source.  The allocator
+and voice map use one documented lock order, and stale lane records are pruned
+against the voice map so a panic, release, or reload cannot permanently occupy
+a lane.
+
+* Runtime integration and reload
+
+The surfaces runtime gains explicit compact-loop state, persistence, input
+dispatch, scheduler ticks, paint state, and synth voice operations.  Loop
+playback receives a distinct =VoiceSource= identity.  Source lifecycle helpers
+centralize logical onset/release tracking so fingers, sustain transitions, chord
+recalls, clears, register shifts, disconnect cleanup, and reload cleanup cannot
+silently bypass recording.
+
+Reload preserves audio safety: all voices and transient record/playback state
+belonging to a removed or changed grid are released through normal ramps.  New
+layout and numeric parameters participate in reload comparison and validation.
+Persistent chord and loop contents survive process reload through their files,
+while transient chord mode, latches, loop target, gates, clocks, selection wait,
+recording transaction, and phase mode return to their startup states.
+
+The rig and operator documentation state the final cell map, three-target
+controls, source-specific clear, chord modes, direct loop playback, recording
+and overdub gestures, sub-threshold clear, phase modes, persistence scope,
+octave behavior, and crowded-pitch parameter.  Obsolete descriptions of the
+5x2 chord block, eight slots, top-right chord placement, six-cent tail special
+case, and legacy PLAY/STOP transport are removed for this rig.
+
+* Verification
+
+Unit tests cover:
+
+- exact layout geometry, coordinates, and three TARGET states;
+- independent per-target timbre and base/chord/loop gain arithmetic;
+- source-specific sustain clear and its finger-held edge case;
+- thirteen-slot momentary/toggle chord behavior, mode transition, arming,
+  equal-pitch ownership, and eight-to-thirteen persistence migration;
+- record-target selection/cancellation, first take, silent first take, overdub,
+  multi-cycle folding, pre-existing voices, wrap intervals, drones, exact
+  duration boundary, and sub-threshold clear;
+- direct multi-slot playback, pending play-on-completion, phase
+  reconstruction, exact-boundary single attacks, attack/release gating, and
+  independent equal-pitch occurrences;
+- KEEP-RUNNING and RESTART clocks, mode transitions, dormant overdub behavior,
+  startup reset, and multi-cycle scheduler catch-up;
+- eleven-slot persistence, atomic transaction publication, clear, octave edit,
+  malformed input, per-serial isolation, and headless suppression; and
+- crowded-pitch lane order, lifetime stability, gap reuse without reshuffling,
+  global cross-source/cross-grid collisions, simultaneous tie randomization,
+  tuning-derived enharmonic-cell collisions, release-tail occupancy, zero-step
+  disablement, and legacy tail-detune compatibility.
+
+The implementation is complete when =cargo fmt --all -- --check=,
+=cargo test -p edo_surface=, and =cargo test --workspace= pass, the current rig
+loads in mock mode, and the documented LED/control state can be exercised
+without persistence writes or audio hardware.

@@ -7,7 +7,7 @@ Run from the repository root:
 ** identity
 *** PARAM version = 1
 *** PARAM id = "monomes_two-timbres_sustain_chords"
-*** PARAM title = "Monomes: two timbres, sustain, and momentary chords"
+*** PARAM title = "Monomes: sustain, chords, and compact loops"
 ** tuning
 *** ELEM tunings
 **** PARAM id = "main"
@@ -35,12 +35,12 @@ Unused: this rig has no expression pedals.
 **** PARAM release_secs = 0.050
 **** PARAM sustain_level = 0.35
 **** PARAM decay_secs = 0.5
-**** PARAM retrigger_tail_detune_cents = 6
+**** PARAM crowded_pitch_planck_deviation = 5
 The waveform selector uses the built-in sine / triangle / square / saw choices.
 Loudness belongs to the layer-volume state below, initially -12 dB.
-When a sustained note is re-fingered, only its outgoing release tail is shifted
-six cents sharp.  Edit this parameter and reload with =r= to audition another
-offset; zero restores an exact-pitch tail.
+Equal-nominal-pitch surface voices take the first free lane in
+=0,+p,-p,+2p,-2p,...=, where this parameter is =p= in cents.  Set it to zero to
+disable crowded-pitch separation.
 ** grid A: the first available 16x16 monome
 *** ELEM monomes
 **** PARAM id = "a"
@@ -77,25 +77,36 @@ The persistent chord space is still keyed by the physical serial id.
 **** PARAM id = "chords-a"
 **** PARAM monome = "a"
 **** PARAM kind = "momentary_chord_block"
-**** PARAM rect = [11, 0, 15, 1]
+**** PARAM rect = [0, 14, 7, 15]
+*** ELEM monome_windows
+**** PARAM id = "target-a"
+**** PARAM monome = "a"
+**** PARAM kind = "layer_target_control"
+**** PARAM rect = [4, 0, 4, 0]
+*** ELEM monome_windows
+**** PARAM id = "loops-a"
+**** PARAM monome = "a"
+**** PARAM kind = "compact_loop_block"
+**** PARAM rect = [8, 14, 15, 15]
+**** PARAM loop_clear_tap_ms = 300
 *** ELEM monome_windows
 **** PARAM id = "sustain-clear-a"
 **** PARAM monome = "a"
 **** PARAM kind = "accrete_control"
-**** PARAM rect = [0, 15, 0, 15]
+**** PARAM rect = [8, 14, 8, 14]
 **** PARAM control = "clear"
 *** ELEM monome_windows
 **** PARAM id = "sustain-accrete-a"
 **** PARAM monome = "a"
 **** PARAM kind = "accrete_control"
-**** PARAM rect = [1, 15, 1, 15]
+**** PARAM rect = [7, 14, 7, 14]
 **** PARAM control = "accrete"
 With no needs_holding control, this bank is permanently momentary.
 *** ELEM monome_windows
 **** PARAM id = "shift-a"
 **** PARAM monome = "a"
 **** PARAM kind = "edo_shift_pad"
-**** PARAM rect = [13, 14, 15, 15]
+**** PARAM rect = [13, 0, 15, 1]
 ** grid B: the second available 16x16 monome
 If only one grid is connected, this whole logical surface is skipped and A plays on.
 *** ELEM monomes
@@ -131,21 +142,32 @@ If only one grid is connected, this whole logical surface is skipped and A plays
 **** PARAM id = "chords-b"
 **** PARAM monome = "b"
 **** PARAM kind = "momentary_chord_block"
-**** PARAM rect = [11, 0, 15, 1]
+**** PARAM rect = [0, 14, 7, 15]
+*** ELEM monome_windows
+**** PARAM id = "target-b"
+**** PARAM monome = "b"
+**** PARAM kind = "layer_target_control"
+**** PARAM rect = [4, 0, 4, 0]
+*** ELEM monome_windows
+**** PARAM id = "loops-b"
+**** PARAM monome = "b"
+**** PARAM kind = "compact_loop_block"
+**** PARAM rect = [8, 14, 15, 15]
+**** PARAM loop_clear_tap_ms = 300
 *** ELEM monome_windows
 **** PARAM id = "sustain-clear-b"
 **** PARAM monome = "b"
 **** PARAM kind = "accrete_control"
-**** PARAM rect = [0, 15, 0, 15]
+**** PARAM rect = [8, 14, 8, 14]
 **** PARAM control = "clear"
 *** ELEM monome_windows
 **** PARAM id = "sustain-accrete-b"
 **** PARAM monome = "b"
 **** PARAM kind = "accrete_control"
-**** PARAM rect = [1, 15, 1, 15]
+**** PARAM rect = [7, 14, 7, 14]
 **** PARAM control = "accrete"
 *** ELEM monome_windows
 **** PARAM id = "shift-b"
 **** PARAM monome = "b"
 **** PARAM kind = "edo_shift_pad"
-**** PARAM rect = [13, 14, 15, 15]
+**** PARAM rect = [13, 0, 15, 1]

@@ -672,6 +672,10 @@ pub enum SinkRig {
     /// pitches remain exact. Signed; 0 disables. Default 0.
     #[serde(default = "default_retrigger_tail_detune_cents")]
     retrigger_tail_detune_cents: f32,
+    /// Spacing, in cents, between globally packed equal-nominal-pitch surface
+    /// voices. Zero disables crowded-pitch separation. Default 0.
+    #[serde(default = "default_crowded_pitch_planck_deviation")]
+    crowded_pitch_planck_deviation: f32,
   },
   /// A one-shot sample player: each trigger plays a loaded WAV to completion,
   /// mixed polyphonically. Drives the `drumkit` softstep window. Uses the same
@@ -718,6 +722,10 @@ fn default_decay_secs() -> f32 {
 
 fn default_retrigger_tail_detune_cents() -> f32 {
   0.0 // preserve exact-pitch retriggers unless a rig asks for de-correlation
+}
+
+fn default_crowded_pitch_planck_deviation() -> f32 {
+  0.0
 }
 
 impl SinkRig {
@@ -958,6 +966,21 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
   },
+  // A single-cell three-way layer target for the pitch-only chord/loop surface.
+  LayerTargetControl {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+  },
+  // The surfaces runtime's freehand compact-loop block. Unlike the legacy looper
+  // windows this never selects the metronomic looper runtime.
+  CompactLoopBlock {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    #[serde(default = "default_loop_clear_tap_ms")]
+    loop_clear_tap_ms: u64,
+  },
   // ---- Looper windows (see 6_plan.org). ----
   // The 3x2 shift pad overlaid on the lower-right of the edo grid.
   EdoShiftPad {
@@ -1030,6 +1053,10 @@ pub enum MonomeWindowRig {
     #[serde(default = "default_save_undo_ms")]
     save_undo_double_ms: u64,
   },
+}
+
+fn default_loop_clear_tap_ms() -> u64 {
+  300
 }
 
 fn default_volume_coarse_db() -> f32 {
@@ -1149,6 +1176,8 @@ impl MonomeWindowRig {
       | MonomeWindowRig::FineTransposeToggle { id, .. }
       | MonomeWindowRig::ChordBlock { id, .. }
       | MonomeWindowRig::MomentaryChordBlock { id, .. }
+      | MonomeWindowRig::LayerTargetControl { id, .. }
+      | MonomeWindowRig::CompactLoopBlock { id, .. }
       | MonomeWindowRig::EdoShiftPad { id, .. }
       | MonomeWindowRig::LoopSlots { id, .. }
       | MonomeWindowRig::LoopControl { id, .. }
@@ -1188,6 +1217,8 @@ impl MonomeWindowRig {
       | MonomeWindowRig::FineTransposeToggle { monome, .. }
       | MonomeWindowRig::ChordBlock { monome, .. }
       | MonomeWindowRig::MomentaryChordBlock { monome, .. }
+      | MonomeWindowRig::LayerTargetControl { monome, .. }
+      | MonomeWindowRig::CompactLoopBlock { monome, .. }
       | MonomeWindowRig::EdoShiftPad { monome, .. }
       | MonomeWindowRig::LoopSlots { monome, .. }
       | MonomeWindowRig::LoopControl { monome, .. }
@@ -1227,6 +1258,8 @@ impl MonomeWindowRig {
       | MonomeWindowRig::FineTransposeToggle { rect, .. }
       | MonomeWindowRig::ChordBlock { rect, .. }
       | MonomeWindowRig::MomentaryChordBlock { rect, .. }
+      | MonomeWindowRig::LayerTargetControl { rect, .. }
+      | MonomeWindowRig::CompactLoopBlock { rect, .. }
       | MonomeWindowRig::EdoShiftPad { rect, .. }
       | MonomeWindowRig::LoopSlots { rect, .. }
       | MonomeWindowRig::LoopControl { rect, .. }
@@ -1267,6 +1300,8 @@ impl MonomeWindowRig {
       MonomeWindowRig::FineTransposeToggle { .. } => "fine_transpose_toggle",
       MonomeWindowRig::ChordBlock { .. } => "chord_block",
       MonomeWindowRig::MomentaryChordBlock { .. } => "momentary_chord_block",
+      MonomeWindowRig::LayerTargetControl { .. } => "layer_target_control",
+      MonomeWindowRig::CompactLoopBlock { .. } => "compact_loop_block",
       MonomeWindowRig::EdoShiftPad { .. } => "edo_shift_pad",
       MonomeWindowRig::LoopSlots { .. } => "loop_slots",
       MonomeWindowRig::LoopControl { .. } => "loop_control",
@@ -1792,6 +1827,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       distortion_makeup,
       distortion_makeup_slew_ms,
       retrigger_tail_detune_cents,
+      crowded_pitch_planck_deviation,
       ..
     } = sink {
       if *sample_rate == 0 || *buffer_frames == 0 {
@@ -1821,6 +1857,15 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       {
         return Err(format!(
           "sink {:?} retrigger_tail_detune_cents must be finite and within -1200..1200",
+          sink.id(),
+        ));
+      }
+      if !crowded_pitch_planck_deviation.is_finite()
+        || *crowded_pitch_planck_deviation < 0.0
+        || *crowded_pitch_planck_deviation > 1200.0
+      {
+        return Err(format!(
+          "sink {:?} crowded_pitch_planck_deviation must be finite and within 0..1200 cents",
           sink.id(),
         ));
       }
@@ -1927,6 +1972,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_factored_pulse_pads(rig)?;
   validate_chord_blocks(rig)?;
   validate_momentary_chord_blocks(rig)?;
+  validate_compact_loop_blocks(rig)?;
   validate_timbres(rig)?;
   validate_expression_pedals(rig)?;
   validate_looper(rig)?;
@@ -2115,7 +2161,7 @@ fn validate_chord_blocks(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
-/// A `momentary_chord_block` is exactly 5x2 cells on an EDO grid. It is
+/// A `momentary_chord_block` is exactly 8x2 cells on an EDO grid. It is
 /// intentionally a separate kind from the legacy nine-slot toggle block.
 fn validate_momentary_chord_blocks(rig: &Rig) -> Result<(), String> {
   let mut seen: HashSet<&str> = HashSet::new();
@@ -2124,9 +2170,9 @@ fn validate_momentary_chord_blocks(rig: &Rig) -> Result<(), String> {
       continue;
     };
     let [x0, y0, x1, y1] = *rect;
-    if x1 - x0 != 4 || y1 - y0 != 1 {
+    if x1 - x0 != 7 || y1 - y0 != 1 {
       return Err(format!(
-        "momentary_chord_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 5x2 cells",
+        "momentary_chord_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 8x2 cells",
       ));
     }
     let has_grid = rig.monome_windows.iter().any(|w| {
@@ -2180,6 +2226,65 @@ fn validate_momentary_chord_blocks(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
+/// The surfaces-only compact loop block is one 8x2 half-grid. It is deliberately
+/// not one of the legacy looper windows, and therefore requires no `[looper]` table.
+fn validate_compact_loop_blocks(rig: &Rig) -> Result<(), String> {
+  let mut seen: HashSet<&str> = HashSet::new();
+  for window in &rig.monome_windows {
+    let MonomeWindowRig::CompactLoopBlock {
+      id,
+      monome,
+      rect,
+      loop_clear_tap_ms,
+    } = window
+    else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x1 - x0 != 7 || y1 - y0 != 1 {
+      return Err(format!(
+        "compact_loop_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must be exactly 8x2 cells",
+      ));
+    }
+    if *loop_clear_tap_ms == 0 {
+      return Err(format!(
+        "compact_loop_block window {id:?} loop_clear_tap_ms must be positive",
+      ));
+    }
+    let has_grid = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if m == monome)
+    });
+    let has_chords = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::MomentaryChordBlock { monome: m, .. } if m == monome)
+    });
+    let has_target = rig.monome_windows.iter().any(|w| {
+      matches!(w, MonomeWindowRig::LayerTargetControl { monome: m, .. } if m == monome)
+    });
+    if !has_grid || !has_chords || !has_target {
+      return Err(format!(
+        "compact_loop_block window {id:?} requires an edo_note_grid, momentary_chord_block, and layer_target_control on monome {monome:?}",
+      ));
+    }
+    let [gw, gh] = rig
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x1 >= gw || y1 >= gh {
+      return Err(format!(
+        "compact_loop_block window {id:?} rect [{x0}, {y0}, {x1}, {y1}] must fit the {gw}x{gh} grid",
+      ));
+    }
+    if !seen.insert(monome.as_str()) {
+      return Err(format!(
+        "monome {monome:?} declares more than one compact_loop_block (window {id:?})"
+      ));
+    }
+  }
+  Ok(())
+}
+
 /// The single-cell per-monome buttons (`distortion_toggle`, `slide_toggle`,
 /// `mono_toggle`, ..., plus the momentary `editmode_control` buttons): each is one cell on
 /// a monome that has an `edo_note_grid`, at most one of each kind per monome (a
@@ -2201,6 +2306,9 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     }
     MonomeWindowRig::FineTransposeToggle { id, monome, rect } => {
       Some(("fine_transpose_toggle", id, monome, *rect))
+    }
+    MonomeWindowRig::LayerTargetControl { id, monome, rect } => {
+      Some(("layer_target_control", id, monome, *rect))
     }
     MonomeWindowRig::EditmodeControl { id, monome, rect, control } => {
       // Per-control uniqueness: label by control so a monome may carry one clear
@@ -2231,6 +2339,18 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
     if !has_edo_grid {
       return Err(format!(
         "{kind} window {id:?} needs an edo_note_grid on the same monome {monome:?}",
+      ));
+    }
+    if kind == "layer_target_control"
+      && !rig.monome_windows.iter().any(|window| {
+        matches!(
+          window,
+          MonomeWindowRig::MomentaryChordBlock { monome: owner, .. } if owner == monome
+        )
+      })
+    {
+      return Err(format!(
+        "layer_target_control window {id:?} needs a momentary_chord_block on the same monome {monome:?}",
       ));
     }
     let [gw, gh] = rig
@@ -3057,6 +3177,21 @@ mod tests {
     *retrigger_tail_detune_cents = 1200.1;
     let err = validate_rig(&rig).expect_err("more than an octave should fail");
     assert!(err.contains("-1200..1200"), "{err}");
+  }
+
+  #[test]
+  fn crowded_pitch_spacing_must_be_nonnegative_finite_and_within_one_octave() {
+    for invalid in [f32::NAN, -0.1, 1200.1] {
+      let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
+      let SinkRig::CpalSynth { crowded_pitch_planck_deviation, .. } = &mut rig.sinks[0]
+      else {
+        panic!("test rig should use cpal_synth");
+      };
+      *crowded_pitch_planck_deviation = invalid;
+      let err = validate_rig(&rig).expect_err("invalid crowded spacing should fail");
+      assert!(err.contains("crowded_pitch_planck_deviation"), "{err}");
+      assert!(err.contains("0..1200"), "{err}");
+    }
   }
 
   #[test]
@@ -4430,7 +4565,7 @@ controls = "a"
 id = "momentary-a"
 monome = "a"
 kind = "momentary_chord_block"
-rect = [11, 0, 15, 1]
+rect = [0, 14, 7, 15]
 "#;
 
   fn two_layer_rig_source() -> String {
@@ -4486,8 +4621,8 @@ rect = [11, 0, 15, 1]
   #[test]
   fn momentary_chord_block_validates_geometry_and_paired_controls() {
     let bad_rect =
-      two_layer_rig_source().replace("rect = [11, 0, 15, 1]", "rect = [11, 0, 14, 1]");
-    assert!(parse_rig(&bad_rect).unwrap_err().contains("exactly 5x2 cells"));
+      two_layer_rig_source().replace("rect = [0, 14, 7, 15]", "rect = [0, 14, 6, 15]");
+    assert!(parse_rig(&bad_rect).unwrap_err().contains("exactly 8x2 cells"));
 
     let missing_volume = two_layer_rig_source().replace(TWO_LAYER_WINDOWS, &TWO_LAYER_WINDOWS
       .replace(
@@ -4501,6 +4636,27 @@ rect = [11, 0, 15, 1]
       two_layer_rig_source(),
     );
     assert!(parse_rig(&legacy_too).unwrap_err().contains("cannot declare both"));
+  }
+
+  #[test]
+  fn layer_target_is_one_cell_and_requires_the_pitch_only_chord_layer() {
+    let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
+    let target = rig
+      .monome_windows
+      .iter_mut()
+      .find(|window| matches!(window, MonomeWindowRig::LayerTargetControl { .. }))
+      .expect("target exists");
+    let MonomeWindowRig::LayerTargetControl { rect, .. } = target else { unreachable!() };
+    *rect = [4, 0, 5, 0];
+    let err = validate_rig(&rig).expect_err("a two-cell target should fail");
+    assert!(err.contains("layer_target_control") && err.contains("exactly one cell"), "{err}");
+
+    let mut rig = load_named_rig("monomes_two-timbres_sustain_chords").expect("rig loads");
+    rig
+      .monome_windows
+      .retain(|window| !matches!(window, MonomeWindowRig::MomentaryChordBlock { .. }));
+    let err = validate_rig(&rig).expect_err("an orphan target should fail");
+    assert!(err.contains("needs a momentary_chord_block"), "{err}");
   }
 
   // ---- accrete_control (surfaces sustain buttons) ----

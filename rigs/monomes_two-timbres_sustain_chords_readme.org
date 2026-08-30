@@ -1,110 +1,199 @@
-#+title: Monomes: two timbres, sustain, and momentary chords
+#+title: Monomes: sustain, chords, and compact loops
 
-* Run
+* Jeff's redux
+** Run
+Connect monome(s), then:
 
-Connect either one or two 16x16 monomes, then from the repository root inside
-the container run:
+pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords
+** Layout
+*** at the bottom : chords are left, loops are right
+*** picture
+y=0  SIN TRI SQUARE SAW  TARGET[1]  . . . . . . . .  SHIFT SHIFT SHIFT
+y=1  -12  -2    +2  +12             . . . . . . . .  SHIFT SHIFT SHIFT
+
+                       EDO PLAY SURFACE
+
+y=14 C C C C C C C    | ACCRETE  CLEAR | SELECT L1 L L L L L
+                      ------------------
+y=15 C C C C C C MODE   ARM    | STOP    START  L  L L L L PHASE
+** controls
+*** TARGET = timbre and volume target
+Solid = loop, flashing = stored chords, off = fingered & sustained voices.
+There only are three (timbre, volume) pairs;
+  all the distinct chords share the same pair, as do distinct loops.
+*** volume control
+Volume of chords and loops are relative to fingered volume.
+Coarse and fine size are configurable; initially -12 -2 +2 +12 db.
+*** SHIFT : octaves change meaning with TARGET
+Fingered voices: changes what the grid shows.
+Chords: Shifts them temporarily. (User can re-save them.)
+Loops: Shifts them permanently.
+*** MODE = chords are momentary or toggles
+Momentary is is good and bad:
+one can't hold it without holding a finger there,
+but it's good for rapidly switching between them and silence.
+*** ACCRETE : accrete to the sustained set
+*** CLEAR : clear the sustained set
+*** ARM = prepare to store to chord slot
+Press a chord slot to select which and execute.
+*** SELECT : The next loop touched will be the target.
+Press SELECT and then any loop slot to choose another target;
+SELECT flashes while waiting, and pressing SELECT again cancels.  A slot touch
+used for selection never changes playback.
+*** STOP : stop recording
+*** START : start recording
+*** fast START then STOP : empty the target loop slot
+*** PHASE : Toggles KEEP RUNNING or RESTART mode.
+*** L1 is special
+because it is the loop slot initially targeted for record,
+which is why it flashes
+* Claude's lengthier description
+** Run
+
+Connect either one or two 16x16 monomes.  From the repository root inside the
+container run:
 
 #+begin_src sh
 pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords
 #+end_src
 
-Either physical grid may be the only one connected.  With two, both carry the
-same controls but have independent played notes, sustain, registers, timbre and
-volume states, chord voices, and stored chord slots.  Ctrl-C blanks every grid
-and stops audio.
+Either physical grid can be used alone.  With two, each grid has independent
+notes, sustain, chord and loop banks, registers, controls, and loop clocks.
+Ctrl-C blanks the grids and stops audio.
 
-The tuning begins at 110 Hz in 41-EDO.  Moving right adds 8 steps; moving down
-adds 1.  Edit mode, SoftSteps, expression pedals, factored pulse, and the square
-and diamond dances are not part of this rig.
+The shipped rig begins at 110 Hz in 41-EDO.  Right adds eight steps and down
+adds one.  Edit mode, SoftSteps, expression pedals, and factored pulse are not
+part of this rig.
 
-* Layout
+** Layout
 
 #+begin_example
-top-left                                top-right
-sin tri square saw          TARGET slot slot slot ARM
--12 -2   +2   +12           slot   slot slot slot slot
+y=0  SIN TRI SQUARE SAW  TARGET[1]  . . . . . . . .  SHIFT SHIFT SHIFT
+y=1  -12  -2    +2  +12             . . . . . . . .  SHIFT SHIFT SHIFT
 
-                 41-EDO play surface
+                       EDO PLAY SURFACE
 
-CLEAR ACCRETE                             3x2 SHIFT
-bottom-left                            bottom-right
+y=14 C C C C C C C ACCRETE  | CLEAR SELECT L L L L L L
+y=15 C C C C C C MODE ARM   | STOP START L L L L L PHASE
 #+end_example
 
-The dB labels show the default coarse/fine steps.  The rig fields
-=volume_coarse= and =volume_fine= configure them.
+TARGET = timbre and volume target.
+  Solid = loop, flashing = stored chords, off = fingered & sustained voices.
+  There only are three (timbre, volume) pairs;
+    all the distinct chords share the same pair, as do distinct loops.
 
-* The two timbre targets
+The thirteen =C= cells are chord slots.  The eleven =L= cells are loop slots.
+The dB labels are the default coarse and fine volume steps; the rig can change
+them.  The four arrow cells in SHIFT move one grid cell.  Its two outer top
+corners move one configured EDO octave and change meaning with TARGET as
+described below.
 
-TARGET starts black: the waveform and dB buttons address this grid's
-fingered/sustained layer.  Press TARGET and it becomes solid bright: those controls
-now address recalled chord voices.  Each layer remembers its own selected
-waveform.  Changing it immediately crossfades every voice already sounding in
-that layer and also changes future notes/recalls.
+** TARGET, waveform, and volume
 
-Each of the four waveforms remembers a fingered/sustained base volume, initially
--12 dB.  Its chord volume is a remembered offset from that same base, initially
-0 dB.  Therefore:
+TARGET cycles through three layers:
 
-- with TARGET black, a dB press moves that waveform's base and both layers follow;
-- with TARGET bright, a dB press changes only that waveform's chord offset.
+- black: fingered and sustained voices;
+- dim: recalled chord voices; and
+- solid: compact-loop playback voices.
 
-Resulting levels clamp to -60..0 dB.  Changes use the synth's short gain slew,
-so a button does not pop or restart a voice.
+Each layer remembers its own waveform choice.  Each waveform remembers a base
+finger/sustain volume plus separate chord and loop offsets.  Thus a volume
+change while TARGET is black also carries the other two layers' bases with it;
+a change while TARGET is dim or solid moves only that layer relative to the
+base.  Changes affect sounding voices immediately without restarting them.
 
-* Sustain
+With TARGET black, the two octave corners scroll the keyboard.  With TARGET
+dim, they temporarily glide all sounding chord recalls by one configured EDO
+octave.  With TARGET solid, they permanently transpose the current loop record
+target, save it, and glide that slot if it is playing.  Loop octave edits do
+nothing while recording.
 
-Hold ACCRETE while fingering notes.  Every note played or already held joins
-this grid's sustained set and keeps ringing after release.  ACCRETE is always
-momentary; there is no latch-mode button.  CLEAR ends this grid's sustained
-notes and any momentary chord voices currently ringing, without touching the
-other monome.  Re-fingering a sustained note shifts only its outgoing release
-tail six cents sharp; =retrigger_tail_detune_cents= in the rig changes that
-offset live on =r= reload, and zero disables it.
+** Sustain
 
-* The eight momentary chord slots
+Hold ACCRETE while playing.  Notes already held, and notes played while it is
+held, join this grid's sustained set and keep ringing after finger release.
+CLEAR removes only sustain: it does not end a held finger, a recalled chord, or
+loop playback, and does not erase either stored bank.
 
-An unarmed slot sounds only while held; release it and its voices take the
-ordinary short release ramp.  Several slots may be held and layered.  Empty and
-occupied slots both rest dim; a slot is bright only while it actually sounds.
+At rest ACCRETE and CLEAR alternate in opposite halves of a one-second flash.
+Holding either button makes that button solid.
 
-To save into a destination:
+** Chords
 
-1. Press ARM with no chord slot held; ARM flashes.
-2. Finger, sustain, and/or hold the chord voices to capture.
-3. Press a destination slot.
+The thirteen slots store pitches only.  An empty slot is black, a populated
+silent slot is dim, and a sounding slot is solid.
 
-The slot receives the sorted set of pitches currently sounding on this grid and
-ARM disarms.  Saving silence leaves the destination unchanged.  Slots store
-only absolute pitches—not timbre, gain, phase, pulse, cells, or register.
-Recall always uses the chord layer's current waveform and relative volume.
+MODE begins solid (momentary).  In momentary mode, hold a populated slot to
+sound it and release the cell to end that recall.  Press MODE to make it black
+(toggle mode); then each slot press independently toggles that recall, so
+several may remain on.  Returning to momentary mode releases all toggled
+recalls.
 
-To replace a held source after shifting it, keep one or more source slots held,
-use the octave corners, then press ARM.  ARM immediately overwrites every held
-source slot with the whole current sounding pitch set.  This avoids having to
-release a momentary source before saving it back into itself.
+To store a chord without a source chord slot, press ARM, play or sustain its
+notes, and press a destination slot.  ARM flashes until the save.  Recalled
+chords can also be sources: in momentary mode ARM overwrites the source slots
+you are physically holding; in toggle mode it overwrites the latched-on source
+slots.  Storage never captures loop playback or the tiny crowded-pitch offsets.
 
-Slots persist atomically in
-=state/chord-slots/monomes_two-timbres_sustain_chords.toml=.  Each space is
-keyed by the physical monome serial id, so connecting one grid alone or changing
-serialosc enumeration order does not move its stored chords to the other grid.
+Chord slots persist by physical monome serial id in
+=state/chord-slots/monomes_two-timbres_sustain_chords.toml=.  Older eight-slot
+files retain their first eight slots and gain five empty ones.
 
-* Shift pad
+** Compact loops
 
-The four arrows always scroll the playable region.  The octave corners depend
-on TARGET:
+Loop slot 1 (the first =L= cell at =(10,14)=) is the record target at startup
+and flashes.  Press SELECT and then any loop slot to choose another target;
+SELECT flashes while waiting, and pressing SELECT again cancels.  A slot touch
+used for selection never changes playback.
 
-- TARGET black: scroll the playable region by an octave;
-- TARGET bright: glide every currently held chord voice by an octave, leaving
-  the playable region still.  With no chord sounding they do nothing.
+To make a first loop:
 
-The chord shift is temporary until saved.  Release and re-hold an unsaved slot
-and it returns at the octave stored in that slot.
+1. Press START.
+2. Play, sustain, and/or recall local chords freely.
+3. Press STOP at the cycle boundary.
 
-* More detail
+START flashes while recording.  The first take's START-to-STOP span becomes its
+fixed duration.  A populated target receives an overdub instead; its duration
+and phase stay fixed.  Recording includes sources that were already sounding
+at START, but excludes every loop-playback voice, so it cannot feed back.
+When the target is also playing back during recording, its slot alternates
+quickly between bright and dim (80 ms each) and never goes black.
+
+A quick START then STOP shorter than =loop_clear_tap_ms= (300 ms initially)
+clears only the target loop.  A longer take with no captured notes makes no
+loop.  Interrupted recordings are not published.
+
+Touch a populated loop slot to turn its playback on or off.  Many slots can
+play together, each with its own duration and phase.  Touching the empty target
+while its first take is being recorded toggles a pending request to begin
+playing at STOP.  At other times an empty slot does nothing.
+
+PHASE begins flashing in KEEP-RUNNING mode.  Once a slot has first played, its
+clock keeps moving while muted, so a later touch rejoins its current phase.
+Press PHASE to make it black (RESTART mode); each playback-on then begins at
+phase zero.  Changing to RESTART also re-anchors sounding loops at zero through
+the normal release and attack ramps.
+
+Compact loops persist by physical serial id in
+=state/compact-loops/monomes_two-timbres_sustain_chords.toml=.  Pitch and timing
+are saved; targets, gates, phase, mode, timbre, and volume restart from their
+normal defaults.
+
+** Equal-pitch voice packing
+
+Every simultaneous surface voice at the same nominal pitch remains independently
+owned, including two enharmonic keyboard cells such as =(x,y)= and
+=(x+1,y-8)= when the tuning makes them equal.  The rig initially separates such
+voices by the first free offset in =0,+5,-5,+10,-10,...= cents.  Change
+=crowded_pitch_planck_deviation= in the rig to choose another spacing, or set it
+to zero to disable separation.  Offsets are live-performance state and are
+never stored.
+
+** More detail
 
 - Rig data and configurable values: [[file:monomes_two-timbres_sustain_chords.org]]
 - Rig format and general window meanings: [[file:README.org]]
-- Design decisions and implementation plan:
-  [[file:../TODO/monomes_two-timbres_sustain_chords/2_discussion.org]] and
-  [[file:../TODO/monomes_two-timbres_sustain_chords/3_plan.org]]
+- Final implementation specification:
+  [[file:../TODO/monomes_two-timbres_sustain_chords/6_plan.org]]
+- The discussion behind it:
+  [[file:../TODO/monomes_two-timbres_sustain_chords/5_layout-and-loops.org]]

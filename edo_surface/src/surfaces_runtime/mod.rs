@@ -26,6 +26,8 @@ mod accrete;
 pub mod audio;
 mod chords;
 mod chords_persist;
+mod compact_loops;
+mod compact_loops_persist;
 mod dance;
 mod edit;
 mod fine;
@@ -74,6 +76,7 @@ use crate::rig::{AccreteControlKind, MonomeWindowRig, SinkRig};
 use crate::voices::Distortion;
 
 use accrete::AccreteState;
+use compact_loops::CompactLoops;
 use layer_controls::LayerControls;
 use ring::{GridRing, Reason};
 use polyrhythm::{TempoFactorButton, PolyrhythmState};
@@ -250,6 +253,9 @@ fn run(
   // sink's `amplitude` is the single master "synth volume" (both grids); the per-grid
   // volume strips are live trims that multiply below it.
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+  let crowded = Arc::new(Mutex::new(synth::CrowdedPitches::new(
+    s.crowded_pitch_planck_deviation,
+  )));
   // The per-grid distortion switches (misc.org "distortion / per-monome"): grid g's
   // toggle routes grid g's voices through the distorted bus in the audio callback.
   let distortion_on: Arc<Vec<AtomicBool>> =
@@ -458,6 +464,25 @@ fn run(
       }))
     };
 
+  let has_compact_loops = s.grids.iter().any(|g| g.overlays.compact_loop_rect != NO_RECT);
+  let compact_persist: Option<Arc<CompactPersistTarget>> = if no_audio || !has_compact_loops {
+    None
+  } else {
+    let path = compact_loops_persist::path_for(&rig.id);
+    let loaded = compact_loops_persist::load(&path);
+    let device_ids: Vec<Option<String>> =
+      assigned.iter().map(|device| device.as_ref().map(|device| device.id.clone())).collect();
+    let restored: usize = device_ids
+      .iter()
+      .filter_map(|id| id.as_ref().and_then(|id| loaded.get(id)))
+      .map(|slots| slots.iter().filter(|slot| slot.is_some()).count())
+      .sum();
+    if restored > 0 {
+      println!("compact loops: restored {restored} from {}", path.display());
+    }
+    Some(Arc::new(CompactPersistTarget { path, device_ids, all: Mutex::new(loaded) }))
+  };
+
   // The EX-P volume-pedal thread. The pedal is uniform UNTIL a grid has an edit
   // selection, when it targets only the edited voices and records a per-voice trim
   // that then rides the uniform pedal (queues/branch-3.org "target volume changes at
@@ -552,6 +577,7 @@ fn run(
     voices: Arc::clone(&voices),
     persist,
     momentary_persist,
+    compact_persist,
   };
 
   // Spawn one key/LED loop per PRESENT grid (absent grids have `None` for both their
@@ -583,6 +609,17 @@ fn run(
       volume_controls_index: g.volume_controls_index,
       volume_delta_controls_index: g.volume_delta_controls_index,
     };
+    let mut compact_loops = CompactLoops::new(g.loop_clear_tap_ms);
+    if let Some(target) = shared.compact_persist.as_ref() {
+      if let Some(id) = target.device_ids.get(grid_index).and_then(Option::as_ref) {
+        let all = target.all.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(slots) = all.get(id) {
+          for (slot, stored) in slots.iter().enumerate().take(compact_loops::SLOTS) {
+            compact_loops.slots[slot] = stored.clone();
+          }
+        }
+      }
+    }
     let rt = GridThread {
       grid_index,
       sock,
@@ -599,14 +636,16 @@ fn run(
       editmode_clear_down: false,
       editmode_accrete_down: false,
       volume_delta_down: [false; SELECTOR_CELLS],
+      compact_stop_down: false,
       tuning,
       knobs,
       shared: shared.clone(),
       slide: SlideCandidates::new(),
       pedal_slide: pedal_slide::PedalSlideState::new(),
       fine: fine::FineTranspose::new(),
+      compact_loops,
       started: Instant::now(),
-      sink: SurfaceSink::new(
+      sink: SurfaceSink::new_with_crowding(
         grid_index,
         Arc::clone(&voices),
         s.fund,
@@ -617,6 +656,7 @@ fn run(
         s.sustain_level,
         s.decay_secs,
         s.retrigger_tail_detune_cents,
+        Arc::clone(&crowded),
         Arc::clone(&pedal_gains),
         Arc::clone(&gains),
       ),
@@ -704,6 +744,7 @@ struct Shared {
   /// rewrites the whole state file for this rig.
   persist: Option<Arc<PersistTarget>>,
   momentary_persist: Option<Arc<MomentaryPersistTarget>>,
+  compact_persist: Option<Arc<CompactPersistTarget>>,
 }
 
 /// Where (and for which monomes, in grid-index order) the chord slots persist.
@@ -718,6 +759,12 @@ struct MomentaryPersistTarget {
   /// The complete file, including physical grids absent from this run. Keeping
   /// those entries prevents a one-grid save from erasing the other grid's slots.
   all: Mutex<momentary_chords_persist::AllSlots>,
+}
+
+struct CompactPersistTarget {
+  path: PathBuf,
+  device_ids: Vec<Option<String>>,
+  all: Mutex<compact_loops_persist::AllSlots>,
 }
 
 /// The tuning inputs, identical across every grid in one run (one instrument-wide
@@ -780,6 +827,7 @@ struct GridThread {
   editmode_accrete_down: bool,
   /// Momentary press LEDs for the four relative dB cells.
   volume_delta_down: [bool; SELECTOR_CELLS],
+  compact_stop_down: bool,
   tuning: Tuning,
   knobs: Knobs,
   shared: Shared,
@@ -793,6 +841,7 @@ struct GridThread {
   pedal_slide: pedal_slide::PedalSlideState,
   /// THIS grid's fine-transpose mode (the X, the scalar transpose, the key stack).
   fine: fine::FineTranspose,
+  compact_loops: CompactLoops,
   /// When this runtime started. The diamond dance's phase is a pure function of
   /// elapsed time from here, so every dance on the instrument turns in step -- that
   /// is the whole reason a skipped corner is not allowed to retime its dance.
@@ -874,6 +923,10 @@ fn grid_thread(mut rt: GridThread) {
       }
     }
 
+    let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    let loop_actions = rt.compact_loops.tick(now_ns);
+    apply_compact_actions(&mut rt, loop_actions);
+
     // Repaint. The overlays show the state of whatever grid THIS grid's strips control
     // (its own, in the current rigs); the play cells reflect the union of both grids'
     // sounding classes (bright; sustained notes count -- you hear them) and the shared
@@ -888,7 +941,7 @@ fn grid_thread(mut rt: GridThread) {
     };
     let volume_col = volume_active_col(&rt);
     let elapsed = rt.started.elapsed();
-    let (mut buttons, sustained_classes) = accrete_view(&rt);
+    let (mut buttons, sustained_classes) = accrete_view(&rt, elapsed);
     // The chord block's cells (arm + 9 slots) and every grid's live chord pitches
     // (they are sounding notes, so they reflect bright on both grids like the
     // sustained classes).
@@ -897,6 +950,9 @@ fn grid_thread(mut rt: GridThread) {
     let (momentary_buttons, momentary_classes) = momentary_chord_view(&rt, elapsed);
     buttons.extend(momentary_buttons);
     chord_classes.extend(momentary_classes);
+    let (loop_buttons, loop_classes) = compact_loop_view(&rt, elapsed);
+    buttons.extend(loop_buttons);
+    chord_classes.extend(loop_classes);
     for (i, down) in rt.volume_delta_down.iter().copied().enumerate() {
       if rt.overlays.volume_delta_rect != NO_RECT {
         let x = rt.overlays.volume_delta_rect[0] + i as i32;

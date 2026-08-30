@@ -8,10 +8,11 @@
 //! (`0p5_also.org` item 5). Earlier surfaces builds painted a register-*independent*
 //! map; that is deliberately reversed here.
 //!
-//! Three logical LED states per cell -- `OFF`, `DIM`, `BRIGHT`. On a varibright grid
-//! these render as levels 0 / 4 / 15 directly; on a monobright grid the runtime fakes
-//! `DIM` by flashing (see `mod.rs`), since a monobright grid thresholds any level <= 7
-//! to off.
+//! Three ordinary logical LED states per cell -- `OFF`, `DIM`, `BRIGHT`. On a
+//! varibright grid these render as levels 0 / 4 / 15 directly; on a monobright grid
+//! the runtime fakes `DIM` by flashing (see `mod.rs`), since a monobright grid
+//! thresholds any level <= 7 to off. `STEADY_DIM` is the one special overlay state
+//! that must stay continuously lit instead of joining that animation.
 
 use std::collections::HashSet;
 
@@ -22,6 +23,9 @@ use crate::types::MonomeKey;
 /// OSC LED levels (0..15). The three visible states the painter emits.
 pub const OFF: i32 = 0;
 pub const DIM: i32 = 4;
+/// A continuously lit dim state. Unlike ordinary overlay `DIM`, this bypasses
+/// the slow dim/off control animation; binary grids render it as continuously on.
+pub const STEADY_DIM: i32 = 5;
 pub const BRIGHT: i32 = 15;
 
 /// The number of cells in (and timbre slots behind) a selector strip.
@@ -289,6 +293,7 @@ mod tests {
     let buttons: Vec<ButtonOverlay> = vec![
       ([0, 15, 0, 15], button_level(false)), // a resting button
       ([1, 15, 1, 15], button_level(true)),  // a lit one
+      ([2, 15, 2, 15], STEADY_DIM),          // never joins the slow off half
     ];
     let trail: HashSet<i32> = [class_at(0, 6, 6)].into_iter().collect();
     let off_half = levels_for_grid(
@@ -300,6 +305,11 @@ mod tests {
     assert_eq!(at(&off_half, 14, 14), OFF, "a scroll arrow goes dark");
     assert_eq!(at(&off_half, 0, 15), OFF, "a resting button goes dark");
     assert_eq!(at(&off_half, 1, 15), BRIGHT, "a lit button holds bright");
+    assert_eq!(
+      at(&off_half, 2, 15),
+      STEADY_DIM,
+      "a steady-dim button never goes dark",
+    );
     assert_eq!(at(&off_half, 10, 0), BRIGHT, "the volume column holds bright");
     assert_eq!(at(&off_half, 6, 6), DIM, "a trailed PLAY cell holds its steady dim");
 
@@ -312,6 +322,7 @@ mod tests {
     assert_eq!(at(&dim_half, 0, 0), DIM);
     assert_eq!(at(&dim_half, 14, 14), DIM);
     assert_eq!(at(&dim_half, 0, 15), DIM);
+    assert_eq!(at(&dim_half, 2, 15), STEADY_DIM);
     assert_eq!(at(&dim_half, 6, 6), DIM);
   }
 

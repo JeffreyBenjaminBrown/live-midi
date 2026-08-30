@@ -91,6 +91,10 @@ pub(super) struct Overlays {
   pub(super) chord_rect: [i32; 4],
   /// Pitch-only target/arm/eight-slot block.
   pub(super) momentary_chord_rect: [i32; 4],
+  /// The separate three-way FS/chord/loop TARGET cell.
+  pub(super) layer_target_rect: [i32; 4],
+  /// The surfaces-only compact-loop half-grid.
+  pub(super) compact_loop_rect: [i32; 4],
   /// The fine-transpose toggle's cell, `NO_RECT` when absent.
   pub(super) fine_transpose_rect: [i32; 4],
 }
@@ -112,6 +116,7 @@ pub(super) struct GridSettings {
   pub(super) volume_controls_index: usize,
   pub(super) volume_delta_controls_index: usize,
   pub(super) layer_volume: Option<LayerVolumeConfig>,
+  pub(super) loop_clear_tap_ms: u64,
   pub(super) overlays: Overlays,
 }
 
@@ -138,6 +143,8 @@ pub(super) struct Settings {
   pub(super) decay_secs: f32,
   /// Cents applied only to a retired sustain-retrigger tail. Zero disables.
   pub(super) retrigger_tail_detune_cents: f32,
+  /// Cents between crowded equal-nominal-pitch surface voices; zero disables.
+  pub(super) crowded_pitch_planck_deviation: f32,
   /// The four selectable timbres (rig `[[timbres]]`, or the plain waveforms).
   pub(super) timbres: [TimbreSlot; SELECTOR_CELLS],
   /// The instrument-wide AM LFO morph family (rig `[am]`).
@@ -215,7 +222,8 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
   let SinkRig::CpalSynth {
     sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
     distortion_scale, distortion_shape, distortion_makeup, distortion_auto_makeup,
-    distortion_makeup_slew_ms, sustain_level, decay_secs, retrigger_tail_detune_cents, ..
+    distortion_makeup_slew_ms, sustain_level, decay_secs, retrigger_tail_detune_cents,
+    crowded_pitch_planck_deviation, ..
   } = sink
   else {
     return Err("surfaces requires a cpal_synth sink for the play grids".into());
@@ -378,6 +386,26 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    let layer_target_rect = rig
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowRig::LayerTargetControl { monome, rect, .. } if monome == monome_id => {
+          Some(*rect)
+        }
+        _ => None,
+      })
+      .unwrap_or(NO_RECT);
+    let compact_loop = rig.monome_windows.iter().find_map(|w| match w {
+      MonomeWindowRig::CompactLoopBlock {
+        monome,
+        rect,
+        loop_clear_tap_ms,
+        ..
+      } if monome == monome_id => Some((*rect, *loop_clear_tap_ms)),
+      _ => None,
+    });
+    let (compact_loop_rect, loop_clear_tap_ms) = compact_loop.unwrap_or((NO_RECT, 300));
     let fine_transpose_rect = rig
       .monome_windows
       .iter()
@@ -421,6 +449,8 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
       chord_rect,
       momentary_chord_rect,
+      layer_target_rect,
+      compact_loop_rect,
       fine_transpose_rect,
     };
     grids.push(GridSettings {
@@ -432,6 +462,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       volume_controls_index,
       volume_delta_controls_index,
       layer_volume,
+      loop_clear_tap_ms,
       overlays,
     });
   }
@@ -484,6 +515,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     sustain_level: *sustain_level,
     decay_secs: *decay_secs,
     retrigger_tail_detune_cents: *retrigger_tail_detune_cents,
+    crowded_pitch_planck_deviation: *crowded_pitch_planck_deviation,
     timbres: resolve_timbre_slots(rig),
     am_shape_family: match rig.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
       AmShapeFamilyRig::SinToSquare => AmShapeFamily::SinToSquare,

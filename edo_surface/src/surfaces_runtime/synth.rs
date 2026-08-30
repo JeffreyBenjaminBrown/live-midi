@@ -27,6 +27,60 @@ use crate::voices::pluck_envelope;
 /// How long the edit-mode timbre switch's equal-power crossfade takes.
 pub const TIMBRE_XFADE_SECS: f32 = 0.05;
 
+#[derive(Debug, Default)]
+pub(super) struct CrowdedPitches {
+  step_cents: f32,
+  assignments: HashMap<VoiceSource, (i32, i32, f32)>,
+}
+
+impl CrowdedPitches {
+  pub(super) fn new(step_cents: f32) -> Self {
+    Self { step_cents, assignments: HashMap::new() }
+  }
+
+  fn set_step(&mut self, step_cents: f32) {
+    self.step_cents = step_cents;
+  }
+
+  fn allocate(&mut self, voices: &VoiceMap, source: VoiceSource, pitch: i32) -> f32 {
+    self.assignments.retain(|key, _| voices.contains_key(key));
+    self.assignments.remove(&source);
+    if self.step_cents <= 0.0 {
+      self.assignments.insert(source, (pitch, 0, 1.0));
+      return 1.0;
+    }
+    let occupied: HashSet<i32> = self
+      .assignments
+      .values()
+      .filter_map(|(nominal, lane, _)| (*nominal == pitch).then_some(*lane))
+      .collect();
+    let lane = (0_i32..)
+      .flat_map(|magnitude| {
+        if magnitude == 0 {
+          [Some(0), None]
+        } else {
+          [Some(magnitude), Some(-magnitude)]
+        }
+      })
+      .flatten()
+      .find(|lane| !occupied.contains(lane))
+      .unwrap_or(0);
+    let ratio = 2.0_f32.powf(lane as f32 * self.step_cents / 1200.0);
+    self.assignments.insert(source, (pitch, lane, ratio));
+    ratio
+  }
+
+  fn ratio(&self, source: VoiceSource) -> f32 {
+    self.assignments.get(&source).map(|(_, _, ratio)| *ratio).unwrap_or(1.0)
+  }
+
+  fn rekey(&mut self, from: VoiceSource, to: VoiceSource) {
+    if let Some(assignment) = self.assignments.remove(&from) {
+      self.assignments.insert(to, assignment);
+    }
+  }
+}
+
 /// Aim every voice belonging to `grid` -- fingered and sustained (drone) alike -- at
 /// fader gain `gain`, in place. Drives the *live* volume control: a volume strip sets
 /// the loudness of whatever grid it `controls` (its own, in the current rigs), and
@@ -187,6 +241,10 @@ pub(super) fn chord_key(grid: usize, seq: u64) -> VoiceSource {
   VoiceSource::SurfaceChord { grid, seq }
 }
 
+pub(super) fn loop_key(grid: usize, seq: u64) -> VoiceSource {
+  VoiceSource::SurfaceLoop { grid, seq }
+}
+
 /// The key of a *sustained* voice: per source grid and absolute pitch (the accrete
 /// set is keyed the same way).
 fn sustain_key(grid: usize, pitch: i32) -> VoiceSource {
@@ -211,6 +269,7 @@ pub struct SurfaceSink {
   decay_per_sample: f32,
   /// Rig-configured cents applied only to a same-pitch retrigger's retired tail.
   retrigger_tail_detune_cents: f32,
+  crowded: Arc<Mutex<CrowdedPitches>>,
   /// The per-grid expression-pedal volumes (shared with the pedal thread, which
   /// writes them). A fresh note starts at ITS grid's current pedal volume --
   /// already settled, no slew-in. Unity when the rig has no pedals.
@@ -239,6 +298,39 @@ impl SurfaceSink {
     pedal_gains: Arc<Mutex<Vec<f32>>>,
     fader_gains: Arc<Mutex<Vec<f32>>>,
   ) -> Self {
+    Self::new_with_crowding(
+      grid,
+      voices,
+      fund,
+      edo,
+      sample_rate,
+      attack_secs,
+      release_secs,
+      sustain_level,
+      decay_secs,
+      retrigger_tail_detune_cents,
+      Arc::new(Mutex::new(CrowdedPitches::new(0.0))),
+      pedal_gains,
+      fader_gains,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn new_with_crowding(
+    grid: usize,
+    voices: Arc<Mutex<VoiceMap>>,
+    fund: f64,
+    edo: i32,
+    sample_rate: f32,
+    attack_secs: f32,
+    release_secs: f32,
+    sustain_level: f32,
+    decay_secs: f32,
+    retrigger_tail_detune_cents: f32,
+    crowded: Arc<Mutex<CrowdedPitches>>,
+    pedal_gains: Arc<Mutex<Vec<f32>>>,
+    fader_gains: Arc<Mutex<Vec<f32>>>,
+  ) -> Self {
     let (sustain_env, decay_per_sample) = pluck_envelope(sustain_level, decay_secs, 1.0, sample_rate);
     SurfaceSink {
       grid,
@@ -252,9 +344,39 @@ impl SurfaceSink {
       sustain_env,
       decay_per_sample,
       retrigger_tail_detune_cents,
+      crowded,
       pedal_gains,
       fader_gains,
     }
+  }
+
+  fn allocate_ratio(
+    &self,
+    voices: &VoiceMap,
+    source: VoiceSource,
+    pitch: i32,
+  ) -> f32 {
+    self
+      .crowded
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .allocate(voices, source, pitch)
+  }
+
+  fn crowded_ratio(&self, source: VoiceSource) -> f32 {
+    self
+      .crowded
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .ratio(source)
+  }
+
+  fn crowded_rekey(&self, from: VoiceSource, to: VoiceSource) {
+    self
+      .crowded
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .rekey(from, to);
   }
 
   /// This grid's current expression-pedal volume (unity absent a pedal or before
@@ -330,11 +452,13 @@ impl SurfaceSink {
     self.next_id += 1;
     let fader = self.fader_gain();
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let key = voice_key(self.grid, cell);
+    let crowded_ratio = self.allocate_ratio(&voices, key, pitch);
     voices.insert(
-      voice_key(self.grid, cell),
+      key,
       VoiceState {
         id,
-        freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq: freq_for_pitch(pitch, self.fund, self.edo) * crowded_ratio,
         freq_target: 0.0,
         glide_per_sample: 1.0,
         factored_pulse_freq: factored_pulse_hz.unwrap_or(0.0),
@@ -371,6 +495,7 @@ impl SurfaceSink {
     sustain_level: f32,
     decay_secs: f32,
     retrigger_tail_detune_cents: f32,
+    crowded_pitch_planck_deviation: f32,
   ) {
     self.fund = fund;
     self.edo = edo;
@@ -379,6 +504,11 @@ impl SurfaceSink {
     self.sustain_env = sustain_env;
     self.decay_per_sample = decay_per_sample;
     self.retrigger_tail_detune_cents = retrigger_tail_detune_cents;
+    self
+      .crowded
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .set_step(crowded_pitch_planck_deviation);
   }
 
   /// `note_on`, but the voice STARTS at `from_pitch` and glides into `pitch` over
@@ -408,7 +538,8 @@ impl SurfaceSink {
     self.note_on(cell, pitch, timbre, factored_pulse_hz);
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) {
-      let from = freq_for_pitch(from_pitch, self.fund, self.edo);
+      let ratio = self.crowded_ratio(voice_key(self.grid, cell));
+      let from = freq_for_pitch(from_pitch, self.fund, self.edo) * ratio;
       let to = state.freq;
       let samples = (glide_secs * self.sample_rate).max(1.0);
       state.freq = from;
@@ -437,7 +568,10 @@ impl SurfaceSink {
     let Some(mut state) = voices.remove(&voice_key(self.grid, from_cell)) else {
       return false;
     };
-    let to = freq_for_pitch(pitch, self.fund, self.edo);
+    let from_key = voice_key(self.grid, from_cell);
+    let to_key = voice_key(self.grid, cell);
+    let ratio = self.crowded_ratio(from_key);
+    let to = freq_for_pitch(pitch, self.fund, self.edo) * ratio;
     let from = state.freq; // wherever it is NOW, mid-glide included
     if to == from {
       state.glide_per_sample = 1.0;
@@ -447,7 +581,8 @@ impl SurfaceSink {
       state.glide_per_sample = (to / from).powf(1.0 / samples);
     }
     state.factored_pulse_freq = factored_pulse_hz.unwrap_or(0.0);
-    voices.insert(voice_key(self.grid, cell), state);
+    self.crowded_rekey(from_key, to_key);
+    voices.insert(to_key, state);
     true
   }
 
@@ -478,7 +613,8 @@ impl SurfaceSink {
     let Some(state) = voices.get_mut(&voice_key(self.grid, cell)) else {
       return false;
     };
-    let to = freq_for_pitch(pitch, self.fund, self.edo);
+    let key = voice_key(self.grid, cell);
+    let to = freq_for_pitch(pitch, self.fund, self.edo) * self.crowded_ratio(key);
     let from = state.freq; // live, mid-glide included
     if to == from {
       state.glide_per_sample = 1.0;
@@ -531,7 +667,7 @@ impl SurfaceSink {
     state.target_env = 0.0;
     state.ramp_per_sample = state.env / (DIP_SECS * self.sample_rate).max(1.0);
     state.pending_attack = Some(1.0 / (self.attack_secs * self.sample_rate));
-    let target = freq_for_pitch(to, self.fund, self.edo);
+    let target = freq_for_pitch(to, self.fund, self.edo) * self.crowded_ratio(src);
     let start = state.freq; // live, mid-glide included
     if target == start {
       state.glide_per_sample = 1.0;
@@ -540,7 +676,9 @@ impl SurfaceSink {
       state.freq_target = target;
       state.glide_per_sample = (target / start).powf(1.0 / samples);
     }
-    voices.insert(voice_key(self.grid, cell), state);
+    let dest = voice_key(self.grid, cell);
+    self.crowded_rekey(src, dest);
+    voices.insert(dest, state);
     true
   }
 
@@ -559,7 +697,9 @@ impl SurfaceSink {
     let Some(mut state) = voices.remove(&sustain_key(self.grid, from)) else {
       return false;
     };
-    let target = freq_for_pitch(to, self.fund, self.edo);
+    let from_key = sustain_key(self.grid, from);
+    let to_key = sustain_key(self.grid, to);
+    let target = freq_for_pitch(to, self.fund, self.edo) * self.crowded_ratio(from_key);
     let start = state.freq; // live, mid-glide included
     if target == start {
       state.glide_per_sample = 1.0;
@@ -568,7 +708,8 @@ impl SurfaceSink {
       state.freq_target = target;
       state.glide_per_sample = (target / start).powf(1.0 / samples);
     }
-    voices.insert(sustain_key(self.grid, to), state);
+    self.crowded_rekey(from_key, to_key);
+    voices.insert(to_key, state);
     true
   }
 
@@ -582,7 +723,8 @@ impl SurfaceSink {
     let Some(state) = voices.get_mut(&chord_key(self.grid, seq)) else {
       return false;
     };
-    let target = freq_for_pitch(to, self.fund, self.edo);
+    let target = freq_for_pitch(to, self.fund, self.edo)
+      * self.crowded_ratio(chord_key(self.grid, seq));
     let start = state.freq; // live, mid-glide included
     if target == start {
       state.glide_per_sample = 1.0;
@@ -621,6 +763,7 @@ impl SurfaceSink {
       state.ramp_per_sample = state.env / (self.release_secs * self.sample_rate);
       voices.insert(voice_key(self.grid, cell), state);
     } else {
+      self.crowded_rekey(voice_key(self.grid, cell), key);
       voices.insert(key, state);
     }
   }
@@ -652,6 +795,7 @@ impl SurfaceSink {
     }
     match voices.remove(&sustain_key(self.grid, from)) {
       Some(state) => {
+        self.crowded_rekey(sustain_key(self.grid, from), sustain_key(self.grid, to));
         voices.insert(sustain_key(self.grid, to), state);
         true
       }
@@ -676,12 +820,13 @@ impl SurfaceSink {
     if voices.contains_key(&key) {
       return None;
     }
+    let crowded_ratio = self.allocate_ratio(&voices, key, pitch);
     self.next_id += 1;
     voices.insert(
       key,
       VoiceState {
         id,
-        freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq: freq_for_pitch(pitch, self.fund, self.edo) * crowded_ratio,
         freq_target: 0.0,
         glide_per_sample: 1.0,
         factored_pulse_freq: 0.0,
@@ -747,11 +892,13 @@ impl SurfaceSink {
       0.0
     };
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let key = chord_key(self.grid, seq);
+    let crowded_ratio = self.allocate_ratio(&voices, key, v.pitch);
     voices.insert(
-      chord_key(self.grid, seq),
+      key,
       VoiceState {
         id,
-        freq: freq_for_pitch(v.pitch, self.fund, self.edo),
+        freq: freq_for_pitch(v.pitch, self.fund, self.edo) * crowded_ratio,
         freq_target: 0.0,
         glide_per_sample: 1.0,
         factored_pulse_freq: pulse_hz,
@@ -788,11 +935,13 @@ impl SurfaceSink {
     let id = self.next_id;
     self.next_id += 1;
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let key = chord_key(self.grid, seq);
+    let crowded_ratio = self.allocate_ratio(&voices, key, pitch);
     voices.insert(
-      chord_key(self.grid, seq),
+      key,
       VoiceState {
         id,
-        freq: freq_for_pitch(pitch, self.fund, self.edo),
+        freq: freq_for_pitch(pitch, self.fund, self.edo) * crowded_ratio,
         freq_target: 0.0,
         glide_per_sample: 1.0,
         factored_pulse_freq: 0.0,
@@ -817,6 +966,68 @@ impl SurfaceSink {
         timbre_xfade: None,
       },
     );
+  }
+
+  /// A compact-loop attack uses the monome's current loop-layer timbre and gain.
+  pub fn spawn_compact_loop_voice(
+    &mut self,
+    seq: u64,
+    pitch: i32,
+    timbre: Timbre,
+    gain: f32,
+  ) {
+    let id = self.next_id;
+    self.next_id += 1;
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let key = loop_key(self.grid, seq);
+    let crowded_ratio = self.allocate_ratio(&voices, key, pitch);
+    voices.insert(
+      key,
+      VoiceState {
+        id,
+        freq: freq_for_pitch(pitch, self.fund, self.edo) * crowded_ratio,
+        freq_target: 0.0,
+        glide_per_sample: 1.0,
+        factored_pulse_freq: 0.0,
+        factored_pulse_phase: 0.0,
+        phase: 0.0,
+        env: 0.0,
+        target_env: 1.0,
+        ramp_per_sample: 1.0 / (self.attack_secs * self.sample_rate),
+        pending_attack: None,
+        sustain_env: self.sustain_env,
+        decay_per_sample: self.decay_per_sample,
+        timbre,
+        fader_gain: 1.0,
+        grid_gain: gain,
+        grid_gain_target: gain,
+        pedal_scale: 1.0,
+        slide_freq_target: 0.0,
+        am_phase: 0.0,
+        fm_phase: 0.0,
+        rel_am_phase: 0.0,
+        rel_fm_phase: 0.0,
+        timbre_xfade: None,
+      },
+    );
+  }
+
+  pub fn glide_loop_voice(&mut self, seq: u64, to: i32, glide_secs: f32) -> bool {
+    let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(state) = voices.get_mut(&loop_key(self.grid, seq)) else {
+      return false;
+    };
+    let target = freq_for_pitch(to, self.fund, self.edo)
+      * self.crowded_ratio(loop_key(self.grid, seq));
+    let start = state.freq;
+    if target == start {
+      state.glide_per_sample = 1.0;
+    } else {
+      let samples = (glide_secs * self.sample_rate).max(1.0);
+      state.freq_target = target;
+      state.glide_per_sample = (target / start).powf(1.0 / samples);
+    }
+    true
   }
 
   /// A manual retrigger of a sustaining pitch: cut THIS grid's drone at `pitch` so
@@ -861,7 +1072,9 @@ impl SurfaceSink {
     // next_id doubles as the retired-key uniquifier: two cuts never collide.
     let seq = self.next_id;
     self.next_id += 1;
-    voices.insert(VoiceSource::SurfaceRetired { grid: self.grid, seq }, state);
+    let retired = VoiceSource::SurfaceRetired { grid: self.grid, seq };
+    self.crowded_rekey(sustain_key(self.grid, pitch), retired);
+    voices.insert(retired, state);
     Some(cut)
   }
 
@@ -1077,6 +1290,36 @@ pub fn set_layer_gain(
   }
 }
 
+pub fn retimbre_loop_layer(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  timbre: Timbre,
+  sample_rate: f32,
+) {
+  let step = 1.0 / (TIMBRE_XFADE_SECS * sample_rate).max(1.0);
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (source, state) in voices.iter_mut() {
+    if matches!(source, VoiceSource::SurfaceLoop { grid: g, .. } if *g == grid)
+      && state.target_env > 0.0
+      && state.timbre != timbre
+    {
+      state.timbre_xfade = Some(TimbreXfade { from: state.timbre, progress: 0.0, step });
+      state.timbre = timbre;
+    }
+  }
+}
+
+pub fn set_loop_layer_gain(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (source, state) in voices.iter_mut() {
+    if matches!(source, VoiceSource::SurfaceLoop { grid: g, .. } if *g == grid)
+      && state.target_env > 0.0
+    {
+      state.grid_gain_target = gain;
+    }
+  }
+}
+
 /// End -- by the ordinary release ramp -- the chord-layer voices of `grid` named by
 /// `seqs` (a slot toggling OFF, or the widened clear's "and chord" half). The chord
 /// layer has already unregistered them; the ramping voices are reaped by the render
@@ -1094,6 +1337,26 @@ pub fn end_chord_voices(
   let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
   for seq in seqs {
     if let Some(state) = voices.get_mut(&chord_key(grid, *seq)) {
+      state.target_env = 0.0;
+      state.ramp_per_sample = state.env / (release_secs * sample_rate);
+      state.pending_attack = None;
+    }
+  }
+}
+
+pub fn end_loop_voices(
+  voices: &Arc<Mutex<VoiceMap>>,
+  grid: usize,
+  seqs: &[u64],
+  release_secs: f32,
+  sample_rate: f32,
+) {
+  if seqs.is_empty() {
+    return;
+  }
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for seq in seqs {
+    if let Some(state) = voices.get_mut(&loop_key(grid, *seq)) {
       state.target_env = 0.0;
       state.ramp_per_sample = state.env / (release_secs * sample_rate);
       state.pending_attack = None;
@@ -1240,6 +1503,57 @@ mod tests {
     assert_eq!(count(&voices), 2);
     a.note_off((0, 8));
     assert_eq!(target_env(&voices, 0, (1, 0)), Some(1.0), "the other cell still holds");
+  }
+
+  #[test]
+  fn enharmonic_cells_are_independent_and_use_the_shared_crowded_pitch_lanes() {
+    // In 58-8-1, (0,8) and (1,0) are enharmonic grid positions: both resolve
+    // to nominal step 8.  Ownership remains cell-specific, while the shared
+    // allocator packs every concurrently sounding instance of that step.
+    let voices = shared();
+    let crowded = Arc::new(Mutex::new(CrowdedPitches::new(5.0)));
+    let make_sink = |grid| {
+      SurfaceSink::new_with_crowding(
+        grid,
+        Arc::clone(&voices),
+        80.0,
+        58,
+        48000.0,
+        0.003,
+        0.05,
+        1.0,
+        0.5,
+        0.0,
+        Arc::clone(&crowded),
+        Arc::new(Mutex::new(vec![1.0; 2])),
+        Arc::new(Mutex::new(vec![1.0; 2])),
+      )
+    };
+    let mut a = make_sink(0);
+    let mut b = make_sink(1);
+
+    a.note_on_layered((0, 8), 8, Timbre::default(), 1.0);
+    a.note_on_layered((1, 0), 8, Timbre::default(), 1.0);
+    b.note_on_layered((0, 8), 8, Timbre::default(), 1.0);
+
+    let base = freq_for_pitch(8, 80.0, 58);
+    let cents_from_base = |freq: f32| 1200.0 * (freq / base).log2();
+    {
+      let states = voices.lock().unwrap();
+      let cents = [
+        cents_from_base(states[&voice_key(0, (0, 8))].freq),
+        cents_from_base(states[&voice_key(0, (1, 0))].freq),
+        cents_from_base(states[&voice_key(1, (0, 8))].freq),
+      ];
+      assert!(cents[0].abs() < 1e-4, "first voice occupies the nominal lane: {cents:?}");
+      assert!((cents[1] - 5.0).abs() < 1e-3, "second voice occupies +one Planck: {cents:?}");
+      assert!((cents[2] + 5.0).abs() < 1e-3, "third voice occupies -one Planck: {cents:?}");
+    }
+
+    a.note_off((0, 8));
+    assert_eq!(target_env(&voices, 0, (0, 8)), Some(0.0), "one enharmonic cell releases");
+    assert_eq!(target_env(&voices, 0, (1, 0)), Some(1.0), "the other cell remains held");
+    assert_eq!(target_env(&voices, 1, (0, 8)), Some(1.0), "the other grid remains held");
   }
 
   #[test]
@@ -1563,7 +1877,7 @@ mod tests {
   fn hot_reloaded_retrigger_detunes_only_the_retired_tail_by_six_cents() {
     let voices = shared();
     let mut a = sink(0, &voices);
-    a.retune(80.0, 58, 1.0, 0.5, 6.0);
+    a.retune(80.0, 58, 1.0, 0.5, 6.0, 0.0);
     a.note_on((3, 4), 20, Timbre::default(), None);
     a.sustain_note((3, 4), 20);
     let drone_freq = voices.lock().unwrap()[&sustain_key(0, 20)].freq;

@@ -17,15 +17,15 @@ Stop a runtime with Ctrl-C.
 ** The current two-grid instruments
 
 The reduced two-grid instrument needs either one or two unpinned 16x16 monomes
-and no pedals.  It provides independent fingered/sustained and momentary-chord
-timbres and volumes on each grid:
+and no pedals.  It provides independent fingered/sustained, stored-chord, and
+compact-loop layers on each grid:
 
 #+begin_src sh
 pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords
 #+end_src
 
-Read [[file:rigs/monomes_two-timbres_sustain_chords_readme.org][its short player manual]] for the layout, sustain, pitch-only chord saving,
-targeted timbre/volume controls, octave shifting, and per-device persistence.
+Read [[file:rigs/monomes_two-timbres_sustain_chords_readme.org][its short player manual]] for the layout, sustain, chord modes, freehand loop
+recording/playback, targeted timbre/volume controls, and per-device persistence.
 
 The daily instrument has two variants.  They are identical except that the newer
 SoftStep controls either the factored pulse or the drumkit:

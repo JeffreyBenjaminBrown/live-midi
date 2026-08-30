@@ -111,9 +111,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn round_trip_is_pitch_only_and_normalizes_to_eight_slots() {
+  fn round_trip_is_pitch_only_and_pads_older_banks_to_thirteen_slots() {
     let mut all = AllSlots::new();
-    all.insert("m256-282".to_string(), vec![Some(vec![9, 5, 9])]);
+    let mut older_bank = vec![Some(vec![9, 5, 9])];
+    older_bank.resize_with(8, || None);
+    all.insert("m256-282".to_string(), older_bank);
     let text = encode(&all);
     for forbidden in ["waveform", "gain", "phase", "pulse", "timbre"] {
       assert!(!text.contains(forbidden), "pitch-only format leaked {forbidden}: {text}");
@@ -121,6 +123,7 @@ mod tests {
     let decoded = decode(&text).unwrap();
     assert_eq!(decoded["m256-282"].len(), SLOTS);
     assert_eq!(decoded["m256-282"][0].as_deref(), Some([5, 9].as_slice()));
+    assert!(decoded["m256-282"][8..].iter().all(Option::is_none));
   }
 
   #[test]

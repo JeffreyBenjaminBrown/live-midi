@@ -10,22 +10,41 @@ use std::time::Duration;
 
 use crate::monome;
 
-use super::grid::{button_level, volume_cells, ButtonOverlay, BRIGHT, DIM, OFF};
+use super::grid::{
+  button_level, volume_cells, ButtonOverlay, BRIGHT, DIM, OFF, STEADY_DIM,
+};
+use super::layer_controls::LayerTarget;
 use super::ring::Reason;
-use super::{chords, dance, momentary_chords, GridThread, NO_RECT};
+use super::{chords, compact_loops, dance, momentary_chords, GridThread, NO_RECT};
 
 /// One lock: this grid's accrete-control LED view (its OWN bank's state) plus the
 /// union of every grid's sustained pitch classes (which paint bright on every
 /// grid -- they are all sounding, like the cross-grid note reflection).
-pub(super) fn accrete_view(rt: &GridThread) -> (Vec<ButtonOverlay>, HashSet<i32>) {
+pub(super) fn accrete_view(rt: &GridThread, elapsed: Duration) -> (Vec<ButtonOverlay>, HashSet<i32>) {
   let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
   let s = &rings[rt.grid_index].accrete;
-  let buttons = vec![
-    (rt.overlays.clear_rect, button_level(s.clear_lit())),
-    (rt.overlays.needs_holding_rect, button_level(s.needs_holding_lit())),
-    (rt.overlays.accrete_rect, button_level(s.accrete_lit())),
-    (rt.overlays.erase_rect, button_level(s.erase_lit())),
-  ];
+  let buttons = if rt.overlays.compact_loop_rect != NO_RECT {
+    let first_half = (elapsed.as_millis() / 500) % 2 == 0;
+    vec![
+      (
+        rt.overlays.clear_rect,
+        if s.clear_lit() || first_half { BRIGHT } else { OFF },
+      ),
+      (rt.overlays.needs_holding_rect, button_level(s.needs_holding_lit())),
+      (
+        rt.overlays.accrete_rect,
+        if s.accrete_lit() || !first_half { BRIGHT } else { OFF },
+      ),
+      (rt.overlays.erase_rect, button_level(s.erase_lit())),
+    ]
+  } else {
+    vec![
+      (rt.overlays.clear_rect, button_level(s.clear_lit())),
+      (rt.overlays.needs_holding_rect, button_level(s.needs_holding_lit())),
+      (rt.overlays.accrete_rect, button_level(s.accrete_lit())),
+      (rt.overlays.erase_rect, button_level(s.erase_lit())),
+    ]
+  };
   let mut classes = HashSet::new();
   for gr in rings.iter() {
     classes.extend(gr.store.classes(Reason::Sustain, rt.tuning.edo));
@@ -83,7 +102,7 @@ pub(super) fn momentary_chord_view(
   if rect == NO_RECT {
     return (Vec::new(), HashSet::new());
   }
-  let (armed, sounding, classes) = {
+  let (armed, mode, populated, sounding, classes) = {
     let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
     let mut classes = HashSet::new();
     for gr in rings.iter() {
@@ -94,22 +113,109 @@ pub(super) fn momentary_chord_view(
     let layer = &rings[rt.grid_index].momentary_chord;
     let sounding: [bool; momentary_chords::SLOTS] =
       std::array::from_fn(|slot| layer.slot_sounding(slot));
-    (layer.armed, sounding, classes)
+    let populated: [bool; momentary_chords::SLOTS] =
+      std::array::from_fn(|slot| layer.slots[slot].is_some());
+    (layer.armed, layer.mode, populated, sounding, classes)
   };
-  let targets_chords = {
+  let target = {
     let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
-    controls.get(rt.grid_index).is_some_and(|state| state.targets_chords())
+    controls.get(rt.grid_index).map(|state| state.target())
   };
   let mut buttons = Vec::new();
-  let (tx, ty) = momentary_chords::target_cell(rect);
-  buttons.push(([tx, ty, tx, ty], if targets_chords { BRIGHT } else { OFF }));
-  let (ax, ay) = momentary_chords::arm_cell(rect);
-  let arm_level = if armed && dance::flash_on(elapsed) { BRIGHT } else { OFF };
-  buttons.push(([ax, ay, ax, ay], arm_level));
-  for (slot, is_sounding) in sounding.into_iter().enumerate() {
-    let (x, y) = momentary_chords::slot_cell(rect, slot);
-    buttons.push(([x, y, x, y], if is_sounding { BRIGHT } else { DIM }));
+  if rt.overlays.layer_target_rect != NO_RECT {
+    let target_level = match target {
+      Some(LayerTarget::FingeredSustained) | None => OFF,
+      Some(LayerTarget::Chord) => DIM,
+      Some(LayerTarget::Loop) => BRIGHT,
+    };
+    buttons.push((rt.overlays.layer_target_rect, target_level));
   }
+  let (mx, my) = momentary_chords::mode_cell(rect);
+  let mode_level = if mode == momentary_chords::RecallMode::Momentary { BRIGHT } else { OFF };
+  buttons.push(([mx, my, mx, my], mode_level));
+  let (ax, ay) = momentary_chords::arm_cell(rect);
+  let arm_level = if armed && (elapsed.as_millis() / 200) % 2 == 0 {
+    BRIGHT
+  } else {
+    OFF
+  };
+  buttons.push(([ax, ay, ax, ay], arm_level));
+  for (slot, (is_populated, is_sounding)) in
+    populated.into_iter().zip(sounding).enumerate()
+  {
+    let (x, y) = momentary_chords::slot_cell(rect, slot);
+    let level = if is_sounding {
+      BRIGHT
+    } else if is_populated {
+      DIM
+    } else {
+      OFF
+    };
+    buttons.push(([x, y, x, y], level));
+  }
+  (buttons, classes)
+}
+
+pub(super) fn compact_loop_view(
+  rt: &GridThread,
+  elapsed: Duration,
+) -> (Vec<ButtonOverlay>, HashSet<i32>) {
+  let rect = rt.overlays.compact_loop_rect;
+  if rect == NO_RECT {
+    return (Vec::new(), HashSet::new());
+  }
+  let flash = (elapsed.as_millis() / 200) % 2 == 0;
+  let record_play_bright = (elapsed.as_millis() / 80) % 2 == 0;
+  let mut buttons = Vec::new();
+  for slot in 0..compact_loops::SLOTS {
+    let (x, y) = compact_loops::slot_cell(rect, slot);
+    let recording_and_playing = rt.compact_loops.recording()
+      && slot == rt.compact_loops.target
+      && rt.compact_loops.slot_sounding(slot);
+    let level = if recording_and_playing {
+      if record_play_bright {
+        BRIGHT
+      } else {
+        STEADY_DIM
+      }
+    } else if slot == rt.compact_loops.target {
+      if flash { BRIGHT } else { OFF }
+    } else if rt.compact_loops.slot_sounding(slot) {
+      BRIGHT
+    } else if rt.compact_loops.slots[slot].is_some() {
+      DIM
+    } else {
+      OFF
+    };
+    buttons.push(([x, y, x, y], level));
+  }
+  let (sx, sy) = compact_loops::start_cell(rect);
+  buttons.push((
+    [sx, sy, sx, sy],
+    if rt.compact_loops.recording() && flash { BRIGHT } else { OFF },
+  ));
+  let (tx, ty) = compact_loops::stop_cell(rect);
+  buttons.push(([tx, ty, tx, ty], if rt.compact_stop_down { BRIGHT } else { OFF }));
+  let (qx, qy) = compact_loops::select_cell(rect);
+  buttons.push((
+    [qx, qy, qx, qy],
+    if rt.compact_loops.selecting_target && flash { BRIGHT } else { OFF },
+  ));
+  let (px, py) = compact_loops::phase_cell(rect);
+  buttons.push((
+    [px, py, px, py],
+    if rt.compact_loops.phase_mode == compact_loops::PhaseMode::KeepRunning && flash {
+      BRIGHT
+    } else {
+      OFF
+    },
+  ));
+  let classes = rt
+    .compact_loops
+    .live_pitches()
+    .into_iter()
+    .map(|pitch| pitch.rem_euclid(rt.tuning.edo))
+    .collect();
   (buttons, classes)
 }
 
@@ -156,9 +262,10 @@ pub(super) fn trail_set(trail: &Arc<Mutex<VecDeque<i32>>>) -> HashSet<i32> {
 }
 
 /// Send a binary frame as changed 8x8 quads (`/grid/led/map`). `dim_on` selects whether
-/// DIM cells are lit this sub-frame (the monobright fake-dim flash toggles it); BRIGHT is
-/// always on, OFF always off. Cheap: a whole 16x16 frame is at most 4 messages, so this
-/// sustains the flash where per-cell writes would swamp the serial link.
+/// DIM cells are lit this sub-frame (the monobright fake-dim flash toggles it);
+/// STEADY_DIM and BRIGHT are always on, and OFF is always off. Cheap: a whole
+/// 16x16 frame is at most 4 messages, so this sustains the flash where per-cell
+/// writes would swamp the serial link.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_binary_frame(
   sock: &UdpSocket,
@@ -195,7 +302,7 @@ pub(super) fn send_binary_frame(
             continue;
           }
           let level = levels[(y * grid_w + x) as usize];
-          let on = level == BRIGHT || (level == DIM && dim_on);
+          let on = level == BRIGHT || level == STEADY_DIM || (level == DIM && dim_on);
           if on {
             byte |= 1u8 << c;
           }

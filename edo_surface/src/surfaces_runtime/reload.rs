@@ -93,6 +93,7 @@ pub(crate) struct LiveParams {
   pub sustain_level: f32,
   pub decay_secs: f32,
   pub retrigger_tail_detune_cents: f32,
+  pub crowded_pitch_planck_deviation: f32,
   pub slide_window: Duration,
   pub slide_duration_secs: f32,
   /// The pedal-slide pitch smoother's time constant, in seconds -- read fresh by the
@@ -129,6 +130,7 @@ pub(super) fn live_params(s: &Settings) -> LiveParams {
     sustain_level: s.sustain_level,
     decay_secs: s.decay_secs,
     retrigger_tail_detune_cents: s.retrigger_tail_detune_cents,
+    crowded_pitch_planck_deviation: s.crowded_pitch_planck_deviation,
     slide_window: s.slide_window,
     slide_duration_secs: s.slide_duration_secs,
     slide_pedal_smoother_secs: s.slide_pedal_smoother_secs,
@@ -203,6 +205,7 @@ pub(super) fn refresh_live(rt: &mut GridThread) {
     p.sustain_level,
     p.decay_secs,
     p.retrigger_tail_detune_cents,
+    p.crowded_pitch_planck_deviation,
   );
 }
 

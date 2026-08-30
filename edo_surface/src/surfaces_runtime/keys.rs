@@ -15,6 +15,7 @@ use crate::rig::{AccreteControlKind, EditmodeControlKind};
 use crate::types::{Timbre, VoiceSource, VoiceState};
 
 use super::chords;
+use super::compact_loops::{self, SourceKey, VoiceAction};
 use super::grid::{slot_for_selector_cell, volume_cells, volume_gain_for_pos};
 use super::hooks::{drive_accrete, editmode_press, factored_pulse_press};
 use super::layer_controls::LayerTarget;
@@ -71,6 +72,16 @@ pub(super) fn handle_key(
   cell: (i32, i32),
   press: bool,
 ) {
+  // The three-way layer target is a separate cell from both storage blocks.
+  if in_overlay(rt.overlays.layer_target_rect, cell) {
+    if press {
+      let mut controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
+      if let Some(state) = controls.get_mut(rt.grid_index).filter(|state| state.enabled) {
+        state.cycle_target();
+      }
+    }
+    return;
+  }
   // Selector: a press sets the *controlled* grid's timbre slot (radio; future
   // notes) -- UNLESS that grid has an edit selection, in which case the press
   // re-timbres the selected voices instead (both layers, crossfaded) and the radio
@@ -90,9 +101,20 @@ pub(super) fn handle_key(
       if let Some((layer, gain)) = layered {
         let timbre = timbre_at(rt, slot);
         let (_, sample_rate) = rt.sink.release_params();
-        let chord = layer == LayerTarget::Chord;
-        synth::retimbre_layer(&rt.shared.voices, target, chord, timbre, sample_rate);
-        synth::set_layer_gain(&rt.shared.voices, target, chord, gain);
+        match layer {
+          LayerTarget::FingeredSustained => {
+            synth::retimbre_layer(&rt.shared.voices, target, false, timbre, sample_rate);
+            synth::set_layer_gain(&rt.shared.voices, target, false, gain);
+          }
+          LayerTarget::Chord => {
+            synth::retimbre_layer(&rt.shared.voices, target, true, timbre, sample_rate);
+            synth::set_layer_gain(&rt.shared.voices, target, true, gain);
+          }
+          LayerTarget::Loop => {
+            synth::retimbre_loop_layer(&rt.shared.voices, target, timbre, sample_rate);
+            synth::set_loop_layer_gain(&rt.shared.voices, target, gain);
+          }
+        }
         return;
       }
       let (edited, chord_keys): (HashSet<i32>, HashSet<VoiceSource>) = {
@@ -146,19 +168,26 @@ pub(super) fn handle_key(
           let changed_slot = state.apply_delta_cell(pos);
           let finger_gain = state.gain_for(LayerTarget::FingeredSustained);
           let chord_gain = state.gain_for(LayerTarget::Chord);
+          let loop_gain = state.gain_for(LayerTarget::Loop);
           let chord_shares_base =
             state.selected_for(LayerTarget::Chord) == changed_slot;
-          (layer, finger_gain, chord_gain, chord_shares_base)
+          let loop_shares_base = state.selected_for(LayerTarget::Loop) == changed_slot;
+          (layer, finger_gain, chord_gain, loop_gain, chord_shares_base, loop_shares_base)
         })
       };
-      if let Some((layer, finger_gain, chord_gain, chord_shares_base)) = update {
+      if let Some((layer, finger_gain, chord_gain, loop_gain, chord_shares_base, loop_shares_base)) = update {
         if layer == LayerTarget::FingeredSustained {
           synth::set_layer_gain(&rt.shared.voices, target_grid, false, finger_gain);
           if chord_shares_base {
             synth::set_layer_gain(&rt.shared.voices, target_grid, true, chord_gain);
           }
-        } else {
+          if loop_shares_base {
+            synth::set_loop_layer_gain(&rt.shared.voices, target_grid, loop_gain);
+          }
+        } else if layer == LayerTarget::Chord {
           synth::set_layer_gain(&rt.shared.voices, target_grid, true, chord_gain);
+        } else {
+          synth::set_loop_layer_gain(&rt.shared.voices, target_grid, loop_gain);
         }
       }
     }
@@ -276,7 +305,11 @@ pub(super) fn handle_key(
     }
     return;
   }
-  if in_overlay(rt.overlays.momentary_chord_rect, cell) {
+  if compact_loops::block_cell(rt.overlays.compact_loop_rect, cell).is_some() {
+    compact_loop_key(rt, cell, press);
+    return;
+  }
+  if momentary_chords::block_cell(rt.overlays.momentary_chord_rect, cell).is_some() {
     momentary_chord_key(rt, held, cell, press);
     return;
   }
@@ -313,24 +346,56 @@ pub(super) fn handle_key(
   // "two monome-specific accrete banks"). Decisions are made under the accrete lock,
   // voices are touched after it drops (the module's no-nested-locks rule).
   if in_overlay(rt.overlays.clear_rect, cell) {
-    // The sustain clear removes the SUSTAIN reason from every sustained pitch, ends
-    // exactly the drones no finger holds (deselecting them -- `remove_sustain`
-    // cascades edit membership away), and ends every CHORD-layer voice, untoggling
-    // its slots (the widened "end all sustain and chord", chord-storage-v2). Same
-    // code as the pedal: `drive_accrete` is the one implementation, so hands and
-    // feet cannot diverge. (`held` was published to the shared registry by every
-    // path that changes it, so the finger snapshot inside is current.)
-    let (release_secs, sample_rate) = rt.sink.release_params();
-    drive_accrete(
-      rt.grid_index,
-      AccreteControlKind::Clear,
-      press,
-      &rt.shared.ring,
-      &rt.shared.held_all,
-      &rt.shared.voices,
-      release_secs,
-      sample_rate,
-    );
+    if rt.overlays.compact_loop_rect == super::NO_RECT {
+      // Existing surfaces instruments retain the historical origin-blind
+      // sustain+chord clear.  Only the compact three-layer rig narrows its
+      // dedicated on-grid button below.
+      let (release_secs, sample_rate) = rt.sink.release_params();
+      drive_accrete(
+        rt.grid_index,
+        AccreteControlKind::Clear,
+        press,
+        &rt.shared.ring,
+        &rt.shared.held_all,
+        &rt.shared.voices,
+        release_secs,
+        sample_rate,
+      );
+      return;
+    }
+    // This rig's on-grid CLEAR is deliberately narrower than the shared pedal
+    // action: remove sustain only.  Every drone is independently owned in the
+    // synth, so all sustained pitches are returned for drone release even when
+    // an enharmonic finger is still holding the same nominal pitch.
+    let ended = {
+      let mut rings = rt.shared.ring.lock().unwrap_or_else(|error| error.into_inner());
+      let grid = &mut rings[rt.grid_index];
+      if press {
+        grid.accrete.press_clear();
+        let all: Vec<i32> = grid.store.iter(Reason::Sustain).collect();
+        for pitch in &all {
+          grid.store.discard_sustain(*pitch);
+        }
+        all
+      } else {
+        grid.accrete.release_clear();
+        Vec::new()
+      }
+    };
+    if !ended.is_empty() {
+      let (release_secs, sample_rate) = rt.sink.release_params();
+      synth::end_drones_at(
+        &rt.shared.voices,
+        rt.grid_index,
+        &ended.iter().copied().collect(),
+        release_secs,
+        sample_rate,
+      );
+      let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+      for pitch in ended {
+        rt.compact_loops.source_off(SourceKey::Sustain(pitch), now_ns);
+      }
+    }
     return;
   }
   if in_overlay(rt.overlays.needs_holding_rect, cell) {
@@ -390,17 +455,23 @@ pub(super) fn handle_key(
         _ => None,
       };
       if let Some(delta) = octave {
-        let chord_target = {
+        let layer_target = {
           let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
           controls
             .get(rt.grid_index)
-            .is_some_and(|state| state.enabled && state.targets_chords())
+            .filter(|state| state.enabled)
+            .map(|state| state.target())
         };
-        if chord_target {
-          shift_momentary_chords(rt, delta);
-          // Even silence consumes the octave corner in chord-target mode: it must
-          // not unexpectedly scroll the play field.
-          return;
+        match layer_target {
+          Some(LayerTarget::Chord) => {
+            shift_momentary_chords(rt, delta);
+            return;
+          }
+          Some(LayerTarget::Loop) => {
+            shift_compact_loop(rt, delta);
+            return;
+          }
+          _ => {}
         }
         // In fine transpose the corners move the X ITSELF -- even off-screen; the
         // register and the voices hold still until a transpose key says otherwise.
@@ -495,6 +566,8 @@ pub(super) fn handle_key(
         rt.sink.note_on_continuing(cell, pitch, timbre, cut);
         drone_became_fingered(rt, pitch, cell);
         held.insert(cell, pitch);
+        let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        rt.compact_loops.source_on(SourceKey::Finger(cell.0, cell.1), pitch, now_ns);
         let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
         let gr = &mut rings[rt.grid_index];
         gr.accrete.note_played(pitch, &mut gr.store);
@@ -607,6 +680,11 @@ pub(super) fn handle_key(
       synth::set_layer_gain(&rt.shared.voices, rt.grid_index, false, gain);
     }
     held.insert(cell, pitch);
+    let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    if let Some(from) = legato_from.filter(|_| stole) {
+      rt.compact_loops.source_off(SourceKey::Finger(from.0, from.1), now_ns);
+    }
+    rt.compact_loops.source_on(SourceKey::Finger(cell.0, cell.1), pitch, now_ns);
     {
       let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
       let gr = &mut rings[rt.grid_index];
@@ -670,6 +748,91 @@ pub(super) fn persist_momentary(rt: &GridThread) {
   super::momentary_chords_persist::save(&target.path, &all);
 }
 
+pub(super) fn persist_compact(rt: &GridThread) {
+  let Some(target) = rt.shared.compact_persist.as_ref() else {
+    return;
+  };
+  let Some(id) = target.device_ids.get(rt.grid_index).and_then(Option::as_ref) else {
+    return;
+  };
+  let mut all = target.all.lock().unwrap_or_else(|error| error.into_inner());
+  all.insert(id.clone(), rt.compact_loops.slots.to_vec());
+  super::compact_loops_persist::save(&target.path, &all);
+}
+
+pub(super) fn apply_compact_actions(rt: &mut GridThread, actions: Vec<VoiceAction>) {
+  if actions.is_empty() {
+    return;
+  }
+  let (slot, gain) = {
+    let controls = rt.shared.layer_controls.lock().unwrap_or_else(|error| error.into_inner());
+    let state = &controls[rt.grid_index];
+    (
+      state.selected_for(LayerTarget::Loop),
+      state.gain_for(LayerTarget::Loop),
+    )
+  };
+  let timbre = timbre_at(rt, slot);
+  let mut releases = Vec::new();
+  for action in actions {
+    match action {
+      VoiceAction::Spawn { seq, pitch } => {
+        rt.sink.spawn_compact_loop_voice(seq, pitch, timbre, gain);
+      }
+      VoiceAction::Release { seq } => releases.push(seq),
+    }
+  }
+  let (release_secs, sample_rate) = rt.sink.release_params();
+  synth::end_loop_voices(
+    &rt.shared.voices,
+    rt.grid_index,
+    &releases,
+    release_secs,
+    sample_rate,
+  );
+}
+
+fn compact_loop_key(rt: &mut GridThread, cell: (i32, i32), press: bool) {
+  let Some(hit) = compact_loops::block_cell(rt.overlays.compact_loop_rect, cell) else {
+    return;
+  };
+  let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+  match hit {
+    compact_loops::BlockCell::Start => {
+      if press {
+        rt.compact_loops.start_recording(now_ns);
+      }
+    }
+    compact_loops::BlockCell::Stop => {
+      rt.compact_stop_down = press;
+      if press {
+        let result = rt.compact_loops.stop_recording(now_ns);
+        apply_compact_actions(rt, result.actions);
+        if result.changed {
+          persist_compact(rt);
+        }
+      }
+    }
+    compact_loops::BlockCell::SelectTarget => {
+      if press {
+        rt.compact_loops.select_press();
+      }
+    }
+    compact_loops::BlockCell::PhaseMode => {
+      if press {
+        let actions = rt.compact_loops.toggle_phase_mode(now_ns);
+        apply_compact_actions(rt, actions);
+      }
+    }
+    compact_loops::BlockCell::Slot(slot) => {
+      if press {
+        let actions = rt.compact_loops.slot_press(slot, now_ns);
+        apply_compact_actions(rt, actions);
+      }
+    }
+  }
+}
+
 /// Target/arm/eight-slot key edges for the pitch-only momentary block.
 fn momentary_chord_key(
   rt: &mut GridThread,
@@ -681,13 +844,20 @@ fn momentary_chord_key(
     return;
   };
   match hit {
-    momentary_chords::BlockCell::Target => {
-      if press {
-        let mut controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(state) = controls.get_mut(rt.grid_index).filter(|state| state.enabled) {
-          state.toggle_target();
-        }
+    momentary_chords::BlockCell::Mode => {
+      if !press {
+        return;
       }
+      let seqs = {
+        let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+        rings[rt.grid_index].momentary_chord.toggle_mode()
+      };
+      let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+      for seq in &seqs {
+        rt.compact_loops.source_off(SourceKey::Chord(*seq), now_ns);
+      }
+      let (release, sample_rate) = rt.sink.release_params();
+      synth::end_chord_voices(&rt.shared.voices, rt.grid_index, &seqs, release, sample_rate);
     }
     momentary_chords::BlockCell::Arm => {
       if !press {
@@ -695,7 +865,7 @@ fn momentary_chord_key(
       }
       let has_held_sources = {
         let rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-        !rings[rt.grid_index].momentary_chord.held_slots().is_empty()
+        !rings[rt.grid_index].momentary_chord.storage_source_slots().is_empty()
       };
       if has_held_sources {
         let pitches = capture_momentary_pitches(rt, held);
@@ -729,10 +899,26 @@ fn momentary_chord_key(
             persist_momentary(rt);
           }
         } else {
-          let spawned = {
+          let (spawned, ended) = {
             let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-            rings[rt.grid_index].momentary_chord.press(slot)
+            let layer = &mut rings[rt.grid_index].momentary_chord;
+            match layer.mode {
+              momentary_chords::RecallMode::Momentary => (layer.press(slot), Vec::new()),
+              momentary_chords::RecallMode::Toggle => layer.toggle(slot),
+            }
           };
+          let (release, sample_rate) = rt.sink.release_params();
+          let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+          for seq in &ended {
+            rt.compact_loops.source_off(SourceKey::Chord(*seq), now_ns);
+          }
+          synth::end_chord_voices(
+            &rt.shared.voices,
+            rt.grid_index,
+            &ended,
+            release,
+            sample_rate,
+          );
           let (timbre, gain) = {
             let controls = rt.shared.layer_controls.lock().unwrap_or_else(|e| e.into_inner());
             let state = &controls[rt.grid_index];
@@ -743,6 +929,7 @@ fn momentary_chord_key(
           };
           for (seq, pitch) in spawned {
             rt.sink.spawn_momentary_chord_voice(seq, pitch, timbre, gain);
+            rt.compact_loops.source_on(SourceKey::Chord(seq), pitch, now_ns);
           }
         }
       } else {
@@ -750,6 +937,10 @@ fn momentary_chord_key(
           let mut rings = rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
           rings[rt.grid_index].momentary_chord.release(slot)
         };
+        let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        for seq in &seqs {
+          rt.compact_loops.source_off(SourceKey::Chord(*seq), now_ns);
+        }
         let (release, sample_rate) = rt.sink.release_params();
         synth::end_chord_voices(
           &rt.shared.voices,
@@ -770,6 +961,18 @@ fn shift_momentary_chords(rt: &mut GridThread, delta: i32) {
   };
   for (seq, pitch) in moved {
     rt.sink.glide_chord_voice(seq, pitch, rt.knobs.slide_duration_secs);
+    let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    rt.compact_loops.source_move(SourceKey::Chord(seq), pitch, now_ns);
+  }
+}
+
+fn shift_compact_loop(rt: &mut GridThread, delta: i32) {
+  let (moved, changed) = rt.compact_loops.shift_target(delta);
+  for (seq, pitch) in moved {
+    rt.sink.glide_loop_voice(seq, pitch, rt.knobs.slide_duration_secs);
+  }
+  if changed {
+    persist_compact(rt);
   }
 }
 
@@ -1071,6 +1274,8 @@ pub(super) fn release_cell(rt: &mut GridThread, held: &mut HashMap<(i32, i32), i
     became_a_drone(rt, cell, pitch);
   } else {
     rt.sink.note_off(cell);
+    let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    rt.compact_loops.source_off(SourceKey::Finger(cell.0, cell.1), now_ns);
     let mono = rt.shared.mono_on[rt.grid_index].load(Ordering::Relaxed);
     rt.slide.note_released(pitch, Instant::now(), mono);
   }
@@ -1113,6 +1318,10 @@ fn became_a_drone(rt: &mut GridThread, cell: (i32, i32), pitch: i32) {
     VoiceSource::SurfaceFinger { grid, cell },
     VoiceSource::SurfaceDrone { grid, pitch },
   );
+  rt.compact_loops.source_rekey(
+    SourceKey::Finger(cell.0, cell.1),
+    SourceKey::Sustain(pitch),
+  );
 }
 
 /// The mirror: a finger landed on a sliding DRONE and took it over (`cut_sustained` +
@@ -1125,6 +1334,8 @@ fn drone_became_fingered(rt: &mut GridThread, pitch: i32, cell: (i32, i32)) {
     VoiceSource::SurfaceDrone { grid, pitch },
     VoiceSource::SurfaceFinger { grid, cell },
   );
+  let now_ns = rt.started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+  rt.compact_loops.source_off(SourceKey::Sustain(pitch), now_ns);
 }
 
 /// Mirror this grid's held map into the shared per-grid registry (for accrete's

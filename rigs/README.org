@@ -271,6 +271,11 @@ decay_secs = 0.5
 # release tail by this many cents; signed, -1200..1200. The replacing/live and
 # stored pitches remain exact. Surfaces rigs adopt edits on `r` reload.
 retrigger_tail_detune_cents = 0
+# Optional, default 0.  Separate every concurrently live surface voice at one
+# exact nominal pitch into 0,+p,-p,+2p,-2p,... cent lanes.  Finger, sustain,
+# chord, loop, cross-grid, and enharmonic-cell collisions share this allocator.
+# Existing voices keep their lane across hot reload; new voices use the new p.
+crowded_pitch_planck_deviation = 0
 # Optional. Global distortion curve, heard only under a distortion_toggle window:
 distortion_scale = 1.0
 distortion_shape = 2.0
@@ -358,6 +363,8 @@ Built-in unbundled window kinds:
 - ~fine_transpose_toggle~
 - ~chord_block~
 - ~momentary_chord_block~
+- ~layer_target_control~
+- ~compact_loop_block~
 
 A ~waveform_selector~ is a 4-cell radio strip (sine / triangle / square / saw, left
 to right) that sets the timbre of the monome named by its ~controls~ field -- usually
@@ -391,10 +398,10 @@ min_db = -60.0
 max_db = 0.0
 #+end_src
 
-In the two-layer instrument this control follows the adjacent
-~momentary_chord_block~ target.  Fingered/sustained targeting changes the
-selected waveform's base and therefore moves both layers; chord targeting
-changes only the chord layer's offset from that base.  Each of the four
+In the three-layer instrument this control follows the adjacent
+~layer_target_control~.  Fingered/sustained targeting changes the selected
+waveform's base and therefore moves all three layers; chord or compact-loop
+targeting changes only that layer's offset from the base.  Each of the four
 waveforms remembers its own values.  Live voices slew to the new level.
 
 #+begin_src toml
@@ -640,13 +647,14 @@ full player's
 reference: [[./2-edogrids_ss-accrete_ss-pulse_readme.org]] "chord storage" and "chord
 voices in edit mode".
 
-A ~momentary_chord_block~ (surfaces runtime) is the pitch-only counterpart used
-by the reduced two-layer instrument.  It is also exactly 5x2, but contains a
-TARGET button, eight momentary slots, and ARM:
+A ~momentary_chord_block~ (surfaces runtime) is the pitch-only chord bank used
+by the reduced three-layer instrument.  It is exactly 8x2: thirteen row-major
+slots, a hole at top right for a separate ACCRETE control, then MODE and ARM at
+bottom right:
 
 #+begin_example
-TARGET  slot  slot  slot  ARM
-slot    slot  slot  slot  slot
+slot slot slot slot slot slot slot ACCRETE
+slot slot slot slot slot slot MODE ARM
 #+end_example
 
 #+begin_src toml
@@ -654,20 +662,60 @@ slot    slot  slot  slot  slot
 id = "chords-a"
 monome = "a"
 kind = "momentary_chord_block"
-rect = [11, 0, 15, 1]
+rect = [0, 14, 7, 15]
 #+end_src
 
-TARGET selects whether this grid's waveform and ~volume_delta~ controls address
-fingered/sustained voices (TARGET black) or recalled chord voices (TARGET solid
-bright).  A disarmed slot sounds only
-while held, and several slots may layer.  ARM followed by a destination stores
-the sorted unique pitches currently sounding on this grid; ARM pressed while
-source slots are held overwrites those sources in place.  Silence never erases a
-slot.  Storage contains only absolute EDO pitches: recalls always use the chord
-layer's current timbre and volume.  The octave corners glide held chord voices
-when TARGET is bright, while arrows continue to scroll.  Slots persist per
-physical monome serial id.  This kind cannot coexist with legacy ~chord_block~
-in the same rig; its full player reference is
+MODE switches between momentary recalls (solid; key-up ends its slot) and
+independent toggle recalls (black; key-up is inert).  Returning to momentary
+releases every latch.  ARM followed by a destination stores the sorted unique
+nominal pitches currently emitted by local finger, sustain, and eligible chord
+sources; loop playback is excluded.  In momentary mode, ARM while source slots
+are held overwrites them; in toggle mode it overwrites latched-on sources.
+Empty/populated/sounding LEDs are black/dim/solid.  Storage contains absolute
+EDO pitches only and persists per physical monome serial id.  This kind cannot
+coexist with legacy ~chord_block~ in the same rig.
+
+The three-layer target is a separate, exactly one-cell
+~layer_target_control~:
+
+#+begin_src toml
+[[monome_windows]]
+id = "target-a"
+monome = "a"
+kind = "layer_target_control"
+rect = [4, 0, 4, 0]
+#+end_src
+
+It cycles fingered/sustained (black), chord (dim), and compact-loop (solid).
+The target directs this grid's waveform selector, ~volume_delta~, and octave
+corners.  Octave size comes from the referenced EDO tuning: finger target
+scrolls, chord target glides live recalls without rewriting storage, and loop
+target permanently transposes the current record target when not recording.
+
+A ~compact_loop_block~ is an exactly 8x2 surfaces-runtime loop bank paired with
+an EDO grid, ~momentary_chord_block~, and ~layer_target_control~ on the same
+monome.  Its top-left hole belongs to a separate CLEAR SUSTAIN cell:
+
+#+begin_example
+CLEAR  SELECT slot slot slot slot slot slot
+STOP   START  slot slot slot slot slot PHASE
+#+end_example
+
+#+begin_src toml
+[[monome_windows]]
+id = "loops-a"
+monome = "a"
+kind = "compact_loop_block"
+rect = [8, 14, 15, 15]
+loop_clear_tap_ms = 300
+#+end_src
+
+The eleven pitch/timing-only slots support direct independent playback,
+freehand first takes and overdubs, target selection, a sub-threshold START/STOP
+clear gesture, and per-grid KEEP-RUNNING/RESTART phase mode.  They record local
+finger, sustain, and recalled-chord source lifetimes, never loop playback.
+Storage persists per physical serial id under =state/compact-loops/=.  Full
+musical behavior, LEDs, and corner cases are in the player reference:
 [[./monomes_two-timbres_sustain_chords_readme.org]].
 
 The bundled 12-EDO offset/root board is:

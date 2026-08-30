@@ -76,16 +76,18 @@ fails if they drift.
   features are journaled in =queues/branch-<N>.org= DONE entries, in per-feature
   =TODO/<feature>/= directories, and in commit messages.
 
-* the reduced two-layer instrument
+* the reduced three-layer instrument
 =monomes_two-timbres_sustain_chords= is a separate surfaces-runtime rig for one
 or two unpinned 16x16 grids, with no pedals or edit/pulse interface.  Each grid
-has independent fingered/sustained and momentary-chord timbre/volume state plus
-eight pitch-only chord slots persisted by physical serial id.  Player reference:
+has independent fingered/sustained, recalled-chord, and compact-loop
+timbre/volume state, thirteen pitch-only chord slots, and eleven freehand loop
+slots persisted by physical serial id.  Player reference:
 [[./rigs/monomes_two-timbres_sustain_chords_readme.org]]; rig:
 =rigs/monomes_two-timbres_sustain_chords.org=; design:
 =TODO/monomes_two-timbres_sustain_chords/=.  Its focused runtime pieces are
-=layer_controls.rs=, =momentary_chords.rs=, and =momentary_chords_persist.rs=;
-dispatch remains in =keys.rs= and LEDs in =paint.rs=.
+=layer_controls.rs=, =momentary_chords.rs=, =momentary_chords_persist.rs=,
+=compact_loops.rs=, and =compact_loops_persist.rs=; dispatch remains in =keys.rs=,
+LEDs in =paint.rs=, and global equal-pitch packing in =synth.rs=.
 
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.

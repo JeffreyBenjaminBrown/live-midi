@@ -93,6 +93,9 @@ pub enum VoiceSource {
   // but the FADER walk does not: a recalled voice keeps its saved fader
   // component.
   SurfaceChord { grid: usize, seq: u64 },
+  // A compact-loop playback occurrence. `seq` is unique for each scheduled
+  // attack, so equal pitches, slots, and overlapping laps remain independent.
+  SurfaceLoop { grid: usize, seq: u64 },
 }
 
 // === Timbre =============================================================

@@ -53,6 +53,7 @@
       voices: Arc::clone(&voices),
       persist: None,
       momentary_persist: None,
+      compact_persist: None,
     };
     let g = &s.grids[0];
     GridThread {
@@ -68,6 +69,7 @@
       editmode_clear_down: false,
       editmode_accrete_down: false,
       volume_delta_down: [false; SELECTOR_CELLS],
+      compact_stop_down: false,
       tuning: Tuning {
         x_step: s.x_step,
         y_step: s.y_step,
@@ -91,8 +93,9 @@
       slide: SlideCandidates::new(),
       pedal_slide: pedal_slide::PedalSlideState::new(),
       fine: fine::FineTranspose::new(),
+      compact_loops: CompactLoops::new(g.loop_clear_tap_ms),
       started: Instant::now(),
-      sink: SurfaceSink::new(
+      sink: SurfaceSink::new_with_crowding(
         0,
         voices,
         s.fund,
@@ -103,6 +106,9 @@
         s.sustain_level,
         s.decay_secs,
         s.retrigger_tail_detune_cents,
+        Arc::new(Mutex::new(synth::CrowdedPitches::new(
+          s.crowded_pitch_planck_deviation,
+        ))),
         Arc::new(Mutex::new(vec![1.0; num_grids])),
         Arc::new(Mutex::new(vec![1.0; num_grids])),
       ),
@@ -110,18 +116,20 @@
   }
 
   #[test]
-  fn retrigger_tail_detune_is_configured_per_rig_and_defaults_to_zero() {
+  fn crowded_pitch_spacing_is_configured_and_legacy_tail_detune_defaults_to_zero() {
     let configured = resolve_settings(
       &load_named_rig("monomes_two-timbres_sustain_chords").expect("two-layer rig loads"),
     )
     .expect("two-layer rig resolves");
-    assert_eq!(configured.retrigger_tail_detune_cents, 6.0);
+    assert_eq!(configured.retrigger_tail_detune_cents, 0.0);
+    assert_eq!(configured.crowded_pitch_planck_deviation, 5.0);
 
     let legacy = resolve_settings(
       &load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("legacy rig loads"),
     )
     .expect("legacy rig resolves");
     assert_eq!(legacy.retrigger_tail_detune_cents, 0.0, "omission preserves exact-pitch tails");
+    assert_eq!(legacy.crowded_pitch_planck_deviation, 0.0);
   }
 
   #[test]
@@ -133,8 +141,10 @@
     let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
     assert_eq!(rt.overlays.selector_rect, [0, 0, 3, 0]);
     assert_eq!(rt.overlays.volume_delta_rect, [0, 1, 3, 1]);
-    assert_eq!(rt.overlays.momentary_chord_rect, [11, 0, 15, 1]);
-    assert_eq!(rt.overlays.scroll_rect, [13, 14, 15, 15]);
+    assert_eq!(rt.overlays.momentary_chord_rect, [0, 14, 7, 15]);
+    assert_eq!(rt.overlays.layer_target_rect, [4, 0, 4, 0]);
+    assert_eq!(rt.overlays.compact_loop_rect, [8, 14, 15, 15]);
+    assert_eq!(rt.overlays.scroll_rect, [13, 0, 15, 1]);
     assert_eq!(rt.shared.ring.lock().unwrap()[0].momentary_chord.slots.len(), SLOTS);
 
     let mut register = 0;
@@ -151,10 +161,10 @@
     }
 
     // TARGET -> chord, then ARM + slot 0 saves the currently sounding pitch.
-    handle_key(&mut rt, &mut register, &mut held, (11, 0), true);
-    handle_key(&mut rt, &mut register, &mut held, (11, 0), false);
-    handle_key(&mut rt, &mut register, &mut held, (15, 0), true);
-    handle_key(&mut rt, &mut register, &mut held, (15, 0), false);
+    handle_key(&mut rt, &mut register, &mut held, (4, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (4, 0), false);
+    handle_key(&mut rt, &mut register, &mut held, (7, 15), true);
+    handle_key(&mut rt, &mut register, &mut held, (7, 15), false);
     let slot0 = slot_cell(rt.overlays.momentary_chord_rect, 0);
     handle_key(&mut rt, &mut register, &mut held, slot0, true);
     handle_key(&mut rt, &mut register, &mut held, slot0, false);
@@ -206,15 +216,15 @@
       (rt.shared.voices.lock().unwrap()[&first_chord].grid_gain_target - db_to_gain(-10.0)).abs()
         < 1e-6
     );
-    handle_key(&mut rt, &mut register, &mut held, (15, 14), true);
-    handle_key(&mut rt, &mut register, &mut held, (15, 14), false);
+    handle_key(&mut rt, &mut register, &mut held, (15, 0), true);
+    handle_key(&mut rt, &mut register, &mut held, (15, 0), false);
     assert_eq!(register, 0, "chord-target octave leaves the play register still");
     assert_eq!(
       rt.shared.ring.lock().unwrap()[0].momentary_chord.live[&first_seq].pitch,
       pitch + rt.tuning.edo,
     );
-    handle_key(&mut rt, &mut register, &mut held, (15, 0), true);
-    handle_key(&mut rt, &mut register, &mut held, (15, 0), false);
+    handle_key(&mut rt, &mut register, &mut held, (7, 15), true);
+    handle_key(&mut rt, &mut register, &mut held, (7, 15), false);
     assert_eq!(
       rt.shared.ring.lock().unwrap()[0].momentary_chord.slots[0].as_deref(),
       Some([pitch + rt.tuning.edo].as_slice()),
@@ -231,7 +241,7 @@
   }
 
   #[test]
-  fn two_layer_sustain_retrigger_detunes_only_the_outgoing_tail() {
+  fn crowded_pitch_retrigger_keeps_the_incumbent_lane_and_offsets_the_new_finger() {
     use crate::types::VoiceSource;
 
     let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
@@ -242,23 +252,90 @@
     let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
 
     handle_key(&mut rt, &mut register, &mut held, note, true);
-    handle_key(&mut rt, &mut register, &mut held, (1, 15), true);
-    handle_key(&mut rt, &mut register, &mut held, (1, 15), false);
+    handle_key(&mut rt, &mut register, &mut held, (7, 14), true);
+    handle_key(&mut rt, &mut register, &mut held, (7, 14), false);
     handle_key(&mut rt, &mut register, &mut held, note, false);
     let exact_freq = rt.shared.voices.lock().unwrap()[&drone].freq;
 
     handle_key(&mut rt, &mut register, &mut held, note, true);
     let voices = rt.shared.voices.lock().unwrap();
     let finger = &voices[&VoiceSource::SurfaceFinger { grid: 0, cell: note }];
-    assert_eq!(finger.freq, exact_freq, "the newly fingered pitch stays exact");
+    let finger_cents = 1200.0 * (finger.freq / exact_freq).log2();
+    assert!((finger_cents - 5.0).abs() < 1e-3, "new finger got {finger_cents} cents");
     let tail = voices
       .iter()
       .find_map(|(source, voice)| {
         matches!(source, VoiceSource::SurfaceRetired { grid: 0, .. }).then_some(voice)
       })
       .expect("the old drone continues as a retired tail");
-    let cents = 1200.0 * (tail.freq / exact_freq).log2();
-    assert!((cents - 6.0).abs() < 1e-3, "retired tail offset was {cents} cents");
+    let tail_cents = 1200.0 * (tail.freq / exact_freq).log2();
+    assert!(tail_cents.abs() < 1e-3, "incumbent tail moved by {tail_cents} cents");
+  }
+
+  #[test]
+  fn compact_rig_clear_ends_only_sustain_even_beside_an_enharmonic_finger() {
+    use crate::types::{Timbre, VoiceSource};
+
+    let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let pitch = 8;
+    let drone_cell = (0, 8);
+    let finger_cell = (1, 0); // also nominal step 8 under the rig's 8-by-1 tuning
+    let chord_seq = 77;
+    let loop_seq = 88;
+
+    rt.sink.note_on_layered(drone_cell, pitch, Timbre::default(), 1.0);
+    rt.sink.sustain_note(drone_cell, pitch);
+    rt.sink.note_on_layered(finger_cell, pitch, Timbre::default(), 1.0);
+    rt.sink.spawn_momentary_chord_voice(chord_seq, pitch, Timbre::default(), 1.0);
+    rt.sink.spawn_compact_loop_voice(loop_seq, pitch, Timbre::default(), 1.0);
+    held.insert(finger_cell, pitch);
+    rt.shared.ring.lock().unwrap()[0].store.add(Reason::Sustain, pitch);
+
+    handle_key(&mut rt, &mut register, &mut held, (8, 14), true);
+    handle_key(&mut rt, &mut register, &mut held, (8, 14), false);
+
+    let voices = rt.shared.voices.lock().unwrap();
+    assert_eq!(voices[&VoiceSource::SurfaceDrone { grid: 0, pitch }].target_env, 0.0);
+    assert_eq!(
+      voices[&VoiceSource::SurfaceFinger { grid: 0, cell: finger_cell }].target_env,
+      1.0,
+      "the independently owned enharmonic finger survives",
+    );
+    assert_eq!(voices[&VoiceSource::SurfaceChord { grid: 0, seq: chord_seq }].target_env, 1.0);
+    assert_eq!(voices[&VoiceSource::SurfaceLoop { grid: 0, seq: loop_seq }].target_env, 1.0);
+    drop(voices);
+    assert!(!rt.shared.ring.lock().unwrap()[0].store.has(Reason::Sustain, pitch));
+  }
+
+  #[test]
+  fn recording_a_playing_loop_uses_the_fast_bright_dim_slot_signal() {
+    use crate::surfaces_runtime::compact_loops::{LoopInterval, LoopSlot};
+    use crate::surfaces_runtime::grid::{BRIGHT, OFF, STEADY_DIM};
+
+    let mut rt = test_grid_thread_for("monomes_two-timbres_sustain_chords");
+    rt.compact_loops.slots[0] = Some(LoopSlot {
+      duration_ns: 1_000_000_000,
+      intervals: vec![LoopInterval { pitch: 8, start_ns: 0, duration_ns: None }],
+    });
+    assert!(!rt.compact_loops.slot_press(0, 0).is_empty());
+    rt.compact_loops.start_recording(0);
+    let cell = compact_loops::slot_cell(rt.overlays.compact_loop_rect, 0);
+    let level_at = |elapsed_ms| {
+      compact_loop_view(&rt, Duration::from_millis(elapsed_ms))
+        .0
+        .into_iter()
+        .find_map(|(rect, level)| (rect == [cell.0, cell.1, cell.0, cell.1]).then_some(level))
+        .expect("slot has an LED overlay")
+    };
+
+    assert_eq!(level_at(0), BRIGHT);
+    assert_eq!(level_at(79), BRIGHT);
+    assert_eq!(level_at(80), STEADY_DIM);
+    assert_eq!(level_at(159), STEADY_DIM);
+    assert_eq!(level_at(160), BRIGHT);
+    assert_ne!(level_at(240), OFF, "the dim half never becomes the target's black half");
   }
 
   #[test]
@@ -1771,6 +1848,7 @@
       volume_controls_index: controls_index,
       volume_delta_controls_index: controls_index,
       layer_volume: None,
+      loop_clear_tap_ms: 300,
       overlays: Overlays {
         edo_rect: [0, 0, 15, 15],
         scroll_rect: NO_RECT,
@@ -1790,6 +1868,8 @@
         editmode_accrete_rect: NO_RECT,
         chord_rect: NO_RECT,
         momentary_chord_rect: NO_RECT,
+        layer_target_rect: NO_RECT,
+        compact_loop_rect: NO_RECT,
         fine_transpose_rect: NO_RECT,
       },
     }
@@ -1968,9 +2048,14 @@
       let solo = mock.grid(0);
       assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
       assert!(wait_until(secs(3), || solo.level_at(1, 0) == 15), "triangle is selected");
-      assert_eq!(solo.level_at(11, 0), 0, "fingered TARGET is black, not dim-flashing");
-      solo.tap(11, 0);
-      assert!(wait_until(secs(3), || solo.level_at(11, 0) == 15), "TARGET works with one grid");
+      assert_eq!(solo.level_at(4, 0), 0, "fingered TARGET is black, not dim-flashing");
+      solo.tap(4, 0);
+      thread::sleep(Duration::from_millis(250));
+      solo.tap(4, 0);
+      assert!(
+        wait_until(secs(3), || solo.level_at(4, 0) == 15),
+        "TARGET cycles through chord to the solid loop state with one grid",
+      );
     }
 
     {
@@ -1988,27 +2073,28 @@
       assert!(wait_until(secs(5), || a.registered() && b.registered()), "both distinct grids register");
       assert!(wait_until(secs(3), || a.level_at(1, 0) == 15 && b.level_at(1, 0) == 15));
 
-      a.tap(11, 0);
-      assert!(wait_until(secs(3), || a.level_at(11, 0) == 15), "a targets chords");
-      thread::sleep(Duration::from_millis(300));
-      assert_ne!(b.level_at(11, 0), 15, "b keeps its independent fingered target");
+      a.tap(4, 0);
+      thread::sleep(Duration::from_millis(250));
+      a.tap(4, 0);
+      assert!(wait_until(secs(3), || a.level_at(4, 0) == 15), "a targets loops");
+      assert_ne!(b.level_at(4, 0), 15, "b keeps its independent fingered target");
 
       // Save a held pitch into slot 0 and recall it momentarily through real OSC.
       a.press(5, 5);
       assert!(wait_until(secs(3), || a.level_at(5, 5) == 15));
-      a.tap(15, 0); // arm
-      assert!(wait_until(secs(3), || a.level_at(15, 0) == 15), "ARM flashes while armed");
-      a.tap(12, 0); // destination slot 0
-      assert!(wait_until(secs(3), || a.level_at(15, 0) == 0), "save disarms ARM");
+      a.tap(7, 15); // arm
+      assert!(wait_until(secs(3), || a.level_at(7, 15) == 15), "ARM flashes while armed");
+      a.tap(0, 14); // destination slot 0
+      assert!(wait_until(secs(3), || a.level_at(7, 15) == 0), "save disarms ARM");
       a.release(5, 5);
       assert!(wait_until(secs(3), || a.level_at(5, 5) != 15), "the finger releases");
-      a.press(12, 0);
+      a.press(0, 14);
       assert!(
-        wait_until(secs(3), || a.level_at(12, 0) == 15 && a.level_at(5, 5) == 15),
+        wait_until(secs(3), || a.level_at(0, 14) == 15 && a.level_at(5, 5) == 15),
         "slot hold recalls and lights the pitch",
       );
-      a.release(12, 0);
-      assert!(wait_until(secs(3), || a.level_at(12, 0) != 15), "slot release ends the recall");
+      a.release(0, 14);
+      assert!(wait_until(secs(3), || a.level_at(0, 14) != 15), "slot release ends the recall");
     }
   }
 
@@ -2648,7 +2734,7 @@
     let edited = must_replace(
       &edited,
       "*** PARAM decay_secs = 0.5",
-      "*** PARAM decay_secs = 0.5\n*** PARAM retrigger_tail_detune_cents = 7.0",
+      "*** PARAM decay_secs = 0.5\n*** PARAM retrigger_tail_detune_cents = 7.0\n*** PARAM crowded_pitch_planck_deviation = 9.0",
     );
     // "Add" an expression pedal with a non-default taper: the pedal thread re-reads
     // Live every poll, so the curve_* knobs are exactly as live as the rest.
@@ -2672,6 +2758,7 @@
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");
     assert_eq!(p.timbres[2].rel_fm.depth, 1.5, "and through-zero relative FM");
     assert_eq!(p.retrigger_tail_detune_cents, 7.0, "retrigger detune reloads live");
+    assert_eq!(p.crowded_pitch_planck_deviation, 9.0, "crowded-pitch spacing reloads live");
     assert!((p.slide_duration_secs - 0.25).abs() < 1e-6);
     assert!(
       (p.slide_pedal_smoother_secs - 0.09).abs() < 1e-6,

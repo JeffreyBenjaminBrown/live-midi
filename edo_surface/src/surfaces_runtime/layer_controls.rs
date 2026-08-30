@@ -1,4 +1,4 @@
-//! Per-grid control state for the two-layer monome instrument.
+//! Per-grid control state for the three-layer monome instrument.
 
 use super::grid::SELECTOR_CELLS;
 use super::settings::DEFAULT_SLOT;
@@ -7,6 +7,7 @@ use super::settings::DEFAULT_SLOT;
 pub enum LayerTarget {
   FingeredSustained,
   Chord,
+  Loop,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -28,9 +29,10 @@ impl Default for LayerVolumeConfig {
 pub struct LayerControls {
   pub enabled: bool,
   target: LayerTarget,
-  selected: [usize; 2],
+  selected: [usize; 3],
   base_db: [f32; SELECTOR_CELLS],
   chord_delta_db: [f32; SELECTOR_CELLS],
+  loop_delta_db: [f32; SELECTOR_CELLS],
   config: LayerVolumeConfig,
 }
 
@@ -43,29 +45,31 @@ impl LayerControls {
     Self {
       enabled,
       target: LayerTarget::FingeredSustained,
-      selected: [DEFAULT_SLOT; 2],
+      selected: [DEFAULT_SLOT; 3],
       base_db: [config.initial_db; SELECTOR_CELLS],
       chord_delta_db: [0.0; SELECTOR_CELLS],
+      loop_delta_db: [0.0; SELECTOR_CELLS],
       config,
     }
   }
 
   fn target_index(target: LayerTarget) -> usize {
-    usize::from(target == LayerTarget::Chord)
+    match target {
+      LayerTarget::FingeredSustained => 0,
+      LayerTarget::Chord => 1,
+      LayerTarget::Loop => 2,
+    }
   }
 
   pub fn target(&self) -> LayerTarget {
     self.target
   }
 
-  pub fn targets_chords(&self) -> bool {
-    self.target == LayerTarget::Chord
-  }
-
-  pub fn toggle_target(&mut self) {
+  pub fn cycle_target(&mut self) {
     self.target = match self.target {
       LayerTarget::FingeredSustained => LayerTarget::Chord,
-      LayerTarget::Chord => LayerTarget::FingeredSustained,
+      LayerTarget::Chord => LayerTarget::Loop,
+      LayerTarget::Loop => LayerTarget::FingeredSustained,
     };
   }
 
@@ -87,6 +91,8 @@ impl LayerControls {
       LayerTarget::FingeredSustained => base,
       LayerTarget::Chord =>
         (base + self.chord_delta_db[slot]).clamp(self.config.min_db, self.config.max_db),
+      LayerTarget::Loop =>
+        (base + self.loop_delta_db[slot]).clamp(self.config.min_db, self.config.max_db),
     }
   }
 
@@ -123,6 +129,11 @@ impl LayerControls {
         // effective value instead of adding to that hidden overhang.
         self.chord_delta_db[slot] = after - self.base_db[slot];
       }
+      LayerTarget::Loop => {
+        let before = self.effective_db(LayerTarget::Loop, slot);
+        let after = (before + delta).clamp(self.config.min_db, self.config.max_db);
+        self.loop_delta_db[slot] = after - self.base_db[slot];
+      }
     }
     slot
   }
@@ -137,18 +148,26 @@ mod tests {
   use super::*;
 
   #[test]
-  fn bases_move_both_layers_but_chord_deltas_move_only_chords() {
+  fn bases_move_all_layers_but_layer_deltas_move_only_their_layer() {
     let mut s = LayerControls::new(true, LayerVolumeConfig::default());
     let slot = s.selected_target();
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, slot), -12.0);
     assert_eq!(s.effective_db(LayerTarget::Chord, slot), -12.0);
+    assert_eq!(s.effective_db(LayerTarget::Loop, slot), -12.0);
     s.apply_delta_cell(1); // base -2
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, slot), -14.0);
     assert_eq!(s.effective_db(LayerTarget::Chord, slot), -14.0);
-    s.toggle_target();
+    assert_eq!(s.effective_db(LayerTarget::Loop, slot), -14.0);
+    s.cycle_target();
     s.apply_delta_cell(3); // chord +12 only
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, slot), -14.0);
     assert_eq!(s.effective_db(LayerTarget::Chord, slot), -2.0);
+    assert_eq!(s.effective_db(LayerTarget::Loop, slot), -14.0);
+    s.cycle_target();
+    s.apply_delta_cell(1); // loop -2 only
+    assert_eq!(s.effective_db(LayerTarget::FingeredSustained, slot), -14.0);
+    assert_eq!(s.effective_db(LayerTarget::Chord, slot), -2.0);
+    assert_eq!(s.effective_db(LayerTarget::Loop, slot), -16.0);
   }
 
   #[test]
@@ -158,7 +177,7 @@ mod tests {
       s.apply_delta_cell(0);
     }
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, DEFAULT_SLOT), -60.0);
-    s.toggle_target();
+    s.cycle_target();
     for _ in 0..20 {
       s.apply_delta_cell(3);
     }
@@ -169,10 +188,13 @@ mod tests {
   fn each_layer_remembers_its_own_timbre() {
     let mut s = LayerControls::new(true, LayerVolumeConfig::default());
     s.set_selected_target(0);
-    s.toggle_target();
+    s.cycle_target();
     s.set_selected_target(3);
     assert_eq!(s.selected_for(LayerTarget::FingeredSustained), 0);
     assert_eq!(s.selected_for(LayerTarget::Chord), 3);
+    s.cycle_target();
+    s.set_selected_target(2);
+    assert_eq!(s.selected_for(LayerTarget::Loop), 2);
   }
 
   #[test]
@@ -180,7 +202,7 @@ mod tests {
     let mut s = LayerControls::new(true, LayerVolumeConfig::default());
     s.set_selected_target(0);
     s.apply_delta_cell(1); // sine base -14
-    s.toggle_target();
+    s.cycle_target();
     s.set_selected_target(3);
     s.apply_delta_cell(3); // saw chord -12 -> 0
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, 0), -14.0);
@@ -188,7 +210,8 @@ mod tests {
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, 3), -12.0);
     assert_eq!(s.effective_db(LayerTarget::Chord, 3), 0.0);
 
-    s.toggle_target();
+    s.cycle_target();
+    s.cycle_target();
     s.set_selected_target(3);
     s.apply_delta_cell(0); // saw base clamps at -24; its +12 chord offset remains
     assert_eq!(s.effective_db(LayerTarget::FingeredSustained, 3), -24.0);
@@ -198,12 +221,13 @@ mod tests {
   #[test]
   fn a_chord_edit_moves_immediately_even_after_a_base_move_hides_offset_past_a_bound() {
     let mut s = LayerControls::new(true, LayerVolumeConfig::default());
-    s.toggle_target();
+    s.cycle_target();
     s.apply_delta_cell(3); // chord -12 -> 0: offset +12
-    s.toggle_target();
+    s.cycle_target();
+    s.cycle_target();
     s.apply_delta_cell(3); // base -12 -> 0; retained offset is now hidden above max
     assert_eq!(s.effective_db(LayerTarget::Chord, DEFAULT_SLOT), 0.0);
-    s.toggle_target();
+    s.cycle_target();
     s.apply_delta_cell(1); // explicit chord -2 must be audible, not eaten by overhang
     assert_eq!(s.effective_db(LayerTarget::Chord, DEFAULT_SLOT), -2.0);
   }
