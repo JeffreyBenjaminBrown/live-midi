@@ -151,7 +151,7 @@ pub struct ExpressionPedalRig {
   pub monome: Option<String>,
   /// WHICH voices on that grid it drives -- the second, independent plug. `all`
   /// (default): every voice, the long-standing grid volume pedal. `new`
-  /// (TODO/volpedal-sustain_volpedal-newvoice): only notes a finger holds; when the
+  /// (TODO/volpedal-per-monome_granular-sustain): only notes a finger holds; when the
   /// finger lifts from a sustained note nothing happens -- it keeps its level, and
   /// later pedal moves don't reach it.
   #[serde(default)]
@@ -5045,7 +5045,7 @@ monome = "b"
     bad(&with("curve_remainder_exp_db = 0.0\n"), "curve_remainder_exp_db");
   }
 
-  // ---- the new-notes pedal, note handles, initially_on (TODO/volpedal-sustain_volpedal-newvoice) ----
+  // ---- the new-notes pedal, note handles, initially_on (TODO/volpedal-per-monome_granular-sustain) ----
 
   /// One new-notes pedal per grid -- the volpedal rig's wiring.
   const NEW_PEDAL_PER_GRID: &str = r#"

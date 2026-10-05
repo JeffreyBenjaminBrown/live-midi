@@ -1,18 +1,18 @@
-* volpedal-sustain_volpedal-newvoice
+* volpedal-per-monome_granular-sustain
 ** about
 TOML-in-org format reference: [[file:README.org]]
-Player reference: [[file:volpedal-sustain_volpedal-newvoice_readme.org]]
-Design: [[file:../TODO/volpedal-sustain_volpedal-newvoice/1_discussion.org]]
+Player reference: [[file:volpedal-per-monome_granular-sustain_readme.org]]
+Design: [[file:../TODO/volpedal-per-monome_granular-sustain/1_discussion.org]]
 Run from the repository root:
-=pw-jack cargo run --bin midi_pulse -- volpedal-sustain_volpedal-newvoice=
+=pw-jack cargo run --bin midi_pulse -- volpedal-per-monome_granular-sustain=
 Derived from [[file:monomes_two-timbres_sustain_chords.org]]: the same grids,
 tuning, sound, timbres and volume keys, minus chords, loops and the tone target,
 plus, per grid, an EX-P pedal for the notes you hold on it, a per-note sustain
-handle one cell below each sounding note, and three sustain buttons. (The name
-dates from a first design that also had a pedal for sustained notes.)
+handle one cell below each sounding note, and three sustain buttons. Hence the
+name: a volume pedal per monome, and sustain note by note.
 ** identity
 *** PARAM version = 1
-*** PARAM id = "volpedal-sustain_volpedal-newvoice"
+*** PARAM id = "volpedal-per-monome_granular-sustain"
 *** PARAM title = "Monomes: a volume pedal per grid for held notes"
 ** ELEM tunings
 *** some favorite tunings

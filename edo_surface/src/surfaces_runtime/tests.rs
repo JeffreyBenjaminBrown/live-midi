@@ -2219,12 +2219,12 @@
 
   }
 
-  // ---- the volpedal rig (TODO/volpedal-sustain_volpedal-newvoice) ----
+  // ---- the volpedal rig (TODO/volpedal-per-monome_granular-sustain) ----
   //
   // None of these pin the rig's layout or values: each reads what the rig declares,
   // or sets the one thing it tests (see "reading the rig instead of pinning it").
 
-  const VOLPEDAL: &str = "volpedal-sustain_volpedal-newvoice";
+  const VOLPEDAL: &str = "volpedal-per-monome_granular-sustain";
 
   /// What the rig declares is what the runtime gets: each grid's handle sides, its
   /// sustain buttons and their starting mode, its tone controls, and the pedals

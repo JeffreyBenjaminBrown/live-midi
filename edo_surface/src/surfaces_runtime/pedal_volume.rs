@@ -127,7 +127,7 @@ pub(super) fn apply_pedal_gain(
 /// re-keyed them, which is the race that broke it (6_plan.org's ranked cause 1); with
 /// the engine unreachable from this thread, that class of bug is no longer expressible.
 ///
-/// A NEW-NOTES pedal (`voices = "new"`, TODO/volpedal-sustain_volpedal-newvoice)
+/// A NEW-NOTES pedal (`voices = "new"`, TODO/volpedal-per-monome_granular-sustain)
 /// takes a much shorter path: no slide duty and no edit trims. A move sets its grid's
 /// entry (or every grid's) in the shared `new_pedal_gains` (read by note-ons) and
 /// re-aims the notes held there (`synth::aim_new_pedal`); notes ringing without a

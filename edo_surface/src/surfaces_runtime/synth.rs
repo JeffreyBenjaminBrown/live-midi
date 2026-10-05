@@ -291,7 +291,7 @@ pub struct SurfaceSink {
 }
 
 /// The new-notes pedals' current gains, by grid index
-/// (TODO/volpedal-sustain_volpedal-newvoice). Unity until a pedal first moves, so an
+/// (TODO/volpedal-per-monome_granular-sustain). Unity until a pedal first moves, so an
 /// unplugged pedal never mutes anything; a missing entry also reads as unity.
 pub type NewPedalGains = Arc<Mutex<Vec<f32>>>;
 
@@ -1337,7 +1337,7 @@ pub fn retimbre_tone_target(
 }
 
 /// Aim every note held on `grid` at its new-notes pedal's gain
-/// (TODO/volpedal-sustain_volpedal-newvoice). The pedal drives a note only while a
+/// (TODO/volpedal-per-monome_granular-sustain). The pedal drives a note only while a
 /// finger holds it: once the note rings alone as a drone it keeps the level it had,
 /// so lifting the finger changes nothing and later pedal moves don't reach it.
 /// Releasing voices (`target_env == 0`), retired tails, chord and loop voices, and

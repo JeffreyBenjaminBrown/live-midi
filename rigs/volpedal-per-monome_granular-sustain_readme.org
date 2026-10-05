@@ -6,7 +6,7 @@ on the HOST first, in a terminal you leave open, every session. Then, from the
 repository root inside the container:
 
 #+begin_src sh
-pw-jack cargo run --bin midi_pulse -- volpedal-sustain_volpedal-newvoice
+pw-jack cargo run --bin midi_pulse -- volpedal-per-monome_granular-sustain
 #+end_src
 
 Either physical grid can be used alone. The rig looks for the pedals only at
@@ -89,7 +89,7 @@ No chord storage, no loops, no tone-target cell, no edit mode, no SoftSteps,
 no square or diamond dances.
 
 * More detail
-The rig itself, with every value: [[file:volpedal-sustain_volpedal-newvoice.org]].
-The design discussion: [[file:../TODO/volpedal-sustain_volpedal-newvoice/1_discussion.org]],
+The rig itself, with every value: [[file:volpedal-per-monome_granular-sustain.org]].
+The design discussion: [[file:../TODO/volpedal-per-monome_granular-sustain/1_discussion.org]],
 then the later numbered discussions beside it.
 General window meanings and the rig format: [[file:README.org]].
