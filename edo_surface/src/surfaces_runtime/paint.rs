@@ -24,6 +24,26 @@ pub(super) fn status_flash_on(elapsed: Duration) -> bool {
   (elapsed.as_millis() / STATUS_FLASH_MS) % 2 == 0
 }
 
+/// The pitch classes a grid paints BRIGHT: everything fingered on any grid, chord and
+/// loop voices, and the sustained classes -- except that a grid set to
+/// `flash_sustained` drops the sustained classes no finger holds during the dark half
+/// of its flash clock (`flash_on` false), so those notes blink while held ones stay
+/// steady.
+pub(super) fn lit_classes(
+  held: HashSet<i32>,
+  sustained: HashSet<i32>,
+  chords: HashSet<i32>,
+  flash_sustained: bool,
+  flash_on: bool,
+) -> HashSet<i32> {
+  let mut lit = held;
+  if !flash_sustained || flash_on {
+    lit.extend(sustained);
+  }
+  lit.extend(chords);
+  lit
+}
+
 /// One lock: this grid's accrete-control LED view (its OWN bank's state) plus the
 /// union of every grid's sustained pitch classes (which paint bright on every
 /// grid -- they are all sounding, like the cross-grid note reflection).

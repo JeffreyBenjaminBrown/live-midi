@@ -613,6 +613,7 @@ fn run(
       volume_controls_index: g.volume_controls_index,
       volume_delta_controls_index: g.volume_delta_controls_index,
       handles: g.handles,
+      flash_sustained: g.flash_sustained,
     };
     let mut compact_loops = CompactLoops::new(g.loop_clear_tap_ms);
     if let Some(target) = shared.compact_persist.as_ref() {
@@ -819,6 +820,8 @@ struct Knobs {
   volume_delta_controls_index: usize,
   /// This grid's neighbour handles (which neighbour edits / sustains a note).
   handles: settings::Handles,
+  /// Whether this grid flashes the sustained notes no finger holds.
+  flash_sustained: bool,
 }
 
 /// Everything one grid thread owns for the run. Grouped from first principles
@@ -1053,14 +1056,26 @@ fn grid_thread(mut rt: GridThread) {
         buttons.push(([x, y, x, y], level));
       }
     }
-    let mut sounding_classes = union_sounding(&rt.shared.sounding);
+    // The clock this grid's resting controls flash dim on (150 ms in the compact
+    // family, the slower dance clock otherwise); sustained notes flash on it too where
+    // the rig asks (`flash_sustained`).
+    let flash_on = if rt.overlays.compact() {
+      status_flash_on(elapsed)
+    } else {
+      dance::overlay_dim_on(elapsed)
+    };
     // `sustained_classes` (from `accrete_view`) is the union of every grid's SUSTAINED
     // pitch classes, painted bright on both grids -- they are all audible. An edited note
     // is always sustained too (edited ⊆ sustained, branch-3 queue item 4), so it is
     // already in this set and needs no separate union: this supersedes the old code that
     // unioned the edit set in by hand because edit was its own, non-sustained reason.
-    sounding_classes.extend(sustained_classes);
-    sounding_classes.extend(chord_classes);
+    let sounding_classes = lit_classes(
+      union_sounding(&rt.shared.sounding),
+      sustained_classes,
+      chord_classes,
+      rt.knobs.flash_sustained,
+      flash_on,
+    );
     let trail_classes = trail_set(&rt.shared.trail);
 
     // The diamond dance (edit-mode) and the square dance (sustained), plus the
@@ -1159,11 +1174,7 @@ fn grid_thread(mut rt: GridThread) {
       dance::OffScreen::default()
     };
 
-    let overlay_dim_on = if rt.overlays.compact() {
-      status_flash_on(elapsed)
-    } else {
-      dance::overlay_dim_on(elapsed)
-    };
+    let overlay_dim_on = flash_on;
     let levels = levels_for_grid(
       &sounding_classes,
       &trail_classes,

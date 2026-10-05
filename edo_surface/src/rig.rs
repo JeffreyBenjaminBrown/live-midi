@@ -783,6 +783,11 @@ pub enum MonomeWindowRig {
     /// runtime). Absent = `above`, the long-standing layout. Same restriction.
     #[serde(default)]
     sustain_handle: Option<HandleSide>,
+    /// Sustained notes that no finger holds FLASH bright on this grid, on the same
+    /// clock as its resting controls' dim flash, instead of holding steady (surfaces
+    /// runtime). Held notes stay steady. Absent = false.
+    #[serde(default)]
+    flash_sustained: bool,
   },
   ChordWipeButton {
     id: String,

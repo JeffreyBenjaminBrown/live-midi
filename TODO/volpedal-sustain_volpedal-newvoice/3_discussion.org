@@ -33,6 +33,14 @@ code, so the next rewiring request starts from a list instead of a code search.
 now describe one, but I left the name, the file names and this directory alone,
 since you chose them. If you want something like =volpedal-newvoice=, say so and
 I'll rename everything together.
+* [Jeff] (in chat) flashing
+Let's make the sustained notes flash bright at the speed those sustain controls
+are flashing dim.
+* [Claude] done
+A sustained note that no finger holds now flashes bright on the same 150 ms
+clock as the resting controls' dim flash, in phase with them. A held note stays
+steady, sustained or not. It is a per-grid plug, =flash_sustained = true= on the
+play grid, so other rigs are unchanged until they ask for it.
 ** still open
 *** TODO the twin-rig test
 Unchanged from =2_discussion.org=: copy your tuning to the drums twin, or tell

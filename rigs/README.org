@@ -335,9 +335,10 @@ if the connection you need is in the second list, it needs code.
 *** SoftStep windows
 ~accrete_control~, ~editmode_control~, ~pulse_factor_pedal~ and the rest name
 the grid they drive with ~monome~.
-*** ~edo_note_grid~ note handles
+*** ~edo_note_grid~ note handles and looks
 ~edit_handle~ and ~sustain_handle~ pick which neighbour of a sounding note
-toggles its edit mode or its sustain, or ~"none"~.
+toggles its edit mode or its sustain, or ~"none"~. ~flash_sustained~ makes
+fingerless sustained notes flash.
 *** ~accrete_control~ ~needs_holding~
 ~initially_on~ picks whether ON starts momentary or latching.
 ** connections that are still fixed in code
@@ -394,7 +395,12 @@ tuning = "main"
 sink = "synth"
 sustain_handle = "below"   # the volpedal rig: thumb under a note sustains it
 edit_handle = "none"       # and there is no edit mode
+flash_sustained = true     # sustained notes no finger holds flash bright
 #+end_src
+
+~flash_sustained~ (default false) makes the sustained notes that no finger holds
+flash bright, on the same clock as that grid's resting controls flash dim; held
+notes stay steady.
 
 Built-in unbundled window kinds:
 

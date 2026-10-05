@@ -70,9 +70,12 @@ No serial pin: whichever matching monome serialosc reports first may fill A.
 **** PARAM sink = "synth"
 **** PARAM sustain_handle = "below"
 **** PARAM edit_handle = "none"
+**** PARAM flash_sustained = true
 Press the cell directly below a sounding note to toggle that note's sustain;
 the press never sounds. "above", "left" and "right" also work. There is no
-edit mode here, so the edit handle is off.
+edit mode here, so the edit handle is off. Sustained notes no finger holds
+flash bright on the same 150 ms clock as the resting controls' dim flash; held
+notes stay steady.
 *** ELEM monome_windows
 **** PARAM id = "timbre-a"
 **** PARAM monome = "a"
@@ -140,6 +143,7 @@ If only one grid is connected, this whole logical surface is skipped and A plays
 **** PARAM sink = "synth"
 **** PARAM sustain_handle = "below"
 **** PARAM edit_handle = "none"
+**** PARAM flash_sustained = true
 *** ELEM monome_windows
 **** PARAM id = "timbre-b"
 **** PARAM monome = "b"

@@ -83,6 +83,7 @@
         volume_controls_index: 0,
         volume_delta_controls_index: 0,
         handles: g.handles,
+        flash_sustained: g.flash_sustained,
       },
       shared,
       slide: SlideCandidates::new(),
@@ -2038,6 +2039,7 @@
       tone_volume: None,
       loop_clear_tap_ms: 300,
       handles: Handles::DEFAULT,
+      flash_sustained: false,
       overlays: Overlays {
         edo_rect: [0, 0, 15, 15],
         scroll_rect: NO_RECT,
@@ -2411,9 +2413,23 @@
     assert_eq!(gains_of(&rt, drone).1, 0.2, "only held notes move");
   }
 
+  /// `flash_sustained`: during the dark half of the grid's flash clock, a sustained
+  /// class no finger holds drops out of the lit set; a held one never does; without
+  /// the flag nothing ever drops.
+  #[test]
+  fn flashing_sustained_notes_blink_while_held_ones_stay_lit() {
+    let set = |v: &[i32]| v.iter().copied().collect::<HashSet<i32>>();
+    let (held, sustained, chords) = (set(&[1]), set(&[1, 2]), set(&[3]));
+    let lit = |flash, on| lit_classes(held.clone(), sustained.clone(), chords.clone(), flash, on);
+    assert_eq!(lit(true, true), set(&[1, 2, 3]), "bright half: everything lit");
+    assert_eq!(lit(true, false), set(&[1, 3]), "dark half: only the fingerless sustained note drops");
+    assert_eq!(lit(false, false), set(&[1, 2, 3]), "without the flag sustained notes hold steady");
+  }
+
   /// The volpedal rig against one and two mock grids through real OSC. LED
   /// expectations come from the rig (where its controls are, how its mode switch
-  /// starts); the handle is set on the loaded rig to "below", the gesture under test.
+  /// starts, whether sustained notes flash); the handle is set on the loaded rig to
+  /// "below", the gesture under test.
   #[test]
   fn volpedal_rig_runs_against_one_and_two_mock_grids() {
     use crate::mock_monome::{wait_until, GridSpec, MockRig};
@@ -2438,13 +2454,14 @@
         (one_cell(g.overlays.needs_holding_rect), grid_needs_holding_initially_on(&rig, g))
       });
       let (note, handle) = note_with_handle(&g.overlays, HandleSide::Below.note_offset().unwrap());
-      (rig, selected, mode, note, handle)
+      let flashes = g.flash_sustained;
+      (rig, selected, mode, note, handle, flashes)
     };
 
     {
       let mock = MockRig::start(0, &[GridSpec::grid_256("volpedal-solo")])
         .expect("start one mock grid");
-      let (rig, selected, mode, _, _) = load([19230, 19231]);
+      let (rig, selected, mode, _, _, _) = load([19230, 19231]);
       let _run = MockRun::start(rig, mock.detector_port(), "one-grid volpedal rig");
       let solo = mock.grid(0);
       assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
@@ -2460,7 +2477,7 @@
         &[GridSpec::grid_256("volpedal-left"), GridSpec::grid_256("volpedal-right")],
       )
       .expect("start two mock grids");
-      let (rig, _, mode, note, handle) = load([19232, 19233]);
+      let (rig, _, mode, note, handle, flashes) = load([19232, 19233]);
       let _run = MockRun::start(rig, mock.detector_port(), "two-grid volpedal rig");
       let a = mock.grid(0);
       let b = mock.grid(1);
@@ -2477,16 +2494,32 @@
         assert_eq!(lit(&b), b_before, "b's switch is untouched");
       }
 
-      // The below-handle sustains a held note on b: it stays lit after the finger lifts.
+      // Sample a cell's level every 10 ms for `ms`: was it ever bright, ever not?
+      let watch = |g: &crate::mock_monome::MockGrid, ms: u64| {
+        let (mut bright, mut not) = (false, false);
+        for _ in 0..ms / 10 {
+          if g.level_at(note.0, note.1) == 15 { bright = true } else { not = true }
+          thread::sleep(Duration::from_millis(10));
+        }
+        (bright, not)
+      };
+      // The below-handle sustains a held note on b, which stays lit after the finger
+      // lifts: steady while held, then flashing if the rig flashes sustained notes.
       b.press(note.0, note.1);
       assert!(wait_until(secs(3), || b.level_at(note.0, note.1) == 15), "the note sounds");
       b.tap(handle.0, handle.1);
       thread::sleep(Duration::from_millis(100));
+      assert_eq!(watch(&b, 400), (true, false), "held: steady, even once sustained");
       b.release(note.0, note.1);
-      thread::sleep(Duration::from_millis(400));
-      assert_eq!(b.level_at(note.0, note.1), 15, "sustained by its handle, it outlives the finger");
+      thread::sleep(Duration::from_millis(100));
+      assert_eq!(
+        watch(&b, 700),
+        (true, flashes),
+        "sustained by its handle, it outlives the finger -- flashing iff the rig says so",
+      );
       b.tap(handle.0, handle.1);
-      assert!(wait_until(secs(3), || b.level_at(note.0, note.1) != 15), "the handle again ends it");
+      thread::sleep(Duration::from_millis(200));
+      assert_eq!(watch(&b, 500).0, false, "the handle again ends it");
     }
   }
 

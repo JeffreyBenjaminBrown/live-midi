@@ -28,7 +28,8 @@ y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
 #+end_example
 Everything else is play surface: 41-EDO from 110 Hz, eight steps per cell
 rightward and one step per cell downward. A control at rest flashes dim on the
-shared 150 ms clock; a lit control is solid bright.
+shared 150 ms clock; a lit control is solid bright. A held note is solid bright,
+and a sustained note no finger holds flashes bright on that same clock.
 
 * The pedals
 ** what each drives

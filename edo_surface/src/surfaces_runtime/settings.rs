@@ -132,6 +132,8 @@ pub(super) struct GridSettings {
   pub(super) overlays: Overlays,
   /// This grid's neighbour handles (`edo_note_grid` `edit_handle` / `sustain_handle`).
   pub(super) handles: Handles,
+  /// Whether this grid flashes its sustained notes (`edo_note_grid` `flash_sustained`).
+  pub(super) flash_sustained: bool,
 }
 
 /// A play grid's neighbour handles (keys.rs `handle_edit_press`): for each gesture, the
@@ -495,21 +497,22 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     // The neighbour handles: the rig's sides, defaulting to edit-below / sustain-above.
     // (A momentary-chord grid has none at all -- keys.rs skips the handle path there,
     // and validation rejects setting them on one.)
-    let handles = rig
+    let (handles, flash_sustained) = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
-        MonomeWindowRig::EdoNoteGrid { monome, edit_handle, sustain_handle, .. }
-          if monome == monome_id =>
-        {
-          Some(Handles {
+        MonomeWindowRig::EdoNoteGrid {
+          monome, edit_handle, sustain_handle, flash_sustained, ..
+        } if monome == monome_id => Some((
+          Handles {
             edit: edit_handle.unwrap_or(HandleSide::Below).note_offset(),
             sustain: sustain_handle.unwrap_or(HandleSide::Above).note_offset(),
-          })
-        }
+          },
+          *flash_sustained,
+        )),
         _ => None,
       })
-      .unwrap_or(Handles::DEFAULT);
+      .unwrap_or((Handles::DEFAULT, false));
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       select: monome_cfg.select.clone(),
@@ -522,6 +525,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       loop_clear_tap_ms,
       overlays,
       handles,
+      flash_sustained,
     });
   }
 

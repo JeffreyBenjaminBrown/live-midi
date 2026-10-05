@@ -94,8 +94,9 @@ The newest sibling of the reduced rig (2026-10): the same one-or-two unpinned
 grids, tuning, timbres and volume keys, minus chords, loops and the tone-target
 cell, plus an EX-P *new-notes pedal* per grid that drives that grid's held notes
 (and lets go of a note when its finger lifts), a per-note sustain *handle* (the cell directly
-below a sounding note), and on-grid OFF / ON / TOGGLE-WHAT-ON-MEANS sustain
-buttons. Player reference:
+below a sounding note), on-grid OFF / ON / TOGGLE-WHAT-ON-MEANS sustain
+buttons, and fingerless sustained notes that flash (=flash_sustained=, painted
+through =paint::lit_classes=). Player reference:
 [[./rigs/volpedal-sustain_volpedal-newvoice_readme.org]]; rig:
 =rigs/volpedal-sustain_volpedal-newvoice.org=; design and decisions:
 =TODO/volpedal-sustain_volpedal-newvoice/1_discussion.org=. Runtime pieces: the
