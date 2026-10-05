@@ -61,20 +61,39 @@ impl EditSelection {
 /// halves meet, so the curve is continuous, monotonic, and pinned at 0 and 1.
 /// (Tried before this: linear -- numb at the toe, a cliff at the heel -- then
 /// quadratic, better but still not spread right. This is the console fader's law.)
+///
+/// Or, with `silent_heel` false (the rig's `range_db`), no fade to silence at all: the
+/// whole travel is dB-linear from -`exp_db` at full heel to unity at full toe, so the
+/// pedal spans a finite range (`lin_frac` is 0 then).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PedalVolumeCurve {
   pub(super) lin_frac: f32,
   pub(super) exp_db: f32,
+  pub(super) silent_heel: bool,
 }
 
 impl PedalVolumeCurve {
+  /// The taper a rig's pedal declares: its `range_db` if it has one, else the fader
+  /// law with its curve_* knobs (or their defaults).
+  pub(super) fn from_rig(p: &crate::rig::ExpressionPedalRig) -> Self {
+    match p.range_db {
+      Some(range_db) => PedalVolumeCurve { lin_frac: 0.0, exp_db: range_db, silent_heel: false },
+      None => PedalVolumeCurve {
+        lin_frac: p.curve_initial_lin_frac.unwrap_or(crate::rig::DEFAULT_CURVE_INITIAL_LIN_FRAC),
+        exp_db: p.curve_remainder_exp_db.unwrap_or(crate::rig::DEFAULT_CURVE_REMAINDER_EXP_DB),
+        silent_heel: true,
+      },
+    }
+  }
+
   pub(super) fn gain(&self, norm: f32) -> f32 {
     let x = norm.clamp(0.0, 1.0);
-    if x <= 0.0 {
-      return 0.0;
-    }
-    // The exponential's floor: the gain where the splice hands over.
+    // The exponential's floor: the gain where the splice hands over, or (without a
+    // silent heel) the bottom of the range.
     let floor = 10.0_f32.powf(-self.exp_db / 20.0);
+    if x <= 0.0 {
+      return if self.silent_heel { 0.0 } else { floor };
+    }
     if x < self.lin_frac {
       return floor * (x / self.lin_frac);
     }
@@ -341,6 +360,65 @@ mod tests {
   use crate::surfaces_runtime::ring::GridRing;
   use crate::types::{Timbre, VoiceSource};
   use std::collections::HashMap;
+
+  /// A rig pedal's taper: `range_db` makes a finite, never-silent range; without it,
+  /// the fader law with whichever curve_* knobs the rig gives (defaults otherwise).
+  #[test]
+  fn a_pedals_taper_comes_from_its_rig_entry() {
+    let rig = crate::rig::parse_rig(
+      r#"version = 1
+id = "t"
+title = "t"
+[[tunings]]
+id = "main"
+edo = 41
+x_step = 8
+y_step = 1
+fundamental_hz = 110
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.05
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/a"
+select.size = [16, 16]
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+[[expression_pedals]]
+channel = 1
+role = "new_note_volume"
+range_db = 30.0
+[[expression_pedals]]
+channel = 2
+role = "global_volume"
+curve_remainder_exp_db = 40.0
+"#,
+    )
+    .expect("rig parses");
+    assert_eq!(
+      PedalVolumeCurve::from_rig(&rig.expression_pedals[0]),
+      PedalVolumeCurve { lin_frac: 0.0, exp_db: 30.0, silent_heel: false },
+    );
+    assert_eq!(
+      PedalVolumeCurve::from_rig(&rig.expression_pedals[1]),
+      PedalVolumeCurve {
+        lin_frac: crate::rig::DEFAULT_CURVE_INITIAL_LIN_FRAC,
+        exp_db: 40.0,
+        silent_heel: true,
+      },
+    );
+  }
 
   /// The pedal thread's edit-detection: nothing edited -> empty (the pedal stays
   /// uniform); an edit-mode pitch or an edit-flagged chord voice -> the snapshot

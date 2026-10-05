@@ -2315,11 +2315,7 @@
           PedalRole::NewNoteVolume => PedalTarget::NewNote(some),
           PedalRole::GlobalVolume => PedalTarget::Global(some),
         };
-        let curve = PedalVolumeCurve {
-          lin_frac: p.curve_initial_lin_frac,
-          exp_db: p.curve_remainder_exp_db,
-        };
-        (p.channel as usize - 1, target, curve)
+        (p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p))
       })
       .collect();
     assert_eq!(s.expression_pedals, expected);
@@ -2826,14 +2822,17 @@
       rig.expression_pedals.iter().map(|p| (p.channel, p.monome.as_deref().unwrap_or(""))).collect();
     assert_eq!(pedals, [(1, "a"), (2, "b")]);
     let s = resolve_settings(&rig).expect("resolves");
-    let curve = PedalVolumeCurve { lin_frac: 0.1, exp_db: 50.0 };
+    let curves: Vec<PedalVolumeCurve> =
+      rig.expression_pedals.iter().map(PedalVolumeCurve::from_rig).collect();
     assert_eq!(
       s.expression_pedals,
-      [(0, PedalTarget::Grid(0), curve), (1, PedalTarget::Grid(1), curve)],
+      [(0, PedalTarget::Grid(0), curves[0]), (1, PedalTarget::Grid(1), curves[1])],
+      "each pedal resolves to the taper its rig entry declares",
     );
 
-    // The taper: exponential (dB-linear in travel) spliced to a linear fade over
-    // the first lin_frac, so the ends are pinned at exact 0 and 1.
+    // The taper's math, on explicit values: exponential (dB-linear in travel) spliced
+    // to a linear fade over the first lin_frac, so the ends are pinned at exact 0 and 1.
+    let curve = PedalVolumeCurve { lin_frac: 0.1, exp_db: 50.0, silent_heel: true };
     assert_eq!(curve.gain(0.0), 0.0);
     assert_eq!(curve.gain(1.0), 1.0);
     let floor = 10f32.powf(-50.0 / 20.0); // where the splice meets the exponential
@@ -2845,6 +2844,14 @@
     // Monotonic across the whole travel.
     let g: Vec<f32> = (0..=100).map(|i| curve.gain(i as f32 / 100.0)).collect();
     assert!(g.windows(2).all(|w| w[1] >= w[0]));
+
+    // A finite range instead (`range_db`): dB-linear across the whole travel, from
+    // -range at the heel -- never silent -- to unity at the toe.
+    let ranged = PedalVolumeCurve { lin_frac: 0.0, exp_db: 30.0, silent_heel: false };
+    let db = |g: f32| 20.0 * g.log10();
+    assert!((db(ranged.gain(0.0)) - -30.0).abs() < 1e-3, "the heel is -30 dB, not silence");
+    assert!((db(ranged.gain(0.5)) - -15.0).abs() < 1e-3, "halfway is halfway in dB");
+    assert_eq!(ranged.gain(1.0), 1.0);
 
     // And it must resolve, not merely parse.
     resolve_settings(&rig).expect("the shipped rig resolves to Settings");
@@ -3312,7 +3319,10 @@
     assert_eq!(p.x_step, 7);
     assert_eq!(
       p.expression_pedals,
-      [Some((PedalTarget::Grid(0), PedalVolumeCurve { lin_frac: 0.1, exp_db: 40.0 })), None],
+      [Some((
+        PedalTarget::Grid(0),
+        PedalVolumeCurve { lin_frac: 0.1, exp_db: 40.0, silent_heel: true },
+      )), None],
       "the pedal taper reloads (lin_frac keeps its default; exp_db moved)",
     );
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");

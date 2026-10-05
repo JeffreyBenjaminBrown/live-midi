@@ -155,13 +155,22 @@ pub struct ExpressionPedalRig {
   /// The fraction of the travel, from the heel, that fades LINEARLY from silence up
   /// to the exponential's floor. In [0, 1); 0 = no splice (silence snaps on at the
   /// exact bottom). Default 0.1.
-  #[serde(default = "default_curve_initial_lin_frac")]
-  pub curve_initial_lin_frac: f32,
+  #[serde(default)]
+  pub curve_initial_lin_frac: Option<f32>,
   /// The dB span of the exponential remainder of the travel: gain runs dB-linearly
   /// from -this (where the splice meets it) up to 0 dB at full toe. > 0. Default 50.
-  #[serde(default = "default_curve_remainder_exp_db")]
-  pub curve_remainder_exp_db: f32,
+  #[serde(default)]
+  pub curve_remainder_exp_db: Option<f32>,
+  /// A FINITE range instead of the fade to silence: gain runs dB-linearly from
+  /// -this dB at full heel up to 0 dB at full toe, and the heel is never silent.
+  /// Replaces the two curve_* knobs, so a pedal takes one or the other. > 0.
+  #[serde(default)]
+  pub range_db: Option<f32>,
 }
+
+/// The fader-law taper's defaults (`curve_initial_lin_frac`, `curve_remainder_exp_db`).
+pub const DEFAULT_CURVE_INITIAL_LIN_FRAC: f32 = 0.1;
+pub const DEFAULT_CURVE_REMAINDER_EXP_DB: f32 = 50.0;
 
 /// What a pedal does on the grids it plugs into (`[[expression_pedals]] role = ...`).
 /// The two volpedal roles (TODO/volpedal-newnotes-and-global_granular-sustain) each drive a
@@ -181,14 +190,6 @@ pub enum PedalRole {
   /// A live volume over every note, held or sustained: moving it rescales whatever is
   /// sounding (slewed) and everything struck later.
   GlobalVolume,
-}
-
-fn default_curve_initial_lin_frac() -> f32 {
-  0.1
-}
-
-fn default_curve_remainder_exp_db() -> f32 {
-  50.0
 }
 
 fn default_timbre_freq() -> f32 {
@@ -2182,19 +2183,34 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
         PedalRole::GlobalVolume => {}
       }
     }
-    if !p.curve_initial_lin_frac.is_finite()
-      || !(0.0..1.0).contains(&p.curve_initial_lin_frac)
-    {
+    if let Some(range_db) = p.range_db {
+      if p.curve_initial_lin_frac.is_some() || p.curve_remainder_exp_db.is_some() {
+        return Err(format!(
+          "expression pedal (channel {}): range_db replaces the curve_* taper; give one \
+           or the other",
+          p.channel,
+        ));
+      }
+      if !range_db.is_finite() || range_db <= 0.0 {
+        return Err(format!(
+          "expression pedal (channel {}): range_db must be > 0, got {range_db}",
+          p.channel,
+        ));
+      }
+    }
+    let lin_frac = p.curve_initial_lin_frac.unwrap_or(DEFAULT_CURVE_INITIAL_LIN_FRAC);
+    if !lin_frac.is_finite() || !(0.0..1.0).contains(&lin_frac) {
       return Err(format!(
         "expression pedal (channel {}): curve_initial_lin_frac must be in 0..1 \
-         (1 would leave no travel for the exponential), got {}",
-        p.channel, p.curve_initial_lin_frac,
+         (1 would leave no travel for the exponential), got {lin_frac}",
+        p.channel,
       ));
     }
-    if !p.curve_remainder_exp_db.is_finite() || p.curve_remainder_exp_db <= 0.0 {
+    let exp_db = p.curve_remainder_exp_db.unwrap_or(DEFAULT_CURVE_REMAINDER_EXP_DB);
+    if !exp_db.is_finite() || exp_db <= 0.0 {
       return Err(format!(
-        "expression pedal (channel {}): curve_remainder_exp_db must be > 0, got {}",
-        p.channel, p.curve_remainder_exp_db,
+        "expression pedal (channel {}): curve_remainder_exp_db must be > 0, got {exp_db}",
+        p.channel,
       ));
     }
   }
@@ -5181,6 +5197,19 @@ controls = "a"
     bad(&VOLPEDALS.replace("\"global_volume\"", "\"sustained\""), "unknown variant");
     // A grid_volume pedal on a monome whose volume_delta owns its volume would fight it.
     bad(&format!("{VOLUME_DELTA_A}{EXPRESSION_PEDALS}"), "volume_delta");
+  }
+
+  #[test]
+  fn range_db_gives_a_pedal_a_finite_range_instead_of_the_curve_knobs() {
+    let ranged = VOLPEDALS.replacen("role = \"new_note_volume\"", "role = \"new_note_volume\"\nrange_db = 30.0", 1);
+    let rig = parse_rig(&format!("{SURFACES_MIN}{ranged}")).expect("range_db validates");
+    assert_eq!(rig.expression_pedals[0].range_db, Some(30.0));
+    let bad = |s: &str, contains: &str| {
+      let err = parse_rig(&format!("{SURFACES_MIN}{s}")).expect_err("must fail");
+      assert!(err.contains(contains), "{err}");
+    };
+    bad(&ranged.replace("range_db = 30.0", "range_db = 0.0"), "range_db must be > 0");
+    bad(&ranged.replace("range_db = 30.0", "range_db = 30.0\ncurve_remainder_exp_db = 40.0"), "one or the other");
   }
 
   #[test]

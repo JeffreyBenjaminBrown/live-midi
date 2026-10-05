@@ -94,6 +94,15 @@ oh hmm now it should be called volpedal-newnotes-and-global_granular-sustain
 * [Claude] renamed again
 The rig file, its readme, this directory and every reference now use it. Your
 quoted earlier names above are left as written.
+* [Jeff] (in chat) a finite range for the new-note pedal
+The new notes pedal should have a db range less than infinite. Let's make the new
+note pedal volume range a config parameter and set it initially at ... I don't
+know, 30 db? Is that about what acoustic musicians have?
+* [Claude] done
+Any pedal may now take =range_db= instead of the curve_* knobs: dB-linear over the
+whole travel from that many dB down at full heel, never silent, to full volume at
+full toe. The new-note pedal uses 30. The global pedal still fades to silence, so
+its heel works as a mute; give it a =range_db= too if you'd rather it didn't.
 * still open
 ** TODO hear it on the grids and pedals
 Remember the pedal bridge: run =tools/pedals/bridge.sh= on the host before the

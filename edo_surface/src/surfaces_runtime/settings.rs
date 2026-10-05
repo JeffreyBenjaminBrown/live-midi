@@ -592,11 +592,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         PedalRole::NewNoteVolume => PedalTarget::NewNote(some_grid),
         PedalRole::GlobalVolume => PedalTarget::Global(some_grid),
       };
-      let curve = PedalVolumeCurve {
-        lin_frac: p.curve_initial_lin_frac,
-        exp_db: p.curve_remainder_exp_db,
-      };
-      Some((p.channel as usize - 1, target, curve))
+      Some((p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p)))
     })
     .collect();
 

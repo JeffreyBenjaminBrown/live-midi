@@ -49,11 +49,17 @@ on this grid start at the new-note pedal's level; dim means they start at
 unity. GLOBAL (x=1) lit means every note on this grid rides the global pedal;
 dim means they glide to unity and ignore it. Both start lit. Each grid's buttons
 are its own, so one grid can follow a pedal while the other ignores it.
-** the taper
-Heel is silent and toe is unity. The top 90% of the travel is dB-linear over
-50 dB, and the first 10% fades linearly to exact silence. Both knobs are in
-the rig and reload live with =r= then Enter. Until a pedal sends its first CC
-it counts as unity, so an unplugged pedal mutes nothing.
+** the tapers
+Both pedals reach full volume at the toe.
+*** the new-note pedal: a 30 dB range
+Full heel starts notes 30 dB down, never silent, and the travel is dB-linear in
+between. Change =range_db= in the rig to widen or narrow it.
+*** the global pedal: a fade to silence
+The top 90% of the travel is dB-linear over 50 dB, and the first 10% fades
+linearly to exact silence, so full heel mutes everything.
+*** both
+The knobs reload live with =r= then Enter. Until a pedal sends its first CC it
+counts as unity, so an unplugged pedal mutes nothing.
 ** cabling
 If the pedals arrive the other way round, swap the two =channel= values in the
 rig.
