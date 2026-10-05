@@ -129,7 +129,8 @@ fn default_timbre_amplitude() -> f32 {
 
 /// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
 /// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
-/// deliberately drops) bound as a volume pedal for one monome's grid: the pedal's
+/// deliberately drops) bound as a volume pedal for one monome's grid, or (`voices =
+/// "new"`) for the held notes of every grid: the pedal's
 /// reliable ~1..119 CC travel maps to a position 0..1, tapered into the amplitude
 /// factor by the standard fader law -- an EXPONENTIAL (dB-linear) curve over most
 /// of the travel, SPLICED to a linear fade over the first `curve_initial_lin_frac`
@@ -143,8 +144,18 @@ pub struct ExpressionPedalRig {
   /// The MPC-20 MIDI channel this pedal arrives on: 1 or 2 (both pedals send CC 21,
   /// one per channel).
   pub channel: u8,
-  /// The monome whose grid volume this pedal drives. Must have an `edo_note_grid`.
-  pub monome: String,
+  /// WHERE the pedal plugs in: the monome whose grid it drives (must have an
+  /// `edo_note_grid`). Required for `voices = "all"`; for `voices = "new"`, leaving it
+  /// out plugs the pedal into every grid at once.
+  #[serde(default)]
+  pub monome: Option<String>,
+  /// WHICH voices on that grid it drives -- the second, independent plug. `all`
+  /// (default): every voice, the long-standing grid volume pedal. `new`
+  /// (TODO/volpedal-sustain_volpedal-newvoice): only notes a finger holds; when the
+  /// finger lifts from a sustained note nothing happens -- it keeps its level, and
+  /// later pedal moves don't reach it.
+  #[serde(default)]
+  pub voices: PedalVoices,
   /// The fraction of the travel, from the heel, that fades LINEARLY from silence up
   /// to the exponential's floor. In [0, 1); 0 = no splice (silence snaps on at the
   /// exact bottom). Default 0.1.
@@ -154,6 +165,20 @@ pub struct ExpressionPedalRig {
   /// from -this (where the splice meets it) up to 0 dB at full toe. > 0. Default 50.
   #[serde(default = "default_curve_remainder_exp_db")]
   pub curve_remainder_exp_db: f32,
+}
+
+/// Which voices on its grid a pedal drives (`[[expression_pedals]] voices = ...`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PedalVoices {
+  /// Every voice on the grid: the grid volume pedal (with its edit-mode trims and
+  /// pedal-slide duty). Drives the same per-voice gain a `volume_delta` uses, so the
+  /// two can't share a grid.
+  #[default]
+  All,
+  /// Only notes a finger holds, sustained or not, through a gain of their own, so it
+  /// multiplies with every other volume control.
+  New,
 }
 
 fn default_curve_initial_lin_frac() -> f32 {
@@ -749,6 +774,15 @@ pub enum MonomeWindowRig {
     rect: [i32; 4],
     tuning: String,
     sink: String,
+    /// Which neighbour of a sounding note toggles its EDIT MODE when pressed (surfaces
+    /// runtime). Absent = `below`, the long-standing layout. Not allowed on a monome
+    /// with a `momentary_chord_block`, whose grid has no handles at all.
+    #[serde(default)]
+    edit_handle: Option<HandleSide>,
+    /// Which neighbour of a sounding note toggles its SUSTAIN when pressed (surfaces
+    /// runtime). Absent = `above`, the long-standing layout. Same restriction.
+    #[serde(default)]
+    sustain_handle: Option<HandleSide>,
   },
   ChordWipeButton {
     id: String,
@@ -938,6 +972,11 @@ pub enum MonomeWindowRig {
     monome: String,
     rect: [i32; 4],
     control: AccreteControlKind,
+    /// `needs_holding` only: whether the switch starts ON -- accrete (and erase)
+    /// momentary, hold to sustain -- instead of the default OFF, where they latch.
+    /// Absent = false, the long-standing start.
+    #[serde(default)]
+    initially_on: Option<bool>,
   },
   // A single-cell toggle for FINE TRANSPOSE (surfaces runtime;
   // queues/branch-2.org): while on, a dancing X marks a center pitch, play
@@ -1118,6 +1157,36 @@ pub enum ScaleControlKind {
   Store,
   /// Arms "the next slot pressed is emptied".
   Empty,
+}
+
+/// Where a note's handle sits relative to the note (`edo_note_grid` `edit_handle` /
+/// `sustain_handle`): pressing that neighbouring play cell while the note sounds acts
+/// on the note instead of sounding. Geometric, not pitch-defined, so it doesn't move
+/// when the tuning changes. `none` turns the gesture off.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleSide {
+  Above,
+  Below,
+  Left,
+  Right,
+  #[serde(rename = "none")]
+  Off,
+}
+
+impl HandleSide {
+  /// The offset from the PRESSED (handle) cell to the note it acts on, or `None` when
+  /// the gesture is off. Monome y grows downward, so a handle BELOW its note finds
+  /// the note at y - 1.
+  pub fn note_offset(self) -> Option<(i32, i32)> {
+    match self {
+      HandleSide::Above => Some((0, 1)),
+      HandleSide::Below => Some((0, -1)),
+      HandleSide::Left => Some((1, 0)),
+      HandleSide::Right => Some((-1, 0)),
+      HandleSide::Off => None,
+    }
+  }
 }
 
 // The surfaces sustain ("accrete") buttons -- see TODO/misc.org "sustain (accrete)".
@@ -1891,9 +1960,26 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       return Err(format!("monome window {:?} rect must be ascending", window.id()));
     }
     match window {
-      MonomeWindowRig::EdoNoteGrid { tuning, sink, .. } => {
+      MonomeWindowRig::EdoNoteGrid { id, monome, tuning, sink, edit_handle, sustain_handle, .. } => {
         require_ref("monome_window.tuning", tuning, &tuning_ids)?;
         require_ref("monome_window.sink", sink, &sink_ids)?;
+        let edit = edit_handle.unwrap_or(HandleSide::Below);
+        let sustain = sustain_handle.unwrap_or(HandleSide::Above);
+        if edit != HandleSide::Off && edit == sustain {
+          return Err(format!(
+            "edo_note_grid {id:?}: edit_handle and sustain_handle are both {edit:?}; \
+             one neighbour cannot toggle two things",
+          ));
+        }
+        let has_momentary_chords = rig.monome_windows.iter().any(
+          |w| matches!(w, MonomeWindowRig::MomentaryChordBlock { monome: m, .. } if m == monome),
+        );
+        if has_momentary_chords && (edit_handle.is_some() || sustain_handle.is_some()) {
+          return Err(format!(
+            "edo_note_grid {id:?}: a monome with a momentary_chord_block has no note \
+             handles, so edit_handle / sustain_handle would do nothing",
+          ));
+        }
       }
       MonomeWindowRig::RemappableUn12Grid { tuning, .. } => {
         require_ref("monome_window.tuning", tuning, &tuning_ids)?;
@@ -1982,12 +2068,29 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
-/// The `[[expression_pedals]]` bindings: channel 1 or 2, each channel and each
-/// monome claimed at most once, and the monome must be a play grid (it has voices
-/// to fade).
+/// The `[[expression_pedals]]` bindings. Each pedal arrives on its own channel (1 or
+/// 2, the MPC-20's two) and plugs into a grid (`monome`) and a set of its voices
+/// (`voices`), two independent choices:
+/// - `voices = "all"` (the default) needs a `monome`, at most one per monome, and not
+///   on a monome with a `volume_delta` (whose tone volume owns the same per-voice gain);
+/// - `voices = "new"` takes a `monome` or, without one, every grid; at most one per
+///   grid, and not on a grid with chord or loop blocks (whose voices no finger holds,
+///   so whether the pedal should reach them is undecided).
 fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
+  let grid_monomes: Vec<&str> = rig
+    .monome_windows
+    .iter()
+    .filter_map(|w| match w {
+      MonomeWindowRig::EdoNoteGrid { monome, .. } => Some(monome.as_str()),
+      _ => None,
+    })
+    .collect();
+  let on_monome = |m: &str, f: fn(&MonomeWindowRig) -> bool| {
+    rig.monome_windows.iter().any(|w| f(w) && w.monome() == m)
+  };
   let mut channels: HashSet<u8> = HashSet::new();
-  let mut monomes: HashSet<&str> = HashSet::new();
+  let mut all_voices: HashSet<&str> = HashSet::new();
+  let mut new_notes: HashSet<&str> = HashSet::new();
   for p in &rig.expression_pedals {
     if !(1..=2).contains(&p.channel) {
       return Err(format!(
@@ -1998,17 +2101,67 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
     if !channels.insert(p.channel) {
       return Err(format!("two expression pedals declare channel {}", p.channel));
     }
-    let has_grid = rig.monome_windows.iter().any(
-      |w| matches!(w, MonomeWindowRig::EdoNoteGrid { monome: m, .. } if *m == p.monome),
-    );
-    if !has_grid {
-      return Err(format!(
-        "expression pedal (channel {}) targets monome {:?}, which has no edo_note_grid",
-        p.channel, p.monome,
-      ));
+    if let Some(monome) = &p.monome {
+      if !grid_monomes.contains(&monome.as_str()) {
+        return Err(format!(
+          "expression pedal (channel {}) targets monome {:?}, which has no edo_note_grid",
+          p.channel, monome,
+        ));
+      }
     }
-    if !monomes.insert(p.monome.as_str()) {
-      return Err(format!("monome {:?} has two expression pedals", p.monome));
+    match p.voices {
+      PedalVoices::All => {
+        let Some(monome) = p.monome.as_deref() else {
+          return Err(format!(
+            "expression pedal (channel {}) drives all voices, so it needs a monome = \"...\" \
+             (only voices = \"new\" may leave it out to cover every grid)",
+            p.channel,
+          ));
+        };
+        if !all_voices.insert(monome) {
+          return Err(format!("monome {monome:?} has two expression pedals"));
+        }
+        if on_monome(monome, |w| matches!(w, MonomeWindowRig::VolumeDelta { .. })) {
+          return Err(format!(
+            "expression pedal (channel {}) targets monome {monome:?}, whose volume_delta \
+             already owns that grid's volume; use voices = \"new\" there instead",
+            p.channel,
+          ));
+        }
+      }
+      PedalVoices::New => {
+        let covered: Vec<&str> = match p.monome.as_deref() {
+          Some(m) => vec![m],
+          None => grid_monomes.clone(),
+        };
+        if covered.is_empty() {
+          return Err(format!(
+            "expression pedal (channel {}) has no edo_note_grid to drive",
+            p.channel,
+          ));
+        }
+        for m in covered {
+          if !new_notes.insert(m) {
+            return Err(format!("monome {m:?} has two new-notes pedals (voices = \"new\")"));
+          }
+          let chords_or_loops = on_monome(m, |w| {
+            matches!(
+              w,
+              MonomeWindowRig::ChordBlock { .. }
+                | MonomeWindowRig::MomentaryChordBlock { .. }
+                | MonomeWindowRig::CompactLoopBlock { .. }
+            )
+          });
+          if chords_or_loops {
+            return Err(format!(
+              "expression pedal (channel {}) drives monome {m:?}'s new notes, which cannot \
+               share a grid with chord or loop blocks (whether it should reach their voices \
+               is undecided)",
+              p.channel,
+            ));
+          }
+        }
+      }
     }
     if !p.curve_initial_lin_frac.is_finite()
       || !(0.0..1.0).contains(&p.curve_initial_lin_frac)
@@ -2380,9 +2533,15 @@ fn validate_single_cell_toggles(rig: &Rig) -> Result<(), String> {
 fn validate_accrete_controls(rig: &Rig) -> Result<(), String> {
   let mut per_monome: HashMap<&str, Vec<AccreteControlKind>> = HashMap::new();
   for window in &rig.monome_windows {
-    let MonomeWindowRig::AccreteControl { id, monome, rect, control } = window else {
+    let MonomeWindowRig::AccreteControl { id, monome, rect, control, initially_on } = window
+    else {
       continue;
     };
+    if initially_on.is_some() && *control != AccreteControlKind::NeedsHolding {
+      return Err(format!(
+        "accrete_control window {id:?}: initially_on applies only to control = \"needs_holding\"",
+      ));
+    }
     let [x0, y0, x1, y1] = *rect;
     if x0 != x1 || y0 != y1 {
       return Err(format!(
@@ -4858,7 +5017,7 @@ monome = "b"
     let rig = parse_rig(&format!("{SURFACES_MIN}{EXPRESSION_PEDALS}")).expect("two pedals validate");
     assert_eq!(rig.expression_pedals.len(), 2);
     assert_eq!(rig.expression_pedals[0].channel, 1);
-    assert_eq!(rig.expression_pedals[1].monome, "b");
+    assert_eq!(rig.expression_pedals[1].monome.as_deref(), Some("b"));
     // Absent = empty: rigs without pedals are untouched.
     let rig = parse_rig(SURFACES_MIN).expect("no pedals is fine");
     assert!(rig.expression_pedals.is_empty());
@@ -4879,6 +5038,217 @@ monome = "b"
     let with = |extra: &str| format!("{EXPRESSION_PEDALS}{extra}");
     bad(&with("curve_initial_lin_frac = 1.0\n"), "curve_initial_lin_frac");
     bad(&with("curve_remainder_exp_db = 0.0\n"), "curve_remainder_exp_db");
+  }
+
+  // ---- the new-notes pedal, note handles, initially_on (TODO/volpedal-sustain_volpedal-newvoice) ----
+
+  /// One new-notes pedal per grid -- the volpedal rig's wiring.
+  const NEW_PEDAL_PER_GRID: &str = r#"
+[[expression_pedals]]
+channel = 1
+monome = "a"
+voices = "new"
+[[expression_pedals]]
+channel = 2
+monome = "b"
+voices = "new"
+"#;
+
+  /// One new-notes pedal plugged into every grid at once.
+  const NEW_PEDAL_EVERY_GRID: &str = r#"
+[[expression_pedals]]
+channel = 1
+voices = "new"
+"#;
+
+  /// A volume_delta on grid a, for the rules that pair it with pedals.
+  const VOLUME_DELTA_A: &str = r#"
+[[monome_windows]]
+id = "vol-a"
+monome = "a"
+kind = "volume_delta"
+rect = [0, 1, 3, 1]
+controls = "a"
+"#;
+
+  #[test]
+  fn pedals_plug_into_a_grid_and_a_set_of_its_voices_independently() {
+    // Without `voices`: the long-standing grid volume pedal.
+    let rig = parse_rig(&format!("{SURFACES_MIN}{EXPRESSION_PEDALS}")).expect("grid pedals");
+    assert_eq!(rig.expression_pedals[0].voices, PedalVoices::All);
+    // One new-notes pedal per grid.
+    let rig = parse_rig(&format!("{SURFACES_MIN}{NEW_PEDAL_PER_GRID}")).expect("per grid");
+    assert_eq!(rig.expression_pedals[1].voices, PedalVoices::New);
+    assert_eq!(rig.expression_pedals[1].monome.as_deref(), Some("b"));
+    // Or one for every grid.
+    let rig = parse_rig(&format!("{SURFACES_MIN}{NEW_PEDAL_EVERY_GRID}")).expect("every grid");
+    assert_eq!(rig.expression_pedals[0].monome, None);
+    // New-notes pedals multiply with a volume_delta: they own a gain of their own.
+    parse_rig(&format!("{SURFACES_MIN}{VOLUME_DELTA_A}{NEW_PEDAL_PER_GRID}"))
+      .expect("new-notes pedal + volume_delta");
+  }
+
+  #[test]
+  fn pedal_plugs_reject_double_coverage_and_missing_grids() {
+    let bad = |s: &str, contains: &str| {
+      let err = parse_rig(&format!("{SURFACES_MIN}{s}")).expect_err("must fail");
+      assert!(err.contains(contains), "{err}");
+    };
+    bad(&NEW_PEDAL_PER_GRID.replace("monome = \"b\"", "monome = \"a\""), "two new-notes pedals");
+    let every_plus_b = format!(
+      "{NEW_PEDAL_EVERY_GRID}[[expression_pedals]]\nchannel = 2\nmonome = \"b\"\nvoices = \"new\"\n",
+    );
+    bad(&every_plus_b, "two new-notes pedals");
+    bad(&EXPRESSION_PEDALS.replace("monome = \"a\"\n", ""), "needs a monome");
+    bad(&NEW_PEDAL_PER_GRID.replace("monome = \"b\"", "monome = \"nope\""), "no edo_note_grid");
+    bad(&NEW_PEDAL_EVERY_GRID.replace("\"new\"", "\"sustained\""), "unknown variant");
+    // An all-voices pedal on a monome whose volume_delta owns its volume would fight it.
+    bad(&format!("{VOLUME_DELTA_A}{EXPRESSION_PEDALS}"), "volume_delta");
+  }
+
+  /// A one-grid rig with a momentary chord block, written here rather than borrowed
+  /// from a shipped rig, whose layout Jeff may change at any time.
+  const MOMENTARY_MIN: &str = r#"version = 1
+id = "momentary-min"
+title = "Momentary min"
+
+[[tunings]]
+id = "main"
+edo = 41
+x_step = 8
+y_step = 1
+fundamental_hz = 110
+
+[[sinks]]
+id = "synth"
+kind = "cpal_synth"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.15
+attack_secs = 0.003
+release_secs = 0.05
+
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/a"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+
+[[monome_windows]]
+id = "wave-a"
+monome = "a"
+kind = "waveform_selector"
+rect = [0, 0, 3, 0]
+controls = "a"
+
+[[monome_windows]]
+id = "vol-a"
+monome = "a"
+kind = "volume_delta"
+rect = [0, 1, 3, 1]
+controls = "a"
+
+[[monome_windows]]
+id = "chords-a"
+monome = "a"
+kind = "momentary_chord_block"
+rect = [0, 14, 7, 15]
+"#;
+
+  #[test]
+  fn a_new_notes_pedal_cannot_share_a_grid_with_chord_or_loop_blocks() {
+    parse_rig(MOMENTARY_MIN).expect("the fixture itself validates");
+    let err = parse_rig(&format!("{MOMENTARY_MIN}{NEW_PEDAL_EVERY_GRID}")).expect_err("must fail");
+    assert!(err.contains("chord or loop blocks"), "{err}");
+  }
+
+  #[test]
+  fn note_handles_parse_validate_and_default_to_edit_below_sustain_above() {
+    let with_handles = |edit: &str, sustain: &str| {
+      let mut extra = String::new();
+      if !edit.is_empty() {
+        extra.push_str(&format!("edit_handle = \"{edit}\"\n"));
+      }
+      if !sustain.is_empty() {
+        extra.push_str(&format!("sustain_handle = \"{sustain}\"\n"));
+      }
+      SURFACES_MIN.replacen("sink = \"synth\"\n", &format!("sink = \"synth\"\n{extra}"), 1)
+    };
+    let rig = parse_rig(&with_handles("none", "below")).expect("sustain below, no edit");
+    let MonomeWindowRig::EdoNoteGrid { edit_handle, sustain_handle, .. } = &rig.monome_windows[0]
+    else {
+      panic!("the first window is grid a's edo_note_grid");
+    };
+    assert_eq!((*edit_handle, *sustain_handle), (Some(HandleSide::Off), Some(HandleSide::Below)));
+    assert_eq!(HandleSide::Below.note_offset(), Some((0, -1)), "the note is one row up");
+    assert_eq!(HandleSide::Off.note_offset(), None);
+    parse_rig(&with_handles("right", "left")).expect("any two distinct sides");
+    parse_rig(&with_handles("none", "none")).expect("both off");
+
+    let err = parse_rig(&with_handles("", "below")).expect_err("sustain below collides with the default edit below");
+    assert!(err.contains("both Below"), "{err}");
+    let err = parse_rig(&with_handles("above", "")).expect_err("edit above collides with the default sustain above");
+    assert!(err.contains("both Above"), "{err}");
+  }
+
+  #[test]
+  fn note_handles_are_rejected_where_a_momentary_chord_block_disables_them() {
+    let with_handle =
+      MOMENTARY_MIN.replacen("sink = \"synth\"\n", "sink = \"synth\"\nedit_handle = \"none\"\n", 1);
+    let err = parse_rig(&with_handle).expect_err("must fail");
+    assert!(err.contains("no note handles"), "{err}");
+  }
+
+  #[test]
+  fn initially_on_belongs_to_needs_holding_alone() {
+    let buttons = |initially_on_on: &str| {
+      let line = |control: &str| {
+        if control == initially_on_on { "initially_on = true\n" } else { "" }
+      };
+      format!(
+        r#"
+[[monome_windows]]
+id = "clear-a"
+monome = "a"
+kind = "accrete_control"
+rect = [6, 15, 6, 15]
+control = "clear"
+{}
+[[monome_windows]]
+id = "accrete-a"
+monome = "a"
+kind = "accrete_control"
+rect = [7, 15, 7, 15]
+control = "accrete"
+{}
+[[monome_windows]]
+id = "mode-a"
+monome = "a"
+kind = "accrete_control"
+rect = [8, 15, 8, 15]
+control = "needs_holding"
+{}"#,
+        line("clear"),
+        line("accrete"),
+        line("needs_holding"),
+      )
+    };
+    let rig = parse_rig(&format!("{SURFACES_MIN}{}", buttons("needs_holding")))
+      .expect("initially_on on the needs_holding switch");
+    assert!(rig.monome_windows.iter().any(|w| matches!(
+      w,
+      MonomeWindowRig::AccreteControl { initially_on: Some(true), .. }
+    )));
+    let err = parse_rig(&format!("{SURFACES_MIN}{}", buttons("accrete"))).expect_err("must fail");
+    assert!(err.contains("initially_on applies only"), "{err}");
   }
 
   #[test]

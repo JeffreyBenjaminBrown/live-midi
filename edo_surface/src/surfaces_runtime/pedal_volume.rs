@@ -14,7 +14,8 @@ use crate::types::{VoiceMap, VoiceSource};
 
 use super::pedal_slide::VolumeReturn;
 use super::ring::{GridRing, Reason};
-use super::synth;
+use super::settings::PedalTarget;
+use super::synth::{self, NewPedalGains};
 use super::{Live, STOP};
 
 /// This grid's edit selection as the pedal-volume path needs it: the edit-mode pitches
@@ -125,11 +126,18 @@ pub(super) fn apply_pedal_gain(
 /// the drives. The reverted build instead drove voices from here while the grid thread
 /// re-keyed them, which is the race that broke it (6_plan.org's ranked cause 1); with
 /// the engine unreachable from this thread, that class of bug is no longer expressible.
+///
+/// A NEW-NOTES pedal (`voices = "new"`, TODO/volpedal-sustain_volpedal-newvoice)
+/// takes a much shorter path: no slide duty and no edit trims. A move sets its grid's
+/// entry (or every grid's) in the shared `new_pedal_gains` (read by note-ons) and
+/// re-aims the notes held there (`synth::aim_new_pedal`); notes ringing without a
+/// finger keep their level.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
+  new_pedal_gains: NewPedalGains,
   pedal_slide_on: Arc<Vec<AtomicBool>>,
   pedal_slide_frac: Arc<Vec<AtomicU32>>,
   ring: Arc<Mutex<Vec<GridRing>>>,
@@ -157,9 +165,43 @@ pub(super) fn expression_pedal_loop(
     last_generation = generation;
     let map = live.params.lock().unwrap_or_else(|e| e.into_inner()).expression_pedals;
     let pedals = reader.pedals();
+    let num_grids = new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).len();
+    let mut new_pedal_bound = vec![false; num_grids];
     for (pedal, binding) in map.iter().enumerate() {
-      let Some((grid, curve)) = *binding else { continue };
+      let Some((target, curve)) = *binding else { continue };
       let p = pedals[pedal];
+      let grid = match target {
+        PedalTarget::Grid(grid) => grid,
+        PedalTarget::NewNotes(grids) => {
+          let targets: Vec<usize> = match grids {
+            Some(g) => vec![g],
+            None => (0..num_grids).collect(),
+          };
+          for g in &targets {
+            if let Some(bound) = new_pedal_bound.get_mut(*g) {
+              *bound = true;
+            }
+          }
+          // No CC yet = no position to trust: held notes stay at unity. A reload
+          // re-applies a known position through the (possibly new) taper.
+          if p.updates > 0 && (reloaded || last[pedal] != p.norm) {
+            last[pedal] = p.norm;
+            let gain = curve.gain(p.norm);
+            {
+              let mut gains = new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
+              for g in &targets {
+                if let Some(entry) = gains.get_mut(*g) {
+                  *entry = gain;
+                }
+              }
+            }
+            for g in targets {
+              synth::aim_new_pedal(&voices, g, gain);
+            }
+          }
+          continue;
+        }
+      };
       // Publish the position for the grid thread whether or not slide mode is on, so
       // that turning the toggle ON knows at once which side of the pedal the foot is
       // resting on instead of waiting for the next twitch. Only once the pedal has
@@ -244,6 +286,21 @@ pub(super) fn expression_pedal_loop(
           &voices, grid, base, gain, &selection.pitches, &held, &selection.chord_keys,
         );
       }
+    }
+    // A grid whose new-notes pedal a reload unbound gets its held notes back at unity.
+    let released: Vec<usize> = {
+      let mut gains = new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
+      let mut released = Vec::new();
+      for (g, entry) in gains.iter_mut().enumerate() {
+        if !new_pedal_bound.get(g).copied().unwrap_or(false) && *entry != 1.0 {
+          *entry = 1.0;
+          released.push(g);
+        }
+      }
+      released
+    };
+    for g in released {
+      synth::aim_new_pedal(&voices, g, 1.0);
     }
     thread::sleep(Duration::from_millis(10));
   }

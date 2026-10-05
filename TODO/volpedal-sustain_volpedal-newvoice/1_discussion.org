@@ -1,0 +1,171 @@
+* [Jeff] vision
+One pedal for new tone volume,
+one for sustained tone(s) volume.
+Press key 1 below for sustain.
+  (1 below seems best because thumb can always get to it,
+  but this can be configurable.)
+Still 3 global sustain "off|on|toggle what on means" buttons,
+  in the middle of the bottom row.
+No chord storage, no loops.
+The four timbres stay, and the four volume keys.
+
+Call it volpedal-sustain_volpedal-newvoice.
+If there are two monomes, the two pedals apply to both,
+but the sustain buttons apply only to each separately.
+Timbres and volumes apply to each separately.
+* [Claude] response
+I built it. The rig is =rigs/volpedal-sustain_volpedal-newvoice.org=, its player
+reference is =rigs/volpedal-sustain_volpedal-newvoice_readme.org=, and nothing is
+committed yet. The vision was complete enough to build without questions; the
+TODOs below are the things only you can do or decide.
+** TODO hear it on the grids and pedals
+I can't hear the synth or see the grids from the container. Everything below
+passed against mock grids, but not yet against real ones.
+*** setup
+Run =tools/pedals/bridge.sh= on the host, then from the container:
+=pw-jack cargo run --bin midi_pulse -- volpedal-sustain_volpedal-newvoice=.
+*** the handle
+Hold a note and press the cell directly below it. The press should make no
+sound. Lift the note: it should keep ringing. Press the same cell below again:
+it should stop. The cell directly above a sounding note should just play.
+*** the pedals
+Channel 1 is the new-voice pedal and channel 2 the sustained one. If they're
+backwards, swap the two =channel= values in the rig. Build a quiet bed with the
+sustained pedal low, then play over it with the new pedal high. Sweeps should
+be smooth on both. A note you sustain should drop to the bed's level as you
+sustain it, not when you lift your finger.
+*** the buttons
+Bottom row, x = 6, 7, 8: OFF, ON, TOGGLE. TOGGLE starts bright, meaning ON is
+momentary. Tap TOGGLE and it dims; ON then latches.
+*** two grids
+The pedals act on both grids. The buttons, timbres and volume keys act on their
+own grid only.
+** ONGOING confirm the one musical rule I chose: membership decides the pedal
+*** the rule
+A voice follows the sustained pedal while its pitch is in its grid's sustained
+set, and the new pedal otherwise. So a note moves to the sustained pedal the
+instant you sustain it, by its handle or by ON, even with your finger still
+down. Lifting the finger afterwards changes nothing. Re-striking a sustained
+pitch re-articulates it at the sustained level. A note struck while ON is live
+is born at the sustained level. OFF, or the handle of a held sustained note,
+hands it back to the new pedal. Every move is a 20 ms glide.
+*** why I chose it
+The change happens at the moment you deliberately sustain, and that also gives
+the press audible confirmation. Lifting a finger stays an inaudible act, as it is
+on a piano with the damper pedal down. While you build a bed with ON held, you
+hear each note at the level the bed will have.
+*** the alternative
+"Finger decides": a voice follows the new pedal while any finger holds it and
+the sustained pedal only once it rings alone. A sustained note would then change
+level when you lift it, and re-striking a sustained pitch would play it at the
+new-voice level. It's a small change if you prefer it. Answer under this
+headline.
+** TODO eleven tests failed before I started
+Your uncommitted edit moved =2-edogrids_ss-accrete_ss-pulse= from 46/9/80 to
+41/8/110. That breaks the test requiring its drums twin to match, and ten
+pedal-slide tests whose fixtures assume 46-EDO. This work changes none of them.
+Either give the drums twin the same tuning and update those fixtures, or revert
+the edit.
+** TODO review the diff, then say commit
+Everything is in the =main= worktree, uncommitted, beside your own uncommitted
+edits. The only file we share is this one, which holds your vision and my reply;
+otherwise yours and mine touch different files and can be committed separately.
+** how I read the vision
+*** "One pedal for new tone volume, one for sustained tone(s) volume."
+New means fingered and not sustained. Sustained means in the grid's sustained
+set. The pedals are live, rescaling sounding voices as well as later ones, with
+the same fader-law taper, slew and unity-until-first-move as the 2-edogrids
+pedals.
+*** "Press key 1 below for sustain."
+The cell directly below a sounding note toggles that note's sustain and never
+sounds. It's geometric rather than pitch-defined, as in the 2-edogrids rig.
+"Configurable" became =sustain_handle= on the play grid: =above=, =below=,
+=left=, =right= or =none=. There's no edit mode here, so =edit_handle= is
+=none=.
+*** "Still 3 global sustain off|on|toggle what on means buttons, in the middle of the bottom row."
+OFF is the existing clear, ON the existing accrete, and TOGGLE the existing
+=needs_holding= switch, left to right at x = 6, 7, 8 on row 15. Sixteen columns
+have no exact middle three, so I picked the left of the two. "Global" means
+they act on the grid's whole sustained set, unlike the per-note handle. TOGGLE
+starts momentary, matching the two-timbres rig.
+*** "No chord storage, no loops."
+Both are gone, and so is the tone-target cell, which had nothing left to
+choose between. The SHIFT pad stays, and its octave corners just scroll.
+*** "The four timbres stay, and the four volume keys."
+They behave as in the two-timbres rig with its tone target black: a waveform
+press re-timbres the grid's fingered and sustained voices in place, and the
+volume keys step the current waveform's level. The pedals multiply on top.
+*** "If there are two monomes ..."
+Pedals act on both grids; buttons, timbres and volumes per grid. One grid
+alone works too, since the grids are unpinned as before.
+*** "Call it volpedal-sustain_volpedal-newvoice."
+Done: the rig, its readme, and this directory share the name.
+** layout
+#+begin_example
+       x=0   1   2   3                                 13    14    15
+y=0  | SIN TRI SQR SAW  . . . . . . . . .            SHIFT SHIFT SHIFT
+y=1  | -12  -2  +2 +12  . . . . . . . . .            SHIFT SHIFT SHIFT
+     |
+     |                   EDO PLAY SURFACE
+     |
+y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
+                    x=6  x=7  x=8
+#+end_example
+** what changed in the code
+*** role pedals
+An =[[expression_pedals]]= entry may now name =voices = "new"= or
+=voices = "sustained"= instead of a =monome=. Such a pedal drives a new per-voice
+gain factor, =role_gain=, slewed like the old grid pedal's. It needed its own
+factor because in these compact rigs the volume keys already own the grid
+pedal's. The pedal thread re-aims every live voice at its role's pedal on every
+poll, so no key path needs a hook. A fresh note is born already at its role's
+level, which avoids the unity-then-slew spike from the volume-spike bug. The
+new validation rules: exactly one of =monome= or =voices=, each role at most
+once, no role pedals beside chord or loop blocks, and no grid pedal on a monome
+with a =volume_delta=.
+*** handle sides
+=edo_note_grid= takes optional =edit_handle= and =sustain_handle=. Left out,
+other rigs keep edit-below, sustain-above. A monome with a momentary chord
+block still has no handles, and setting them there is an error.
+*** volume keys without chords
+A grid's tone controls used to switch on only beside a momentary chord block.
+Now any =volume_delta= switches them on.
+*** the momentary start
+=needs_holding= takes =initially_on = true=. Without it, a switchable bank
+still starts latching, as before.
+*** the calm surface
+The two-timbres rig suppressed the square dance and the off-screen octave
+hints, and used 150 ms status flashes, by testing for its chord block. Those
+tests now ask whether the grid is one of the compact family (volume keys,
+momentary chords or compact loops), so this rig looks like its sibling.
+*** docs
+=rigs/README.org= documents role pedals, handle sides and =initially_on=.
+=ORIENTATION.org= has a section for this rig.
+** what the tests cover
+The new rig tests cover parsing and every new rejection. The runtime tests
+drive the real key path for this rig. They check that the handle sustains and
+un-sustains without sounding and that the cell above plays. They check that
+voices are born at the right role level and re-aim at sustain, accrete,
+pedal movement and OFF. A mock-grid run with one grid and then two checks the
+TOGGLE light, its per-grid independence, and a handle-sustained note outliving
+its finger. A routing test checks that the run command lands in the surfaces
+runtime. Every other test passes except the eleven failures above, which are
+the same eleven as before I started.
+** glossary
+*** sustained set
+The pitches a grid keeps ringing without fingers. Each grid has its own. The
+handle, ON and OFF all edit it.
+*** drone
+The fingerless voice that sounds a sustained pitch once its finger lifts.
+*** role pedal
+An EX-P pedal bound to a kind of voice on every grid (=voices= in the rig)
+rather than to one grid (=monome=).
+*** handle
+The neighbouring play cell that, while a note sounds, acts on that note instead
+of sounding.
+*** onset role
+The pedal a new voice starts under: sustained if its pitch is already sustained
+or ON is live, else new.
+*** slew
+The 20 ms glide by which a voice's gain chases its target, so pedal sweeps and
+role changes don't click or zipper.

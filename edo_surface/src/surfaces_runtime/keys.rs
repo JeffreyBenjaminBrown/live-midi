@@ -1462,15 +1462,20 @@ pub(super) fn handle_edit_press(
 ) -> bool {
   // Both triggers act on a NEIGHBOUR of the pressed cell, and both are geometric
   // rather than pitch-defined -- Jeff pinned them to physical position so they don't
-  // move when the tuning changes. Press BELOW a note to edit it, ABOVE it to sustain
-  // it. A note on the top or bottom row therefore has no trigger cell on that side.
-  let on_grid = |y: i32| y >= rt.overlays.edo_rect[1] && y <= rt.overlays.edo_rect[3];
-  let neighbour = |dy: i32| {
-    on_grid(cell.1 + dy)
-      .then(|| step_for_cell(rt.tuning.x_step, rt.tuning.y_step, *register, cell.0, cell.1 + dy))
+  // move when the tuning changes. By default press BELOW a note to edit it, ABOVE it
+  // to sustain it; the rig may move either handle to another side or turn it off
+  // (`edo_note_grid` `edit_handle` / `sustain_handle` -- the volpedal rig sustains
+  // from below and has no edit handle). A note at the play surface's edge has no
+  // trigger cell on that side.
+  let [ex0, ey0, ex1, ey1] = rt.overlays.edo_rect;
+  let neighbour = |offset: Option<(i32, i32)>| {
+    let (dx, dy) = offset?;
+    let (x, y) = (cell.0 + dx, cell.1 + dy);
+    (x >= ex0 && x <= ex1 && y >= ey0 && y <= ey1)
+      .then(|| step_for_cell(rt.tuning.x_step, rt.tuning.y_step, *register, x, y))
   };
-  let edit_target = neighbour(-1); // the note above the pressed cell
-  let sustain_target = neighbour(1); // the note below it
+  let edit_target = neighbour(rt.knobs.handles.edit);
+  let sustain_target = neighbour(rt.knobs.handles.sustain);
 
   // Decide under the ring lock, act after it drops: the voice touches below happen
   // after the lock, and this module's rule is no nested locks. One lock covers

@@ -1,0 +1,49 @@
+* [Claude] follow-up to your chat reply
+This supersedes two headlines of =1_discussion.org=: "confirm the one musical
+rule" and "eleven tests failed before I started". I left that file untouched
+because you were reading it.
+** DONE the pedal switch now waits for the finger
+*** what you hear
+A note follows the new pedal for as long as a finger holds it, sustained or not.
+When the finger lifts from a sustained note, the note glides over 20 ms to the
+sustained pedal's level. Striking a sustained pitch again gives a new note at
+the new pedal's level, which returns to the sustained level when you let go. ON
+works the same way: notes you play while it is live stay at the new level until
+you lift them.
+*** what changed underneath
+The rule is now simpler than the one it replaces. A voice held by a finger
+follows the new pedal and a fingerless drone follows the sustained pedal. The
+one moment a note changes pedal is when its finger lifts, and the code re-aims
+it right there. The pedal thread no longer sweeps every voice on every poll; it
+re-aims only when a pedal moves.
+** DONE tests read the rig instead of pinning it
+*** the ten pedal-slide tests
+They now take their note, its edit handle, the pedal-slide toggle and the
+editmode-clear button from the rig's layout. Their target pitches are always
+free play cells. Their intervals were written in 46-EDO steps, and are now
+rescaled to whatever EDO the rig has, so "27 steps", the fifth from your bug
+report, stays a fifth. All ten pass on your 41-EDO edit.
+*** the tests I wrote last round
+They pinned this rig's layout too, so I rewrote them the same way. Each one
+either checks that what the rig declares reaches the runtime, or sets the one
+setting it is about on its own copy of the rig. Two schema tests that borrowed
+the two-timbres rig's chord block now carry their own small inline rig.
+*** the note for future agents
+=README_AI.org= has a new section, "Tests must read the rig, not pin it". It
+says why, and points at the helpers in =surfaces_runtime/tests.rs=.
+=ORIENTATION.org= points to it from its working-style list. Many older tests
+still pin rig values. The note asks agents to convert one whenever they touch
+it, rather than sweeping them all now.
+** TODO one failing test left: the twin-rig comparison
+=the_two_edogrid_rigs_differ_only_in_the_newer_boards_job= doesn't pin a value.
+It requires =2-edogrids_ss-accrete_ss-pulse= and =2-edogrids_ss-accrete_ss-drums=
+to be identical apart from the newer SoftStep's job, and your tuning edit
+changed only the pulse rig. Either give the drums rig the same tuning, or tell
+me to drop tunings from the comparison so the twins may be tuned differently.
+Everything else passes.
+** still open from =1_discussion.org=
+*** TODO hear it on the grids and pedals
+As described there, except for one thing: a note you sustain now drops to the
+bed's level when you lift your finger, not when you sustain it.
+*** TODO review the diff, then say commit
+Still uncommitted.

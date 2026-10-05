@@ -321,6 +321,43 @@ runs backward. Audio-rate rel AM/FM manufactures sidebands; give the
 ~cpal_synth~ sink ~oversample = 4~ or so, or they alias. Notes snapshot their
 timbre at note-on (radio semantics).
 
+* The wiring map: how widgets plug together
+Every surfaces widget sits on one monome (its ~monome~) and drives something.
+Where a field chooses WHAT it drives, that connection is a plug: re-wiring it is
+a rig edit, not a code change. Check this map first when asked to rewire a rig;
+if the connection you need is in the second list, it needs code.
+** plugs you can re-wire in a rig
+*** ~waveform_selector~, ~volume_strip~, ~volume_delta~
+~controls~ names the grid whose timbre or volume they set; usually their own.
+*** ~[[expression_pedals]]~
+~monome~ picks the grid (a new-notes pedal may omit it to cover every grid), and
+~voices~ picks ~"all"~ voices or only ~"new"~ (held) notes there.
+*** SoftStep windows
+~accrete_control~, ~editmode_control~, ~pulse_factor_pedal~ and the rest name
+the grid they drive with ~monome~.
+*** ~edo_note_grid~ note handles
+~edit_handle~ and ~sustain_handle~ pick which neighbour of a sounding note
+toggles its edit mode or its sustain, or ~"none"~.
+*** ~accrete_control~ ~needs_holding~
+~initially_on~ picks whether ON starts momentary or latching.
+** connections that are still fixed in code
+*** on-grid toggles act on their own grid
+On-grid ~accrete_control~, ~editmode_control~, ~pedal_slide_toggle~ and
+~fine_transpose_toggle~ have no ~controls~; each drives the grid it sits on.
+*** an all-voices pedal and a ~volume_delta~ can't share a grid
+Both drive the same per-voice gain. Use a new-notes pedal there.
+*** a ~momentary_chord_block~ turns off its grid's note handles
+*** the compact family changes how a grid looks
+A ~volume_delta~, ~momentary_chord_block~ or ~compact_loop_block~ on a grid turns
+off its square dance and off-screen octave hints, and puts its resting controls
+on the 150 ms status flash.
+*** a ~compact_loop_block~ changes the sustain buttons
+Its grid's on-grid CLEAR ends sustain only (not chords), and ACCRETE and CLEAR
+alternate at rest.
+*** ~tone_target_control~ needs a ~momentary_chord_block~
+which in turn needs a self-controlling ~waveform_selector~ and ~volume_delta~.
+*** new-notes pedals stay off grids with chord or loop blocks
+
 * Monome windows
 
 Monome windows reference configured monomes, tunings, and sinks by ID.
@@ -338,6 +375,26 @@ sink = "saw"
 Here, ~monome = "big"~ references ~[[monomes]] id = "big"~,
 ~tuning = "main"~ references ~[[tunings]] id = "main"~, and
 ~sink = "saw"~ references ~[[sinks]] id = "saw"~.
+
+In the surfaces runtime an ~edo_note_grid~ also takes two optional *note
+handles*. Pressing the play cell on the named side of a sounding note acts on
+that note instead of sounding: ~edit_handle~ toggles its edit mode,
+~sustain_handle~ its sustain. Each is ~"above"~, ~"below"~, ~"left"~,
+~"right"~ or ~"none"~. Absent, they keep the long-standing layout (edit below,
+sustain above). The two may not name the same side, and a monome with a
+~momentary_chord_block~ has no handles, so setting either there is an error.
+
+#+begin_src toml
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "synth"
+sustain_handle = "below"   # the volpedal rig: thumb under a note sustains it
+edit_handle = "none"       # and there is no edit mode
+#+end_src
 
 Built-in unbundled window kinds:
 
@@ -398,7 +455,9 @@ min_db = -60.0
 max_db = 0.0
 #+end_src
 
-In the tone-target instrument this control follows the adjacent
+It works on any surfaces grid, with or without chords: absent a
+~tone_target_control~ the target simply stays fingered/sustained (the volpedal
+rig). In the tone-target instrument this control follows the adjacent
 ~tone_target_control~.  Fingered/sustained targeting changes the selected
 waveform's base and therefore moves all three tone targets; chord or compact-loop
 targeting changes only that tone target's offset from the base.  Each of the four
@@ -454,7 +513,8 @@ control = "clear"            # or "needs_holding", "accrete", "erase"
   in the same breath (an edited note is always sustained; nothing silent stays
   selected). See the ~editmode_control~ section.
 - ~needs_holding~ (key-down toggles; lit when on) sets whether ~accrete~ and
-  ~erase~ must be *held* or are themselves toggles.
+  ~erase~ must be *held* or are themselves toggles. It starts off (toggles)
+  unless the window sets ~initially_on = true~, which only this control accepts.
 - ~accrete~: while the accreting condition is live (button held, or accrete mode
   toggled on), notes played on this grid -- plus notes already held here when it
   went live -- join the bank's *sustained set* and keep ringing after their fingers
@@ -910,7 +970,10 @@ protocol.
 * Expression pedals (EX-P volume)
 
 An optional top-level ~[[expression_pedals]]~ array (surfaces runtime) binds the
-M-Audio EX-P expression pedals as volume pedals, one per monome.
+M-Audio EX-P expression pedals as volume pedals. Each pedal has two independent
+plugs: ~monome~ says WHICH GRID it drives, and ~voices~ says WHICH VOICES on it --
+~"all"~ (the default, the grid volume pedal described first below) or ~"new"~
+(only notes a finger holds; see "New-notes pedals" below).
 The pedals reach the runtime via the MPC-20 -> host bridge
 (run ~tools/pedals/bridge.sh~ on the HOST; both pedals send
 CC 21, one per MIDI channel) -- NOT via the SoftSteps' own EX-P jacks, whose CC
@@ -947,8 +1010,32 @@ rate. The position is absolute (a pedal parked at 0 recovers), and until a
 pedal's first CC it contributes unity -- an unplugged pedal never mutes its
 grid. If the bridge's "MPC-20 pedals" port is missing at startup, the runtime
 prints a red note and plays on without them. Rejected at load: a channel
-outside 1..2, the same channel or the same monome claimed twice, and a monome
-with no ~edo_note_grid~.
+outside 1..2, the same channel or the same monome claimed twice, a monome
+with no ~edo_note_grid~, and a monome with a ~volume_delta~ (whose tone volume
+already owns the per-voice gain a grid pedal drives; use the new-notes pedal there).
+
+*New-notes pedals* (TODO/volpedal-sustain_volpedal-newvoice) set ~voices = "new"~.
+The volpedal rig gives each grid its own:
+
+#+begin_src toml
+[[expression_pedals]]
+channel = 1
+monome = "a"
+voices = "new"          # every note a finger holds on grid a
+[[expression_pedals]]
+channel = 2
+monome = "b"
+voices = "new"
+#+end_src
+
+Leave out ~monome~ and one new-notes pedal drives every grid instead. It drives
+each held note's volume as a separate per-voice factor that multiplies with the
+grid's tone volume, its fader and any all-voices pedal. A strike is born settled
+at the pedal's level. When the finger lifts from a sustained note nothing
+happens: the note keeps the level it had, and later moves don't reach it. Each
+grid may have one new-notes pedal, and not on a grid with chord or loop blocks,
+whose voices no finger holds. An all-voices pedal must name a ~monome~. The
+taper, the unity-before-first-CC rule, and ~r~ reload are as above.
 
 Dual duty (TODO/pedal-slide): a grid's EX-P is a volume pedal ONLY while that
 grid's ~pedal_slide_toggle~ is off. Toggle it on and the same pedal drives the

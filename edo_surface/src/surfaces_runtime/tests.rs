@@ -24,13 +24,7 @@
     let shared = Shared {
       selected: Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids])),
       tone_controls: Arc::new(Mutex::new(
-        s.grids
-          .iter()
-          .map(|g| match (g.overlays.momentary_chord_rect != NO_RECT, g.tone_volume) {
-            (true, Some(config)) => ToneControls::new(true, config),
-            _ => ToneControls::disabled(),
-          })
-          .collect(),
+        s.grids.iter().map(tone_controls_for).collect(),
       )),
       sounding: Arc::new(Mutex::new(vec![HashSet::new(); num_grids])),
       trail: Arc::new(Mutex::new(VecDeque::new())),
@@ -88,6 +82,7 @@
         controls_index: 0,
         volume_controls_index: 0,
         volume_delta_controls_index: 0,
+        handles: g.handles,
       },
       shared,
       slide: SlideCandidates::new(),
@@ -111,7 +106,8 @@
         ))),
         Arc::new(Mutex::new(vec![1.0; num_grids])),
         Arc::new(Mutex::new(vec![1.0; num_grids])),
-      ),
+      )
+      .with_new_pedal_gains(synth::unity_new_pedal_gains(num_grids)),
     }
   }
 
@@ -652,6 +648,75 @@
   //
   // Each of those three would have failed on the reverted build.
 
+  // ---- reading the rig instead of pinning it ----
+  //
+  // Jeff edits the rigs constantly (tuning, layout, which handle does what). A test
+  // that hardcodes a cell, a pitch or an interval from today's rig breaks on his next
+  // edit while the code is fine -- ten pedal-slide tests did exactly that when grid A
+  // went from 46-EDO to 41. So these helpers read the rig a test is running and
+  // compute what it needs: README_AI.org "Tests must read the rig, not pin it".
+
+  /// Every control overlay on this grid -- everything that occludes the play surface.
+  /// Destructured, so a new overlay field fails to compile here until it is listed.
+  fn control_rects(o: &Overlays) -> [[i32; 4]; 20] {
+    let Overlays {
+      edo_rect: _, scroll_rect, selector_rect, volume_rect, volume_delta_rect, clear_rect,
+      needs_holding_rect, accrete_rect, erase_rect, distortion_rect, slide_rect, mono_rect,
+      pedal_slide_rect, poly_rect, editmode_clear_rect, editmode_accrete_rect, chord_rect,
+      momentary_chord_rect, tone_target_rect, compact_loop_rect, fine_transpose_rect,
+    } = *o;
+    [
+      scroll_rect, selector_rect, volume_rect, volume_delta_rect, clear_rect,
+      needs_holding_rect, accrete_rect, erase_rect, distortion_rect, slide_rect, mono_rect,
+      pedal_slide_rect, poly_rect, editmode_clear_rect, editmode_accrete_rect, chord_rect,
+      momentary_chord_rect, tone_target_rect, compact_loop_rect, fine_transpose_rect,
+    ]
+  }
+
+  /// Is `cell` a plain play cell on this grid: on the play surface, under no control?
+  fn is_play_cell(o: &Overlays, cell: (i32, i32)) -> bool {
+    in_overlay(o.edo_rect, cell) && !control_rects(o).iter().any(|r| in_overlay(*r, cell))
+  }
+
+  /// The one cell of a single-cell control, wherever the rig put it.
+  fn one_cell(rect: [i32; 4]) -> (i32, i32) {
+    assert_ne!(rect, NO_RECT, "the rig declares this control");
+    (rect[0], rect[1])
+  }
+
+  /// The cell to press to work `note`'s handle, given the handle's note offset (from
+  /// the PRESSED cell to the note): the press sits at `note - offset`.
+  fn handle_cell(note: (i32, i32), offset: (i32, i32)) -> (i32, i32) {
+    (note.0 - offset.0, note.1 - offset.1)
+  }
+
+  /// A play cell to strike whose handle at `offset` is also a play cell, nearest the
+  /// play surface's upper-left third point (the old hardcoded (5,5) on a full 16x16,
+  /// leaving room for the higher pitches the slide tests pick).
+  fn note_with_handle(o: &Overlays, offset: (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    let [x0, y0, x1, y1] = o.edo_rect;
+    let aim = (x0 + (x1 - x0 + 1) / 3, y0 + (y1 - y0 + 1) / 3);
+    let mut cells: Vec<(i32, i32)> =
+      (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x, y))).collect();
+    cells.sort_by_key(|c| ((c.0 - aim.0).pow(2) + (c.1 - aim.1).pow(2), c.1, c.0));
+    cells
+      .into_iter()
+      .map(|note| (note, handle_cell(note, offset)))
+      .find(|(note, handle)| is_play_cell(o, *note) && is_play_cell(o, *handle))
+      .expect("some play cell has a play-cell handle")
+  }
+
+  /// Would pressing `cell` work a HANDLE of a sounding pitch (so not sound itself)?
+  fn is_handle_of(rt: &GridThread, register: i32, cell: (i32, i32), sounding: &HashSet<i32>) -> bool {
+    [rt.knobs.handles.edit, rt.knobs.handles.sustain].into_iter().flatten().any(|(dx, dy)| {
+      let target = (cell.0 + dx, cell.1 + dy);
+      in_overlay(rt.overlays.edo_rect, target)
+        && sounding.contains(&step_for_cell(
+          rt.tuning.x_step, rt.tuning.y_step, register, target.0, target.1,
+        ))
+    })
+  }
+
   /// A pedal-slide rig under test: a real `GridThread` with one sustained + edited note
   /// at `h`, pedal slide ON, and the pedal parked at the heel.
   struct SlideRigUnderTest {
@@ -680,14 +745,15 @@
       let mut rt = test_grid_thread();
       let mut register = 0;
       let mut held = HashMap::new();
-      let note = (5, 5);
-      let handle = (5, 6); // the cell directly below: the edit handle
+      let edit = rt.knobs.handles.edit.expect("the slide rig has an edit handle");
+      let (note, handle) = note_with_handle(&rt.overlays, edit);
       let h = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
       handle_key(&mut rt, &mut register, &mut held, note, true);
       handle_key(&mut rt, &mut register, &mut held, handle, true);
       handle_key(&mut rt, &mut register, &mut held, handle, false);
       handle_key(&mut rt, &mut register, &mut held, note, false); // drones, edited
-      handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+      let toggle = one_cell(rt.overlays.pedal_slide_rect);
+      handle_key(&mut rt, &mut register, &mut held, toggle, true); // pedal slide ON
       assert!(rt.pedal_slide.mode(), "the engine entered slide mode");
       SlideRigUnderTest { rt, register, held, h }
     }
@@ -697,11 +763,33 @@
       handle_key(&mut self.rt, &mut self.register, &mut self.held, cell, false);
     }
 
-    /// The cell holding `pitch` under the current register (for picking targets).
+    /// A cell holding `pitch` under the current register (for picking targets): a
+    /// plain play cell, and not a handle of the note being slid (which would toggle
+    /// that note instead of picking).
     fn cell_for(&self, pitch: i32) -> (i32, i32) {
-      *cells_for_pitch(&self.rt, self.register, pitch)
-        .first()
-        .unwrap_or_else(|| panic!("pitch {pitch} is on screen"))
+      let sounding: HashSet<i32> = {
+        let rings = self.rt.shared.ring.lock().unwrap();
+        rings[0].store.iter(Reason::Sustain).chain(self.held.values().copied()).collect()
+      };
+      cells_for_pitch(&self.rt, self.register, pitch)
+        .into_iter()
+        .find(|&c| {
+          is_play_cell(&self.rt.overlays, c)
+            && !is_handle_of(&self.rt, self.register, c, &sounding)
+        })
+        .unwrap_or_else(|| panic!("pitch {pitch} is on a free play cell"))
+    }
+
+    /// An interval these tests were written in, in steps of 46-EDO (grid A's tuning
+    /// then), rescaled to the rig's own EDO so its musical size survives a retuning:
+    /// 27 steps is the fifth from Jeff's bug report, whatever the EDO now is.
+    fn interval(&self, steps_of_46: i32) -> i32 {
+      (steps_of_46 as f64 * self.rt.tuning.edo as f64 / 46.0).round() as i32
+    }
+
+    /// The rig's pedal-slide toggle cell.
+    fn slide_toggle(&self) -> (i32, i32) {
+      one_cell(self.rt.overlays.pedal_slide_rect)
     }
 
     /// Move the pedal to `f` and run ONE grid-thread step, then render 1 ms of audio so
@@ -802,7 +890,7 @@
   #[test]
   fn pedal_slide_reaches_its_target_exactly_through_the_real_render() {
     let mut r = SlideRigUnderTest::new();
-    let t = r.h + 27; // the interval from Jeff's bug report
+    let t = r.h + r.interval(27); // the interval from Jeff's bug report
     let target_cell = r.cell_for(t);
     r.press(target_cell);
     assert_eq!(r.rt.pedal_slide.targets(), vec![t], "the press picked a target");
@@ -816,7 +904,7 @@
       (landed - t as f32).abs() < 0.05,
       "the toe must land ON the target: wanted {t}, heard {landed:.3} \
        (the reverted build stopped at {:.3})",
-      r.h as f32 + 0.55 * 27.0,
+      r.h as f32 + 0.55 * (t - r.h) as f32,
     );
   }
 
@@ -826,7 +914,7 @@
   #[test]
   fn after_arriving_the_pedal_slides_back_to_the_old_home_and_keeps_going() {
     let mut r = SlideRigUnderTest::new();
-    let t = r.h + 27;
+    let t = r.h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
 
@@ -848,7 +936,7 @@
   #[test]
   fn arrival_refiles_the_note_and_swaps_the_led_roles() {
     let mut r = SlideRigUnderTest::new();
-    let t = r.h + 27;
+    let t = r.h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
     r.sweep(0.0, 1.0);
@@ -875,13 +963,13 @@
   #[test]
   fn retargeting_mid_flight_never_jumps_and_still_lands_exactly() {
     let mut r = SlideRigUnderTest::new();
-    let first = r.h + 27;
+    let first = r.h + r.interval(27);
     let cell = r.cell_for(first);
     r.press(cell);
     r.sweep(0.0, 0.4);
     let before = r.render_ms(50);
 
-    let second = r.h + 12;
+    let second = r.h + r.interval(12);
     let cell = r.cell_for(second);
     r.press(cell);
     let after = r.render_ms(1);
@@ -906,15 +994,18 @@
   #[test]
   fn reversing_after_a_mid_flight_retarget_still_lands_home_exactly() {
     let mut r = SlideRigUnderTest::new();
-    let cell = r.cell_for(r.h + 12);
+    let cell = r.cell_for(r.h + r.interval(12));
     r.press(cell);
     r.sweep(0.0, 0.5);
 
     // Retarget far away, pinning a big kink at f = 0.5, and climb a little.
-    let far = r.cell_for(r.h + 40);
+    let far = r.cell_for(r.h + r.interval(40));
     r.press(far);
     let up = r.sweep(0.5, 0.75);
-    assert!(up > r.h as f32 + 6.0, "the big new goalpost pulled the pitch up, at {up:.3}");
+    assert!(
+      up > (r.h + r.interval(6)) as f32,
+      "the big new goalpost pulled the pitch up, at {up:.3}",
+    );
 
     // Now reverse all the way home. The descent is a new segment from here, and it
     // must still arrive exactly -- every step of it checked for jumps by `sweep`.
@@ -934,7 +1025,7 @@
   #[test]
   fn crossing_the_midpoint_swaps_the_roles_without_moving_the_pitch() {
     let mut r = SlideRigUnderTest::new();
-    let t = r.h + 27;
+    let t = r.h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
 
@@ -972,7 +1063,7 @@
   #[test]
   fn a_foot_trembling_at_the_midpoint_does_not_flicker_the_roles() {
     let mut r = SlideRigUnderTest::new();
-    let cell = r.cell_for(r.h + 27);
+    let cell = r.cell_for(r.h + r.interval(27));
     r.press(cell);
     r.sweep(0.0, 0.5);
     let home_before = r.rt.pedal_slide.home();
@@ -992,16 +1083,17 @@
     let mut rt = test_grid_thread();
     let mut register = 0;
     let mut held = HashMap::new();
-    let note = (5, 5);
-    let handle = (5, 6);
+    let edit = rt.knobs.handles.edit.expect("the slide rig has an edit handle");
+    let (note, handle) = note_with_handle(&rt.overlays, edit);
     let h = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, 0, note.0, note.1);
     handle_key(&mut rt, &mut register, &mut held, note, true); // strike, finger STAYS down
     handle_key(&mut rt, &mut register, &mut held, handle, true); // edit it (+ sustain)
     handle_key(&mut rt, &mut register, &mut held, handle, false);
-    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+    let toggle = one_cell(rt.overlays.pedal_slide_rect);
+    handle_key(&mut rt, &mut register, &mut held, toggle, true); // pedal slide ON
 
     let mut r = SlideRigUnderTest { rt, register, held, h };
-    let t = h + 27;
+    let t = h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
     assert_eq!(
@@ -1036,7 +1128,7 @@
   #[test]
   fn retriggering_a_sliding_note_keeps_it_sliding() {
     let mut r = SlideRigUnderTest::new();
-    let t = r.h + 27;
+    let t = r.h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
     r.sweep(0.0, 0.3);
@@ -1067,7 +1159,8 @@
     let mut rt = test_grid_thread();
     let mut register = 0;
     let mut held = HashMap::new();
-    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON, nothing edited
+    let toggle = one_cell(rt.overlays.pedal_slide_rect);
+    handle_key(&mut rt, &mut register, &mut held, toggle, true); // pedal slide ON, nothing edited
     let mut r = SlideRigUnderTest { rt, register, held, h: 0 };
 
     let pitch = step_for_cell(r.rt.tuning.x_step, r.rt.tuning.y_step, 0, 7, 7);
@@ -1136,7 +1229,8 @@
     for (seq, v) in &spawned {
       rt.sink.spawn_chord_voice(*seq, v, 0.0);
     }
-    handle_key(&mut rt, &mut register, &mut held, (0, 15), true); // pedal slide ON
+    let toggle = one_cell(rt.overlays.pedal_slide_rect);
+    handle_key(&mut rt, &mut register, &mut held, toggle, true); // pedal slide ON
 
     // Press slot 1: under slide mode this AIMS at the stored chord rather than
     // recalling it.
@@ -1241,7 +1335,7 @@
     let mut r = SlideRigUnderTest::new_untouched_pedal();
     assert!(!r.rt.pedal_slide.pedal_seen(), "no CC yet: the engine knows nothing");
 
-    let t = r.h + 27;
+    let t = r.h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
     let before = r.render_ms(50);
@@ -1296,7 +1390,7 @@
     let mut r = SlideRigUnderTest::new_untouched_pedal();
     // Park the pedal mid-travel and let the engine adopt that as its starting point.
     r.pedal_to(0.4);
-    let t = r.h + 27;
+    let t = r.h + r.interval(27);
     let cell = r.cell_for(t);
     r.press(cell);
 
@@ -1336,12 +1430,13 @@
   #[test]
   fn toggling_off_mid_flight_freezes_the_voice_where_it_is() {
     let mut r = SlideRigUnderTest::new();
-    let cell = r.cell_for(r.h + 27);
+    let cell = r.cell_for(r.h + r.interval(27));
     r.press(cell);
     let mid = r.sweep(0.0, 0.4);
 
-    handle_key(&mut r.rt, &mut r.register, &mut r.held, (0, 15), false); // key-up: inert
-    handle_key(&mut r.rt, &mut r.register, &mut r.held, (0, 15), true); // pedal slide OFF
+    let toggle = r.slide_toggle();
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, toggle, false); // key-up: inert
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, toggle, true); // pedal slide OFF
     assert!(!r.rt.pedal_slide.mode(), "the engine left slide mode");
     assert!(
       !r.rt.shared.pedal_slide_on[0].load(Ordering::Relaxed),
@@ -1370,7 +1465,7 @@
   #[test]
   fn deselecting_mid_flight_cancels_the_slide_but_a_live_one_survives_every_step() {
     let mut r = SlideRigUnderTest::new();
-    let cell = r.cell_for(r.h + 27);
+    let cell = r.cell_for(r.h + r.interval(27));
     r.press(cell);
     // A full round trip, crossing the role swap in both directions: the pairing must
     // survive every single step of it.
@@ -1379,7 +1474,8 @@
     assert!(!r.rt.pedal_slide.is_empty(), "the slide survived the whole round trip");
 
     // Now really deselect it, through the real editmode-clear button.
-    handle_key(&mut r.rt, &mut r.register, &mut r.held, (12, 0), true);
+    let editmode_clear = one_cell(r.rt.overlays.editmode_clear_rect);
+    handle_key(&mut r.rt, &mut r.register, &mut r.held, editmode_clear, true);
     r.pedal_to(0.5);
     assert!(r.rt.pedal_slide.is_empty(), "deselection cancelled the pairing");
     let voices = r.rt.shared.voices.lock().unwrap();
@@ -1625,7 +1721,7 @@
     let mut rt = test_grid_thread();
     let mut register = 0;
     let mut held = HashMap::new();
-    let slide_toggle = (0, 15); // the pedal-slide toggle, the lower-left corner
+    let slide_toggle = one_cell(rt.overlays.pedal_slide_rect);
     let step = {
       let (xs, ys) = (rt.tuning.x_step, rt.tuning.y_step);
       move |x: i32, y: i32| step_for_cell(xs, ys, 0, x, y)
@@ -1941,6 +2037,7 @@
       volume_delta_controls_index: controls_index,
       tone_volume: None,
       loop_clear_tap_ms: 300,
+      handles: Handles::DEFAULT,
       overlays: Overlays {
         edo_rect: [0, 0, 15, 15],
         scroll_rect: NO_RECT,
@@ -2118,6 +2215,279 @@
     a.release(5, 5);
     assert!(wait_until(secs(3), || a.level_at(5, 5) == 4), "released note lingers dim");
 
+  }
+
+  // ---- the volpedal rig (TODO/volpedal-sustain_volpedal-newvoice) ----
+  //
+  // None of these pin the rig's layout or values: each reads what the rig declares,
+  // or sets the one thing it tests (see "reading the rig instead of pinning it").
+
+  const VOLPEDAL: &str = "volpedal-sustain_volpedal-newvoice";
+
+  /// What the rig declares is what the runtime gets: each grid's handle sides, its
+  /// sustain buttons and their starting mode, its tone controls, and the pedals
+  /// (role or grid), whatever values the rig holds today.
+  #[test]
+  fn volpedal_rig_settings_carry_what_the_rig_declares() {
+    use crate::rig::HandleSide;
+    let rig = load_named_rig(VOLPEDAL).expect("rig loads");
+    let s = resolve_settings(&rig).expect("rig resolves");
+    assert!(!s.grids.is_empty());
+    for g in &s.grids {
+      let m = g.monome_id.as_str();
+      let (edit, sustain) = rig
+        .monome_windows
+        .iter()
+        .find_map(|w| match w {
+          MonomeWindowRig::EdoNoteGrid { monome, edit_handle, sustain_handle, .. }
+            if monome == m => Some((*edit_handle, *sustain_handle)),
+          _ => None,
+        })
+        .expect("each grid has its edo_note_grid");
+      assert_eq!(
+        g.handles,
+        Handles {
+          edit: edit.unwrap_or(HandleSide::Below).note_offset(),
+          sustain: sustain.unwrap_or(HandleSide::Above).note_offset(),
+        },
+      );
+      let declared = |kind: AccreteControlKind| {
+        rig.monome_windows.iter().find_map(|w| match w {
+          MonomeWindowRig::AccreteControl { monome, rect, control, initially_on, .. }
+            if monome == m && *control == kind => Some((*rect, *initially_on)),
+          _ => None,
+        })
+      };
+      let rect_of = |kind| declared(kind).map_or(NO_RECT, |(rect, _)| rect);
+      assert_eq!(g.overlays.clear_rect, rect_of(AccreteControlKind::Clear));
+      assert_eq!(g.overlays.accrete_rect, rect_of(AccreteControlKind::Accrete));
+      assert_eq!(g.overlays.needs_holding_rect, rect_of(AccreteControlKind::NeedsHolding));
+      assert_eq!(
+        grid_needs_holding_initially_on(&rig, g),
+        declared(AccreteControlKind::NeedsHolding).and_then(|(_, on)| on) == Some(true),
+      );
+      let has_volume_delta = rig.monome_windows.iter().any(
+        |w| matches!(w, MonomeWindowRig::VolumeDelta { monome, .. } if monome == m),
+      );
+      assert_eq!(tone_controls_for(g).enabled, has_volume_delta, "volume keys need no chords");
+    }
+    let expected: Vec<(usize, PedalTarget, PedalVolumeCurve)> = rig
+      .expression_pedals
+      .iter()
+      .map(|p| {
+        use crate::rig::PedalVoices;
+        let grid = |m: &String| {
+          s.grids.iter().position(|g| &g.monome_id == m).expect("a pedal's grid")
+        };
+        let target = match (p.voices, &p.monome) {
+          (PedalVoices::All, Some(m)) => PedalTarget::Grid(grid(m)),
+          (PedalVoices::All, None) => unreachable!("validation requires a monome"),
+          (PedalVoices::New, m) => PedalTarget::NewNotes(m.as_ref().map(grid)),
+        };
+        let curve = PedalVolumeCurve {
+          lin_frac: p.curve_initial_lin_frac,
+          exp_db: p.curve_remainder_exp_db,
+        };
+        (p.channel as usize - 1, target, curve)
+      })
+      .collect();
+    assert_eq!(s.expression_pedals, expected);
+  }
+
+  /// The sustain handle, set here to Jeff's "one below" with no edit handle: pressing
+  /// the cell below a sounding note toggles its sustain and never sounds, and the cell
+  /// on the opposite side is an ordinary note.
+  #[test]
+  fn the_sustain_handle_toggles_sustain_and_never_sounds() {
+    use crate::rig::HandleSide;
+    use crate::types::VoiceSource;
+    let mut rt = test_grid_thread_for(VOLPEDAL);
+    let below = HandleSide::Below.note_offset().unwrap();
+    rt.knobs.handles = Handles { edit: None, sustain: Some(below) };
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let (note, handle) = note_with_handle(&rt.overlays, below);
+    let opposite = handle_cell(note, (-below.0, -below.1));
+    assert!(is_play_cell(&rt.overlays, opposite), "the cell on the other side is playable");
+    let pitch = step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, note.0, note.1);
+    let sustained =
+      |rt: &GridThread| rt.shared.ring.lock().unwrap()[0].store.has(Reason::Sustain, pitch);
+    let finger = |cell| VoiceSource::SurfaceFinger { grid: 0, cell };
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch };
+
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    handle_key(&mut rt, &mut register, &mut held, handle, true);
+    assert!(sustained(&rt), "the handle sustains the held note");
+    assert!(!rt.shared.voices.lock().unwrap().contains_key(&finger(handle)), "the handle never sounds");
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    assert!(
+      rt.shared.voices.lock().unwrap().get(&drone).is_some_and(|v| v.target_env > 0.0),
+      "lifting the finger leaves the sustained note ringing",
+    );
+
+    handle_key(&mut rt, &mut register, &mut held, opposite, true);
+    assert!(
+      rt.shared.voices.lock().unwrap().contains_key(&finger(opposite)),
+      "no edit handle: the cell on the other side plays",
+    );
+    handle_key(&mut rt, &mut register, &mut held, opposite, false);
+
+    handle_key(&mut rt, &mut register, &mut held, handle, true);
+    handle_key(&mut rt, &mut register, &mut held, handle, false);
+    assert!(!sustained(&rt), "the handle again un-sustains");
+    assert!(
+      rt.shared.voices.lock().unwrap().get(&drone).is_none_or(|v| v.target_env == 0.0),
+      "and the fingerless note releases",
+    );
+  }
+
+  /// A grid's new-notes pedal drives a note while a finger holds it, and only then
+  /// (Jeff: "When a note switches from fingered to sustained-only, nothing happens").
+  /// A strike is born settled at the pedal's level; a pedal move re-aims every held
+  /// note; lifting the finger off a sustained note leaves its level alone, even through
+  /// the real render; later moves don't reach it; re-striking it makes a new held note
+  /// at the pedal's current level.
+  #[test]
+  fn the_new_notes_pedal_drives_held_notes_and_lets_go_on_lift() {
+    use crate::types::VoiceSource;
+    let mut rt = test_grid_thread_for(VOLPEDAL);
+    let pedals = rt.sink.new_pedal_gains_handle();
+    let grid = rt.grid_index;
+    let set_pedal = |gain: f32, rt: &GridThread| {
+      pedals.lock().unwrap()[grid] = gain;
+      synth::aim_new_pedal(&rt.shared.voices, grid, gain);
+    };
+    let gains_of = |rt: &GridThread, src: VoiceSource| {
+      let voices = rt.shared.voices.lock().unwrap();
+      let v = &voices[&src];
+      (v.new_pedal_gain, v.new_pedal_gain_target)
+    };
+    let render_ms = |rt: &GridThread, ms: usize| {
+      let mut voices = rt.shared.voices.lock().unwrap();
+      let mut data = vec![0.0_f32; 48 * ms];
+      crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
+    };
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let play: Vec<(i32, i32)> = {
+      let [x0, y0, x1, y1] = rt.overlays.edo_rect;
+      (y0..=y1)
+        .flat_map(|y| (x0..=x1).map(move |x| (x, y)))
+        .filter(|c| is_play_cell(&rt.overlays, *c))
+        .collect()
+    };
+    let (note, other) = (play[play.len() / 3], play[2 * play.len() / 3]);
+    let (x_step, y_step) = (rt.tuning.x_step, rt.tuning.y_step);
+    let pitch_of = move |c: (i32, i32)| step_for_cell(x_step, y_step, 0, c.0, c.1);
+    let finger = |cell| VoiceSource::SurfaceFinger { grid: 0, cell };
+    let drone = VoiceSource::SurfaceDrone { grid: 0, pitch: pitch_of(note) };
+
+    set_pedal(0.5, &rt);
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    assert_eq!(gains_of(&rt, finger(note)), (0.5, 0.5), "born settled at the pedal's level");
+    set_pedal(0.7, &rt);
+    assert_eq!(gains_of(&rt, finger(note)).1, 0.7, "a held note follows the pedal");
+    render_ms(&rt, 200);
+
+    rt.shared.ring.lock().unwrap()[0].store.add(Reason::Sustain, pitch_of(note));
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    let at_lift = gains_of(&rt, drone);
+    assert!((at_lift.0 - 0.7).abs() < 1e-3 && at_lift.1 == 0.7, "lifting changes nothing");
+    render_ms(&rt, 200);
+    assert!((gains_of(&rt, drone).0 - 0.7).abs() < 1e-3, "not even through the render");
+
+    set_pedal(0.2, &rt);
+    assert_eq!(gains_of(&rt, drone).1, 0.7, "a note ringing alone ignores the pedal");
+
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    assert_eq!(gains_of(&rt, finger(note)), (0.2, 0.2), "re-struck: a held note again");
+    handle_key(&mut rt, &mut register, &mut held, note, false);
+    assert_eq!(gains_of(&rt, drone).1, 0.2, "and let go of at the level it had");
+
+    handle_key(&mut rt, &mut register, &mut held, other, true);
+    set_pedal(0.9, &rt);
+    assert_eq!(gains_of(&rt, finger(other)).1, 0.9);
+    assert_eq!(gains_of(&rt, drone).1, 0.2, "only held notes move");
+  }
+
+  /// The volpedal rig against one and two mock grids through real OSC. LED
+  /// expectations come from the rig (where its controls are, how its mode switch
+  /// starts); the handle is set on the loaded rig to "below", the gesture under test.
+  #[test]
+  fn volpedal_rig_runs_against_one_and_two_mock_grids() {
+    use crate::mock_monome::{wait_until, GridSpec, MockRig};
+    use crate::rig::HandleSide;
+
+    let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let secs = Duration::from_secs;
+    let load = |ports: [u16; 2]| {
+      let mut rig = load_named_rig(VOLPEDAL).expect("rig loads");
+      rig.monomes[0].listen_port = ports[0];
+      rig.monomes[1].listen_port = ports[1];
+      for w in rig.monome_windows.iter_mut() {
+        if let MonomeWindowRig::EdoNoteGrid { edit_handle, sustain_handle, .. } = w {
+          *edit_handle = Some(HandleSide::Off);
+          *sustain_handle = Some(HandleSide::Below);
+        }
+      }
+      let s = resolve_settings(&rig).expect("rig resolves");
+      let g = &s.grids[0];
+      let selected = (g.overlays.selector_rect[0] + DEFAULT_SLOT as i32, g.overlays.selector_rect[1]);
+      let mode = (g.overlays.needs_holding_rect != NO_RECT).then(|| {
+        (one_cell(g.overlays.needs_holding_rect), grid_needs_holding_initially_on(&rig, g))
+      });
+      let (note, handle) = note_with_handle(&g.overlays, HandleSide::Below.note_offset().unwrap());
+      (rig, selected, mode, note, handle)
+    };
+
+    {
+      let mock = MockRig::start(0, &[GridSpec::grid_256("volpedal-solo")])
+        .expect("start one mock grid");
+      let (rig, selected, mode, _, _) = load([19230, 19231]);
+      let _run = MockRun::start(rig, mock.detector_port(), "one-grid volpedal rig");
+      let solo = mock.grid(0);
+      assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
+      assert!(wait_until(secs(3), || solo.level_at(selected.0, selected.1) == 15), "default timbre lit");
+      if let Some(((x, y), true)) = mode {
+        assert!(wait_until(secs(3), || solo.level_at(x, y) == 15), "the mode switch boots momentary");
+      }
+    }
+
+    {
+      let mock = MockRig::start(
+        0,
+        &[GridSpec::grid_256("volpedal-left"), GridSpec::grid_256("volpedal-right")],
+      )
+      .expect("start two mock grids");
+      let (rig, _, mode, note, handle) = load([19232, 19233]);
+      let _run = MockRun::start(rig, mock.detector_port(), "two-grid volpedal rig");
+      let a = mock.grid(0);
+      let b = mock.grid(1);
+      assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
+
+      // The mode switch is per grid: flipping a's leaves b's alone.
+      if let Some(((x, y), _)) = mode {
+        let lit = |g: &crate::mock_monome::MockGrid| g.level_at(x, y) == 15;
+        assert!(wait_until(secs(3), || lit(&a) == lit(&b) && b.level_at(x, y) != 0));
+        let b_before = lit(&b);
+        a.tap(x, y);
+        assert!(wait_until(secs(3), || lit(&a) != b_before), "a's switch flips");
+        thread::sleep(Duration::from_millis(400));
+        assert_eq!(lit(&b), b_before, "b's switch is untouched");
+      }
+
+      // The below-handle sustains a held note on b: it stays lit after the finger lifts.
+      b.press(note.0, note.1);
+      assert!(wait_until(secs(3), || b.level_at(note.0, note.1) == 15), "the note sounds");
+      b.tap(handle.0, handle.1);
+      thread::sleep(Duration::from_millis(100));
+      b.release(note.0, note.1);
+      thread::sleep(Duration::from_millis(400));
+      assert_eq!(b.level_at(note.0, note.1), 15, "sustained by its handle, it outlives the finger");
+      b.tap(handle.0, handle.1);
+      assert!(wait_until(secs(3), || b.level_at(note.0, note.1) != 15), "the handle again ends it");
+    }
   }
 
   /// The new unpinned rig's actual device seam: one arbitrary 16x16 grid is a
@@ -2362,11 +2732,14 @@
     // taper (10% linear splice, 50 dB exponential remainder -- spelled out in the
     // rig so the parameter names are findable).
     let pedals: Vec<(u8, &str)> =
-      rig.expression_pedals.iter().map(|p| (p.channel, p.monome.as_str())).collect();
+      rig.expression_pedals.iter().map(|p| (p.channel, p.monome.as_deref().unwrap_or(""))).collect();
     assert_eq!(pedals, [(1, "a"), (2, "b")]);
     let s = resolve_settings(&rig).expect("resolves");
     let curve = PedalVolumeCurve { lin_frac: 0.1, exp_db: 50.0 };
-    assert_eq!(s.expression_pedals, [(0, 0, curve), (1, 1, curve)]);
+    assert_eq!(
+      s.expression_pedals,
+      [(0, PedalTarget::Grid(0), curve), (1, PedalTarget::Grid(1), curve)],
+    );
 
     // The taper: exponential (dB-linear in travel) spliced to a linear fade over
     // the first lin_frac, so the ends are pinned at exact 0 and 1.
@@ -2848,7 +3221,7 @@
     assert_eq!(p.x_step, 7);
     assert_eq!(
       p.expression_pedals,
-      [Some((0, PedalVolumeCurve { lin_frac: 0.1, exp_db: 40.0 })), None],
+      [Some((PedalTarget::Grid(0), PedalVolumeCurve { lin_frac: 0.1, exp_db: 40.0 })), None],
       "the pedal taper reloads (lin_frac keeps its default; exp_db moved)",
     );
     assert_eq!(p.timbres[2].fm.depth_cents, 25.0, "timbre slot 2 gained vibrato");

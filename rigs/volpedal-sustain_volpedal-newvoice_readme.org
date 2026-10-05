@@ -1,0 +1,94 @@
+#+title: Monomes: a volume pedal per grid for held notes
+
+* Run
+Connect one or two 16x16 monomes. For the pedals, run =tools/pedals/bridge.sh=
+on the HOST first, in a terminal you leave open, every session. Then, from the
+repository root inside the container:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- volpedal-sustain_volpedal-newvoice
+#+end_src
+
+Either physical grid can be used alone. The rig looks for the pedals only at
+startup: if the bridge wasn't running then, it prints a red "expression pedals
+skipped" line and plays on at full pedal volume until restarted. Working pedals
+print "expression pedals: connected" instead. Ctrl-C blanks the grids
+and stops audio.
+
+* Layout
+#+begin_example
+       x=0   1   2   3                                 13    14    15
+y=0  | SIN TRI SQR SAW  . . . . . . . . .            SHIFT SHIFT SHIFT
+y=1  | -12  -2  +2 +12  . . . . . . . . .            SHIFT SHIFT SHIFT
+     |
+     |                   EDO PLAY SURFACE
+     |
+y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
+                    x=6  x=7  x=8
+#+end_example
+Everything else is play surface: 41-EDO from 110 Hz, eight steps per cell
+rightward and one step per cell downward. A control at rest flashes dim on the
+shared 150 ms clock; a lit control is solid bright.
+
+* The pedals
+** what each drives
+Each grid has its own pedal: MPC-20 channel 1 for grid A, channel 2 for grid B.
+A grid's pedal drives every note a finger holds on that grid, sustained or not.
+It multiplies with the volume keys and everything else.
+** when you let go
+Nothing happens. A sustained note keeps the level it had when its finger
+lifted, and later pedal moves don't reach it. Striking that pitch again gives a
+new held note at the pedal's current level, which in turn keeps its level when
+you let go.
+** the taper
+Heel is silent and toe is unity. The top 90% of the travel is dB-linear over
+50 dB, and the first 10% fades linearly to exact silence. Both knobs are in
+the rig and reload live with =r= then Enter. Until a pedal sends its first CC
+it counts as unity, so an unplugged pedal mutes nothing.
+** cabling
+If the pedals arrive the other way round, swap the two =channel= values in the
+rig. For one pedal on both grids, delete one pedal and drop =monome= from the
+other.
+
+* Sustain
+Each grid has its own sustained set. OFF, ON and TOGGLE act on their own grid
+only.
+** the handle: the cell below a note
+Press the cell directly below a sounding note to toggle that note's sustain.
+The press never sounds. Sustaining a held note keeps it ringing after you lift
+your finger. Pressing the handle of a sustained note un-sustains it, which ends
+it unless a finger still holds it. The cell above a note is an ordinary note.
+
+The handle is geometric, so it stays put when the tuning changes. With this
+tuning it is also the pitch one EDO step above the note, which therefore can't
+be played from that cell while the note sounds. A note on the bottom row, or
+directly above OFF, ON or TOGGLE, has no handle. The rig can move the handle
+to another side with =sustain_handle=.
+** OFF
+Ends every sustained note on this grid that no finger holds. Held notes keep
+sounding, now on the new pedal.
+** ON
+Notes already held, and notes played while ON is live, join the sustained set.
+** TOGGLE WHAT ON MEANS
+Bright means ON is momentary: hold it. Dim means ON latches: tap it on, tap it
+off. It starts bright.
+
+* Timbre and volume
+The four waveform cells and the four volume cells work as in the two-timbres
+rig, per grid. A waveform press re-timbres this grid's fingered and sustained
+voices in place. Each volume cell moves the current waveform's level by -12,
+-2, +2 or +12 dB, from -12 dB at start. The pedals multiply on top of that.
+
+* Shift
+The four arrow cells move the visible register one cell. The two outer top
+corners move it one octave.
+
+* Deliberately not here
+No chord storage, no loops, no tone-target cell, no edit mode, no SoftSteps,
+no square or diamond dances.
+
+* More detail
+The rig itself, with every value: [[file:volpedal-sustain_volpedal-newvoice.org]].
+The design discussion: [[file:../TODO/volpedal-sustain_volpedal-newvoice/1_discussion.org]],
+then the later numbered discussions beside it.
+General window meanings and the rig format: [[file:README.org]].

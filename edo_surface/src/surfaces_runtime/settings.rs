@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::rig::{
-  AccreteControlKind, AmShapeFamilyRig, EditmodeControlKind, MonomeWindowRig, Rig, SinkRig,
-  SoftstepWindowRig, WaveformChoice,
+  AccreteControlKind, AmShapeFamilyRig, EditmodeControlKind, HandleSide, MonomeWindowRig,
+  PedalVoices, Rig, SinkRig, SoftstepWindowRig, WaveformChoice,
 };
 
 use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Waveform};
@@ -99,6 +99,18 @@ pub(super) struct Overlays {
   pub(super) fine_transpose_rect: [i32; 4],
 }
 
+impl Overlays {
+  /// Is this grid from the compact tone-control family -- a `volume_delta`, a
+  /// `momentary_chord_block`, or a `compact_loop_block` (the two-timbres and volpedal
+  /// rigs)? Those grids keep a calm surface: no square dance, no off-screen octave
+  /// hints, and every resting control on the shared 150 ms status flash.
+  pub(super) fn compact(&self) -> bool {
+    self.volume_delta_rect != NO_RECT
+      || self.momentary_chord_rect != NO_RECT
+      || self.compact_loop_rect != NO_RECT
+  }
+}
+
 /// One play grid's resolved rig: its monome binding + its overlay rects + which
 /// grid its selector re-timbres.
 pub(super) struct GridSettings {
@@ -118,6 +130,22 @@ pub(super) struct GridSettings {
   pub(super) tone_volume: Option<ToneVolumeConfig>,
   pub(super) loop_clear_tap_ms: u64,
   pub(super) overlays: Overlays,
+  /// This grid's neighbour handles (`edo_note_grid` `edit_handle` / `sustain_handle`).
+  pub(super) handles: Handles,
+}
+
+/// A play grid's neighbour handles (keys.rs `handle_edit_press`): for each gesture, the
+/// offset from the PRESSED cell to the note it acts on, or `None` when that gesture is
+/// off. Resolved once at startup, like the overlay rects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Handles {
+  pub(super) edit: Option<(i32, i32)>,
+  pub(super) sustain: Option<(i32, i32)>,
+}
+
+impl Handles {
+  /// The long-standing layout: press BELOW a note to edit it, ABOVE it to sustain it.
+  pub(super) const DEFAULT: Handles = Handles { edit: Some((0, -1)), sustain: Some((0, 1)) };
 }
 
 pub(super) struct Settings {
@@ -178,8 +206,19 @@ pub(super) struct Settings {
   /// scrolling away under key echoes as you play.
   pub(super) echo_input: bool,
   /// The EX-P volume pedals (`[[expression_pedals]]`), resolved to
-  /// `(pedal index = MPC-20 channel - 1, grid index, taper)`.
-  pub(super) expression_pedals: Vec<(usize, usize, PedalVolumeCurve)>,
+  /// `(pedal index = MPC-20 channel - 1, what it drives, taper)`.
+  pub(super) expression_pedals: Vec<(usize, PedalTarget, PedalVolumeCurve)>,
+}
+
+/// What one EX-P volume pedal drives: the rig's two plugs (`monome` x `voices`)
+/// resolved to grid indices (= positions in `Settings::grids`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum PedalTarget {
+  /// `voices = "all"`: every voice on one grid -- the grid volume pedal.
+  Grid(usize),
+  /// `voices = "new"`: the notes a finger holds on one grid, or on every grid
+  /// (`None`, the rig named no monome). TODO/volpedal-sustain_volpedal-newvoice.
+  NewNotes(Option<usize>),
 }
 
 pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -453,6 +492,24 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       compact_loop_rect,
       fine_transpose_rect,
     };
+    // The neighbour handles: the rig's sides, defaulting to edit-below / sustain-above.
+    // (A momentary-chord grid has none at all -- keys.rs skips the handle path there,
+    // and validation rejects setting them on one.)
+    let handles = rig
+      .monome_windows
+      .iter()
+      .find_map(|w| match w {
+        MonomeWindowRig::EdoNoteGrid { monome, edit_handle, sustain_handle, .. }
+          if monome == monome_id =>
+        {
+          Some(Handles {
+            edit: edit_handle.unwrap_or(HandleSide::Below).note_offset(),
+            sustain: sustain_handle.unwrap_or(HandleSide::Above).note_offset(),
+          })
+        }
+        _ => None,
+      })
+      .unwrap_or(Handles::DEFAULT);
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       select: monome_cfg.select.clone(),
@@ -464,6 +521,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       tone_volume,
       loop_clear_tap_ms,
       overlays,
+      handles,
     });
   }
 
@@ -480,20 +538,26 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
   let slide = rig.slide.unwrap_or_default();
   let tap_tempo = rig.tap_tempo.unwrap_or_default();
 
-  // The EX-P volume pedals, by grid index (= position in `grids`). Validation
-  // already pinned channel to 1|2, the monome to a play grid, and the curve
+  // The EX-P volume pedals, their monome resolved to a grid index (= position in
+  // `grids`). Validation already pinned channel to 1|2, each pedal to exactly
+  // one of monome/voices, a grid pedal's monome to a play grid, and the curve
   // parameters to their legal ranges.
   let expression_pedals = rig
     .expression_pedals
     .iter()
     .filter_map(|p| {
-      grids.iter().position(|g| g.monome_id == p.monome).map(|grid| {
-        let curve = PedalVolumeCurve {
-          lin_frac: p.curve_initial_lin_frac,
-          exp_db: p.curve_remainder_exp_db,
-        };
-        (p.channel as usize - 1, grid, curve)
-      })
+      let grid = |monome: &String| grids.iter().position(|g| &g.monome_id == monome);
+      let target = match (p.voices, &p.monome) {
+        (PedalVoices::All, Some(monome)) => PedalTarget::Grid(grid(monome)?),
+        (PedalVoices::All, None) => return None,
+        (PedalVoices::New, Some(monome)) => PedalTarget::NewNotes(Some(grid(monome)?)),
+        (PedalVoices::New, None) => PedalTarget::NewNotes(None),
+      };
+      let curve = PedalVolumeCurve {
+        lin_frac: p.curve_initial_lin_frac,
+        exp_db: p.curve_remainder_exp_db,
+      };
+      Some((p.channel as usize - 1, target, curve))
     })
     .collect();
 
@@ -680,6 +744,22 @@ pub(super) fn grid_has_needs_holding_control(rig: &Rig, grid: &GridSettings) -> 
       w,
       SoftstepWindowRig::AccreteControl { monome, control: AccreteControlKind::NeedsHolding, .. }
         if *monome == grid.monome_id
+    )
+  })
+}
+
+/// Does this grid's on-grid `needs_holding` switch start ON (`initially_on = true`),
+/// so its bank boots momentary even though the player can flip it to latching?
+pub(super) fn grid_needs_holding_initially_on(rig: &Rig, grid: &GridSettings) -> bool {
+  rig.monome_windows.iter().any(|w| {
+    matches!(
+      w,
+      MonomeWindowRig::AccreteControl {
+        monome,
+        control: AccreteControlKind::NeedsHolding,
+        initially_on: Some(true),
+        ..
+      } if *monome == grid.monome_id
     )
   })
 }

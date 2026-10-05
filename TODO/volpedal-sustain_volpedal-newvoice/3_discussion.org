@@ -1,0 +1,41 @@
+* [Jeff] (in chat) simplify
+One pedal per rig. The pedal controls the volume of new notes. When a note
+switches from fingered to sustained-only, nothing happens. All other volume
+controls keep working the same way, so multiplicatively with this feature.
+** [Jeff] (in chat) correction
+One pedal per grid, not per rig.
+* [Claude] done
+This supersedes the pedal parts of =1_discussion.org= and =2_discussion.org=.
+** what the pedals do now
+Each grid has its own pedal. It drives every note a finger holds on that grid,
+sustained or not. A strike starts at its grid's pedal level. When the finger lifts from a sustained note,
+nothing happens: the note keeps the level it had, and later pedal moves don't
+reach it. Striking that pitch again gives a new held note at the pedal's
+current level. The volume keys, master volume and everything else multiply
+with it, as before.
+** the rig
+Grid A's pedal is MPC-20 channel 1 and grid B's is channel 2, each written in its
+grid's section as =monome = "a"= (or ="b"=) plus =voices = "new"=. Swap the
+channels if the cabling is the other way round.
+** the code: two plugs per pedal
+A pedal now has two independent plugs. =monome= picks the grid and =voices=
+picks which voices on it: ="all"=, the old grid volume pedal and still the
+default, or ="new"=, held notes only. A new-notes pedal without a =monome=
+drives every grid, so "per grid" versus "per rig" is a rig edit now, not a code
+change. Two pedals on the same grid's new notes, or =voices = "sustained"=, are
+load errors. Lifting a finger touches nothing.
+** the wiring map
+=rigs/README.org= has a new section, "The wiring map". It lists every widget
+connection that is a plug in the rig file, and every one that is still fixed in
+code, so the next rewiring request starts from a list instead of a code search.
+** TODO the rig's name still mentions a sustain pedal
+=volpedal-sustain_volpedal-newvoice= named both pedals. Its title and comments
+now describe one, but I left the name, the file names and this directory alone,
+since you chose them. If you want something like =volpedal-newvoice=, say so and
+I'll rename everything together.
+** still open
+*** TODO the twin-rig test
+Unchanged from =2_discussion.org=: copy your tuning to the drums twin, or tell
+me to stop comparing tunings.
+*** TODO hear it, then say commit
+Everything is still uncommitted.

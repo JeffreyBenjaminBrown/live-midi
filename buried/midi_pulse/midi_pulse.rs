@@ -273,6 +273,17 @@ mod dispatch_tests {
     }
   }
 
+  /// The compact monome rigs (no SoftSteps, unpinned grids) also run on surfaces.
+  #[test]
+  fn compact_monome_rigs_route_to_surfaces() {
+    for name in ["monomes_two-timbres_sustain_chords", "volpedal-sustain_volpedal-newvoice"] {
+      let c = load_named_rig(name).unwrap_or_else(|e| panic!("{name} loads: {e}"));
+      assert!(is_surfaces_rig(&c), "{name}: grids -> surfaces");
+      assert!(!is_drumkit_rig(&c), "{name}: not the drums-only arm");
+      assert!(!is_looper_rig(&c), "{name}: no loop_display");
+    }
+  }
+
   #[test]
   fn drumkit_rig_still_routes_to_drumkit() {
     let c = load_named_rig("kmss-drumkit").expect("loads");

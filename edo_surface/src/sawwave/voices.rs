@@ -543,6 +543,15 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
         v.grid_gain = v.grid_gain_target;
       }
     }
+    // The new-notes pedal: the same slew, so its sweeps over held notes don't zipper.
+    // Identity everywhere that pedal doesn't exist.
+    let new_pedal_gap = v.new_pedal_gain_target - v.new_pedal_gain;
+    if new_pedal_gap != 0.0 {
+      v.new_pedal_gain += new_pedal_gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
+      if (v.new_pedal_gain_target - v.new_pedal_gain).abs() < 1e-4 {
+        v.new_pedal_gain = v.new_pedal_gain_target;
+      }
+    }
     // Advance the per-voice AM/FM LFOs (by `frac` of a full-rate step). The absolute
     // pair runs at a fixed Hz; the relative pair at a multiple of the voice's own
     // frequency (v.freq -- the *unmodulated* pitch, so there is no FM feedback loop,
@@ -579,9 +588,11 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     // pitches) add in power. Summing `b^2` therefore hands the distortion the dirty
     // bus's RMS for free -- no detector, no lag. `b >= 0`: every factor is. The volume
     // chain is stored components multiplied here, never baked together: the timbre
-    // slot's amplitude, the grid fader's gain, and the pedal's grid_gain -- all plain
-    // linear multipliers, all 1.0 wherever that mechanism doesn't exist.
-    let b = v.env * v.timbre.gain * v.fader_gain * v.grid_gain * amm * factored_pulse * amplitude;
+    // slot's amplitude, the grid fader's gain, the pedal's grid_gain, and the new-notes
+    // pedal's new_pedal_gain -- all plain linear multipliers, all 1.0 wherever that
+    // mechanism doesn't exist.
+    let b = v.env * v.timbre.gain * v.fader_gain * v.grid_gain * v.new_pedal_gain * amm
+      * factored_pulse * amplitude;
     let mut s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * b;
     let mut b_pow = b;
     // A live timbre swap in progress (the edit-mode timbre switch): render the OLD
@@ -596,7 +607,8 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
       let amm_old = am_multiplier(x.from.am, shape_family, v.am_phase)
         * rel_am_multiplier(x.from.rel_am, v.rel_am_phase);
       let b_old =
-        v.env * x.from.gain * v.fader_gain * v.grid_gain * amm_old * factored_pulse * amplitude;
+        v.env * x.from.gain * v.fader_gain * v.grid_gain * v.new_pedal_gain * amm_old * factored_pulse
+          * amplitude;
       let s_old = osc(x.from.waveform, v.phase, dt) * waveform_norm(x.from.waveform) * b_old;
       s = s * g_new + s_old * g_old;
       b_pow = b * g_new + b_old * g_old;
@@ -854,7 +866,7 @@ pub fn spawn_accretion_voice(
     timbre: Timbre::default(),
     fader_gain: 1.0,
     grid_gain: 1.0,
-    grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0,
+    grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0,
     am_phase: 0.0,
     fm_phase: 0.0,
     rel_am_phase: 0.0,
@@ -912,7 +924,7 @@ mod tests {
       sustain_env: 1.0, decay_per_sample: 1.0,
       // The NEW timbre is silent (gain 0); the OLD full-gain sine fades out.
       timbre: Timbre { waveform: Waveform::Sine, gain: 0.0, ..Timbre::default() },
-      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0,
+      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0,
       am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
       timbre_xfade: Some(TimbreXfade {
         from: Timbre { waveform: Waveform::Sine, gain: 1.0, ..Timbre::default() },
@@ -949,7 +961,7 @@ mod tests {
       pending_attack: None,
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0,
       target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let data = render_voice(v, 1024, sr);
     let peak = data.iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
     // Capped by AMPLITUDE=0.15.
@@ -967,7 +979,7 @@ mod tests {
       target_env: 0.0,
       ramp_per_sample: 1.0 / (RELEASE_SECS * sr),
       sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; release_samples + 200];
@@ -998,7 +1010,7 @@ mod tests {
     let mk = |gain: f32| VoiceState {
       pending_attack: None,
       id: 0, freq: 440.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      timbre: Timbre { gain, ..Timbre::default() }, am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let peak = |g: f32| render_voice(mk(g), 1024, sr).iter().fold(0.0_f32, |a, &x| a.max(x.abs()));
     let (full, half) = (peak(1.0), peak(0.5));
     assert!((half / full - 0.5).abs() < 0.05, "gain 0.5 should ~halve peak: full={full} half={half}");
@@ -1015,7 +1027,7 @@ mod tests {
         pending_attack: None,
         id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      };
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      };
       let data = render_voice(v, sr as usize, sr); // ~1 s = many whole periods
       (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
     };
@@ -1134,7 +1146,7 @@ mod tests {
           rel_fm: RelFm { depth: 0.5, freq: 0.125 },
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
       let mut data = vec![0.0_f32; 480]; // 10 ms
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
       *voices.values().next().unwrap()
@@ -1164,7 +1176,7 @@ mod tests {
       id: 0, freq: 100.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.25, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
       am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
-      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 0.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,
+      fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 0.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,
     });
     let mut down = vec![0.0_f32; 14400]; // 300 ms: many slew time constants
     render_block_with_amplitude(&mut voices, &mut down, 1, sr, 1.0, AmShapeFamily::default());
@@ -1199,7 +1211,7 @@ mod tests {
           rel_fm: RelFm { depth, freq: 0.05 }, // 15 Hz LFO on the 300 Hz voice
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
       data
@@ -1225,7 +1237,7 @@ mod tests {
           am: Am { depth, freq: 50.0, shape: 0.0 },
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::SinToSquare);
       (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt()
@@ -1251,7 +1263,7 @@ mod tests {
           pending_attack: None,
           id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
           timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,        },
+          am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,        },
       );
       let mut data = vec![0.0_f32; 4800];
       BlockRenderer::new(oversample)
@@ -1277,7 +1289,7 @@ mod tests {
         pending_attack: None,
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      };
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      };
       render_voice(v, 1024, sr)
     };
     let (fwd, bwd) = (render(300.0), render(-300.0));
@@ -1297,7 +1309,7 @@ mod tests {
       pending_attack: None,
       id: 0, freq: -220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Saw, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; 4096];
@@ -1327,7 +1339,7 @@ mod tests {
       id: 0, freq: 220.0, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0,
       env: 0.5, target_env: 0.0, ramp_per_sample: dip_ramp, sustain_env: 0.35, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; 4096];
@@ -1365,7 +1377,7 @@ mod tests {
       // the queued attack within the single sample we render below.
       env: 1e-6, target_env: 0.0, ramp_per_sample: 1.0, sustain_env: 0.35, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let expected_dt = v.freq / sr; // no FM in this timbre: this sample's phase step
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
@@ -1411,7 +1423,7 @@ mod tests {
       ramp_per_sample: 1.0 / (0.003 * sr),
       sustain_env, decay_per_sample,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; sr as usize];
@@ -1450,7 +1462,7 @@ mod tests {
       target_env: 0.5,
       ramp_per_sample: 0.5 / (0.05 * sr),
       sustain_env: 0.5, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Accreted { chord: 0, pitch: 10 }, v);
     let mut data = vec![0.0_f32; 9600]; // 200 ms >> the 50 ms ramp
@@ -1473,7 +1485,7 @@ mod tests {
       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: 1.0, decay_per_sample: 1.0,
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut data = vec![0.0_f32; 9600]; // two factored-pulse cycles
@@ -1526,7 +1538,7 @@ mod tests {
       id: 0, freq: 220.0, freq_target: 440.0, glide_per_sample: glide, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0,
       phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: 1.0, decay_per_sample: 1.0,
-      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
+      timbre: Timbre::default(), am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    };
     let mut voices: VoiceMap = HashMap::new();
     voices.insert(VoiceSource::Fingered { xy: (0, 0) }, v);
     let mut half = vec![0.0_f32; (dur * sr / 2.0) as usize];
@@ -1587,7 +1599,7 @@ mod tests {
         pending_attack: None,
         id: i as u64, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: i as f32 * 0.137, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
     }
     voices
   }
@@ -1742,7 +1754,7 @@ mod tests {
       factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0,
       sustain_env: sustain, decay_per_sample: (-1.0 / (decay_secs * sample_rate)).exp(),
       timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    });
+      am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,    });
     voices
   }
 
@@ -1977,7 +1989,7 @@ mod tests {
         pending_attack: None,
         id: 0, freq, freq_target: 0.0, glide_per_sample: 1.0, factored_pulse_freq: 0.0, factored_pulse_phase: 0.0, phase: 0.0, env: 1.0, target_env: 1.0, ramp_per_sample: 0.0, sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      })
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      })
     };
     let render = |sources: &[(VoiceSource, VoiceState)], distortion, dirty: fn(&VoiceSource) -> bool| {
       let mut voices: VoiceMap = sources.iter().cloned().collect();
@@ -2020,7 +2032,7 @@ mod tests {
           fm: Fm { depth_cents, freq: 6.0 },
           ..Timbre::default()
         },
-        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
+        am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0, fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0, timbre_xfade: None,      });
       let mut data = vec![0.0_f32; 4800];
       render_block_with_amplitude(&mut voices, &mut data, 1, sr, 1.0, AmShapeFamily::default());
       data
@@ -2049,7 +2061,7 @@ mod tests {
         sustain_env: 1.0, decay_per_sample: 1.0,
         timbre: Timbre { waveform: Waveform::Sine, ..Timbre::default() },
         am_phase: 0.0, fm_phase: 0.0, rel_am_phase: 0.0, rel_fm_phase: 0.0,
-        fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0,
+        fader_gain: 1.0, grid_gain: 1.0, grid_gain_target: 1.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0,
         // The pedal is driving this voice toward 200 Hz.
         slide_freq_target: 200.0, timbre_xfade: None,
       });

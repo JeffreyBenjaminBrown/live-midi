@@ -323,6 +323,9 @@ fn run(
   // through each grid's SurfaceSink. `no_audio` gates the thread like the cpal
   // stream -- a headless/mock run must not open MIDI connections.
   let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; num_grids]));
+  // The new-notes pedals' gains, per grid: unity until a pedal first moves, and
+  // forever on a grid without one.
+  let new_pedal_gains = synth::unity_new_pedal_gains(num_grids);
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -343,10 +346,7 @@ fn run(
   let tone_controls = Arc::new(Mutex::new(
     s.grids
       .iter()
-      .map(|g| match (g.overlays.momentary_chord_rect != NO_RECT, g.tone_volume) {
-        (true, Some(config)) => ToneControls::new(true, config),
-        _ => ToneControls::disabled(),
-      })
+      .map(tone_controls_for)
       .collect::<Vec<_>>(),
   ));
   // Per-grid sounding pitch-classes (union drives cross-grid note reflection), the
@@ -393,7 +393,10 @@ fn run(
   let ring: Arc<Mutex<Vec<GridRing>>> = Arc::new(Mutex::new(
     (0..num_grids)
       .map(|g| {
-        let accrete = if grid_has_needs_holding_control(rig, &s.grids[g]) {
+        // A switchable bank starts latched unless its switch says `initially_on`
+        // (the volpedal rig boots momentary, like its two-timbres sibling).
+        let switchable = grid_has_needs_holding_control(rig, &s.grids[g]);
+        let accrete = if switchable && !grid_needs_holding_initially_on(rig, &s.grids[g]) {
           AccreteState::new()
         } else {
           AccreteState::new_momentary()
@@ -494,13 +497,14 @@ fn run(
     let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
     let gains = Arc::clone(&pedal_gains);
+    let new_gains = Arc::clone(&new_pedal_gains);
     let slide_on = Arc::clone(&pedal_slide_on);
     let slide_frac = Arc::clone(&pedal_slide_frac);
     let ring_for_pedals = Arc::clone(&ring);
     let held_for_pedals = Arc::clone(&held_all);
     thread::spawn(move || {
       expression_pedal_loop(
-        live_for_pedals, voices_for_pedals, gains, slide_on, slide_frac,
+        live_for_pedals, voices_for_pedals, gains, new_gains, slide_on, slide_frac,
         ring_for_pedals, held_for_pedals,
       )
     });
@@ -608,6 +612,7 @@ fn run(
       controls_index: g.controls_index,
       volume_controls_index: g.volume_controls_index,
       volume_delta_controls_index: g.volume_delta_controls_index,
+      handles: g.handles,
     };
     let mut compact_loops = CompactLoops::new(g.loop_clear_tap_ms);
     if let Some(target) = shared.compact_persist.as_ref() {
@@ -659,7 +664,8 @@ fn run(
         Arc::clone(&crowded),
         Arc::clone(&pedal_gains),
         Arc::clone(&gains),
-      ),
+      )
+      .with_new_pedal_gains(Arc::clone(&new_pedal_gains)),
     };
     handles.push(thread::spawn(move || grid_thread(rt)));
   }
@@ -781,6 +787,17 @@ struct Tuning {
   grid_h: i32,
 }
 
+/// A grid's tone controls (timbre + volume per tone target). Live wherever the grid
+/// has a `volume_delta`: with the momentary chord block (the two-timbres rig) or
+/// without it (the volpedal rig, where the target simply stays fingered/sustained --
+/// only a `tone_target_control` ever cycles it).
+fn tone_controls_for(g: &GridSettings) -> ToneControls {
+  match g.tone_volume {
+    Some(config) => ToneControls::new(true, config),
+    None => ToneControls::disabled(),
+  }
+}
+
 /// The instrument-wide scalar knobs (`[trail]` / `[slide]` / `[tap_tempo]` + which
 /// grid this one's overlays control), refreshed alongside `Tuning` on a hot reload.
 #[derive(Clone, Copy)]
@@ -800,6 +817,8 @@ struct Knobs {
   /// The grid index this grid's volume strip sets the loudness of.
   volume_controls_index: usize,
   volume_delta_controls_index: usize,
+  /// This grid's neighbour handles (which neighbour edits / sustains a note).
+  handles: settings::Handles,
 }
 
 /// Everything one grid thread owns for the run. Grouped from first principles
@@ -1082,7 +1101,7 @@ fn grid_thread(mut rt: GridThread) {
     // CHORD voices square-dance exactly like sustained ones (Jeff: same dance for
     // both) -- they are the other kind of playing-while-not-fingered voice, and the
     // marker reads the same either way.
-    if rt.overlays.momentary_chord_rect == NO_RECT {
+    if !rt.overlays.compact() {
       for pitch in sustained.iter().copied().chain(chord_pitches.iter().copied()) {
         for (x, y) in cells_for_pitch(&rt, register, pitch) {
           dance_cells.insert(dance::diagonal_cell((x, y), elapsed));
@@ -1121,7 +1140,7 @@ fn grid_thread(mut rt: GridThread) {
       step_for_cell(rt.tuning.x_step, rt.tuning.y_step, register, ex1, ey1),
     ];
     let (lo, hi) = (corners[0].min(corners[1]), corners[0].max(corners[1]));
-    let off = if rt.overlays.momentary_chord_rect != NO_RECT {
+    let off = if rt.overlays.compact() {
       dance::OffScreen::default()
     } else if dance::flash_on(elapsed) {
       // One signal for edit-mode, sustained, AND chord-layer notes -- Jeff's call
@@ -1140,7 +1159,7 @@ fn grid_thread(mut rt: GridThread) {
       dance::OffScreen::default()
     };
 
-    let overlay_dim_on = if rt.overlays.compact_loop_rect != NO_RECT {
+    let overlay_dim_on = if rt.overlays.compact() {
       status_flash_on(elapsed)
     } else {
       dance::overlay_dim_on(elapsed)

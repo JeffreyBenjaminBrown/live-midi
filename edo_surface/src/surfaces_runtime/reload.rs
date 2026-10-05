@@ -15,7 +15,7 @@ use crate::voices::{Distortion, Makeup};
 
 use super::grid::SELECTOR_CELLS;
 use super::pedal_volume::PedalVolumeCurve;
-use super::settings::{resolve_settings, Settings, TimbreSlot};
+use super::settings::{resolve_settings, PedalTarget, Settings, TimbreSlot};
 use super::GridThread;
 
 /// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
@@ -103,20 +103,20 @@ pub(crate) struct LiveParams {
   pub trail_clobber_radius: i32,
   pub trails_max: usize,
   /// The EX-P volume pedals, indexed by pedal (= MPC-20 channel - 1):
-  /// `(grid index, taper)`. Live so Jeff can tweak the curve_* knobs mid-play
+  /// `(what it drives, taper)`. Live so Jeff can tweak the curve_* knobs mid-play
   /// ('r' reload); the pedal thread re-reads them each poll. Rebinding or
   /// removing a pedal live also takes effect, but a rig that STARTS with no
   /// pedals never spawns the thread -- adding the first pedal needs a restart,
   /// like any other bound resource.
-  pub expression_pedals: [Option<(usize, PedalVolumeCurve)>; NUM_PEDALS],
+  pub expression_pedals: [Option<(PedalTarget, PedalVolumeCurve)>; NUM_PEDALS],
 }
 
 /// The live subset of resolved settings.
 pub(super) fn live_params(s: &Settings) -> LiveParams {
   let mut expression_pedals = [None; NUM_PEDALS];
-  for &(pedal, grid, curve) in &s.expression_pedals {
+  for &(pedal, target, curve) in &s.expression_pedals {
     if let Some(slot) = expression_pedals.get_mut(pedal) {
-      *slot = Some((grid, curve));
+      *slot = Some((target, curve));
     }
   }
   LiveParams {
