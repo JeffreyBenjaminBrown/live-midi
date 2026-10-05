@@ -1040,7 +1040,7 @@ outside 1..2, the same channel or the same monome claimed twice, a monome
 with no ~edo_note_grid~, and a monome with a ~volume_delta~ (whose tone volume
 already owns the per-voice gain a grid pedal drives; use a global_volume pedal there).
 
-*Volpedal roles* (TODO/volpedal-per-monome_granular-sustain). The volpedal rig
+*Volpedal roles* (TODO/volpedal-newnotes-and-global_granular-sustain). The volpedal rig
 plugs one pedal of each into every grid:
 
 #+begin_src toml

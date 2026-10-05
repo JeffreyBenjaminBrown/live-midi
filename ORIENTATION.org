@@ -88,7 +88,7 @@ slots, and eleven freehand loop slots persisted by physical serial id.  Player r
 =compact_loops.rs=, and =compact_loops_persist.rs=; dispatch remains in =keys.rs=,
 LEDs in =paint.rs=, and global equal-pitch packing in =synth.rs=.
 
-* the volume-pedal instrument: volpedal-per-monome_granular-sustain
+* the volume-pedal instrument: volpedal-newnotes-and-global_granular-sustain
 The newest sibling of the reduced rig (2026-10): the same one-or-two unpinned
 grids, tuning, timbres and volume keys, minus chords, loops and the tone-target
 cell, plus two rig-wide EX-P pedals -- a *new-note* pedal setting each note's start
@@ -97,9 +97,9 @@ with two =pedal_toggle= buttons, a per-note sustain *handle* (the cell directly
 below a sounding note), on-grid OFF / ON / TOGGLE-WHAT-ON-MEANS sustain
 buttons, and fingerless sustained notes that flash (=flash_sustained=, painted
 through =paint::lit_classes=). Player reference:
-[[./rigs/volpedal-per-monome_granular-sustain_readme.org]]; rig:
-=rigs/volpedal-per-monome_granular-sustain.org=; design and decisions:
-=TODO/volpedal-per-monome_granular-sustain/1_discussion.org=. Runtime pieces: the
+[[./rigs/volpedal-newnotes-and-global_granular-sustain_readme.org]]; rig:
+=rigs/volpedal-newnotes-and-global_granular-sustain.org=; design and decisions:
+=TODO/volpedal-newnotes-and-global_granular-sustain/1_discussion.org=. Runtime pieces: the
 pedals are =PedalTarget::{NewNote,Global}= in =settings.rs=, their levels and each
 grid's opt-ins in =synth::PedalLevels= (written by =pedal_volume.rs= and the
 toggles in =keys.rs=). A note copies its grid's new-note level into a constant

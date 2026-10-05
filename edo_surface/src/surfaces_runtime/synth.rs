@@ -290,7 +290,7 @@ pub struct SurfaceSink {
   pedal_levels: SharedPedalLevels,
 }
 
-/// The volpedal pedals as the notes see them (TODO/volpedal-per-monome_granular-sustain),
+/// The volpedal pedals as the notes see them (TODO/volpedal-newnotes-and-global_granular-sustain),
 /// by grid index: the level each pedal last set there (written by the pedal thread),
 /// and whether the grid is opted in to it (its `pedal_toggle` buttons, written by the
 /// grid threads). Unity until a pedal first moves, so an unplugged pedal never mutes
@@ -1389,7 +1389,7 @@ pub fn retimbre_tone_target(
 }
 
 /// Aim every voice on `grid` -- held, sustained, releasing, chord or loop -- at the
-/// global volume pedal's level `gain` (TODO/volpedal-per-monome_granular-sustain). The
+/// global volume pedal's level `gain` (TODO/volpedal-newnotes-and-global_granular-sustain). The
 /// engine slews each voice there, so a sweep or an opt-in flip glides. Called by the
 /// pedal thread when the pedal moves and by the grid thread when its toggle flips.
 pub fn aim_global_pedal(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {

@@ -1,19 +1,20 @@
-* volpedal-per-monome_granular-sustain
+* volpedal-newnotes-and-global_granular-sustain
 ** about
 TOML-in-org format reference: [[file:README.org]]
-Player reference: [[file:volpedal-per-monome_granular-sustain_readme.org]]
-Design: [[file:../TODO/volpedal-per-monome_granular-sustain/1_discussion.org]]
+Player reference: [[file:volpedal-newnotes-and-global_granular-sustain_readme.org]]
+Design: [[file:../TODO/volpedal-newnotes-and-global_granular-sustain/1_discussion.org]]
 Run from the repository root:
-=pw-jack cargo run --bin midi_pulse -- volpedal-per-monome_granular-sustain=
+=pw-jack cargo run --bin midi_pulse -- volpedal-newnotes-and-global_granular-sustain=
 Derived from [[file:monomes_two-timbres_sustain_chords.org]]: the same grids,
 tuning, sound, timbres and volume keys, minus chords, loops and the tone target,
 plus two EX-P pedals -- one setting each new note's starting volume, one a live
 global volume over every note -- which each monome opts into with its own two
 buttons, a per-note sustain handle one cell below each sounding note, and three
-sustain buttons. Hence the name: volume pedals per monome, and sustain note by note.
+sustain buttons. Hence the name: a new-notes pedal and a global pedal, and
+sustain note by note.
 ** identity
 *** PARAM version = 1
-*** PARAM id = "volpedal-per-monome_granular-sustain"
+*** PARAM id = "volpedal-newnotes-and-global_granular-sustain"
 *** PARAM title = "Monomes: new-note and global volume pedals, opted into per grid"
 ** ELEM tunings
 *** some favorite tunings

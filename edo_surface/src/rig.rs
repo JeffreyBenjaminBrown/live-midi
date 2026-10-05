@@ -164,7 +164,7 @@ pub struct ExpressionPedalRig {
 }
 
 /// What a pedal does on the grids it plugs into (`[[expression_pedals]] role = ...`).
-/// The two volpedal roles (TODO/volpedal-per-monome_granular-sustain) each drive a
+/// The two volpedal roles (TODO/volpedal-newnotes-and-global_granular-sustain) each drive a
 /// per-voice gain of their own, so they multiply with each other and with every other
 /// volume control; a grid opts in or out of each with a `pedal_toggle`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq)]
@@ -986,7 +986,7 @@ pub enum MonomeWindowRig {
     initially_on: Option<bool>,
   },
   // A single-cell opt-in for one of the volpedal pedal roles (surfaces runtime,
-  // TODO/volpedal-per-monome_granular-sustain): lit = the grid named by `controls`
+  // TODO/volpedal-newnotes-and-global_granular-sustain): lit = the grid named by `controls`
   // (default: its own) listens to the rig's `role` pedal, dim = it ignores it.
   PedalToggle {
     id: String,
@@ -5095,7 +5095,7 @@ monome = "b"
     bad(&with("curve_remainder_exp_db = 0.0\n"), "curve_remainder_exp_db");
   }
 
-  // ---- volpedal roles and toggles, note handles, initially_on (TODO/volpedal-per-monome_granular-sustain) ----
+  // ---- volpedal roles and toggles, note handles, initially_on (TODO/volpedal-newnotes-and-global_granular-sustain) ----
 
   /// The volpedal rig's wiring: a new-note pedal and a global pedal, each on every grid.
   const VOLPEDALS: &str = r#"

@@ -89,6 +89,11 @@ A pedal's job is now =role=: ="grid_volume"= (the old per-grid pedal, still the
 default), ="new_note_volume"= or ="global_volume"=. The opt-in buttons are a new
 widget, =pedal_toggle=, with =role=, =controls= (which grid; default its own) and
 =initially_on=. The wiring map in =rigs/README.org= lists them.
+* [Jeff] (in chat) the name, again
+oh hmm now it should be called volpedal-newnotes-and-global_granular-sustain
+* [Claude] renamed again
+The rig file, its readme, this directory and every reference now use it. Your
+quoted earlier names above are left as written.
 * still open
 ** TODO hear it on the grids and pedals
 Remember the pedal bridge: run =tools/pedals/bridge.sh= on the host before the

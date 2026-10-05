@@ -14,8 +14,8 @@ If there are two monomes, the two pedals apply to both,
 but the sustain buttons apply only to each separately.
 Timbres and volumes apply to each separately.
 * [Claude] response
-I built it. The rig is =rigs/volpedal-per-monome_granular-sustain.org=, its player
-reference is =rigs/volpedal-per-monome_granular-sustain_readme.org=, and nothing is
+I built it. The rig is =rigs/volpedal-newnotes-and-global_granular-sustain.org=, its player
+reference is =rigs/volpedal-newnotes-and-global_granular-sustain_readme.org=, and nothing is
 committed yet. The vision was complete enough to build without questions; the
 TODOs below are the things only you can do or decide.
 ** TODO hear it on the grids and pedals
@@ -23,7 +23,7 @@ I can't hear the synth or see the grids from the container. Everything below
 passed against mock grids, but not yet against real ones.
 *** setup
 Run =tools/pedals/bridge.sh= on the host, then from the container:
-=pw-jack cargo run --bin midi_pulse -- volpedal-per-monome_granular-sustain=.
+=pw-jack cargo run --bin midi_pulse -- volpedal-newnotes-and-global_granular-sustain=.
 *** the handle
 Hold a note and press the cell directly below it. The press should make no
 sound. Lift the note: it should keep ringing. Press the same cell below again:

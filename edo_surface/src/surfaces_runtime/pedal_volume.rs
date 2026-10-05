@@ -127,7 +127,7 @@ pub(super) fn apply_pedal_gain(
 /// re-keyed them, which is the race that broke it (6_plan.org's ranked cause 1); with
 /// the engine unreachable from this thread, that class of bug is no longer expressible.
 ///
-/// The volpedal roles (TODO/volpedal-per-monome_granular-sustain) take a much shorter
+/// The volpedal roles (TODO/volpedal-newnotes-and-global_granular-sustain) take a much shorter
 /// path: no slide duty and no edit trims. A NEW-NOTE pedal move only records the level
 /// in the shared `pedal_levels`, which each note reads once, as it starts
 /// (`set_new_note_pedal`). A GLOBAL pedal move records it and re-aims every voice on

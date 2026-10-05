@@ -222,7 +222,7 @@ pub(super) struct Settings {
 
 /// What one EX-P volume pedal drives: the rig's two plugs (`monome` x `role`)
 /// resolved to grid indices (= positions in `Settings::grids`); `None` = every grid
-/// (the rig named no monome). TODO/volpedal-per-monome_granular-sustain.
+/// (the rig named no monome). TODO/volpedal-newnotes-and-global_granular-sustain.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PedalTarget {
   /// `role = "grid_volume"`: every voice on one grid, live -- the grid volume pedal.

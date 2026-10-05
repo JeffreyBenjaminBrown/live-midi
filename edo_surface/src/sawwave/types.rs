@@ -264,7 +264,7 @@ pub struct VoiceState {
   // render input), so the render is unchanged: `grid_gain` still slews to the target.
   pub pedal_scale:      f32,
   // The NEW-NOTE pedal (the surfaces runtime's `[[expression_pedals]] role = "new_note_volume"`,
-  // TODO/volpedal-per-monome_granular-sustain): an ABSOLUTE multiplier in [0,1], the
+  // TODO/volpedal-newnotes-and-global_granular-sustain): an ABSOLUTE multiplier in [0,1], the
   // pedal's level at the moment this voice started, fixed for its life -- the pedal
   // never changes a sounding note. A separate factor from `grid_gain` because rigs
   // with tone controls (`volume_delta`) already own `grid_gain`; everything
