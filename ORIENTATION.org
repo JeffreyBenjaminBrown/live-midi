@@ -89,6 +89,23 @@ slots, and eleven freehand loop slots persisted by physical serial id.  Player r
 =compact_loops.rs=, and =compact_loops_persist.rs=; dispatch remains in =keys.rs=,
 LEDs in =paint.rs=, and global equal-pitch packing in =synth.rs=.
 
+* the volume-pedal instrument: volpedal-sustain_volpedal-newvoice
+The newest sibling of the reduced rig (2026-10): the same one-or-two unpinned
+grids, tuning, timbres and volume keys, minus chords, loops and the tone-target
+cell, plus an EX-P *new-notes pedal* per grid that drives that grid's held notes
+(and lets go of a note when its finger lifts), a per-note sustain *handle* (the cell directly
+below a sounding note), and on-grid OFF / ON / TOGGLE-WHAT-ON-MEANS sustain
+buttons. Player reference:
+[[./rigs/volpedal-sustain_volpedal-newvoice_readme.org]]; rig:
+=rigs/volpedal-sustain_volpedal-newvoice.org=; design and decisions:
+=TODO/volpedal-sustain_volpedal-newvoice/1_discussion.org=. Runtime pieces: the
+pedals are =PedalTarget::NewNotes= in =settings.rs=, a separate slewed
+=new_pedal_gain= factor on every voice (=sawwave/types.rs=, rendered in
+=sawwave/voices.rs=), with per-grid levels in =synth::NewPedalGains=. A strike is
+born at its grid's level, and a pedal move re-aims that grid's finger-held voices
+via =synth::aim_new_pedal= (from =pedal_volume.rs=); drones are never touched. The handle sides are =Handles= in
+=settings.rs=.
+
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.
 - Reference: [[./rigs/monome-looper-58-8-1_readme.org]];
@@ -155,18 +172,69 @@ See [[./MOCK-MONOME.org]]. Parallel-branch workflows: [[./how-to-parallelize-dev
   milestone just to ask permission. Do ask a *blocking* question when genuinely
   stuck or when an instruction contradicts what's on disk.
 - Commit in natural, bite-sized chunks.
+- *Rewiring a rig: read the wiring map first.* [[./rigs/README.org]] "The wiring
+  map" lists which widget connections are plugs (a rig edit) and which are still
+  fixed in code.
+- *Tests read the rig; they never pin it.* Jeff edits rigs constantly, so a test
+  computes cells, pitches and intervals from the loaded rig, or sets the one
+  setting it is about. See [[file:README_AI.org][README_AI.org]] "Tests must read the rig, not pin it".
+- *Design conversations happen in org files, not the CLI.* A topic gets a
+  directory =TODO/<topic>/= of numbered docs (=1_vision=, =2_discussion=,
+  =3_plan=, =progress=); Jeff may instead write a =* [Jeff] vision= headline in a
+  =1_discussion.org= and expect a =* [Claude] ...= reply in the same file. In
+  those replies every subdivision is an org headline (no =-= lists, no tables
+  for glossaries), questions go under their own headline, and only the
+  headlines that need Jeff's attention are marked =TODO=. He answers as
+  sub-headlines under each question.
+
+* my-dot-claude: Claude's own state
+=my-dot-claude/= at the top of each worktree is =CLAUDE_CONFIG_DIR= for sessions
+in that worktree's container: =docker.sh= overrides the image default
+(=/home/ubuntu/host/my-dot-claude=, which is what its own =README.md= still
+says -- that README was written for a different project) with
+=$ROOT/$REL/my-dot-claude=. So each worktree has its OWN Claude state:
+credentials, history, transcripts and memory written in =worktrees/2= are not
+visible from a =worktrees/main= session's config (though the read-only root
+mount lets you read them by path).
+- *It is its own git repo* (github.com/JeffreyBenjaminBrown/my-dot-claude),
+  gitignored by this one. A whitelist =.gitignore= tracks only =settings.json=,
+  =README.md=, =before-relaunch.sh= and =hooks/=; everything else Claude writes
+  there (=.credentials.json=, =.claude.json=, =history.jsonl=, =projects/=,
+  =sessions/=) stays untracked. Never commit or print the credentials.
+- *Hooks*: =settings.json= runs =hooks/beep-if-main-agent.sh= on =Stop=
+  (soothing beep) and before =ExitPlanMode= / =AskUserQuestion= (harsh beep),
+  silent for subagents. That beep is how Jeff learns it is his turn.
+- *Memory* lives at =projects/<slug>/memory/MEMORY.md=. Don't guess the slug: it
+  is *not* reliably this checkout's path. In both =worktrees/2= and
+  =worktrees/main= sessions it has been =-home-ubuntu-host--bare=, i.e. slugged
+  from the *bare repo*; the directory is created lazily on first write, and each
+  session is told its own path. =ls my-dot-claude/projects/= to see what exists.
+  (There is no =~/.claude=.)
+- *Past session transcripts* live beside it under the worktree-path slug
+  (=projects/-home-ubuntu-host-worktrees-main/*.jsonl=, one file per session).
+  They are the quickest way to learn how Jeff phrased an earlier request and what
+  was done about it. To list his prompts:
+  #+begin_src sh
+  python3 - <<'PY'
+  import json, glob, os
+  d = 'my-dot-claude/projects/-home-ubuntu-host-worktrees-main'
+  for f in sorted(glob.glob(d + '/*.jsonl'), key=os.path.getmtime):
+      for line in open(f):
+          m = json.loads(line)
+          c = m.get('message', {}).get('content') if m.get('type') == 'user' else None
+          if isinstance(c, str) and not c.startswith('<'):
+              print(os.path.basename(f)[:8], m.get('timestamp', '')[:10], c[:300])
+  PY
+  #+end_src
+- *Codex's counterpart* is =.codex/homestate/= (mounted as the container's
+  =~/.codex= when nonempty; gitignored). Its =history.jsonl= holds Jeff's Codex
+  prompts. It also holds =auth.json= -- never print it.
 
 * deeper pointers
 - [[./rigs/README.org]] -- the rig system (windows, kinds, the
   =[looper]= table).
 - [[./architecture.org]] -- container/audio architecture in full.
-- Claude's persistent memory index: =my-dot-claude/projects/<slug>/memory/MEMORY.md=
-  -- gitignored. Don't guess the slug: it is *not* reliably this checkout's path (in
-  a =worktrees/2= session it has been =-home-ubuntu-host--bare=, i.e. slugged from
-  the *bare repo*), the directory is created lazily on first write, and each session
-  is told its own path. Read the one you are given; =ls my-dot-claude/projects/= to
-  see what exists. (There is no =~/.claude=; the pointer here used to claim
-  otherwise.)
+- Claude's own state, memory included: see "my-dot-claude" below.
 * also possibly relevant files
 - README.org
 - rigs/README.org -- the rig system. It has been =configs/= and then

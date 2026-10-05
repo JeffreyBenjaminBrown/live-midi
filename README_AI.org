@@ -19,6 +19,22 @@ Then follow whichever of these its task calls for:
   =TODO/DONE/=.  For a sequence of numbered design documents, later plans
   supersede earlier plans unless its local README says otherwise.
 
+* Tests must read the rig, not pin it
+Jeff edits the rig files constantly: tunings, layouts, which pedal or handle
+does what.  A rig edit must never break a test.  So a test must not hardcode
+anything a rig decides: no literal cells for controls, no pitches or intervals
+that assume one tuning, no expected rects, curves or channel numbers copied out
+of a rig file.  Read the loaded rig instead (or the resolved settings, or a
+grid thread's overlays, tuning and knobs) and compute what the test needs.
+When a test is about one particular setting, set that setting on the loaded rig
+or in an inline TOML fixture inside the test, rather than relying on a shipped
+rig to keep it.  The helpers under "reading the rig instead of pinning it" in
+=edo_surface/src/surfaces_runtime/tests.rs= show the pattern.
+
+Earlier agents did pin rig values, and many older tests still do.  When grid A
+was retuned from 46-EDO to 41, ten pedal-slide tests failed while the code was
+fine.  Convert such a test whenever you touch it.
+
 The older [[file:README.org][README.org]] is muddled: it mixes a few user operations, architecture
 notes, and AI/developer reminders, so it is not exactly a README for either kind
 of reader.  Treat it as supplementary historical/operational notes, not as the
