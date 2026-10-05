@@ -1,4 +1,4 @@
-#+title: Monomes: a volume pedal per grid for new notes
+#+title: Monomes: new-note and global volume pedals, opted into per grid
 
 * Run
 Connect one or two 16x16 monomes. For the pedals, run =tools/pedals/bridge.sh=
@@ -23,23 +23,32 @@ y=1  | -12  -2  +2 +12  . . . . . . . . .            SHIFT SHIFT SHIFT
      |
      |                   EDO PLAY SURFACE
      |
-y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
-                    x=6  x=7  x=8
+y=15 | NEW GLOBAL . . . .  OFF  ON  TOGGLE  . . . . . . .
+       x=0   x=1          x=6  x=7  x=8
 #+end_example
+NEW and GLOBAL opt this grid into the two pedals (see "The pedals").
 Everything else is play surface: 41-EDO from 110 Hz, eight steps per cell
 rightward and one step per cell downward. A control at rest flashes dim on the
 shared 150 ms clock; a lit control is solid bright. A held note is solid bright,
 and a sustained note no finger holds flashes bright on that same clock.
 
 * The pedals
-** what each drives
-Each grid has its own pedal: MPC-20 channel 1 for grid A, channel 2 for grid B.
-A grid's pedal sets how loud the notes you strike on that grid start. It
-multiplies with the volume keys and everything else.
-** notes already sounding
-The pedal never changes them. A note keeps the level it started at for its whole
-life, held or sustained, whatever the pedal does afterwards. Striking a
-sustained pitch again starts a new note, at the pedal's current level.
+** what they do
+A note's volume at any moment is its START level times the GLOBAL level, times
+the volume keys and the rest.
+*** the new-note pedal (MPC-20 channel 1)
+It sets the level each note starts at. The note keeps that level for its whole
+life, held or sustained; moving the pedal never changes a note already sounding.
+Striking a sustained pitch again starts a new note, at the pedal's current level.
+*** the global pedal (MPC-20 channel 2)
+It scales every note live, held or sustained, gliding over 20 ms so sweeps are
+smooth.
+** opting in, per grid
+Each grid has two buttons at the bottom-left. NEW (x=0) lit means notes struck
+on this grid start at the new-note pedal's level; dim means they start at
+unity. GLOBAL (x=1) lit means every note on this grid rides the global pedal;
+dim means they glide to unity and ignore it. Both start lit. Each grid's buttons
+are its own, so one grid can follow a pedal while the other ignores it.
 ** the taper
 Heel is silent and toe is unity. The top 90% of the travel is dB-linear over
 50 dB, and the first 10% fades linearly to exact silence. Both knobs are in
@@ -47,8 +56,7 @@ the rig and reload live with =r= then Enter. Until a pedal sends its first CC
 it counts as unity, so an unplugged pedal mutes nothing.
 ** cabling
 If the pedals arrive the other way round, swap the two =channel= values in the
-rig. For one pedal on both grids, delete one pedal and drop =monome= from the
-other.
+rig.
 
 * Sustain
 Each grid has its own sustained set. OFF, ON and TOGGLE act on their own grid

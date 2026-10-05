@@ -263,13 +263,20 @@ pub struct VoiceState {
   // RIDES the uniform pedal afterward. It folds into `grid_gain_target` (not a separate
   // render input), so the render is unchanged: `grid_gain` still slews to the target.
   pub pedal_scale:      f32,
-  // The NEW-NOTES pedal (the surfaces runtime's `[[expression_pedals]] voices = "new"`,
+  // The NEW-NOTE pedal (the surfaces runtime's `[[expression_pedals]] role = "new_note_volume"`,
   // TODO/volpedal-per-monome_granular-sustain): an ABSOLUTE multiplier in [0,1], the
   // pedal's level at the moment this voice started, fixed for its life -- the pedal
   // never changes a sounding note. A separate factor from `grid_gain` because rigs
   // with tone controls (`volume_delta`) already own `grid_gain`; everything
   // multiplies. 1.0 wherever that pedal doesn't exist -- every other rig.
   pub new_pedal_gain:   f32,
+  // The GLOBAL volume pedal (`[[expression_pedals]] role = "global_volume"`, same
+  // TODO): a live ABSOLUTE multiplier in [0,1] on every note of an opted-in grid.
+  // `global_pedal_gain` chases `global_pedal_gain_target` with the same per-sample
+  // slew as `grid_gain` (`voices::GAIN_SLEW_SECS`), so sweeps and opt-in flips don't
+  // zipper or click. Both 1.0 wherever that pedal doesn't exist -- every other rig.
+  pub global_pedal_gain:        f32,
+  pub global_pedal_gain_target: f32,
   // Pedal-slide flight (the surfaces runtime's `pedal_slide_toggle`,
   // TODO/pedal-slide): while a grid's pedal slide is driving this voice, `freq`
   // chases `slide_freq_target` per sample with a one-pole smoother

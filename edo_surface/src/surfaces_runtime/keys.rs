@@ -241,6 +241,34 @@ pub(super) fn handle_key(
   // pitch is yanked -- until the first pick. Leaving freezes every sliding voice
   // exactly where it is and drops the maps; the pedal thread resumes volume duty on
   // its next poll.
+  // The volpedal opt-ins (TODO/volpedal-per-monome_granular-sustain): a press flips
+  // whether the controlled grid listens to the rig's new-note pedal (its next notes'
+  // starting level; nothing sounding changes) or its global pedal (every note there
+  // glides to the pedal's level, or back to unity).
+  if in_overlay(rt.overlays.new_note_toggle_rect, cell) {
+    if press {
+      let g = rt.knobs.new_note_toggle_controls;
+      let mut levels = rt.shared.pedal_levels.lock().unwrap_or_else(|e| e.into_inner());
+      if let Some(on) = levels.new_note_on.get_mut(g) {
+        *on = !*on;
+      }
+    }
+    return;
+  }
+  if in_overlay(rt.overlays.global_toggle_rect, cell) {
+    if press {
+      let g = rt.knobs.global_toggle_controls;
+      let level = {
+        let mut levels = rt.shared.pedal_levels.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(on) = levels.global_on.get_mut(g) {
+          *on = !*on;
+        }
+        levels.global_level(g)
+      };
+      synth::aim_global_pedal(&rt.shared.voices, g, level);
+    }
+    return;
+  }
   if in_overlay(rt.overlays.pedal_slide_rect, cell) {
     if press {
       let now_on = !rt.shared.pedal_slide_on[rt.grid_index].load(Ordering::Relaxed);

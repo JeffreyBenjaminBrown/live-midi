@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::rig::{
   AccreteControlKind, AmShapeFamilyRig, EditmodeControlKind, HandleSide, MonomeWindowRig,
-  PedalVoices, Rig, SinkRig, SoftstepWindowRig, WaveformChoice,
+  PedalRole, Rig, SinkRig, SoftstepWindowRig, WaveformChoice,
 };
 
 use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Waveform};
@@ -80,6 +80,10 @@ pub(super) struct Overlays {
   /// The pedal-slide toggle's cell, `NO_RECT` when absent (per-monome; switches this
   /// grid's EX-P pedal between volume duty and the pitch-slide engine).
   pub(super) pedal_slide_rect: [i32; 4],
+  /// The volpedal opt-in buttons (`pedal_toggle`), `NO_RECT` when absent: lit = the
+  /// controlled grid listens to the rig's new-note / global volume pedal.
+  pub(super) new_note_toggle_rect: [i32; 4],
+  pub(super) global_toggle_rect: [i32; 4],
   /// The 3x2 polyrhythm pad's rect (x3/x2/tap over /3//2/=1), `NO_RECT` when absent.
   pub(super) poly_rect: [i32; 4],
   /// The editmode_control buttons' cells, `NO_RECT` when absent: clear empties
@@ -134,6 +138,10 @@ pub(super) struct GridSettings {
   pub(super) handles: Handles,
   /// Whether this grid flashes its sustained notes (`edo_note_grid` `flash_sustained`).
   pub(super) flash_sustained: bool,
+  /// The grids this grid's `pedal_toggle` buttons opt in or out (their `controls`;
+  /// itself when absent), as grid indices.
+  pub(super) new_note_toggle_controls: usize,
+  pub(super) global_toggle_controls: usize,
 }
 
 /// A play grid's neighbour handles (keys.rs `handle_edit_press`): for each gesture, the
@@ -212,15 +220,17 @@ pub(super) struct Settings {
   pub(super) expression_pedals: Vec<(usize, PedalTarget, PedalVolumeCurve)>,
 }
 
-/// What one EX-P volume pedal drives: the rig's two plugs (`monome` x `voices`)
-/// resolved to grid indices (= positions in `Settings::grids`).
+/// What one EX-P volume pedal drives: the rig's two plugs (`monome` x `role`)
+/// resolved to grid indices (= positions in `Settings::grids`); `None` = every grid
+/// (the rig named no monome). TODO/volpedal-per-monome_granular-sustain.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PedalTarget {
-  /// `voices = "all"`: every voice on one grid -- the grid volume pedal.
+  /// `role = "grid_volume"`: every voice on one grid, live -- the grid volume pedal.
   Grid(usize),
-  /// `voices = "new"`: the starting level of notes struck on one grid, or on every grid
-  /// (`None`, the rig named no monome). TODO/volpedal-per-monome_granular-sustain.
-  NewNotes(Option<usize>),
+  /// `role = "new_note_volume"`: the starting level of each note struck there.
+  NewNote(Option<usize>),
+  /// `role = "global_volume"`: a live multiplier on every note there.
+  Global(Option<usize>),
 }
 
 pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -401,6 +411,24 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         _ => None,
       })
       .unwrap_or(NO_RECT);
+    // The volpedal opt-in buttons and the grid each one controls (default: this one).
+    let pedal_toggle = |want: PedalRole| {
+      rig
+        .monome_windows
+        .iter()
+        .find_map(|w| match w {
+          MonomeWindowRig::PedalToggle { monome, rect, role, controls, .. }
+            if monome == monome_id && *role == want =>
+          {
+            Some((*rect, controls.as_deref().and_then(index_of)))
+          }
+          _ => None,
+        })
+        .map_or((NO_RECT, None), |(rect, idx)| (rect, idx))
+    };
+    let own_index = index_of(monome_id).expect("a play grid's own index");
+    let (new_note_toggle_rect, new_note_controls) = pedal_toggle(PedalRole::NewNoteVolume);
+    let (global_toggle_rect, global_controls) = pedal_toggle(PedalRole::GlobalVolume);
     let poly_rect = rig
       .monome_windows
       .iter()
@@ -485,6 +513,8 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       slide_rect,
       mono_rect,
       pedal_slide_rect,
+      new_note_toggle_rect,
+      global_toggle_rect,
       poly_rect,
       editmode_clear_rect: editmode_rect_on(EditmodeControlKind::Clear),
       editmode_accrete_rect: editmode_rect_on(EditmodeControlKind::Accrete),
@@ -526,6 +556,8 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       overlays,
       handles,
       flash_sustained,
+      new_note_toggle_controls: new_note_controls.unwrap_or(own_index),
+      global_toggle_controls: global_controls.unwrap_or(own_index),
     });
   }
 
@@ -551,11 +583,14 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     .iter()
     .filter_map(|p| {
       let grid = |monome: &String| grids.iter().position(|g| &g.monome_id == monome);
-      let target = match (p.voices, &p.monome) {
-        (PedalVoices::All, Some(monome)) => PedalTarget::Grid(grid(monome)?),
-        (PedalVoices::All, None) => return None,
-        (PedalVoices::New, Some(monome)) => PedalTarget::NewNotes(Some(grid(monome)?)),
-        (PedalVoices::New, None) => PedalTarget::NewNotes(None),
+      let some_grid = match &p.monome {
+        Some(monome) => Some(grid(monome)?),
+        None => None,
+      };
+      let target = match p.role {
+        PedalRole::GridVolume => PedalTarget::Grid(some_grid?),
+        PedalRole::NewNoteVolume => PedalTarget::NewNote(some_grid),
+        PedalRole::GlobalVolume => PedalTarget::Global(some_grid),
       };
       let curve = PedalVolumeCurve {
         lin_frac: p.curve_initial_lin_frac,
@@ -766,6 +801,29 @@ pub(super) fn grid_needs_holding_initially_on(rig: &Rig, grid: &GridSettings) ->
       } if *monome == grid.monome_id
     )
   })
+}
+
+/// Whether each grid starts opted in to the `role` pedal: as its controlling
+/// `pedal_toggle` says (`initially_on`, default true), and true for a grid no toggle
+/// controls -- a pedal reaches every grid it plugs into unless a button says otherwise.
+pub(super) fn initial_pedal_optin(rig: &Rig, grids: &[GridSettings], role: PedalRole) -> Vec<bool> {
+  grids
+    .iter()
+    .map(|g| {
+      rig
+        .monome_windows
+        .iter()
+        .find_map(|w| match w {
+          MonomeWindowRig::PedalToggle { monome, role: r, controls, initially_on, .. }
+            if *r == role && controls.as_ref().unwrap_or(monome) == &g.monome_id =>
+          {
+            Some(initially_on.unwrap_or(true))
+          }
+          _ => None,
+        })
+        .unwrap_or(true)
+    })
+    .collect()
 }
 
 pub(super) fn current_slot(selected: &Arc<Mutex<Vec<usize>>>, index: usize) -> usize {

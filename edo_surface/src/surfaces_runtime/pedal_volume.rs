@@ -15,7 +15,7 @@ use crate::types::{VoiceMap, VoiceSource};
 use super::pedal_slide::VolumeReturn;
 use super::ring::{GridRing, Reason};
 use super::settings::PedalTarget;
-use super::synth::{self, NewPedalGains};
+use super::synth::{self, SharedPedalLevels};
 use super::{Live, STOP};
 
 /// This grid's edit selection as the pedal-volume path needs it: the edit-mode pitches
@@ -127,17 +127,17 @@ pub(super) fn apply_pedal_gain(
 /// re-keyed them, which is the race that broke it (6_plan.org's ranked cause 1); with
 /// the engine unreachable from this thread, that class of bug is no longer expressible.
 ///
-/// A NEW-NOTES pedal (`voices = "new"`, TODO/volpedal-per-monome_granular-sustain)
-/// takes a much shorter path: no slide duty, no edit trims, and no sounding voice is
-/// touched. A move only sets its grid's entry (or every grid's) in the shared
-/// `new_pedal_gains`, which each note reads once, when it starts
-/// (`set_new_pedal_gains`).
+/// The volpedal roles (TODO/volpedal-per-monome_granular-sustain) take a much shorter
+/// path: no slide duty and no edit trims. A NEW-NOTE pedal move only records the level
+/// in the shared `pedal_levels`, which each note reads once, as it starts
+/// (`set_new_note_pedal`). A GLOBAL pedal move records it and re-aims every voice on
+/// the grids it reaches, as far as each grid's opt-in allows (`set_global_pedal`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
   voices: Arc<Mutex<VoiceMap>>,
   pedal_gains: Arc<Mutex<Vec<f32>>>,
-  new_pedal_gains: NewPedalGains,
+  pedal_levels: SharedPedalLevels,
   pedal_slide_on: Arc<Vec<AtomicBool>>,
   pedal_slide_frac: Arc<Vec<AtomicU32>>,
   ring: Arc<Mutex<Vec<GridRing>>>,
@@ -165,28 +165,36 @@ pub(super) fn expression_pedal_loop(
     last_generation = generation;
     let map = live.params.lock().unwrap_or_else(|e| e.into_inner()).expression_pedals;
     let pedals = reader.pedals();
-    let num_grids = new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner()).len();
-    let mut new_pedal_bound = vec![false; num_grids];
+    let num_grids = pedal_levels.lock().unwrap_or_else(|e| e.into_inner()).new_note.len();
+    let mut new_note_bound = vec![false; num_grids];
+    let mut global_bound = vec![false; num_grids];
     for (pedal, binding) in map.iter().enumerate() {
       let Some((target, curve)) = *binding else { continue };
       let p = pedals[pedal];
       let grid = match target {
         PedalTarget::Grid(grid) => grid,
-        PedalTarget::NewNotes(grids) => {
+        PedalTarget::NewNote(grids) | PedalTarget::Global(grids) => {
+          let global = matches!(target, PedalTarget::Global(_));
           let targets: Vec<usize> = match grids {
             Some(g) => vec![g],
             None => (0..num_grids).collect(),
           };
+          let bound = if global { &mut global_bound } else { &mut new_note_bound };
           for g in &targets {
-            if let Some(bound) = new_pedal_bound.get_mut(*g) {
-              *bound = true;
+            if let Some(b) = bound.get_mut(*g) {
+              *b = true;
             }
           }
-          // No CC yet = no position to trust: held notes stay at unity. A reload
+          // No CC yet = no position to trust: the level stays at unity. A reload
           // re-applies a known position through the (possibly new) taper.
           if p.updates > 0 && (reloaded || last[pedal] != p.norm) {
             last[pedal] = p.norm;
-            set_new_pedal_gains(&new_pedal_gains, &targets, curve.gain(p.norm));
+            let gain = curve.gain(p.norm);
+            if global {
+              set_global_pedal(&pedal_levels, &voices, &targets, gain);
+            } else {
+              set_new_note_pedal(&pedal_levels, &targets, gain);
+            }
           }
           continue;
         }
@@ -276,21 +284,52 @@ pub(super) fn expression_pedal_loop(
         );
       }
     }
-    // A grid whose new-notes pedal a reload unbound starts its notes at unity again.
-    let unbound: Vec<usize> = (0..num_grids).filter(|g| !new_pedal_bound[*g]).collect();
-    set_new_pedal_gains(&new_pedal_gains, &unbound, 1.0);
+    // A grid whose volpedal pedal a reload unbound goes back to unity (re-aimed only
+    // when something actually changes, so rigs without these pedals never pay).
+    let (unbound_new, unbound_global): (Vec<usize>, Vec<usize>) = {
+      let levels = pedal_levels.lock().unwrap_or_else(|e| e.into_inner());
+      (
+        (0..num_grids).filter(|g| !new_note_bound[*g] && levels.new_note[*g] != 1.0).collect(),
+        (0..num_grids).filter(|g| !global_bound[*g] && levels.global[*g] != 1.0).collect(),
+      )
+    };
+    set_new_note_pedal(&pedal_levels, &unbound_new, 1.0);
+    set_global_pedal(&pedal_levels, &voices, &unbound_global, 1.0);
     thread::sleep(Duration::from_millis(10));
   }
 }
 
-/// A new-notes pedal move: set the level that notes struck from now on take, on each
-/// of `grids`. Nothing already sounding is touched -- that is the whole behaviour.
-pub(super) fn set_new_pedal_gains(gains: &NewPedalGains, grids: &[usize], gain: f32) {
-  let mut gains = gains.lock().unwrap_or_else(|e| e.into_inner());
+/// A new-note pedal move: set the level that notes struck from now on start at, on
+/// each of `grids`. Nothing already sounding is touched -- that is the whole behaviour.
+pub(super) fn set_new_note_pedal(levels: &SharedPedalLevels, grids: &[usize], gain: f32) {
+  let mut levels = levels.lock().unwrap_or_else(|e| e.into_inner());
   for g in grids {
-    if let Some(entry) = gains.get_mut(*g) {
+    if let Some(entry) = levels.new_note.get_mut(*g) {
       *entry = gain;
     }
+  }
+}
+
+/// A global pedal move: record the level on each of `grids`, then re-aim every voice
+/// there at it -- or at unity, on a grid opted out (`PedalLevels::global_level`). The
+/// levels lock is released before the voice map's (never nested).
+pub(super) fn set_global_pedal(
+  levels: &SharedPedalLevels,
+  voices: &Arc<Mutex<VoiceMap>>,
+  grids: &[usize],
+  gain: f32,
+) {
+  let aims: Vec<(usize, f32)> = {
+    let mut levels = levels.lock().unwrap_or_else(|e| e.into_inner());
+    for g in grids {
+      if let Some(entry) = levels.global.get_mut(*g) {
+        *entry = gain;
+      }
+    }
+    grids.iter().map(|g| (*g, levels.global_level(*g))).collect()
+  };
+  for (g, level) in aims {
+    synth::aim_global_pedal(voices, g, level);
   }
 }
 

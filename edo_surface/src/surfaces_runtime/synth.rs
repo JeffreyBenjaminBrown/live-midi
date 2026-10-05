@@ -282,21 +282,63 @@ pub struct SurfaceSink {
   /// a fader or before its first move); `set_grid_fader_gain` re-aims voices already
   /// in flight. Two views of one vec, never two copies.
   fader_gains: Arc<Mutex<Vec<f32>>>,
-  /// The new-notes pedals' current gains, per grid, written by the pedal thread
-  /// (`[[expression_pedals]] voices = "new"`). A fresh fingered note takes its grid's
-  /// entry as its `new_pedal_gain` and keeps it for life; nothing re-aims it. Unity for
-  /// a grid without such a pedal.
-  new_pedal_gains: NewPedalGains,
+  /// The volpedal pedals as notes read them (`[[expression_pedals]] role = ...`). A
+  /// fresh fingered note takes its grid's new-note level as its `new_pedal_gain` for
+  /// life, and every voice this sink makes starts settled at the grid's global level --
+  /// the volume-spike lesson (BUG_volume-spike.org): never insert a voice at one gain
+  /// and slew it to another. Unity for a grid without those pedals.
+  pedal_levels: SharedPedalLevels,
 }
 
-/// The new-notes pedals' current gains, by grid index
-/// (TODO/volpedal-per-monome_granular-sustain). Unity until a pedal first moves, so an
-/// unplugged pedal never mutes anything; a missing entry also reads as unity.
-pub type NewPedalGains = Arc<Mutex<Vec<f32>>>;
+/// The volpedal pedals as the notes see them (TODO/volpedal-per-monome_granular-sustain),
+/// by grid index: the level each pedal last set there (written by the pedal thread),
+/// and whether the grid is opted in to it (its `pedal_toggle` buttons, written by the
+/// grid threads). Unity until a pedal first moves, so an unplugged pedal never mutes
+/// anything; a missing entry reads as unity and opted in.
+#[derive(Clone, Debug, Default)]
+pub struct PedalLevels {
+  pub new_note: Vec<f32>,
+  pub global: Vec<f32>,
+  pub new_note_on: Vec<bool>,
+  pub global_on: Vec<bool>,
+}
 
-/// Fresh, unity [`NewPedalGains`] for `num_grids` grids.
-pub fn unity_new_pedal_gains(num_grids: usize) -> NewPedalGains {
-  Arc::new(Mutex::new(vec![1.0; num_grids]))
+impl PedalLevels {
+  /// Every grid at unity and opted in to both pedals.
+  pub fn unity(num_grids: usize) -> Self {
+    PedalLevels {
+      new_note: vec![1.0; num_grids],
+      global: vec![1.0; num_grids],
+      new_note_on: vec![true; num_grids],
+      global_on: vec![true; num_grids],
+    }
+  }
+
+  /// The level a note struck on `grid` right now starts at, for life.
+  pub fn new_note_level(&self, grid: usize) -> f32 {
+    if self.new_note_on.get(grid).copied().unwrap_or(true) {
+      self.new_note.get(grid).copied().unwrap_or(1.0)
+    } else {
+      1.0
+    }
+  }
+
+  /// The live global multiplier every note on `grid` should sit at right now.
+  pub fn global_level(&self, grid: usize) -> f32 {
+    if self.global_on.get(grid).copied().unwrap_or(true) {
+      self.global.get(grid).copied().unwrap_or(1.0)
+    } else {
+      1.0
+    }
+  }
+}
+
+/// [`PedalLevels`], shared between the pedal thread, the grid threads and the sinks.
+pub type SharedPedalLevels = Arc<Mutex<PedalLevels>>;
+
+/// Fresh, unity [`SharedPedalLevels`] for `num_grids` grids.
+pub fn unity_pedal_levels(num_grids: usize) -> SharedPedalLevels {
+  Arc::new(Mutex::new(PedalLevels::unity(num_grids)))
 }
 
 impl SurfaceSink {
@@ -364,28 +406,31 @@ impl SurfaceSink {
       crowded,
       pedal_gains,
       fader_gains,
-      new_pedal_gains: unity_new_pedal_gains(0),
+      pedal_levels: unity_pedal_levels(0),
     }
   }
 
-  /// Share the new-notes pedals' gains with this sink (the runtime's one
-  /// `NewPedalGains`, which the pedal thread writes). Without this call the sink
-  /// reads unity.
-  pub fn with_new_pedal_gains(mut self, new_pedal_gains: NewPedalGains) -> Self {
-    self.new_pedal_gains = new_pedal_gains;
+  /// Share the volpedal pedal levels with this sink (the runtime's one
+  /// `SharedPedalLevels`). Without this call the sink reads unity.
+  pub fn with_pedal_levels(mut self, pedal_levels: SharedPedalLevels) -> Self {
+    self.pedal_levels = pedal_levels;
     self
   }
 
-  /// The new-notes pedal gains this sink reads, for tests that play the pedal thread.
+  /// The pedal levels this sink reads, for tests that play the pedal thread.
   #[cfg(test)]
-  pub fn new_pedal_gains_handle(&self) -> NewPedalGains {
-    Arc::clone(&self.new_pedal_gains)
+  pub fn pedal_levels_handle(&self) -> SharedPedalLevels {
+    Arc::clone(&self.pedal_levels)
   }
 
-  /// This grid's new-notes pedal gain (unity absent such a pedal).
+  /// The level a note struck on this grid now starts at (unity absent the pedal).
   fn current_new_pedal_gain(&self) -> f32 {
-    let gains = self.new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
-    gains.get(self.grid).copied().unwrap_or(1.0)
+    self.pedal_levels.lock().unwrap_or_else(|e| e.into_inner()).new_note_level(self.grid)
+  }
+
+  /// This grid's live global pedal level (unity absent the pedal).
+  fn current_global_gain(&self) -> f32 {
+    self.pedal_levels.lock().unwrap_or_else(|e| e.into_inner()).global_level(self.grid)
   }
 
   fn allocate_ratio(
@@ -495,8 +540,10 @@ impl SurfaceSink {
     let id = self.next_id;
     self.next_id += 1;
     let fader = self.fader_gain();
-    // The new-notes pedal's level right now becomes this note's, for its whole life.
+    // The new-note pedal's level right now becomes this note's, for its whole life;
+    // the global pedal's is where its live factor starts.
     let new_pedal_gain = self.current_new_pedal_gain();
+    let global = self.current_global_gain();
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let key = voice_key(self.grid, cell);
     let crowded_ratio = self.allocate_ratio(&voices, key, pitch);
@@ -523,7 +570,8 @@ impl SurfaceSink {
         fader_gain: fader,
         grid_gain,
         grid_gain_target: grid_gain, pedal_scale: 1.0,
-        new_pedal_gain, slide_freq_target: 0.0,
+        new_pedal_gain, global_pedal_gain: global, global_pedal_gain_target: global,
+        slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -860,6 +908,8 @@ impl SurfaceSink {
   /// Refuses, returning `None`, if a voice already rings at `pitch`: overwriting would
   /// silently kill it, and there is nothing to swell into that is not already there.
   pub fn spawn_slide_swell(&mut self, pitch: i32, timbre: Timbre) -> Option<VoiceSource> {
+    // Born settled at this grid's live global pedal level.
+    let global = self.current_global_gain();
     let key = sustain_key(self.grid, pitch);
     let fader = self.fader_gain();
     let id = self.next_id;
@@ -891,7 +941,7 @@ impl SurfaceSink {
         // `grid_gain` starts level with it so there is no slew-in from the pedal's
         // ordinary volume.
         grid_gain: 0.0,
-        grid_gain_target: 0.0, pedal_scale: 1.0, new_pedal_gain: 1.0,
+        grid_gain_target: 0.0, pedal_scale: 1.0, new_pedal_gain: 1.0, global_pedal_gain: global, global_pedal_gain_target: global,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -931,6 +981,8 @@ impl SurfaceSink {
   /// pedal's NEXT move like everything else (the pedal walk is uniform), while
   /// the fader component stays as saved (see `VoiceSource`).
   pub fn spawn_chord_voice(&mut self, seq: u64, v: &super::chords::StoredVoice, base_hz: f32) {
+    // Born settled at this grid's live global pedal level.
+    let global = self.current_global_gain();
     let id = self.next_id;
     self.next_id += 1;
     let pulse_hz = if v.pulse_factor > 0.0 && base_hz > 0.0 {
@@ -960,7 +1012,7 @@ impl SurfaceSink {
         timbre: v.timbre,
         fader_gain: v.fader_gain,
         grid_gain: v.pedal_gain,
-        grid_gain_target: v.pedal_gain, pedal_scale: 1.0, new_pedal_gain: 1.0, slide_freq_target: 0.0,
+        grid_gain_target: v.pedal_gain, pedal_scale: 1.0, new_pedal_gain: 1.0, global_pedal_gain: global, global_pedal_gain_target: global, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -979,6 +1031,8 @@ impl SurfaceSink {
     timbre: Timbre,
     gain: f32,
   ) {
+    // Born settled at this grid's live global pedal level.
+    let global = self.current_global_gain();
     let id = self.next_id;
     self.next_id += 1;
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -1004,7 +1058,7 @@ impl SurfaceSink {
         fader_gain: 1.0,
         grid_gain: gain,
         grid_gain_target: gain,
-        pedal_scale: 1.0, new_pedal_gain: 1.0,
+        pedal_scale: 1.0, new_pedal_gain: 1.0, global_pedal_gain: global, global_pedal_gain_target: global,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -1023,6 +1077,8 @@ impl SurfaceSink {
     timbre: Timbre,
     gain: f32,
   ) {
+    // Born settled at this grid's live global pedal level.
+    let global = self.current_global_gain();
     let id = self.next_id;
     self.next_id += 1;
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
@@ -1048,7 +1104,7 @@ impl SurfaceSink {
         fader_gain: 1.0,
         grid_gain: gain,
         grid_gain_target: gain,
-        pedal_scale: 1.0, new_pedal_gain: 1.0,
+        pedal_scale: 1.0, new_pedal_gain: 1.0, global_pedal_gain: global, global_pedal_gain_target: global,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -1332,6 +1388,27 @@ pub fn retimbre_tone_target(
   }
 }
 
+/// Aim every voice on `grid` -- held, sustained, releasing, chord or loop -- at the
+/// global volume pedal's level `gain` (TODO/volpedal-per-monome_granular-sustain). The
+/// engine slews each voice there, so a sweep or an opt-in flip glides. Called by the
+/// pedal thread when the pedal moves and by the grid thread when its toggle flips.
+pub fn aim_global_pedal(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
+  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+  for (src, state) in voices.iter_mut() {
+    let on_grid = match src {
+      VoiceSource::SurfaceFinger { grid: g, .. }
+      | VoiceSource::SurfaceDrone { grid: g, .. }
+      | VoiceSource::SurfaceRetired { grid: g, .. }
+      | VoiceSource::SurfaceChord { grid: g, .. }
+      | VoiceSource::SurfaceLoop { grid: g, .. } => *g == grid,
+      _ => false,
+    };
+    if on_grid {
+      state.global_pedal_gain_target = gain;
+    }
+  }
+}
+
 /// Aim the existing 20 ms gain slew at every live voice in one tone target.
 pub fn set_tone_target_gain(
   voices: &Arc<Mutex<VoiceMap>>,
@@ -1478,27 +1555,48 @@ mod tests {
     Arc::new(Mutex::new(HashMap::new()))
   }
 
-  /// One pedal per grid, and only at onset: a note takes its OWN grid's new-notes
-  /// pedal level when it starts and keeps it -- a later move changes no sounding note,
-  /// on either grid, held or sustained.
+  /// The two volpedal pedals, per grid. A note takes its OWN grid's new-note level as
+  /// it starts and keeps it; it is born settled at its grid's global level, and a
+  /// global re-aim moves every voice on that grid (drones too) and nothing on the
+  /// other; a grid opted out of a pedal reads unity from it.
   #[test]
-  fn a_note_takes_its_grids_new_notes_pedal_level_at_onset_and_keeps_it() {
+  fn notes_start_at_their_grids_new_note_level_and_ride_its_global_level() {
     let voices = shared();
-    let gains = unity_new_pedal_gains(2);
-    let mut a = sink(0, &voices).with_new_pedal_gains(Arc::clone(&gains));
-    let mut b = sink(1, &voices).with_new_pedal_gains(Arc::clone(&gains));
-    gains.lock().unwrap()[1] = 0.3;
+    let levels = unity_pedal_levels(2);
+    let mut a = sink(0, &voices).with_pedal_levels(Arc::clone(&levels));
+    let mut b = sink(1, &voices).with_pedal_levels(Arc::clone(&levels));
+    levels.lock().unwrap().new_note[1] = 0.3;
+    levels.lock().unwrap().global[0] = 0.8;
     a.note_on((0, 0), 20, Timbre::default(), None);
     b.note_on((0, 0), 20, Timbre::default(), None);
     a.note_on((1, 1), 30, Timbre::default(), None);
     a.sustain_note((1, 1), 30);
-    *gains.lock().unwrap() = vec![0.5, 0.9];
+    levels.lock().unwrap().new_note = vec![0.5, 0.9];
     a.note_on((2, 2), 40, Timbre::default(), None);
+    {
+      let v = voices.lock().unwrap();
+      let at = |k: VoiceSource| (v[&k].new_pedal_gain, v[&k].global_pedal_gain, v[&k].global_pedal_gain_target);
+      assert_eq!(at(voice_key(0, (0, 0))), (1.0, 0.8, 0.8), "grid 0: its own levels, settled");
+      assert_eq!(at(voice_key(1, (0, 0))), (0.3, 1.0, 1.0), "grid 1: its own levels");
+      assert_eq!(at(sustain_key(0, 30)).0, 1.0, "a drone keeps its onset level");
+      assert_eq!(at(voice_key(0, (2, 2))).0, 0.5, "a note struck now takes the new level");
+    }
+    aim_global_pedal(&voices, 0, 0.25);
+    {
+      let v = voices.lock().unwrap();
+      assert_eq!(v[&voice_key(0, (0, 0))].global_pedal_gain_target, 0.25, "grid 0's held note");
+      assert_eq!(v[&sustain_key(0, 30)].global_pedal_gain_target, 0.25, "and its drone");
+      assert_eq!(v[&voice_key(1, (0, 0))].global_pedal_gain_target, 1.0, "not grid 1's");
+    }
+    {
+      let mut l = levels.lock().unwrap();
+      l.new_note_on[0] = false;
+      l.global_on[0] = false;
+    }
+    a.note_on((3, 3), 50, Timbre::default(), None);
     let v = voices.lock().unwrap();
-    assert_eq!(v[&voice_key(0, (0, 0))].new_pedal_gain, 1.0, "grid 0's held note kept its onset level");
-    assert_eq!(v[&voice_key(1, (0, 0))].new_pedal_gain, 0.3, "grid 1's too, from its own pedal");
-    assert_eq!(v[&sustain_key(0, 30)].new_pedal_gain, 1.0, "a drone keeps its onset level");
-    assert_eq!(v[&voice_key(0, (2, 2))].new_pedal_gain, 0.5, "a note struck now takes the new level");
+    assert_eq!(v[&voice_key(0, (3, 3))].new_pedal_gain, 1.0, "opted out of the new-note pedal");
+    assert_eq!(v[&voice_key(0, (3, 3))].global_pedal_gain, 1.0, "and of the global one");
   }
 
   fn sink(grid: usize, voices: &Arc<Mutex<VoiceMap>>) -> SurfaceSink {

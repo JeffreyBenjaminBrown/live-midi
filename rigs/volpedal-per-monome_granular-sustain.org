@@ -7,13 +7,14 @@ Run from the repository root:
 =pw-jack cargo run --bin midi_pulse -- volpedal-per-monome_granular-sustain=
 Derived from [[file:monomes_two-timbres_sustain_chords.org]]: the same grids,
 tuning, sound, timbres and volume keys, minus chords, loops and the tone target,
-plus, per grid, an EX-P pedal for the notes you strike on it, a per-note sustain
-handle one cell below each sounding note, and three sustain buttons. Hence the
-name: a volume pedal per monome, and sustain note by note.
+plus two EX-P pedals -- one setting each new note's starting volume, one a live
+global volume over every note -- which each monome opts into with its own two
+buttons, a per-note sustain handle one cell below each sounding note, and three
+sustain buttons. Hence the name: volume pedals per monome, and sustain note by note.
 ** identity
 *** PARAM version = 1
 *** PARAM id = "volpedal-per-monome_granular-sustain"
-*** PARAM title = "Monomes: a volume pedal per grid for new notes"
+*** PARAM title = "Monomes: new-note and global volume pedals, opted into per grid"
 ** ELEM tunings
 *** some favorite tunings
 **** 41 8 1, 41 13 -2
@@ -43,17 +44,27 @@ Equal-nominal-pitch surface voices take the first free lane in
 =0,+p,-p,+2p,-2p,...=, where this parameter is =p= in cents.  Set it to zero to
 disable crowded-pitch separation.
 ** the EX-P volume pedals
-One per grid, each listed in its grid's section below. They reach the runtime
-through the MPC-20 -> host bridge: run =tools/pedals/bridge.sh= on the HOST before
-starting the rig, which looks for the "MPC-20 pedals" port only at startup
-(without it, a red note, and no pedals). A grid's pedal sets the volume of the
-notes struck on THAT grid (=voices = "new"=): each takes the pedal's level as it
-starts and keeps it for life, multiplied with the volume keys. Moving the pedal
-never changes a note already sounding, held or sustained. Heel = silent, toe = unity, the
-fader-law taper. Until a pedal first moves it counts as unity, so an unplugged
-pedal mutes nothing. Swap the two =channel= values if the pedals are cabled the
-other way round; drop =monome= from one and delete the other for a single pedal
-on both grids.
+Both reach the runtime through the MPC-20 -> host bridge: run
+=tools/pedals/bridge.sh= on the HOST before starting the rig, which looks for the
+"MPC-20 pedals" port only at startup (without it, a red note, and no pedals).
+A note's volume at any moment is its START level times the GLOBAL level (times the
+volume keys and the rest), each pedal running heel = silent to toe = unity on the
+fader-law taper. Channel 1 (=new_note_volume=) sets the level each note starts
+at, kept for its life; moving it never changes a note already sounding. Channel 2
+(=global_volume=) is a live level over every note, held or sustained. Each pedal reaches every grid (no =monome=), and each grid opts in or out of each
+with its two =pedal_toggle= buttons (bottom-left; lit = listening). Until a pedal
+first moves it counts as unity, so an unplugged pedal mutes nothing. Swap the
+=channel= values if the pedals are cabled the other way round.
+*** ELEM expression_pedals
+**** PARAM channel = 1
+**** PARAM role = "new_note_volume"
+**** PARAM curve_initial_lin_frac = 0.1
+**** PARAM curve_remainder_exp_db = 50.0
+*** ELEM expression_pedals
+**** PARAM channel = 2
+**** PARAM role = "global_volume"
+**** PARAM curve_initial_lin_frac = 0.1
+**** PARAM curve_remainder_exp_db = 50.0
 ** grid A: the first available 16x16 monome
 *** ELEM monomes
 **** PARAM id = "a"
@@ -121,12 +132,22 @@ TOGGLE WHAT ON MEANS: bright = ON is momentary (hold it), dim = ON latches
 **** PARAM monome = "a"
 **** PARAM kind = "edo_shift_pad"
 **** PARAM rect = [13, 0, 15, 1]
-*** ELEM expression_pedals
-**** PARAM channel = 1
+*** ELEM monome_windows
+**** PARAM id = "new-note-pedal-a"
 **** PARAM monome = "a"
-**** PARAM voices = "new"
-**** PARAM curve_initial_lin_frac = 0.1
-**** PARAM curve_remainder_exp_db = 50.0
+**** PARAM kind = "pedal_toggle"
+**** PARAM rect = [0, 15, 0, 15]
+**** PARAM role = "new_note_volume"
+Lit: notes struck on this grid start at the new-note pedal's level. Dim: they
+start at unity. Either way nothing already sounding changes.
+*** ELEM monome_windows
+**** PARAM id = "global-pedal-a"
+**** PARAM monome = "a"
+**** PARAM kind = "pedal_toggle"
+**** PARAM rect = [1, 15, 1, 15]
+**** PARAM role = "global_volume"
+Lit: every note on this grid rides the global pedal. Dim: they sit at unity
+(gliding there). Both buttons start lit; add =initially_on = false= to change that.
 ** grid B: the second available 16x16 monome
 If only one grid is connected, this whole logical surface is skipped and A plays on.
 *** ELEM monomes
@@ -185,9 +206,15 @@ If only one grid is connected, this whole logical surface is skipped and A plays
 **** PARAM monome = "b"
 **** PARAM kind = "edo_shift_pad"
 **** PARAM rect = [13, 0, 15, 1]
-*** ELEM expression_pedals
-**** PARAM channel = 2
+*** ELEM monome_windows
+**** PARAM id = "new-note-pedal-b"
 **** PARAM monome = "b"
-**** PARAM voices = "new"
-**** PARAM curve_initial_lin_frac = 0.1
-**** PARAM curve_remainder_exp_db = 50.0
+**** PARAM kind = "pedal_toggle"
+**** PARAM rect = [0, 15, 0, 15]
+**** PARAM role = "new_note_volume"
+*** ELEM monome_windows
+**** PARAM id = "global-pedal-b"
+**** PARAM monome = "b"
+**** PARAM kind = "pedal_toggle"
+**** PARAM rect = [1, 15, 1, 15]
+**** PARAM role = "global_volume"

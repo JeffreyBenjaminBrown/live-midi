@@ -21,6 +21,12 @@
       p.set_fixed_tempo(1.0, Instant::now());
       Arc::new(Mutex::new(p))
     };
+    let pedal_levels = synth::unity_pedal_levels(num_grids);
+    {
+      let mut levels = pedal_levels.lock().unwrap();
+      levels.new_note_on = initial_pedal_optin(&rig, &s.grids, crate::rig::PedalRole::NewNoteVolume);
+      levels.global_on = initial_pedal_optin(&rig, &s.grids, crate::rig::PedalRole::GlobalVolume);
+    }
     let shared = Shared {
       selected: Arc::new(Mutex::new(vec![DEFAULT_SLOT; num_grids])),
       tone_controls: Arc::new(Mutex::new(
@@ -45,6 +51,7 @@
       poly,
       live,
       voices: Arc::clone(&voices),
+      pedal_levels: Arc::clone(&pedal_levels),
       persist: None,
       momentary_persist: None,
       compact_persist: None,
@@ -84,6 +91,8 @@
         volume_delta_controls_index: 0,
         handles: g.handles,
         flash_sustained: g.flash_sustained,
+        new_note_toggle_controls: g.new_note_toggle_controls,
+        global_toggle_controls: g.global_toggle_controls,
       },
       shared,
       slide: SlideCandidates::new(),
@@ -108,7 +117,7 @@
         Arc::new(Mutex::new(vec![1.0; num_grids])),
         Arc::new(Mutex::new(vec![1.0; num_grids])),
       )
-      .with_new_pedal_gains(synth::unity_new_pedal_gains(num_grids)),
+      .with_pedal_levels(Arc::clone(&pedal_levels)),
     }
   }
 
@@ -659,18 +668,20 @@
 
   /// Every control overlay on this grid -- everything that occludes the play surface.
   /// Destructured, so a new overlay field fails to compile here until it is listed.
-  fn control_rects(o: &Overlays) -> [[i32; 4]; 20] {
+  fn control_rects(o: &Overlays) -> [[i32; 4]; 22] {
     let Overlays {
       edo_rect: _, scroll_rect, selector_rect, volume_rect, volume_delta_rect, clear_rect,
       needs_holding_rect, accrete_rect, erase_rect, distortion_rect, slide_rect, mono_rect,
-      pedal_slide_rect, poly_rect, editmode_clear_rect, editmode_accrete_rect, chord_rect,
-      momentary_chord_rect, tone_target_rect, compact_loop_rect, fine_transpose_rect,
+      pedal_slide_rect, new_note_toggle_rect, global_toggle_rect, poly_rect,
+      editmode_clear_rect, editmode_accrete_rect, chord_rect, momentary_chord_rect,
+      tone_target_rect, compact_loop_rect, fine_transpose_rect,
     } = *o;
     [
       scroll_rect, selector_rect, volume_rect, volume_delta_rect, clear_rect,
       needs_holding_rect, accrete_rect, erase_rect, distortion_rect, slide_rect, mono_rect,
-      pedal_slide_rect, poly_rect, editmode_clear_rect, editmode_accrete_rect, chord_rect,
-      momentary_chord_rect, tone_target_rect, compact_loop_rect, fine_transpose_rect,
+      pedal_slide_rect, new_note_toggle_rect, global_toggle_rect, poly_rect,
+      editmode_clear_rect, editmode_accrete_rect, chord_rect, momentary_chord_rect,
+      tone_target_rect, compact_loop_rect, fine_transpose_rect,
     ]
   }
 
@@ -2040,6 +2051,8 @@
       loop_clear_tap_ms: 300,
       handles: Handles::DEFAULT,
       flash_sustained: false,
+      new_note_toggle_controls: controls_index,
+      global_toggle_controls: controls_index,
       overlays: Overlays {
         edo_rect: [0, 0, 15, 15],
         scroll_rect: NO_RECT,
@@ -2054,6 +2067,8 @@
         slide_rect: NO_RECT,
         mono_rect: NO_RECT,
         pedal_slide_rect: NO_RECT,
+        new_note_toggle_rect: NO_RECT,
+        global_toggle_rect: NO_RECT,
         poly_rect: NO_RECT,
         editmode_clear_rect: NO_RECT,
         editmode_accrete_rect: NO_RECT,
@@ -2272,19 +2287,33 @@
         |w| matches!(w, MonomeWindowRig::VolumeDelta { monome, .. } if monome == m),
       );
       assert_eq!(tone_controls_for(g).enabled, has_volume_delta, "volume keys need no chords");
+      for (role, rect, controls) in [
+        (PedalRole::NewNoteVolume, g.overlays.new_note_toggle_rect, g.new_note_toggle_controls),
+        (PedalRole::GlobalVolume, g.overlays.global_toggle_rect, g.global_toggle_controls),
+      ] {
+        let declared = rig.monome_windows.iter().find_map(|w| match w {
+          MonomeWindowRig::PedalToggle { monome, rect, role: r, controls, .. }
+            if monome == m && *r == role => Some((*rect, controls.clone())),
+          _ => None,
+        });
+        assert_eq!(rect, declared.as_ref().map_or(NO_RECT, |(rect, _)| *rect));
+        let target = declared.and_then(|(_, c)| c).unwrap_or_else(|| m.to_string());
+        assert_eq!(s.grids[controls].monome_id, target, "the toggle controls what the rig says");
+      }
     }
     let expected: Vec<(usize, PedalTarget, PedalVolumeCurve)> = rig
       .expression_pedals
       .iter()
       .map(|p| {
-        use crate::rig::PedalVoices;
+        use crate::rig::PedalRole;
         let grid = |m: &String| {
           s.grids.iter().position(|g| &g.monome_id == m).expect("a pedal's grid")
         };
-        let target = match (p.voices, &p.monome) {
-          (PedalVoices::All, Some(m)) => PedalTarget::Grid(grid(m)),
-          (PedalVoices::All, None) => unreachable!("validation requires a monome"),
-          (PedalVoices::New, m) => PedalTarget::NewNotes(m.as_ref().map(grid)),
+        let some = p.monome.as_ref().map(grid);
+        let target = match p.role {
+          PedalRole::GridVolume => PedalTarget::Grid(some.expect("grid_volume names a monome")),
+          PedalRole::NewNoteVolume => PedalTarget::NewNote(some),
+          PedalRole::GlobalVolume => PedalTarget::Global(some),
         };
         let curve = PedalVolumeCurve {
           lin_frac: p.curve_initial_lin_frac,
@@ -2344,28 +2373,17 @@
     );
   }
 
-  /// A grid's new-notes pedal sets only the level a note STARTS at (Jeff: "if a note
-  /// is already sounding, the pedal does nothing to it"). Each strike takes the
-  /// pedal's level at that moment; a later move, made through the pedal thread's own
-  /// `set_new_pedal_gains`, leaves every sounding note alone -- held, sustained by its
-  /// finger lifting, or rendering -- and only the next strike hears it.
+  /// The two volpedal pedals and their opt-in buttons, through the real key path and
+  /// the pedal thread's own setters. Jeff: one pedal sets new note volume, the other
+  /// "controls all notes multiplicatively, so total volume at any time for a note is
+  /// its start volume times the global pedal volume". The toggles are placed by the
+  /// test on free play cells -- the behaviour, not the rig's layout, is under test.
   #[test]
-  fn the_new_notes_pedal_sets_a_notes_level_only_when_it_starts() {
+  fn new_note_and_global_pedals_multiply_and_each_grid_opts_in() {
     use crate::types::VoiceSource;
     let mut rt = test_grid_thread_for(VOLPEDAL);
-    let pedals = rt.sink.new_pedal_gains_handle();
-    let grid = rt.grid_index;
-    let move_pedal = |gain: f32| set_new_pedal_gains(&pedals, &[grid], gain);
-    let level_of = |rt: &GridThread, src: VoiceSource| {
-      rt.shared.voices.lock().unwrap()[&src].new_pedal_gain
-    };
-    let render_ms = |rt: &GridThread, ms: usize| {
-      let mut voices = rt.shared.voices.lock().unwrap();
-      let mut data = vec![0.0_f32; 48 * ms];
-      crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
-    };
-    let mut register = 0;
-    let mut held = HashMap::new();
+    let levels = rt.sink.pedal_levels_handle();
+    let g = rt.grid_index;
     let play: Vec<(i32, i32)> = {
       let [x0, y0, x1, y1] = rt.overlays.edo_rect;
       (y0..=y1)
@@ -2373,29 +2391,70 @@
         .filter(|c| is_play_cell(&rt.overlays, *c))
         .collect()
     };
-    let (note, other) = (play[play.len() / 3], play[2 * play.len() / 3]);
+    let n = play.len();
+    let (note, other, third) = (play[n / 4], play[n / 2], play[3 * n / 4]);
+    let (new_toggle, global_toggle) = (play[0], play[n - 1]);
+    rt.overlays.new_note_toggle_rect = [new_toggle.0, new_toggle.1, new_toggle.0, new_toggle.1];
+    rt.overlays.global_toggle_rect = [global_toggle.0, global_toggle.1, global_toggle.0, global_toggle.1];
+    rt.knobs.new_note_toggle_controls = g;
+    rt.knobs.global_toggle_controls = g;
+    {
+      let mut l = levels.lock().unwrap();
+      l.new_note_on[g] = true;
+      l.global_on[g] = true;
+    }
     let (x_step, y_step) = (rt.tuning.x_step, rt.tuning.y_step);
     let pitch_of = move |c: (i32, i32)| step_for_cell(x_step, y_step, 0, c.0, c.1);
     let finger = |cell| VoiceSource::SurfaceFinger { grid: 0, cell };
     let drone = VoiceSource::SurfaceDrone { grid: 0, pitch: pitch_of(note) };
+    let gains = |rt: &GridThread, src: VoiceSource| {
+      let voices = rt.shared.voices.lock().unwrap();
+      let v = &voices[&src];
+      (v.new_pedal_gain, v.global_pedal_gain_target)
+    };
+    let render_ms = |rt: &GridThread, ms: usize| {
+      let mut voices = rt.shared.voices.lock().unwrap();
+      let mut data = vec![0.0_f32; 48 * ms];
+      crate::voices::render_block(&mut voices, &mut data, 1, 48000.0);
+    };
+    let tap = |rt: &mut GridThread, cell, register: &mut i32, held: &mut HashMap<(i32, i32), i32>| {
+      handle_key(rt, register, held, cell, true);
+      handle_key(rt, register, held, cell, false);
+    };
+    let mut register = 0;
+    let mut held = HashMap::new();
+    let voices = Arc::clone(&rt.shared.voices);
 
-    move_pedal(0.5);
+    set_new_note_pedal(&levels, &[g], 0.5);
+    set_global_pedal(&levels, &voices, &[g], 0.8);
     handle_key(&mut rt, &mut register, &mut held, note, true);
-    assert_eq!(level_of(&rt, finger(note)), 0.5, "struck at the pedal's level");
-    move_pedal(0.7);
-    render_ms(&rt, 100);
-    assert_eq!(level_of(&rt, finger(note)), 0.5, "a held note ignores a later move");
+    assert_eq!(gains(&rt, finger(note)), (0.5, 0.8), "start level x live global level");
+
+    set_new_note_pedal(&levels, &[g], 0.7);
+    set_global_pedal(&levels, &voices, &[g], 0.4);
+    assert_eq!(gains(&rt, finger(note)), (0.5, 0.4), "the new-note pedal leaves it; the global moves it");
+    render_ms(&rt, 200);
+    let applied = rt.shared.voices.lock().unwrap()[&finger(note)].global_pedal_gain;
+    assert!((applied - 0.4).abs() < 1e-3, "and the render glides it there");
 
     rt.shared.ring.lock().unwrap()[0].store.add(Reason::Sustain, pitch_of(note));
     handle_key(&mut rt, &mut register, &mut held, note, false);
-    move_pedal(0.2);
-    render_ms(&rt, 100);
-    assert_eq!(level_of(&rt, drone), 0.5, "so does the sustained note it becomes");
+    set_global_pedal(&levels, &voices, &[g], 0.6);
+    assert_eq!(gains(&rt, drone), (0.5, 0.6), "a sustained note rides the global pedal too");
 
     handle_key(&mut rt, &mut register, &mut held, other, true);
-    assert_eq!(level_of(&rt, finger(other)), 0.2, "the next strike takes the new level");
-    handle_key(&mut rt, &mut register, &mut held, note, true);
-    assert_eq!(level_of(&rt, finger(note)), 0.2, "re-striking a sustained pitch is a new note");
+    assert_eq!(gains(&rt, finger(other)), (0.7, 0.6), "the next strike starts at the new level");
+
+    tap(&mut rt, global_toggle, &mut register, &mut held);
+    assert_eq!(gains(&rt, drone).1, 1.0, "opted out of the global pedal: back to unity");
+    assert_eq!(gains(&rt, finger(other)).1, 1.0);
+    tap(&mut rt, global_toggle, &mut register, &mut held);
+    assert_eq!(gains(&rt, drone).1, 0.6, "opted back in: the pedal's level again");
+
+    tap(&mut rt, new_toggle, &mut register, &mut held);
+    handle_key(&mut rt, &mut register, &mut held, third, true);
+    assert_eq!(gains(&rt, finger(third)).0, 1.0, "opted out of the new-note pedal: starts at unity");
+    assert_eq!(gains(&rt, finger(other)).0, 0.7, "and nothing sounding changed");
   }
 
   /// `flash_sustained`: during the dark half of the grid's flash clock, a sustained
@@ -2440,19 +2499,33 @@
       });
       let (note, handle) = note_with_handle(&g.overlays, HandleSide::Below.note_offset().unwrap());
       let flashes = g.flash_sustained;
-      (rig, selected, mode, note, handle, flashes)
+      let toggles: Vec<([i32; 4], bool)> = [
+        (g.overlays.new_note_toggle_rect, crate::rig::PedalRole::NewNoteVolume, g.new_note_toggle_controls),
+        (g.overlays.global_toggle_rect, crate::rig::PedalRole::GlobalVolume, g.global_toggle_controls),
+      ]
+      .into_iter()
+      .filter(|(rect, _, _)| *rect != NO_RECT)
+      .map(|(rect, role, controls)| (rect, initial_pedal_optin(&rig, &s.grids, role)[controls]))
+      .collect();
+      (rig, selected, mode, note, handle, flashes, toggles)
     };
 
     {
       let mock = MockRig::start(0, &[GridSpec::grid_256("volpedal-solo")])
         .expect("start one mock grid");
-      let (rig, selected, mode, _, _, _) = load([19230, 19231]);
+      let (rig, selected, mode, _, _, _, toggles) = load([19230, 19231]);
       let _run = MockRun::start(rig, mock.detector_port(), "one-grid volpedal rig");
       let solo = mock.grid(0);
       assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
       assert!(wait_until(secs(3), || solo.level_at(selected.0, selected.1) == 15), "default timbre lit");
       if let Some(((x, y), true)) = mode {
         assert!(wait_until(secs(3), || solo.level_at(x, y) == 15), "the mode switch boots momentary");
+      }
+      // The pedal opt-in buttons, wherever the rig puts them, boot as the rig says.
+      for (rect, on) in &toggles {
+        if *on {
+          assert!(wait_until(secs(3), || solo.level_at(rect[0], rect[1]) == 15), "opt-in lit");
+        }
       }
     }
 
@@ -2462,7 +2535,7 @@
         &[GridSpec::grid_256("volpedal-left"), GridSpec::grid_256("volpedal-right")],
       )
       .expect("start two mock grids");
-      let (rig, _, mode, note, handle, flashes) = load([19232, 19233]);
+      let (rig, _, mode, note, handle, flashes, _) = load([19232, 19233]);
       let _run = MockRun::start(rig, mock.detector_port(), "two-grid volpedal rig");
       let a = mock.grid(0);
       let b = mock.grid(1);

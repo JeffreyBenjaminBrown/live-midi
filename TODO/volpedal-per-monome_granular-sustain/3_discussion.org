@@ -64,6 +64,31 @@ paired and don't use it anymore.
 * [Claude] deleted
 The test is gone, and =ORIENTATION.org= no longer calls the 2-edogrids pair the
 active work or says the two must match.
+* [Jeff] (in chat) two pedals, opted into per monome
+Oh hey I got a better idea! One pedal is for new note volume and the other
+controls all notes multiplicatively, so total volume at any time for a note is
+its start volume times the global pedal volume (both normalized to have a
+maximum of unity). We'll need to let each monome opt into both controls. The two
+buttons at the far-left of each monome can be 'the new note pedal controls my new
+notes' volumes' and 'the global volume pedal controls my volume'.
+* [Claude] done
+** the pedals
+Channel 1 is the new-note pedal: each note starts at its level and keeps it.
+Channel 2 is the global pedal: a live level over every note, held or sustained.
+A note's volume is start level times global level, times everything else. Both
+taper from silent at the heel to unity at the toe.
+** the buttons
+I read "far-left" as the bottom-left, x = 0 and 1 on the bottom row, since the
+top-left already holds the timbre and volume keys. x = 0 opts the grid into the
+new-note pedal, x = 1 into the global one. Lit means listening; both start lit.
+Opting out of the new-note pedal makes later notes start at unity and changes
+nothing sounding; opting out of the global pedal glides this grid's notes to
+unity. Move them by editing their =rect= in the rig.
+** the plugs
+A pedal's job is now =role=: ="grid_volume"= (the old per-grid pedal, still the
+default), ="new_note_volume"= or ="global_volume"=. The opt-in buttons are a new
+widget, =pedal_toggle=, with =role=, =controls= (which grid; default its own) and
+=initially_on=. The wiring map in =rigs/README.org= lists them.
 * still open
 ** TODO hear it on the grids and pedals
 Remember the pedal bridge: run =tools/pedals/bridge.sh= on the host before the

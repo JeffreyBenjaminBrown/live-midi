@@ -129,8 +129,8 @@ fn default_timbre_amplitude() -> f32 {
 
 /// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
 /// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
-/// deliberately drops) bound as a volume pedal for one monome's grid, or (`voices =
-/// "new"`) as the starting level of the notes struck there: the pedal's
+/// deliberately drops) bound as a volume pedal for one monome's grid, or in one of the
+/// rig-wide `role`s (a new note's starting level, or a live global volume): the pedal's
 /// reliable ~1..119 CC travel maps to a position 0..1, tapered into the amplitude
 /// factor by the standard fader law -- an EXPONENTIAL (dB-linear) curve over most
 /// of the travel, SPLICED to a linear fade over the first `curve_initial_lin_frac`
@@ -145,17 +145,13 @@ pub struct ExpressionPedalRig {
   /// one per channel).
   pub channel: u8,
   /// WHERE the pedal plugs in: the monome whose grid it drives (must have an
-  /// `edo_note_grid`). Required for `voices = "all"`; for `voices = "new"`, leaving it
-  /// out plugs the pedal into every grid at once.
+  /// `edo_note_grid`). Required for `role = "grid_volume"`; for the other roles,
+  /// leaving it out plugs the pedal into every grid at once.
   #[serde(default)]
   pub monome: Option<String>,
-  /// WHICH voices on that grid it drives -- the second, independent plug. `all`
-  /// (default): every voice, live, the long-standing grid volume pedal. `new`
-  /// (TODO/volpedal-per-monome_granular-sustain): only notes struck from now on --
-  /// each takes the pedal's level when it starts and keeps it; the pedal never
-  /// changes a note already sounding.
+  /// WHAT the pedal does there -- the second, independent plug. See [`PedalRole`].
   #[serde(default)]
-  pub voices: PedalVoices,
+  pub role: PedalRole,
   /// The fraction of the travel, from the heel, that fades LINEARLY from silence up
   /// to the exponential's floor. In [0, 1); 0 = no splice (silence snaps on at the
   /// exact bottom). Default 0.1.
@@ -167,19 +163,24 @@ pub struct ExpressionPedalRig {
   pub curve_remainder_exp_db: f32,
 }
 
-/// Which voices on its grid a pedal drives (`[[expression_pedals]] voices = ...`).
+/// What a pedal does on the grids it plugs into (`[[expression_pedals]] role = ...`).
+/// The two volpedal roles (TODO/volpedal-per-monome_granular-sustain) each drive a
+/// per-voice gain of their own, so they multiply with each other and with every other
+/// volume control; a grid opts in or out of each with a `pedal_toggle`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum PedalVoices {
-  /// Every voice on the grid: the grid volume pedal (with its edit-mode trims and
-  /// pedal-slide duty). Drives the same per-voice gain a `volume_delta` uses, so the
-  /// two can't share a grid.
+pub enum PedalRole {
+  /// Every voice on one grid, live: the long-standing grid volume pedal (with its
+  /// edit-mode trims and pedal-slide duty). Drives the same per-voice gain a
+  /// `volume_delta` uses, so the two can't share a grid.
   #[default]
-  All,
-  /// Only notes struck from now on: each takes the pedal's level as it starts, kept
-  /// for its life in a gain of its own that multiplies with every other volume
-  /// control. A note already sounding never changes.
-  New,
+  GridVolume,
+  /// A new note's STARTING level: each note struck takes the pedal's level as it
+  /// starts and keeps it for life; a note already sounding never changes.
+  NewNoteVolume,
+  /// A live volume over every note, held or sustained: moving it rescales whatever is
+  /// sounding (slewed) and everything struck later.
+  GlobalVolume,
 }
 
 fn default_curve_initial_lin_frac() -> f32 {
@@ -984,6 +985,22 @@ pub enum MonomeWindowRig {
     #[serde(default)]
     initially_on: Option<bool>,
   },
+  // A single-cell opt-in for one of the volpedal pedal roles (surfaces runtime,
+  // TODO/volpedal-per-monome_granular-sustain): lit = the grid named by `controls`
+  // (default: its own) listens to the rig's `role` pedal, dim = it ignores it.
+  PedalToggle {
+    id: String,
+    monome: String,
+    rect: [i32; 4],
+    /// Which pedal role it opts the grid into: `new_note_volume` or `global_volume`.
+    role: PedalRole,
+    /// The grid it opts in or out; absent = its own.
+    #[serde(default)]
+    controls: Option<String>,
+    /// Whether the grid starts opted in. Absent = true.
+    #[serde(default)]
+    initially_on: Option<bool>,
+  },
   // A single-cell toggle for FINE TRANSPOSE (surfaces runtime;
   // queues/branch-2.org): while on, a dancing X marks a center pitch, play
   // presses set a scalar transpose of the grid's whole edit selection (pressed
@@ -1246,6 +1263,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { id, .. }
       | MonomeWindowRig::MonoToggle { id, .. }
       | MonomeWindowRig::PedalSlideToggle { id, .. }
+      | MonomeWindowRig::PedalToggle { id, .. }
       | MonomeWindowRig::EditmodeControl { id, .. }
       | MonomeWindowRig::FactoredPulsePad { id, .. }
       | MonomeWindowRig::AccreteControl { id, .. }
@@ -1287,6 +1305,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { monome, .. }
       | MonomeWindowRig::MonoToggle { monome, .. }
       | MonomeWindowRig::PedalSlideToggle { monome, .. }
+      | MonomeWindowRig::PedalToggle { monome, .. }
       | MonomeWindowRig::EditmodeControl { monome, .. }
       | MonomeWindowRig::FactoredPulsePad { monome, .. }
       | MonomeWindowRig::AccreteControl { monome, .. }
@@ -1328,6 +1347,7 @@ impl MonomeWindowRig {
       | MonomeWindowRig::SlideToggle { rect, .. }
       | MonomeWindowRig::MonoToggle { rect, .. }
       | MonomeWindowRig::PedalSlideToggle { rect, .. }
+      | MonomeWindowRig::PedalToggle { rect, .. }
       | MonomeWindowRig::EditmodeControl { rect, .. }
       | MonomeWindowRig::FactoredPulsePad { rect, .. }
       | MonomeWindowRig::AccreteControl { rect, .. }
@@ -1370,6 +1390,7 @@ impl MonomeWindowRig {
       MonomeWindowRig::SlideToggle { .. } => "slide_toggle",
       MonomeWindowRig::MonoToggle { .. } => "mono_toggle",
       MonomeWindowRig::PedalSlideToggle { .. } => "pedal_slide_toggle",
+      MonomeWindowRig::PedalToggle { .. } => "pedal_toggle",
       MonomeWindowRig::EditmodeControl { .. } => "editmode_control",
       MonomeWindowRig::FactoredPulsePad { .. } => "factored_pulse_pad",
       MonomeWindowRig::AccreteControl { .. } => "accrete_control",
@@ -2068,6 +2089,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   validate_compact_loop_blocks(rig)?;
   validate_timbres(rig)?;
   validate_expression_pedals(rig)?;
+  validate_pedal_toggles(rig)?;
   validate_looper(rig)?;
   validate_softsteps(rig)?;
 
@@ -2075,28 +2097,21 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
 }
 
 /// The `[[expression_pedals]]` bindings. Each pedal arrives on its own channel (1 or
-/// 2, the MPC-20's two) and plugs into a grid (`monome`) and a set of its voices
-/// (`voices`), two independent choices:
-/// - `voices = "all"` (the default) needs a `monome`, at most one per monome, and not
-///   on a monome with a `volume_delta` (whose tone volume owns the same per-voice gain);
-/// - `voices = "new"` takes a `monome` or, without one, every grid; at most one per
-///   grid, and not on a grid with chord or loop blocks (whose voices no finger
-///   strikes, so whether the pedal should reach them is undecided).
+/// 2, the MPC-20's two) and plugs into a grid (`monome`) in a `role`, two independent
+/// choices:
+/// - `grid_volume` (the default) needs a `monome`, at most one per monome, and not on
+///   a monome with a `volume_delta` (whose tone volume owns the same per-voice gain);
+/// - `new_note_volume` and `global_volume` take a `monome` or, without one, every
+///   grid; at most one of each role per grid. A new-note pedal stays off grids with
+///   chord or loop blocks (whose voices no finger strikes, so whether it should reach
+///   them is undecided).
 fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
-  let grid_monomes: Vec<&str> = rig
-    .monome_windows
-    .iter()
-    .filter_map(|w| match w {
-      MonomeWindowRig::EdoNoteGrid { monome, .. } => Some(monome.as_str()),
-      _ => None,
-    })
-    .collect();
+  let grid_monomes = edo_grid_monomes(rig);
   let on_monome = |m: &str, f: fn(&MonomeWindowRig) -> bool| {
     rig.monome_windows.iter().any(|w| f(w) && w.monome() == m)
   };
   let mut channels: HashSet<u8> = HashSet::new();
-  let mut all_voices: HashSet<&str> = HashSet::new();
-  let mut new_notes: HashSet<&str> = HashSet::new();
+  let mut covered: HashSet<(PedalRole, &str)> = HashSet::new();
   for p in &rig.expression_pedals {
     if !(1..=2).contains(&p.channel) {
       return Err(format!(
@@ -2115,41 +2130,38 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
         ));
       }
     }
-    match p.voices {
-      PedalVoices::All => {
-        let Some(monome) = p.monome.as_deref() else {
-          return Err(format!(
-            "expression pedal (channel {}) drives all voices, so it needs a monome = \"...\" \
-             (only voices = \"new\" may leave it out to cover every grid)",
-            p.channel,
-          ));
-        };
-        if !all_voices.insert(monome) {
-          return Err(format!("monome {monome:?} has two expression pedals"));
-        }
-        if on_monome(monome, |w| matches!(w, MonomeWindowRig::VolumeDelta { .. })) {
-          return Err(format!(
-            "expression pedal (channel {}) targets monome {monome:?}, whose volume_delta \
-             already owns that grid's volume; use voices = \"new\" there instead",
-            p.channel,
-          ));
-        }
+    let grids: Vec<&str> = match (p.role, p.monome.as_deref()) {
+      (_, Some(m)) => vec![m],
+      (PedalRole::GridVolume, None) => {
+        return Err(format!(
+          "expression pedal (channel {}) is a grid_volume pedal, so it needs a \
+           monome = \"...\" (only the other roles may leave it out to cover every grid)",
+          p.channel,
+        ));
       }
-      PedalVoices::New => {
-        let covered: Vec<&str> = match p.monome.as_deref() {
-          Some(m) => vec![m],
-          None => grid_monomes.clone(),
-        };
-        if covered.is_empty() {
-          return Err(format!(
-            "expression pedal (channel {}) has no edo_note_grid to drive",
-            p.channel,
-          ));
-        }
-        for m in covered {
-          if !new_notes.insert(m) {
-            return Err(format!("monome {m:?} has two new-notes pedals (voices = \"new\")"));
+      (_, None) => grid_monomes.clone(),
+    };
+    if grids.is_empty() {
+      return Err(format!("expression pedal (channel {}) has no edo_note_grid to drive", p.channel));
+    }
+    for m in grids {
+      if !covered.insert((p.role, m)) {
+        return Err(match p.role {
+          PedalRole::GridVolume => format!("monome {m:?} has two expression pedals"),
+          role => format!("monome {m:?} has two {role:?} expression pedals"),
+        });
+      }
+      match p.role {
+        PedalRole::GridVolume => {
+          if on_monome(m, |w| matches!(w, MonomeWindowRig::VolumeDelta { .. })) {
+            return Err(format!(
+              "expression pedal (channel {}) targets monome {m:?}, whose volume_delta \
+               already owns that grid's volume; use role = \"global_volume\" there instead",
+              p.channel,
+            ));
           }
+        }
+        PedalRole::NewNoteVolume => {
           let chords_or_loops = on_monome(m, |w| {
             matches!(
               w,
@@ -2160,13 +2172,14 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
           });
           if chords_or_loops {
             return Err(format!(
-              "expression pedal (channel {}) drives monome {m:?}'s new notes, which cannot \
-               share a grid with chord or loop blocks (whether it should reach their voices \
-               is undecided)",
+              "expression pedal (channel {}) sets monome {m:?}'s new-note volume, which \
+               cannot share a grid with chord or loop blocks (whether it should reach \
+               their voices is undecided)",
               p.channel,
             ));
           }
         }
+        PedalRole::GlobalVolume => {}
       }
     }
     if !p.curve_initial_lin_frac.is_finite()
@@ -2182,6 +2195,70 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
       return Err(format!(
         "expression pedal (channel {}): curve_remainder_exp_db must be > 0, got {}",
         p.channel, p.curve_remainder_exp_db,
+      ));
+    }
+  }
+  Ok(())
+}
+
+/// The monomes that carry an `edo_note_grid`, in rig order.
+fn edo_grid_monomes(rig: &Rig) -> Vec<&str> {
+  rig
+    .monome_windows
+    .iter()
+    .filter_map(|w| match w {
+      MonomeWindowRig::EdoNoteGrid { monome, .. } => Some(monome.as_str()),
+      _ => None,
+    })
+    .collect()
+}
+
+/// The `pedal_toggle` opt-in buttons: one cell, on a monome with a play grid,
+/// controlling a play grid, in one of the two volpedal roles, at most one per
+/// (controlled grid, role), and only where a pedal of that role reaches that grid --
+/// otherwise the button would do nothing.
+fn validate_pedal_toggles(rig: &Rig) -> Result<(), String> {
+  let grid_monomes = edo_grid_monomes(rig);
+  let mut seen: HashSet<(PedalRole, &str)> = HashSet::new();
+  for w in &rig.monome_windows {
+    let MonomeWindowRig::PedalToggle { id, monome, rect, role, controls, .. } = w else {
+      continue;
+    };
+    let [x0, y0, x1, y1] = *rect;
+    if x0 != x1 || y0 != y1 {
+      return Err(format!("pedal_toggle window {id:?} rect must cover exactly one cell"));
+    }
+    if !grid_monomes.contains(&monome.as_str()) {
+      return Err(format!("pedal_toggle window {id:?} needs an edo_note_grid on monome {monome:?}"));
+    }
+    let [gw, gh] = rig
+      .monomes
+      .iter()
+      .find(|m| m.id == *monome)
+      .and_then(|m| m.select.size)
+      .unwrap_or([16, 16]);
+    if x0 < 0 || y0 < 0 || x0 >= gw || y0 >= gh {
+      return Err(format!("pedal_toggle window {id:?} rect must fit the {gw}x{gh} grid"));
+    }
+    let target = controls.as_deref().unwrap_or(monome);
+    if !grid_monomes.contains(&target) {
+      return Err(format!("pedal_toggle window {id:?} controls {target:?}, which has no edo_note_grid"));
+    }
+    if *role == PedalRole::GridVolume {
+      return Err(format!(
+        "pedal_toggle window {id:?}: role must be \"new_note_volume\" or \"global_volume\"",
+      ));
+    }
+    if !seen.insert((*role, target)) {
+      return Err(format!("monome {target:?} has two {role:?} pedal_toggles"));
+    }
+    let reached = rig.expression_pedals.iter().any(|p| {
+      p.role == *role && p.monome.as_deref().is_none_or(|m| m == target)
+    });
+    if !reached {
+      return Err(format!(
+        "pedal_toggle window {id:?} opts {target:?} into the {role:?} pedal, but no such \
+         expression pedal reaches that grid",
       ));
     }
   }
@@ -5018,25 +5095,45 @@ monome = "b"
     bad(&with("curve_remainder_exp_db = 0.0\n"), "curve_remainder_exp_db");
   }
 
-  // ---- the new-notes pedal, note handles, initially_on (TODO/volpedal-per-monome_granular-sustain) ----
+  // ---- volpedal roles and toggles, note handles, initially_on (TODO/volpedal-per-monome_granular-sustain) ----
 
-  /// One new-notes pedal per grid -- the volpedal rig's wiring.
-  const NEW_PEDAL_PER_GRID: &str = r#"
+  /// The volpedal rig's wiring: a new-note pedal and a global pedal, each on every grid.
+  const VOLPEDALS: &str = r#"
+[[expression_pedals]]
+channel = 1
+role = "new_note_volume"
+[[expression_pedals]]
+channel = 2
+role = "global_volume"
+"#;
+
+  /// The same two roles plugged into one grid each.
+  const VOLPEDALS_PER_GRID: &str = r#"
 [[expression_pedals]]
 channel = 1
 monome = "a"
-voices = "new"
+role = "new_note_volume"
 [[expression_pedals]]
 channel = 2
 monome = "b"
-voices = "new"
+role = "global_volume"
 "#;
 
-  /// One new-notes pedal plugged into every grid at once.
-  const NEW_PEDAL_EVERY_GRID: &str = r#"
-[[expression_pedals]]
-channel = 1
-voices = "new"
+  /// Grid a's two opt-in buttons.
+  const PEDAL_TOGGLES_A: &str = r#"
+[[monome_windows]]
+id = "new-note-a"
+monome = "a"
+kind = "pedal_toggle"
+rect = [0, 15, 0, 15]
+role = "new_note_volume"
+[[monome_windows]]
+id = "global-a"
+monome = "a"
+kind = "pedal_toggle"
+rect = [1, 15, 1, 15]
+role = "global_volume"
+initially_on = false
 "#;
 
   /// A volume_delta on grid a, for the rules that pair it with pedals.
@@ -5050,20 +5147,20 @@ controls = "a"
 "#;
 
   #[test]
-  fn pedals_plug_into_a_grid_and_a_set_of_its_voices_independently() {
-    // Without `voices`: the long-standing grid volume pedal.
+  fn pedals_plug_into_a_grid_and_a_role_independently() {
+    // Without `role`: the long-standing grid volume pedal.
     let rig = parse_rig(&format!("{SURFACES_MIN}{EXPRESSION_PEDALS}")).expect("grid pedals");
-    assert_eq!(rig.expression_pedals[0].voices, PedalVoices::All);
-    // One new-notes pedal per grid.
-    let rig = parse_rig(&format!("{SURFACES_MIN}{NEW_PEDAL_PER_GRID}")).expect("per grid");
-    assert_eq!(rig.expression_pedals[1].voices, PedalVoices::New);
+    assert_eq!(rig.expression_pedals[0].role, PedalRole::GridVolume);
+    // The two volpedal roles, on every grid or on one grid each.
+    let rig = parse_rig(&format!("{SURFACES_MIN}{VOLPEDALS}")).expect("every grid");
+    assert_eq!(rig.expression_pedals[0].role, PedalRole::NewNoteVolume);
+    assert_eq!(rig.expression_pedals[1].role, PedalRole::GlobalVolume);
+    assert_eq!(rig.expression_pedals[1].monome, None);
+    let rig = parse_rig(&format!("{SURFACES_MIN}{VOLPEDALS_PER_GRID}")).expect("per grid");
     assert_eq!(rig.expression_pedals[1].monome.as_deref(), Some("b"));
-    // Or one for every grid.
-    let rig = parse_rig(&format!("{SURFACES_MIN}{NEW_PEDAL_EVERY_GRID}")).expect("every grid");
-    assert_eq!(rig.expression_pedals[0].monome, None);
-    // New-notes pedals multiply with a volume_delta: they own a gain of their own.
-    parse_rig(&format!("{SURFACES_MIN}{VOLUME_DELTA_A}{NEW_PEDAL_PER_GRID}"))
-      .expect("new-notes pedal + volume_delta");
+    // Both multiply with a volume_delta: they own gains of their own.
+    parse_rig(&format!("{SURFACES_MIN}{VOLUME_DELTA_A}{VOLPEDALS}"))
+      .expect("volpedal roles + volume_delta");
   }
 
   #[test]
@@ -5072,16 +5169,44 @@ controls = "a"
       let err = parse_rig(&format!("{SURFACES_MIN}{s}")).expect_err("must fail");
       assert!(err.contains(contains), "{err}");
     };
-    bad(&NEW_PEDAL_PER_GRID.replace("monome = \"b\"", "monome = \"a\""), "two new-notes pedals");
-    let every_plus_b = format!(
-      "{NEW_PEDAL_EVERY_GRID}[[expression_pedals]]\nchannel = 2\nmonome = \"b\"\nvoices = \"new\"\n",
+    let twice = VOLPEDALS.replace("\"global_volume\"", "\"new_note_volume\"");
+    bad(&twice, "two NewNoteVolume expression pedals");
+    let every_plus_a = format!(
+      "{}[[expression_pedals]]\nchannel = 2\nmonome = \"a\"\nrole = \"new_note_volume\"\n",
+      VOLPEDALS.split("[[expression_pedals]]\nchannel = 2").next().unwrap(),
     );
-    bad(&every_plus_b, "two new-notes pedals");
-    bad(&EXPRESSION_PEDALS.replace("monome = \"a\"\n", ""), "needs a monome");
-    bad(&NEW_PEDAL_PER_GRID.replace("monome = \"b\"", "monome = \"nope\""), "no edo_note_grid");
-    bad(&NEW_PEDAL_EVERY_GRID.replace("\"new\"", "\"sustained\""), "unknown variant");
-    // An all-voices pedal on a monome whose volume_delta owns its volume would fight it.
+    bad(&every_plus_a, "two NewNoteVolume expression pedals");
+    bad(&EXPRESSION_PEDALS.replace("monome = \"a\"\n", ""), "needs a");
+    bad(&VOLPEDALS_PER_GRID.replace("monome = \"b\"", "monome = \"nope\""), "no edo_note_grid");
+    bad(&VOLPEDALS.replace("\"global_volume\"", "\"sustained\""), "unknown variant");
+    // A grid_volume pedal on a monome whose volume_delta owns its volume would fight it.
     bad(&format!("{VOLUME_DELTA_A}{EXPRESSION_PEDALS}"), "volume_delta");
+  }
+
+  #[test]
+  fn pedal_toggles_opt_a_grid_into_a_pedal_that_reaches_it() {
+    let rig = parse_rig(&format!("{SURFACES_MIN}{VOLPEDALS}{PEDAL_TOGGLES_A}")).expect("toggles");
+    assert!(rig.monome_windows.iter().any(|w| matches!(
+      w,
+      MonomeWindowRig::PedalToggle { role: PedalRole::GlobalVolume, initially_on: Some(false), .. }
+    )));
+    let bad = |s: &str, contains: &str| {
+      let err = parse_rig(&format!("{SURFACES_MIN}{s}")).expect_err("must fail");
+      assert!(err.contains(contains), "{err}");
+    };
+    // No pedal of that role reaches the grid: the button would do nothing.
+    bad(&format!("{VOLPEDALS_PER_GRID}{PEDAL_TOGGLES_A}"), "no such expression pedal");
+    bad(&format!("{PEDAL_TOGGLES_A}"), "no such expression pedal");
+    // Two buttons for one grid's role, a grid_volume role, a bad rect.
+    let both_new = PEDAL_TOGGLES_A.replace("\"global_volume\"", "\"new_note_volume\"");
+    bad(&format!("{VOLPEDALS}{both_new}"), "two NewNoteVolume pedal_toggles");
+    let grid_role = PEDAL_TOGGLES_A.replace("\"global_volume\"", "\"grid_volume\"");
+    bad(&format!("{VOLPEDALS}{grid_role}"), "role must be");
+    let wide = PEDAL_TOGGLES_A.replace("[1, 15, 1, 15]", "[1, 15, 2, 15]");
+    bad(&format!("{VOLPEDALS}{wide}"), "exactly one cell");
+    // `controls` plugs a button into the other grid.
+    let cross = PEDAL_TOGGLES_A.replace("role = \"global_volume\"", "role = \"global_volume\"\ncontrols = \"b\"");
+    parse_rig(&format!("{SURFACES_MIN}{VOLPEDALS}{cross}")).expect("a button may control grid b");
   }
 
   /// A one-grid rig with a momentary chord block, written here rather than borrowed
@@ -5142,10 +5267,14 @@ rect = [0, 14, 7, 15]
 "#;
 
   #[test]
-  fn a_new_notes_pedal_cannot_share_a_grid_with_chord_or_loop_blocks() {
+  fn a_new_note_pedal_cannot_share_a_grid_with_chord_or_loop_blocks() {
     parse_rig(MOMENTARY_MIN).expect("the fixture itself validates");
-    let err = parse_rig(&format!("{MOMENTARY_MIN}{NEW_PEDAL_EVERY_GRID}")).expect_err("must fail");
+    let err = parse_rig(&format!("{MOMENTARY_MIN}{VOLPEDALS}")).expect_err("must fail");
     assert!(err.contains("chord or loop blocks"), "{err}");
+    // The global pedal alone is fine there: it simply scales every voice.
+    let global_only = VOLPEDALS.split("[[expression_pedals]]\nchannel = 2").nth(1).unwrap();
+    parse_rig(&format!("{MOMENTARY_MIN}[[expression_pedals]]\nchannel = 2{global_only}"))
+      .expect("a global pedal beside chords and loops");
   }
 
   #[test]

@@ -60,7 +60,7 @@ use std::time::{Duration, Instant};
 
 use rosc::{decoder, OscPacket, OscType};
 
-use crate::rig::Rig;
+use crate::rig::{PedalRole, Rig};
 use crate::device_assign::assign_selected_devices;
 use crate::edo_play::step_for_cell;
 use crate::monome::{self, DeviceInfo};
@@ -323,9 +323,15 @@ fn run(
   // through each grid's SurfaceSink. `no_audio` gates the thread like the cpal
   // stream -- a headless/mock run must not open MIDI connections.
   let pedal_gains = Arc::new(Mutex::new(vec![1.0_f32; num_grids]));
-  // The new-notes pedals' gains, per grid: unity until a pedal first moves, and
-  // forever on a grid without one.
-  let new_pedal_gains = synth::unity_new_pedal_gains(num_grids);
+  // The volpedal pedals' levels, per grid: unity until a pedal first moves, and
+  // forever on a grid without one; each grid starts opted in or out of each pedal as
+  // its `pedal_toggle` buttons say (in, absent a button).
+  let pedal_levels = synth::unity_pedal_levels(num_grids);
+  {
+    let mut levels = pedal_levels.lock().unwrap_or_else(|e| e.into_inner());
+    levels.new_note_on = initial_pedal_optin(rig, &s.grids, PedalRole::NewNoteVolume);
+    levels.global_on = initial_pedal_optin(rig, &s.grids, PedalRole::GlobalVolume);
+  }
   let audio = if no_audio {
     audio::start_null(s.sample_rate)
   } else {
@@ -497,14 +503,14 @@ fn run(
     let live_for_pedals = Arc::clone(&live);
     let voices_for_pedals = Arc::clone(&voices);
     let gains = Arc::clone(&pedal_gains);
-    let new_gains = Arc::clone(&new_pedal_gains);
+    let levels = Arc::clone(&pedal_levels);
     let slide_on = Arc::clone(&pedal_slide_on);
     let slide_frac = Arc::clone(&pedal_slide_frac);
     let ring_for_pedals = Arc::clone(&ring);
     let held_for_pedals = Arc::clone(&held_all);
     thread::spawn(move || {
       expression_pedal_loop(
-        live_for_pedals, voices_for_pedals, gains, new_gains, slide_on, slide_frac,
+        live_for_pedals, voices_for_pedals, gains, levels, slide_on, slide_frac,
         ring_for_pedals, held_for_pedals,
       )
     });
@@ -579,6 +585,7 @@ fn run(
     poly: Arc::clone(&poly),
     live: Arc::clone(&live),
     voices: Arc::clone(&voices),
+    pedal_levels: Arc::clone(&pedal_levels),
     persist,
     momentary_persist,
     compact_persist,
@@ -614,6 +621,8 @@ fn run(
       volume_delta_controls_index: g.volume_delta_controls_index,
       handles: g.handles,
       flash_sustained: g.flash_sustained,
+      new_note_toggle_controls: g.new_note_toggle_controls,
+      global_toggle_controls: g.global_toggle_controls,
     };
     let mut compact_loops = CompactLoops::new(g.loop_clear_tap_ms);
     if let Some(target) = shared.compact_persist.as_ref() {
@@ -666,7 +675,7 @@ fn run(
         Arc::clone(&pedal_gains),
         Arc::clone(&gains),
       )
-      .with_new_pedal_gains(Arc::clone(&new_pedal_gains)),
+      .with_pedal_levels(Arc::clone(&pedal_levels)),
     };
     handles.push(thread::spawn(move || grid_thread(rt)));
   }
@@ -747,6 +756,9 @@ struct Shared {
   live: Arc<Live>,
   /// The shared voice map, for the live volume rescale of the controlled grid's voices.
   voices: Arc<Mutex<VoiceMap>>,
+  /// The volpedal pedals' levels and each grid's opt-ins (its `pedal_toggle` buttons
+  /// flip them; the pedal thread writes the levels).
+  pedal_levels: synth::SharedPedalLevels,
   /// Chord-slot persistence target (`None` on headless/mock runs): a save-to-slot
   /// rewrites the whole state file for this rig.
   persist: Option<Arc<PersistTarget>>,
@@ -822,6 +834,9 @@ struct Knobs {
   handles: settings::Handles,
   /// Whether this grid flashes the sustained notes no finger holds.
   flash_sustained: bool,
+  /// The grids this grid's `pedal_toggle` buttons opt in or out.
+  new_note_toggle_controls: usize,
+  global_toggle_controls: usize,
 }
 
 /// Everything one grid thread owns for the run. Grouped from first principles
@@ -987,6 +1002,19 @@ fn grid_thread(mut rt: GridThread) {
     buttons.push(toggle(rt.overlays.slide_rect, &rt.shared.slide_on));
     buttons.push(toggle(rt.overlays.mono_rect, &rt.shared.mono_on));
     buttons.push(toggle(rt.overlays.pedal_slide_rect, &rt.shared.pedal_slide_on));
+    // The volpedal opt-ins: lit while the controlled grid listens to that pedal.
+    {
+      let levels = rt.shared.pedal_levels.lock().unwrap_or_else(|e| e.into_inner());
+      let on = |v: &[bool], g: usize| button_level(v.get(g).copied().unwrap_or(true));
+      buttons.push((
+        rt.overlays.new_note_toggle_rect,
+        on(&levels.new_note_on, rt.knobs.new_note_toggle_controls),
+      ));
+      buttons.push((
+        rt.overlays.global_toggle_rect,
+        on(&levels.global_on, rt.knobs.global_toggle_controls),
+      ));
+    }
     // Pedal slide (TODO/pedal-slide): read the pedal's published position and run one
     // step of THIS grid's engine. Everything the step touches -- the map, the voice
     // keys, the ring's filing, the held map, the sink -- is owned by this thread, so
