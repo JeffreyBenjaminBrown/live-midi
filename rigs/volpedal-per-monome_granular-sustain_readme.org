@@ -1,4 +1,4 @@
-#+title: Monomes: a volume pedal per grid for held notes
+#+title: Monomes: a volume pedal per grid for new notes
 
 * Run
 Connect one or two 16x16 monomes. For the pedals, run =tools/pedals/bridge.sh=
@@ -34,13 +34,12 @@ and a sustained note no finger holds flashes bright on that same clock.
 * The pedals
 ** what each drives
 Each grid has its own pedal: MPC-20 channel 1 for grid A, channel 2 for grid B.
-A grid's pedal drives every note a finger holds on that grid, sustained or not.
-It multiplies with the volume keys and everything else.
-** when you let go
-Nothing happens. A sustained note keeps the level it had when its finger
-lifted, and later pedal moves don't reach it. Striking that pitch again gives a
-new held note at the pedal's current level, which in turn keeps its level when
-you let go.
+A grid's pedal sets how loud the notes you strike on that grid start. It
+multiplies with the volume keys and everything else.
+** notes already sounding
+The pedal never changes them. A note keeps the level it started at for its whole
+life, held or sustained, whatever the pedal does afterwards. Striking a
+sustained pitch again starts a new note, at the pedal's current level.
 ** the taper
 Heel is silent and toe is unity. The top 90% of the travel is dB-linear over
 50 dB, and the first 10% fades linearly to exact silence. Both knobs are in

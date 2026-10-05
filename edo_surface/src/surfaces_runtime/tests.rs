@@ -2344,26 +2344,20 @@
     );
   }
 
-  /// A grid's new-notes pedal drives a note while a finger holds it, and only then
-  /// (Jeff: "When a note switches from fingered to sustained-only, nothing happens").
-  /// A strike is born settled at the pedal's level; a pedal move re-aims every held
-  /// note; lifting the finger off a sustained note leaves its level alone, even through
-  /// the real render; later moves don't reach it; re-striking it makes a new held note
-  /// at the pedal's current level.
+  /// A grid's new-notes pedal sets only the level a note STARTS at (Jeff: "if a note
+  /// is already sounding, the pedal does nothing to it"). Each strike takes the
+  /// pedal's level at that moment; a later move, made through the pedal thread's own
+  /// `set_new_pedal_gains`, leaves every sounding note alone -- held, sustained by its
+  /// finger lifting, or rendering -- and only the next strike hears it.
   #[test]
-  fn the_new_notes_pedal_drives_held_notes_and_lets_go_on_lift() {
+  fn the_new_notes_pedal_sets_a_notes_level_only_when_it_starts() {
     use crate::types::VoiceSource;
     let mut rt = test_grid_thread_for(VOLPEDAL);
     let pedals = rt.sink.new_pedal_gains_handle();
     let grid = rt.grid_index;
-    let set_pedal = |gain: f32, rt: &GridThread| {
-      pedals.lock().unwrap()[grid] = gain;
-      synth::aim_new_pedal(&rt.shared.voices, grid, gain);
-    };
-    let gains_of = |rt: &GridThread, src: VoiceSource| {
-      let voices = rt.shared.voices.lock().unwrap();
-      let v = &voices[&src];
-      (v.new_pedal_gain, v.new_pedal_gain_target)
+    let move_pedal = |gain: f32| set_new_pedal_gains(&pedals, &[grid], gain);
+    let level_of = |rt: &GridThread, src: VoiceSource| {
+      rt.shared.voices.lock().unwrap()[&src].new_pedal_gain
     };
     let render_ms = |rt: &GridThread, ms: usize| {
       let mut voices = rt.shared.voices.lock().unwrap();
@@ -2385,32 +2379,23 @@
     let finger = |cell| VoiceSource::SurfaceFinger { grid: 0, cell };
     let drone = VoiceSource::SurfaceDrone { grid: 0, pitch: pitch_of(note) };
 
-    set_pedal(0.5, &rt);
+    move_pedal(0.5);
     handle_key(&mut rt, &mut register, &mut held, note, true);
-    assert_eq!(gains_of(&rt, finger(note)), (0.5, 0.5), "born settled at the pedal's level");
-    set_pedal(0.7, &rt);
-    assert_eq!(gains_of(&rt, finger(note)).1, 0.7, "a held note follows the pedal");
-    render_ms(&rt, 200);
+    assert_eq!(level_of(&rt, finger(note)), 0.5, "struck at the pedal's level");
+    move_pedal(0.7);
+    render_ms(&rt, 100);
+    assert_eq!(level_of(&rt, finger(note)), 0.5, "a held note ignores a later move");
 
     rt.shared.ring.lock().unwrap()[0].store.add(Reason::Sustain, pitch_of(note));
     handle_key(&mut rt, &mut register, &mut held, note, false);
-    let at_lift = gains_of(&rt, drone);
-    assert!((at_lift.0 - 0.7).abs() < 1e-3 && at_lift.1 == 0.7, "lifting changes nothing");
-    render_ms(&rt, 200);
-    assert!((gains_of(&rt, drone).0 - 0.7).abs() < 1e-3, "not even through the render");
-
-    set_pedal(0.2, &rt);
-    assert_eq!(gains_of(&rt, drone).1, 0.7, "a note ringing alone ignores the pedal");
-
-    handle_key(&mut rt, &mut register, &mut held, note, true);
-    assert_eq!(gains_of(&rt, finger(note)), (0.2, 0.2), "re-struck: a held note again");
-    handle_key(&mut rt, &mut register, &mut held, note, false);
-    assert_eq!(gains_of(&rt, drone).1, 0.2, "and let go of at the level it had");
+    move_pedal(0.2);
+    render_ms(&rt, 100);
+    assert_eq!(level_of(&rt, drone), 0.5, "so does the sustained note it becomes");
 
     handle_key(&mut rt, &mut register, &mut held, other, true);
-    set_pedal(0.9, &rt);
-    assert_eq!(gains_of(&rt, finger(other)).1, 0.9);
-    assert_eq!(gains_of(&rt, drone).1, 0.2, "only held notes move");
+    assert_eq!(level_of(&rt, finger(other)), 0.2, "the next strike takes the new level");
+    handle_key(&mut rt, &mut register, &mut held, note, true);
+    assert_eq!(level_of(&rt, finger(note)), 0.2, "re-striking a sustained pitch is a new note");
   }
 
   /// `flash_sustained`: during the dark half of the grid's flash clock, a sustained

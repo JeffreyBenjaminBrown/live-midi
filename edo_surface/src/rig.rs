@@ -130,7 +130,7 @@ fn default_timbre_amplitude() -> f32 {
 /// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
 /// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
 /// deliberately drops) bound as a volume pedal for one monome's grid, or (`voices =
-/// "new"`) for the held notes of every grid: the pedal's
+/// "new"`) as the starting level of the notes struck there: the pedal's
 /// reliable ~1..119 CC travel maps to a position 0..1, tapered into the amplitude
 /// factor by the standard fader law -- an EXPONENTIAL (dB-linear) curve over most
 /// of the travel, SPLICED to a linear fade over the first `curve_initial_lin_frac`
@@ -150,10 +150,10 @@ pub struct ExpressionPedalRig {
   #[serde(default)]
   pub monome: Option<String>,
   /// WHICH voices on that grid it drives -- the second, independent plug. `all`
-  /// (default): every voice, the long-standing grid volume pedal. `new`
-  /// (TODO/volpedal-per-monome_granular-sustain): only notes a finger holds; when the
-  /// finger lifts from a sustained note nothing happens -- it keeps its level, and
-  /// later pedal moves don't reach it.
+  /// (default): every voice, live, the long-standing grid volume pedal. `new`
+  /// (TODO/volpedal-per-monome_granular-sustain): only notes struck from now on --
+  /// each takes the pedal's level when it starts and keeps it; the pedal never
+  /// changes a note already sounding.
   #[serde(default)]
   pub voices: PedalVoices,
   /// The fraction of the travel, from the heel, that fades LINEARLY from silence up
@@ -176,8 +176,9 @@ pub enum PedalVoices {
   /// two can't share a grid.
   #[default]
   All,
-  /// Only notes a finger holds, sustained or not, through a gain of their own, so it
-  /// multiplies with every other volume control.
+  /// Only notes struck from now on: each takes the pedal's level as it starts, kept
+  /// for its life in a gain of its own that multiplies with every other volume
+  /// control. A note already sounding never changes.
   New,
 }
 
@@ -2079,8 +2080,8 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
 /// - `voices = "all"` (the default) needs a `monome`, at most one per monome, and not
 ///   on a monome with a `volume_delta` (whose tone volume owns the same per-voice gain);
 /// - `voices = "new"` takes a `monome` or, without one, every grid; at most one per
-///   grid, and not on a grid with chord or loop blocks (whose voices no finger holds,
-///   so whether the pedal should reach them is undecided).
+///   grid, and not on a grid with chord or loop blocks (whose voices no finger
+///   strikes, so whether the pedal should reach them is undecided).
 fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
   let grid_monomes: Vec<&str> = rig
     .monome_windows

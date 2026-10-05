@@ -43,10 +43,28 @@ The rig file, its readme, this directory and every reference now use the new
 name. The two discussion lines that quote the original name are left as written.
 ** TODO your =TODO.org= still points at the old directory
 I didn't touch that file, since it holds your own uncommitted notes.
+* [Jeff] (in chat) only new notes
+I'm using the volume pedals on the new rig now. They affect new notes and old
+notes equally. Can we make it affect only the volume of new notes? That is, if a
+note is already sounding, the pedal does nothing to it. Let's not retroactively
+change what the pedal widget does for other rigs, but for this one it should do
+that.
+* [Claude] done
+A grid's pedal now sets only the level each note STARTS at. The note keeps that
+level for its whole life, held or sustained; moving the pedal changes nothing
+already sounding, and only the next strike hears it. Re-striking a sustained
+pitch starts a new note, at the pedal's current level. This is what
+=voices = "new"= means now, and only this rig uses it; every other rig's pedals
+(=voices = "all"=, the default) still act live on everything. The code got
+simpler again: the pedal thread no longer touches voices at all, and each voice
+carries one constant factor instead of a slewed pair.
+* [Jeff] (in chat) the twin-rig test
+Ditch it. No need to fix the pairing either; I don't remember why they were
+paired and don't use it anymore.
+* [Claude] deleted
+The test is gone, and =ORIENTATION.org= no longer calls the 2-edogrids pair the
+active work or says the two must match.
 * still open
-** TODO the twin-rig test
-=the_two_edogrid_rigs_differ_only_in_the_newer_boards_job= fails because only
-the pulse twin was retuned. My recommendation, given in chat: delete it.
 ** TODO hear it on the grids and pedals
 Remember the pedal bridge: run =tools/pedals/bridge.sh= on the host before the
 rig, every session.

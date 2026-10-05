@@ -7,13 +7,13 @@ Run from the repository root:
 =pw-jack cargo run --bin midi_pulse -- volpedal-per-monome_granular-sustain=
 Derived from [[file:monomes_two-timbres_sustain_chords.org]]: the same grids,
 tuning, sound, timbres and volume keys, minus chords, loops and the tone target,
-plus, per grid, an EX-P pedal for the notes you hold on it, a per-note sustain
+plus, per grid, an EX-P pedal for the notes you strike on it, a per-note sustain
 handle one cell below each sounding note, and three sustain buttons. Hence the
 name: a volume pedal per monome, and sustain note by note.
 ** identity
 *** PARAM version = 1
 *** PARAM id = "volpedal-per-monome_granular-sustain"
-*** PARAM title = "Monomes: a volume pedal per grid for held notes"
+*** PARAM title = "Monomes: a volume pedal per grid for new notes"
 ** ELEM tunings
 *** some favorite tunings
 **** 41 8 1, 41 13 -2
@@ -46,10 +46,10 @@ disable crowded-pitch separation.
 One per grid, each listed in its grid's section below. They reach the runtime
 through the MPC-20 -> host bridge: run =tools/pedals/bridge.sh= on the HOST before
 starting the rig, which looks for the "MPC-20 pedals" port only at startup
-(without it, a red note, and no pedals). A grid's pedal drives every note a finger
-holds on THAT grid (=voices = "new"=), multiplying with the volume keys. When the
-finger lifts from a sustained note nothing happens: the note keeps the level it
-had, and later pedal moves don't reach it. Heel = silent, toe = unity, the
+(without it, a red note, and no pedals). A grid's pedal sets the volume of the
+notes struck on THAT grid (=voices = "new"=): each takes the pedal's level as it
+starts and keeps it for life, multiplied with the volume keys. Moving the pedal
+never changes a note already sounding, held or sustained. Heel = silent, toe = unity, the
 fader-law taper. Until a pedal first moves it counts as unity, so an unplugged
 pedal mutes nothing. Swap the two =channel= values if the pedals are cabled the
 other way round; drop =monome= from one and delete the other for a single pedal

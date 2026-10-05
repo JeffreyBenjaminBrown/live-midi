@@ -128,10 +128,10 @@ pub(super) fn apply_pedal_gain(
 /// the engine unreachable from this thread, that class of bug is no longer expressible.
 ///
 /// A NEW-NOTES pedal (`voices = "new"`, TODO/volpedal-per-monome_granular-sustain)
-/// takes a much shorter path: no slide duty and no edit trims. A move sets its grid's
-/// entry (or every grid's) in the shared `new_pedal_gains` (read by note-ons) and
-/// re-aims the notes held there (`synth::aim_new_pedal`); notes ringing without a
-/// finger keep their level.
+/// takes a much shorter path: no slide duty, no edit trims, and no sounding voice is
+/// touched. A move only sets its grid's entry (or every grid's) in the shared
+/// `new_pedal_gains`, which each note reads once, when it starts
+/// (`set_new_pedal_gains`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
@@ -186,18 +186,7 @@ pub(super) fn expression_pedal_loop(
           // re-applies a known position through the (possibly new) taper.
           if p.updates > 0 && (reloaded || last[pedal] != p.norm) {
             last[pedal] = p.norm;
-            let gain = curve.gain(p.norm);
-            {
-              let mut gains = new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
-              for g in &targets {
-                if let Some(entry) = gains.get_mut(*g) {
-                  *entry = gain;
-                }
-              }
-            }
-            for g in targets {
-              synth::aim_new_pedal(&voices, g, gain);
-            }
+            set_new_pedal_gains(&new_pedal_gains, &targets, curve.gain(p.norm));
           }
           continue;
         }
@@ -287,22 +276,21 @@ pub(super) fn expression_pedal_loop(
         );
       }
     }
-    // A grid whose new-notes pedal a reload unbound gets its held notes back at unity.
-    let released: Vec<usize> = {
-      let mut gains = new_pedal_gains.lock().unwrap_or_else(|e| e.into_inner());
-      let mut released = Vec::new();
-      for (g, entry) in gains.iter_mut().enumerate() {
-        if !new_pedal_bound.get(g).copied().unwrap_or(false) && *entry != 1.0 {
-          *entry = 1.0;
-          released.push(g);
-        }
-      }
-      released
-    };
-    for g in released {
-      synth::aim_new_pedal(&voices, g, 1.0);
-    }
+    // A grid whose new-notes pedal a reload unbound starts its notes at unity again.
+    let unbound: Vec<usize> = (0..num_grids).filter(|g| !new_pedal_bound[*g]).collect();
+    set_new_pedal_gains(&new_pedal_gains, &unbound, 1.0);
     thread::sleep(Duration::from_millis(10));
+  }
+}
+
+/// A new-notes pedal move: set the level that notes struck from now on take, on each
+/// of `grids`. Nothing already sounding is touched -- that is the whole behaviour.
+pub(super) fn set_new_pedal_gains(gains: &NewPedalGains, grids: &[usize], gain: f32) {
+  let mut gains = gains.lock().unwrap_or_else(|e| e.into_inner());
+  for g in grids {
+    if let Some(entry) = gains.get_mut(*g) {
+      *entry = gain;
+    }
   }
 }
 

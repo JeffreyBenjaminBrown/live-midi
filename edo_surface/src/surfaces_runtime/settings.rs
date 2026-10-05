@@ -218,7 +218,7 @@ pub(super) struct Settings {
 pub(super) enum PedalTarget {
   /// `voices = "all"`: every voice on one grid -- the grid volume pedal.
   Grid(usize),
-  /// `voices = "new"`: the notes a finger holds on one grid, or on every grid
+  /// `voices = "new"`: the starting level of notes struck on one grid, or on every grid
   /// (`None`, the rig named no monome). TODO/volpedal-per-monome_granular-sustain.
   NewNotes(Option<usize>),
 }

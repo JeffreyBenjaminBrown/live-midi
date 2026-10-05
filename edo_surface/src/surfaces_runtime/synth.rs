@@ -283,10 +283,9 @@ pub struct SurfaceSink {
   /// in flight. Two views of one vec, never two copies.
   fader_gains: Arc<Mutex<Vec<f32>>>,
   /// The new-notes pedals' current gains, per grid, written by the pedal thread
-  /// (`[[expression_pedals]] voices = "new"`). A fresh fingered note starts already
-  /// settled at its grid's entry -- the volume-spike lesson (BUG_volume-spike.org): a
-  /// voice must never be inserted at one gain and slewed to another. Unity for a grid
-  /// without such a pedal.
+  /// (`[[expression_pedals]] voices = "new"`). A fresh fingered note takes its grid's
+  /// entry as its `new_pedal_gain` and keeps it for life; nothing re-aims it. Unity for
+  /// a grid without such a pedal.
   new_pedal_gains: NewPedalGains,
 }
 
@@ -496,7 +495,7 @@ impl SurfaceSink {
     let id = self.next_id;
     self.next_id += 1;
     let fader = self.fader_gain();
-    // A finger owns this voice, so the new-notes pedal drives it from the start.
+    // The new-notes pedal's level right now becomes this note's, for its whole life.
     let new_pedal_gain = self.current_new_pedal_gain();
     let mut voices = self.voices.lock().unwrap_or_else(|e| e.into_inner());
     let key = voice_key(self.grid, cell);
@@ -524,8 +523,7 @@ impl SurfaceSink {
         fader_gain: fader,
         grid_gain,
         grid_gain_target: grid_gain, pedal_scale: 1.0,
-        // Settled at the new-notes pedal's level from the first sample.
-        new_pedal_gain, new_pedal_gain_target: new_pedal_gain, slide_freq_target: 0.0,
+        new_pedal_gain, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -813,8 +811,6 @@ impl SurfaceSink {
       voices.insert(voice_key(self.grid, cell), state);
     } else {
       self.crowded_rekey(voice_key(self.grid, cell), key);
-      // The finger is up: the new-notes pedal lets go of this voice, which keeps the
-      // level it has (`aim_new_pedal` never reaches drones).
       voices.insert(key, state);
     }
   }
@@ -895,7 +891,7 @@ impl SurfaceSink {
         // `grid_gain` starts level with it so there is no slew-in from the pedal's
         // ordinary volume.
         grid_gain: 0.0,
-        grid_gain_target: 0.0, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0,
+        grid_gain_target: 0.0, pedal_scale: 1.0, new_pedal_gain: 1.0,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -964,7 +960,7 @@ impl SurfaceSink {
         timbre: v.timbre,
         fader_gain: v.fader_gain,
         grid_gain: v.pedal_gain,
-        grid_gain_target: v.pedal_gain, pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0, slide_freq_target: 0.0,
+        grid_gain_target: v.pedal_gain, pedal_scale: 1.0, new_pedal_gain: 1.0, slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
         rel_am_phase: 0.0,
@@ -1008,7 +1004,7 @@ impl SurfaceSink {
         fader_gain: 1.0,
         grid_gain: gain,
         grid_gain_target: gain,
-        pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0,
+        pedal_scale: 1.0, new_pedal_gain: 1.0,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -1052,7 +1048,7 @@ impl SurfaceSink {
         fader_gain: 1.0,
         grid_gain: gain,
         grid_gain_target: gain,
-        pedal_scale: 1.0, new_pedal_gain: 1.0, new_pedal_gain_target: 1.0,
+        pedal_scale: 1.0, new_pedal_gain: 1.0,
         slide_freq_target: 0.0,
         am_phase: 0.0,
         fm_phase: 0.0,
@@ -1336,22 +1332,6 @@ pub fn retimbre_tone_target(
   }
 }
 
-/// Aim every note held on `grid` at its new-notes pedal's gain
-/// (TODO/volpedal-per-monome_granular-sustain). The pedal drives a note only while a
-/// finger holds it: once the note rings alone as a drone it keeps the level it had,
-/// so lifting the finger changes nothing and later pedal moves don't reach it.
-/// Releasing voices (`target_env == 0`), retired tails, chord and loop voices, and
-/// other grids' voices are never touched. The pedal thread calls this on each move.
-pub fn aim_new_pedal(voices: &Arc<Mutex<VoiceMap>>, grid: usize, gain: f32) {
-  let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-  for (src, state) in voices.iter_mut() {
-    let held_here = matches!(src, VoiceSource::SurfaceFinger { grid: g, .. } if *g == grid);
-    if held_here && state.target_env > 0.0 {
-      state.new_pedal_gain_target = gain;
-    }
-  }
-}
-
 /// Aim the existing 20 ms gain slew at every live voice in one tone target.
 pub fn set_tone_target_gain(
   voices: &Arc<Mutex<VoiceMap>>,
@@ -1498,10 +1478,11 @@ mod tests {
     Arc::new(Mutex::new(HashMap::new()))
   }
 
-  /// One pedal per grid: a grid's new-notes pedal reaches only the notes held on that
-  /// grid -- never the other grid's, and never a drone.
+  /// One pedal per grid, and only at onset: a note takes its OWN grid's new-notes
+  /// pedal level when it starts and keeps it -- a later move changes no sounding note,
+  /// on either grid, held or sustained.
   #[test]
-  fn a_new_notes_pedal_reaches_only_notes_held_on_its_own_grid() {
+  fn a_note_takes_its_grids_new_notes_pedal_level_at_onset_and_keeps_it() {
     let voices = shared();
     let gains = unity_new_pedal_gains(2);
     let mut a = sink(0, &voices).with_new_pedal_gains(Arc::clone(&gains));
@@ -1511,16 +1492,13 @@ mod tests {
     b.note_on((0, 0), 20, Timbre::default(), None);
     a.note_on((1, 1), 30, Timbre::default(), None);
     a.sustain_note((1, 1), 30);
-    {
-      let v = voices.lock().unwrap();
-      assert_eq!(v[&voice_key(0, (0, 0))].new_pedal_gain, 1.0, "grid 0 born at its own pedal");
-      assert_eq!(v[&voice_key(1, (0, 0))].new_pedal_gain, 0.3, "grid 1 born at its own pedal");
-    }
-    aim_new_pedal(&voices, 0, 0.5);
+    *gains.lock().unwrap() = vec![0.5, 0.9];
+    a.note_on((2, 2), 40, Timbre::default(), None);
     let v = voices.lock().unwrap();
-    assert_eq!(v[&voice_key(0, (0, 0))].new_pedal_gain_target, 0.5, "grid 0's held note follows");
-    assert_eq!(v[&voice_key(1, (0, 0))].new_pedal_gain_target, 0.3, "grid 1's is untouched");
-    assert_eq!(v[&sustain_key(0, 30)].new_pedal_gain_target, 1.0, "a drone is never reached");
+    assert_eq!(v[&voice_key(0, (0, 0))].new_pedal_gain, 1.0, "grid 0's held note kept its onset level");
+    assert_eq!(v[&voice_key(1, (0, 0))].new_pedal_gain, 0.3, "grid 1's too, from its own pedal");
+    assert_eq!(v[&sustain_key(0, 30)].new_pedal_gain, 1.0, "a drone keeps its onset level");
+    assert_eq!(v[&voice_key(0, (2, 2))].new_pedal_gain, 0.5, "a note struck now takes the new level");
   }
 
   fn sink(grid: usize, voices: &Arc<Mutex<VoiceMap>>) -> SurfaceSink {

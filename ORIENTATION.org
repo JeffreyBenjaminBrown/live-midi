@@ -91,20 +91,19 @@ LEDs in =paint.rs=, and global equal-pitch packing in =synth.rs=.
 * the volume-pedal instrument: volpedal-per-monome_granular-sustain
 The newest sibling of the reduced rig (2026-10): the same one-or-two unpinned
 grids, tuning, timbres and volume keys, minus chords, loops and the tone-target
-cell, plus an EX-P *new-notes pedal* per grid that drives that grid's held notes
-(and lets go of a note when its finger lifts), a per-note sustain *handle* (the cell directly
+cell, plus an EX-P *new-notes pedal* per grid that sets the level each note struck
+there starts at (and never touches a sounding note), a per-note sustain *handle* (the cell directly
 below a sounding note), on-grid OFF / ON / TOGGLE-WHAT-ON-MEANS sustain
 buttons, and fingerless sustained notes that flash (=flash_sustained=, painted
 through =paint::lit_classes=). Player reference:
 [[./rigs/volpedal-per-monome_granular-sustain_readme.org]]; rig:
 =rigs/volpedal-per-monome_granular-sustain.org=; design and decisions:
 =TODO/volpedal-per-monome_granular-sustain/1_discussion.org=. Runtime pieces: the
-pedals are =PedalTarget::NewNotes= in =settings.rs=, a separate slewed
-=new_pedal_gain= factor on every voice (=sawwave/types.rs=, rendered in
-=sawwave/voices.rs=), with per-grid levels in =synth::NewPedalGains=. A strike is
-born at its grid's level, and a pedal move re-aims that grid's finger-held voices
-via =synth::aim_new_pedal= (from =pedal_volume.rs=); drones are never touched. The handle sides are =Handles= in
-=settings.rs=.
+pedals are =PedalTarget::NewNotes= in =settings.rs=. A pedal move only writes its
+grid's level into =synth::NewPedalGains= (=pedal_volume::set_new_pedal_gains=); a
+note copies that level into its own constant =new_pedal_gain= factor when it starts
+(=sawwave/types.rs=, multiplied in =sawwave/voices.rs=). The handle sides are
+=Handles= in =settings.rs=.
 
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.
