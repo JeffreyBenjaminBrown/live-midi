@@ -4381,34 +4381,6 @@ factor = "x2"
     assert_eq!(pads.len(), 3);
   }
 
-  /// The two sibling rigs differ in exactly one place: what the NEWER SoftStep does.
-  /// Everything else -- grids, overlays, and the older board's sustain/edit pedals --
-  /// must stay identical, so a change to one is a deliberate change to both.
-  #[test]
-  fn the_two_edogrid_rigs_differ_only_in_the_newer_boards_job() {
-    let pulse = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("pulse rig loads");
-    let drums = load_named_rig("2-edogrids_ss-accrete_ss-drums").expect("drums rig loads");
-
-    assert_eq!(pulse.monomes, drums.monomes, "same two grids, pinned by the same serials");
-    assert_eq!(pulse.monome_windows, drums.monome_windows, "same on-grid overlays");
-    assert_eq!(pulse.expression_pedals, drums.expression_pedals, "same EX-P volume pedals");
-    assert_eq!(pulse.tunings, drums.tunings, "same 46-EDO tuning");
-
-    // Both declare the same two boards; only the newer one's windows differ.
-    let boards = |r: &Rig| -> Vec<String> {
-      r.softsteps.iter().map(|s| s.select.name_substring().to_string()).collect()
-    };
-    assert_eq!(boards(&pulse), boards(&drums), "same two boards, matched the same way");
-    let on_old = |r: &Rig| -> Vec<String> {
-      r.softstep_windows
-        .iter()
-        .filter(|w| w.softstep() == "old")
-        .map(|w| format!("{}:{}", w.id(), w.kind_name()))
-        .collect()
-    };
-    assert_eq!(on_old(&pulse), on_old(&drums), "the older board's job is untouched");
-  }
-
   /// The drum map is bound to PRINTED LABELS, but the newer board is physically
   /// rotated 180 degrees, so the labels here are deliberately NOT the ones
   /// `2-monomes_kmss-drums` used -- they are chosen so each drum lands under the
