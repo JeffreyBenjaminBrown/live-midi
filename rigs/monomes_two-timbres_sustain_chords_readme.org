@@ -8,14 +8,14 @@ pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords
 ** Layout
 *** at the bottom : chords are left, loops are right
 *** picture
-y=0  SIN TRI SQUARE SAW  TONE_TARGET[1] . . . . . .  SHIFT SHIFT SHIFT
-y=1  -12  -2    +2  +12             . . . . . . . .  SHIFT SHIFT SHIFT
-
-                       EDO PLAY SURFACE
-
-y=14 C C C C C C C    | ACCRETE  CLEAR | SELECT L1 L L L L L
-                      ------------------
-y=15 C C C C C C CHORD_MODE ARM | STOP    START  L  L L L L PHASE
+y=0  | SIN TRI SQUARE SAW  TONE_TARGET[1] . . . . . .  SHIFT SHIFT SHIFT
+y=1  | -12  -2    +2  +12             . . . . . . . .  SHIFT SHIFT SHIFT
+     |
+     |                   EDO PLAY SURFACE
+     |
+y=14 | C C C C C C C        | ACCRETE  CLEAR | SELECT L1 L L L L L
+     |                      ------------------
+y=15 | C C C C C C CHORD_MODE    ARM | STOP    START  L  L L L L PHASE
 ** controls
 *** TONE TARGET = which voices timbre and volume controls affect
 Here tone means the combination of timbre and volume.
