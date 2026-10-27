@@ -62,6 +62,8 @@ struct Voice {
   target_gain: f32, // where a mid-window loudness revise moves the gain to
   ramp: f32,        // per-frame one-pole coefficient toward `target_gain`
   gen: u64,         // generation, so a stale VoiceId can't revise a reused slot
+  fade: f32,        // fade-out multiplier: 1 until `fade_out`, then falls to 0 and the voice ends
+  fade_step: f32,   // how much `fade` falls per frame; 0 = not fading
 }
 
 /// Handle to a triggered voice, so a later `Revise` can find and re-gain it. Becomes stale
@@ -92,7 +94,8 @@ impl VoicePool {
     let ramp = 1.0 - (-1.0 / (GAIN_RAMP_SECS * output_rate.max(1.0))).exp();
     let gen = self.next_gen;
     self.next_gen += 1;
-    let voice = Voice { sample, pos: 0.0, step, gain, target_gain: gain, ramp, gen };
+    let voice =
+      Voice { sample, pos: 0.0, step, gain, target_gain: gain, ramp, gen, fade: 1.0, fade_step: 0.0 };
     let slot = self.voices.iter().position(|v| v.is_none()).unwrap_or_else(|| {
       // All busy: steal the most-finished voice (largest fraction of its length played).
       let mut best = 0usize;
@@ -124,6 +127,22 @@ impl VoicePool {
     }
   }
 
+  /// Fade a still-playing voice out to silence, linearly over `secs`, and then free
+  /// its slot: a choke, e.g. a monophonic instrument cutting off its previous note.
+  /// Less than one frame ends it at once. Calling it again on a fading voice re-times
+  /// the rest of the fade. A no-op if that voice has already ended or its slot was
+  /// reused (generation mismatch).
+  pub fn fade_out(&mut self, id: VoiceId, secs: f32, output_rate: f32) {
+    let Some(slot) = self.voices.get_mut(id.slot) else { return };
+    let Some(v) = slot.as_mut().filter(|v| v.gen == id.gen) else { return };
+    let frames = secs * output_rate;
+    if frames < 1.0 {
+      *slot = None;
+    } else {
+      v.fade_step = v.fade / frames;
+    }
+  }
+
   /// Mix all active voices into the interleaved output buffer. `amplitude` is the
   /// sink master gain; the per-frame sum is clamped to [-1, 1] to avoid wrap.
   fn mix(&mut self, data: &mut [f32], channels: usize, amplitude: f32) {
@@ -149,8 +168,16 @@ impl VoicePool {
         if (v.target_gain - v.gain).abs() < 1e-6 {
           v.gain = v.target_gain;
         }
-        sum += (a + (b - a) * frac) * v.gain;
+        sum += (a + (b - a) * frac) * v.gain * v.fade;
         v.pos += v.step;
+        if v.fade_step > 0.0 {
+          v.fade -= v.fade_step;
+          // Snap the last step's rounding: a fade over N frames plays exactly N.
+          if v.fade <= 0.5 * v.fade_step {
+            *slot = None;
+            continue;
+          }
+        }
         if v.pos as usize >= frames.len() {
           *slot = None;
         }
@@ -184,6 +211,13 @@ impl Trigger {
   pub fn set_target_gain(&self, id: VoiceId, gain: f32) {
     let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
     pool.set_target_gain(id, gain);
+  }
+
+  /// Fade a previously-fired voice out over `secs`, then end it (see
+  /// [`VoicePool::fade_out`]).
+  pub fn fade_out(&self, id: VoiceId, secs: f32) {
+    let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+    pool.fade_out(id, secs, self.output_rate);
   }
 }
 
@@ -316,6 +350,43 @@ mod tests {
     pool.mix(&mut out, 1, 0.5);
     // (0.4 + 0.4) * 0.5 = 0.4
     assert!((out[0] - 0.4).abs() < 1e-6, "{}", out[0]);
+  }
+
+  #[test]
+  fn fade_out_falls_linearly_over_its_window_then_frees_the_slot() {
+    let mut pool = VoicePool::new();
+    let id = pool.trigger(sample(vec![1.0; 100], 48000), 48000.0, 1.0);
+    let mut out = [0.0f32; 1];
+    pool.mix(&mut out, 1, 1.0);
+    assert_eq!(out, [1.0]);
+    pool.fade_out(id, 4.0 / 48000.0, 48000.0); // four frames
+    let mut out = [9.0f32; 6];
+    pool.mix(&mut out, 1, 1.0);
+    assert_eq!(out, [1.0, 0.75, 0.5, 0.25, 0.0, 0.0]);
+    assert!(pool.voices.iter().all(Option::is_none));
+  }
+
+  #[test]
+  fn a_fade_of_under_one_frame_ends_the_voice_at_once() {
+    let mut pool = VoicePool::new();
+    let id = pool.trigger(sample(vec![1.0; 100], 48000), 48000.0, 1.0);
+    pool.fade_out(id, 0.0, 48000.0);
+    let mut out = [9.0f32; 2];
+    pool.mix(&mut out, 1, 1.0);
+    assert_eq!(out, [0.0, 0.0]);
+  }
+
+  #[test]
+  fn fading_a_stale_voice_leaves_the_slot_s_new_voice_alone() {
+    let mut pool = VoicePool::new();
+    let old = pool.trigger(sample(vec![0.5], 48000), 48000.0, 1.0);
+    let mut out = [0.0f32; 1];
+    pool.mix(&mut out, 1, 1.0); // the one-frame voice ends, freeing its slot
+    let _new = pool.trigger(sample(vec![1.0; 4], 48000), 48000.0, 1.0);
+    pool.fade_out(old, 0.0, 48000.0);
+    let mut out = [0.0f32; 2];
+    pool.mix(&mut out, 1, 1.0);
+    assert_eq!(out, [1.0, 1.0]);
   }
 
   #[test]
