@@ -8,13 +8,16 @@ Run from the repository root:
 *** PARAM version = 1
 *** PARAM id = "monomes_two-timbres_sustain_chords"
 *** PARAM title = "Monomes: sustain, chords, and compact loops"
-** tuning
-*** ELEM tunings
-**** PARAM id = "main"
-**** PARAM edo = 41
-**** PARAM x_step = 8
-**** PARAM y_step = 1
-**** PARAM fundamental_hz = 110
+** ELEM tunings
+*** some favorite tunings
+**** 41 8 1, 41 13 -2
+**** 27 9 1, 27 9 2
+**** 58 8 1
+*** PARAM id = "main"
+*** PARAM edo = 41
+*** PARAM x_step = 8
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 110
 Pitch rises by 8 EDO steps to the right and 1 step downward. Pitch 0 is 110 Hz.
 ** motion
 *** TABLE slide
