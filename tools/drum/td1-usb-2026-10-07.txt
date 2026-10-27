@@ -1,0 +1,32 @@
+2026-10-07 03:02:30 baseline usb=['3-10', '3-5', '3-7', '3-9'] seq=[0, 14, 128, 142, 143]; waiting...
+2026-10-07 03:03:01 NEW USB device 3-6 (/sys/devices/pci0000:00/0000:00:14.0/usb3/3-6)
+  idVendor: 0582
+  idProduct: 019a
+  manufacturer: Roland
+  product: TD-1
+  serial: <[Errno 2] No such file or directory: '/sys/bus/usb/devices/3-6/serial'>
+  bcdDevice: 0100
+  speed: 12
+  bDeviceClass: 00
+  bMaxPower: 0mA
+  busnum: 3
+  devnum: 17
+  iface 3-6:1.0: class=01 sub=01 proto=00 driver=snd-usb-audio name=<[Errno 2] No such file or directory: '/sys/bus/usb/devices/3-6/3-6:1.0/interface'>
+  iface 3-6:1.1: class=01 sub=03 proto=00 driver=snd-usb-audio name=<[Errno 2] No such file or directory: '/sys/bus/usb/devices/3-6/3-6:1.1/interface'>
+  descriptors (len,type,hex):
+     18 0x01 12 01 10 01 00 00 00 40 82 05 9a 01 00 01 01 02 00 01
+      9 0x02 09 02 65 00 02 01 00 c0 00
+      9 0x04 09 04 00 00 00 01 01 00 00
+      9 0x24 09 24 01 00 01 09 00 01 01
+      9 0x04 09 04 01 00 02 01 03 00 00
+      7 0x24 07 24 01 00 01 41 00
+      6 0x24 06 24 02 01 40 00
+      6 0x24 06 24 02 02 80 00
+      9 0x24 09 24 03 01 20 01 80 01 00
+      9 0x24 09 24 03 02 10 01 40 01 00
+      9 0x05 09 05 02 02 40 00 00 00 00
+      5 0x25 05 25 01 01 40
+      9 0x05 09 05 81 02 40 00 00 00 00
+      5 0x25 05 25 01 01 20
+2026-10-07 03:03:01 NEW seq client 20: 'TD-1' [type=kernel,card=1] ports=[(0, 'TD-1 MIDI 1')]
+recording 20:0 -> /tmp/claude-1000/-home-ubuntu-host-worktrees-main/c78b117a-f314-408a-aa6e-da0f7b80a8a4/scratchpad/drum/out/midi.log

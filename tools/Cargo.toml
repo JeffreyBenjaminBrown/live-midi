@@ -25,7 +25,13 @@ path = "sampler/sampler.rs"
 name = "triangle_chord"
 path = "synth/triangle_chord.rs"
 
+[[bin]]
+name = "td1_bass"
+path = "drum/td1_bass.rs"
+
 [dependencies]
 midir = "0.10"
 midi_pulse = { path = "../buried" }
 edo_surface = { path = "../edo_surface" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

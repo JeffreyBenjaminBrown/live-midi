@@ -1,0 +1,29 @@
+# td1_bass settings (tools/drum/td1_bass.rs). Read at startup, so restart td1_bass
+# after editing. Every key is required.
+
+# Each hit cuts off the note before it, fading it out over this many milliseconds,
+# so for that long the two overlap. 0 cuts it instantly (which clicks).
+fade_ms = 20
+
+# Whether every hit also sounds a kick drum: a short thump under the bass note, part
+# of the same tone, so the next hit cuts it off too. For when the bass is triggered
+# from the kick pedal and no acoustic kick sounds.
+kick = true
+
+# Whether pressing a fret button (one of the twelve notes) fades out the bass note
+# that is ringing, over fade_ms, rather than letting it ring until the next hit.
+root-change-cuts-off-bass = true
+
+# The TD-1 pads that play the bass. Each line is a pad's note = what it plays above
+# the pitch the SoftSteps picked: a number of semitones (negative is below), or
+# "fifth", the perfect or flat fifth. The older SoftStep's top-right (fifth) and
+# bottom-right (flat fifth) buttons choose which, but a choice only takes effect at
+# the next press of a fret button (any of the twelve notes, even the same one).
+# The notes are what the drummer's pads sent on 2026-10-21; to see another pad's
+# note, run `aseqdump -p TD-1` and hit it. (This table must stay last in the file: every line
+# after [pads] belongs to it.)
+[pads]
+118 = 0         # root
+43  = "fifth"
+45  = "fifth"
+58  = 12        # octave
