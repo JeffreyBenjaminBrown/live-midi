@@ -1,0 +1,217 @@
+#+title: SoftStep debouncing in the Rust code
+
+How the Rust code debounces SoftStep (KMSS) pads, and where its knobs live.
+Rewritten 2026-10-27 from a July note that described a single =debounce_ms=
+min-gap. That knob was discarded on 2026-07-18 for the quiet gate (=136fe03=),
+and the clock guard joined it on 2026-07-20 (=db12dfc=). For
+the device itself, see [[file:keith-mcmillen-softstep.org]].
+
+* Short answer
+** It is global, not per-rig
+The knobs live in =rigs/softstep.toml=, loaded once per run into the shared
+~SoftstepParams~. No rig, window or pad field can override them, and there is
+no environment override. Change one and every rig changes at once. Editing the
+file and restarting is enough; no rebuild.
+** Two modes, chosen per pad by the pad's job
+Every pad starts in ~DebounceMode::Standard~: drum pads, held pedals like
+accrete, the td1_bass frets. The tempo-factor pedals (a rig's
+=pulse_factor_pedal= windows, except the =1/Unity= pedal, which has its own
+double-tap dance a settle window would fight) are switched to
+~DebounceMode::Settle~. No knob picks the mode; the window kind does.
+** Standard: a clock guard AND a signal guard
+A pad whose sum-of-4 rises above =on_sum= fires only if BOTH hold: at least
+=standard_settle_ms= (120) has passed since that pad last fired, and its sum
+had been unchanged for at least =standard_release_ms= (45) just before the
+rise. A bounce keeps the sum moving, so it never looks quiet, however long it
+lasts; the clock guard catches a bounce that briefly holds still.
+** Settle: one event per stomp
+The pad fires on onset, emits no ~Revise~, and then stays mute until BOTH hold:
+at least =factor_settle_ms= (150) since that fire, and its sum continuously
+below =off_sum= for at least =factor_release_ms= (25). Each dip-and-rise of a
+rocking foot restarts the inactivity clock, so one stomp cannot read as x2^10.
+** One place enforces it: ~TetherDecoder~
+=edo_surface/src/drumkit_runtime/decode.rs=. Every SoftStep path goes through
+it, so they all debounce the same way. Each physical board gets its own
+decoder, and inside a decoder every clock is per pad, so two feet on two pads
+always both fire.
+
+* Where the numbers live
+** =rigs/softstep.toml=
+The shared params file. Its header says the numbers are "shared across every
+rig" and "there is no reason for these to vary from one rig to the next".
+** ~load_softstep_params()~ (=edo_surface/src/rig.rs=)
+Reads =rig_dir()/softstep.toml=, where ~rig_dir()~ is the fixed =<repo>/rigs=,
+whichever rig is running. A missing file gives every compiled default; a
+missing key gives that key's default; a parse error or an unknown key is a hard
+error (~deny_unknown_fields~), so a typo cannot silently fall back.
+** ~SoftstepParams~ (=edo_surface/src/rig.rs=)
+A plain ~Copy~ struct of scalars. ~TetherDecoder::new~ gives every pad
+~Standard { since_fire: standard_settle_ms, quiet: standard_release_ms }~.
+~drumkit_runtime::start_with_hook~ then calls ~set_debounce_by_label~ to put
+each tempo-factor pedal on
+~Settle { since_fire: factor_settle_ms, quiet: factor_release_ms }~.
+
+* Why it cannot be per-rig
+** The file is shared
+It is loaded from a fixed path, not resolved by rig name. Rigs that use the
+SoftStep carry only a "see also softstep.toml" note.
+** The rig schema refuses it
+The ~Drumkit~ softstep window has no detection fields, and says so:
+#+begin_src rust
+// Detection/pressure knobs (debounce, de-stick, thresholds) are NOT here -- they are
+// shared across rigs and live in rigs/softstep.toml (see `SoftstepParams`).
+#+end_src
+With ~deny_unknown_fields~ on the rig, a debounce key in a rig file is rejected.
+** One params value per run
+~start_with_hook~ loads the params once and builds one decoder per board from
+that same value. The only per-pad variation is the mode, which follows from the
+rig's windows.
+
+* The mechanism
+A pad is ~Idle~, ~Watching~ (fired, inside the attack window), ~Settling~ (a
+fired Settle pad, mute until it may re-arm) or ~Held~. ~TetherDecoder::poll~
+advances every pad off its interpreted sum. The fire decision, abridged:
+#+begin_src rust
+PadState::Idle if sum > self.on_sum => {
+  let allowed = match self.debounce_mode[slot] {
+    DebounceMode::Standard { since_fire, quiet } => {
+      let quiet_enough = changed_at.map_or(true, |t| now.duration_since(t) >= quiet);
+      let gap_enough =
+        self.last_fire[slot].map_or(true, |t| now.duration_since(t) >= since_fire);
+      quiet_enough && gap_enough
+    }
+    DebounceMode::Settle { .. } => true, // Settle gates itself via Settling
+  };
+  if !allowed {
+    PadState::Held // a bounce: suppress; it must release + re-quiet
+  } else { /* emit Fire, set last_fire, go to Settling or Watching */ }
+}
+#+end_src
+** Standard, precisely
+*** The quiet gate reads the signal
+~changed_at~ is the time the pad's sum last changed BEFORE this poll, so at a
+rising onset the gate sees the rest that preceded the rise, not the rise
+itself. A constant sum at any level counts as quiet. The tether stream is
+on-change, so an unchanged sum means the pad is sending nothing.
+*** The gap is anchored to the last real fire
+~last_fire~ is set only when a hit actually fires. A suppressed press does not
+move it, so a burst of bounces is measured against the one hit that got
+through.
+*** A suppressed press is swallowed
+It emits no ~Fire~ and goes to ~Held~; it re-arms only by falling below
+=off_sum=, which emits a ~Release~. Consumers therefore see an unpaired
+~Release~, and ~DrumEvent::Release~ documents that they must tolerate it.
+*** Boundaries and off
+Both comparisons are ~>=~, so a press exactly =standard_settle_ms= after the
+last fire is allowed. A pad that has never fired or never changed passes. Both
+knobs at 0 leave only the one-hit-per-press gate below.
+*** The cost
+At 120 ms a single pad cannot exceed about 8 strikes a second. If fast rolls on
+one pad get eaten, that is the knob.
+*** Polling matters
+The quiet gate measures stillness in polls, so the runtime polls every ~1 ms;
+sparse polling widens the gate.
+** Settle, precisely
+*** No attack window
+A Settle pad goes straight from ~Idle~ to ~Settling~ at the fire: no
+~Watching~, no ~Revise~.
+*** It never emits a Release
+~Settling~ returns to ~Idle~ silently once both conditions hold.
+*** The inactivity clock
+It starts when the sum falls below =off_sum= and resets on any activity at or
+above it.
+*** Re-arming after a long hold
+After a long hold the pad re-arms =factor_release_ms= after the foot lifts, not
+=factor_settle_ms= after it, so quick deliberate repeats (x2, x2 = x4) stay
+responsive.
+
+* What debounce is NOT
+** The one-hit-per-press gate
+Whatever the mode, a fired pad cannot fire again until its sum falls below
+=off_sum= and it returns to ~Idle~. =on_sum= above =off_sum= (25 and 10 today)
+is a Schmitt trigger, so a sum hovering at the threshold cannot chatter.
+Debounce is layered on top of that.
+** De-stick (=silence_to_zero_ms=)
+The tether stream is on-change, so a physically stuck sensor stops sending and
+its last value would pin the pad ~Held~ forever. De-stick reads a sensor that
+has been silent this long as 0, so the pad can re-arm. A different knob for a
+different job.
+** The attack window (=attack_ms=)
+The watch-and-adjust window after a Standard fire, during which a higher peak
+raises the hit's pressure (a ~Revise~). It never gates a second hit.
+** Monome key debouncing
+Mentions of debouncing in =buried/midi_pulse/looper_runtime/=,
+=edo_surface/src/surfaces_runtime/= and =edo_surface/src/mock_monome.rs= are
+about grid buttons and share nothing with ~SoftstepParams~.
+** The un-12 SUSTAIN pedal
+It does not use this decoder. =buried/midi_pulse/remap_runtime/sustain.rs=
+watches pad 0's raw CC stream with two knobs from the same file:
+=sustain_on_sum= (a sum-of-4 below which a CC is no signal) and
+=sustain_window_ms= (sustain holds while the last qualifying signal is younger
+than this; the window lapsing is both the release and the debounce). See
+"sustain pedals" in [[file:../rigs/edo-un12_58-8-1_snap_save-scales_readme.org]].
+** The TD-1 drum pads
+td1_bass reads the TD-1 as ordinary MIDI note-ons; only its SoftStep frets go
+through this decoder.
+
+* Who uses the decoder
+** The drumkit runtime
+~run_from_rig~, ~start~ and ~start_with_hook~ in
+=edo_surface/src/drumkit_runtime/mod.rs=. ~start_with_hook~ loads the params,
+builds a decoder per board, and applies Settle to the tempo-factor pedals.
+** The surfaces runtime
+It does not decode the SoftStep itself: =surfaces_runtime/mod.rs= calls
+~drumkit_runtime::start_with_hook~ and taps the pedal stream through a
+~PedalHook~. Same decoder, same debounce.
+** td1_bass
+=tools/drum/td1_bass.rs= also calls ~start_with_hook~ for its two fret boards,
+so the frets are Standard pads.
+** softstep_meter
+=buried/midi_pulse/softstep_meter.rs= imports
+~edo_surface::drumkit_runtime::decode~ and loads the same params. It applies
+ONE treatment to every pad (~set_all_debounce~), switchable live between
+=standard= and =settle=, so you can stomp a pad and feel each policy.
+** A mislabeled banner
+The drumkit's per-device startup line and the meter's banner both print
+=factor_release_ms= as "quiet". That is Settle's inactivity window; Standard's
+quiet gate is =standard_release_ms=.
+
+* Changing it
+** Edit =rigs/softstep.toml= and restart
+It reaches every rig and every board.
+** The Python meter does not follow
+=tools/softstep/meter/config.toml= still has a fixed =debounce-ms= min-gap, the
+mechanism the kit discarded. See =tools/softstep/meter/synth-v-meter.org=,
+"Debounce -- diverged, not shared".
+** There is no per-rig, per-pad or per-run override
+If one is ever needed, the natural seam is a per-window field on the rig schema
+that overrides the shared default, which today is deliberately disallowed.
+
+* Reference: the shared SoftStep params
+Live value in =rigs/softstep.toml=, then the compiled default where it differs.
+** =on_sum= 25 (default 40)
+A pad fires when its sum-of-4 exceeds this.
+** =off_sum= 10 (default 20)
+A pad re-arms once its sum-of-4 falls below this.
+** =attack_ms= 14
+The watch-and-adjust window after a fire (pressure ~Revise~).
+** =pressure_full_scale= 460
+The sum-of-4 that maps to full pressure 1.0.
+** =gain_db_range= 20
+dB between the softest and hardest hit.
+** =silence_to_zero_ms= 25
+De-stick: a sensor silent this long reads 0; 0 = off.
+** =standard_settle_ms= 120
+Standard's clock guard: minimum time from a fire until the pad may fire again.
+** =standard_release_ms= 45
+Standard's quiet gate: how long the sum must hold unchanged before a new rise
+may fire.
+** =factor_settle_ms= 150
+Settle's clock guard.
+** =factor_release_ms= 25
+Settle's inactivity window: how long the sum must sit below =off_sum= before
+the pad may re-arm.
+** =pressure_threshold_sum= 200
+The sum-of-4 at or above which a strike counts as HARD.
+** =sustain_on_sum= 40 and =sustain_window_ms= 150
+The un-12 sustain pedal only; see above.
