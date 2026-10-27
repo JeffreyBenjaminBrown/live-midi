@@ -22,7 +22,7 @@ de-stick window. Every rig that uses a SoftStep reads the same file, and the
 meter reads it too, so one edit there reaches all of them at once.
 ** about the rig
 ===========================================================================
-FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 46-EDO play
+FOUR SURFACES, NO DRUMS. Two 16x16 monome grids, each a full 41-EDO play
 surface, and two SoftStep boards that carry the controls that would
 otherwise cost grid cells: sustain, the factored pulse, and edit mode.
 Each grid keeps four overlays -- a 4-cell waveform strip (top-left), an
@@ -58,13 +58,13 @@ The base is seeded at 1 Hz, so tapping is optional: the tap pedal was retired
 (Jeff never tapped), and the on-grid pads' tap cells are the only tap source.
 ** ELEM tunings
 *** PARAM id = "main"
-*** PARAM edo = 46
-*** PARAM x_step = 9
-46-EDO, 9 steps per cell across and 1 down. So pitch rises DOWN and RIGHT, and
+*** PARAM edo = 41
+*** PARAM x_step = 8
+41-EDO, 8 steps per cell across and 1 down. So pitch rises DOWN and RIGHT, and
 "one microtone above" a note is the cell directly BELOW it -- which is what the
 per-voice edit gesture uses.
 *** PARAM y_step = 1
-*** PARAM fundamental_hz = 80
+*** PARAM fundamental_hz = 110
 ** timbres
 The four selectable timbres behind each grid's waveform strip, left to right.
 *** ELEM timbres
@@ -136,7 +136,7 @@ so it cannot dim a single LED and fakes "dim" by flashing fast.
 ***** PARAM prefix = "/surface-a"
 ***** PARAM select.size = [16, 16]
 ***** PARAM select.id_contains = "m256-282"
-**** ELEM monome_windows              # grid A: the 46-EDO play surface
+**** ELEM monome_windows              # grid A: the 41-EDO play surface
 ***** PARAM id = "grid-a"
 ***** PARAM monome = "a"
 ***** PARAM kind = "edo_note_grid"
@@ -220,7 +220,7 @@ GRID B = RNM, the RIGHT / newer monome. Varibright.
 ***** PARAM prefix = "/surface-b"
 ***** PARAM select.size = [16, 16]
 ***** PARAM select.id_contains = "m0000102"
-**** ELEM monome_windows              # grid B: the 46-EDO play surface
+**** ELEM monome_windows              # grid B: the 41-EDO play surface
 ***** PARAM id = "grid-b"
 ***** PARAM monome = "b"
 ***** PARAM kind = "edo_note_grid"

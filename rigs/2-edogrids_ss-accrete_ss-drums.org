@@ -24,10 +24,11 @@ meter reads it too, so one edit there reaches all of them at once.
 ===========================================================================
 FOUR SURFACES, WITH DRUMS. The drum-surface twin of
 2-edogrids_ss-accrete_ss-pulse: identical in every respect except what the
-NEWER SoftStep does. Two 16x16 monome grids, each a full 46-EDO play
-surface; the OLDER board (SSCOM) still carries sustain and edit mode, two
-rows as ever; and the NEWER board (SoftStep) is now a velocity-sensitive
-TR-808 drumkit instead of the factored-pulse pedals.
+NEWER SoftStep does and the tuning (the pulse rig moved to 41-EDO). Two
+16x16 monome grids, each a full 46-EDO play surface; the OLDER board (SSCOM)
+still carries sustain and edit mode, two rows as ever; and the NEWER board
+(SoftStep) is now a velocity-sensitive TR-808 drumkit instead of the
+factored-pulse pedals.
 Jeff never actually touched those pulse pedals -- and their whole function
 also lives on each grid's own upper-right 3x2 pad -- so this trades a
 duplicate control surface for a kit. Nothing is lost: the factored pulse is

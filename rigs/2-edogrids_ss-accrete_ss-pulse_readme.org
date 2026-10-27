@@ -3,11 +3,11 @@
 
 (Renamed 2026-07-20 from =2-monomes_2-softsteps=: the two boards do different
 jobs, so the name now says which. Its drum-surface sibling --
-identical but for the newer board -- is
+identical but for the newer board and the tuning -- is
 [[./2-edogrids_ss-accrete_ss-drums_readme.org]].)
 
 The =2-edogrids_ss-accrete_ss-pulse= rig drives four surfaces at once: two 16x16 monome
-grids, each a full 46-EDO play surface with nine chord-storage slots (see
+grids, each a full 41-EDO play surface with nine chord-storage slots (see
 "chord storage"), and two Keith McMillen SoftStep (KMSS)
 pedalboards that carry the controls that would otherwise cost grid cells --
 sustain, the factored pulse, and edit mode (the factored pulse and the
@@ -85,8 +85,9 @@ Here's how to see what's connected:
   rotation -- it only ever binds printed labels -- the rotation just explains
   why the map in "NSS: the factored pulse" looks mirrored. As Jeff reads it (post
   rotation): =5 4 3 2 1= (far row) over =0 9 8 7 6= (near row).
-- play grid -- a 16x16 monome, the whole grid a 46-EDO note surface
-  (=x_step 9=, =y_step 1=, =fundamental_hz 80=). Pitch rises down and right,
+- play grid -- a 16x16 monome, the whole grid a 41-EDO note surface
+  (=x_step 8=, =y_step 1=, =fundamental_hz 110=; the drums rig keeps 46-EDO,
+  =x_step 9=, =fundamental_hz 80=). Pitch rises down and right,
   so "one microtone above" a note is the cell directly below it. Each grid
   has its own voices and its own scroll register.
 - scroll pad -- a 3x2 pad at a grid's bottom-right (=[13,14,15,15]=) that
@@ -166,7 +167,7 @@ lives on a SoftStep instead:
   col: 0   1   2   3   4   5   6   7   8   9  10  11   12    13    14    15
   row 0  [SIN TRI SQR SAW] . [c1  c2  c3  c4  c5]  .   .   CLR    x3    x2   tap
   row 1    .   .   .   .   . [ARM c6  c7  c8  c9]  .   .    .     /3    /2   =1
-   ...                        (46-EDO play cells)
+   ...                        (EDO play cells)
   row 13   .   .   .   .   .   .   .   .   .   .   .   .    .      .     .    .
   row 14   .   .   .   .   .   .   .   .   .   .   .   .    .   8vaDN   UP  8vaUP
   row 15   PS  FT   .   .   .   .   .   .   .   .   .   .    .   LEFT  DOWN  RIGHT
@@ -181,7 +182,7 @@ lives on a SoftStep instead:
   recalls a chord, clears edit mode, moves the factored pulse, arms the pedal
   slide, toggles fine transpose, or scrolls
   rather than sounding a note. Every other cell on both grids is an ordinary
-  46-EDO play cell.
+  play cell.
 - The editmode-clear button ((12,0), just left of the pad's =x3=; dim at
   rest, bright while pressed) removes every pitch from edit mode on its own
   grid -- pure DESELECTION: an edited note is always sustained (edited ⊆
@@ -646,8 +647,8 @@ so one turn is 600 ms.
 
 - This is local, unlike everything else on these grids. It marks the exact
   cell(s) holding that exact pitch on that one grid: never octave-equivalents,
-  never the other grid. (A pitch can occupy two cells here -- with =x_step 9=,
-  =(x,y)= and =(x+1,y-9)= collide -- and both dance.)
+  never the other grid. (A pitch can occupy two cells here -- with =y_step 1=,
+  =(x,y)= and =(x+1,y-x_step)= collide -- and both dance.)
 - It stays in step everywhere. The phase comes from one clock, so every dance
   turns together. That is why a corner that cannot be drawn is skipped but
   still spends its slot: compressing the turn would drift that dance out of

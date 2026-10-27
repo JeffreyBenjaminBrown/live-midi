@@ -1,10 +1,11 @@
 #+title: Two EDO grids + an accrete SoftStep + a drum SoftStep -- reference
 #+date: 2026-07-20
 
-The drum-surface twin of [[./2-edogrids_ss-accrete_ss-pulse.org][2-edogrids_ss-accrete_ss-pulse]]. Everything about the grids is
-the same instrument, down to the cell: same two 46-EDO play surfaces, same
-overlays, same chord slots, same edit mode, same EX-P volume pedals, same
-older SoftStep carrying sustain and edit mode under two rows of pedals.
+The drum-surface twin of [[./2-edogrids_ss-accrete_ss-pulse.org][2-edogrids_ss-accrete_ss-pulse]]. Everything about the grids but
+the tuning is the same instrument, down to the cell: same two play surfaces
+(46-EDO here; the pulse rig was retuned to 41-EDO), same overlays, same chord
+slots, same edit mode, same EX-P volume pedals, same older SoftStep carrying
+sustain and edit mode under two rows of pedals.
 
 *One thing differs.* The NEWER SoftStep (NSS) is a velocity-sensitive TR-808
 drumkit here instead of the factored-pulse pedals.
@@ -13,8 +14,8 @@ drumkit here instead of the factored-pulse pedals.
 the per-grid layout, edit mode, chord storage, the dances, fine transpose, the
 EX-P taper, the LED rules, startup -- read the sibling's reference:
 [[./2-edogrids_ss-accrete_ss-pulse_readme.org]]. Every word of it applies here except
-its "NSS: the factored pulse" section and its "what is deliberately NOT here"
-first line ("No drumkit"). Do not copy those sections into this file; the one
+its "NSS: the factored pulse" section, its "what is deliberately NOT here"
+first line ("No drumkit"), and its tuning numbers. Do not copy those sections into this file; the one
 thing this repo has learned about duplicated rig docs is that they drift on
 every rename.
 
