@@ -7,6 +7,10 @@ for either kind of reader.
 Use this file for commands,
 and the rig readmes it links to for details.
 
+* DO THIS each session
+From host, run tools/pedals/bridge.sh
+(or forego using the volume pedals).
+
 * things this repo can do
 Run Rust commands from the repository root,
 inside the Docker container, unless a command says *host*.
