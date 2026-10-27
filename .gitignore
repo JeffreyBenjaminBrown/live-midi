@@ -1,7 +1,8 @@
 *~
 .bash_history
 .cache
-.codex
+#.codex
+/.codex/homestate/
 .emacs.desktop*
 .local/
 .python_history

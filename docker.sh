@@ -37,6 +37,17 @@ fi
 ROOT=/home/ubuntu/host
 CONTAINER_NAME="midi-$WT_NAME"
 
+# The one-time exporter stores this worktree's complete Codex home here. Mount
+# it only after it exists and is nonempty; mounting an empty directory would
+# hide the user-level hook baked into the image. CODEX_HOMESTATE may override
+# the host-side location for a nonstandard setup.
+CODEX_HOMESTATE="${CODEX_HOMESTATE:-$WT_TOP/.codex/homestate}"
+CODEX_MOUNT=()
+if [ -d "$CODEX_HOMESTATE" ] \
+  && [ -n "$(find "$CODEX_HOMESTATE" -mindepth 1 -print -quit)" ]; then
+  CODEX_MOUNT=(-v "$CODEX_HOMESTATE:/home/ubuntu/.codex")
+fi
+
 # The audition samples for softstep_meter (and the drumkit rigs) live in the
 # drum-samples/ submodule, cloned over SSH. A fresh worktree does not populate
 # submodules automatically, and the container cannot clone (it has no SSH), so do it
@@ -65,6 +76,7 @@ docker run --name "$CONTAINER_NAME" -it -d               \
   -v "$WT_TOP":"$ROOT/$REL"                              \
   -w "$ROOT/$REL"                                        \
   -e CLAUDE_CONFIG_DIR="$ROOT/$REL/my-dot-claude"        \
+  "${CODEX_MOUNT[@]}"                                    \
   --group-add "$(getent group audio | cut -d: -f3)"      \
   -v /dev/snd:/dev/snd                                   \
   --device-cgroup-rule 'c 116:* rmw'                     \
