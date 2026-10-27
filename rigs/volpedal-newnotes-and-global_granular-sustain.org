@@ -52,7 +52,7 @@ A note's volume at any moment is its START level times the GLOBAL level (times t
 volume keys and the rest), each pedal reaching unity at full toe. Channel 1 (=new_note_volume=) sets the level each note starts
 at, kept for its life; moving it never changes a note already sounding. Channel 2
 (=global_volume=) is a live level over every note, held or sustained. The new-note
-pedal spans a finite =range_db= (heel = 30 dB down); the global pedal fades to
+pedal spans a finite =range_db= (heel = 20 dB down); the global pedal fades to
 silence at the heel on the fader-law taper (its curve_* knobs). Each pedal reaches every grid (no =monome=), and each grid opts in or out of each
 with its two =pedal_toggle= buttons (bottom-left; lit = listening). Until a pedal
 first moves it counts as unity, so an unplugged pedal mutes nothing. Swap the
@@ -60,10 +60,10 @@ first moves it counts as unity, so an unplugged pedal mutes nothing. Swap the
 *** ELEM expression_pedals
 **** PARAM channel = 1
 **** PARAM role = "new_note_volume"
-**** PARAM range_db = 30
-A finite range: full heel starts notes 30 dB down, full toe at full volume,
-dB-linear between, never silent -- roughly the pp-to-ff span of many acoustic
-instruments.
+**** PARAM range_db = 20
+A finite range: full heel starts notes 20 dB down, full toe at full volume,
+dB-linear between, never silent. Narrowed from 30 dB, roughly the pp-to-ff
+span of many acoustic instruments.
 *** ELEM expression_pedals
 **** PARAM channel = 2
 **** PARAM role = "global_volume"

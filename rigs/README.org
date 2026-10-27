@@ -1031,7 +1031,7 @@ amplitude-to-loudness is roughly logarithmic -- then quadratic; this is the
 console fader's law.) A pedal may instead give ~range_db~ (> 0, and not with the
 curve_* knobs) for a FINITE range: dB-linear over the whole travel from
 -~range_db~ at full heel, never silent, to unity at full toe -- the volpedal rig's
-new-note pedal uses 30. It applies to the grid's sounding
+new-note pedal uses 20. It applies to the grid's sounding
 voices AND its future notes, multiplying below the timbre amplitude and the
 volume fader, and the engine slews each voice toward the pedal (~20 ms time
 constant, per sample), so sweeps are smooth rather than zipper-stepping at CC
