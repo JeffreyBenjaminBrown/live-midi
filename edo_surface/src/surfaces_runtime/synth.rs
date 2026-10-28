@@ -89,7 +89,7 @@ impl CrowdedPitches {
 /// moving it must change notes that are already sounding (a fader, not a radio) -- so
 /// we walk the shared map and ASSIGN `fader_gain` on that grid's voices. Plain
 /// assignment, not a ratio: the volume chain is stored components multiplied at
-/// render time (`voices::accumulate_voices`), so the timbre slot's amplitude lives in
+/// render time (`voices::step_voice_controls`), so the timbre slot's amplitude lives in
 /// `timbre.gain` untouched and the fader is free to land anywhere, including 0 --
 /// a fader parked at the bottom recovers exactly like the pedal does. Future note-ons
 /// pick up the new fader from the shared per-grid state (via `SurfaceSink::note_on`);

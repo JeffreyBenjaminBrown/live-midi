@@ -319,6 +319,22 @@ pub struct TimbreXfade {
   pub step:     f32,
 }
 
+// What one control step of a voice (`voices::step_voice_controls`) hands its
+// render engine: everything about the voice's level that is not the engine's
+// own tone (no oscillator, no AM, no master amplitude).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoiceStep {
+  // False when the voice has finished (env and target_env both 0): the engine
+  // drops it from the map, and the other fields are 0.
+  pub alive:          bool,
+  // The factored pulse's unipolar triangle in [0,1]; 1.0 for a voice with none.
+  pub factored_pulse: f32,
+  // The voice's gain coefficient: env * timbre.gain * fader_gain * grid_gain
+  // * new_pedal_gain * global_pedal_gain. Excludes the factored pulse, the
+  // timbre's AM and the sink's amplitude.
+  pub gain:           f32,
+}
+
 pub type VoiceMap = HashMap<VoiceSource, VoiceState>;
 
 // === Accretion slot =====================================================

@@ -554,7 +554,7 @@ reasons; what was left unfinished; whether the headline is
 DONE). The one expected stop is none; stopping is otherwise for
 the conditions in 'coding-advice/when-to-stop.org'.
 
-** TODO Slice 1: split voice control stepping out of the render
+** DONE Slice 1: split voice control stepping out of the render
 *** What
 In 'sawwave/voices.rs', 'accumulate_voices' both steps a
 voice's control state (envelope, pluck decay, pending attack,

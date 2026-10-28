@@ -18,7 +18,7 @@ use crate::consts::RELEASE_SECS;
 use crate::pitch::freq_for_pitch;
 use crate::types::{
   Am, AmShapeFamily, ChordId, RelAm, RelFm, Timbre, VoiceId, VoiceMap, VoiceSource, VoiceState,
-  Waveform,
+  VoiceStep, Waveform,
 };
 
 pub fn triangle(phase: f32) -> f32 {
@@ -434,6 +434,11 @@ pub fn render_block(
 /// the rate is the whole point of oversampling: the harmonics/sidebands it
 /// manufactures then land below the *high-rate* Nyquist instead of folding back
 /// into the band. Dead voices are dropped here, exactly as the single-rate path did.
+///
+/// The voice's control state (envelope, glide, slide, factored pulse, gain slews)
+/// is stepped by `step_voice_controls`, which any render engine can share; what
+/// follows it here is the sawwave engine's own: the AM/FM LFO phases, the
+/// oscillator, the AM, the timbre crossfade and the two buses.
 fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
   voices: &mut VoiceMap,
   frac: f32,
@@ -447,110 +452,9 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
   let mut dirt = 0.0_f32;
   let mut dirt_pow = 0.0_f32;
   voices.retain(|src, v| {
-    // Envelope. Linear attack toward target_env; when the attack peaks on a held
-    // voice whose sustain sits below the peak, the target drops to sustain_env and
-    // the env DECAYS toward it exponentially (the pluck) -- so a fresh strike rings
-    // out over already-sounding notes. note_off ramps linearly to 0 as ever.
-    if v.target_env > 0.0 && v.env >= v.target_env && v.sustain_env < v.target_env {
-      v.env = v.target_env;
-      v.target_env = v.sustain_env;
-    }
-    if v.target_env > 0.0 && v.env > v.target_env && v.decay_per_sample < 1.0 {
-      // The pluck decay: retain `decay_per_sample` of the distance to sustain each
-      // full-rate sample (linearized for `frac` sub-steps), snapping when close.
-      // (A flat voice above a positive target -- e.g. the chord-accretion
-      // transform -- keeps the linear ramp below instead.)
-      let keep = 1.0 - (1.0 - v.decay_per_sample) * frac;
-      v.env = v.target_env + (v.env - v.target_env) * keep;
-      if v.env - v.target_env < 1e-4 {
-        v.env = v.target_env;
-      }
-    } else {
-      // Step env linearly toward target_env (by `frac` of a full-rate step).
-      let ramp = v.ramp_per_sample * frac;
-      let delta = v.target_env - v.env;
-      if delta.abs() <= ramp {
-        v.env = v.target_env;
-      } else if delta > 0.0 {
-        v.env += ramp;
-      } else {
-        v.env -= ramp;
-      }
-    }
-    // A drag's dip-then-attack retrigger: when the down-ramp bottoms out at silence,
-    // launch the attack (toward the peak) instead of reaping the voice. This touches
-    // only env/target_env/ramp_per_sample on the SAME `VoiceState` -- never `v.phase`
-    // -- so the oscillator's cycle position free-runs straight through the relaunch
-    // instant (advanced as usual a few lines down) instead of resetting to 0
-    // (branch-3 queue item 5: retrigger must not reset a voice's phase).
-    if v.env <= 0.0 {
-      if let Some(attack_ramp) = v.pending_attack.take() {
-        v.env = 0.0;
-        v.target_env = 1.0;
-        v.ramp_per_sample = attack_ramp;
-      }
-    }
-    // Voice is gone once env and target both reach 0.
-    if v.env == 0.0 && v.target_env == 0.0 {
+    let step: VoiceStep = step_voice_controls(v, frac, sample_rate, slide_slew_secs);
+    if !step.alive {
       return false;
-    }
-    // Frequency glide (the slide feature): while active, walk freq multiplicatively
-    // toward freq_target (pitch-linear), snapping there once crossed -- then the
-    // glide ends. Inert while glide_per_sample == 1.0 (freq_target is ignored).
-    if v.glide_per_sample != 1.0 && v.freq != v.freq_target {
-      let step = 1.0 + (v.glide_per_sample - 1.0) * frac;
-      v.freq *= step;
-      let crossed = (v.glide_per_sample > 1.0 && v.freq >= v.freq_target)
-        || (v.glide_per_sample < 1.0 && v.freq <= v.freq_target);
-      if crossed {
-        v.freq = v.freq_target;
-        v.glide_per_sample = 1.0;
-      }
-    }
-    // Pedal-slide flight (the surfaces `pedal_slide_toggle`): while `slide_freq_target`
-    // is nonzero the pedal owns this voice's pitch, and `freq` chases the target with a
-    // one-pole smoother (SLIDE_SLEW_SECS, per sub-sample) so the CC-rate target steps
-    // do not zipper. Inert -- and cost-free -- for every voice no pedal is sliding,
-    // which is the common case and every non-surfaces runtime. Distinct from the glide
-    // integrator above (a live controller, not a walk to a fixed destination); after it,
-    // so that while a slide is live it is the pedal, not a stale glide, that has the
-    // last word on `freq`.
-    if v.slide_freq_target > 0.0 {
-      v.freq += (v.slide_freq_target - v.freq) * (frac / (slide_slew_secs * sample_rate)).min(1.0);
-    }
-    // The factored pulse: a unipolar triangle in [0,1] -- 1 at the cycle start,
-    // falling to 0 at the half-cycle, rising back to 1 -- at the tempo applied at
-    // this note's onset. Separate from the timbre AM below. Unlike the descending
-    // saw it replaces, it returns to the peak *continuously*, so the cycle boundary
-    // is not a step in amplitude (a saw's 0 -> 1 wrap is a click waiting to happen).
-    let factored_pulse = if v.factored_pulse_freq > 0.0 {
-      v.factored_pulse_phase += v.factored_pulse_freq * frac / sample_rate;
-      if v.factored_pulse_phase >= 1.0 {
-        v.factored_pulse_phase -= 1.0;
-      }
-      (2.0 * v.factored_pulse_phase - 1.0).abs()
-    } else {
-      1.0
-    };
-    // The grid volume pedal: `grid_gain` chases its target with a short exponential
-    // slew (GAIN_SLEW_SECS), per sub-sample, so a sweeping pedal never steps the
-    // amplitude at CC rate (zipper). Snaps when close; identity (1.0 -> 1.0)
-    // everywhere pedals don't exist.
-    let gap = v.grid_gain_target - v.grid_gain;
-    if gap != 0.0 {
-      v.grid_gain += gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
-      if (v.grid_gain_target - v.grid_gain).abs() < 1e-4 {
-        v.grid_gain = v.grid_gain_target;
-      }
-    }
-    // The global volume pedal: the same slew as the grid pedal's. Identity wherever
-    // that pedal doesn't exist.
-    let global_gap = v.global_pedal_gain_target - v.global_pedal_gain;
-    if global_gap != 0.0 {
-      v.global_pedal_gain += global_gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
-      if (v.global_pedal_gain_target - v.global_pedal_gain).abs() < 1e-4 {
-        v.global_pedal_gain = v.global_pedal_gain_target;
-      }
     }
     // Advance the per-voice AM/FM LFOs (by `frac` of a full-rate step). The absolute
     // pair runs at a fixed Hz; the relative pair at a multiple of the voice's own
@@ -586,14 +490,8 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     // oscillator. Since `osc * wf_norm` has RMS 1/sqrt(3) for *every* waveform, the
     // voice's RMS is exactly `b / sqrt(3)`, and incoherent voices (distinct EDO
     // pitches) add in power. Summing `b^2` therefore hands the distortion the dirty
-    // bus's RMS for free -- no detector, no lag. `b >= 0`: every factor is. The volume
-    // chain is stored components multiplied here, never baked together: the timbre
-    // slot's amplitude, the grid fader's gain, the pedal's grid_gain, and the new-notes
-    // pedal's level at the voice's onset (new_pedal_gain), and the global pedal's live
-    // level (global_pedal_gain) -- all plain linear multipliers, all 1.0 wherever that
-    // mechanism doesn't exist.
-    let b = v.env * v.timbre.gain * v.fader_gain * v.grid_gain * v.new_pedal_gain
-      * v.global_pedal_gain * amm * factored_pulse * amplitude;
+    // bus's RMS for free -- no detector, no lag. `b >= 0`: every factor is.
+    let b = step.gain * amm * step.factored_pulse * amplitude;
     let mut s = osc(v.timbre.waveform, v.phase, dt) * wf_norm * b;
     let mut b_pow = b;
     // A live timbre swap in progress (the edit-mode timbre switch): render the OLD
@@ -609,7 +507,7 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
         * rel_am_multiplier(x.from.rel_am, v.rel_am_phase);
       let b_old =
         v.env * x.from.gain * v.fader_gain * v.grid_gain * v.new_pedal_gain
-          * v.global_pedal_gain * amm_old * factored_pulse * amplitude;
+          * v.global_pedal_gain * amm_old * step.factored_pulse * amplitude;
       let s_old = osc(x.from.waveform, v.phase, dt) * waveform_norm(x.from.waveform) * b_old;
       s = s * g_new + s_old * g_old;
       b_pow = b * g_new + b_old * g_old;
@@ -624,6 +522,141 @@ fn accumulate_voices<F: Fn(&VoiceSource) -> bool>(
     true
   });
   (clean, dirt, dirt_pow)
+}
+
+/// Step one voice's control state by `frac` of one output sample: the envelope
+/// (attack, pluck decay, release, a drag's pending attack), the frequency glide,
+/// the pedal-slide smoother, the factored pulse, and the `grid_gain` and
+/// `global_pedal_gain` slews. Returns whether the voice is still alive -- when not,
+/// the caller drops it, and nothing past the envelope was stepped -- and the
+/// factors of its level that every render engine applies (see `VoiceStep`).
+///
+/// It reads and writes only control state, never an oscillator, so an engine with
+/// no oscillator (the strings engine) can call it per voice per sample exactly as
+/// the sawwave engine does. The
+/// four AM/FM LFO phases are not stepped here: they feed only the sawwave engine's
+/// modulators, so `accumulate_voices` advances them after this returns (the order
+/// the sawwave render always had), and an engine without AM or FM leaves them be.
+pub fn step_voice_controls(
+  v: &mut VoiceState,
+  frac: f32,
+  sample_rate: f32,
+  slide_slew_secs: f32,
+) -> VoiceStep {
+  // Envelope. Linear attack toward target_env; when the attack peaks on a held
+  // voice whose sustain sits below the peak, the target drops to sustain_env and
+  // the env DECAYS toward it exponentially (the pluck) -- so a fresh strike rings
+  // out over already-sounding notes. note_off ramps linearly to 0 as ever.
+  if v.target_env > 0.0 && v.env >= v.target_env && v.sustain_env < v.target_env {
+    v.env = v.target_env;
+    v.target_env = v.sustain_env;
+  }
+  if v.target_env > 0.0 && v.env > v.target_env && v.decay_per_sample < 1.0 {
+    // The pluck decay: retain `decay_per_sample` of the distance to sustain each
+    // full-rate sample (linearized for `frac` sub-steps), snapping when close.
+    // (A flat voice above a positive target -- e.g. the chord-accretion
+    // transform -- keeps the linear ramp below instead.)
+    let keep = 1.0 - (1.0 - v.decay_per_sample) * frac;
+    v.env = v.target_env + (v.env - v.target_env) * keep;
+    if v.env - v.target_env < 1e-4 {
+      v.env = v.target_env;
+    }
+  } else {
+    // Step env linearly toward target_env (by `frac` of a full-rate step).
+    let ramp = v.ramp_per_sample * frac;
+    let delta = v.target_env - v.env;
+    if delta.abs() <= ramp {
+      v.env = v.target_env;
+    } else if delta > 0.0 {
+      v.env += ramp;
+    } else {
+      v.env -= ramp;
+    }
+  }
+  // A drag's dip-then-attack retrigger: when the down-ramp bottoms out at silence,
+  // launch the attack (toward the peak) instead of reaping the voice. This touches
+  // only env/target_env/ramp_per_sample on the SAME `VoiceState` -- never `v.phase`
+  // -- so the oscillator's cycle position free-runs straight through the relaunch
+  // instant (advanced as usual by the render engine after this step) instead of
+  // resetting to 0 (branch-3 queue item 5: retrigger must not reset a voice's phase).
+  if v.env <= 0.0 {
+    if let Some(attack_ramp) = v.pending_attack.take() {
+      v.env = 0.0;
+      v.target_env = 1.0;
+      v.ramp_per_sample = attack_ramp;
+    }
+  }
+  // Voice is gone once env and target both reach 0.
+  if v.env == 0.0 && v.target_env == 0.0 {
+    return VoiceStep { alive: false, factored_pulse: 0.0, gain: 0.0 };
+  }
+  // Frequency glide (the slide feature): while active, walk freq multiplicatively
+  // toward freq_target (pitch-linear), snapping there once crossed -- then the
+  // glide ends. Inert while glide_per_sample == 1.0 (freq_target is ignored).
+  if v.glide_per_sample != 1.0 && v.freq != v.freq_target {
+    let step = 1.0 + (v.glide_per_sample - 1.0) * frac;
+    v.freq *= step;
+    let crossed = (v.glide_per_sample > 1.0 && v.freq >= v.freq_target)
+      || (v.glide_per_sample < 1.0 && v.freq <= v.freq_target);
+    if crossed {
+      v.freq = v.freq_target;
+      v.glide_per_sample = 1.0;
+    }
+  }
+  // Pedal-slide flight (the surfaces `pedal_slide_toggle`): while `slide_freq_target`
+  // is nonzero the pedal owns this voice's pitch, and `freq` chases the target with a
+  // one-pole smoother (SLIDE_SLEW_SECS, per sub-sample) so the CC-rate target steps
+  // do not zipper. Inert -- and cost-free -- for every voice no pedal is sliding,
+  // which is the common case and every non-surfaces runtime. Distinct from the glide
+  // integrator above (a live controller, not a walk to a fixed destination); after it,
+  // so that while a slide is live it is the pedal, not a stale glide, that has the
+  // last word on `freq`.
+  if v.slide_freq_target > 0.0 {
+    v.freq += (v.slide_freq_target - v.freq) * (frac / (slide_slew_secs * sample_rate)).min(1.0);
+  }
+  // The factored pulse: a unipolar triangle in [0,1] -- 1 at the cycle start,
+  // falling to 0 at the half-cycle, rising back to 1 -- at the tempo applied at
+  // this note's onset. Separate from the timbre AM the sawwave engine applies.
+  // Unlike the descending saw it replaces, it returns to the peak *continuously*,
+  // so the cycle boundary is not a step in amplitude (a saw's 0 -> 1 wrap is a
+  // click waiting to happen).
+  let factored_pulse: f32 = if v.factored_pulse_freq > 0.0 {
+    v.factored_pulse_phase += v.factored_pulse_freq * frac / sample_rate;
+    if v.factored_pulse_phase >= 1.0 {
+      v.factored_pulse_phase -= 1.0;
+    }
+    (2.0 * v.factored_pulse_phase - 1.0).abs()
+  } else {
+    1.0
+  };
+  // The grid volume pedal: `grid_gain` chases its target with a short exponential
+  // slew (GAIN_SLEW_SECS), per sub-sample, so a sweeping pedal never steps the
+  // amplitude at CC rate (zipper). Snaps when close; identity (1.0 -> 1.0)
+  // everywhere pedals don't exist.
+  let gap = v.grid_gain_target - v.grid_gain;
+  if gap != 0.0 {
+    v.grid_gain += gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
+    if (v.grid_gain_target - v.grid_gain).abs() < 1e-4 {
+      v.grid_gain = v.grid_gain_target;
+    }
+  }
+  // The global volume pedal: the same slew as the grid pedal's. Identity wherever
+  // that pedal doesn't exist.
+  let global_gap = v.global_pedal_gain_target - v.global_pedal_gain;
+  if global_gap != 0.0 {
+    v.global_pedal_gain += global_gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
+    if (v.global_pedal_gain_target - v.global_pedal_gain).abs() < 1e-4 {
+      v.global_pedal_gain = v.global_pedal_gain_target;
+    }
+  }
+  let gain: f32 = // The volume chain is stored components multiplied here, never baked
+    // together: the timbre slot's amplitude, the grid fader's gain, the pedal's
+    // grid_gain, and the new-notes pedal's level at the voice's onset
+    // (new_pedal_gain), and the global pedal's live level (global_pedal_gain) -- all
+    // plain linear multipliers, all 1.0 wherever that mechanism doesn't exist.
+    v.env * v.timbre.gain * v.fader_gain * v.grid_gain * v.new_pedal_gain
+      * v.global_pedal_gain;
+  VoiceStep { alive: true, factored_pulse, gain }
 }
 
 /// A stateful per-stream renderer. With `oversample > 1` it runs the mix at N x the
