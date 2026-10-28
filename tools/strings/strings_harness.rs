@@ -3,7 +3,7 @@
 //! without grids.
 //!
 //! cargo run -p tools --bin strings_harness -- [--rig NAME | --rig-file PATH]
-//!   [--scene NAME] [--out DIR] [--pedal TRACE]
+//!   [--scene NAME] [--out DIR] [--pedal TRACE] [--howl GAIN]
 //!
 //! '--help' prints the options and the scenes.
 //!
@@ -25,6 +25,12 @@
 //! ('0:0,1:1' rises from heel to toe over the first second and stays
 //! there; '0:0' is a pedal resting at the heel). The engine reads the
 //! position once per block, as the audio callback does.
+//!
+//! The howl path. A scene may set the howl's gain over the rig's
+//! ('howl' sets 'HOWL_SCENE_GAIN'); the others render the rig's own
+//! 'howl.gain' (0, off, as shipped). '--howl GAIN' sets the howl's
+//! gain for every rendered scene, over both; the howl's level and
+//! delay stay the rig's.
 //!
 //! A scene drives the engine as the surfaces runtime does: between
 //! 128-frame blocks it inserts and edits 'VoiceState's in a
@@ -49,7 +55,7 @@ use std::vec::IntoIter;
 /// error; `{scenes}` is replaced by the scene names.
 const USAGE: &str = "\
 usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME]... [--out DIR]
-                       [--pedal TRACE]
+                       [--pedal TRACE] [--howl GAIN]
   --rig NAME        render with the first cpal_strings sink of rigs/NAME.org
   --rig-file PATH   the same, from a rig at any path
                     (without either: the engine's defaults at 48 kHz)
@@ -61,7 +67,11 @@ usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME]... [--out D
                     reported), or SECONDS:POSITION points in time order joined
                     by straight lines, the first point's position held before
                     it and the last's after it. '0:0,1:1' rises over the first
-                    second and stays at the toe; '0:0' rests at the heel.";
+                    second and stays at the toe; '0:0' rests at the heel.
+  --howl GAIN       the howl path's gain (howl.gain, >= 0; 0 is off) for every
+                    rendered scene, replacing the rig's and the scene's own
+                    (the 'howl' scene sets 20); the level and delay stay the
+                    rig's.";
 
 /// The sample rate without a rig.
 const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
@@ -74,19 +84,26 @@ const DEFAULT_AMPLITUDE: f32 = 0.15;
 /// Every scene's voices are on this grid.
 const GRID: usize = 0;
 
-const SCENE_NAMES: [&str; 5] = ["single_notes", "chord", "restrike", "pedal_swell", "sympathy"];
+const SCENE_NAMES: [&str; 7] =
+  ["single_notes", "chord", "restrike", "pedal_swell", "sympathy", "howl", "treble"];
+
+/// The howl gain the 'howl' scene renders with: well above the
+/// threshold at which the default level sustains a note.
+const HOWL_SCENE_GAIN: f32 = 20.0;
 
 /// The chord of 'chord' and 'restrike': a major triad with its octave,
 /// 4:5:6:8 on 110 Hz.
 const CHORD_HZ: [f32; 4] = [110.0, 137.5, 165.0, 220.0];
 
-/// A scripted scene: its events, in time order, its length, and its
-/// energy pedal (`None`: never reported).
+/// A scripted scene: its events, in time order, its length, its
+/// energy pedal (`None`: never reported), and the howl gain it sets
+/// over the rig's (`None`: the rig's).
 struct Scene {
   name: &'static str,
   duration_seconds: f32,
   events: Vec<(f32, SceneEvent)>,
-  pedal: Option<PedalTrace>, }
+  pedal: Option<PedalTrace>,
+  howl_gain: Option<f32>, }
 
 /// The energy pedal's raw position over time: `(seconds, position)`
 /// points in time order, joined by straight lines, the first point's
@@ -115,7 +132,9 @@ struct Options {
   out_dir: PathBuf,
   rig_source: Option<RigSource>,
   /// '--pedal': `Some(None)` is 'none', an unreported pedal.
-  pedal_override: Option<Option<PedalTrace>>, }
+  pedal_override: Option<Option<PedalTrace>>,
+  /// '--howl'.
+  howl_override: Option<f32>, }
 
 /// Where '--rig' or '--rig-file' says the rig is.
 enum RigSource {
@@ -153,6 +172,8 @@ fn main(
     let mut scene: Scene = scene_named(scene_name).expect("parse_options checked the name");
     if let Some(pedal) = &options.pedal_override {
       scene.pedal = pedal.clone(); }
+    if options.howl_override.is_some() {
+      scene.howl_gain = options.howl_override; }
     let rendered: Vec<f32> = render_scene(&scene, &rendering);
     let path: PathBuf = options.out_dir.join(format!("{}.wav", scene.name));
     if let Err(error) = write_mono_wav(&path, &rendered, rendering.sample_rate) {
@@ -174,6 +195,7 @@ fn parse_options(
   let mut out_dir: Option<PathBuf> = None;
   let mut rig_source: Option<RigSource> = None;
   let mut pedal_override: Option<Option<PedalTrace>> = None;
+  let mut howl_override: Option<f32> = None;
   let mut remaining: IntoIter<String> = arguments.into_iter();
   while let Some(argument) = remaining.next() {
     match argument.as_str() {
@@ -196,6 +218,13 @@ fn parse_options(
       "--pedal" => {
         let trace: String = remaining.next().ok_or("--pedal needs 'none' or a trace")?;
         pedal_override = Some(parse_pedal_trace(&trace)?); }
+      "--howl" => {
+        let gain: String = remaining.next().ok_or("--howl needs a gain")?;
+        let parsed: f32 = gain.trim().parse::<f32>()
+          .ok()
+          .filter(|value| value.is_finite() && *value >= 0.0)
+          .ok_or(format!("--howl {gain:?} is not a finite number at least 0"))?;
+        howl_override = Some(parsed); }
       other => return Err(format!("unknown argument {other}")), }}
   if scene_names.is_empty() {
     scene_names = SCENE_NAMES.iter().map(|name| name.to_string()).collect(); }
@@ -203,7 +232,8 @@ fn parse_options(
     scene_names,
     out_dir: out_dir.unwrap_or_else(default_out_dir),
     rig_source,
-    pedal_override, }) }
+    pedal_override,
+    howl_override, }) }
 
 /// '--pedal''s value: 'none' is `None`; otherwise comma-separated
 /// 'SECONDS:POSITION' points, their times finite and in order.
@@ -265,22 +295,17 @@ fn scene_named(
     "restrike" => Some(restrike_scene()),
     "pedal_swell" => Some(pedal_swell_scene()),
     "sympathy" => Some(sympathy_scene()),
+    "howl" => Some(howl_scene()),
+    "treble" => Some(treble_scene()),
     _ => None, }}
 
 /// 55, 110, 220, 440, 880 and 1760 Hz one after another, each 2 s,
 /// the damper (the release) at 1.5 s.
 fn single_notes_scene(
 ) -> Scene {
-  let pitches_hz: [f32; 6] = [55.0, 110.0, 220.0, 440.0, 880.0, 1760.0];
-  let events: Vec<(f32, SceneEvent)> = pitches_hz.iter()
-    .enumerate()
-    .flat_map(|(index, freq)| {
-      let start: f32 = 2.0 * index as f32;
-      let cell: i32 = index as i32;
-      [ (start, SceneEvent::Strike { cell, freq: *freq }),
-        (start + 1.5, SceneEvent::Release { cell }) ] })
-    .collect();
-  Scene { name: "single_notes", duration_seconds: 12.0, events, pedal: None }}
+  let events: Vec<(f32, SceneEvent)> =
+    successive_notes(&[55.0, 110.0, 220.0, 440.0, 880.0, 1760.0]);
+  Scene { name: "single_notes", duration_seconds: 12.0, events, pedal: None, howl_gain: None }}
 
 /// A major chord with its octave (110, 137.5, 165, 220 Hz: 4:5:6:8)
 /// held 4 s, then released.
@@ -288,7 +313,7 @@ fn chord_scene(
 ) -> Scene {
   let mut events: Vec<(f32, SceneEvent)> = chord_strikes(0.0);
   events.extend((0 .. CHORD_HZ.len() as i32).map(|cell| (4.0, SceneEvent::Release { cell })));
-  Scene { name: "chord", duration_seconds: 4.5, events, pedal: None }}
+  Scene { name: "chord", duration_seconds: 4.5, events, pedal: None, howl_gain: None }}
 
 /// The chord struck and sustained (its fingers lift at 0.5 s with
 /// sustain on), and its fifth struck again at 2 s: the runtime cuts
@@ -304,7 +329,7 @@ fn restrike_scene(
   events.push((2.0, SceneEvent::Strike {
     cell: restruck_cell, freq: CHORD_HZ[restruck_cell as usize] }));
   events.push((2.5, SceneEvent::Sustain { cell: restruck_cell, pitch: restruck_cell }));
-  Scene { name: "restrike", duration_seconds: 6.0, events, pedal: None }}
+  Scene { name: "restrike", duration_seconds: 6.0, events, pedal: None, howl_gain: None }}
 
 /// The energy pedal rises from the heel at 0 s to the toe at 1 s,
 /// when a 220 Hz note is struck, and stays at the toe through the
@@ -318,7 +343,7 @@ fn pedal_swell_scene(
     (1.0, SceneEvent::Strike { cell, freq: 220.0 }),
     (4.0, SceneEvent::Release { cell }) ];
   let pedal: PedalTrace = PedalTrace { points: vec![(0.0, 0.0), (1.0, 1.0)] };
-  Scene { name: "pedal_swell", duration_seconds: 4.5, events, pedal: Some(pedal) }}
+  Scene { name: "pedal_swell", duration_seconds: 4.5, events, pedal: Some(pedal), howl_gain: None }}
 
 /// Four notes struck at 0 s and held (165, 220, 330 and 440 Hz: the
 /// 3rd, 4th, 6th and 8th harmonics of 55 Hz), ringing quietly by 3 s
@@ -332,7 +357,41 @@ fn sympathy_scene(
     .map(|(index, freq)| (0.0, SceneEvent::Strike { cell: index as i32, freq: *freq }))
     .collect();
   events.push((3.0, SceneEvent::Strike { cell: quiet_hz.len() as i32, freq: 110.0 }));
-  Scene { name: "sympathy", duration_seconds: 8.0, events, pedal: None }}
+  Scene { name: "sympathy", duration_seconds: 8.0, events, pedal: None, howl_gain: None }}
+
+/// The chord struck and held 5 s with the howl path on (gain
+/// `HOWL_SCENE_GAIN`, the rig's level and delay), then released: the
+/// strings sustain on the howl instead of decaying, and the release
+/// ends them.
+fn howl_scene(
+) -> Scene {
+  let mut events: Vec<(f32, SceneEvent)> = chord_strikes(0.0);
+  events.extend((0 .. CHORD_HZ.len() as i32).map(|cell| (5.0, SceneEvent::Release { cell })));
+  Scene {
+    name: "howl", duration_seconds: 6.0, events, pedal: None,
+    howl_gain: Some(HOWL_SCENE_GAIN) }}
+
+/// 1500, 2500 and 3500 Hz one after another, each 2 s, the damper at
+/// 1.5 s: below and above the default 2000 Hz crossover, so the
+/// upper two are modal voices unless the rig moves it.
+fn treble_scene(
+) -> Scene {
+  let events: Vec<(f32, SceneEvent)> = successive_notes(&[1500.0, 2500.0, 3500.0]);
+  Scene { name: "treble", duration_seconds: 6.0, events, pedal: None, howl_gain: None }}
+
+/// `pitches_hz` one after another, each struck on its own cell 2 s
+/// after the one before and released 1.5 s after its strike.
+fn successive_notes(
+  pitches_hz: &[f32],
+) -> Vec<(f32, SceneEvent)> {
+  pitches_hz.iter()
+    .enumerate()
+    .flat_map(|(index, freq)| {
+      let start: f32 = 2.0 * index as f32;
+      let cell: i32 = index as i32;
+      [ (start, SceneEvent::Strike { cell, freq: *freq }),
+        (start + 1.5, SceneEvent::Release { cell }) ] })
+    .collect() }
 
 /// The chord's four strikes at `time`, one cell each.
 fn chord_strikes(
@@ -346,14 +405,20 @@ fn chord_strikes(
 /// The scene rendered in `BLOCK_FRAMES`-frame mono blocks, each
 /// event applied to the map before the first block that starts at or
 /// after its time, and each block handed the pedal's position at its
-/// start (NaN without a pedal).
+/// start (NaN without a pedal), under the rendering's parameters with
+/// the scene's howl gain, if it sets one.
 fn render_scene(
   scene: &Scene,
   rendering: &Rendering,
 ) -> Vec<f32> {
   let sample_rate: f32 = rendering.sample_rate;
   let total_frames: usize = (scene.duration_seconds * sample_rate).round() as usize;
-  let mut renderer: StringsRenderer = StringsRenderer::new(rendering.params, sample_rate);
+  let params: StringsParams = {
+    let mut params: StringsParams = rendering.params;
+    if let Some(howl_gain) = scene.howl_gain {
+      params.howl.gain = howl_gain; }
+    params };
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, sample_rate);
   let mut voices: VoiceMap = VoiceMap::new();
   let mut next_voice_id: VoiceId = 0;
   let mut next_event: usize = 0;
@@ -367,8 +432,7 @@ fn render_scene(
     let pedal_position: f32 = scene.pedal.as_ref()
       .map_or(f32::NAN, |pedal| pedal.position_at(block_start_seconds));
     renderer.render_block(
-      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &rendering.params,
-      pedal_position);
+      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &params, pedal_position);
     rendered.extend_from_slice(&block); }
   rendered.truncate(total_frames);
   rendered }
