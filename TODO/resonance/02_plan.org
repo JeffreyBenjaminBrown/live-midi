@@ -621,6 +621,38 @@ validation the rig will later apply (write the validator here
 as 'StringsParams::validate(&self) -> Result<(), String>').
 
 ** TODO Slice 3: junction, body, renderer, harness
+*** Corrections carried from slice 2
+**** Stream the exciter; do not fold it into the delay line
+Slice 2's 'Loop::add_table' adds a table into the ring at once,
+wrapping a table longer than the line onto itself, which raises
+peaks at high pitch. The string voice will instead hold its
+excitation table and a read position and add one sample of it
+to each loop write ('write(v_i - v_b + table[pos] /
+unison_count + drive_i)'), so a table of any length streams in
+over time, as STK's 'Guitar' streams its commuted body file.
+'add_table' stays for the pre-charge, which is exactly one
+period.
+**** The knock is a parallel table, not a per-note convolution
+The convolution of the dry table with the knock costs 'P * K'
+multiply-adds at note-on (about 2.5 million at 55 Hz), too
+much inside a 128-frame callback. 'exciter.rs' will split into
+'dry_table(params, f0, sample_rate)' (noise or pulses, lowpass,
+comb, normalized to peak 'pick_energy') and
+'knock_table(params, body, sample_rate)' (the body impulse
+response times the exponential window, through the same
+one-pole lowpass at a fixed cutoff of 'brightness * 110' Hz,
+normalized to unit energy, scaled by 'knock_mix * pick_energy').
+The knock table is computed once per parameter change by the
+renderer, never per note; each voice streams both tables in
+parallel from its birth. The exciter tests adapt: determinism,
+dry peak equals 'pick_energy', knock energy equals
+'(knock_mix * pick_energy)^2'.
+**** Slice 2's loop facts the renderer relies on
+The DC blocker's pole follows 'f0 / 200'; the tuning allpass is
+exact at 'f0'; the loss meets 'g' at 'f0'; 'Loop::energy' sums
+only the in-flight samples; 'first_order.rs' holds the shared
+first-order filter the junction's lowpass should reuse;
+'noise.rs' holds the seeded LCG.
 *** What
 'strings/junction.rs' (the formula, with its lowpass);
 'strings/body.rs' (the runtime bank and the mix);
