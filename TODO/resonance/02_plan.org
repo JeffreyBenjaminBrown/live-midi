@@ -620,7 +620,7 @@ period plus the knock. 'StringsParams::default()' passes the
 validation the rig will later apply (write the validator here
 as 'StringsParams::validate(&self) -> Result<(), String>').
 
-** TODO Slice 3: junction, body, renderer, harness
+** DONE Slice 3: junction, body, renderer, harness
 *** Corrections carried from slice 2
 **** Stream the exciter; do not fold it into the delay line
 Slice 2's 'Loop::add_table' adds a table into the ring at once,

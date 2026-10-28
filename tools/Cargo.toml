@@ -29,9 +29,14 @@ path = "synth/triangle_chord.rs"
 name = "td1_bass"
 path = "drum/td1_bass.rs"
 
+[[bin]]
+name = "strings_harness"
+path = "strings/strings_harness.rs"
+
 [dependencies]
 midir = "0.10"
 midi_pulse = { path = "../buried" }
 edo_surface = { path = "../edo_surface" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+hound = "3"

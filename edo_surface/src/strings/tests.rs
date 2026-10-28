@@ -1,18 +1,28 @@
-//! Tests of one loop, the exciter, the curves and validation. Each
-//! renders a loop as a plain Karplus-Strong string (it writes back
-//! what arrives), which is the loop alone, before any junction.
+//! Tests of the strings engine. The first ones render a loop as a
+//! plain Karplus-Strong string (it writes back what arrives), which
+//! is the loop alone, before any junction; then come the exciter,
+//! the body, the curves and validation; then the junction, the
+//! renderer over a voice map, and sympathy between strings.
 
-use crate::strings::body::{BodyMode, BodyModes};
-use crate::strings::exciter::{excitation_table, excitation_table_length, period_samples};
+use crate::strings::body::{BodyBank, BodyMode, BodyModes};
+use crate::strings::exciter::{dry_table, knock_table, period_samples};
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
 };
+use crate::strings::junction::Junction;
 use crate::strings::loop_dsp::{design_loop, Loop, LoopDesign};
+use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{
   dispersion_applies, inharmonicity_b, inharmonicity_perceptual_threshold, round_trip_gain,
   t60_seconds, BodyParams, ExciterKind, StringParams, StringsParams,
 };
+use crate::strings::renderer::{couple_through_junction, StringsRenderer};
+use crate::strings::scripted_voices::{release_voice_state, struck_voice_state, RELEASE_SECS};
+use crate::strings::voice::StringVoice;
+use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -27,7 +37,7 @@ fn a_plucked_loop_sounds_within_two_cents_of_its_pitch() {
   let just_below_the_loss_reference: f32 = 0.99 * params.string.high_frequency_hz;
   for f0 in [55.0_f32, 440.0, 1760.0, 3000.0, just_below_the_loss_reference] {
     let mut string_loop: Loop = Loop::new(&params.string, f0, SAMPLE_RATE);
-    string_loop.add_table(&excitation_table(&params.exciter, &params.body, f0, SAMPLE_RATE));
+    string_loop.add_table(&dry_table(&params.exciter, f0, SAMPLE_RATE));
     let rendered: Vec<f32> = render_plain_karplus_strong(&mut string_loop, seconds(1.2));
     let measured_hz: f64 = partial_frequency_near(&rendered[seconds(0.2) ..], f0 as f64);
     let error_cents: f64 = cents_between(measured_hz, f0 as f64);
@@ -106,8 +116,9 @@ fn dispersion_is_skipped_below_the_threshold_and_stretches_above() {
     assert!(!dispersion_applies(&no_sections, f0));
     assert_eq!(Loop::new(&no_sections, f0, SAMPLE_RATE).design().dispersion_section_count, 0); }}
 
-/// Both exciter kinds give the same table on every call, peak at
-/// `pick_energy`, and one period plus the knock long.
+/// Both exciter kinds give the same dry table on every call, one
+/// period long and peaking at `pick_energy`; the knock is the same on
+/// every call too, and its energy is `(knock_mix * pick_energy)^2`.
 #[test]
 fn both_exciter_kinds_are_deterministic_and_normalized() {
   let defaults: StringsParams = StringsParams::default();
@@ -115,16 +126,22 @@ fn both_exciter_kinds_are_deterministic_and_normalized() {
     for f0 in [55.0_f32, 440.0, 3000.0] {
       let mut params: StringsParams = defaults;
       params.exciter.kind = kind;
-      let first: Vec<f32> = excitation_table(&params.exciter, &params.body, f0, SAMPLE_RATE);
-      let second: Vec<f32> = excitation_table(&params.exciter, &params.body, f0, SAMPLE_RATE);
+      let first: Vec<f32> = dry_table(&params.exciter, f0, SAMPLE_RATE);
+      let second: Vec<f32> = dry_table(&params.exciter, f0, SAMPLE_RATE);
       assert_eq!(first, second, "{kind:?} at {f0} Hz differs between calls");
       let peak: f32 = first.iter().fold(0.0, |peak, sample| peak.max(sample.abs()));
       assert!((peak - params.exciter.pick_energy).abs() < 1e-6,
               "{kind:?} at {f0} Hz peaks at {peak}");
-      let knock_samples: usize =
-        (params.exciter.knock_ms / 1000.0 * SAMPLE_RATE).round() as usize;
-      assert_eq!(first.len(), period_samples(f0, SAMPLE_RATE) + knock_samples - 1);
-      assert_eq!(first.len(), excitation_table_length(&params.exciter, f0, SAMPLE_RATE)); }}}
+      assert_eq!(first.len(), period_samples(f0, SAMPLE_RATE)); }}
+  for knock_mix in [0.0_f32, 0.3, 1.0] {
+    let mut params: StringsParams = defaults;
+    params.exciter.knock_mix = knock_mix;
+    let knock: Vec<f32> = knock_table(&params.exciter, &params.body, SAMPLE_RATE);
+    assert_eq!(knock, knock_table(&params.exciter, &params.body, SAMPLE_RATE));
+    let energy: f32 = knock.iter().map(|sample| sample * sample).sum();
+    let expected: f32 = (knock_mix * params.exciter.pick_energy).powi(2);
+    assert!((energy - expected).abs() <= 1e-4 * expected.max(1e-6),
+            "knock_mix {knock_mix}: knock energy {energy}, expected {expected}"); }}
 
 /// The body's centers rise from about `lowest_hz` to about
 /// `highest_hz` in order, each bandwidth is its center over `q`, the
@@ -217,7 +234,7 @@ fn the_tuning_allpass_has_the_asked_phase_delay_at_f0() {
 fn a_retuned_loop_keeps_its_wave_and_moves_its_pitch() {
   let params: StringsParams = plucked_defaults();
   let mut string_loop: Loop = Loop::new(&params.string, 220.0, SAMPLE_RATE);
-  string_loop.add_table(&excitation_table(&params.exciter, &params.body, 220.0, SAMPLE_RATE));
+  string_loop.add_table(&dry_table(&params.exciter, 220.0, SAMPLE_RATE));
   let energy_at_start: f32 = string_loop.energy();
   render_plain_karplus_strong(&mut string_loop, seconds(0.2));
   let energy_before_retune: f32 = string_loop.energy();
@@ -234,6 +251,293 @@ fn a_retuned_loop_keeps_its_wave_and_moves_its_pitch() {
     let measured_low: f64 = partial_frequency_near(&rendered_low[seconds(0.5) ..], 27.5);
     assert!(cents_between(measured_low, 27.5).abs() < 2.0,
             "retuned to 27.5 Hz, sounds {measured_low}"); }}
+
+/// With `mix` 1 the body's output has the RMS of a white-noise input
+/// (another seed than the one `norm` was measured with), and with
+/// `mix` 0 it is exactly its input.
+#[test]
+fn the_body_bank_keeps_white_noise_rms_and_mix_zero_is_dry() {
+  let body: BodyParams = StringsParams::default().body;
+  let mut wet_bank: BodyBank = BodyBank::new(&BodyParams { mix: 1.0, ..body }, SAMPLE_RATE);
+  let mut noise: DeterministicNoise = DeterministicNoise::new(12345);
+  let settle: usize = seconds(0.3);
+  let (input_energy, output_energy): (f64, f64) = (0 .. settle + seconds(2.0))
+    .fold((0.0, 0.0), |(input_energy, output_energy), index| {
+      let input: f32 = noise.next_bipolar();
+      let output: f32 = wet_bank.process(input);
+      if index < settle { (input_energy, output_energy) } else {
+        ( input_energy + (input as f64).powi(2), output_energy + (output as f64).powi(2) ) }});
+  let rms_ratio: f64 = (output_energy / input_energy).sqrt();
+  println!("body: norm {:.4}, white-noise RMS out over in {rms_ratio:.4}", wet_bank.norm());
+  assert!((rms_ratio - 1.0).abs() < 0.05, "the body changes white noise's RMS by {rms_ratio}");
+  let mut dry_bank: BodyBank = BodyBank::new(&BodyParams { mix: 0.0, ..body }, SAMPLE_RATE);
+  for index in 0 .. 1000 {
+    let input: f32 = (index as f32 * 0.37).sin();
+    assert_eq!(dry_bank.process(input), input); }}
+
+/// 32 loops (16 voices of two unisons) at pitches that include
+/// unisons, octaves and fifths, struck and then left alone with no
+/// drive, store an energy (the sum of squares of every delay line)
+/// that never rises from one 128-sample block to the next once the
+/// excitation has streamed in, for a light, the default and a heavy
+/// bridge.
+///
+/// The loops carry no dispersion chain here. A chain of first-order
+/// allpasses holds tens of samples of the wave in its few states
+/// (its group delay at a low note is about 15 samples a section), so
+/// as a strike's pulses pass through it the delay lines' sum of
+/// squares dips and recovers, rising by up to 110 percent from one
+/// block to the next in a lone loop with no junction at all. With the chain, the test
+/// asserts the weaker fact that the energy averaged over successive
+/// quarter seconds never rises.
+#[test]
+fn the_junction_never_raises_the_stored_energy() {
+  let pitches: [f32; 16] = [
+    110.0, 110.0, 220.0, 220.0, 165.0, 330.0, 440.0, 55.0,
+    82.5, 247.5, 660.0, 880.0, 123.75, 371.25, 1320.0, 2640.0 ];
+  let block: usize = 128;
+  let blocks_per_quarter_second: usize = seconds(0.25) / block;
+  for dispersion_sections in [0_u32, StringsParams::default().string.dispersion_sections] {
+    for heaviness in [1.0_f32, 50.0, 500.0] {
+      let mut params: StringsParams = StringsParams::default();
+      params.bridge.heaviness = heaviness;
+      params.string.dispersion_sections = dispersion_sections;
+      let block_energies: Vec<f32> = block_energies_after_the_excitation(
+        &params, &pitches, block, seconds(3.0) / block);
+      let largest_block_rise: f32 = largest_relative_rise(&block_energies);
+      let quarter_second_means: Vec<f32> = block_energies
+        .chunks_exact(blocks_per_quarter_second)
+        .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+        .collect();
+      let largest_quarter_second_rise: f32 = largest_relative_rise(&quarter_second_means);
+      println!("junction r = {heaviness}, {dispersion_sections} dispersion sections: energy \
+                from {:.4} to {:.4e}, largest rise block to block {largest_block_rise:+.3e}, \
+                quarter second to quarter second {largest_quarter_second_rise:+.3e}",
+               block_energies[0], block_energies[block_energies.len() - 1]);
+      assert!(block_energies.iter().all(|energy| energy.is_finite()));
+      if dispersion_sections == 0 {
+        assert!(largest_block_rise <= 0.0,
+                "r = {heaviness}: the energy rose by {largest_block_rise} in a block");
+      } else {
+        assert!(largest_quarter_second_rise <= 0.0,
+                "r = {heaviness}: the energy rose by {largest_quarter_second_rise} in a \
+                 quarter second"); }
+      assert!(block_energies[block_energies.len() - 1] < block_energies[0]); }}}
+
+/// The sympathy between strings weakens with the bridge's
+/// heaviness: a struck 220 Hz voice and a silent one at the same
+/// pitch share one junction, and half a second later the silent one
+/// holds an energy above 1e-6 and above a tenth of the struck one's
+/// under a light bridge (r = 20), and under a heavy one (r = 5000)
+/// below a fiftieth of the struck one's and a tenth of what it held
+/// under the light bridge.
+///
+/// Two loops at one pitch resonate exactly, so even a heavy bridge
+/// hands the silent string about `2 / (N + r)` of the struck one's
+/// amplitude every round trip, coherently: after 110 round trips at
+/// r = 5000 its energy is about half a percent of the struck one's
+/// (measured 4.6e-3 against 0.88), far above an absolute 1e-6, which
+/// would take a bridge some 70 times heavier.
+#[test]
+fn a_silent_string_rings_by_sympathy_more_under_a_lighter_bridge() {
+  let mut sympathetic_energy_by_heaviness: Vec<(f32, f32, f32)> = Vec::new();
+  for heaviness in [20.0_f32, 5000.0] {
+    let mut params: StringsParams = StringsParams::default();
+    params.bridge.heaviness = heaviness;
+    let mut string_voices: BTreeMap<VoiceId, StringVoice> = struck_string_voices(&params, &[220.0]);
+    string_voices.insert(
+      1, StringVoice::new(&params, 220.0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new())));
+    let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
+    let mut arriving_waves: Vec<f32> = Vec::with_capacity(4);
+    for _ in 0 .. seconds(0.5) {
+      couple_through_junction(&mut string_voices, &mut junction, &mut arriving_waves); }
+    let struck_energy: f32 = string_voices[&0].energy();
+    let silent_energy: f32 = string_voices[&1].energy();
+    println!("sympathy at r = {heaviness}: struck string {struck_energy:.4e}, \
+              silent string {silent_energy:.4e}");
+    sympathetic_energy_by_heaviness.push((heaviness, struck_energy, silent_energy)); }
+  let (_, light_struck_energy, light_silent_energy): (f32, f32, f32) =
+    sympathetic_energy_by_heaviness[0];
+  let (_, heavy_struck_energy, heavy_silent_energy): (f32, f32, f32) =
+    sympathetic_energy_by_heaviness[1];
+  assert!(light_silent_energy > 1e-6, "r = 20: the silent string holds {light_silent_energy}");
+  assert!(light_silent_energy > 0.1 * light_struck_energy,
+          "r = 20: the silent string holds {light_silent_energy}, the struck one \
+           {light_struck_energy}");
+  assert!(heavy_silent_energy < 0.02 * heavy_struck_energy,
+          "r = 5000: the silent string holds {heavy_silent_energy}, the struck one \
+           {heavy_struck_energy}");
+  assert!(heavy_silent_energy < 0.1 * light_silent_energy,
+          "r = 5000: the silent string holds {heavy_silent_energy}, against \
+           {light_silent_energy} at r = 20"); }
+
+/// Three voices rendered for 2 s give finite output, below the clamp
+/// and audible.
+#[test]
+fn the_renderer_renders_three_voices_finite_below_the_clamp() {
+  let params: StringsParams = StringsParams::default();
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  for (index, freq) in [110.0_f32, 220.0, 330.0].iter().enumerate() {
+    voices.insert(finger_key(index), struck_voice_state(index as VoiceId, *freq, SAMPLE_RATE)); }
+  let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 2.0);
+  let peak: f32 = peak_of(&rendered);
+  println!("three voices: peak {peak:.4}");
+  assert!(rendered.iter().all(|sample| sample.is_finite()));
+  assert!(peak < 0.95, "peak {peak} reaches the clamp");
+  assert!(peak > 1e-3, "peak {peak} is silent");
+  assert_eq!(renderer.voice_count(), 3); }
+
+/// A released voice's output (the body off, so what is heard is the
+/// voice alone) falls below -60 dB of its peak within
+/// `RELEASE_SECS` plus 50 ms, and the voice then leaves both the map
+/// and the engine.
+#[test]
+fn a_released_voice_falls_silent_within_its_release() {
+  let mut params: StringsParams = StringsParams::default();
+  params.body.mix = 0.0;
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  let held: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 0.5);
+  let peak: f32 = peak_of(&held);
+  release_voice_state(voices.get_mut(&finger_key(0)).expect("the voice"), SAMPLE_RATE);
+  let released: Vec<f32> =
+    render_seconds(&mut renderer, &mut voices, &params, RELEASE_SECS + 0.05 + 0.5);
+  let after_release: f32 = peak_of(&released[seconds(RELEASE_SECS + 0.05) ..]);
+  println!("release: peak {peak:.4}, after release + 50 ms {after_release:.3e}");
+  assert!(after_release < 1e-3 * peak, "{after_release} remains of a peak of {peak}");
+  assert!(voices.is_empty(), "the released voice stays in the map");
+  assert_eq!(renderer.voice_count(), 0); }
+
+/// A voice removed from the map drops its string voice; a voice
+/// moved to another key under the same id (as a sustain moves it)
+/// keeps its string voice, born when it was.
+#[test]
+fn the_renderer_follows_the_map_by_voice_id() {
+  let params: StringsParams = StringsParams::default();
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  voices.insert(finger_key(1), struck_voice_state(1, 330.0, SAMPLE_RATE));
+  render_seconds(&mut renderer, &mut voices, &params, 0.1);
+  assert_eq!(renderer.voice_count(), 2);
+  let birth: u64 = renderer.string_voice(1).expect("voice 1").birth();
+  voices.remove(&finger_key(0));
+  { // The sustain's move: same state, same id, a drone key.
+    let state: VoiceState = voices.remove(&finger_key(1)).expect("voice 1");
+    voices.insert(VoiceSource::SurfaceDrone { grid: 0, pitch: 7 }, state); }
+  render_seconds(&mut renderer, &mut voices, &params, 0.1);
+  assert_eq!(renderer.voice_count(), 1);
+  assert!(renderer.string_voice(0).is_none());
+  assert_eq!(renderer.string_voice(1).expect("voice 1").birth(), birth); }
+
+/// A held voice whose string has decayed to silence is reaped from
+/// the engine (not the map) after a second, and is not respawned
+/// while it stays in the map.
+#[test]
+fn a_silent_string_is_reaped_and_stays_reaped() {
+  let mut params: StringsParams = StringsParams::default();
+  params.string.t60_seconds_at_55hz = 0.05;
+  params.string.t60_seconds_at_1760hz = 0.05;
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  render_seconds(&mut renderer, &mut voices, &params, 0.5);
+  assert_eq!(renderer.voice_count(), 1, "reaped before a second");
+  let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 1.0);
+  assert_eq!(renderer.voice_count(), 0, "not reaped");
+  assert_eq!(voices.len(), 1, "reaping touched the map");
+  render_seconds(&mut renderer, &mut voices, &params, 0.1);
+  assert_eq!(renderer.voice_count(), 0, "respawned");
+  assert!(peak_of(&rendered[seconds(0.9) ..]) < 1e-6); }
+
+/// Changed parameters are adopted at the next block: the renderer's
+/// parameters move, and a sounding loop is retuned to the new decay.
+#[test]
+fn the_renderer_adopts_changed_params_at_the_next_block() {
+  let params: StringsParams = StringsParams::default();
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  render_seconds(&mut renderer, &mut voices, &params, 0.1);
+  let gain_before: f32 = renderer.string_voice(0).expect("voice 0").loops()[0].round_trip_gain();
+  let mut changed: StringsParams = params;
+  changed.string.t60_seconds_at_55hz = 2.0;
+  render_seconds(&mut renderer, &mut voices, &changed, 0.01);
+  assert_eq!(*renderer.params(), changed);
+  let gain_after: f32 = renderer.string_voice(0).expect("voice 0").loops()[0].round_trip_gain();
+  assert!(gain_after < gain_before, "the loop kept its gain {gain_before} (now {gain_after})"); }
+
+/// Renders struck `pitches` through one junction for `block_count`
+/// blocks of `block` samples and returns the stored energy (every
+/// voice's `energy`) at the end of each block after both tables have
+/// streamed in.
+fn block_energies_after_the_excitation(
+  params: &StringsParams,
+  pitches: &[f32],
+  block: usize,
+  block_count: usize,
+) -> Vec<f32> {
+  let mut string_voices: BTreeMap<VoiceId, StringVoice> = struck_string_voices(params, pitches);
+  let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
+  let mut arriving_waves: Vec<f32> = Vec::with_capacity(3 * pitches.len());
+  let mut energies: Vec<f32> = Vec::with_capacity(block_count);
+  for _ in 0 .. block_count {
+    for _ in 0 .. block {
+      couple_through_junction(&mut string_voices, &mut junction, &mut arriving_waves); }
+    if string_voices.values().all(|voice| voice.excitation_finished()) {
+      energies.push(string_voices.values().map(|voice| voice.energy()).sum()); }}
+  energies }
+
+/// The largest `next / previous - 1` over consecutive values; 0 when
+/// none rises.
+fn largest_relative_rise(
+  values: &[f32],
+) -> f32 {
+  values.windows(2).fold(0.0, |largest, pair| largest.max(pair[1] / pair[0] - 1.0)) }
+
+/// One string voice per pitch, struck with the dry table and the
+/// knock of `params`, keyed by its index, all with gain 1.
+fn struck_string_voices(
+  params: &StringsParams,
+  pitches: &[f32],
+) -> BTreeMap<VoiceId, StringVoice> {
+  let knock: Arc<[f32]> = Arc::from(knock_table(&params.exciter, &params.body, SAMPLE_RATE));
+  pitches.iter()
+    .enumerate()
+    .map(|(index, f0)| {
+      let mut voice: StringVoice = StringVoice::new(
+        params, *f0, SAMPLE_RATE, 0, dry_table(&params.exciter, *f0, SAMPLE_RATE),
+        Arc::clone(&knock));
+      voice.set_gain(1.0);
+      (index as VoiceId, voice) })
+    .collect() }
+
+/// Renders `duration` seconds in 128-frame mono blocks, as the audio
+/// callback would, at amplitude 0.15.
+fn render_seconds(
+  renderer: &mut StringsRenderer,
+  voices: &mut VoiceMap,
+  params: &StringsParams,
+  duration: f32,
+) -> Vec<f32> {
+  let mut rendered: Vec<f32> = Vec::with_capacity(seconds(duration));
+  let mut block: [f32; 128] = [0.0; 128];
+  while rendered.len() < seconds(duration) {
+    renderer.render_block(voices, &mut block, 1, SAMPLE_RATE, 0.15, params);
+    rendered.extend_from_slice(&block); }
+  rendered }
+
+fn finger_key(
+  index: usize,
+) -> VoiceSource {
+  VoiceSource::SurfaceFinger { grid: 0, cell: (index as i32, 0) }}
+
+fn peak_of(
+  signal: &[f32],
+) -> f32 {
+  signal.iter().fold(0.0, |peak, sample| peak.max(sample.abs())) }
 
 fn relative_error(
   measured: f32,

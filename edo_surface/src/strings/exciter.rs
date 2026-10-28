@@ -1,13 +1,19 @@
-//! The excitation table: what a note's loops are filled with at
-//! key-down. One period of a raw source (white noise for a pluck,
-//! a few raised-cosine pulses for a strike), through a one-pole
-//! lowpass at `exciter.brightness` times `f0`, through the position
-//! comb `1 - z^-round(position P)`, plus the same convolved with the
-//! body's knock and scaled by `exciter.knock_mix`, and normalized so
-//! the table's peak is `exciter.pick_energy`.
+//! The two excitation tables a note streams into its loops from
+//! key-down, side by side. The dry table is one period of a raw
+//! source (white noise for a pluck, a few raised-cosine pulses for a
+//! strike), through a one-pole lowpass at `exciter.brightness` times
+//! `f0`, through the position comb `1 - z^-round(position P)`, and
+//! normalized so its peak is `exciter.pick_energy`. The knock table
+//! is the body's own short response to being hit: its impulse
+//! response under an exponential window, through the same kind of
+//! lowpass at a fixed `exciter.brightness` times 110 Hz, at unit
+//! energy times `exciter.knock_mix * exciter.pick_energy`. The dry
+//! table depends on the note's pitch; the knock does not, so the
+//! renderer builds it once per parameter change and every note
+//! shares it.
 //!
-//! The same parameters and pitch give the same table every time: the
-//! noise has a fixed seed and nothing else is random.
+//! The same parameters and pitch give the same tables every time:
+//! the noise has a fixed seed and nothing else is random.
 
 use crate::strings::body::BodyModes;
 use crate::strings::first_order::{one_pole_lowpass, FirstOrderCoefficients, FirstOrderState};
@@ -26,12 +32,16 @@ pub const HIGHEST_EXCITATION_CUTOFF_FRACTION_OF_SAMPLE_RATE: f32 = 0.45;
 /// falls 60 dB (a factor `e^-6.9`) over `knock_ms`.
 pub const KNOCK_WINDOW_TIME_CONSTANTS: f32 = 6.9;
 
-/// The table for a note at `f0` Hz. It is
-/// `excitation_table_length` samples long: one period (the dry
-/// excitation) plus the knock's tail.
-pub fn excitation_table(
+/// The knock's lowpass cuts off at `exciter.brightness` times this
+/// (Hz): the dry table's cutoff for a note at this pitch, so a
+/// brighter setting brightens the knock too, but the knock, shared by
+/// every note, does not follow any one note's pitch.
+pub const KNOCK_LOWPASS_REFERENCE_HZ: f32 = 110.0;
+
+/// The dry table for a note at `f0` Hz, one period
+/// (`period_samples`) long, peaking at `exciter.pick_energy`.
+pub fn dry_table(
   exciter: &ExciterParams,
-  body: &BodyParams,
   f0: f32,
   sample_rate: f32,
 ) -> Vec<f32> {
@@ -39,22 +49,41 @@ pub fn excitation_table(
   let source: Vec<f32> = match exciter.kind {
     ExciterKind::Pluck => white_noise(period),
     ExciterKind::Strike => strike_pulses(exciter, period), };
-  let cutoff_hz: f32 = (exciter.brightness * f0)
-    .min(HIGHEST_EXCITATION_CUTOFF_FRACTION_OF_SAMPLE_RATE * sample_rate);
-  let smoothed: Vec<f32> = lowpassed(&source, cutoff_hz, sample_rate);
+  let smoothed: Vec<f32> =
+    lowpassed(&source, excitation_cutoff_hz(exciter.brightness * f0, sample_rate), sample_rate);
   let combed: Vec<f32> = position_comb(&smoothed, position_comb_delay(exciter, period));
-  let knock: Vec<f32> = knock_table(exciter, body, sample_rate);
-  let knocked: Vec<f32> = add_convolution_with_knock(&combed, &knock, exciter.knock_mix);
-  normalized_to_peak(knocked, exciter.pick_energy) }
+  normalized_to_peak(combed, exciter.pick_energy) }
 
-/// One period plus the knock, less the sample they share: the length
-/// of a full linear convolution of the two.
-pub fn excitation_table_length(
+/// The body's impulse response, `knock_ms` long, under the window
+/// `exp(-t / (knock_ms / 6.9))`, through the one-pole lowpass at
+/// `brightness * KNOCK_LOWPASS_REFERENCE_HZ`, scaled to energy (sum
+/// of squares) `(knock_mix * pick_energy)^2`. Empty when `knock_mix`
+/// is 0.
+pub fn knock_table(
   exciter: &ExciterParams,
-  f0: f32,
+  body: &BodyParams,
   sample_rate: f32,
-) -> usize {
-  period_samples(f0, sample_rate) + knock_length_samples(exciter, sample_rate) - 1 }
+) -> Vec<f32> {
+  if exciter.knock_mix <= 0.0 {
+    return Vec::new(); }
+  let length: usize = knock_length_samples(exciter, sample_rate);
+  let response: Vec<f32> =
+    BodyModes::design(body, sample_rate).impulse_response(sample_rate, length);
+  let time_constant_samples: f32 =
+    exciter.knock_ms / 1000.0 * sample_rate / KNOCK_WINDOW_TIME_CONSTANTS;
+  let windowed: Vec<f32> = response.iter()
+    .enumerate()
+    .map(|(index, sample)| sample * (-(index as f32) / time_constant_samples).exp())
+    .collect();
+  let smoothed: Vec<f32> = lowpassed(
+    &windowed,
+    excitation_cutoff_hz(exciter.brightness * KNOCK_LOWPASS_REFERENCE_HZ, sample_rate),
+    sample_rate);
+  let energy: f32 = smoothed.iter().map(|sample| sample * sample).sum();
+  if energy > 0.0 {
+    let scale: f32 = exciter.knock_mix * exciter.pick_energy / energy.sqrt();
+    smoothed.iter().map(|sample| sample * scale).collect()
+  } else { smoothed }}
 
 /// `sample_rate / f0` rounded, at least 2.
 pub fn period_samples(
@@ -101,6 +130,15 @@ fn lowpassed(
   let mut state: FirstOrderState = FirstOrderState::default();
   input.iter().map(|sample| state.tick(&coefficients, *sample)).collect() }
 
+/// `requested_hz`, clamped below
+/// `HIGHEST_EXCITATION_CUTOFF_FRACTION_OF_SAMPLE_RATE` of the sample
+/// rate.
+fn excitation_cutoff_hz(
+  requested_hz: f32,
+  sample_rate: f32,
+) -> f32 {
+  requested_hz.min(HIGHEST_EXCITATION_CUTOFF_FRACTION_OF_SAMPLE_RATE * sample_rate) }
+
 /// `round(position * period)`, at least one sample.
 fn position_comb_delay(
   exciter: &ExciterParams,
@@ -120,47 +158,6 @@ fn position_comb(
   (0 .. period)
     .map(|index| period_table[index] - period_table[(index + period - delay % period) % period])
     .collect() }
-
-/// `dry + mix * (dry * knock)`, `*` the full linear convolution; the
-/// dry part is zero-padded to the convolution's length.
-fn add_convolution_with_knock(
-  dry: &[f32],
-  knock: &[f32],
-  mix: f32,
-) -> Vec<f32> {
-  let mut result: Vec<f32> = vec![0.0; dry.len() + knock.len() - 1];
-  result[.. dry.len()].copy_from_slice(dry);
-  if mix > 0.0 {
-    for (dry_index, dry_sample) in dry.iter().enumerate() {
-      let scaled: f32 = mix * dry_sample;
-      for (knock_index, knock_sample) in knock.iter().enumerate() {
-        result[dry_index + knock_index] += scaled * knock_sample; }}}
-  result }
-
-/// The body's impulse response, `knock_ms` long, under the window
-/// `exp(-t / (knock_ms / 6.9))`, scaled to unit energy (sum of
-/// squares 1) so that convolving a white table with it keeps the
-/// table's RMS, which makes `knock_mix` the knock's level relative
-/// to the dry table.
-pub fn knock_table(
-  exciter: &ExciterParams,
-  body: &BodyParams,
-  sample_rate: f32,
-) -> Vec<f32> {
-  let length: usize = knock_length_samples(exciter, sample_rate);
-  let response: Vec<f32> =
-    BodyModes::design(body, sample_rate).impulse_response(sample_rate, length);
-  let time_constant_samples: f32 =
-    exciter.knock_ms / 1000.0 * sample_rate / KNOCK_WINDOW_TIME_CONSTANTS;
-  let windowed: Vec<f32> = response.iter()
-    .enumerate()
-    .map(|(index, sample)| sample * (-(index as f32) / time_constant_samples).exp())
-    .collect();
-  let energy: f32 = windowed.iter().map(|sample| sample * sample).sum();
-  if energy > 0.0 {
-    let scale: f32 = 1.0 / energy.sqrt();
-    windowed.iter().map(|sample| sample * scale).collect()
-  } else { windowed }}
 
 /// `knock_ms` in samples, rounded, at least one.
 fn knock_length_samples(
