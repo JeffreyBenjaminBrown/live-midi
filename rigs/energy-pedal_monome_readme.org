@@ -120,17 +120,48 @@ it on, tap it off. It starts bright.
 The four arrow cells move the visible register one cell. The two
 outer top corners move it one octave.
 
+* Two options: the howl and the top register
+Both live in the rig under "parameters you might also enjoy".
+** the howl
+=howl.gain= above 0 turns on an active loop: every sounding
+string, summed, saturated, delayed a few milliseconds and fed
+back into every string, as a guitar howls into its amplifier.
+Above a threshold (about 1.5 to 3 at the defaults, depending on
+the pitch) notes stop decaying and sustain for as long as they
+are held or sustained; releasing still ends them. At 20 every
+note howls. =howl.level= sets how loud they settle, and
+=howl.delay_ms= which pitches howl readily. Caution: the howl
+locks pitches. Among several notes the partials they share win
+the saturation, and it pulls near-unisons, near-fifths and
+near-octaves toward just ratios, which fights the EDO tuning,
+the more the higher the gain. It is off as shipped.
+** the top register
+A note above =modal.crossover_hz= (2000 Hz as shipped; 0 turns
+it off) is not a string of loops but a few resonators at the
+string's partials, with the same decay, stiffness and level, and
+it rings in sympathy, blooms under the pedal and howls like the
+rest. Up there a string's period is only a couple of dozen
+samples, too short for its filters, and the resonators stay
+stable and in tune. The trade: harmonics. A modal note has at
+most =modal.mode_count= partials and none near or above the top
+of the audio band (six at 3000 Hz), no unison beating, and a
+slightly brighter tail than a string at the same pitch. The
+kind is chosen at the key-down, so a note keeps it through a
+slide.
+
 * Hot reload
 Edit the rig, then press =r= then Enter in the terminal running
 it. The new values apply without a restart:
 ** at once, to strings already sounding
 The string table (decay, the upper partials' decay, detune,
 stiffness, dispersion), the bridge, the body (its resonators
-restart from rest, a brief dip), =amplitude= and the tuning.
+restart from rest, a brief dip), the howl table,
+=modal.mode_count=, =amplitude= and the tuning.
 ** to notes struck afterward
 The exciter table (kind, pick energy, brightness, position,
 hammer, knock), the energy table (the window, the exponent, the
-drive, the pre-charge) and =unison_count=.
+drive, the pre-charge), =unison_count= and
+=modal.crossover_hz=.
 ** only after a restart
 =sample_rate=, =buffer_frames=, =release_secs=, the grid layout,
 the ports, and a change of sink kind.
@@ -147,10 +178,13 @@ cargo run -p tools --bin strings_harness -- --rig energy-pedal_monome
 
 It writes =target/strings-harness/<scene>.wav= for each scene
 (single notes across the range, a chord, a re-strike over a
-sustained chord, a pedal swell, sympathy) and prints each path
-and peak. =--scene NAME= renders one, =--pedal TRACE= scripts the
-pedal (='0:0,1:1'= rises from heel to toe over the first second),
-=--out DIR= writes elsewhere; =--help= lists them all.
+sustained chord, a pedal swell, sympathy, the chord with the
+howl on, and three treble notes across the crossover) and
+prints each path and peak. =--scene NAME= renders one,
+=--pedal TRACE= scripts the pedal (='0:0,1:1'= rises from heel
+to toe over the first second), =--howl GAIN= sets the howl's
+gain for every scene, =--out DIR= writes elsewhere; =--help=
+lists them all.
 
 * Deliberately not here
 No timbre keys and no volume keys (a string has no waveform, and

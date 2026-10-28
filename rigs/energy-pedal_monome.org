@@ -539,7 +539,124 @@ seed is another body of the same size and shape. Try a few.
 ******* the math
 The seed of the deterministic noise that draws each 'j_k'.
 *** parameters you might also enjoy
-Later options are added here as they land.
+Two options beside the passive instrument. The howl is an active
+path that can sustain every note forever; it is off as shipped.
+The modal table decides how the top register is rendered. A
+change to either reaches sounding strings at once, except the
+crossover, which applies to notes struck afterward.
+**** TABLE howl
+An active loop beside the passive bridge, as an amplifier and
+its speaker are beside a guitar's strings: the sum of every
+sounding string, saturated, delayed and added back into each.
+Above a threshold it sustains a note indefinitely, at a level
+it chooses. Among several notes the partials they share win, so
+it pulls near-unisons, near-fifths and near-octaves toward just
+ratios: it fights the EDO tuning, the more the higher the gain.
+Released notes still stop (the damper wins). Off as shipped.
+***** the math of the howl
+Per sample, with 'v_i' the wave arriving at the bridge from each
+string (the same sum the bridge takes),
+'h = level * tanh(gain * sum over every string of v_i)' is
+delayed by 'delay_ms' and added into every string's write,
+beside the bridge's '-v_b'. Since '|h| <= level', the howl is
+bounded whatever the gain. A note of 'n' unisons in phase gains
+about 'n * gain * level * cos(2 pi f * delay_ms / 1000)' of its
+amplitude per round trip at a partial 'f', against its own loss
+'1 - g' (see 't60_seconds_at_55hz') and the bridge's
+'2 n / (N + heaviness)'; where the gain wins, the partial grows
+until the tanh saturates. Saturated, 'h' is near a square wave of
+amplitude 'level' at the winning pitch, and a string settles
+near an amplitude of '4 / pi * level / (1 - g)'.
+***** PARAM gain = 0.0
+Unitless, >= 0. How hard the strings' sum drives the howl. 0
+turns the path off: it costs nothing, and the sound is exactly
+the bridge's alone. At the defaults a lone 220 Hz note starts to
+sustain between 1.5 and 1.8 (as the formula predicts, 1.65) and
+an 880 Hz note between 2.2 and 3; 20 sustains every note. Useful
+from 0 to 50.
+****** the math
+'h = level * tanh(gain * sum)': below the saturation, 'gain'
+times 'level' is the small-signal gain of the path; above it,
+more 'gain' only sharpens the square wave and speeds the
+take-over, while 'level' sets how loud.
+***** PARAM level = 0.003
+Loop amplitude units, in [0, 1]. How loud a howling note
+settles. At gain 20, 0.003 settles a lone 220 Hz note at a peak
+of about 0.5 (struck without the howl it peaks near 0.17), and
+the chord of the harness's 'howl' scene at 0.77; 0.01 brings
+many notes near the clamp; 0.03 or more pins them there. Useful
+from 0.001 to 0.01.
+****** the math
+The howl adds at most 'level' per sample to each string. With
+'1 - g' from about 0.0026 (1760 Hz) to 0.0125 (55 Hz) at the
+default decay curve, a string settles near an amplitude of
+'4 / pi * level / (1 - g)'; what is heard also passes the body,
+whose resonances lift some pitches more than others.
+***** PARAM delay_ms = 5.0
+Milliseconds, in [0.5, 20]. The speaker's distance (1 ms is
+about 34 cm). It picks which partials howl readily: one whose
+period fits the delay a whole number of times is helped most,
+one that fits it a half-number of times is damped, and the note
+then howls on another partial or weakly. Changing it moves
+those sweet and dead spots across the keyboard. Useful from 1 to
+10.
+****** the math
+The delayed 'h' reaches a partial at 'f' with the phase
+'2 pi f * delay_ms / 1000', so its gain on that partial is
+scaled by the cosine of that phase. The delay is rounded to
+whole samples.
+**** TABLE modal
+Above the crossover a note is a few resonators (modes) instead
+of loops. Up there a period is a couple of dozen samples or
+fewer, and the loop's loss, stiffness and tuning filters eat it,
+so the waveguide's decay and stretch get worse there. A modal
+note has the same decay curve, stiffness and level as a string,
+and is a member of the bridge, of the energy pedal's drive and
+of the howl, as a string is. It trades harmonics for that
+stability: only 'mode_count' partials, none at or above 0.45
+times the sample rate (six at 3000 Hz, four at 4000 Hz), and one
+bank per note, so no unison beating and no two-stage decay.
+***** the math of a mode
+Mode k (k = 1, 2, ...) sits at
+'f_k = k f0 sqrt((1 + B k^2) / (1 + B))', with 'B' the string
+table's stiffness at 'f0': the first is at 'f0', the rest
+stretched as a stiff string's partials are. Mode 1 decays with
+'T60(f0)', mode k with 'T60(f0) * high_frequency_t60_ratio ^ x',
+'x = log2(f_k / f0) / log2(high_frequency_hz / f0)' clamped to
+[0, 1]: log-linear in frequency down to the ratio at
+'high_frequency_hz', flat above it. Each mode is the resonator
+'b (r c z^-1 - r^2 z^-2) / (1 - 2 r c z^-1 + r^2 z^-2)', with
+'c = cos(2 pi f_k / sample_rate)',
+'r = exp(-ln(1000) / (T60_k * sample_rate))' and
+'b = 2 f0 / sample_rate', which is the loop's own Fourier series:
+each mode plays its partial as loud as a loop would, and the
+bridge, the drive and the howl act on it as on a loop's partial.
+Two differences remain. A loop's upper partials keep darkening
+above 'high_frequency_hz' and the modes do not, so a modal note
+is a little brighter (in its first 0.2 s, about 1.4 to 1.7 times
+a loop's RMS at the same pitch, with the same fundamental). And
+a modal note is one member of the bridge where a note of two
+unisons is two moving together, so it drains half as fast and
+rings a little longer (at 2000 Hz, about 1.1 s against 0.9 s).
+***** PARAM crossover_hz = 2000.0
+Hz, >= 0. A note above this pitch is modal; 0 makes every note
+loops. Useful from about 1500 to 4000. Lower gives up more
+harmonics for more stability; higher keeps the waveguide's full
+spectrum further up.
+****** the math
+Chosen at key-down: modal when 'crossover_hz > 0' and
+'f0 > crossover_hz'. The note keeps its kind for life, through
+a glide or a slide across the crossover. At 48 kHz a 2000 Hz
+period is 24 samples.
+***** PARAM mode_count = 8
+Count, 1 to 32. Partials per modal note. Fewer is purer and
+duller. At 48 kHz 8 fit just above the default crossover, 6 at
+3000 Hz and 4 at 4000 Hz, so 8 is all the top can use. Each mode
+costs a few multiply-adds per sample.
+****** the math
+Modes 'k = 1 .. mode_count', stopping at the first at or above
+'0.45 * sample_rate'. Since 'f_k' is at least 'k f0', a note at
+'f0' keeps at most '0.45 * sample_rate / f0' modes.
 ** the energy pedal
 It reaches the runtime through the MPC-20 -> host bridge: run
 =tools/pedals/bridge.sh= on the HOST before starting the rig,

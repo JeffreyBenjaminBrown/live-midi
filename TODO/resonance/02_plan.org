@@ -859,7 +859,7 @@ shift pad moves the register.
 'loads_default_rigs' passes with the new rig; the mock-run
 test; 'cargo test --workspace' green.
 
-** TODO Slice 7: the howl path and the modal crossover
+** DONE Slice 7: the howl path and the modal crossover
 *** What
 'howl' as "Agreed behavior" says, in the renderer. 'ModalVoice'
 in 'strings/voice.rs' behind the same interface as

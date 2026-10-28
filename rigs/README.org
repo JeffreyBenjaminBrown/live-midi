@@ -300,8 +300,9 @@ hold the engine's parameters:
   ~"wind"~, and its window.
 - ~bridge~ -- the one bridge every string meets: its heaviness and damping.
 - ~body~ -- the resonating body on the summed output.
-- ~howl~ -- an optional active loop that sustains what it hears.
-- ~modal~ -- the pitch above which a note is a few resonators instead of loops.
+- ~howl~ -- an optional active loop that sustains what it hears (off at ~gain = 0~).
+- ~modal~ -- the pitch above which a note is a few resonators instead of loops
+  (~crossover_hz~, 0 for none), and how many.
 
 Every parameter is documented in place in the rig that uses it,
 [[file:energy-pedal_monome.org]] (its player reference is
