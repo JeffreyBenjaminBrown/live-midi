@@ -2,8 +2,13 @@
 //! to mono f32 WAV files, so string parameters can be judged by ear
 //! without grids.
 //!
-//! cargo run -p tools --bin strings_harness -- [--scene NAME] [--out DIR]
+//! cargo run -p tools --bin strings_harness -- [--rig NAME | --rig-file PATH]
+//!   [--scene NAME] [--out DIR]
 //!
+//! '--rig' loads the named rig from 'rigs/', '--rig-file' a rig at
+//! any path; the harness then renders with the first 'cpal_strings'
+//! sink's parameters, sample rate and amplitude. Without either it
+//! renders 'StringsParams::default()' at 48 kHz and amplitude 0.15.
 //! Without '--scene' it renders every scene; without '--out' it
 //! writes into 'target/strings-harness/' at the repository root. Each
 //! scene lands in 'DIR/<scene>.wav'; the harness prints each file's
@@ -16,6 +21,7 @@
 //! the map. So what it renders is what a rig with the same
 //! parameters plays.
 
+use edo_surface::rig::{load_named_rig, load_rig_file, Rig, SinkRig};
 use edo_surface::strings::scripted_voices::{release_voice_state, struck_voice_state};
 use edo_surface::strings::{StringsParams, StringsRenderer};
 use edo_surface::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
@@ -27,12 +33,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::vec::IntoIter;
 
-const SAMPLE_RATE: f32 = 48_000.0;
+/// The sample rate without a rig.
+const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 const BLOCK_FRAMES: usize = 128;
 
-/// The sink amplitude every scene renders at.
-const AMPLITUDE: f32 = 0.15;
+/// The sink amplitude without a rig.
+const DEFAULT_AMPLITUDE: f32 = 0.15;
 
 /// Every scene's voices are on this grid.
 const GRID: usize = 0;
@@ -66,7 +73,20 @@ enum SceneEvent {
 
 struct Options {
   scene_names: Vec<String>,
-  out_dir: PathBuf, }
+  out_dir: PathBuf,
+  rig_source: Option<RigSource>, }
+
+/// Where '--rig' or '--rig-file' says the rig is.
+enum RigSource {
+  Named(String),
+  File(PathBuf), }
+
+/// What the scenes render with: a strings sink's parameters, its
+/// sample rate and its amplitude.
+struct Rendering {
+  params: StringsParams,
+  sample_rate: f32,
+  amplitude: f32, }
 
 fn main(
 ) -> ExitCode {
@@ -74,18 +94,23 @@ fn main(
     Ok(options) => options,
     Err(message) => {
       eprintln!("strings_harness: {message}");
-      eprintln!("usage: strings_harness [--scene NAME] [--out DIR]; scenes: {}",
+      eprintln!("usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME] \
+                 [--out DIR]; scenes: {}",
                 SCENE_NAMES.join(", "));
       return ExitCode::from(2); }};
+  let rendering: Rendering = match rendering_from(options.rig_source.as_ref()) {
+    Ok(rendering) => rendering,
+    Err(message) => {
+      eprintln!("strings_harness: {message}");
+      return ExitCode::FAILURE; }};
   if let Err(error) = fs::create_dir_all(&options.out_dir) {
     eprintln!("strings_harness: cannot create {}: {error}", options.out_dir.display());
     return ExitCode::FAILURE; }
-  let params: StringsParams = StringsParams::default();
   for scene_name in &options.scene_names {
     let scene: Scene = scene_named(scene_name).expect("parse_options checked the name");
-    let rendered: Vec<f32> = render_scene(&scene, &params);
+    let rendered: Vec<f32> = render_scene(&scene, &rendering);
     let path: PathBuf = options.out_dir.join(format!("{}.wav", scene.name));
-    if let Err(error) = write_mono_wav(&path, &rendered) {
+    if let Err(error) = write_mono_wav(&path, &rendered, rendering.sample_rate) {
       eprintln!("strings_harness: cannot write {}: {error}", path.display());
       return ExitCode::FAILURE; }
     let peak: f32 = rendered.iter().fold(0.0, |peak, sample| peak.max(sample.abs()));
@@ -98,6 +123,7 @@ fn parse_options(
 ) -> Result<Options, String> {
   let mut scene_names: Vec<String> = Vec::new();
   let mut out_dir: Option<PathBuf> = None;
+  let mut rig_source: Option<RigSource> = None;
   let mut remaining: IntoIter<String> = arguments.into_iter();
   while let Some(argument) = remaining.next() {
     match argument.as_str() {
@@ -108,10 +134,41 @@ fn parse_options(
         scene_names.push(name); }
       "--out" => {
         out_dir = Some(PathBuf::from(remaining.next().ok_or("--out needs a directory")?)); }
+      "--rig" | "--rig-file" => {
+        if rig_source.is_some() {
+          return Err("give at most one of --rig and --rig-file".to_string()); }
+        let value: String =
+          remaining.next().ok_or(format!("{argument} needs a rig name or path"))?;
+        rig_source = Some(if argument == "--rig" {
+          RigSource::Named(value)
+        } else {
+          RigSource::File(PathBuf::from(value)) }); }
       other => return Err(format!("unknown argument {other}")), }}
   if scene_names.is_empty() {
     scene_names = SCENE_NAMES.iter().map(|name| name.to_string()).collect(); }
-  Ok(Options { scene_names, out_dir: out_dir.unwrap_or_else(default_out_dir) }) }
+  Ok(Options { scene_names, out_dir: out_dir.unwrap_or_else(default_out_dir), rig_source }) }
+
+/// The rig's first 'cpal_strings' sink as a rendering, or the
+/// defaults without a rig.
+fn rendering_from(
+  rig_source: Option<&RigSource>,
+) -> Result<Rendering, String> {
+  let Some(rig_source) = rig_source else {
+    return Ok(Rendering {
+      params: StringsParams::default(),
+      sample_rate: DEFAULT_SAMPLE_RATE,
+      amplitude: DEFAULT_AMPLITUDE, }); };
+  let rig: Rig = match rig_source {
+    RigSource::Named(name) => load_named_rig(name)?,
+    RigSource::File(path) => load_rig_file(path)?, };
+  rig.sinks.iter()
+    .find_map(|sink| match sink {
+      SinkRig::CpalStrings { sample_rate, amplitude, .. } => Some(Rendering {
+        params: sink.strings_params()?,
+        sample_rate: *sample_rate as f32,
+        amplitude: *amplitude, }),
+      _ => None, })
+    .ok_or(format!("rig {:?} has no cpal_strings sink", rig.id)) }
 
 /// 'target/strings-harness/' under the repository root (the parent
 /// of this package's directory).
@@ -197,21 +254,23 @@ fn chord_strikes(
 /// after its time.
 fn render_scene(
   scene: &Scene,
-  params: &StringsParams,
+  rendering: &Rendering,
 ) -> Vec<f32> {
-  let total_frames: usize = (scene.duration_seconds * SAMPLE_RATE).round() as usize;
-  let mut renderer: StringsRenderer = StringsRenderer::new(*params, SAMPLE_RATE);
+  let sample_rate: f32 = rendering.sample_rate;
+  let total_frames: usize = (scene.duration_seconds * sample_rate).round() as usize;
+  let mut renderer: StringsRenderer = StringsRenderer::new(rendering.params, sample_rate);
   let mut voices: VoiceMap = VoiceMap::new();
   let mut next_voice_id: VoiceId = 0;
   let mut next_event: usize = 0;
   let mut rendered: Vec<f32> = Vec::with_capacity(total_frames + BLOCK_FRAMES);
   let mut block: [f32; BLOCK_FRAMES] = [0.0; BLOCK_FRAMES];
   while rendered.len() < total_frames {
-    let block_start_seconds: f32 = rendered.len() as f32 / SAMPLE_RATE;
+    let block_start_seconds: f32 = rendered.len() as f32 / sample_rate;
     while next_event < scene.events.len() && scene.events[next_event].0 <= block_start_seconds {
-      apply_event(&mut voices, &mut next_voice_id, scene.events[next_event].1);
+      apply_event(&mut voices, &mut next_voice_id, scene.events[next_event].1, sample_rate);
       next_event += 1; }
-    renderer.render_block(&mut voices, &mut block, 1, SAMPLE_RATE, AMPLITUDE, params);
+    renderer.render_block(
+      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &rendering.params);
     rendered.extend_from_slice(&block); }
   rendered.truncate(total_frames);
   rendered }
@@ -222,20 +281,21 @@ fn apply_event(
   voices: &mut VoiceMap,
   next_voice_id: &mut VoiceId,
   event: SceneEvent,
+  sample_rate: f32,
 ) {
   match event {
     SceneEvent::Strike { cell, freq } => {
-      let voice: VoiceState = struck_voice_state(take_id(next_voice_id), freq, SAMPLE_RATE);
+      let voice: VoiceState = struck_voice_state(take_id(next_voice_id), freq, sample_rate);
       voices.insert(finger_key(cell), voice); }
     SceneEvent::Release { cell } => {
       if let Some(voice) = voices.get_mut(&finger_key(cell)) {
-        release_voice_state(voice, SAMPLE_RATE); }}
+        release_voice_state(voice, sample_rate); }}
     SceneEvent::Sustain { cell, pitch } => {
       if let Some(voice) = voices.remove(&finger_key(cell)) {
         voices.insert(drone_key(pitch), voice); }}
     SceneEvent::CutSustained { pitch } => {
       if let Some(mut voice) = voices.remove(&drone_key(pitch)) {
-        release_voice_state(&mut voice, SAMPLE_RATE);
+        release_voice_state(&mut voice, sample_rate);
         let retired_key: VoiceSource =
           VoiceSource::SurfaceRetired { grid: GRID, seq: take_id(next_voice_id) };
         voices.insert(retired_key, voice); }}}}
@@ -262,10 +322,11 @@ fn drone_key(
 fn write_mono_wav(
   path: &Path,
   samples: &[f32],
+  sample_rate: f32,
 ) -> Result<(), hound::Error> {
   let spec: WavSpec = WavSpec {
     channels: 1,
-    sample_rate: SAMPLE_RATE as u32,
+    sample_rate: sample_rate as u32,
     bits_per_sample: 32,
     sample_format: SampleFormat::Float, };
   let mut writer: WavWriter<BufWriter<File>> = WavWriter::create(path, spec)?;

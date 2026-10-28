@@ -710,7 +710,7 @@ The agent renders all scenes and lists the WAV paths and peaks
 in its report. It listens to nothing (it cannot); the report
 notes any scene whose peak or decay looks wrong numerically.
 
-** TODO Slice 4: rig schema, settings, reload, engine switch
+** DONE Slice 4: rig schema, settings, reload, engine switch
 *** Corrections carried from slice 3
 **** Remove the silent-string reaper
 See the UPDATED note under "Silent strings are reaped": a

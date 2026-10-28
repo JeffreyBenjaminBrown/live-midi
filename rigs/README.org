@@ -284,6 +284,30 @@ distortion_shape = 2.0
 A third sink kind, ~cpal_sampler~ (a one-shot WAV player), drives the SoftStep
 ~drumkit~ window; see the SoftStep section below.
 
+** ~cpal_strings~: the strings engine
+A ~cpal_strings~ sink under the play grids selects the strings engine instead of the
+sawwave engine: every note is a modelled string, all coupled through one bridge and
+radiated through a body. It plays through the same output path as ~cpal_synth~, and
+every surfaces control (sustain, shift, volume, pedals, ~r~ reload) works unchanged.
+The sink has no waveform, pluck-envelope or distortion keys, and a ~distortion_toggle~
+does nothing under it. Its top-level keys are ~id~, ~kind = "cpal_strings"~,
+~sample_rate~, ~buffer_frames~, ~amplitude~ and ~release_secs~ (the damper; optional,
+default 0.05). Seven nested tables (~TABLE~ headlines under the sink's ~ELEM sinks~)
+hold the engine's parameters:
+- ~string~ -- decay over pitch, stiffness, unison loops, dispersion.
+- ~exciter~ -- what starts a note: ~kind = "pluck"~ or ~"strike"~, and its shape.
+- ~energy~ -- how the energy pedal drives a string: ~kind = "ebow"~, ~"bow"~ or
+  ~"wind"~, and its window.
+- ~bridge~ -- the one bridge every string meets: its heaviness and damping.
+- ~body~ -- the resonating body on the summed output.
+- ~howl~ -- an optional active loop that sustains what it hears.
+- ~modal~ -- the pitch above which a note is a few resonators instead of loops.
+
+Every parameter is documented in place in the rig that uses it. Any key or whole
+table may be left out and takes its value from ~StringsParams::default()~
+(~edo_surface/src/strings/params.rs~); a misspelled key is an error. The whole sink
+hot-reloads with ~r~, except a change of sink kind, which needs a restart.
+
 * Timbres (the waveform strip's four choices)
 
 An optional top-level ~[[timbres]]~ array (exactly four entries when present)
