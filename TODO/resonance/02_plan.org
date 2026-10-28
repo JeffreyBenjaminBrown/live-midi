@@ -340,6 +340,13 @@ Below the natural loss 'k' is 0 and the drive does nothing.
 Outside the window 'k' is 0. A test asserts that a note with a
 full pedal and a 1 s ex-post leg grows and a note with the pedal
 at 0 decays as without the pedal.
+*** TODO UPDATED [Claude] after slice 5: the rate's heel
+As written above, 'k = max(0, exp(rate / f0) - g)' with 'rate =
+0' at the heel gives 'k = 1 - g', which exactly cancels the loss
+and holds a heel-pedal note forever. Slice 5 maps the pedal
+onto the rate from the string's own decay rate (so 'k = 0' at
+the heel) up to 'growth_rate_per_second_max' at full pedal and
+full triangle. 'energy.rs' derives it.
 *** Only the window gates the drive
 Whether a finger holds the note, whether it is sustained, and
 whether it has been retriggered do not enter. A re-strike makes
@@ -804,6 +811,34 @@ is rejected; two such pedals are rejected; a 'pedal_toggle' in
 the role is rejected.
 
 ** TODO Slice 6: the rig, its readme, the mock run, user docs
+*** Corrections carried from slice 5
+**** The drive limit rises with the pedal
+Slice 5 found that at 'drive_limit' 0.4 the tanh flattens the
+bloom about 5 dB up within 0.3 s. The limit will scale with the
+pedal: 'A = drive_limit * pedal(t)^e' (so a light pedal blooms
+to a low ceiling and a full pedal to the full one), and the
+default 'drive_limit' becomes 0.8. Document it so in the rig.
+**** The unisons of a voice are driven coherently
+Slice 5 drives each loop from its own arriving wave, and the
+unisons drift out of phase under drive, so the heard level
+falls while the loops keep their energy. The drive input will
+be the mean of the voice's loops' arriving waves, and the same
+drive sample is added to every loop of the voice (one magnet
+over the whole course). The growth test must still pass.
+**** The later options are not documented yet
+The howl, modal, bow and wind parameters exist in the schema and
+take their defaults when omitted. Slice 6 does not write them
+into the rig; slices 7 and 8 add them under the second grouping
+headline as they implement them, so the rig never documents a
+behavior that does not exist.
+**** Names slices 4 and 5 fixed
+'PedalRole::StringEnergy' ('role = "string_energy"', rig-wide,
+no 'monome', no taper knobs); the sink's tables are 'string',
+'exciter', 'energy', 'bridge', 'body' (and 'howl', 'modal' for
+later); 'rigs/README.org' already has short entries for the sink
+and the role, which the rig file and its readme point back to.
+The harness renders a rig with 'cargo run -p tools --bin
+strings_harness -- --rig energy-pedal_monome'.
 *** What
 'rigs/energy-pedal_monome.org' as "Agreed behavior" describes,
 with the sink's parameters under two grouping headlines
