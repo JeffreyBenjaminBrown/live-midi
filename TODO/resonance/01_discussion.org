@@ -1,0 +1,674 @@
+* [jeff] vision : pluck-bowed strings with crosstalk
+I'm guessing you should read README_AI.org. It might not be
+super-relevant to this discussion, though, so don't feel
+obligated to read everything it points at in detail. At the
+moment this is a pretty blue-sky request.
+
+My friend Rob Fielding wrote some code for resonant sympathetic
+strings. He can play his oud live and drive some digital
+resonators; it sounded like a Marshall stack. It was awesome. He
+said the math was dirt-simple; just add the sound coming in to
+each string I'm sure this is the repo where he did it, but I
+think so.
+
+https://github.com/rfielding/maqam
+
+I bring that up because I want to make the monome synth actually
+sound good. Right now it's really fun to play but the sound is
+cheesy. I don't have time to learn a complex synth, so I just
+want a single sound that's awesome.
+
+A piano is awesome. Part of what's awesome about a piano is that
+each note key on its own sounds good. I like how
+physically-modeled strings sound when it's well done. Pianoteq
+sounds *amazeballs*. But raw Karplus-Strong sounds really bad.
+
+I've heard some fantastic synth sax sounds, too, and percussion,
+and flute. But I *think* strings are the only model that sounds
+great over a range as great as the piano's. Let me know if I'm
+wrong. (Actually, I can see horns working -- tubas get pretty
+low, and those little trumpets I've forgotten the name of get
+pretty high. But I suspect they would sound nasty feeding back,
+which brings me to the second idea.)
+
+The second aspect of a piano that's wonderful is the crosstalk.
+Rob's rig has the limitation that he has to fix the resonant
+pitches. Mine doesn't! The synth we make could have each key talk
+to each other key.
+
+But an advantage the oud has over the monome is that there is no
+velocity sensitivity in the monome. To overcome that, I want to
+use a pedal as an injector of energy to the strings. Physically,
+this would be like: The string makes no sound until it is keyed,
+but it's moving. I guess this would be like leaving the mic off.
+As soon as it is keyed, the sound is emitted (the virtual mic
+turns on, if we model it, but we probably won't). It begins by
+being plucked or struck (we'll try both) a medium volume. But it
+also accumulates energy. That energy builds up in the string for
+a user-configurable ("ex-ante-energizing-ms", where ms =
+milliseconds) amount of time before the note sounds, and
+continues being injected from the pedal for a while after
+("ex-post-energizing-ms"). The energy contribution isn't boolean;
+rather, it's a (usually) asymmetric triangle, ramping linearly
+from 0 before to 1 at the attack moment to 0 at the end of the
+ex-post energizing window. The energy is also a function of the
+pedal position. Linear might not feel right; let's instead
+provide a user-configurable value, "pedal-energy-exponent". It
+must be positive, and probably will be more useful above unity
+than below it.
+
+I imagine there are different ways to put energy into a string.
+One is a bow. Another is the ebow. Hell wind would probably do
+it. Any of them might sound good. We'll try a few. Let's call
+that the "bow energy". It's not a config parameter but it's a
+concept.
+
+The pick energy is another concept. That actually needs a config
+value, "pick-energy".
+
+Please have Opus 5.5 (or several, if it's easy to parallelize) do
+a literature review. Include Rob's feedback algorithm, and the
+prior art he used (hopefully he talks about it; maybe the
+research genre is "amp modeling"?). Have them look for
+good-sounding physical models, both theory and code.
+
+Then hit me with choices, and ask for whatever clarifications you
+need.
+
+Please respond here in this document, without recapping your
+responses in the CLI.
+
+* [Claude] response: the literature, the choices, and questions
+Three Opus 5.5 reviewers ran in parallel; their full reports are
+in =01_discussion/=. Every claim in the reports carries a URL,
+and the things a reviewer could not pin down are marked
+UNVERIFIED in place. One reviewer also wrote a 32-string Rust
+simulation to check the coupling math; its results are in the
+coupling report and are what I lean on below where I say "blows
+up" or "stable". What follows is my digest, then the design
+choices as I see them, then questions.
+** The three reports
+*** Rob's code and its prior art
+[[file:01_discussion/lit_rob-fielding.org]]
+*** String models, bodies, continuous excitation, code, range
+[[file:01_discussion/lit_strings-and-bodies.org]]
+*** Winds, brass, percussion, and coupling stability
+[[file:01_discussion/lit_coupling-winds-percussion.org]]
+The stability theory is that of coupling N resonators.
+
+** What Rob's rig actually is
+*** A feed-forward bank of biquads, no string-to-string feedback
+=src/sympathetics.rs= in rfielding/maqam is up to 64 two-pole
+resonators, =y = 2r cos(w) y1 - r^2 y2 + drive=, one per partial
+of the current phrase's just pitches (plus the 4/3 and 3/2 over
+the tonic and their harmonics). "Just add the sound coming in to
+each string" is literally the algorithm: the same input,
+tanh-clipped and gated, is added into every resonator. Nothing
+goes from any resonator back into any other or back into the
+input. So his bank is stable for the trivial reason that every
+pole radius is below 1; there is no coupling problem to solve,
+and also no mutual resonance. The pitches come from the score,
+not from pitch-tracking the oud.
+*** The Marshall stack was a Marshall stack
+His =dgrowl.mq= preset runs the oud through a Neural Amp Modeler
+capture of a JCM800 2203X before the strings ever hear it, and
+the commit "soften the feedback a bit" just lowered that amp's
+gain. What he heard as feedback is long, high-Q sustain from
+resonators driven by a cranked amp model. So the parts of your
+plan live in different genres:
+**** The distortion half: "amp modeling" is the right genre
+**** The self-sustaining howl: amp modeling is the wrong genre
+It lives under "acoustic feedback simulation" (Sullivan 1990;
+Smith's virtual electric guitar; Softube's patent).
+**** The strings-talking-to-strings half
+It lives under "coupled strings" and "bridge scattering".
+**** Your plan needs a different structure from Rob's
+Because yours feeds back.
+
+** Why raw Karplus-Strong sounds bad, and the known fixes
+*** Six nameable defects
+**** Pitch is quantized to whole samples
+At 48 kHz the rounding error passes a 58-EDO step (20.7 cents)
+above about 1 kHz.
+**** Decay time scales as 1/f0^3
+So bass rings for days and treble dies in tens of milliseconds.
+**** The excitation is fresh white noise every note
+**** There is no body
+**** There is one loop per note
+So no two-stage decay and no beating.
+**** It is perfectly harmonic
+*** The fixes, in the order every good string engine applies them
+**** Fractional-delay tuning
+With every in-loop filter's phase delay subtracted.
+**** A loss filter specified as T60 in seconds
+Its cutoff tracks pitch; Rings does this in three lines.
+**** A shaped, deterministic excitation
+**** A body
+**** Two slightly detuned or coupled loops per note
+**** A dispersion allpass chain for piano-like stiffness
+**** A shared bridge coupling every sounding string
+**** Rust starting point: =mi-plaits-dsp-rs= (MIT)
+The best Rust starting point; it already contains Rings' string
+and modal resonator, about 700 lines.
+**** STK's =Guitar= is the closest existing shape
+It is 244 lines and is the closest existing shape to your target,
+with a commuted body excitation and crude all-to-all coupling.
+**** Pianoteq's patent, incidentally
+It describes additive synthesis from an offline modal analysis of
+a stiff string coupled to a finite-element soundboard, not a
+waveguide.
+
+** Bodies, since you asked
+A body does three separable jobs and each belongs in a different
+place in the graph.
+*** The bridge admittance
+What the strings feel at their end. It sets per-partial damping,
+pulls partials slightly, and is the path by which strings couple:
+it must be live, inside the loop, low-order and passive.
+*** The radiation
+Bridge force to sound. It is what gives "wood" or "soundboard"
+colour: it is high-order and belongs on the summed output, as a
+partitioned convolution with a measured or synthetic impulse
+response or as 30 to 50 parallel biquads, costing the same at any
+polyphony.
+*** The knock
+The body's own response to being hit. It belongs in the
+excitation, commuted into the pluck or strike table.
+*** Bank and Karjalainen's guitar
+Exactly this split: a 60th-order passive admittance in the loop,
+two 200th-order radiation filters on the output.
+*** The rule both they and Smith follow
+Never put the long impulse response inside the loop, for three
+reasons:
+**** A fitted high-order response is generally not passive
+**** One slightly active mode makes a partial grow forever
+**** Block-based convolution adds a block of delay
+Any block-based convolution would add a block of delay into every
+string loop.
+*** McPherson's note: why do the in-loop part at all
+It comes from the real magnetic resonator piano: a sustained note
+with the dampers down "sounds flat and synthetic" next to the
+same note with the other strings free to ring.
+
+** Coupling every key to every key
+*** The right object: a shared bridge junction, not an NxN matrix
+Smith's loaded series junction, with all strings of equal
+impedance and a bridge impedance ratio =r=: =v_b = 2/(N + r) *
+sum_i v_i_in=, then each string gets back =v_i_out = v_b -
+v_i_in=. At =r = 0= this is the Householder matrix, orthogonal
+and lossless for any N and any delay lengths (Schlecht and Habets
+2017), which matters because your N and your pitches change
+constantly. At =r > 0= it is strictly passive and =r= acts as a
+"bridge heaviness" knob: large =r= gives weak, fixed-per-pair
+coupling (the piano regime), small =r= gives strong coupling that
+renormalizes itself as notes come and go. It costs O(N) per
+sample: one sum, one multiply, N subtractions. Adding a few
+passive bridge modes to the =2/(N+r)= scalar is what turns
+"two-stage decay only" into "two-stage decay plus beating plus
+partial-dependent damping".
+*** What does not work
+**** Adding c times everyone's output into everyone's input
+Simply adding it has an in-phase eigenvalue of =1 + c(N-1)=,
+always above 1; in the simulation it diverged immediately at c =
+1/N and c = 1/sqrt(N) and was stable only near c = 1e-5, which is
+inaudible.
+**** Delaying the cross terms by one audio buffer
+This also diverged (the in-phase gain approaches 3), so the
+junction must run per sample or in micro-blocks no longer than
+the shortest sounding period, about 8 to 11 samples at the top of
+the piano.
+**** 32 coupled strings computed per sample
+They ran at about one percent of one core, so the cpal buffer
+only sets control latency.
+*** The howl is a separate, deliberately active path
+The howl path is a chain whose result is added back into every
+string:
+**** Sum of all strings
+**** Gain
+**** A tanh or cubic clipper
+The clipper bounds it for any gain and any delay, so this is the
+one place a whole buffer of latency is harmless.
+**** A delay of 1 to 10 ms
+This is the speaker distance.
+**** Above threshold a note sustains forever
+The partials that several notes share (unisons, octaves, fifths)
+win.
+**** Caution: keep it out of the passive junction
+That keeps the two concerns independent.
+**** Caution: Fletcher-style locking fights EDO tuning
+It pulls near-unisons and near-octaves toward just ratios while
+the loop saturates, which fights deliberate EDO tuning; that
+follows from the literature and nobody has listened to it in 41-
+or 58-EDO.
+
+** Range: you are mostly right
+*** Strings span it; winds and brass do not, being oscillators
+**** Every blown model is built around one register
+The register is that of one instrument, about two to three
+octaves, because the reed, lip or jet resonance has to stay
+matched to the bore and the register-selecting hardware is
+missing. The blown models are:
+***** STK clarinet
+***** STK saxofony
+***** STK flute
+***** STK brass
+***** Faust's physmodels
+***** Elements' tube
+***** The VL1
+**** Real winds cover the piano only as a family
+The one you forgot is the piccolo trumpet.
+**** Worse for your purpose, they all self-oscillate
+So coupling them is coupling oscillators: the organ-pipe
+synchronization papers predict pitch pulling, locking and
+register jumps. Your "nasty" guess is what the theory says.
+**** Winds could still be one-way drivers
+Into a passive string bank, Rings-style.
+*** Two refinements
+**** The waveguide form fails at the top at 48 kHz
+Above roughly C7 a period is 11 to 23 samples and the loss,
+dispersion and tuning filters eat it, so the commuted piano, the
+Faust-STK piano and Smith all switch to a few modal biquads up
+there.
+**** Modal or additive resonators cover the whole range
+Examples are Pianoteq and Bank's 2010 piano. Their cost grows as
+pitch falls (a 30 Hz note with 64 modes reaches only 2 kHz) and
+bowing or feedback is less natural in them.
+**** The natural split
+Waveguide low and middle, modal at the top.
+**** For your current layout this is moot
+41-EDO with x-step 8 and y-step 1 on a 16x16 from 110 Hz spans
+about 3.3 octaves, 110 Hz to roughly 1.08 kHz, before the shift
+pad moves the register.
+***** DONE jeff : I shift register a lot
+and I might run this with two monomes, ala the rig called
+volpedal-newnotes-and-global_granular-sustain
+where one is bass and one is treble. (I don't often go up
+into the sixth or seventh octaves, but still want them.)
+****** [Claude] then the top matters, and it is a small add-on
+With fractional-delay tuning the waveguide is fine through the
+sixth octave and most of the seventh: at C7 (2093 Hz) a period
+is still 23 samples, and the trouble starts around 20 samples
+and below, where the loss and dispersion filters eat the delay.
+So the voice gets a crossover: above a rig-set pitch (default
+near C7) a note is rendered by a handful of modal biquads with
+the same T60 curve instead of a delay line. It joins the same
+junction, since a biquad has an input and an output like any
+other string. I will design the voice behind one interface from
+the start so the crossover is a per-note choice, not a second
+engine. Two grids with one junction is the natural case: both
+grids' notes are strings on one bridge.
+**** Every per-register parameter should be smooth in log2(f0)
+Each should be a smooth function of log2(f0), never a 12-note
+table. The parameters are:
+***** T60
+***** Stiffness B
+***** Unison count
+***** Strike position
+***** Hammer brightness
+
+** Continuous energy: how the pedal becomes a bow
+*** The simplest bloom is an EBow, not a bow
+Feed each string's own output back into itself through a soft
+limiter: =drive = k * A * tanh(v / A)=. The string's per-period
+gain becomes =g + k=. Below =k = 1 - g= the pedal merely
+lengthens sustain; above it the note grows exponentially from
+whatever energy it has (a pluck, sympathetic ring, or a tiny
+noise floor) until tanh flattens it at about A. That is "energy
+ramps in, string blooms", with no non-starts, no squeaks, and one
+knob. The reviewers' key suggestion for feel: map the pedal to a
+growth rate in nepers per second and derive k from it per note,
+=k = exp(rate / f0) - g=, so a given pedal position feels the
+same in every register; let A rise with the pedal too so more
+pedal is both faster and louder.
+*** Bow and wind are the richer, twitchier alternatives
+**** A friction-table bow
+Examples: Smith's waveguide bow, STK Bowed, Elements' banded
+waveguides. It gives rosin bite and a locked sawtooth spectrum
+but only inside the Schelleng window of force versus velocity;
+expect squeaks and non-starts at extremes.
+**** Wind (the aeolian harp)
+Bandpassed noise centred at the Strouhal frequency, so the
+partial that blooms climbs the series as the pedal rises.
+**** Elements has all three exciters in MIT C++
+I would build the EBow first and keep the exciter as a plug so
+bow and wind can follow.
+
+** How your vision maps onto this
+*** The energy triangle and the exponent
+Your asymmetric triangle (0 at attack minus
+=ex-ante-energizing-ms=, 1 at the attack, 0 at attack plus
+=ex-post-energizing-ms=), times =pedal^pedal-energy-exponent=, is
+the time course of the drive gain k (or of the growth rate) for
+that string. =pick-energy= is the amplitude of the excitation
+table read into the string at the attack. Both slot straight into
+the EBow loop above, and the exponent's "above unity is more
+useful" matches the growth-rate mapping, which is already steep.
+*** The silent pre-energizing is the part that fights causality
+A string that accumulates energy before it is keyed needs to know
+it will be keyed.
+**** The implementable reading
+***** Key-down creates the string silently and starts the ramp
+***** The pluck or strike lands =ex-ante-energizing-ms= later
+***** The string joins the output at that moment
+This is when the "mic turns on".
+***** The price is that much added latency on every attack
+Which is why I expect you will want it at 0 to 30 ms rather than
+hundreds.
+**** A second reading: the ramp peaks at key-down
+Only the ex-post side exists. I need to know which reading you
+meant; see the question below.
+***** TODO jeff : I meant this one.
+I shouldn't hear the string until I press the key,
+but it was gathering energy the whole time.
+
+I realize it would be expensive to model each string
+(or if it's more like a piano, pair or triple of strings)
+at all times when most of them are not sounding.
+I'm hoping we can just keep a running history of where the
+pedal has been, and the instant a key is pressed,
+compute the integral of the energy that would have gone
+into it. If that's a lot of computation, a shortcut that's
+not too wrong about the resulting harmonics would be ideal.
+****** [Claude] good: the integral is cheap, and no latency
+Nothing needs to run for an unkeyed string. The runtime keeps
+one ring buffer of the pedal's position at control rate (say
+every millisecond), as long as =ex-ante-energizing-ms=. At
+key-down it computes the energy that string would hold now,
+fills the new string with that much energy in a plausible
+waveshape, and the live drive carries on for the ex-post ramp.
+Three parts to that:
+******* The integral
+Energy put in at time t decays before key-down, so the amount
+left is a weighted sum over the window: each history sample
+contributes =triangle(t) * pedal(t)^exponent=, times
+=exp(-(T - t) / tau)=, where =tau= is that string's own decay
+time (from its T60 at its pitch). A window of two seconds at
+one millisecond is two thousand multiply-adds per key-down, a
+cost that does not register. Done in amplitude rather than
+energy, that sum is exactly what a linear string would hold
+had it been driven the whole time at that rate.
+******* Why the pre-charge must be additive
+The EBow drive proposed above multiplies what is already
+there, so a silent string would never gather anything. For
+the pre-charge, and I think for the live drive too, model the
+bow energy as a source: each sample adds =k(t)= worth of the
+drive waveform regardless of the string's state, through the
+same soft limiter so it cannot run away. Your "the string is
+moving but the mic is off" is literally that. It also makes
+the pre-charge integral exact rather than an approximation.
+******* The shortcut about harmonics
+The waveshape to fill the string with is the steady state a
+continuously driven string settles into. For an EBow that is
+nearly a sine at the fundamental with weak harmonics; for a
+bow it is the Helmholtz sawtooth, lowpassed by the string's
+own loss; for wind it is the one partial nearest the Strouhal
+frequency. Filling the delay line with one period of that
+shape, scaled by the integral, is the "not too wrong"
+shortcut: the harmonics are those the drive would have left,
+and the string's own loss filter trims them from the first
+period onward. The harness can A/B these fills against a
+string that really was driven for the whole window.
+*** Sustained and chord notes
+**** Fingerless sustained notes
+They ring and couple like every other string but, I propose, do
+not receive pedal energy.
+***** yes
+The pedal energy only goes into things around when they are
+triggered; once that window is up, they just ring.
+****** [Claude] understood, and it simplifies things
+The window is the only gate: a note is driven from
+key-down minus ex-ante to key-down plus ex-post, whether or
+not a finger is still on it, and never again. So "held" versus
+"sustained" does not enter the energy path at all. A re-strike
+of a ringing note opens a new window on that string.
+**** The reviewers' safety note
+Drive should only go to held notes, each with its own limiter,
+since the junction carries a driven string's energy into its
+neighbours anyway.
+***** jeff : please elaborate
+What is drive?
+****** [Claude] drive is your bow energy, per sample
+"Drive" is the signal the energy source adds into the string
+on each sample: the instantaneous bow energy, in your terms.
+In the EBow formula =drive = k * A * tanh(v / A)=, =k= is the
+drive gain, which is where the pedal and your triangle act,
+and =A= is the limiter level that tanh flattens the drive at,
+so no amount of pedal can make a string run away. "Each with
+its own limiter" meant that =A= belongs to the string, not to
+the bank. The safety note was about not driving strings
+outside their window, which your rule already guarantees.
+**** Two unisons per note
+Detuned by about 0.2 to 2 cents, one decaying two to four times
+slower. They are cheap and are where the piano's two-stage decay
+and beating come from; they would be inside the same junction.
+***** TODO jeff : intereesting
+Does this have a physical analog in the piano?
+The detuning is obvious to me, but the difference in decay is not.
+****** [Claude] yes: Weinreich's coupled strings, polarization
+A piano note has two or three unison strings on one bridge.
+The strings themselves have the same loss; the difference in
+decay belongs to the coupled modes, not to either string. When
+the unisons move in phase they push the bridge together, lose
+energy into it fast, and give the loud "prompt sound". When
+they move in antiphase the bridge barely moves, so that mode
+decays slowly and gives the "aftersound". The slight detuning
+is what keeps trading energy between the two modes, which is
+the beating. Weinreich measured this in 1977 and it is the
+accepted explanation of the piano's two-stage decay. The other
+analog is within one string: motion toward the soundboard
+couples strongly to the bridge and dies fast, motion parallel
+to it couples weakly and lingers.
+******* What this means for the model
+The "one decays two to four times slower" shortcut was for
+two uncoupled loops. With the junction present it is wrong to
+do it by hand: give both unisons the same loss, detune them a
+little, and the bridge produces the two decay rates and the
+beating on its own. The hand-set version stays as a cheap
+fallback if the junction is ever off.
+** What this means for the code
+The sawwave engine keeps a =VoiceState= that is =Copy= with no
+heap, runs one oscillator per voice, and sums voices
+independently.
+*** A string needs a per-voice delay buffer
+Of up to about 1,800 samples plus a few filter states.
+*** The junction needs a pass across all sounding voices
+Every sample (or every 8-sample micro-block) inside the cpal
+callback.
+*** A second engine beside =sawwave/=
+So this is a second engine beside =sawwave/=, not a new
+=Waveform= variant. It consists of:
+**** A =strings= module with its own voice map
+**** Selected by a new sink kind in the rig
+**** Driven by the surfaces runtime's paths
+The press, sustain, pedal and volume paths drive it through the
+same =(grid, cell)=-keyed sink interface.
+*** The oversampling and distortion stages can stay
+The radiation body sits where the distortion bus sits now.
+*** Pedal energy is a new =expression_pedals= role
+It sits beside =new_note_volume= and =global_volume=.
+
+** The choices
+*** C1 string core: own extended-KS voice, Rings' normalizations
+Alternatives are porting =mi-plaits-dsp-rs= wholesale, or going
+modal throughout. I recommend writing the voice ourselves,
+reading Rings and the Plaits port for the normalizations, because
+the junction and the EBow drive need to reach inside the loop and
+a ported voice would be rewritten anyway. The voice would have:
+**** Thiran tuning
+**** A one-pole T60-in-seconds loss
+With a pitch-tracking cutoff.
+**** An optional Rauhala-Välimäki dispersion chain
+**** Two unisons
+**** Modal stays in reserve for the top octave
+In case you ever play up there.
+*** C2 excitation: both pluck and strike, as tables
+They are the same mechanism with different tables, either
+convolved with a short body knock.
+**** The pluck table
+A lowpassed noise burst with a pick-position comb.
+**** The strike table
+One to three lowpassed force pulses.
+**** Choosing and tuning
+A rig parameter picks which; both can be tuned by ear in the
+harness.
+*** C3 body: passive bridge with few modes in loop, radiation out
+**** The in-loop part
+The junction's =2/(N+r)= scalar times a few positive-real modes.
+**** The output part
+A partitioned convolution (the =fft-convolver= crate) with a
+soundboard impulse response, or 30 to 50 biquads if we have no
+response to use.
+**** The open question: where the impulse response comes from
+***** A recording you make
+By tapping a real piano soundboard or guitar bridge.
+***** A synthetic one
+A few decaying modes plus lowpassed decaying noise, the Faust-STK
+piano's approach.
+*** C4 coupling: shared junction, default on, =r= as the one knob
+Named something like =bridge-heaviness= in the rig. Per-sample,
+inside the callback, with N recomputed as notes start and stop.
+*** C5 the howl path: designed in, built second
+A =drive= knob and a delay, off by default, kept out of the
+junction. I would hear the passive instrument first, because the
+locking will fight EDO and because the "cranked amp" colour is
+also available from the existing distortion bus.
+*** C6 continuous energy: EBow first, bow and wind behind a plug
+As argued above.
+*** C7 first deliverable: offline listening harness, no grid code
+A binary that renders a scripted note sequence to WAV files, one
+per parameter set, so you can A/B them on the host before any of
+this touches the surfaces runtime. The sequence is:
+**** A few single notes across the range
+**** A chord
+**** A re-strike over a ringing chord
+**** A pedal swell
+**** Every number above is a listening decision
+The harness makes each one a five-minute loop instead of a rig
+restart. The numbers are:
+***** T60 curve
+***** B
+***** Detune
+***** r
+***** Knock length
+***** k mapping
+**** The grid wiring comes after we like a sound
+
+** TODO Questions for Jeff
+*** DONE Ex-ante energizing: latency, or ramp peaks at key-down?
+Answered above: ramp peaks at key-down, with the pre-charge
+computed from the pedal's history at that instant.
+*** DONE Which pedal injects energy?
+My notes say one EX-P has been dead since early October and the
+volpedal rig already assigns =new_note_volume= and
+=global_volume= to the two channels. The options are:
+**** Does the energy pedal replace one of those roles?
+On the working pedal.
+***** TODO jeff : yes
+I now have two working pedals again.
+One can be for the energy injection.
+The other doesn't need a role yet.
+**** Should it be a SoftStep expression pedal?
+***** TODO jeff : No, those are way too finicky.
+It's like they think I've got prehensile toes.
+To me they're just velocity-sensitive switches at best.
+Not even reliable at that.
+*** DONE Body impulse response: record one, or start synthetic?
+A tap on a real soundboard or guitar bridge, recorded with any
+mic, is enough. Synthetic is fine to start and can be swapped
+later without touching anything else.
+**** TODO jeff : synthetic
+*** DONE Which rig gets the new sink first?
+I assume =volpedal-newnotes-and-global_granular-sustain=, your
+newest, since it already has the pedals and the sustain handle
+and no edit mode to re-plumb.
+**** TODO jeff : make a new rig
+Let's call it 'energy-pedal_monome'.
+*** DONE Is piano the target colour, or "a great string" broadly?
+**** Piano means
+***** Dispersion on
+***** Two to three unisons
+***** Strike excitation
+***** A soundboard response
+**** A guitar or harp-like target means
+***** Pluck
+***** Little dispersion
+***** A smaller body
+**** The harness can render both
+But the first presets should aim at one.
+**** TODO jeff : all of them!
+* TODO [jeff]
+I want to work through this whole doc,
+but that's turning out unrealistic.
+Let's just do this.
+
+Tonight (I'm going to bed) I would like you to write a plan,
+and then oversee its execution.
+** the target state
+*** I can try it out with the monome.
+I would like the six keys for transposition,
+the push-an-adjacent-key trick for sustain,
+and the three sustain buttons
+(global off, global on, switch mode).
+*** the config can be hot-reloaded
+The way, IIRC, is to press R <ENTER> from the shell.
+*** the config file is obvious
+One section should be
+'parameters we talked about having access to'.
+Another, 'parameters you might also enjoy'.
+Some of them should probably be enums to select among.
+Others will be floats.
+Each needs its units explained, its likely useful range,
+its qualitative purpose explained,
+and then a technical section that explains in math
+what it does to the system.
+
+The config file should nest naturally.
+I must emphasize that a uniform-depth tree is probably unnatural
+-- most problem spaces do not divide that way.
+
+I believe the config format already allows me
+to freely restructure the config's org-structure,
+adding notes and categories to it without breaking
+the way the config is read, as long as I respect the keywords.
+It should remain so.
+*** where I haven't made a needed choice, code a few options
+e.g. if I hadn't chosen between strings or flutes,
+you would just code for both and offer an enum in the config.
+(We're sticking to strings for now, though.)
+** side-quest : organize
+Organize whatever code you think deserves it.
+I owe no allegiance to the structure of this repo.
+It evolved with no overarching vision, and it is inelegant.
+You have all license to reshape it.
+It ought to be more modular,
+things ought to be grouped better,
+the data flow needs less coupling,
+the type system could probably be more natural.
+You can extend the tests and tooling however you want,too.
+
+Don't rework the old rigs themselves, though,
+beyond what's necessary to make them handle the improved tooling.
+They can otherwise stay ugly; I'm not using them.
+** my plan for you
+First read the notes in coding-advice/ on how to plan
+and how to review code.
+(Much of that advice is for an unrelated project, skg,
+But at least those two things are relevant.)
+
+Then write the plan, as 02_plan.org.
+
+Unlike what that advice probably expects, I won't work through
+the plan with you. Once you've written it,
+have each slice executed by Opus 5.5 on high effort.
+They are free to commit at whatever level of granularity
+they consider natural.
+
+Review the agent's work after each slice,
+keeping a record in 03_review.org.
+If anything unexpected comes up that requires plan modification,
+modify the plan, then have another Opus 5.5 high-effort agent
+implement the next slice.
+
+Finally, write your wrap-up report in 03_review.org.
+
+Thank you, goodnight and good luck!

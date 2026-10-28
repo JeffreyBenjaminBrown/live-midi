@@ -1,3 +1,17 @@
+* clean up docker-typedb-rust/
+* TODO I would still like to read
+in TODO/resonance/01_discussion.org,
+these two level-two sections:
+- [Claude] response: the literature, the choices, and questions
+  ...
+  - What this means for the code
+  - The choices
+  ...
+* ONGOING TODO/resonance/01_discussion.org
+* TODO BUG : sustain should only apply adjacent to the key
+not adjacent to another key enharmonic to the key
+* ONGOING TODO/volpedal-newnotes-and-global_granular-sustain/
+pw-jack cargo run --bin midi_pulse -- volpedal-newnotes-and-global_granular-sustain
 * This file is my instructions to self.
 By contrast, plans for Codex or Claude are in queued/ or TODO/.
 * can't use Codex in midi project

@@ -1,0 +1,527 @@
+# Literature review written 2026-10-27 by a Claude Opus 5.5 subagent at Jeff's request (see 01_discussion.org); Claude Fable 5.1 read it in full and summarized it there. Claims the reviewer could not confirm are marked UNVERIFIED in place.
+#+title: Physically modeled strings that sound good: theory, code, range
+#+date: 2026-10-27
+#+startup: overview
+
+* The short version
+Raw Karplus-Strong (KS) sounds bad for six reasons you can name and measure. Its pitch is quantized. Its decay time scales roughly as 1/f0^3, so bass rings for hours and treble dies in milliseconds. Its excitation is fresh white noise every time. It has no body, it is perfectly harmonic, and it has one polarization, so it has no two-stage decay and no beating. Every "good" string model (Rings, the STK Guitar, OteyPiano, the commuted piano, Pianoteq) fixes the same things in roughly the same order. First comes fractional-delay tuning. Next comes a loss filter specified as T60 in seconds, with cutoff tracking pitch. After that comes a shaped, deterministic excitation with the body's impulse response commuted into it. Then come two detuned or coupled loops per note, a dispersion allpass for stiffness (piano), and a shared bridge that couples every sounding string (sympathetic resonance).
+
+Pianoteq's patent describes additive synthesis, not a waveguide. The partials are exponentially damped sinusoids whose frequencies, decays and amplitudes come from offline modal analysis of a beam-model string coupled to a finite-element soundboard. On top of that comes a percussive noise term.
+
+Bodies (section 1b) split into three jobs. The bridge admittance couples and damps the strings, so it must be live inside the loop, low-order and passive (positive real). The radiation filter gives the timbre: put it as a high-order filter or convolution on the output, never inside the loop. The knock goes into the excitation. Bank and Karjalainen use exactly this split, with a 60th-order passive admittance inside and 200th-order radiation filters outside.
+
+For continuous energy, the simplest bloom model is a soft-saturating feedback loop: a pickup tap is fed back into the string, like an EBow. Its gain crosses the string's loss threshold, and the pedal maps to that gain. Below the threshold it lengthens sustain. Above it, the note swells to a limiter-set level. Bowing (a friction table) is the richer but twitchier alternative. Wind/aeolian is band-limited noise centred at the Strouhal frequency, which selects harmonics as the wind speed rises.
+
+Strings really are the model whose physical range matches the piano's. At 48 kHz, the waveguide form breaks down above about C7 or C8. There a period is only 11 samples, and the dispersion and loss filters eat that delay. Both the Faust/STK piano and JOS switch to modal biquads up there. Modal or additive resonators work across the whole range.
+
+* 1. Plucked and struck strings: why raw KS is bad, and the fixes in order
+** What raw KS is
+Karplus and Strong (1983), CMJ 7(2):43, https://doi.org/10.2307/3680062. The extensions are by Jaffe and Smith (1983), CMJ 7(2):56, https://doi.org/10.2307/3680063, also https://ccrma.stanford.edu/~jos/pasp/Karplus_Strong_Algorithm.html.
+
+The core is y[n] = x[n] + 0.5*(y[n-N] + y[n-N-1]), with the delay line filled with white noise at note-on. The loop is a delay of N samples followed by the one-zero averager H(z) = 0.5 + 0.5 z^-1. Its response is H(e^jw) = cos(wT/2), with a phase delay of exactly half a sample (https://ccrma.stanford.edu/~jos/pasp/One_Zero_Loop_Filter.html). So the period is N + 0.5 samples.
+
+** Defect 1: pitch quantization
+The period can only be N + 0.5 for an integer N. At 48 kHz, A0 has a period of 1745 samples, so adjacent achievable pitches are 1 cent apart. C4 (183 samples) has 9.5-cent steps, 1 kHz (48 samples) 36 cents, C7 (23 samples) 75 cents, and C8 (11.5 samples) 157 cents (my arithmetic).
+
+Jeff's rigs are 58-EDO, where one step is 20.7 cents, so rounding errors exceed a whole scale step above about 1 kHz. Fractional delay is mandatory for arbitrary float pitches.
+
+** Defect 2: decay time is a function of pitch, and it is the wrong function
+With the averager, partial k loses |cos(pi k f0/fs)| per period, which is f0 periods per second. Its decay rate is alpha_k = -f0 ln cos(pi k f0/fs), which is about pi^2 k^2 f0^3 / (2 fs^2) nepers per second. That gives T60_k = 6.91/alpha_k. At 48 kHz (my arithmetic), the A0 fundamental gets T60 of about 1.5e5 s (days), the C4 fundamental 180 s, the 10th harmonic of C4 1.8 s, and the C8 fundamental 43 ms.
+
+So a raw KS keyboard is a sustained sine in the bass and a click in the treble. Real piano T60s run from tens of seconds in the bass to under a second at the top (UNVERIFIED round numbers). The brightness decay rate is also tied to f0^3. That is why low notes go dull-sine while high notes are dead.
+
+The Jaffe-Smith remedies are a per-period loss factor rho (decay shortening) and a "stretch" averager H(z) = (1-S) + S z^-1. The stretch averager lengthens decay without changing pitch as long as its delay S is compensated (https://ccrma.stanford.edu/~jos/pasp/Karplus_Strong_Algorithms.html).
+
+** Defect 3: white-noise excitation
+White noise is maximally bright. It is different on every note, so there is no consistent attack. It carries no dynamics and no pick or hammer position. JOS notes that the noise "is usually lowpass filtered", and that the lowpass cutoff doubles as a dynamic-level control (https://ccrma.stanford.edu/~jos/pasp/Karplus_Strong_Algorithm.html).
+
+** Defect 4: no body or soundboard
+The output is the bare string. A real instrument radiates through a resonant body with thousands of modes. Without one, KS sounds like a "buzzing wire" (https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis_Architecture.html says the soundboard, enclosure and room filter needs "at least thousands of poles and zeros").
+
+** Defect 5: one loop per note
+A single loop means one polarization and no unison. So there is no two-stage decay, no beating, and no energy transfer between modes. The sound is static and electronic (https://ccrma.stanford.edu/~jos/pasp/Coupled_Piano_Strings.html).
+
+** Defect 6: perfectly harmonic
+Piano partials are stretched as f_n = n f0 sqrt(1 + B n^2) (https://ccrma.stanford.edu/~jos/pasp/Dispersion_Filter_Design_I.html). Their absence reads as "synth". This matters little for guitar and a lot for piano.
+
+** Ordered fixes (by perceptual payoff per unit of effort; the order is my judgment, the techniques are cited)
+*** Fix 1: fractional-delay tuning, with every filter's phase delay compensated
+The period is P = fs/f0 = N_int + Delta + (phase delay of loss filter at f0) + (phase delay of dispersion chain at f0). Each of these has to be subtracted. STK's Twang and Plucked subtract loopFilter_.phaseDelay(f). STK's StifKarp does not subtract its stiffness allpass delay, so it goes flat as "stretch" rises. Excerpt from https://github.com/thestk/stk/blob/master/src/StifKarp.cpp:
+#+begin_src c++
+StkFloat delay = lastLength_ - 0.5;   // only the averager's 0.5 is compensated
+delayLine_.setDelay( delay );          // the 4 biquad allpasses' delay is not
+#+end_src
+
+The first-order Thiran allpass is a = (1 - Delta)/(1 + Delta), with H(z) = (a + z^-1)/(1 + a z^-1). Its magnitude is flat and its delay at low frequency is about Delta. Keep Delta in [0.5, 1.5) (STK DelayA) or [0.2, 1.2) (fundsp, JOS's "epsilon" offset). Sources: https://ccrma.stanford.edu/~jos/pasp/Thiran_Allpass_Interpolators.html and https://ccrma.stanford.edu/~jos/pasp/Extended_Karplus_Strong_Algorithm.html. JOS writes the same filter as H_eta(z) = -(eta - z^-1)/(1 - eta z^-1). Excerpt from https://github.com/thestk/stk/blob/master/src/DelayA.cpp:
+#+begin_src c++
+alpha_ = 1.0 + outPoint_ - outPointer; // fractional part
+if ( alpha_ < 0.5 ) { /* borrow one sample */ alpha_ += 1.0; }
+coeff_ = (1.0 - alpha_) / (1.0 + alpha_);  // coefficient for allpass
+#+end_src
+
+The trade-off is that an allpass has internal state, so changing Delta while the note sounds (pitch bend, vibrato, coupling) produces transients. Lagrange or Hermite interpolation have no recursive state but are slight lowpasses whose damping depends on the fractional part. Rings uses 4-point Hermite reads (string_.ReadHermite) because it modulates the delay. DWGPlucked uses Lagrange. Linear interpolation is the worst option because its damping varies with the fractional part, so it gives note-dependent decay and brightness. Jeff's pitches are fixed per note, so Thiran is fine unless he adds glide.
+
+*** Fix 2: design the loss filter from T60 targets, in seconds, with brightness tracking pitch
+The target is that partial k (at f_k) decays with T60_k. Per round trip (P samples, f0 trips per second) the loop gain at f_k must be G_k = 10^(-3/(f0 * T60_k)) (my derivation: 60 dB is 10^-3 in amplitude, spread over f0*T60 trips).
+
+The standard cheap fit is Välimäki's one-pole H(z) = g(1 + a)/(1 + a z^-1) with -1 < a < 0. Here g is the DC gain per period and a sets the high-frequency loss. The robust fit from measured decays is Bank and Välimäki, "Robust loss filter design for digital waveguide synthesis of string tones", IEEE SPL 10(1):18, 2003, https://doi.org/10.1109/LSP.2002.806707. For multi-stage sparse designs see Lehtonen, Rauhala and Välimäki, WASPAA 2005, https://doi.org/10.1109/ASPAA.2005.1540236. For the general method (invfreqz on a minimum-phase target, then compensating the phase in the tuning allpass) see https://ccrma.stanford.edu/~jos/pasp/Damping_Filter_Design.html.
+
+A closed form is in OteyPiano and DWGPlucked (sc3-plugins). It has two physical knobs: c1 is the frequency-independent decay and c3 is the high-frequency loss. Excerpt from https://github.com/supercollider/sc3-plugins/blob/main/source/OteyPianoUGens/filter.cpp:
+#+begin_src c++
+float g = 1.0 - c1/f0;            // per-period DC gain from c1
+float b = 4.0*c3+f0;
+float a1 = (-b+sqrt(b*b-16.0*c3*c3))/(4.0*c3);
+c->b[0] = g*(1+a1);  c->a[1] = a1; // H = g(1+a1)/(1+a1 z^-1)
+#+end_src
+This matches the damping model of Bensa, Bilbao, Kronland-Martinet and Smith, JASA 114:1095 (2003), https://doi.org/10.1121/1.1587146. The exact mapping from c1 and c3 to b1 and b3 is UNVERIFIED.
+
+Rings shows the essential range fix in one line. It specifies T60 in samples and converts it to a per-period gain, so decay time is independent of pitch. It also sets the damping lowpass cutoff relative to f0 (frequency_ * ratio), so the timbre is the same in every octave. Excerpt from https://github.com/pichenettes/eurorack/blob/master/rings/dsp/string.cc (MIT):
+#+begin_src c++
+float rt60 = 0.07f * SemitonesToRatio(lf_damping * 96.0f) * kSampleRate;   // T60 in samples
+float rt60_base_2_12 = max(-120.0f * delay / src_ratio / rt60, -127.0f);   // -60 dB over rt60 samples
+float damping_coefficient = SemitonesToRatio(rt60_base_2_12);              // per-period gain
+float damping_cutoff = min(24.0f + damping_*damping_*48.0f + brightness_*brightness_*24.0f, 84.0f);
+float damping_f = min(frequency_ * SemitonesToRatio(damping_cutoff), 0.499f); // cutoff tracks f0
+...
+delay *= damping_compensation_modulation.Next();  // subtract the SVF's delay
+#+end_src
+For a piano-like voice across Jeff's range, make T60 a smooth function of log f0 (long in the bass, short in the treble). Do not let it fall out of the loop structure.
+
+*** Fix 3: a shaped, deterministic excitation (pick lowpass, position comb, dynamics lowpass)
+Jaffe-Smith gives the factors at https://ccrma.stanford.edu/~jos/pasp/Extended_Karplus_Strong_Algorithm.html. The pick-direction lowpass is H_p(z) = (1-p)/(1 - p z^-1). The pick-position comb is H_beta(z) = 1 - z^-round(beta N), which zeroes harmonics that are multiples of 1/beta. The dynamic-level lowpass is H_L(z) = (1 - R_L)/(1 - R_L z^-1), with R_L = exp(-pi L T), where L is the bandwidth in Hz.
+
+Use a fixed-seed or precomputed excitation per note so attacks are consistent. Rings and Elements use short filtered noise bursts or impulses (rings/dsp/plucker.h, elements/dsp/exciter.cc ProcessPlectrum and ProcessMallet). Faust uses noise through a lowpass at 5*f0*cutoff with a pitch-dependent attack (pm.pluckString in physmodels.lib). Jeff has no velocity, so pick one dynamic level per register. Better still, put a global "dynamics" control on the pedal or a grid row so L moves with it.
+
+*** Fix 4: a body, through commuted synthesis or one shared output body
+Commuted synthesis works because excitation, string and body are each roughly LTI. So they can be reordered as excitation * body * string, and the excitation convolved with the body becomes one "aggregate excitation" table read at note-on. This replaces a filter with thousands of poles by a table lookup. Long tables are shortened by converting to minimum phase or applying an exponential window. Sources: https://ccrma.stanford.edu/~jos/pasp/Commuted_Synthesis.html, the tutorial at https://ccrma.stanford.edu/realsimple/CommutedSynthesis/CommutedSynthesis.html, the piano version at https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis.html, and Smith and Van Duyne, "Commuted piano synthesis", ICMC 1995, pp. 319-326 (https://ccrma.stanford.edu/~savd/pubs.html; summary at https://ccrma.stanford.edu/~jos/Mohonk05/Commuted_Piano_Synthesis_1995.html). The commuted piano ran a "complete, two-key piano" on one DSP56001 (https://auditory.org/asamtgs/asa95wsh/5aMU/5aMU4.html).
+
+For the hammer, the commuted piano treats the hammer-string interaction as one or a few impulses, each through a lowpass "force pulse filter" whose bandwidth depends on collision velocity (https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis.html). Smith's own 1993 ICMC paper on commuted synthesis was cited, but I could not confirm its exact title (UNVERIFIED).
+
+This is the cheap route to realism because the body's dense, long, irregular response is what makes "wood" or "soundboard". In commuted form it costs one table read per sample per voice. STK does exactly this. Mandolin plays one of 12 body impulse responses (rawwaves/mand1.raw to mand12.raw) into two Twang strings. Guitar takes a body file as its excitation and falls back to windowed noise. Sources: https://github.com/thestk/stk/blob/master/include/Mandolin.h and https://github.com/thestk/stk/blob/master/src/Guitar.cpp.
+
+For a polyphonic Rust synth there is an equally valid alternative (my engineering note). The body is shared and LTI, so it can be one FFT-partitioned convolution, or 20 to 50 parallel biquads, on the summed output. That costs the same at any polyphony. Bank's modal piano discusses both FFT convolution and parallel second-order filters for the soundboard (https://home.mit.bme.hu/~bank/publist/taslp-piano/index.html). Commute when you want per-note "knock" variety. Use an output body when you want coupling: the bridge feedback path, below, must not contain the full body.
+
+*** Fix 5: two loops per note (polarizations or unisons) for two-stage decay and beating
+Weinreich, "Coupled piano strings", JASA 62:1474 (1977), https://doi.org/10.1121/1.381677; lecture at https://www.speech.kth.se/music/5_lectures/weinreic/weinreic.html. JOS gives the eigenanalysis for two identical strings on one bridge (https://ccrma.stanford.edu/~jos/pasp/Coupled_Strings_Eigenanalysis.html).
+
+The coupling matrix is H_c = [[1-H_b, -H_b], [-H_b, 1-H_b]], with H_b(s) = 2/(2 + R_b/R). Its eigenvectors are [1, 1] (in-phase) and [1, -1] (anti-phase), with eigenvalues lambda_1 = 1 - 2 H_b(s) and lambda_2 = 1. The in-phase mode moves the bridge, so it decays fast; this is the prompt sound. The anti-phase mode sees a rigid termination and decays slowly; this is the aftersound. Slight mistuning mixes the two, which produces beating and the two-stage envelope. A second polarization behaves the same way: vertical motion couples strongly to the bridge (fast decay) and horizontal motion weakly (slow decay). McPherson's MRP paper restates this: "the interaction of these modes producing the piano's characteristic sharp attack and long decay" (https://andrewmcpherson.org/instrumentslab-data/data/andrew/mcpherson_jnmr2010.pdf).
+
+JOS's count for good piano tones is two or three loops per note for the unisons in the vertical plane. That doubles with horizontal polarization (slightly detuned), and adds two or three short loops for longitudinal waves (https://ccrma.stanford.edu/~jos/pasp/Coupled_Piano_Strings.html).
+
+The cheapest useful version (my design suggestion, not from the literature): two loops with delays P and P(1 + delta), delta about 1e-4 to 1e-3 (0.2 to 2 cents). The excitation is split 1 : epsilon. The first loop gets a shorter T60 and the second a longer one, about 2 to 4 times longer. Sum the two outputs. The coupled version feeds both through a shared bridge junction (Fix 7), and that is where real energy transfer and beating come from.
+
+*** Fix 6: a dispersion (stiffness) allpass chain for piano-like inharmonicity
+The physics (https://ccrma.stanford.edu/~jos/pasp/Dispersion_Filter_Design_I.html):
+
+f_n = n f0 sqrt(1 + B n^2), with B = pi^3 E a^4/(4 K L^2), where a is the radius, K the tension and L the length.
+
+The perceptual threshold is B_thresh = exp(2.54 ln f0 - 24.6) (Järveläinen et al., cited there). Below it, dispersion is inaudible, so many guitar notes do not need it. Pianos stretch about 35 to 60 cents from bottom to top: 45 cents on a Steinway M and 60 cents on a Steinway D (https://ccrma.stanford.edu/~jos/pasp/Stiff_Piano_Strings.html).
+
+From Fletcher's formula with steel and guessed dimensions (my arithmetic, UNVERIFIED dimensions), B comes out around 4e-4 at C4 (1 mm wire, 0.62 m) and around 2e-2 at C8 (0.8 mm wire, 5 cm). Bass tones measure 1e-4 to 1e-3 (https://dafx.de/paper-archive/2004/P_212.PDF, as summarized by search). Wound bass strings add mass without stiffness, which keeps B low.
+
+The design methods: Van Duyne and Smith (ICMC 1994): a cascade of first-order allpasses (exact citation UNVERIFIED). Rocchesso and Scalcon (1996): tune only the lowest partials, which is the cost-effective way (cited at the JOS page above). Rauhala and Välimäki, "Dispersion modeling in waveguide piano synthesis using tunable allpass filters", DAFx 2006: closed-form coefficients from B and f0 for a cascade of M identical first-order sections (https://dafx.de/paper-archive/details/n4Qv1ScD_VbmqShsq0ZVQQ). Abel, Välimäki and Smith, "Robust, efficient design of allpass filters for dispersive string sound synthesis", IEEE SPL 17:406 (2010), https://doi.org/10.1109/LSP.2010.2040924.
+
+Ready-to-port code is Faust's ef.piano_dispersion_filter, written by JOS from Rauhala-Välimäki under the STK-4.3 licence. It returns the chain's delay at f0 so you can subtract it from the delay line. Ikey is a continuous log2 function of f0, so it works for EDO floats. The coefficients were fit to the piano range; their sample rate is UNVERIFIED. Excerpt from https://github.com/grame-cncm/faustlibraries/blob/master/misceffects.lib:
+#+begin_src faust
+// M = number of first-order sections ("8 is typical for medium-sized piano strings")
+piano_dispersion_filter(M,B,f0) = -Df0*M,seq(i,M,fi.tf1(a1,1,a1))
+with {
+ a1 = (1-D)/(1+D);
+ D = exp(Cd - Ikey(f0)*kd);
+ Ikey(f0) = logb(trt,f0*trt/27.5);           // continuous "key number"
+ kd = exp(k1*log(Bc)*log(Bc) + k2*log(Bc)+k3);
+ Cd = exp((m1*log(M)+m2)*log(Bc)+m3*log(M)+m4);
+ k1 = -0.00179; k2 = -0.0233; k3 = -2.93;
+ m1 = 0.0126; m2 = 0.0606; m3 = -0.00825; m4 = 1.97;
+ polydel(a) = atan(sin(wT)/(a+cos(wT)))/wT;
+ Df0 = polydel(a1) - polydel(1.0/a1);         // delay of one section at f0
+};
+#+end_src
+OteyPiano implements the same idea with second-order Thiran sections: 1 section in the treble and 4 elsewhere, with dispersiondelay = M * groupdelay(f) subtracted from the loop (sc3-plugins source/OteyPianoUGens/dwgs.cpp). STK's StifKarp uses 4 biquad allpasses with poles at ad-hoc frequencies (src/StifKarp.cpp setStretch) and no compensation; avoid that pattern.
+
+*** Fix 7: sympathetic coupling of every sounding string through one bridge junction (O(N), passive)
+The waveguide way to do all-to-all coupling is not an N by N matrix. Every string terminates on one shared, loaded junction. JOS's loaded series junction (https://ccrma.stanford.edu/~jos/pasp/Loaded_Waveguide_Junctions.html):
+
+V_J(s) = sum_i alpha_i(s) V_i^+(s), with alpha_i(s) = 2 R_i / (R_J(s) + R_1 + ... + R_N), and V_i^- = V_J - V_i^+.
+
+Here V_i^+ is the wave arriving at the bridge on string i and R_J is the bridge impedance. With R_J -> infinity, V_J = 0 and every string reflects rigidly. If R_J(s) is positive-real (for example a resistance plus a spring or mass), the whole network stays passive, so sympathetic coupling cannot blow up. Cost is one sum, one small filter and N subtractions per sample.
+
+STK Guitar is the cheapest working example of this idea. The summed string output goes through a one-pole lowpass, is scaled by couplingGain/N, and is added to every string's input. couplingFilter_ pole defaults to 0.9 and BASE_COUPLING_GAIN is 0.01. Excerpt from https://github.com/thestk/stk/blob/master/include/Guitar.h (MIT-like STK licence):
+#+begin_src c++
+lastFrame_[0] = couplingGain_ * couplingFilter_.tick( lastFrame_[0] ) / strings_.size();
+for ( unsigned int i=0; i<strings_.size(); i++ ) {
+  temp = input;
+  if ( filePointer_[i] < excitation_.frames() && pluckGains_[i] > 0.2 )
+    temp += pluckGains_[i] * excitation_[filePointer_[i]++];   // commuted body excitation
+  temp += lastFrame_[0];                                       // bridge coupling, all-to-all
+  output += strings_[i].tick( temp );
+}
+#+end_src
+Rings' "sympathetic strings" is one-way, not all-to-all. String 0 is excited, and gain*(out - aux) of string 0 feeds the other strings. Those strings get damping 0.7 + 0.27*damping, more brightness, and a slow LFO on position (rings/dsp/part.cc, RenderModalVoice). McPherson observed on the real magnetic resonator piano that a sustained note "without other dampers lifted ... sounds flat and synthetic in comparison to the depth and richness of the same tone sounded with pedal". That is direct evidence that sympathetic coupling is a large part of "piano-ness" (mcpherson_jnmr2010.pdf, section 5.1).
+
+An engineering note for block processing in Rust (my analysis): each V_i^+ was written at least one period earlier. So the junction can be evaluated a block at a time only if the block is no longer than the shortest sounding delay, which is about 11 samples at C8. Alternatively, accept a block of extra latency in the coupling path. That slightly shifts the coupled-mode frequencies, which is harmless for sympathetic ring.
+
+*** Fix 8: a hammer model (the struck case)
+The felt law is F = K * max(0, y_h - y_s)^p, with the hammer mass ODE m_h y_h'' = -F. The force is injected into the string as velocity F/(2R) into both travelling directions at the strike point. That is standard practice. For the commuted equivalent see https://ccrma.stanford.edu/~jos/pasp/Commuted_Synthesis.html ("a point force divided by 4R"; the factor depends on the wave-variable convention). JOS gives the linear impedance R_h(s) = ms || (mu + k/s) = (mu s^2 + k s)/(s^2 + (mu/m) s + k/m), and notes that the scattering filters become biquads (https://ccrma.stanford.edu/~jos/pasp/Piano_Hammer_Modeling.html).
+
+Stulov's hysteretic felt (https://ccrma.stanford.edu/~jos/pasp/Including_Hysteresis.html; Stulov, JASA 97:2577, 1995, https://doi.org/10.1121/1.411912):
+
+f_h(t) = f_0 [ x^p(t) - (eps/tau_0) * integral_0^t x^p(xi) exp((xi - t)/tau_0) dxi ]
+
+The simpler approximation is f_h = Q_0 [x^p + alpha d(x^p)/dt], with alpha = 248 + 1.83 n - 0.055 n^2 microseconds (n = key number) and Q_0 = f_0(1 - eps).
+
+The finite-difference reference is Chaigne and Askenfelt, "Numerical simulations of piano strings. I", JASA 95:1112 (1994), https://doi.org/10.1121/1.408459. Typical p is about 2 to 3.5, rising toward the treble (UNVERIFIED range). The full-physics grand piano is Chabassier, Chaigne and Joly, JASA 134:648 (2013), https://doi.org/10.1121/1.4809649. That is offline, not real time.
+
+Port-ready code is OteyPiano (sc3-plugins source/OteyPianoUGens/hammer.cpp, 106 lines). It has StulovHammer and BanksHammer, and a loop that distributes the hammer load across 1, 2 or 3 unison strings with the bridge impedance Zb (OteyPiano.cpp, lines 76 to 100). The hammer matters mainly because it makes loud notes brighter and gives contact-time lowpassing that depends on register.
+
+Jeff's grid has no velocity, so a precomputed, per-register force-pulse lowpass (the commuted-piano approach) gets most of the hammer's value. The exceptions are re-strikes of a still-sounding string, where a real hammer interacts with the moving string, and a pedal-driven global dynamics.
+
+*** Fix 9 (piano polish): longitudinal and phantom partials, tension-modulation pitch glide
+Bank and Sujbert, "Generation of longitudinal vibrations in piano strings: from physics to sound synthesis", JASA 117:2268 (2005), https://doi.org/10.1121/1.1868212. The modal piano adds them: Bank, Zambon and Fontana, "A modal-based real-time piano synthesizer", IEEE TASLP 18(4):809 (2010), https://doi.org/10.1109/TASL.2010.2040524. Sound examples and PDF are at https://home.mit.bme.hu/~bank/publist/taslp-piano/index.html; it runs with full polyphony in real time. This is late-stage polish, and only matters loud.
+
+** Digital waveguide theory: the JOS PASP chapters to read, in order
+Ideal string and travelling waves: https://ccrma.stanford.edu/~jos/pasp/Ideal_Vibrating_String.html, https://ccrma.stanford.edu/~jos/pasp/Digital_Waveguide_Models.html, https://ccrma.stanford.edu/~jos/pasp/Ideal_Plucked_String.html, https://ccrma.stanford.edu/~jos/pasp/Damped_Plucked_String.html.
+
+Damping: https://ccrma.stanford.edu/~jos/pasp/Frequency_Dependent_Damping.html, https://ccrma.stanford.edu/~jos/pasp/Damping_Filter_Design.html, https://ccrma.stanford.edu/~jos/pasp/Loop_Filter_Identification.html, https://ccrma.stanford.edu/~jos/pasp/EDR_Based_Loop_Filter_Design.html.
+
+Stiffness: https://ccrma.stanford.edu/~jos/pasp/Stiff_String.html, https://ccrma.stanford.edu/~jos/pasp/Dispersion_Filter_Design.html.
+
+Tuning: https://ccrma.stanford.edu/~jos/pasp/Thiran_Allpass_Interpolators.html.
+
+Karplus-Strong: https://ccrma.stanford.edu/~jos/pasp/Karplus_Strong_Algorithm.html, https://ccrma.stanford.edu/~jos/pasp/Extended_Karplus_Strong_Algorithm.html.
+
+Commuted synthesis: https://ccrma.stanford.edu/~jos/pasp/Commuted_Synthesis.html.
+
+Piano: https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis.html and its subsections (Force_Pulse_Synthesis, Multiple_Force_Pulse_Synthesis, Commuted_Piano_Synthesis_Architecture, Coupled_Piano_Strings, High_Piano_Key_Numbers), plus https://ccrma.stanford.edu/~jos/pasp/Stiff_Piano_Strings.html.
+
+Coupling: https://ccrma.stanford.edu/~jos/pasp/String_Coupling_Effects.html, https://ccrma.stanford.edu/~jos/pasp/Coupled_Strings.html, https://ccrma.stanford.edu/~jos/pasp/Two_Coupled_Strings.html, https://ccrma.stanford.edu/~jos/pasp/Coupled_Strings_Eigenanalysis.html, https://ccrma.stanford.edu/~jos/pasp/Loaded_Waveguide_Junctions.html.
+
+Hammer: https://ccrma.stanford.edu/~jos/pasp/Piano_Hammer_Modeling.html, https://ccrma.stanford.edu/~jos/pasp/Nonlinear_Spring_Model.html, https://ccrma.stanford.edu/~jos/pasp/Including_Hysteresis.html.
+
+Bowing: https://ccrma.stanford.edu/~jos/pasp/Bowed_Strings.html, https://ccrma.stanford.edu/~jos/pasp/Digital_Waveguide_Bowed_String.html, https://ccrma.stanford.edu/~jos/pasp/Bow_String_Scattering_Junction.html.
+
+Modal: https://ccrma.stanford.edu/~jos/pasp/Modal_Representation.html.
+
+Foundational paper: Smith, "Physical modeling using digital waveguides", CMJ 16(4):74 (1992), https://doi.org/10.2307/3680470.
+
+Surveys: Karjalainen, Välimäki and Tolonen, "Plucked-string models: from the Karplus-Strong algorithm to digital waveguides and beyond", CMJ 22(3):17 (1998), with a historic link at http://www.acoustics.hut.fi/~vpv/publications/cmj98.htm (link UNVERIFIED). Välimäki, Pakarinen, Erkut and Karjalainen, "Discrete-time modelling of musical instruments", Rep. Prog. Phys. 69:1 (2006), https://doi.org/10.1088/0034-4885/69/1/R01, PDF at https://www.ece.uvic.ca/~bctill/papers/numacoust/V%c3%a4lim%c3%a4ki_etal_2006.pdf. Bank, Avanzini, Borin, De Poli, Fontana and Rocchesso, "Physically informed signal processing methods for piano sound synthesis: a research overview", EURASIP JASP 2003:941, https://doi.org/10.1155/S1110865703304093 (open access). These three are the best single overviews.
+
+** Modal synthesis as the alternative to waveguides
+A modal model is a bank of decaying resonators, y = sum_k a_k exp(-t/tau_k) sin(2 pi f_k t + phi_k). It is implemented as 2-pole bandpasses or as complex one-pole oscillators, x_k[n] = r_k e^{j w_k} x_k[n-1] + b_k u[n]. Its strengths are the ones a waveguide lacks. Inharmonicity is free: set f_k from f_n = n f0 sqrt(1 + B n^2) directly, with no allpass design. Each mode gets its own T60, so there is no loss-filter fitting. Mode count shrinks naturally at high pitch (stop at Nyquist), and it never runs out of delay samples. The costs: CPU scales with the number of modes (a low A0 needs hundreds), and coupling and nonlinear excitation (bow, feedback) are less natural than in a waveguide.
+
+History and tools: Adrien, "The missing link: modal synthesis", in De Poli, Piccialli and Roads (eds.), Representations of Musical Signals, MIT Press 1991, pp. 269-297 (cited via https://hal.archives-ouvertes.fr/hal-01105469). IRCAM Modalys, originally "Mosaic", is Adrien's thesis software (https://support.ircam.fr/docs/Modalys/3.6/Introduction.html). Bilbao, Numerical Sound Synthesis, Wiley 2009, ISBN 978-0-470-51046-9, has ch. 7 "Linear bar and string vibration", 7.2 "Stiff strings" (https://au.mathworks.com/academia/books/numerical-sound-synthesis-bilbao.html). It is the finite-difference counterpart and the right reference for stable stiff-string and collision schemes, not for cheap real-time voices. A 2026 real-time nonlinear modal object for Max is "nlm" (https://arxiv.org/pdf/2603.10240), not read in detail.
+
+Rings' modal resonator is the cheapest well-regarded modal string. Up to 64 SVF bandpasses (kMaxModes = 64) sit at harmonic * stretch_factor, where stretch_factor accumulates "stiffness" (which itself decays by 0.98 per mode). Q = 1 + f_k * q is multiplied per mode by q_loss, so high modes decay faster. A cosine oscillator weights the modes, which acts as a frequency-domain pickup or position comb. Excerpt from https://github.com/pichenettes/eurorack/blob/master/rings/dsp/resonator.cc (MIT):
+#+begin_src c++
+for (int32_t i = 0; i < min(kMaxModes, resolution_); ++i) {
+  float partial_frequency = harmonic * stretch_factor;
+  if (partial_frequency >= 0.49f) partial_frequency = 0.49f; else num_modes = i + 1;
+  f_[i].set_f_q<FREQUENCY_FAST>(partial_frequency, 1.0f + partial_frequency * q);
+  stretch_factor += stiffness;
+  stiffness *= (stiffness < 0.0f) ? 0.93f : 0.98f;
+  q_loss += q_loss_damping_rate * (1.0f - q_loss);
+  harmonic += frequency_;
+  q *= q_loss;
+}
+#+end_src
+
+** What is publicly known about Modartt/Pianoteq
+Pianoteq launched in 2006. Modartt credits Philippe Guillaume (a mathematician, former piano tuner and restorer, at the Institut de Mathématiques de Toulouse / INSA) with the physical model, and Julien Pommier with the real-time implementation (https://www.modartt.com/about, https://www.modartt.com/user_manual?product=pianoteq&lang=en, https://www.modartt.com/data/download/press/press_release_2008_01_16.pdf).
+
+The patent is US 7,915,515 B2, "Device for producing signals representative of sounds of a keyboard and stringed instrument". The inventor is Guillaume and the assignee Modartt. Priority 2006-07-28, granted 2011-03-29. Google estimates expiry 2027-10-20 (https://patents.google.com/patent/US7915515B2/en). What it describes: Real-time synthesis is additive: s(t) = real( sum_n alpha_n exp(2 pi i f_n t - d_n t) ) + b(p, t), with alpha_n = -i a_n exp(i theta_n). The partial frequencies f_n, damping d_n, amplitudes a_n and phases theta_n come from a "presynthesis" modal analysis. In it each string is an elastic beam (inharmonicity from flexural rigidity), coupled through per-partial impedances Z_np to a finite-element soundboard (shell, laminar or 3D models; Hooke tensor, dimensions and moisture adjustable). A note with K unison strings gets K partials per harmonic, which accounts for "the mutual influence of the unison strings of the same note" (that is where beating and double decay come from). "Resonance by virtue of sympathy between the notes" through soundboard coupling is included. b(p, t) is a percussive term (hammer knock) that can come from recordings. Excitation amplitudes and phases were projected from measurements made with an automated key-press device. The text notes that a physical hammer model could be used instead.
+
+UNVERIFIED: whether the shipping product still works this way; forum speculation varies (https://forum.modartt.com/viewtopic.php?pid=1007805, https://vi-control.net/community/threads/is-pianoteq-just-physical-modelling.175654/). The lesson for Jeff is that the best-sounding commercial "physical model" piano is, per its patent, a physically parameterized modal/additive engine. It is not a waveguide.
+
+* 1b. Resonating bodies, distinct from the strings: guitar body, piano soundboard, bridge
+** Three jobs, three places in the signal graph
+A body does three separable things.
+
+The first is the bridge admittance Y_b(s), the velocity-per-force the strings see at their termination. It sets how fast each partial loses energy into the body, pulls partial frequencies slightly, and is the path through which strings couple to each other (sympathy, two-stage decay, beating).
+
+The second is the transmittance or radiation, which turns bridge force into sound pressure at a listener or microphone. It shares the admittance's poles but has different zeros, and is far higher-order (https://ccrma.stanford.edu/~jos/pasp/Building_Synthetic_Guitar_Bridge.html: "Transmittance ... normally shares the reflectance filter's poles but has different zeros").
+
+The third is the knock: the body's own response to being hit, heard at every attack.
+
+Every practical design chooses, per job, between baking it into the excitation (commuted), running it live inside the string-coupling loop, or running it as a post-filter on the output. The best-documented split is Bank and Karjalainen, DAFx-10 (https://home.mit.bme.hu/~bank/publist/dafx10adm/index.html). A 60th-order passive admittance sits in the loop with the dual-polarization string. Radiation is two separate 200th-order parallel filters on the output.
+
+** (1) Commuted synthesis in depth
+*** Why it works and why it is cheap
+The output is excitation * string * body, a convolution of three LTI parts. Reorder it as (excitation * body) * string. Then excitation * body is one fixed signal, the "aggregate excitation", stored as a table and read out at note-on into the string. The body filter, which would otherwise need "at least thousands of poles and zeros" (https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis_Architecture.html), costs one table read per sample per sounding note, and only for the length of the table. Sources: https://ccrma.stanford.edu/~jos/pasp/Commuted_Synthesis.html, the tutorial at https://ccrma.stanford.edu/realsimple/CommutedSynthesis/CommutedSynthesis.html, and Smith and Van Duyne, ICMC 1995 (https://ccrma.stanford.edu/~savd/pubs.html).
+
+The validity limits are the ones JOS lists: string nonlinearity, vibrato and time variation are "neglected in practice", and the sound stays "substantially the same". The deeper limit, for Jeff, is that the body becomes invisible to the strings. A commuted body cannot couple strings or take energy from them.
+
+*** Getting the body impulse response: measured
+Tap the bridge with an impulse hammer (or pluck with the strings damped) and record the radiated sound. Deconvolve by the tap force if you have a force sensor. Otherwise, use the tap recording directly as the aggregate excitation of a "tap" pluck. STK ships 12 measured mandolin body responses (rawwaves/mand1.raw to mand12.raw; https://github.com/thestk/stk/tree/master/rawwaves) and plays them into two Twang strings (include/Mandolin.h). STK Guitar loads any body file as excitation and falls back to windowed noise with its mean removed (src/Guitar.cpp setBodyFile).
+
+*** Getting the body impulse response: synthetic
+There are three cheap synthetic routes.
+
+A few decaying modes: parallel biquads at the main body resonances. For a guitar these are the Helmholtz air mode and the first top-plate modes, in the 100 to 250 Hz region (UNVERIFIED typical frequencies). Use R_i = exp(-pi B_i T), theta_i = 2 pi F_i T (https://ccrma.stanford.edu/~jos/pasp/Passive_Reflectance_Synthesis_Method.html), and sum their impulse responses.
+
+Decaying noise for the dense high modes: JOS's piano excitation synthesis notes that a soundboard tap "sounds much like noise that is lowpass-filtered" with a bandwidth that "contracts over time". So the table becomes noise through a time-varying lowpass, best applied only to the residual after the long modes are factored out (https://ccrma.stanford.edu/~jos/pasp/Excitation_Synthesis.html). The Faust-STK piano does exactly this: noise with per-note exponential envelopes as the "soundboard" (https://raw.githubusercontent.com/grame-cncm/faust/master-dev/examples/physicalModeling/faust-stk/piano.dsp).
+
+A hybrid: the sum of the two above, which is what "body-model factoring" formalizes.
+
+*** Length, and shortening it
+A guitar or piano body IR rings for hundreds of milliseconds to seconds; exact typical T60s are UNVERIFIED. JOS's shortening tools are: Convert to minimum phase, which gives the maximum shortening for the same magnitude. Apply an exponential window, which uniformly contracts all poles and adds damping. Body-model factoring: pull the few least-damped modes out as live biquads, and commute only the heavily damped residual, which leaves a short table with better quantization signal-to-noise (https://ccrma.stanford.edu/~jos/pasp/Body_Model_Factoring.html; Karjalainen and Smith, "Body modeling techniques for string instrument synthesis", ICMC 1996, pp. 232-239, cited at https://ccrma.stanford.edu/~jos/ncbs/Bibliography.html).
+
+In practice, tables of 50 to 300 ms are typical after factoring (UNVERIFIED numbers).
+
+*** How it is fed to the string
+At note-on, the table is read out sample by sample and added at the excitation point. It can first be multiplied by a per-note lowpass for hammer or pick hardness (STK Guitar runs pickFilter_ over the table; the commuted piano uses 1 to 3 "force pulse" lowpasses whose bandwidth depends on velocity, https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis.html). The table read is additive with whatever the string already holds, so re-strikes work.
+
+** (2) The body as a live resonator, fed in real time by the strings
+*** Low-order modal body filters
+A parallel bank of second-order resonators is H(z) = sum_k g_k / (1 - 2 r_k cos(theta_k) z^-1 + r_k^2 z^-2) (https://ccrma.stanford.edu/~jos/pasp/Building_Synthetic_Guitar_Bridge.html). The design methods are: JOS's iterative fourth-order-section fit: fit a mode, subtract it, refit the residual, and repeat, with the final residual folded into the excitation (https://ccrma.stanford.edu/~jos/pasp/Parallel_Body_Filterbank_Design.html, after Bradley, Cheng and Stonick 1995). Bank's fixed-pole parallel second-order filters: poles placed on a log or warped frequency grid, zeros solved by least squares, with an optional parallel FIR. See Bank, "Direct design of parallel second-order filters for instrument body modeling", ICMC 2007, and MATLAB code at https://home.mit.bme.hu/~bank/parfilt/.
+
+Cost is 5 multiplies per mode per sample. 20 to 50 modes give the "wood" coloration for a few hundred multiplies per sample, independent of polyphony if the bank sits on the summed output. STK Bowed's body is the six-biquad cascade by Esteban Maestre (src/Bowed.cpp).
+
+Faust pm.modeInterpRes is a 40-mode body whose shape and scale are interpolated (physmodels.lib, line 1718). The Elements resonator is a modal body: up to 64 SVF bandpasses whose GEOMETRY moves from plate to string to bar to bell, with up to 50 modes for rich sounds (https://pichenettes.github.io/mutable-instruments-documentation/modules/elements/manual/). So in Elements the body is the instrument, not a stage after a string.
+
+Rings has no separate body model. Its "string and reverb" mode adds a reverb after the string (rings/dsp/part.h, RESONATOR_MODEL_STRING_AND_REVERB). Its character comes from the string tricks above.
+
+*** Full IR convolution of the mix
+The cost of uniformly partitioned overlap-save at 48 kHz (my arithmetic, standard UPOLS accounting): with block (partition) size B and IR length L, there are P = L/B partitions. Per block you do one real FFT and one IFFT of size 2B, plus P complex multiply-accumulates over B + 1 bins. That is about 8L/B flops per sample for the multiply-accumulates, plus about 20 log2(2B) for the FFTs.
+
+For a 1 s soundboard IR (L = 48000) at B = 64 (1.3 ms latency), that is about 6,000 flops per sample, or about 0.3 GFLOP/s, a few percent of one modern core (UNVERIFIED core throughput). B = 256 cuts it to about 1,500 flops per sample. Non-uniform partitions (small first, larger later) cut this further at the same latency (Wefers and Vorländer, DAFx 2011, https://dafx.de/paper-archive/details/fWi-8K36aSnULRLT-W7z2A).
+
+Rust has the fft-convolver crate (uniform partitions, https://docs.rs/fft-convolver). The convolution sits on the summed output, so its cost does not grow with polyphony. That is why, for a polyphonic grid synth, an output convolution is often cheaper than commuting into every voice. It is also exact, including radiation and room if the IR was recorded with a microphone. Its fundamental limit is the same as commuted synthesis: it is outside the strings' world, so it cannot couple them.
+
+*** Piano soundboard models
+JOS and Van Duyne's commuted piano bakes the soundboard, enclosure and room into the excitation table (https://ccrma.stanford.edu/~jos/pasp/Commuted_Piano_Synthesis_Architecture.html). Opening the virtual lid means measuring a new table, which JOS calls "sampling rather than modeling". Bank, Zambon and Fontana's 2010 modal piano discusses FFT-based fast convolution and parallel second-order filters for the soundboard (https://home.mit.bme.hu/~bank/publist/taslp-piano/index.html; https://doi.org/10.1109/TASL.2010.2040524). The EURASIP overview covers hammer, string and soundboard options, including the cheap feedback-delay-network soundboard (Bank et al. 2003, https://doi.org/10.1155/S1110865703304093; the FDN detail is from memory, UNVERIFIED). OteyPiano ships a separate OteySoundBoard, an 8-delay-line Householder FDN (sc3-plugins OteyPiano.cpp, lines 14 to 60). Bensa et al. (JASA 114:1095, 2003, https://doi.org/10.1121/1.1587146) are about the string, meaning damping and stiffness from finite differences to waveguides. A Bensa soundboard model is UNVERIFIED (not found). Chabassier, Chaigne and Joly (JASA 134:648, 2013, https://doi.org/10.1121/1.4809649) is the full-physics reference: nonlinear strings, a Reissner-Mindlin soundboard plate with ribs, and 3D radiation, all coupled. It is offline and expensive (exact run time UNVERIFIED). Pianoteq: the patent models the soundboard by finite elements and folds it into per-partial impedances Z_np that set each partial's damping and frequency, plus sympathy "by virtue of" soundboard coupling (https://patents.google.com/patent/US7915515B2/en). So, per the patent, the soundboard is live in the physics but precomputed into the additive parameters. The user manual exposes soundboard "Impedance" ("the greater the impedance, the longer the sound becomes"), "Impedance Cutoff", "Impedance Slope" and a "Q factor". It also describes a separate "physical model of the soundboard and its radiation" that "simulates the sound field", so microphones can go anywhere, the lid opens or closes, and a binaural "virtual head" is available (https://www.modartt.com/user_manual?product=pianoteq&lang=en, sections 8.1.1, 12, 12.5, 12.6). That is the admittance and radiation split again: the admittance shapes the strings' decay, and the radiation is a separate output stage. How the radiation is computed in real time is UNVERIFIED.
+
+** (3) The bridge: one admittance both couples the strings and feeds the body
+In wave variables, every string ends on one loaded junction. The junction velocity is V_J = sum_i 2 R_i V_i^+ / (R_J + sum_i R_i), with outgoing waves V_i^- = V_J - V_i^+ (https://ccrma.stanford.edu/~jos/pasp/Loaded_Waveguide_Junctions.html). R_J(s) = 1/Y_b(s) is the body's driving-point impedance at the bridge. The same V_J (or the bridge force) is then the input to the radiation filter. So a single object produces three things at once: string damping into the body, string-to-string coupling, and the body's sound.
+
+JOS's guitar version builds Y_b as a sum of measured resonances and stresses that "passivity of the bridge model is actually quite critical in practice", because strings are nearly lossless and an active bridge can destabilize the model or lengthen certain overtones (https://ccrma.stanford.edu/~jos/pasp/Building_Synthetic_Guitar_Bridge.html). The guaranteed-passive construction is Method 1: Rho(z) = g H_A(z) F(z), with 0 < g < 1, H_A an allpass with poles at the modes, and F a positive zero-phase FIR. Then Gamma(z) = Gamma0 (1 - Rho)/(1 + Rho) is positive real by construction (https://ccrma.stanford.edu/~jos/pasp/Passive_Reflectance_Synthesis_Method.html). For six strings and two polarizations, the matrix generalization is a sum of positive-real second-order scalars times positive semidefinite matrices (https://ccrma.stanford.edu/~jos/pasp/Matrix_Bridge_Impedance.html; Bank and Karjalainen, "Passive admittance matrix modeling for guitar synthesis", DAFx-10, pp. 3-8, https://dafx.de/paper-archive/details/KhIp4wXYNNsFzCbLHElaPA).
+
+Their sound examples contrast a passive admittance filter with a resistive (frequency-independent) termination. The resistive one gives two-stage decay only. The passive filter also gives beating, and the envelopes differ a lot, though "the audible difference is more subtle" (https://home.mit.bme.hu/~bank/publist/dafx10adm/index.html).
+
+*** Body inside the loop versus body as a post-filter: stability and practice
+Inside the loop is safe if and only if the in-loop part is passive (positive real). A positive-real Y_b on a lossless or lossy string network can only remove energy, so it cannot go unstable, however many strings share it. Any feedback drive (EBow) is a separate, deliberate source with its own limiter.
+
+The risks of putting the body inside the loop: A fitted or measured high-order response is generally not positive real. One slightly "active" mode makes a partial grow or ring forever. Even passive, a high-order Y_b in the loop costs per sample on the critical path. Any block-based implementation (FFT convolution) adds a block of delay inside every string loop. That retunes every string and makes compensation impossible once B approaches the shortest period (11 samples at C8).
+
+So the rule both JOS and Bank follow is to put a low-order passive admittance inside the loop and the high-order radiation on the output. In Bank and Karjalainen that means 60th order inside and 200th order outside. For Jeff, the cheapest version of the in-loop part is STK Guitar's one-pole lowpass at gain 0.01/N on the string sum (stable because the gain is small, not by construction). The principled version is a positive-real Y_b with 4 to 20 modes in Jeff's bridge junction, plus a separate partitioned-convolution or 30-to-50-biquad radiation body on the summed output.
+
+** (4) What each choice sounds like, and which products use it
+These sound descriptions are my synthesis of the cited behavior. Perceptual claims beyond the cited sources are UNVERIFIED.
+
+No body sounds like a thin, buzzy "wire", which is what Faust pm.guitar and nylonGuitar give, since guitarBody is an identity (physmodels.lib).
+
+An output post-filter or convolution gives correct "wood" or "soundboard" colour, body ring and room, and works with any polyphony at fixed cost. But every note's decay is still the string's own smooth T60 curve. There is no sympathy, no two-stage decay from bridge coupling, and none of the note-to-note unevenness, where partials near body modes die faster or get pulled, that makes real instruments feel alive.
+
+Commuted gives the same timbre as an output body, plus a natural per-note knock and attack, at one table read per voice. It is cheaper than an output convolution only when the IR is long and polyphony is low. It cannot couple. Products and code: STK Mandolin and Guitar; JOS's and Van Duyne's commuted piano (two keys on one DSP56001; https://auditory.org/asamtgs/asa95wsh/5aMU/5aMU4.html); the Faust-STK piano; the Sondius guitars (the real-time MIDI-guitar examples JOS cites at https://ccrma.stanford.edu/~jos/pasp/Further_Reading_Commuted_Synthesis.html); Laurson et al.'s classical guitar (same page).
+
+A live low-order passive admittance gives partial-dependent decay, frequency pulling, two-stage decay, beating and sympathetic ring between all sounding strings. That is the "it's an instrument, not a patch" quality McPherson heard missing when the piano dampers were down (mcpherson_jnmr2010.pdf, section 5.1). Products and code: Bank and Karjalainen's guitar (research); OteyPiano (bridge impedance Zb coupling the unisons, plus an FDN soundboard); STK Guitar (crude one-pole); Pianoteq (soundboard impedance and sympathy folded into the partials per the patent, plus a separate radiation and microphone model per the manual).
+
+The recommendation for Jeff (my synthesis): Live: a passive bridge junction with a handful of modes, shared by all sounding strings. This one object gives all-to-all sympathy, two-stage decay and body-dependent damping. Output: a partitioned convolution with a measured or synthetic soundboard IR (or 30 to 50 parallel biquads) on the string sum. Optional: commute a short knock residual into each note's excitation for attack realism. Never put the long IR inside the loop.
+
+* 2. Continuous excitation: bow, EBow, wind
+** Bowed string: the physics and the classic model
+The theory is McIntyre, Schumacher and Woodhouse, "On the oscillations of musical instruments", JASA 74:1325 (1983), https://doi.org/10.1121/1.390157, reprint at https://www.damtp.cam.ac.uk/user/mem2/papers/MUS-ACOUST/. It models a nonlinear excitation (bow friction, reed, jet) driving a linear resonator described by its reflection function. It predicts Helmholtz motion, and also period doubling and chaos.
+
+The playable region is the Schelleng window: for bow-bridge distance beta (fraction of length), the bow force must lie between F_min, proportional to v_b/beta^2, and F_max, proportional to v_b/beta. Schelleng, "The bowed string and the player", JASA 53:26 (1973), https://doi.org/10.1121/1.1913322. The proportionalities are standard but UNVERIFIED against the text.
+
+** Smith's waveguide bow (STK Bowed, Faust violin)
+Two delay pairs run from bow to nut and from bow to bridge. At the bow, the differential velocity is v_delta = v_b - (v_s_left^+ + v_s_right^+). The outgoing waves are v^- = v^+(other side) + rho(v_delta) v_delta, where rho = r/(1 + r) and r = 0.25 R_b(v_delta)/R_s. The friction curve is constant (sticking) for |v_delta| < v_dc, then drops toward a small dynamic value. More bow force raises v_dc and the peak friction (https://ccrma.stanford.edu/~jos/pasp/Bow_String_Scattering_Junction.html). Bow position is set by moving delay between the two pairs (https://ccrma.stanford.edu/~jos/pasp/Digital_Waveguide_Bowed_String.html).
+
+STK's table is the usual cheap curve, (|slope*(dv + offset)| + 0.75)^-4, clipped. STK Bowed itself is about 180 lines, plus a 6-biquad body by Esteban Maestre. Note that the body coefficients are fixed and their sample rate is UNVERIFIED (likely 44.1 kHz), so they would need redesign at 48 kHz. Excerpts from https://github.com/thestk/stk/blob/master/include/BowTable.h and https://github.com/thestk/stk/blob/master/include/Bowed.h:
+#+begin_src c++
+// BowTable::tick(input = differential velocity)
+sample = (input + offset_) * slope_;
+out = pow(fabs(sample) + 0.75, -4.0);  clamp(out, minOutput_, maxOutput_);
+// Bowed::tick
+StkFloat bowVelocity = maxVelocity_ * adsr_.tick();
+StkFloat bridgeReflection = -stringFilter_.tick( bridgeDelay_.lastOut() );
+StkFloat nutReflection = -neckDelay_.lastOut();
+StkFloat stringVelocity = bridgeReflection + nutReflection;
+StkFloat deltaV = bowVelocity - stringVelocity;
+StkFloat newVelocity = bowDown_ ? deltaV * bowTable_.tick( deltaV ) : 0.0;
+neckDelay_.tick( bridgeReflection + newVelocity );
+bridgeDelay_.tick( nutReflection + newVelocity );
+#+end_src
+Faust's pm.violinModel is the same structure: bowTable(offset, slope) = pow(abs(sample) + 0.75, -4) : min(1). But its violinBridge "reflectance is not implemented yet" and violinBody is an identity (physmodels.lib), so it is thin.
+
+** Modern bowing work
+Demoucron, "On the control of virtual violins: physical modelling and control of bowed string instruments", KTH PhD 2008, Trita-CSC-A 2008:17 (https://discover.musikverket.se/bib/1256762). It systematically maps bow force, velocity and bow-bridge distance to sound, and measures real bowing gestures to drive the model. My recollection is that it uses a modal string with a friction law (UNVERIFIED). There is also a DAFx 2009 score-driven follow-up (https://dafx.de/paper-archive/details/_JK4HHsKjaROZh-8fO2cqw).
+
+Serafin, Smith and Woodhouse found that torsion waves can be dropped without hurting playability, and that the "plastic" or thermal friction model is more playable than velocity-only friction (https://ccrma.stanford.edu/~serafin/SerafinEtAl.pdf; playability pages at https://ccrma.stanford.edu/~serafin/play.html and https://ccrma.stanford.edu/~jos/stiffbowed/Toward_Measure_Playability.html). Her 2004 thesis "The sound of friction" is UNVERIFIED (not located). Woodhouse's thermal friction model: https://doi.org/10.25144/18216.
+
+** Elements' bow: banded waveguides on the modal resonator
+Elements bows the first 8 modes (kMaxBowedModes = 8). Each is a delay of one mode period through a normalized bandpass at that mode, forming a banded waveguide (Essl, Serafin, Cook and Smith, CMJ 28:51, 2004, https://doi.org/10.1162/014892604322970643). All of them feed one shared bow nonlinearity. Excerpts from https://github.com/pichenettes/eurorack/blob/master/elements/dsp/resonator.cc and resonator.h (MIT):
+#+begin_src c++
+inline float BowTable(float x, float velocity) const {
+  x = 0.13f * velocity - x;
+  float bow = x * 6.0f;  bow = fabs(bow) + 0.75;  bow *= bow;  bow *= bow;  bow = 0.25f / bow;
+  bow = clamp(bow, 0.0025f, 0.245f);
+  return x * bow;
+}
+// per sample:
+input += bow_signal_;
+for (size_t i = 0; i < num_banded_wg; ++i) {
+  s = 0.99f * d_bow_[i].Read();       bow_signal += s;
+  s = f_bow_[i].Process<FILTER_MODE_BAND_PASS_NORMALIZED>(input + s);
+  d_bow_[i].Write(s);                 sum_center += s * amplitudes.Next() * 8.0f;
+}
+bow_signal_ = BowTable(bow_signal, *bow_strength++);   // bow_strength = envelope * bow level
+#+end_src
+Elements also lowers the resonator damping when the bow lifts (voice.cc: damping -= (1 - bow_strength) * bow_level * 0.0625), which works like a "palm mute on release".
+
+** EBow and electromagnetic sustain as a feedback loop
+Real systems sense string motion, filter it, phase-align it, and drive it back through a magnet. McPherson's magnetic resonator piano (https://andrewmcpherson.org/instrumentslab-data/data/andrew/mcpherson_jnmr2010.pdf; NIME 2010 at https://www.nime.org/proceedings/2010/nime2010_217.pdf) uses one soundboard piezo, per-note bandpasses (Q about 50 to 200), and a PLL per note with an empirically calibrated phase offset per note. Its measurements: Correct phase gives up to +10 dB over open loop, and wrong phase gives 10 to 20 dB less. The PLL's frequency wobble while settling "enlivens the onset ... subjectively sound[s] more acoustic". A "resonator-induced crescendo from silence" is one of its signature gestures. Active damping was not possible with several milliseconds of latency.
+
+Berdahl and Smith's feedback-control work on a vibrating string (Berdahl, Niemeyer and Smith, Acoustics'08; CCRMA STAN-M-120) is cited there. There is also the Electromagnetically-Prepared Piano (Berdahl, Backer and Smith, ICMC 2005, "If I had a hammer"), which is open-loop with 12 magnets (https://api.crossref.org/works/10.1145%2F1753846.1754116 is the crossref record found; https://perbloland.com/magnets). I found no paper that models the EBow itself as a synthesis algorithm (UNVERIFIED absence). In simulation you do not need a PLL: the "pickup" is the exact string state, with zero latency.
+
+** Wind-driven (aeolian) strings
+Vortex shedding behind a cylinder of diameter d in wind U happens at the Strouhal frequency f_s = St U/d, with St about 0.2 (textbook value; UNVERIFIED in the sources read). When f_s is near a string mode, the shedding locks to that mode. So an aeolian harp sounds a high harmonic of a low string, and jumps to the next harmonic as the wind rises.
+
+Real-time model: Selfridge, Moffat, Reiss and Avital, "Real-time physical model of an aeolian harp", ICSV24 2017, https://doi.org/10.25144/24498 (napier repository https://napier-repository.worktribe.com/output/3010509/real-time-physical-model-of-an-aeolian-harp). The aeroacoustic basis is Selfridge et al., JAES 66:594 (2018), https://doi.org/10.17743/jaes.2018.0033. It is semi-empirical, with a wind model. In listening tests it was as plausible as non-physical synthesis but below recordings. It did not reproduce a harmonics-to-amplitude link.
+
+The synthesis recipe (my design, consistent with the above): drive the string with bandpassed noise centred at f_s(U) and roughly 10 to 20 % bandwidth. Add a weak velocity feedback near f_s so the mode closest to f_s locks and grows. The pedal is U. This gives the "harmonics bloom up the series as the wind rises" behaviour that Elements' BLOW gets more crudely: its noise exciter has a FLOW "noise colour" and a tube, and its output is diffused (elements/dsp/exciter.cc ProcessFlow; https://pichenettes.github.io/mutable-instruments-documentation/modules/elements/manual/).
+
+** The simplest model that gives "energy ramps in, string blooms", and its pedal mapping
+Recommendation (my analysis, built on the sources above): soft-saturated linear feedback inside the existing string loop, EBow style. Per sample:
+#+begin_src text
+pick  = string displacement or velocity at pickup point (or the loop output)
+drive = k * S(pick)            S(x) = A * tanh(x / A)   (A = target amplitude, the "limiter")
+write = -(incoming) + bridge term + excitation + drive   (inject at the drive point)
+#+end_src
+Let g be the loop's per-period gain at f0 (from Fix 2). For small amplitudes the drive adds about k per period at the fundamental, assuming the pickup and drive points are in phase for that mode (choose positions, or add a phase-tweak allpass). So the per-period gain becomes G = g + k.
+
+The threshold is k_c = 1 - g. Below it, the note decays with T60 = 3/(f0 (-log10 G)), so the pedal lengthens sustain smoothly. Above it, the amplitude grows as G^(f0 t), with time constant tau = 1/(f0 ln G). It stops at about A because tanh compresses. This is "bloom": the growth starts from whatever energy is present (a pluck, or sympathetic ring), or from a -90 dB noise floor you add.
+
+Pedal mapping: map the pedal to the growth rate, not to k. Use r = 1/tau, ranging from -1/(T60_natural/6.9) up to +1/(0.1 to 2 s). Then k = exp(r/f0) - g. That gives the same feel in every register, because it is per second, not per period. Make A rise with the pedal too, so that more pedal means both faster and louder.
+
+Harmonic selection: drive or pickup position comb zeros pick which partials grow; for an EBow-like sound, drive near 1/4 of the length. Add a gentle highpass in the feedback path for "fundamental-suppressed, harmonic flip" effects (the EBow's harmonic mode).
+
+Safety with sympathetic coupling: the shared bridge can carry energy from a driven string into its neighbours, which is good. But each driven string needs its own limiter, and k should be applied only to strings whose note is held.
+
+Bowing is the alternative when you want rosin bite and pitch-locked sawtooth spectra. Map the pedal to bow velocity v_b, and scale force with velocity (F proportional to v_b) so you stay inside the Schelleng window. Elements does the equivalent with BowTable(x, velocity = envelope * level). Expect squeaks and non-starts at extreme settings. The feedback loop has none of that.
+
+* 3. Code worth reading or porting
+** Mutable Instruments Rings and Elements (C++, MIT): the most directly useful
+Repository: https://github.com/pichenettes/eurorack (MIT header in every file). Manuals: https://pichenettes.github.io/mutable-instruments-documentation/modules/rings/manual/ and https://pichenettes.github.io/mutable-instruments-documentation/modules/elements/manual/.
+
+Rings rings/dsp/string.cc and .h (218 + 169 lines) is an extended KS: Hermite fractional delay, so the delay can be modulated. T60 specified per second, then converted to per-period gain. A 3-tap FIR "brightness" filter plus an SVF lowpass whose cutoff tracks f0 and whose delay is subtracted. A dispersion mode: a variable-length allpass "stretch" inside the loop with gain -0.618*d/(0.15 + |d|), plus noise frequency modulation of the delay and a "curved bridge" nonlinearity. A DC blocker, and a position comb on the aux output.
+
+rings/dsp/resonator.cc and .h (122 + 99 lines) is the 64-mode SVF bank above. rings/dsp/part.cc (577 lines) holds voice allocation, 4-voice polyphony, the one-way sympathetic strings and plucker.h (93 lines).
+
+It sounds good because every parameter is normalized: per-second decay, pitch-relative cutoff, compensated delay. Excitation and brightness are coupled, and there is a little non-stationarity (noise-modulated delay, LFO on sympathetic positions).
+
+Elements elements/dsp/exciter.cc and .h (289 + 133 lines) has these strike models: sampled mallets (sample player, granular), MALLET (an impulse with "palm mute" damping), PLECTRUM (a pre-pulse, then a delayed pulse), PARTICLES (random bouncing), FLOW (noise with sign-flip "particles", used for blow) and NOISE. elements/dsp/resonator.cc and .h (188 + 134 lines) are the modal bank plus the 8 bowed banded waveguides. voice.cc (270 lines) sums bow, blow (with tube.cc, 89 lines) and strike into the resonator, and runs an ADSR exciter envelope. Elements also has string.cc (219 lines), the Rings-style string.
+
+Port size: a faithful Rust port of the Rings string plus the Elements exciters and resonator is about 1,000 lines. It needs stmlib's Svf, DelayLine and ParameterInterpolator, and the lookup tables in resources.cc.
+
+** mi-plaits-dsp-rs (Rust, MIT): Rings' string and modal voices already in Rust
+https://github.com/sourcebox/mi-plaits-dsp-rs, 67 stars, active 2026-09. It ports Plaits; Plaits' string and modal engines descend from Rings. src/physical_modelling has string.rs (252 lines), string_voice.rs (122 lines; header comment: "Extended Karplus-Strong, with all the niceties from Rings"), resonator.rs (222 lines) and modal_voice.rs (92 lines). This is the fastest route to a good-sounding Rust string: lift string.rs and resonator.rs, then add a bridge junction and commuted body. I have not checked whether its sample rate is fixed (Plaits runs at 48 kHz; UNVERIFIED here).
+
+** STK (C++, MIT-like; Cook and Scavone)
+Repository: https://github.com/thestk/stk; docs at https://ccrma.stanford.edu/software/stk/. ChucK exposes the same classes as UGens: StifKarp, Mandolin, Bowed, Sitar (https://chuck.stanford.edu/doc/reference/ugens-stk.html).
+
+Plucked.cpp (98 lines) is KS with a DelayA allpass and a OneZero filter. It is compensated, but the loop gain is a constant 0.995 + f*5e-6 per period, so decay still scales with period. Its pluck is noise through a pick one-pole. It sounds better than raw KS but is still plain.
+
+StifKarp.cpp (181 lines) adds 4 biquad allpasses for stretch, uncompensated (it detunes), and a pickup comb. It is the weakest of the set.
+
+Twang.cpp (108 lines) has an FIR loop filter with phase-delay compensation and a pluck-position comb. It is the good building block.
+
+Mandolin (186 lines) is two Twangs driven by 12 commuted body responses, and sounds convincing for what it is. Guitar.cpp (244 lines) is N Twangs, a commuted body file and all-to-all bridge coupling through a one-pole. It is the closest existing code to Jeff's target.
+
+Bowed.cpp (180 lines) and BowTable.h (150 lines) are covered above. BandedWG.cpp (364 lines) is the banded waveguide.
+
+Note the headers' warning that waveguide and commuted synthesis were "covered by patents ... assigned to ... Stanford University". Those patents date from the late 1980s and 1990s and are very likely expired (UNVERIFIED).
+
+** Faust libraries (LGPL with an explicit exception: the compiled output is yours to license)
+Repository: https://github.com/grame-cncm/faustlibraries; physmodels.lib by Michon, Grumiaux and Orlarey (https://ccrma.stanford.edu/~rmichon/pmFaust). The file is 5,551 lines. The string section is lines 762 to 1929 and the bowed section lines 1929 to 2295, about half of each being documentation.
+
+pm.ks is raw KS, with ksReflexionFilter = (_+_')/2. pm.openString uses one-pole "dispersion" smoothers, which are really lowpasses and not allpasses. pm.nylonString and pm.steelString fix the stiffness. pm.elecGuitar, pm.guitar and pm.nylonGuitar use bridgeFilter(brightness, absorption), a 3-tap FIR with rho = 0.001^(1/(320*t60)). That loss is fixed to a 320 Hz reference, so T60 still scales with string length. guitarBody is an identity ("TODO"), so these models sound thin; there is no body. pm.modeInterpRes and modularInterpInstr are a 40-mode body that interpolates over shape and scale, and are the most interesting part for bodies. pm.violinModel is covered above.
+
+The Faust-STK piano by Michon, after JOS's commuted piano, under the STK-4.3 licence (https://raw.githubusercontent.com/grame-cncm/faust/master-dev/examples/physicalModeling/faust-stk/piano.dsp, about 255 lines plus C++ tables): A noise "soundboard" commuted excitation. Four one-pole hammer filters interpolated soft to loud. Two coupled detuned strings with stiffness allpasses and loss. A strike-position EQ. For high keys (above about key 88) it skips the waveguide and uses a biquad bank.
+
+ef.piano_dispersion_filter (misceffects.lib) is the Rauhala-Välimäki chain excerpted above.
+
+** SuperCollider: Pluck, DWG UGens and OteyPiano (GPL)
+The core Pluck UGen is a basic KS with a lowpass coefficient, with excitation from an input signal: https://doc.sccode.org/Classes/Pluck.html (not inspected in detail).
+
+The sc3-plugins DWGUGens are by Victor Bombi, not Carl Kozlowski as the brief assumed; the file headers say "Copyright (C) 2013 Victor Bombi", GPL v2+ (https://github.com/supercollider/sc3-plugins/tree/main/source/DWGUGens; docs at https://doc.sccode.org/Classes/DWGPlucked.html). DWGPlucked.cpp is 249 lines and includes DWGPluckedStiff and DWGPlucked2. It uses a two-direction waveguide with Lagrange fractional delays, the c1/c3 closed-form loss filter with its group delay subtracted, and an input usable for commuted excitation. DWGBowed.cpp is 545 lines.
+
+OteyPiano (https://github.com/supercollider/sc3-plugins/tree/main/source/OteyPianoUGens, 1,542 lines in total) is Clayton Otey's waveguide piano, wrapped by Bombi. It has: Physical string parameters: radius, length, density, Young's modulus, and 1, 2 or 3 unisons. Stulov and Bank hammers. Thiran second-order dispersion with M = 1 or 4. The c1/c3 loss filter. A bridge impedance coupling the unisons. A separate OteySoundBoard, an 8-line FDN.
+
+This is the most complete open real-time piano waveguide, and a good porting reference. Licence: GPL like the rest of sc3-plugins (per-file licence UNVERIFIED), so read it, don't copy it into MIT code. Docs: https://doc.sccode.org/Classes/OteyPiano.html.
+
+** pyo, ChucK
+pyo Waveguide is one delay line with a lowpass, Lagrange interpolation and "dur" as a 40 dB decay time. AllpassWG adds a 3-stage allpass detuning in the loop, which gives inharmonic, bell-like results (https://belangeo.github.io/pyo/api/classes/effects.html). Both are basic. ChucK's string UGens are STK.
+
+** Rust crates and repos
+fundsp (MIT or Apache-2.0, 245k downloads) has a pluck(frequency, gain_per_second, high_frequency_damping) oscillator in src/oscillator.rs, about 100 lines (https://github.com/SamiPerttu/fundsp). It is an EKS: gain normalized per second (pow(gain_per_second, 1/f)), a 3-tap FIR damping filter, a first-order allpass tuning delay in [0.2, 1.2) samples, and a mean-removed white-noise fill. Pitch is fixed at construction. It is honest and correct, but sounds like EKS, because there is no body, coupling, dispersion or shaped excitation.
+
+karplus 0.1.0 (MIT, 2016) is a toy: https://github.com/TheOrioli/karplus.
+
+kazoo-string (AGPL-3.0) is a "Karplus-Strong waveguides with stiffness, pick position and a wooden body" synth inside a larger app (https://github.com/tomWhiting/kazoo, about 4,600 lines in kazoo-string). It is AGPL and was not reviewed.
+
+mutated-elements 0.3.1 (MIT) is "A Rust modal synthesizer library based on Mutable Instruments Elements", hosted at https://bytes.purring.online/celine/mutated-elements. It was not inspected; quality is UNVERIFIED.
+
+fan455_piano_synthesis (MIT, https://github.com/fan455/fan455_piano_synthesis; paper https://arxiv.org/abs/2409.03481) is offline finite-element piano research in Rust, with GMSH and Intel MKL eigen-solves. It is not real time, but its modal data approach is Pianoteq-like.
+
+glicol, knyst and nih-plug have no string or waveguide physical models in their trees (I checked the repository file lists; glicol only ships a pluck.wav sample).
+
+Bottom line: there is no mature Rust physical-string crate. mi-plaits-dsp-rs's string and resonator code is the best Rust starting point.
+
+** A Rust-shaped sketch of one good string voice (untested; it shows the structure, not a tuned instrument)
+#+begin_src rust
+// Per voice: delay line + Thiran-1 tuning + M-stage dispersion + one-pole loss. All delays compensated.
+struct Ap1 { a: f32, x1: f32, y1: f32 }            // y = a x + x1 - a y1
+impl Ap1 { fn tick(&mut self, x: f32) -> f32 { let y = self.a*x + self.x1 - self.a*self.y1; self.x1 = x; self.y1 = y; y } }
+struct Loss { b0: f32, a1: f32, y1: f32 }          // H = g(1+a)/(1+a z^-1): b0 = g(1+a), a1 = a
+impl Loss { fn tick(&mut self, x: f32) -> f32 { self.y1 = self.b0*x - self.a1*self.y1; self.y1 } }
+struct Voice { buf: Vec<f32>, w: usize, n: usize, tune: Ap1, disp: Vec<Ap1>, loss: Loss,
+               exc: Vec<f32>, exc_pos: usize, k_drive: f32, sat: f32, v_in: f32 }
+// setup: P = fs/f0; D_loss = phase delay of Loss at f0; D_disp = M * phase delay of one dispersion section at f0;
+//        rest = P - D_loss - D_disp; n = floor(rest - 0.5); Delta = rest - n (in [0.5, 1.5)); tune.a = (1-Delta)/(1+Delta)
+//        g = 10^(-3/(f0*T60(f0))); choose a from the high-frequency T60 (Bank & Välimäki 2003); exc = body-IR * hammer lowpass
+impl Voice {
+    fn incoming(&mut self) -> f32 {                 // wave arriving at the bridge this sample
+        let r = (self.w + self.buf.len() - self.n) % self.buf.len();
+        let mut s = self.tune.tick(self.buf[r]);
+        for d in self.disp.iter_mut() { s = d.tick(s); }
+        self.v_in = self.loss.tick(s); self.v_in
+    }
+    fn write(&mut self, v_junction: f32) {
+        let e = if self.exc_pos < self.exc.len() { self.exc_pos += 1; self.exc[self.exc_pos-1] } else { 0.0 };
+        let drive = self.k_drive * self.sat * (self.v_in / self.sat).tanh();   // EBow-style bloom
+        self.buf[self.w] = (v_junction - self.v_in) + e + drive;               // V^- = V_J - V^+
+        self.w = (self.w + 1) % self.buf.len();
+    }
+}
+// per sample, all voices:  let sum: f32 = voices.iter_mut().map(|v| v.incoming()).sum();
+//   let vj = bridge_lp.tick(alpha0 * 2.0 * sum / (rb_over_r + n_voices as f32)); // alpha_i = 2R/(R_J + sum R)
+//   for v in &mut voices { v.write(vj) }   out = body(sum)   (shared output body, or exc already commuted)
+#+end_src
+
+* 4. Range: are strings the only model that stays great from 27 Hz to 4 kHz?
+** Verdict
+Mostly right, with two refinements.
+
+First, the string is the physical system that nature uses across that range: piano A0 to C8 is 27.5 to 4186 Hz, and the harp covers about 32 Hz to 3 kHz. Its physics (harmonic plus mild stretch, decay falling with pitch) scales smoothly. Most other excitation-resonator models are confined by physics to 2 to 4 octaves: reeds, jets and lips have regime changes, and bars need tuned undercuts. The organ pipe is the counterexample, at 16 Hz to above 8 kHz, but organs are steady-state, which is more an additive problem than a "physical model" one.
+
+Second, what scales across the range is a modal or string description with per-register parameters. That is not the waveguide implementation in particular. The waveguide form fails at the top at 48 kHz. Pianoteq (per its patent) and Bank's 2010 piano are modal or additive throughout, and the waveguide pianos (JOS's commuted piano, Faust-STK) switch to modal biquads for the top keys.
+
+** Where the waveguide string fails at the top (above about 2 kHz at 48 kHz)
+The period is P = fs/f0, which is 23 samples at C7 and 11.5 at C8. The loss filter, the dispersion chain (several samples of delay at f0 when M = 4 to 8) and the tuning allpass all consume part of P. Even before that, rounding error is up to about 75 cents at C8 without fractional delay. JOS: at "very high key numbers ... the delay-line length may become too short", use a few biquads or enveloped sinusoids; "modal synthesis is a good choice" (https://ccrma.stanford.edu/~jos/pasp/High_Piano_Key_Numbers.html). Faust-STK piano does exactly this above about key 88 (piano.dsp highBqs).
+
+Other high-end issues: any modulation of the delay is a large relative change; interpolation lowpassing eats a big fraction of the loop; and very few partials exist below Nyquist (C8 has 5 partials under 24 kHz), so a modal bank of 4 to 8 modes is both cheaper and exact. Rings handles this by CONSTRAINing the delay to at least 4 samples and clamping partials at 0.49 fs.
+
+The fixes, if you stay waveguide: oversample the top octave by 2 to 4 times; skip dispersion where B is below the perceptual threshold; use the one-pole loss with its compensated delay; or cross-fade to a modal bank above about C7. The last option is my recommendation for Jeff, because his pitch floats make per-note crossover easy.
+
+** Where it gets hard at the bottom (27 to 80 Hz)
+The waveguide itself is happy here (1745 samples at A0; tuning steps under 1 cent). The problems are acoustic: A0 has hundreds of audible partials. A one-pole loss can't fit their individual T60s, so use a higher-order or multi-stage loss (Lehtonen-Rauhala-Välimäki 2005; JOS's 17-tap FIR for the lowest strings, https://ccrma.stanford.edu/~jos/pasp/Damping_Filter_Design_I.html). Bass inharmonicity is set by wound-string design (B about 1e-4 to 1e-3). Many dispersion sections (8 or more) are needed because the stretched partials are numerous and audible. Long T60s make sympathetic coupling and two-stage decay dominate the character. Real bass tone depends on the soundboard and body more than the string, since a small soundboard radiates the fundamental weakly. The perceived bass pitch comes from the harmonics, so the body IR (commuted or output) is what makes it sound big. Phantom and longitudinal partials are most audible in the bass (Bank and Sujbert 2005).
+
+None of these breaks the model; they raise its cost, and Bank's modal piano and OteyPiano both handle them.
+
+** What real pianos do across the range
+Unisons: single wound strings in the lowest octave or so, then wound bichords, then plain-steel trichords for most of the compass. The exact counts vary by piano (UNVERIFIED; the Pianoteq patent models K unison strings per note, and OteyPiano picks 1, 2 or 3 by pitch in OteyPiano.cpp lines 180 to 187). Wound bass strings keep B low despite short scale lengths. Treble strings are short and stiff (B rises about two orders of magnitude bottom to top, per my Fletcher-formula numbers). Hammers are harder and lighter in the treble, and the strike point is near 1/7 to 1/9 of the length (UNVERIFIED), which places the position comb's first zero above the 7th partial. The top octave or two have no dampers, so they always ring sympathetically (UNVERIFIED detail). Stretch tuning follows inharmonicity: about 35 to 60 cents bottom to top (https://ccrma.stanford.edu/~jos/pasp/Stiff_Piano_Strings.html).
+
+For Jeff's EDO floats, the takeaway is to make every one of these a smooth function of log2(f0): the unison count blending 1 to 2 to 3, B(f0), T60(f0), hammer cutoff(f0) and strike position. Do not use piecewise tables keyed to 12-EDO note numbers. The Rauhala-Välimäki "Ikey" is already a continuous log function.
+
+** Other model families against the 27 Hz to 4 kHz test (brief)
+Modal or additive resonators, which are strings or bars by data, pass easily (Pianoteq, Bank 2010, Rings' resonator). Struck bars (marimba, vibraphone) are modal and scale technically, but a bar's 1 : 2.76 : 5.40 mode series sounds bell-like low and plinky high. Wind waveguides (clarinet, flute) are convincing over about 3 octaves; outside that the reed and jet models leave their stable regimes. Bowed strings, through the same waveguide, cover double bass to violin in principle, but a single body response and one Schelleng window do not, so the model needs per-register bodies and bow parameters. So yes: for one voice spanning the piano's compass, a string description (implemented as waveguide in the middle and modal at the top, or modal throughout) is the right choice.
