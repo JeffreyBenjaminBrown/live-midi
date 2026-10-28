@@ -149,6 +149,38 @@ slightly brighter tail than a string at the same pitch. The
 kind is chosen at the key-down, so a note keeps it through a
 slide.
 
+* Two more kinds of pedal energy: the bow and the wind
+Set =kind= in the rig's energy table to ="bow"= or ="wind"=
+instead of the shipped ="ebow"=, and the pedal bows the strings
+or blows across them. Their own knobs are in a second energy
+table, under "parameters you might also enjoy". The window, the
+exponent and the pre-charge work the same for all three; the
+bloom's speed and ceiling (=growth_rate_per_second_max= and
+=drive_limit=) are the ebow's alone.
+** the bow
+The pedal sets the bow's speed: strongest at the key-down,
+fading as the window closes, and a lighter pedal bows the same
+way, softer. A bowed note has rosin bite and a bright, locked
+spectrum, at about the same level in every register. Caution:
+the bow has non-starts and squeaks at extreme settings. Whether
+it speaks depends on =bow_velocity= times =bow_force=: below
+about 0.7 the bow grips the string and damps it (the note dies
+sooner than with no pedal), from about 1.5 the low strings
+squeak (they lock onto their 4th partial), and from about 2.5
+the bow skates and adds little. As shipped the product is 0.9,
+which speaks everywhere; =bow_velocity= alone is the loudness
+if you keep the product.
+** the wind
+Noise blown across the string, as across an aeolian harp. The
+partial nearest the wind's pitch blooms, and as the pedal rises
+the wind's pitch climbs (to =wind_speed_hz_max= at full pedal,
+2000 Hz as shipped), so the bloom moves up the harmonic series.
+Caution: the wind blooms one partial, not the note. Under it a
+note becomes a breathy whistle at one of its harmonics over the
+strike (a 220 Hz note at full pedal whistles on its 9th), and a
+low note spreads it over several close partials. =wind_gain=
+sets how hard it blows; =wind_q= how narrow the band is.
+
 * Hot reload
 Edit the rig, then press =r= then Enter in the terminal running
 it. The new values apply without a restart:
@@ -159,8 +191,9 @@ restart from rest, a brief dip), the howl table,
 =modal.mode_count=, =amplitude= and the tuning.
 ** to notes struck afterward
 The exciter table (kind, pick energy, brightness, position,
-hammer, knock), the energy table (the window, the exponent, the
-drive, the pre-charge), =unison_count= and
+hammer, knock), the energy table (the kind, the window, the
+exponent, the drive, the pre-charge, the bow and the wind),
+=unison_count= and
 =modal.crossover_hz=.
 ** only after a restart
 =sample_rate=, =buffer_frames=, =release_secs=, the grid layout,
@@ -178,13 +211,14 @@ cargo run -p tools --bin strings_harness -- --rig energy-pedal_monome
 
 It writes =target/strings-harness/<scene>.wav= for each scene
 (single notes across the range, a chord, a re-strike over a
-sustained chord, a pedal swell, sympathy, the chord with the
-howl on, and three treble notes across the crossover) and
-prints each path and peak. =--scene NAME= renders one,
-=--pedal TRACE= scripts the pedal (='0:0,1:1'= rises from heel
-to toe over the first second), =--howl GAIN= sets the howl's
-gain for every scene, =--out DIR= writes elsewhere; =--help=
-lists them all.
+sustained chord, a pedal swell, the same swell under the bow
+and under the wind, sympathy, the chord with the howl on, and
+three treble notes across the crossover) and prints each path
+and peak. =--scene NAME= renders one, =--pedal TRACE= scripts
+the pedal (='0:0,1:1'= rises from heel to toe over the first
+second), =--howl GAIN= sets the howl's gain for every scene,
+=--energy KIND= the energy kind (=ebow=, =bow= or =wind=),
+=--out DIR= writes elsewhere; =--help= lists them all.
 
 * Deliberately not here
 No timbre keys and no volume keys (a string has no waveform, and

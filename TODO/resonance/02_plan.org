@@ -876,7 +876,7 @@ and below 0.95 for 10 s. Crossover: a note at 3000 Hz with the
 crossover at 2000 is a modal voice (inspect), its pitch within
 2 cents, its T60 within 10 percent; a note at 1000 Hz is loops.
 
-** TODO Slice 8: the bow and wind energy kinds
+** DONE Slice 8: the bow and wind energy kinds
 *** What
 In 'strings/energy.rs', the two drives of "The options", the
 pre-charge waveshapes for each, 'energy.kind' honored at birth,

@@ -235,6 +235,7 @@ fn deep_merge(dst: &mut toml::Table, src: toml::Table) {
 mod tests {
   use super::*;
   use crate::rig::{MonomeWindowRig, SinkRig};
+  use crate::strings::params::EnergyKind;
   use crate::strings::StringsParams;
 
   const SAWWAVE_ORG: &str = r#"
@@ -595,5 +596,42 @@ A grouping headline inside the TABLE: its PARAMs still land in [trail].
     let strings: StringsParams = rig.sinks[0].strings_params().expect("a strings sink");
     assert_eq!(strings.string.t60_seconds_at_55hz, 7.5);
     assert_eq!(strings.howl.gain, 2.5);
+  }
+
+  /// One TABLE given twice under a strings sink's ELEM, once under each grouping
+  /// headline (as the energy table's bow and wind keys are), is one table: the keys of
+  /// both land in it.
+  #[test]
+  fn a_table_given_under_both_groups_is_one_table() {
+    let org = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** ELEM sinks
+*** PARAM id = "strings"
+*** PARAM kind = "cpal_strings"
+*** PARAM sample_rate = 48000
+*** PARAM buffer_frames = 128
+*** PARAM amplitude = 0.2
+*** parameters we talked about
+**** TABLE energy
+***** PARAM kind = "bow"
+***** PARAM ex_post_energizing_ms = 900.0
+*** parameters you might also enjoy
+**** TABLE energy
+***** the bow
+****** PARAM bow_velocity = 0.7
+***** the wind
+****** PARAM wind_q = 12.0
+"#;
+    let rig: Rig = parse_org_rig(org).expect("parses");
+    let strings: StringsParams = rig.sinks[0].strings_params().expect("a strings sink");
+    assert_eq!(strings.energy.kind, EnergyKind::Bow);
+    assert_eq!(strings.energy.ex_post_energizing_ms, 900.0);
+    assert_eq!(strings.energy.bow_velocity, 0.7);
+    assert_eq!(strings.energy.wind_q, 12.0);
+    let defaults: StringsParams = StringsParams::default();
+    assert_eq!(strings.energy.bow_force, defaults.energy.bow_force);
   }
 }

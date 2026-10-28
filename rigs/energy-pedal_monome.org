@@ -337,17 +337,34 @@ and 'b = ex_post_energizing_ms' (in seconds):
 The energy factor is 'f(t) = tri(t) * pedal(t) ^ e', with
 'e = pedal_energy_exponent'.
 ***** PARAM kind = "ebow"
-An enum: how the drive puts energy in. The only kind the engine
-has is "ebow": a magnet under the string that feeds the string's
-own motion back into it, so the note blooms from what it already
+An enum: how the drive puts energy in, "ebow", "bow" or "wind".
+The ebow is a magnet under the string that feeds the string's own
+motion back into it, so the note blooms from what it already
 holds (the strike, a sympathetic ring) without squeaks or
-non-starts. Other kinds are added under 'parameters you might
-also enjoy' as they land.
+non-starts; it reads 'growth_rate_per_second_max' and
+'drive_limit'. The bow rubs the string at a speed the pedal
+sets: rosin bite and a locked, bright spectrum, but it can fail
+to speak or squeak; it reads 'bow_velocity' and 'bow_force'. The
+wind blows noise across the string and the partial nearest its
+pitch blooms, climbing the series as the pedal rises; it reads
+'wind_speed_hz_max', 'wind_q' and 'wind_gain'. All three read
+the window, 'pedal_energy_exponent' and 'precharge_gain'. The
+bow's and the wind's parameters are under 'parameters you might
+also enjoy', in a second energy table.
 ****** the math
-The drive, per sample, during '[T, T + b]': see 'drive_limit'
-and 'growth_rate_per_second_max'. The pre-charge's waveshape is
-nearly a sine, as a string under a magnet settles: one delay
-line's worth of 'sin(2 pi f0 t) + 0.2 sin(4 pi f0 t)'.
+The drive, per sample, during '[T, T + b]': for the ebow see
+'drive_limit' and 'growth_rate_per_second_max', for the bow and
+the wind the math under their own parameters. The pre-charge is
+the same 'A0' for every kind (see 'ex_ante_energizing_ms'); its
+waveshape, one delay line's worth scaled to the peak
+'A0 / unison_count', is the kind's own. The ebow's is nearly a
+sine, as a string under a magnet settles:
+'sin(2 pi f0 t) + 0.2 sin(4 pi f0 t)'. The bow's is the sawtooth
+'2 frac(f0 t) - 1' passed once through the loop's own loss
+filter: a bowed string's spectrum, dulled as one round trip
+dulls it. The wind's is a sine at the partial 'k f0' (k >= 1)
+nearest the wind's pitch 'f_s' at key-down (see
+'wind_speed_hz_max').
 ***** the window
 ****** PARAM ex_ante_energizing_ms = 300.0
 Milliseconds, in [0, 10000]. How far back before key-down the
@@ -391,10 +408,10 @@ rate, and in the drive's limit 'A = drive_limit * p ^ e'. At 2,
 half pedal is a quarter of the energy.
 ***** the drive
 ****** PARAM growth_rate_per_second_max = 8.0
-Nepers per second, >= 0. How fast a note grows under a full
-pedal at the window's peak. 8 nepers per second is about 69 dB
-per second. The same pedal grows every register at the same
-rate. Useful from 2 (a slow bloom) to 20 (a snap).
+Nepers per second, >= 0. The ebow's only: how fast a note grows
+under a full pedal at the window's peak. 8 nepers per second is
+about 69 dB per second. The same pedal grows every register at
+the same rate. Useful from 2 (a slow bloom) to 20 (a snap).
 ******* the math
 The pedal moves the growth rate from the string's own decay to
 this: 'rate = growth_rate_per_second_max * f - lambda * (1 -
@@ -406,9 +423,11 @@ heel 'f = 0', 'rate = -lambda' and 'k = 0', so the string decays
 exactly as undriven; a light pedal lengthens the sustain; past
 the point where 'rate' crosses 0 the note grows.
 ****** PARAM drive_limit = 0.8
-Loop amplitude units, > 0. The ceiling the bloom flattens at, at
-full pedal; a lighter pedal blooms to a proportionally lower
-ceiling. No pedal can make a string run away. Useful from 0.1
+Loop amplitude units, > 0. The ebow's only: the ceiling the bloom
+flattens at, at full pedal; a lighter pedal blooms to a
+proportionally lower ceiling. No pedal can make a string run
+away. A bowed note settles where the bow's speed puts it, and a
+blown one where the wind's gain does. Useful from 0.1
 to 1.5; the output clamps at 0.95 after 'amplitude' and the body.
 ******* the math
 One drive sample per note, added to every one of its loops:
@@ -539,11 +558,131 @@ seed is another body of the same size and shape. Try a few.
 ******* the math
 The seed of the deterministic noise that draws each 'j_k'.
 *** parameters you might also enjoy
-Two options beside the passive instrument. The howl is an active
-path that can sustain every note forever; it is off as shipped.
-The modal table decides how the top register is rendered. A
-change to either reaches sounding strings at once, except the
-crossover, which applies to notes struck afterward.
+Options beside the passive instrument. The bow and the wind are
+two more ways for the energy pedal to drive a string, chosen by
+the energy table's 'kind'. The howl is an active path that can
+sustain every note forever; it is off as shipped. The modal
+table decides how the top register is rendered. A change to the
+howl or the modal table reaches sounding strings at once, except
+the crossover, which applies to notes struck afterward; a change
+to the bow or the wind applies to notes struck afterward.
+**** TABLE energy
+The rest of the energy table: the bow's and the wind's
+parameters, read only when 'kind' (under 'parameters we talked
+about having access to') is "bow" or "wind". The two energy
+tables are one table to the engine.
+***** the bow
+A bow drawn across the string at a speed the pedal and the window
+set: strongest at the key-down, fading as the window closes, a
+lighter pedal bowing the same way, softer. It speaks at about
+the same level in every register, with rosin bite and a bright,
+locked spectrum, but only inside a window of its two settings:
+outside it the bow grips and damps the string, squeaks, or
+skates (see 'bow_force').
+****** the math of the bow
+With 'f = tri(t) * p ^ e' the energy factor, the bow moves at
+'v_bow = bow_velocity * f'. With 'v' the string's speed under the
+bow (the mean of the note's loops' arriving waves) and
+'delta = v_bow - v', one drive sample per note is added to every
+one of its loops: 'delta * bow', where
+'bow = clamp((|delta / f * bow_force| + 0.75) ^ -4, 0.0025,
+0.245)' is the friction table (STK's, between the bounds of
+Mutable Instruments Elements'), the result passed through a
+one-pole highpass at 'f0 / 10'. While '|delta / f * bow_force|'
+is below about 0.67 the table sits at its top and the bow grips,
+pulling the string toward its own speed, which damps it. Beyond,
+the table falls steeply and the bow slips; there the drive
+shrinks as 'delta' grows, which feeds the string's motion until
+the grip holds it. The table reads 'delta / f', not 'delta': the
+bow's force falls with its speed, as a player keeps a bow inside
+its playable window, so a lighter pedal and the closing window
+make the same motion smaller. (Read at 'delta', a slowing bow
+would grip and stop every string near the window's end.) The
+highpass keeps the friction from pushing the string's slow,
+near-DC motion. 'drive_limit' does not apply.
+****** PARAM bow_velocity = 0.3
+Loop velocity units, in (0, 2]. The bow's speed at full pedal and
+the window's peak: how loud a bowed note is. At 0.3 a softly
+struck 220 Hz note bowed at full pedal peaks near 0.19 (body
+off), where the shipped strike alone peaks near 0.08. Useful from
+0.1 to 0.6.
+Changing it alone also moves whether the bow speaks: see
+'bow_force'.
+******* the math
+'v_bow = bow_velocity * f'. With 'bow_velocity * bow_force' held,
+the bowed motion is the same shape at any 'bow_velocity' and
+scales with it (the strike does not).
+****** PARAM bow_force = 3.0
+Unitless, in [1, 10]. The friction table's slope: how small a
+difference between the bow's speed and the string's already
+makes the bow slip. Despite the name, larger slips sooner: a
+lighter grip. Its product with 'bow_velocity' decides whether the
+bow speaks. Below about 0.7 the bow grips throughout and damps
+the note instead of driving it (a non-start: the note dies
+faster than under no pedal). From about 0.8 to 2 it speaks, at
+about the same level from 55 to 1760 Hz (0.9 as shipped). From
+about 1.5 the low strings lock onto their 4th partial (a
+squeak). From about 2.5 the bow slips throughout and adds little
+(it skates), the low strings first.
+******* the math
+'bow = clamp((|x| + 0.75) ^ -4, 0.0025, 0.245)' with
+'x = delta / f * bow_force'. The table leaves its top at
+'|x| = 0.245 ^ (-1/4) - 0.75 = 0.67'. With the string at rest
+under the bow, 'delta / f = bow_velocity', so
+'x = bow_velocity * bow_force', and at or below 0.67 the bow
+grips until something else moves the string: about 0.7 speaks
+after the shipped strike, not after a soft one.
+***** the wind
+Wind across the string, as across an aeolian harp: the partial
+nearest the wind's pitch gathers the noise and blooms, and as
+the pedal rises the wind's pitch climbs, so the bloom moves up
+the harmonic series. It blooms one partial, not the note: a
+breathy whistle at one harmonic over the strike. On a low note
+several close partials share it. At the heel there is no wind.
+****** the math of the wind
+White noise in [-1, 1), each note its own (seeded from the note),
+passes the resonator
+'H(z) = ((1 - R^2) / 2) (1 - z^-2) / (1 - 2 R cos(theta) z^-1 +
+R^2 z^-2)' (the body's mode filter, peak gain about 1) at the
+wind's pitch 'f_s = wind_speed_hz_max * p ^ e', clamped to
+[20 Hz, 0.45 * sample_rate], of bandwidth 'f_s / wind_q':
+'R = exp(-pi f_s / (wind_q * sample_rate))',
+'theta = 2 pi f_s / sample_rate'. The filter is redesigned, its
+state kept, when 'f_s' moves by more than 1 percent. The result,
+scaled by 'tri(t) * wind_gain', is one drive sample per note,
+added to every one of its loops. The noise does not depend on
+the string's motion; a partial near 'f_s' takes it in at every
+round trip and keeps it for its own decay time, so the longer it
+rings the higher it blooms. 'drive_limit' does not apply.
+****** PARAM wind_speed_hz_max = 2000.0
+Hz, > 0. The wind's pitch at full pedal, so which partial blooms:
+at 2000 a 220 Hz note blooms its 9th partial, a 55 Hz note a
+cluster near its 36th. As the pedal falls the pitch falls with
+'p ^ e', and the bloom moves down the series. Useful from 200 to
+8000.
+******* the math
+'f_s = wind_speed_hz_max * p ^ e', clamped to [20 Hz, 0.45 *
+sample_rate], with 'p ^ e' the pedal's power now; the pre-charge
+takes the partial nearest the 'f_s' of the pedal at key-down.
+****** PARAM wind_q = 8.0
+Unitless, > 0. How narrow the wind's band is. 2 to 4 is a broad
+hiss that feeds several partials; 8 to 20 picks one; above about
+50 it is nearly a whistle. Useful from 2 to 30.
+******* the math
+Bandwidth 'f_s / wind_q' Hz. A narrower band carries less noise:
+the band's RMS is about '0.58 * sqrt(pi f_s / (wind_q *
+sample_rate))' (0.074 at the shipped values).
+****** PARAM wind_gain = 0.5
+Unitless, >= 0. How hard the wind blows at the window's peak. On
+the harness's 'pedal_swell_wind' (a 220 Hz note struck under a
+full pedal) 0.1 leaves the note within a dB of the same note
+unblown; 0.5 blooms its 9th partial to twice its fundamental and
+raises its level about 6 dB; 1 raises it about 11 dB, as much as
+the ebow's swell. Useful from 0.2 to 1.
+******* the math
+The band's noise times 'tri(t) * wind_gain': the pedal's position
+enters through 'f_s' (a higher, wider band carries more noise)
+and not as a factor of its own.
 **** TABLE howl
 An active loop beside the passive bridge, as an amplifier and
 its speaker are beside a guitar's strings: the sum of every
