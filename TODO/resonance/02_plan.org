@@ -888,6 +888,21 @@ ex-post leg; with the pedal at 0 it decays as without; both
 stay finite and below 0.95.
 
 ** TODO Slice 9: organize, record, and the two-question check
+*** Corrections carried from slice 8
+**** Rename 'bow_force' to 'bow_slipperiness'
+In the friction table 'bow = (|delta * bow_force| + 0.75)^-4' a
+larger value is a lighter grip, the opposite of what "force"
+says. Rename the field in 'params.rs', the rig, the readme and
+the tests to 'bow_slipperiness' (larger slips more), with no
+alias for the old key ('coding-advice/no-legacy-support.org').
+**** Facts slices 5 to 8 fixed
+The bow's table reads 'delta / (tri * pedal^e)' and its drive
+passes a highpass at 'f0 / 10'; the bow's amplitude is set by
+'bow_velocity', not 'drive_limit'; a modal note is one junction
+member; 'howl.level' defaults to 0.003; the harness has scenes
+'single_notes', 'chord', 'restrike', 'sympathy', 'pedal_swell',
+'pedal_swell_bow', 'pedal_swell_wind', 'howl', 'treble' and
+options '--pedal', '--howl', '--energy'.
 *** What
 Read the strings engine as a whole and remove quasi-duplication
 within it and against 'sawwave/' (the slice-1 split is the
