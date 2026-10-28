@@ -9,3 +9,326 @@ and the diff, records the verdict and any corrections here, and
 launches the next slice. The wrap-up goes at the end.
 
 * Slices
+** Slice 1: split voice control stepping out of the render
+*** Launched 2026-10-28 06:39 UTC
+Baseline commit 4690d83; 695 tests green in about 30 s.
+*** Reported 2026-10-28 06:44 UTC, about 5 minutes
+Commit 9aefe74. Suite 695 green. The agent's bit-identity check
+(two renderers, every control feature, grouped so f32 summation
+order could not differ) passed. Deviations: 'VoiceStep' lives in
+'sawwave/types.rs' rather than 'voices.rs' (the module that
+holds all data shapes; correct); the LFO phases stay in
+'accumulate_voices' (documented); one comment in 'synth.rs'
+renamed to point at the new function. The old-timbre crossfade
+gain is still computed inline to preserve f32 order. Verdict:
+accepted, nothing to carry forward.
+** Slice 2: one loop, the exciter, the T60 and B curves
+*** Launched 2026-10-28 06:47 UTC
+*** Reported 2026-10-28 07:08 UTC, about 20 minutes
+Commit fcbac8d: 'edo_surface/src/strings/' with params,
+loop_dsp, first_order, body (design only), exciter, noise,
+tests. Suite 705 green (10 new). Pitch within 0.0005 cents at
+every test frequency; T60 within 1.4 percent. Deviations, all
+accepted: the DC blocker's pole follows f0/200 with gain
+correction (the plan's fixed 0.995 pole ate 18 percent per
+round trip at 55 Hz); the tuning allpass is exact at f0 rather
+than plain Thiran (Thiran missed by 2.4 cents at 3 kHz); the
+loss meets g at f0 rather than at DC; the loss pole is bounded
+for passivity; the T60 and B curves are power laws through the
+two anchors (the plan's wording admitted a reading that goes
+negative); two shared files, 'first_order.rs' and 'noise.rs'.
+Carried into slice 3: stream the exciter instead of folding it
+into the delay line; make the knock a parallel precomputed
+table instead of a per-note convolution (2.5 M multiply-adds at
+55 Hz would stall the callback).
+**** Open for Jeff later: the DC blocker's cutoff
+At f0/200 the upper partials sit about 1.4 cents flat; f0/500
+would give 0.55 cents but hold in-loop DC longer. A rig knob is
+cheap if he wants to hear the difference.
+** Slice 3: junction, body, renderer, harness
+*** Launched 2026-10-28 07:12 UTC
+*** Reported 2026-10-28 07:24 UTC, about 12 minutes
+Commit e6460d5: junction, body bank, string voice, renderer,
+scripted-voice helper, the harness binary. Suites: 713 in the
+live crate, 944 across the workspace, all green. Four scenes
+rendered to 'target/strings-harness/', peaks 0.21 to 0.28, all
+finite. Two thresholds the plan stated could not hold and were
+adapted with measurements: the stored-energy test ignores the
+allpass states, so it asserts no rise per block with dispersion
+off and no rise between quarter-second averages with it on; the
+sympathy test uses relative bounds because coincident pitches
+couple strongly at any heaviness.
+**** Decision: the bridge is lossy, default heaviness 3000
+At r = 50 a 110 Hz note hit -40 dB in 0.43 s against a 6.8 s
+T60 curve. That is what a resistive bridge does; compensating
+the loss filter would make the anti-phase modes exceed unity.
+Default 3000 keeps the bridge's own T60 above the curve's
+except near the top, and the rig will document the trade.
+**** Decision: no reaping of silent strings
+Slice 3 reaped silent string voices after a second and did not
+respawn them, which removed sustained drones from the junction.
+A drone is the string Jeff wants excited in sympathy, and a
+loop is cheap, so slice 4 removes the reaper.
+**** Accepted deviations
+No respawn (moot once reaping goes), the re-strike scene cuts
+the drone the way 'cut_sustained' does, a changed unison count
+applies to later notes, voices live in a 'BTreeMap' so the
+junction sums in a fixed order.
+** Slice 4: rig schema, settings, reload, engine switch
+*** Launched 2026-10-28 07:26 UTC
+*** Reported 2026-10-28 07:41 UTC, about 14 minutes
+Commits ee6b697 (reaper removed, heaviness 3000), 3c3f4c2
+(sink schema, settings, reload, engine switch), b043308
+(harness flags, README, DONE). Suites 722 and 954, green.
+Sympathy at heaviness 3000: the silent unison reaches 0.014 of
+the struck string's amplitude. Deviation accepted: the
+'strings::params' structs deserialize directly from the rig
+instead of parallel 'XRig' structs, so every default exists
+once; the cost is a serde dependency in 'params.rs'. Dispatch
+fix in 'midi_pulse.rs': a one-grid strings rig now reaches the
+surfaces runtime. Not testable without a sound card: the switch
+inside the cpal callback; the hot-reload test exercises the same
+calls outside it. Carried into slice 5: the energy pedal
+publishes its raw position (Jeff's exponent is the shaping).
+** Slice 5: the energy pedal
+*** Launched 2026-10-28 07:43 UTC
+*** Reported 2026-10-28 08:06 UTC, about 23 minutes
+Commits 3b306e9 (role, validation, shared atomic,
+'strings/energy.rs'), e14951a (harness '--pedal' and
+'pedal_swell'), 92d1bbe (docs, DONE). Suites 733 and 965,
+green. Pre-charge within 0.4 percent of the closed form. Full
+pedal grows a struck note's RMS fourfold over a 1 s ex-post
+leg; a heel pedal renders byte-identically to no pedal.
+**** Correction the agent made to the plan's formula, accepted
+At the heel the plan's 'k' was '1 - g', which cancels the loss
+and sustains forever. The pedal now maps the rate from the
+string's own decay (heel) to the maximum (toe). Folded into the
+plan as an UPDATED note.
+**** Carried into slice 6
+The drive limit scales with the pedal and defaults to 0.8; the
+unisons of a voice are driven coherently from their mean wave
+(slice 5 saw them drift apart under drive and the heard level
+fall). The later options stay undocumented in the rig until
+their slices.
+** Slice 6: the rig, its readme, the mock run, user docs
+*** Launched 2026-10-28 08:08 UTC
+*** Reported 2026-10-28 08:30 UTC, about 21 minutes
+Commits 804fa61 (drive limit rises with the pedal, default 0.8;
+unisons driven as one), b1fdf0b (the rig and its mock run),
+564394e (readme, README_USER, ORIENTATION). Suites 736 and 968,
+green; 'loads_default_rigs' covers the new rig. Growth test now
++14 dB over a 1 s ex-post leg; the unisons stay coherent under
+drive (coherence 1.72 of 2 against 0.48 without the fix). Every
+harness scene renders on the rig, peaks 0.28 to 0.67. The rig
+file documents every parameter with units, range, purpose and a
+"the math" sub-headline, nested as the problem divides, with the
+two grouping headlines Jeff asked for. Deviations accepted: a
+'#[cfg(test)]' slot exposes the latest run's voice map to the
+mock test (mock grids show only LEDs); the bridge's example
+decay times are measured rather than copied from the plan (the
+damping lowpass softens the bridge loss at high pitch); the
+coherent drive takes the mean round-trip gain of the voice's
+loops; a stale sentence in 'rigs/README.org' about reload was
+corrected. Jeff's target state is reached at this commit.
+**** For Jeff's ears
+Sympathy at heaviness 3000 is gentle; the pre-charge at
+'precharge_gain' 0.5 sits about 18 dB under the strike. Both
+are rig knobs with the trade written beside them.
+** Slice 7: the howl path and the modal crossover
+*** Launched 2026-10-28 08:33 UTC
+*** Reported 2026-10-28 08:56 UTC, about 22 minutes
+Commits 956cc23 (howl path in 'howl.rs', modal voice in
+'modal.rs', 'VoiceKind'), 55121cf (harness 'howl' and 'treble'
+scenes, '--howl'), 3572578 (rig and readme docs, DONE). Suites
+743 and 975, green. Howl at gain 20 grows a note's energy by
+half over two seconds and stays bounded; gain 0 renders the
+five earlier scenes byte-identically. A 3000 Hz modal note is
+in tune within 0.05 cents and its T60 matches the curve; no
+level step across the crossover (treble peaks 0.068 to 0.073).
+Deviations accepted: 'howl.level' default 0.003 (0.3 pinned the
+clamp); mode frequencies divided by 'sqrt(1 + B)' so mode 1 is
+'f0' as the loops tune theirs; per-mode gain '2 f0 / fs' makes
+the bank the loop's Fourier series, so no tuned constant.
+**** Noted for Jeff, not changed
+A modal note is one junction member where a two-unison note is
+two, so it rings about 20 percent longer near the crossover,
+and it is brighter than a loop note because the spec holds the
+upper modes at 'T60 * ratio'. Both are written in the rig.
+** Slice 8: the bow and wind energy kinds
+*** Launched 2026-10-28 08:58 UTC
+*** Reported 2026-10-28 09:31 UTC, about 32 minutes
+Commits d79577a (bow and wind drives and pre-charge shapes),
+6a97cff (harness scenes and '--energy'), 3258999 (docs, DONE).
+Suites 749 and 981, green. Both kinds grow a soft strike under
+a full pedal; a heel pedal renders identically to none; the
+pre-charge fills peak at A0/2 and the wind's sits on the
+expected partial. Deviations accepted: the bow table reads
+'delta / (tri * pedal^e)' so the grip does not stop the string
+as the triangle falls (the literal formula choked the note
+mid-window); a highpass at f0/10 on the bow's drive stops a
+slow drift; defaults 'bow_velocity' 0.3 and 'wind_gain' 0.5
+(the plan's values did nothing audible); the growth test checks
+mid-window RMS against the strike, since these drives follow
+the falling triangle.
+**** Carried into slice 9
+'bow_force' means the opposite of its name; renamed to
+'bow_slipperiness'.
+**** For Jeff's ears
+The wind's pre-charge sits 26 cents under the stiffness-
+stretched partial; a five-note bowed chord peaks near 0.85.
+** Slice 9: organize, record, and the two-question check
+*** Launched 2026-10-28 09:34 UTC
+*** Reported 2026-10-28 09:52 UTC, about 18 minutes
+Commits da30344 (rename to 'bow_slipperiness'), 35ff011 (one
+copy each of the shared math), e4b7442 (shared test helpers),
+f232680 ('TODO/problems.org', one sink-stream check, DONE).
+Suites 749 and 981, green. The slew helper it extracted from
+'step_voice_controls' performs the same f32 operations in the
+same order (checked by reading the diff), so the sawwave output
+stays bit-identical. Every harness scene renders finite and
+below the clamp with peaks unchanged from slice 8. The two
+questions are answered in its report and folded into
+'TODO/problems.org' as decisions for Jeff.
+
+* Wrap-up
+** Verdict
+Every slice is DONE. The rig 'energy-pedal_monome' plays the
+strings engine with the sustain handle, the three sustain
+buttons, the six-key shift pad and the energy pedal; every
+string parameter hot-reloads with 'r'; the rig file documents
+each parameter with units, range, purpose and math under the
+two headlines Jeff asked for; the three energy kinds, the howl
+and the modal crossover exist behind enums and tables. Nothing
+has been listened to. The next step is Jeff's ears, and
+'TODO/problems.org' holds the decisions that wait on them.
+** What the orchestrator checked itself
+The baseline suite before the run (695 green); every slice's
+report and the commits' diffs; the slice-1 and slice-9 edits
+to 'step_voice_controls' for f32 operation order; the rig
+file's outline and a sample of its parameter prose; the final
+'cargo test --workspace' on the finished tree: 981 tests in
+six binaries, none failing.
+** Results
+*** The run
+Nine slices, nine Opus 5.5 agents at high effort, launched
+06:39 UTC and finished 09:52 UTC on 2026-10-28, about 3 h 15 m
+wall clock, of which about 2 h 50 m was agent time (5, 20, 16,
+14, 23, 21, 22, 32 and 18 minutes). No slice stopped. 27
+commits from 4690d83 to f232680, 37 files, about 8,200 lines
+added. Every slice commit names the plan and the slice and
+carries the Opus co-author line.
+*** Counts
+Tests 695 to 749 in 'edo_surface' (54 new), 981 in the
+workspace. New code: 'edo_surface/src/strings/' (params,
+loop_dsp, first_order, noise, exciter, body, junction, voice,
+modal, energy, howl, renderer, scripted_voices, tests) and
+'tools/strings/strings_harness.rs'. Changed: 'sawwave/voices.rs'
+and 'types.rs', 'surfaces_runtime/{audio,settings,reload,
+pedal_volume,mod}.rs', 'rig.rs', 'buried/midi_pulse/
+midi_pulse.rs', 'tools/Cargo.toml', 'rigs/README.org',
+'README_USER.org', 'ORIENTATION.org'. New rig and readme.
+** What the slices did beyond the plan's words
+Recorded under each slice above. The pattern: the plan's
+formulas and defaults were written from the literature and
+never rendered, and the agents found where they failed on
+contact with sound. Slice 2 replaced the fixed DC-blocker pole,
+plain Thiran tuning and the DC-referenced loss. Slice 3 found
+the resistive bridge drains notes at heaviness 50. Slice 5
+found the rate formula sustained every heel-pedal note forever.
+Slice 6 found the drive limit flattened the bloom and the
+unisons drifted apart. Slice 7 found 'howl.level' 0.3 pinned the
+clamp. Slice 8 found the literal bow table choked the note and
+two defaults did nothing audible.
+** The churn ledger
+*** Built then removed
+The silent-string reaper (slice 3, removed slice 4): a plan
+requirement that conflicted with sympathy. The per-note knock
+convolution and the folded excitation table (slice 2, replaced
+slice 3): a plan "how" that cost too much and raised peaks.
+*** Defaults the plan gave that moved
+Bridge heaviness 50 to 3000; drive limit 0.4 to 0.8 and
+pedal-scaled; howl level 0.3 to 0.003; bow velocity 0.2 to 0.3;
+wind gain 0.1 to 0.5. Cause in every case: a plan number not
+rendered before the run.
+*** Formulas the plan gave that moved
+The rate's heel (would sustain forever); the bow table's
+argument (would choke); the modal mode frequencies (7.8 cents
+sharp); the DC blocker (ate the bass). Same cause.
+*** Names
+'bow_force' to 'bow_slipperiness' (slice 9). The vocabulary
+drift listed in 'TODO/problems.org' ("string voice" for two
+things, "Loop" against recorded loops, "energy" three ways,
+"junction" in code against "bridge" in the rig) is not churn
+yet; it waits on Jeff.
+*** Cost
+No human time during the run. The plan took about 1 h 45 m to
+research and write, after a literature review of three agents.
+** What the user sees differently
+*** By decision
+A new rig and readme, a run line in 'README_USER.org', a
+paragraph in 'ORIENTATION.org', a 'cpal_strings' sink and a
+'string_energy' pedal role in 'rigs/README.org', and the
+harness. The 'r' reload message lists the string parameters and
+says the sink's stream settings need a restart.
+*** By accident
+Nothing found. Every 'cpal_synth' rig renders bit-identically
+(slice 1's check, and slice 9's edit read for operation order);
+the grid threads were not changed except one comment and one
+test-only slot in 'mod.rs'; the old rigs were not touched.
+** The agents' reports
+'03_review/slice-1.org' through 'slice-9.org', beside this
+file. Each has the commits, the suite counts, the measured
+numbers behind every threshold, and the deviations.
+** Open questions
+All in 'TODO/problems.org', in four groups: quasi-duplication
+left in the engine; 'VoiceState' construction (and one possible
+bug: three ways of ending a voice keep its 'pending_attack');
+structural problems in the old code that the plan had to thread
+through; names that need a decision; and eleven listening
+questions.
+** TODO Decide
+*** TODO Listen first
+'pw-jack cargo run --bin midi_pulse -- energy-pedal_monome' on
+the host, with the pedal bridge running. Or without grids:
+'cargo run -p tools --bin strings_harness -- --rig
+energy-pedal_monome' renders nine scenes to
+'target/strings-harness/'. The knobs most likely to want a
+hand: 'bridge.heaviness' (3000 is gentle sympathy; the trade
+is written beside it), 'energy.precharge_gain' (0.5 is 18 dB
+under the strike; about 4 matches it), 'energy.drive_limit',
+'body.mix', 'string.high_frequency_t60_ratio'.
+*** TODO The names
+'TODO/problems.org' "Names in the strings engine that deserve a
+decision" lists ten. The orchestrator's recommendations: rename
+'StringVoice' to 'LoopsVoice' and the renderer's 'string_voices'
+to 'voices'; rename 'Loop' to 'StringLoop'; rename
+'StringParams' to 'OneStringParams'; call the junction "bridge"
+in code as the rig does; leave "energy" as Jeff's own word.
+*** TODO The possible re-strike bug
+'sustain_note', 'cut_sustained' and 'end_drones_at' do not
+clear 'pending_attack' as 'note_off' does. Unverified; a
+two-line fix if real. It predates this plan.
+*** TODO Whether to reshape the old code
+'TODO/problems.org' "Structural problems in the old code" is
+the list Jeff asked for under "side-quest: organize": the
+voice-map walkers in 'synth.rs', the four copies of cpal glue,
+the all-'Copy' 'VoiceState', and the five files one engine had
+to be threaded through. Each is a plan of its own.
+*** TODO The modal note as one junction member
+It rings about 20 percent longer than a two-unison note near
+the crossover and is brighter. Counting it as 'unison_count'
+members is a small change; the orchestrator would make it.
+** Suggestions for the advice
+*** A plan's numbers need a render before the run
+Every default and formula the plan stated from the literature
+without rendering it moved during the run. 'plans.org' says to
+read the code path before stating a rule about existing
+behavior; the analogue for DSP is to render the formula before
+stating a default. A first slice that is only a numeric harness
+(slice 3's, moved first) would have let the planner tune the
+numbers before writing them into eight slices.
+*** The corrections mechanism worked
+Six of nine launches carried "Corrections carried from slice N"
+written from the previous report, and no slice had to undo a
+predecessor's design. 'TODO UPDATED [Claude]' children kept the
+plan's "Agreed behavior" honest without rewriting it.

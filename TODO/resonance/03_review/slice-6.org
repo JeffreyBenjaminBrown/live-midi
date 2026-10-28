@@ -1,0 +1,145 @@
+#+title: Slice 6 report: the rig, its readme, the mock run, docs
+
+* Commits
+** 804fa61 the drive limit rises with the pedal; unisons as one
+The two corrections carried from slice 5. 'energy.rs': the
+ebow drive is 'k * A * tanh(v / A)' with 'A = drive_limit *
+pedal ^ e' (new 'energy::pedal_power'); 'drive' and
+'ebow_drive' take the pedal's power. 'EnergyParams::default()
+.drive_limit' is 0.8. 'voice.rs': 'StringVoice::write_back'
+computes one drive sample per voice ('drive_of_the_voice') from
+the mean of its loops' arriving waves and the mean of their
+round-trip gains at the voice's 'f0', and adds it to every loop;
+'drive_into_loop' is gone. 'renderer.rs' hands each voice its
+pedal power beside its energy factor. Module and doc comments
+updated. Two new tests: the drive saturates at its limit times
+the pedal power; a full pedal keeps a voice's unisons in phase.
+** b1fdf0b the energy-pedal_monome rig and its mock run
+'rigs/energy-pedal_monome.org', and the mock-run test
+'energy_pedal_rig_runs_against_two_and_one_mock_grids' in
+'surfaces_runtime/tests.rs', with a test-only slot in
+'surfaces_runtime/mod.rs' that exposes the run's voice map.
+** 564394e the rig's readme; README_USER and ORIENTATION
+'rigs/energy-pedal_monome_readme.org', the run line and a
+paragraph in 'README_USER.org', a section in 'ORIENTATION.org',
+a pointer to the rig (and a corrected reload sentence) in
+'rigs/README.org', and the slice headline marked DONE.
+
+* Suites
+** cargo test -p edo_surface
+736 passed, 0 failed (733 at launch plus the three new tests).
+** cargo test --workspace
+968 passed, 0 failed: 736 edo_surface, 180, 28, 16 and 8 in the
+other crates' targets (965 at launch plus three).
+** Failures
+None. The dead-code warnings are pre-existing: three in the lib
+('edit.rs:72', 'settings.rs:166', 'synth.rs:346') and, in the
+test build, 'pedal_slide.rs:547'.
+** loads_default_rigs
+Passes with the new rig. A throwaway test (not committed)
+asserted the rig's sink converts to exactly
+'StringsParams::default()'; another asserted that the readme's
+global_volume addition on channel 2 parses and validates.
+
+* The growth numbers after the corrections
+** The growth test
+'a_full_pedal_grows_a_note_over_its_window_...' (220 Hz, body
+off, 1 s ex-post leg, struck at a tenth of the limit, so 0.08
+now against 0.04 before).
+*** after
+Full pedal: RMS 0.0108 at 0.1 s, 0.0563 at 0.9 s (+14.3 dB),
+peak 0.1813. Heel: 0.0046, then 0.0005. Heel equals unreported.
+*** before (slice 5's code)
+Full pedal: 0.0054, then 0.0200 (+11.4 dB), peak 0.0542.
+Heel: 0.0023, then 0.0002.
+** The window-gate test
+Stored energy 0.567 at 0.05 s, 4.564 at the window's end (0.5 s),
+0.0297 1.5 s later; the largest rise of the 50 ms means after
+the window is 0. Before: 0.411, 3.326, 0.0258, 0.
+** The new coherence test
+Heard power over stored energy of two default unisons (1.2
+cents) relative to one loop's, at 0.6 s under a 1 s ex-post leg:
+1.717 under a full pedal, 0.481 under none (2 is fully in phase).
+With slice 5's per-loop drive restored in a scratch copy, the
+full pedal gave 0.452: the drive alone did nothing for the phase.
+The test asserts above 1.5 and above the undriven case. At 10
+cents of detune the unisons do not lock (the drive's coupling is
+weaker than the detune once the triangle falls), so the test
+uses the default detune.
+** The saturation test
+At 220 Hz the saturated drive equals 'k * drive_limit * pedal ^
+e' to 1e-4 at pedal 1 and 0.5 ('k' 4.37e-2 and 1.08e-2), and a
+small wave takes 'k * v'.
+
+* Harness peaks on the new rig
+'cargo run -p tools --bin strings_harness -- --rig
+energy-pedal_monome' (the rig equals the defaults, 48 kHz,
+amplitude 0.15):
+** single_notes 0.2774
+** chord 0.3969
+** restrike 0.3969
+** pedal_swell 0.6689
+With '--pedal 0:0' (heel) 0.1525. Slice 5's defaults gave
+0.4212; the higher, pedal-scaled limit lets the bloom go about
+4 dB further.
+** sympathy 0.3065
+All finite and below the 0.95 clamp.
+
+* Deviations from the plan's "how", with reasons
+** The mock test reads a test-only voice-map slot
+A mock grid shows only LEDs, and the brief asks that the test
+see voices in the map. 'run()' builds its voice map locally, so
+'surfaces_runtime/mod.rs' gained a '#[cfg(test)]' static,
+'VOICES_OF_THE_LATEST_RUN', set right after the map is built
+(the tests that read it hold 'MOCK_LOCK'). Non-test builds are
+unchanged; the engine is not involved, so "the grid threads do
+not know which engine renders" still holds.
+** The mock test's shape
+Two grids (ports 19240/19241), then one (19242/19243), as the
+brief orders. Two grids: a press strikes a voice; the handle
+tap strikes nothing; after release the same 'VoiceId' rings
+under a 'SurfaceDrone' key; OFF releases it; the shift pad's
+rightward arrow (found by 'shift_for_cell') makes the same cell
+strike a pitch higher by '2 ^ (register_delta / edo)'. One grid:
+it registers, its mode switch boots as the rig says, a press
+sounds and a release lets it go. Every cell, offset and step
+comes from the resolved settings. Null audio, so no renderer
+runs and nothing is reaped; "released" is 'target_env' 0.
+** The bridge's example decay times are measured
+The plan's UPDATED note gives about 42 s at 110 Hz and 2.6 s at
+1760 Hz for 'r = 3000'. The formula for a two-unison note alone,
+'T60_bridge = ln(1000) (N + r) / (2 n f0)', gives 47 s and 2.9
+s; a render with the string's own loss removed measured 46 s,
+13 s at 440 Hz and 5.5 s at 1760 Hz (the damping lowpass lags at
+high pitch, which softens the bridge's loss). The rig gives the
+formula and the measured values, at 'r' 3000, 300 and 50, and
+the lone-loop factor '1 - 2 / (N + r)' beside the in-phase
+'1 - 2 n / (N + r)'.
+** The coherent drive's gain
+The drive gain 'k' comes from the voice's 'f0' and the mean of
+its loops' round-trip gains (the unisons' detune moves them a
+little). The plan does not say which; this is one evaluation per
+voice per sample instead of one per loop.
+** The rig's layout
+'ELEM sinks' sits directly under the rig's title headline,
+without volpedal's 'audio' grouping, to keep the parameter tree
+from reaching nine levels. The sink's own keys (sample rate,
+buffer, amplitude, release) sit under two small grouping
+headlines outside the two named groups, since they are not
+string parameters. 'parameters you might also enjoy' carries
+only the one-line body. Unisons and dispersion are in the first
+group, as Jeff discussed both.
+** rigs/README.org's reload sentence
+It said the whole sink hot-reloads. 'release_secs',
+'sample_rate' and 'buffer_frames' are not in 'LiveParams', so
+they need a restart; the sentence now says so, as the readme
+does.
+
+* Unfinished
+Nothing in this slice. Listening decisions remain Jeff's: at the
+default heaviness 3000 sympathy is gentle (the trade is in the
+rig); the pre-charge at 'precharge_gain' 0.5 is about 18 dB below
+the strike (the rig says about 4 matches it).
+
+* Headline
+DONE: "** DONE Slice 6:" in '02_plan.org', in the last commit.

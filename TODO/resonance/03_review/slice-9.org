@@ -1,0 +1,312 @@
+#+title: Slice 9 report: organize, record, the two questions
+
+* Commits
+** da30344 rename bow_force to bow_slipperiness
+'params.rs' (the field, its validation key), 'energy.rs', the
+tests, 'rig_org.rs's test, the rig's PARAM line and prose, the
+readme. No alias. 'rigs/README.org' and the harness never named
+it. The rig's "Despite the name, larger slips sooner" became
+"Larger slips sooner".
+** 35ff011 one copy each of the strings engine's shared math
+The engine refactors listed under "Refactors applied", and the
+two against the sawwave engine.
+** e4b7442 the strings tests share their helpers
+Title: "the strings tests share their render and energy helpers".
+** f232680 TODO/problems.org; one sink-stream check; DONE
+Also the reload.rs citation and the DONE keyword.
+
+* Suites
+** cargo test -p edo_surface: 749 passed, 0 failed
+Run after the rename, after the refactors, and at the end.
+** cargo test --workspace: 981 passed, 0 failed
+749 + 180 + 28 + 16 + 8, run twice (after the refactors, at the
+end).
+** One intermediate check
+Before committing the engine refactors apart from the test
+refactors, the strings tests at the old 'tests.rs' were built
+and run against the new engine (36 passed), so commit 35ff011
+compiles and passes on its own.
+** No failures to classify
+** Warnings
+Only the dead-code warnings that predate the plan: in the library
+'EditState's unused methods, 'Settings.size' and
+'SurfaceSink::new'; in the test build also 'set_flip_policy'.
+Nothing new.
+
+* Refactors applied
+** The decay a T60 gives over an interval
+Duplicated: '10 ^ (-3 / (f0 T60))' in 'params::round_trip_gain',
+'10 ^ (-3 / (f0 T60 ratio))' in 'loop_dsp::design_loss', and
+'exp(-ln(1000) / (T60 fs))' in 'modal::design_modes'. Now
+'params::amplitude_after_t60_decay(elapsed, t60)' serves all
+three.
+** The amplitude time constant
+'T60(f0) / ln(1000)' was written in the renderer and in three
+tests. Now 'params::amplitude_time_constant_seconds'.
+** Filtering a table from rest
+'exciter::lowpassed' and 'energy::bow_waveshape' each ran a
+first-order filter over a table from a fresh state. Now
+'first_order::filtered_from_rest'.
+** Peak normalization and the peak
+'energy::precharge_waveshape' repeated
+'exciter::normalized_to_peak' line for line, and the peak fold
+was written in the exciter, the energy module, the tests
+('peak_of') and the harness. Now 'exciter::normalized_to_peak'
+(public) and 'exciter::peak_magnitude' serve all of them; the
+tests' 'peak_of' is gone.
+** A second triangle
+'energy::ex_post_energy_factor' computed the ex-post leg of the
+window in samples beside 'energy::tri', and raised the pedal to
+its exponent beside 'energy::pedal_power'. It is now 'tri' times
+'pedal_power'.
+** Retuning when the pitch moved
+'StringVoice::retune_if_moved' and 'ModalVoice::retune_if_moved'
+were one test each against 'RETUNE_RELATIVE_THRESHOLD'. Now
+'VoiceKind::retune_if_moved' alone.
+** The wind's ceiling below Nyquist
+'energy::HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE' (0.45) is
+gone; the Strouhal clamp uses
+'body::HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE', since the wind's
+bandpass is the body's resonator (slice 7 did the same for modal
+modes).
+** The output clamp
+'strings::renderer::OUTPUT_CLAMP' said "as the sawwave
+engine's", whose two clamps were literal 0.95s. Now
+'voices::OUTPUT_CLAMP' serves both renderers.
+** The two pedal-gain slews in 'step_voice_controls'
+The 'grid_gain' and 'global_pedal_gain' slews were the same six
+lines twice. Now 'voices::slew_gain_toward', with the same f32
+operations in the same order, so the sawwave output is unchanged
+(no fast-math; the sawwave tests pass).
+** The stream checks of a sink
+'validate_rig's cpal_sampler arm and 'validate_strings_sink'
+repeated the sample-rate, buffer and amplitude checks and
+messages. Now 'rig::validate_sink_stream'. The cpal_synth arm
+interleaves the same checks with its own keys and was left (in
+problems.org).
+** Test helpers
+Four tests' identical closures (fresh renderer, one struck note,
+render under a pedal) became 'render_one_struck_note'. The modal
+passivity test's copy of 'block_energies_after_the_excitation'
+became a call of 'block_energies_of_voices_after_the_excitation'
+(prebuilt voices and an after-block callback, which reads the
+silent voice's energy at 0.5 s); slice 7's report had named this
+one. Three copies of "means of successive chunks" became
+'means_of_chunks'. 'rms_around' calls 'rms_between'.
+** Nested definitions
+'loop_dsp::design_loop' (the period, and the delay left for the
+line and the tuning, each used once) and
+'energy::precharge_amplitude' (everything behind the sum) now
+nest their single-use definitions.
+** Looked for and not duplicated
+The pitch and T60 measurements in 'tests.rs' are one helper each
+('partial_frequency_near', 't60_from_rms_envelope'), shared by
+the loop and modal tests. Streaming a table into an input is
+already one type, 'voice::ExcitationStream', used by both voice
+kinds; the two pre-charge paths ('Loop::add_table',
+'ExcitationStream::add_into_dry_table') differ by necessity (a
+loop folds one delay line's worth into its line, a modal voice
+has no line). A search of 'buried/', 'sawwave/' and 'tools/' for
+rings, delay lines, biquads and one-pole filters found none that
+'loop_dsp.rs' or 'first_order.rs' duplicates (the decimator in
+'voices.rs' is an FIR), and no second LCG ('td1_bass' has its
+own xorshift, in a tool).
+
+* problems.org entries added
+The file did not exist; it now opens with a header saying what
+it holds.
+** Quasi-duplication left in the strings engine
+*** The two voice kinds repeat their shared state
+*** Three rings index by hand
+*** The body's resonator and a modal mode share only their poles
+*** Two milliseconds-to-samples helpers
+*** Three ceilings below Nyquist
+*** The pedal's power is computed twice per voice per sample
+*** The tests' modal render repeats the plain loop render
+*** The harness and the tests each build their own render loop
+** VoiceState construction and release
+*** Every 'VoiceState' constructor spells out all 27 fields
+*** The release ramp is written out eight times
+*** Possible bug: a release keeping a pending attack re-strikes
+'note_off' clears 'pending_attack'; 'sustain_note's release
+branch, 'cut_sustained' and 'end_drones_at' do not, so a voice
+ended inside a drag's 2 ms dip would sound again. Unverified.
+** Structural problems in the old code
+*** About twenty free functions in 'synth.rs' walk the voice map
+*** The cpal glue is copied four times
+*** 'VoiceState' copies everything for every engine
+*** One engine had to be threaded through five files
+With children: 'Settings' is flat; 'LiveParams' mirrors
+'Settings' by hand; loose arguments instead of a shared-state
+struct; the play grids' sink is found twice.
+*** 'validate_rig' checks a cpal_synth's stream by itself
+** Names in the strings engine that deserve a decision
+Ten headlines; the answers to question (a) below give each.
+** Open listening questions
+*** Sympathy is gentle at the default heaviness 3000
+*** The pre-charge sits about 18 dB under the strike
+*** A modal note drains half as fast through the bridge
+*** A modal note is brighter than a loop note
+*** The wind's pre-charge sits 26 cents under its partial
+*** A bowed chord runs near the clamp
+*** The bow's squeaks are measured only as the strongest partial
+*** The howl's level and its dead spot
+*** The body boosts the partials on its modes
+*** The DC blocker leaves the upper partials 1.4 cents flat
+*** Nothing has been listened to
+
+* Question (a): the terms this plan's code coined or reused
+** Terms used as the vocabulary defines them
+The sawwave engine, the strings engine ('strings/',
+'cpal_strings'), voice control state ('VoiceState', with
+'step_voice_controls' and 'VoiceStep' coined by slice 1 for its
+stepping), body ('BodyBank', 'BodyModes', 'body' table), knock
+('knock_table', 'knock_mix', 'knock_ms'), exciter ('exciter.rs',
+'ExciterParams', 'ExciterKind', the 'exciter' table; the tables
+it builds are "excitation", 'ExcitationStream', one meaning),
+energy window ('tri', 'ex_ante_energizing_ms',
+'ex_post_energizing_ms'), pre-charge ('precharge_amplitude',
+'precharge_waveshape', 'precharge_gain'), drive ('drive',
+'DriveState', 'drive_limit'), growth rate
+('growth_rate_per_second_max'), howl path ('HowlPath', 'howl'
+table), crossover ('crossover_hz'), energy kind ('EnergyKind':
+ebow, bow, wind), harness ('strings_harness'), bridge heaviness
+('bridge.heaviness'). Each is used with one meaning everywhere I
+read.
+** "String voice" drifted
+The vocabulary's string voice is the engine's per-voice state.
+In the code 'StringVoice' is the loops kind only; slice 7 added
+'ModalVoice' and 'VoiceKind' and kept the renderer's map name
+'string_voices' (and local 'string_voice' variables) for
+'VoiceKind's. 'StringsRenderer::string_voice(id)' returns only a
+loops voice, 'voice_kind(id)' either. Not renamed (no renames).
+** "Loop" collides with an existing word
+The vocabulary coins 'Loop' for a delay-line loop. The codebase
+already says "loop" for a recorded musical loop: compact loops,
+'VoiceSource::SurfaceLoop', 'end_loop_voices', the looper,
+'TimbreTarget::Loop'. The strings tests' "a loop voice" (a voice
+of loops) means, in 'synth.rs', a voice that a compact loop
+plays. The plan did not mark the coinage against the old word.
+** "Junction" and "bridge" are two words for one thing
+The type is 'Junction'; the rig table is 'bridge',
+'bridge_velocity' its output, 'damping_hz' its lowpass. The plan
+defines the junction as "the shared bridge", so this is the
+plan's own pair, not drift; Jeff meets "bridge" in the rig and
+"junction" in the code.
+** "Member" and "arriving wave" are coined and consistent
+"Junction member" (a loop, or one modal voice) is not in the
+vocabulary; it entered with slice 7 ('member_count') and has one
+meaning. "Arriving wave" ('read_arriving',
+'push_arriving_waves') is the vocabulary's "wave arriving at the
+bridge", one meaning; for a modal voice it is the bank's output.
+** "Energy" has three meanings
+The energy pedal's ('EnergyParams', 'energy_factor', the 'energy'
+table), a loop's stored energy ('Loop::energy',
+'VoiceKind::energy': a sum of squares), and 'pick_energy', which
+is a peak amplitude (the discussion's word, kept). "Drive" is
+always the per-sample signal; "energy" never names the drive, so
+the plan's "drive" versus "energy" holds.
+** "Kind" names four enums
+'ExciterKind' and 'EnergyKind' are rig choices ('kind' keys).
+'VoiceKind' is not a rig key: the crossover picks it. The sink's
+'kind' (serde tag, 'SinkRig::kind_name') is the old meaning. The
+four do not clash in use, but "voice kind" reads like a setting.
+** 'StringsParams' and 'StringParams' differ by one letter
+All parameters, against the 'string' table's.
+** "Power" is the pedal's exponent
+'energy::pedal_power' is 'pedal ^ pedal_energy_exponent'; the
+tests say "heard power" for a mean square.
+** "Dry" names two things
+'exciter::dry_table' (a note's own table, against the knock) and
+the body's dry sum (against its wet bank).
+** 'wind_speed_hz_max' is a frequency
+The Strouhal frequency at full pedal, in Hz, named for the wind
+speed it stands for.
+** 'struck_voice_state' serves a pluck too
+"Struck" is also 'ExciterKind::Strike'.
+** 'bow_slipperiness' replaced a misleading word
+Renamed in this slice; "force" survives only in prose about the
+player's bow force, which is the physical quantity.
+** Synonyms noticed in the old code
+"Drone" and "sustained voice" ('SurfaceDrone', 'sustain_key',
+'end_drones_at', 'cut_sustained') name one thing in
+'synth.rs'.
+
+* Question (b): citations of 'TODO/' in this plan's code
+** What was searched
+Every line this plan added to a '.rs' file, the two new rig
+files, 'rigs/README.org', 'README_USER.org' and
+'ORIENTATION.org' ('git diff 4690d83'), for 'TODO/', '02_plan',
+'01_discussion', '03_review', 'plan 02', 'slice N', "the plan",
+"plan's", "discussion", "resonance". Also the strings code for
+'lit_', "Fix N", "reviewer", "orchestrat", "Jeff".
+** Fixed: 'strings/tests.rs'
+The pre-charge test said "the closed form of the plan's sum"; it
+now says "of the pre-charge sum (see 'energy.rs')", whose module
+comment states the sum, and the test's comment already states
+the closed form.
+** Fixed: 'surfaces_runtime/reload.rs'
+The 'Live' doc, rewrapped by slice 4, ended "See TODO/misc.org
+"rig reload"", a file that has moved to 'TODO/DONE/'. The comment
+already listed what reloads; it now also says what needs a
+restart, and the citation is gone.
+** Left: the design links in docs
+'ORIENTATION.org' names 'TODO/resonance/'; the rig and its readme
+link '02_plan.org' and '01_discussion.org'. Rig files and readmes
+may link design docs, as the other rigs do. The rig's "the 'pick
+energy' of the discussion" credits the word's origin and was
+left.
+** Not this plan's
+The old citations in 'rig.rs', 'settings.rs', 'mod.rs',
+'synth.rs', 'pedal_volume.rs', 'sawwave/' and 'lib.rs' predate
+plan 02; this slice did not touch them.
+
+* Harness peaks
+'cargo run -p tools --bin strings_harness -- --rig
+energy-pedal_monome'. Every file was read back: all samples
+finite.
+** single_notes 0.2774
+** chord 0.3969
+** restrike 0.3969
+** pedal_swell 0.6689
+** pedal_swell_bow 0.4346
+** pedal_swell_wind 0.2958
+** sympathy 0.3065
+** howl 0.7696
+** treble 0.0726
+All equal slice 8's to four places: the refactors moved no
+audible number.
+
+* The warm build
+'README_USER.org' runs 'pw-jack cargo run --bin midi_pulse --
+energy-pedal_monome', the dev profile, so 'cargo build
+--workspace' was run last (no source changed after it); the
+first run will not compile.
+
+* Deviations from the plan's "how"
+** One refactor reached 'rig.rs' and 'sawwave/voices.rs'
+'validate_sink_stream' and 'OUTPUT_CLAMP' / 'slew_gain_toward'
+are outside 'strings/', but both files are this plan's and the
+duplication was the plan's own (the strings sink's checks copied
+the sampler's; the strings clamp copied the sawwave's).
+** One public constant removed
+'energy::HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE' was deleted in
+favor of the body's, not renamed; nothing else referred to it.
+** The bit-identity of the sawwave render was argued, not diffed
+Slice 1 diffed buffers. The slew helper performs the identical
+f32 operations and the clamp constant has the same value, so I
+relied on that and the sawwave tests rather than repeating the
+diff.
+** The voice-state refactor was recorded, not done
+The largest quasi-duplication (the two voice kinds' shared state
+and 'VoiceKind's forwarding) would coin a type name and touch
+every test that builds a voice; problems.org describes it.
+** Names were reported, not changed
+The task allowed only the 'bow_slipperiness' rename.
+
+* Left unfinished
+Nothing the slice asked for. The entries in 'TODO/problems.org'
+are the work deliberately not done.
+
+* The headline is DONE
+'** DONE Slice 9:' in '02_plan.org', in commit f232680.

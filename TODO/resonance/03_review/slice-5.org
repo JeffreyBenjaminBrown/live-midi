@@ -1,0 +1,154 @@
+#+title: Slice 5 report: the energy pedal
+
+* Commits
+** 3b306e9 the string_energy pedal pre-charges and drives
+'rig.rs': 'PedalRole::StringEnergy', 'SinkRig::kind_name',
+'validate_string_energy_pedal' (called from
+'validate_expression_pedals'), the toggle rejection in
+'validate_pedal_toggles', five tests. 'settings.rs':
+'PedalTarget::StringEnergy'. 'pedal_volume.rs': the arm that
+stores 'p.norm' (no taper) into the shared atomic. 'mod.rs': the
+atomic, NaN at start, handed to the pedal thread and to
+'audio::start'. 'audio.rs': reads it each callback into
+'render_block'. New 'strings/energy.rs': the history ring, 'tri',
+the pre-charge sum, the waveshape, the ebow drive. 'voice.rs':
+the voice keeps its birth's 'EnergyParams', takes an energy
+factor per sample, 'drive_into_loop' calls 'energy::drive', a
+'precharge' method fills the loops. 'renderer.rs': records the
+pedal each block before the births, pre-charges at birth, hands
+the energy factor per sample. Four strings tests, two reload
+tests. The harness got only the extra NaN argument here.
+** e14951a the harness scripts the pedal; pedal_swell
+'--pedal TRACE' and the 'pedal_swell' scene.
+** 92d1bbe docs of the role; the harness's --help
+'rigs/README.org' "Expression pedals" gains "The energy pedal"
+and the wiring map names the role. The harness gains '--help'.
+The slice headline marked DONE.
+
+* Suites run
+** cargo test -p edo_surface: 733 passed, 0 failed
+722 before, plus eleven: four in 'strings/tests.rs', five in
+'rig.rs', two in 'reload.rs'. No failures.
+** cargo test --workspace: 965 passed, 0 failed
+954 before, plus the same eleven. No failures.
+** Warnings
+Only the three known dead-code ones ('Settings.size',
+'EditState::is_editing' and friends, 'SurfaceSink::new').
+
+* Measurements
+** Pre-charge against the closed form
+Full pedal over a 300 ms ex-ante leg, 220 Hz, default
+'precharge_gain' 0.5: measured 0.065308, closed form 0.065058,
+0.38 percent high, the same at 48 kHz and 44.1 kHz. The excess is
+the plain sum's endpoint at birth (weight 1, half a step more
+than the trapezoid gives).
+** No history
+An empty history, a history of NaN and a heel pedal all give 0.
+** Growth and decay (body off, 1 s ex-post leg)
+Struck at a tenth of 'drive_limit' (see the deviation below):
+| pedal | RMS at 0.1 s | RMS at 0.9 s |
+| full  |       0.0054 |       0.0200 |
+| heel  |       0.0023 |       0.0002 |
+The heel render equals the no-pedal render exactly.
+** The window gate (0.5 s ex-post leg, full pedal kept)
+Voice energy 0.411 at 0.05 s, 3.326 at the window's end, 0.0258
+1.5 s later; its 50 ms means never rise after the window.
+** The limiter caps a default strike's bloom
+Default strike (pick 0.5 over two loops) with the default
+'drive_limit' 0.4, full pedal, 1 s leg, output RMS:
+| drive_limit | 0.1 s  | 0.3 s  | 0.9 s  |
+| 0.4         | 0.0609 | 0.1051 | 0.0560 |
+| 100         | 0.0675 | 0.1722 | 0.2981 |
+Each loop starts at about the limit, so the tanh flattens the
+growth within 0.3 s (about +5 dB), and the level it then
+sustains scales with 'k', which falls with the triangle. Under
+saturation the two unison loops also drift out of phase faster
+than their 1.2 cent detune explains (output power over loop
+energy fell from 1.24 to 0.21 by 0.8 s; with detune 0 it rose),
+so the radiated level falls while the strings hold energy. In
+the linear regime ('drive_limit' 100) partials 1 to 5 grow
+together as designed. This is a listening decision for slice 6
+(a larger 'drive_limit', or 'A' rising with the pedal as the
+discussion's reviewers suggested); I changed no default.
+
+* Harness renders
+** Slice 4's fixture, '--rig-file', 44.1 kHz pluck
+The fixture is 'strings-fixture.toml' in the session scratchpad
+(slice 4's). 'pedal_swell' peak 0.4586. With '--pedal 0:0' and
+with '--pedal none' the peak is 0.1301 and the two WAVs are
+byte-identical ('cmp'), so a heel pedal decays as without one.
+RMS (20 ms), swell against none:
+| time  | swell  | none   |
+| 1.05  | 0.0747 | 0.0392 |
+| 1.30  | 0.2252 | 0.0225 |
+| 1.50  | 0.2453 | 0.0132 |
+| 2.00  | 0.0811 | 0.0039 |
+After the window (1.6 s) both fall at the same rate, about 21 dB
+a second. The four pedal-less scenes have slice 4's peaks
+exactly (0.2026, 0.4408, 0.4408, 0.3101).
+** Without a rig
+'pedal_swell' peak 0.4212.
+
+* Deviations from the plan's "how", with reasons
+** The pedal moves the rate from the string's own decay
+The plan writes 'rate = growth_rate_per_second_max * tri *
+pedal^e' and 'k = max(0, exp(rate / f0) - g)'. With 'rate'
+never negative, 'exp(rate / f0) >= 1 > g', so 'k' is at least
+'1 - g' anywhere in the window: a heel pedal would hold a note
+at constant level, which contradicts "the pedal at 0 decays as
+without the pedal" and makes the 'max(0, ...)' and "below the
+natural loss 'k' is 0" vacuous. Both only make sense if 'rate'
+can reach the natural decay rate 'lambda = -f0 ln g'. So 'rate
+= growth_max * f - lambda * (1 - f)', 'f' the energy factor: 'k'
+is exactly 0 at a heel pedal, a light pedal lengthens the
+sustain, and a full pedal at the window's peak grows every
+register at 'growth_rate_per_second_max'. 'k' keeps the plan's
+formula. 'energy.rs' states this in its module comment, with
+the note that the drive is added after the loss, so the loop's
+gain is 'g (1 + k)', not 'g + k' (a second-order difference).
+** The history is a fixed 1 ms grid
+Each grid point holds the position of the block that contains
+it, so the pre-charge's step ('dt' = 1 ms) and cost do not
+depend on the callback length. 10002 slots. The pre-charge
+walks back from birth multiplying the decay by one constant per
+step instead of an 'exp' per point.
+** The pre-charge fills the delay line, not a whole period
+'Loop::add_table' wraps a table longer than the delay line onto
+itself, and the line is a few samples shorter than a period
+(the filters hold the rest). The waveshape is therefore the
+delay line's length of the shape, starting at phase 0, its peak
+normalized to 'A0 / unison_count' over those samples. The
+missing few samples are trimmed by the loss filter at once.
+** A string voice keeps its birth's energy parameters
+So a reload changes the window and drive of notes born after it
+only, as "Hot reload" says, without any per-voice bookkeeping in
+the renderer.
+** A monome on the role is rejected, not ignored
+Per the brief's preference; the message says the pedal is
+rig-wide. Every taper knob is rejected by name.
+** The pedal thread writes NaN when no pedal holds the role
+So a reload that removes or rebinds the energy pedal never
+leaves the engine driving from a stale position.
+** The growth and window tests strike at a tenth of the limit
+'pick_energy = drive_limit / 10', computed from the params. At
+the default strike the limiter, not the drive, decides the
+shape (see the measurement above), and the test is about the
+drive. The window test averages energy over 50 ms: block by
+block the delay line's sum of squares of a peaky wave wobbles a
+percent or two, being a few samples short of a period.
+** Bow and wind
+Their drive and pre-charge waveshape fall back to the ebow's,
+with a comment naming slice 8, as the brief allowed.
+** The harness's '--pedal' replaces every rendered scene's pedal
+'none' or 'SECONDS:POSITION' points joined linearly, ends held.
+Scenes without a pedal pass NaN.
+
+* What was left unfinished
+Nothing of slice 5. Not tested: the pedal thread itself (it
+needs MIDI hardware; the arm is four lines and follows the
+'pedal_slide_frac' path) and the audio callback (untestable
+cpal glue). A renderer-level check of the pre-charge fill's peak
+was not written; the sum is tested directly and the harness
+shows its effect (RMS 0.0747 against 0.0392 at 1.05 s).
+
+* Headline: DONE

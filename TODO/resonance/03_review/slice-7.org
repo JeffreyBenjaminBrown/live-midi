@@ -1,0 +1,176 @@
+#+title: Slice 7 report: the howl path and the modal crossover
+
+* Commits
+** 956cc23 the howl path and the modal voice above the crossover
+'strings/howl.rs' (new), 'strings/modal.rs' (new), 'voice.rs'
+('VoiceKind', 'ExcitationStream'), 'renderer.rs', 'params.rs',
+'mod.rs', 'tests.rs'.
+** 55121cf the harness's howl and treble scenes and --howl
+** 3572578 the howl and modal tables in the rig, the readme
+The rig's two tables, the readme's section and its hot-reload
+and harness lines, the two lines of 'rigs/README.org', and the
+plan's headline marked DONE.
+
+* Suites
+** cargo test -p edo_surface: 743 passed, 0 failed
+736 before the slice, plus 7 new tests.
+** cargo test --workspace: 975 passed, 0 failed
+968 before the slice, plus the same 7. 'loads_default_rigs'
+passes with the edited rig.
+** No failures to classify
+The build shows only the pre-existing dead-code warnings
+('edit.rs', 'settings.rs' 'size', 'synth.rs' 'new',
+'pedal_slide.rs').
+
+* The new tests
+** the_howl_path_sustains_a_struck_note_and_stays_bounded
+** a_howl_gain_of_zero_is_the_junction_alone
+** the_renderer_adopts_a_changed_howl_at_the_next_block
+** a_note_above_the_crossover_is_modal_in_tune_and_decays_...
+Its full name ends 'with_the_curve'.
+** a_modal_voice_starts_at_a_loop_voice_s_level
+** modal_voices_in_the_junction_stay_passive_and_ring_in_...
+Its full name ends 'sympathy'.
+** the_renderer_adopts_changed_modal_params
+The validation test also gained 'howl.level', 'howl.gain',
+'modal.mode_count' and 'modal.crossover_hz' cases.
+
+* Measurements behind the thresholds
+** Howl growth
+At 'howl.gain' 20 and 'level' 0.003, a struck 220 Hz note holds
+an energy of 17.22 at 1 s and 24.91 at 3 s. Its peak over 10 s
+is 0.504 and its RMS at 9.9 s is 0.363. Without the howl it
+holds 0.156 and then 0.0001. In the reload test (the howl on at
+0.5 s, off at 3 s) the energy is 10.14 at 1 s, 28.20 at 3 s and
+0.035 at 5 s.
+** The howl's threshold
+A lone 220 Hz note at the defaults sustains between gain 1.5 and
+1.8; the rig's formula predicts 1.65. At 880 Hz the 5 ms delay
+puts the fundamental out of phase, and it sustains between 2.2
+and 3, on another partial.
+** Why the default level is 0.003
+At gain 20 and 10 s, notes at 55, 220, 880, 1760 and 3000 Hz:
+*** level 0.3
+Every register is pinned at the clamp (peak 0.95).
+*** level 0.03
+Most notes are at the clamp.
+*** level 0.01
+RMS from 0.09 to 0.83; 220 Hz peaks at the clamp.
+*** level 0.003
+RMS from 0.15 to 0.36, peaks from 0.21 to 0.50, except 880 Hz
+(RMS 0.027, the delay's dead spot).
+** Gain 0 is the junction alone
+A one-time check: the harness's five scenes, rendered on the rig
+and with the defaults before the slice's code, are
+byte-identical to the renders after it (10 WAVs), and again after
+the harness change. The test asserts the same sample for sample
+across levels and delays at gain 0.
+** Modal pitch and T60
+At 3000 Hz the measured pitch is 3000.083 Hz (+0.048 cents).
+Alone, filled with one period of its fundamental, it falls 60 dB
+in 1.1202 s against a curve value of 1.1202 s (+0.001 percent);
+at 2500 Hz, 1.2377 s against 1.2378 s. Every mode's pole radius
+gives its curve T60 within 1e-3.
+** The level normalization
+No measured factor: each mode's gain is 'beta = 2 f0 /
+sample_rate', the Fourier coefficient of a loop's period-'P'
+impulse train. So the bank is the loop's own response, partial
+for partial, and the junction, the drive and the howl see a
+modal voice exactly as they see a loop. The 'modal.rs' header
+derives it. Measured, over the first 30 ms the modal fundamental
+is 1.029, 1.034 and 1.041 times the loop voice's at 2500, 3000
+and 3500 Hz. With a near-rigid bridge (r = 1e7) the ratios are
+1.005 to 1.009, and with one unison 1.001 to 1.002. What remains
+at r = 3000 is the bridge: see "Deviations".
+** Brightness against loops
+Over the first 0.2 s a modal note's total RMS is 1.42 to 1.71
+times a loop voice's at the same pitch (peaks 1.03 to 1.24
+times). The spec clamps the upper modes' decay at 'T60 * ratio'
+above 'high_frequency_hz', while a loop's one-pole loss keeps
+darkening there. I measured the alternative, extending the
+log-linear line past the reference: 0.65 to 1.0 times, with the
+second partial gone at 3500 Hz. That is too dark, so I kept the
+clamp.
+** Passivity with modal members
+Three struck loop voices (750, 1000, 1500 Hz), two struck modal
+voices (2250, 3000 Hz) and a silent one at 3000 Hz share one
+bridge. The largest rise of the quarter-second mean energy is 0
+at r = 1, 50 and 500. The silent modal voice holds 3.5e-5 to
+6.2e-5 at 0.5 s (sympathy). The header of 'modal.rs' bounds 'Re
+G > -0.45' for a modal member, which makes it a passive loop in
+the junction's sense.
+
+* Harness peaks on the rig
+** single_notes 0.2774
+** chord 0.3969
+** restrike 0.3969
+** pedal_swell 0.6689
+** sympathy 0.3065
+** howl 0.7696
+The chord's RMS grows from 0.145 to 0.55 by 2 s, holds to the
+release at 5 s, and is silent by 5.4 s.
+** treble 0.0726
+The notes peak at 0.070 (1500 Hz, loops), 0.068 (2500 Hz,
+modal) and 0.073 (3500 Hz, modal), with RMS at 50 ms of 0.0105,
+0.0118 and 0.0109: no level step at the crossover.
+** chord with --howl 5: 0.7660
+
+* Deviations from the plan's how
+** The howl path lives in its own file
+'strings/howl.rs' holds 'HowlPath'; the renderer wires it into
+'couple_through_junction', which gained a 'howl' argument. Its
+ring is sized once, at construction, for 20 ms, so a reload
+never re-sizes it. Turning the path on clears the ring.
+** The default howl.level is 0.003, not 0.3
+0.3 pins every note at the clamp at gain 20 (above). The
+validation of 'howl.level' is now [0, 1], as the plan says.
+** Mode 1 sits at f0
+The literal 'k f0 sqrt(1 + B k^2)' puts mode 1 7.8 cents sharp
+at 3000 Hz and would fail the 2-cent test. The modes are
+'k f0 sqrt((1 + B k^2) / (1 + B))', so the fundamental is at
+'f0', as a loop's tuning puts it.
+** Where the modal voice and the voice enum live
+'ModalVoice' is in 'strings/modal.rs', 'VoiceKind' in
+'voice.rs'. The two voices' shared excitation read-out became
+'voice::ExcitationStream'. 'StringsRenderer::string_voice'
+returns only a voice of loops, as before; the new
+'voice_kind(id)' inspects either kind.
+** The modal pre-charge streams through the input
+One period of the waveshape is added into the dry table at
+birth, where a loop adds it into its delay line.
+** The harness has both a scene gain and --howl
+The 'howl' scene sets gain 20; '--howl GAIN' overrides every
+scene, as '--pedal' does.
+** One junction member drains half as fast as two unisons
+A modal note is one member, but a two-unison loop note is two
+members moving together, so a modal note loses half as much to
+the bridge. Derived at 2000 Hz and r = 3000: a T60 of about 1.1 s
+against 0.9 s for loops. The rig's modal math says so. A fix
+that needs no decision would count a modal voice as
+'unison_count' members, each carrying '1 / n' of its output; I
+left it, because the plan says the modal voice is one member.
+
+* Quasi-duplication
+** The passivity tests
+The new modal passivity test repeats the shape of
+'the_junction_never_raises_the_stored_energy' (block energies,
+quarter-second means), because 'block_energies_after_the_
+excitation' builds loop voices only. One helper that takes
+prebuilt voices could serve both.
+** Removed
+The 0.45 Nyquist fraction is the body's
+'HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE', reused. The harness's
+single_notes and treble scenes share 'successive_notes'.
+
+* Names worth a look
+The renderer's field 'string_voices' now holds 'VoiceKind's,
+modal ones included; I kept the name (no renames). The plan's
+vocabulary uses "string voice" for the loops kind only.
+
+* Left unfinished
+Nothing in slice 7. Slice 8 (bow and wind) is untouched; the
+energy table's bow and wind keys are still undocumented in the
+rig, as slice 6 left them.
+
+* The headline is DONE
+'** DONE Slice 7' in '02_plan.org', in commit 3572578.

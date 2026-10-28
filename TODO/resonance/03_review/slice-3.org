@@ -1,0 +1,154 @@
+#+title: Slice 3 report: junction, body, renderer, harness
+
+* Commits
+** e6460d5 plan 02, slice 3: the junction, the body bank, ...
+New in 'edo_surface/src/strings/': 'junction.rs', 'voice.rs',
+'renderer.rs', 'scripted_voices.rs'. Changed: 'body.rs' (the
+runtime 'BodyBank'), 'exciter.rs' (split into 'dry_table' and
+'knock_table'), 'mod.rs' (the list; 'StringsParams' and
+'StringsRenderer' re-exported), 'tests.rs'. New bin
+'tools/strings/strings_harness.rs', listed in 'tools/Cargo.toml'
+with 'hound = "3"'. The slice headline marked DONE.
+
+* Suites run
+** cargo test -p edo_surface: 713 passed, 0 failed
+705 before plus 8 new 'strings::tests'. No failures.
+** cargo test --workspace: 944 passed, 0 failed, 14 suites
+No failures.
+** Warnings
+The test build shows the two known dead-code warnings
+('set_flip_policy', 'Settings.size'). The non-test lib build
+('cargo check --workspace') shows three, in files this slice did
+not touch: 'Settings.size', 'EditState::is_editing' and friends,
+'SurfaceSink::new'. They predate this slice.
+
+* Harness renders (defaults, 48 kHz, amplitude 0.15)
+** target/strings-harness/single_notes.wav: peak 0.2128
+** target/strings-harness/chord.wav: peak 0.2785
+** target/strings-harness/restrike.wav: peak 0.2785
+** target/strings-harness/sympathy.wav: peak 0.2252
+All under '/home/ubuntu/host/worktrees/main/'. All finite and
+below the clamp. Debug build, 30.5 s of audio in 1.8 s.
+** Suspicious: the default bridge drains notes ten times too fast
+With 'bridge.heaviness' 50, each note dies far faster than the
+T60 curve says. Single voices, body off, -40 dB reached at:
+| f0 Hz | T60 curve s | r = 50 | r = 500 | r = 5000 | r = 50000 |
+|   110 |        6.84 |   0.43 |    3.05 |     3.92 |      4.09 |
+|   220 |        4.68 |   0.23 |    1.79 |     2.37 |      2.48 |
+|   440 |        3.20 |   0.12 |    0.98 |     1.32 |      1.39 |
+|   880 |        2.19 |   0.07 |    0.45 |     0.63 |      0.68 |
+|  1760 |        1.50 |   0.04 |    0.16 |     0.32 |      0.36 |
+(-40 dB is two thirds of a T60; at r = 50000 the times match the
+curve's two thirds within the strike's faster-dying highs.) This
+is the junction as specified, not a bug: the in-phase mode of a
+voice's loops loses the factor '(r - N) / (r + N)' per round trip
+(the discussion's eigenvalue), 0.923 for two unisons at r = 50,
+which is 38 dB per second at 55 Hz and grows with f0. The loss
+filter alone meets the curve (slice 2's test). The harness's
+envelopes show it: the 110 Hz note of 'single_notes' falls about
+40 dB in its first half second. A choice for the orchestrator or
+Jeff: a default heaviness in the thousands, or a loss filter that
+compensates a lone voice's bridge loss. I changed neither.
+** Otherwise the envelopes look right
+After each damper the output is gone within the release plus the
+body's ring (about 0.25 s, from -70 dB to below -120 dB). In
+'restrike' the re-struck fifth rises at 2 s to -32 dB RMS. In
+'sympathy' the 110 Hz strike at 3 s lands at -30 dB RMS over four
+voices already at -91 dB.
+** The body's norm is 0.0696
+'wet / norm' is then fourteen times the raw bank, so a partial on
+a body mode is strongly boosted; a voice with mix 0.5 peaks about
+2.4 times higher than with mix 0. This follows from the plan's
+white-noise normalization; it is not wrong numerically.
+
+* Measured numbers behind each threshold
+** Junction stability, without dispersion: no rise at all
+32 loops (16 two-unison voices: 110 twice, 220 twice, 165, 330,
+440, 55, 82.5, 247.5, 660, 880, 123.75, 371.25, 1320, 2640 Hz),
+default strike, 3 s, 128-sample blocks after both tables end.
+Largest block-to-block rise exactly 0 for r = 1, 50 and 500.
+Energy from 83.8, 66.2, 81.2 to 0.27, 0.27, 0.31.
+** Junction stability, with dispersion: the plan's measure fails
+With the default 4 dispersion sections the block-to-block rise is
+up to +11.8 percent (r = 1), +9.1 (r = 50), +11.1 (r = 500). A
+lone loop with no junction shows it worse: +43 to +111 percent
+between 55 and 1320 Hz. The allpass chain holds about 15 samples
+of the wave per section in its states at a low note, which the
+delay lines' sum of squares does not count; a strike's pulses dip
+out of the measure and back. So the test asserts block-to-block
+non-increase with dispersion off, and with dispersion on that the
+mean over successive quarter seconds never rises (measured: it
+never does).
+** Sympathy: the 1e-6 bound at r = 5000 is unreachable
+Struck 220 Hz voice and a silent 220 Hz voice (empty tables),
+0.5 s. At r = 20: struck 0.258, silent 0.240. At r = 5000:
+struck 0.877, silent 4.58e-3. Identical pitches resonate exactly,
+so a heavy bridge still hands the silent string about '2 / (N +
+r)' of the struck amplitude each round trip, coherently; below
+1e-6 would need r near 3.4e5. The test asserts: at r = 20 the
+silent energy is above 1e-6 and above a tenth of the struck
+one's; at r = 5000 it is below a fiftieth of the struck one's
+(measured 0.0052) and below a tenth of the r = 20 silent
+energy (measured 0.019).
+** Body normalization
+White noise of another seed, 2 s after 0.3 s settling, mix 1:
+RMS out over in 1.0185 (asserted within 5 percent). Mix 0 is
+asserted bit-exact dry.
+** Renderer
+Three voices (110, 220, 330 Hz) 2 s: peak 0.1722, finite.
+Release (body off): peak 0.0725 while held; after release plus
+50 ms, exactly 0 (the envelope reaches 0, the voice leaves the
+map and the engine). Knock energy equals
+'(knock_mix * pick_energy)^2' within 1e-4 relative.
+
+* Deviations from the plan's "how", with reasons
+** A reaped id is not respawned while it stays in the map
+The brief said to respawn a reaped id, silent, the next block.
+That brings its delay lines back a block later and reaps them a
+second after: a hundred silent drones would again cost a hundred
+delay lines, which reaping exists to prevent. The renderer keeps
+the reaped ids (pruned when they leave the map) and does not
+respawn them. A re-strike makes a new id, which spawns struck. If
+the intent was to keep silent drones as sympathetic junction
+members, reaping and that intent conflict; say which wins.
+** The stability and sympathy tests, as measured above
+** The re-strike scene cuts the drone as the runtime does
+The brief said to remove the finger key and insert a new voice
+at 2 s. The scene instead sustains the chord at 0.5 s (finger key
+to drone key, same id), and at 2 s moves the fifth's drone to a
+retired key releasing (as 'SurfaceSink::cut_sustained') and
+strikes a new voice, sustained again at 2.5 s. Removing the old
+voice outright would cut its string mid-ring, a click the runtime
+never makes.
+** The sympathy scene's loud note is a fresh strike
+There is no per-note excitation level (velocity is out of scope),
+so 'quiet' means struck at 0 s and decayed by 3 s, when the 110
+Hz note is struck.
+** A changed unison count applies to notes born afterward
+A sounding voice keeps its loop count; its detunes and
+coefficients are retuned on a parameter change.
+** A changed sample rate restarts the engine
+'render_block' given another sample rate rebuilds the renderer;
+every voice in the map is then struck again. The runtime never
+changes it.
+** The body bank's resonators restart from rest on a body change
+** 'StringsRenderer.slide_slew_secs' mirrors 'BlockRenderer'
+A public field, default 'SLIDE_SLEW_SECS', for slice 4 to set
+from the rig.
+** The scripted-voice helper is 'strings::scripted_voices'
+'struck_voice_state(id, freq, sample_rate)' and
+'release_voice_state(voice, sample_rate)', shared by the tests
+and the harness.
+** The per-sample junction pass is one public function
+'renderer::couple_through_junction' runs the read, junction and
+write-back over a 'BTreeMap' of string voices; the tests' direct
+loop-and-junction harness calls the same function. String voices
+live in a 'BTreeMap' by id so the junction sums in the same order
+on every run.
+
+* What was left unfinished
+Nothing of this slice. The drive seam ('voice::drive_into_loop',
+returning 0) and the birth time ('StringVoice::birth') wait for
+slice 5. The reaper's "no window open" is always true until then.
+
+* Headline: DONE

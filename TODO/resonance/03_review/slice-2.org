@@ -1,0 +1,119 @@
+#+title: Slice 2 report: one loop, the exciter, the curves
+
+* Commits
+** fcbac8d plan 02, slice 2: one loop, exciter, T60 and B curves
+New module 'edo_surface/src/strings/' (old-style 'mod.rs'):
+'params.rs', 'loop_dsp.rs', 'first_order.rs', 'body.rs',
+'exciter.rs', 'noise.rs', 'tests.rs'; 'pub mod strings' in
+'lib.rs'; the slice headline marked DONE in '02_plan.org'.
+
+* Suites run
+** cargo test -p edo_surface: 705 passed, 0 failed
+695 before plus the 10 new 'strings::tests'. No failures to
+classify. The two dead-code warnings ('set_flip_policy',
+'Settings.size') predate this slice.
+** cargo check --workspace: clean
+'buried' and 'tools' still build.
+
+* Measured pitch errors (plucked loop, defaults, 48 kHz)
+** 55 Hz: +0.0001 cents (dispersion on, 4 sections)
+** 440 Hz: -0.0001 cents (dispersion on)
+** 1760 Hz: -0.0003 cents (dispersion on)
+** 3000 Hz: -0.0004 cents (dispersion skipped: B below threshold)
+** 3960 Hz: -0.0003 cents (added: just below the loss reference)
+** A throwaway sweep, 27.5 to 4200 Hz: worst 0.005 cents
+Measured as the Hann-windowed DTFT peak of the fundamental
+(coarse scan, then golden-section), on 0.2 to 1.2 s.
+
+* Measured T60 errors (defaults, 48 kHz)
+** 110 Hz: expected 6.843 s, measured 6.846 s, +0.05 percent
+** 880 Hz: expected 2.192 s, measured 2.163 s, -1.35 percent
+Slope of the 10 ms RMS envelope, least squares, -10 to -40 dB.
+The loop is filled with one period of a sine at f0, so the
+measurement is the fundamental's decay, which is what 'T60(f0)'
+names; a pluck's brighter partials decay faster and would bias
+the envelope.
+
+* Deviations from the plan's "how", with reasons
+** The DC blocker's pole follows f0, and it is normalized
+The plan's 'y = x - x1 + 0.995 y1' cuts off near 38 Hz at 48
+kHz. Inside a loop it removes 18 percent of the amplitude per
+round trip at 55 Hz and 5 percent at 110 Hz (designed loss: 1.2
+and 0.9 percent), so no T60 test could pass and no loss design
+can compensate (it would need gain above 1 at the second
+partial). It also gains 2/1.995 at Nyquist, which a loop with a
+flat loss filter amplifies forever. Now 'y = k (x - x1) + R y1',
+'k = (1 + R) / 2', cutoff 'f0 / 200'
+('DC_BLOCKER_CUTOFF_BELOW_F0'). Its loss and phase lead at f0
+are folded into the loss design and the tuning. The cost: the
+upper partials sit about 1.4 cents flat of exact harmonics (the
+lead shrinks with frequency). 50 gave 5.5 cents; 500 would give
+0.55 but leaves in-loop DC longer. Jeff may want to pick.
+** The tuning allpass is exact at f0, not plain Thiran
+'a = sin((1 - d) w / 2) / sin((1 + d) w / 2)' has phase delay
+exactly 'd' at 'w0'; it tends to '(1 - d) / (1 + d)' at low
+pitch. Plain Thiran is off by up to 2.4 cents at 3000 Hz (period
+16 samples), past the 2-cent test. Near Nyquist, where no
+stable first-order allpass has the asked delay, it falls back to
+Thiran ('LARGEST_EXACT_ALLPASS_COEFFICIENT' 0.5); found by a
+sweep that blew up at 20 kHz.
+** The loss meets g at f0, not at DC
+The plan's 'g (1 + a) / (1 + a z^-1)' has DC gain g. Its gain at
+f0 is lower, which at 880 Hz made the decay about 11 percent too
+fast. The design solves for the loop's gain (loss times DC
+blocker) to be 'g' at f0 and 'g_hf' at the reference, the same
+closed-form quadratic with 'cos w0' in place of 1.
+** The loss pole is limited for passivity
+Just below 'high_frequency_hz' the request is a steep drop
+between two near frequencies; one pole then needs a DC gain above
+1. The pole is kept no darker than the one at which DC gain
+reaches 0.999999, so the loop keeps its T60 at f0 and gives up
+the high-frequency loss. Before this a 3949 Hz note was 8 cents
+off and nearly silent. When the discriminant is negative the
+pole is -0.99 (then limited the same way), not 0, so the filter
+does not jump from darkest to flat.
+** "Log-linear in log2(f0)" read as log-log
+The log of T60 (and of B) is linear in log2(f0): a power law
+through the anchors. Linear T60 in log2(f0) goes negative a few
+octaves above 1760 Hz. B must therefore be positive (validated
+in (0, 0.1]).
+** The dispersion chain is dropped when it would not fit
+If its delay would leave the tuning allpass under its minimum,
+the loop skips it and stays in tune.
+** Two more files: 'first_order.rs', 'noise.rs'
+The first-order filter (coefficients, state, magnitude, phase
+delay, the allpass and one-pole lowpass designs) is shared by the
+loop and the exciter, and the junction's lowpass will use it.
+'noise.rs' is the LCG the body jitter and the pluck share.
+** 'add_table' folds a long table into the loop
+The table (one period plus a 60 ms knock) is longer than the
+delay line; it wraps and adds onto itself, which equals streaming
+for a lossless loop. Slice 3's junction writes 'excitation_i' per
+sample and may stream instead. Folding raises the arriving peak
+at high pitches (worst seen 1.17 at 22.05 kHz, pick_energy 0.5).
+** Exciter details the plan left open
+Position comb applied circularly over the one-period table (as
+the loop sees it; it also cancels the strike's DC). Knock
+normalized to unit energy, so 'knock_mix' is a level relative to
+the dry table. Table length 'P + K - 1' (full convolution).
+Strike pulses are 'sin^2' at half-sample centers, so a one-sample
+pulse is not zero.
+** Body details
+Jitter up to 0.3 of the log spacing either way (centers keep
+their order); modes at or above 0.45 fs are left out; resonator
+'b0 (1 - z^-2)' with 'b0 = (1 - r^2) / 2' (peak gain near 1).
+** Values the plan did not give
+Howl level 0.3 and delay 5 ms (gain 0, so off). Validation upper
+bounds of my choosing: unison_detune_cents 100, B 0.1,
+dispersion_sections 16, pick_energy 1, strike_pulses 8,
+knock_ms 1000, ex_post 60000 ms, body.mode_count 128,
+modal.mode_count 32; pulses plus gaps must fit in one period.
+** 'energy()' sums the in-flight window
+Only the 'N' samples in flight, not the ring's spent slots.
+
+* Left unfinished
+Nothing in the slice. For slice 3: the knock convolution costs
+'P K' multiply-adds at note-on (about 2.5 M at 55 Hz), which the
+renderer may want to precompute or keep off the callback.
+
+* Headline: DONE

@@ -1,0 +1,72 @@
+#+title: Slice 1 report: voice control stepping split out
+
+* The commits
+** 9aefe74 plan 02, slice 1: split voice control stepping out
+Of the sawwave render. One commit: the code, the comment pointer
+fix in 'synth.rs', and the slice headline marked DONE.
+
+* The suites run
+** 'cargo test -p edo_surface': 695 passed, 0 failed
+The same count as the baseline 4690d83, in 28 s. No failures to
+classify.
+** 'cargo check --workspace': clean
+Only the three dead-code warnings that predate this slice
+('edit.rs', 'settings.rs', 'synth.rs').
+
+* The bit-identity check
+** Passed: both buffers byte-for-byte identical
+'target/bitident/distorted.f32' (1 155 084 bytes) and
+'target/bitident/plain.f32' (1 925 140 bytes), rendered before
+the refactor and again after it.
+** What it rendered
+A throwaway integration test, deleted before the commit. Ten
+voices: a plain attack; a pluck decay; two note_offs mid-render;
+a pending attack (relaunched twice); a glide up, later retargeted
+down; a pedal slide, retargeted, then released; a factored pulse,
+rate changed mid-note; grid_gain and global_pedal_gain slews,
+retargeted; a timbre xfade, restarted mid-render; abs and rel AM
+and FM, rel FM through zero; nonunit fader and new-pedal gains.
+About 1 s per group, edits between 512-frame blocks, the final
+voice count appended to catch the reaping. Once through
+'BlockRenderer::new(2)' with 'render_with_distortion' (auto
+makeup, two dirty voices per group), once through
+'BlockRenderer::new(1)' with 'render'.
+** Why the voices are grouped
+'VoiceMap' is a 'HashMap' with a random seed per process, so its
+iteration order, and hence the f32 summation order, differs
+between runs. Each render therefore holds at most two voices per
+bus, where 'a + b == b + a' exactly. Two compares before the
+refactor confirmed the buffers are stable across processes.
+** The check is sensitive
+Multiplying the gain by '(1 + f32::EPSILON)' made the compare
+fail; reverting restored equality.
+
+* Deviations from the plan's "how"
+** 'VoiceStep' lives in 'sawwave/types.rs'
+That module's header says it holds all the data shapes and no
+functions; 'step_voice_controls' is in 'voices.rs' right after
+its caller 'accumulate_voices'.
+** The LFO phase advance stays in 'accumulate_voices'
+The four AM/FM phases feed only the sawwave modulators, and
+keeping them after the control step keeps the old order exactly.
+The strings engine leaves them unadvanced; nothing reads them
+there. The doc comment of 'step_voice_controls' says so.
+** A dead voice's step is all zeros
+'alive: false' returns 'factored_pulse' 0 and 'gain' 0, and
+nothing past the envelope is stepped (as the old 'retain'
+closure returned before the glide).
+** One comment outside the plan's file list changed
+'surfaces_runtime/synth.rs' line 92 named 'accumulate_voices' as
+where the volume chain is multiplied; it now names
+'step_voice_controls'. A pointer fix in a comment, not an engine
+change, so "the grid threads do not know which engine renders"
+still holds.
+** The crossfade's old-timbre gain is still computed inline
+'b_old' uses 'x.from.gain' in place of 'timbre.gain', so it
+cannot reuse 'step.gain' without reassociating the product.
+
+* What was left unfinished
+Nothing.
+
+* The slice headline
+DONE in '02_plan.org'.
