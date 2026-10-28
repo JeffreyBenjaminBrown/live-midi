@@ -12,7 +12,7 @@ use crate::strings::energy::{
   drive, ebow_drive_gain, pedal_power, precharge_amplitude, precharge_waveshape, DriveState,
   PedalHistory, WindSource,
 };
-use crate::strings::exciter::{dry_table, knock_table, period_samples};
+use crate::strings::exciter::{dry_table, knock_table, peak_magnitude, period_samples};
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
 };
@@ -22,9 +22,9 @@ use crate::strings::loop_dsp::{design_loop, Loop, LoopDesign};
 use crate::strings::modal::{mode_t60_seconds, ModalVoice, ModeDesign};
 use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{
-  dispersion_applies, inharmonicity_b, inharmonicity_perceptual_threshold, round_trip_gain,
-  t60_seconds, BodyParams, EnergyKind, EnergyParams, ExciterKind, HowlParams, StringParams,
-  StringsParams,
+  amplitude_time_constant_seconds, dispersion_applies, inharmonicity_b,
+  inharmonicity_perceptual_threshold, round_trip_gain, t60_seconds, BodyParams, EnergyKind,
+  EnergyParams, ExciterKind, HowlParams, StringParams, StringsParams,
 };
 use crate::strings::renderer::{couple_through_junction, StringsRenderer};
 use crate::strings::scripted_voices::{release_voice_state, struck_voice_state, RELEASE_SECS};
@@ -139,7 +139,7 @@ fn both_exciter_kinds_are_deterministic_and_normalized() {
       let first: Vec<f32> = dry_table(&params.exciter, f0, SAMPLE_RATE);
       let second: Vec<f32> = dry_table(&params.exciter, f0, SAMPLE_RATE);
       assert_eq!(first, second, "{kind:?} at {f0} Hz differs between calls");
-      let peak: f32 = first.iter().fold(0.0, |peak, sample| peak.max(sample.abs()));
+      let peak: f32 = peak_magnitude(&first);
       assert!((peak - params.exciter.pick_energy).abs() < 1e-6,
               "{kind:?} at {f0} Hz peaks at {peak}");
       assert_eq!(first.len(), period_samples(f0, SAMPLE_RATE)); }}
@@ -322,10 +322,8 @@ fn the_junction_never_raises_the_stored_energy() {
       let block_energies: Vec<f32> = block_energies_after_the_excitation(
         &params, &pitches, block, seconds(3.0) / block);
       let largest_block_rise: f32 = largest_relative_rise(&block_energies);
-      let quarter_second_means: Vec<f32> = block_energies
-        .chunks_exact(blocks_per_quarter_second)
-        .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
-        .collect();
+      let quarter_second_means: Vec<f32> =
+        means_of_chunks(&block_energies, blocks_per_quarter_second);
       let largest_quarter_second_rise: f32 = largest_relative_rise(&quarter_second_means);
       println!("junction r = {heaviness}, {dispersion_sections} dispersion sections: energy \
                 from {:.4} to {:.4e}, largest rise block to block {largest_block_rise:+.3e}, \
@@ -399,7 +397,7 @@ fn the_renderer_renders_three_voices_finite_below_the_clamp() {
   for (index, freq) in [110.0_f32, 220.0, 330.0].iter().enumerate() {
     voices.insert(finger_key(index), struck_voice_state(index as VoiceId, *freq, SAMPLE_RATE)); }
   let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 2.0);
-  let peak: f32 = peak_of(&rendered);
+  let peak: f32 = peak_magnitude(&rendered);
   println!("three voices: peak {peak:.4}");
   assert!(rendered.iter().all(|sample| sample.is_finite()));
   assert!(peak < 0.95, "peak {peak} reaches the clamp");
@@ -418,11 +416,11 @@ fn a_released_voice_falls_silent_within_its_release() {
   let mut voices: VoiceMap = VoiceMap::new();
   voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
   let held: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 0.5);
-  let peak: f32 = peak_of(&held);
+  let peak: f32 = peak_magnitude(&held);
   release_voice_state(voices.get_mut(&finger_key(0)).expect("the voice"), SAMPLE_RATE);
   let released: Vec<f32> =
     render_seconds(&mut renderer, &mut voices, &params, RELEASE_SECS + 0.05 + 0.5);
-  let after_release: f32 = peak_of(&released[seconds(RELEASE_SECS + 0.05) ..]);
+  let after_release: f32 = peak_magnitude(&released[seconds(RELEASE_SECS + 0.05) ..]);
   println!("release: peak {peak:.4}, after release + 50 ms {after_release:.3e}");
   assert!(after_release < 1e-3 * peak, "{after_release} remains of a peak of {peak}");
   assert!(voices.is_empty(), "the released voice stays in the map");
@@ -461,7 +459,7 @@ fn a_silent_held_string_keeps_its_string_voice() {
   let mut voices: VoiceMap = VoiceMap::new();
   voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
   let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 2.0);
-  assert!(peak_of(&rendered[seconds(1.5) ..]) < 1e-6, "the string is not yet silent");
+  assert!(peak_magnitude(&rendered[seconds(1.5) ..]) < 1e-6, "the string is not yet silent");
   assert_eq!(voices.len(), 1);
   assert_eq!(renderer.voice_count(), 1, "the silent string voice was dropped"); }
 
@@ -483,8 +481,8 @@ fn the_renderer_adopts_changed_params_at_the_next_block() {
   assert!(gain_after < gain_before, "the loop kept its gain {gain_before} (now {gain_after})"); }
 
 /// A constant full pedal over the whole ex-ante leg (300 ms here)
-/// pre-charges a string with what the closed form of the plan's sum
-/// gives: `precharge_gain * integral over s in [0, ex_ante] of (s /
+/// pre-charges a string with what the closed form of the pre-charge
+/// sum (see 'energy.rs') gives: `precharge_gain * integral over s in [0, ex_ante] of (s /
 /// ex_ante) exp(-(ex_ante - s) / tau) ds`, which is `precharge_gain *
 /// (tau (1 - E) - tau^2 / ex_ante (1 - E (1 + ex_ante / tau)))` with
 /// `E = exp(-ex_ante / tau)`, within 1 percent, at a sample rate whose
@@ -494,7 +492,7 @@ fn a_constant_full_pedal_precharges_as_the_closed_form_integral() {
   let mut params: StringsParams = StringsParams::default();
   params.energy.ex_ante_energizing_ms = 300.0;
   let f0: f32 = 220.0;
-  let tau: f64 = t60_seconds(&params.string, f0) as f64 / 1000.0_f64.ln();
+  let tau: f64 = amplitude_time_constant_seconds(&params.string, f0) as f64;
   let ex_ante_seconds: f64 = params.energy.ex_ante_energizing_ms as f64 / 1000.0;
   let expected: f64 = {
     let decayed_over_the_leg: f64 = (-ex_ante_seconds / tau).exp();
@@ -517,7 +515,7 @@ fn a_constant_full_pedal_precharges_as_the_closed_form_integral() {
 fn an_unreported_or_heel_pedal_precharges_nothing() {
   let params: StringsParams = StringsParams::default();
   let birth: u64 = SAMPLE_RATE as u64;
-  let tau: f32 = t60_seconds(&params.string, 220.0) / 1000.0_f32.ln();
+  let tau: f32 = amplitude_time_constant_seconds(&params.string, 220.0);
   let empty: PedalHistory = PedalHistory::new(SAMPLE_RATE);
   assert_eq!(precharge_amplitude(&empty, birth, &params.energy, tau, SAMPLE_RATE), 0.0);
   for position in [f32::NAN, 0.0] {
@@ -543,17 +541,14 @@ fn a_full_pedal_grows_a_note_over_its_window_and_a_heel_pedal_does_not() {
   params.energy.ex_post_energizing_ms = 1000.0;
   params.exciter.pick_energy = params.energy.drive_limit / 10.0;
   let render_under_pedal = |pedal_position: f32| -> Vec<f32> {
-    let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
-    let mut voices: VoiceMap = VoiceMap::new();
-    voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
-    render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, pedal_position) };
+    render_one_struck_note(&params, 220.0, 1.0, pedal_position) };
   let full: Vec<f32> = render_under_pedal(1.0);
   let heel: Vec<f32> = render_under_pedal(0.0);
   let unreported: Vec<f32> = render_under_pedal(f32::NAN);
   let (full_early, full_late): (f32, f32) = (rms_around(&full, 0.1), rms_around(&full, 0.9));
   let (heel_early, heel_late): (f32, f32) = (rms_around(&heel, 0.1), rms_around(&heel, 0.9));
   println!("full pedal: RMS {full_early:.4} at 0.1 s, {full_late:.4} at 0.9 s, peak {:.4}; \
-            heel pedal: {heel_early:.4}, {heel_late:.4}", peak_of(&full));
+            heel pedal: {heel_early:.4}, {heel_late:.4}", peak_magnitude(&full));
   assert!(full.iter().all(|sample| sample.is_finite()));
   assert!(full_late > full_early, "a full pedal: {full_early} at 0.1 s, {full_late} at 0.9 s");
   assert!(heel_late < heel_early, "a heel pedal: {heel_early} at 0.1 s, {heel_late} at 0.9 s");
@@ -585,13 +580,12 @@ fn a_full_pedal_stops_feeding_a_note_when_its_window_closes() {
     energies.push((since_birth, renderer.string_voice(0).expect("voice 0").energy())); }
   let energy_at = |seconds: f32| -> f32 {
     energies.iter().find(|(time, _)| *time >= seconds).expect("rendered that long").1 };
-  let after_the_window: Vec<f32> = energies.iter()
-    .filter(|(time, _)| *time > ex_post_seconds)
-    .map(|(_, energy)| *energy)
-    .collect::<Vec<f32>>()
-    .chunks_exact(blocks_per_50_ms)
-    .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
-    .collect();
+  let after_the_window: Vec<f32> = {
+    let energies_after_the_window: Vec<f32> = energies.iter()
+      .filter(|(time, _)| *time > ex_post_seconds)
+      .map(|(_, energy)| *energy)
+      .collect();
+    means_of_chunks(&energies_after_the_window, blocks_per_50_ms) };
   let largest_rise: f32 = largest_relative_rise(&after_the_window);
   println!("window gate: energy {:.4} at 0.05 s, {:.4} at the window's end, {:.4} 1.5 s \
             later (50 ms mean); largest rise of the 50 ms means after the window \
@@ -680,10 +674,7 @@ fn a_full_pedal_grows_a_note_under_the_bow_and_the_wind() {
     params.energy.ex_post_energizing_ms = 1000.0;
     params.exciter.pick_energy = 0.05;
     let render_under_pedal = |pedal_position: f32| -> Vec<f32> {
-      let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
-      let mut voices: VoiceMap = VoiceMap::new();
-      voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
-      render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, pedal_position) };
+      render_one_struck_note(&params, 220.0, 1.0, pedal_position) };
     let driven: Vec<f32> = render_under_pedal(1.0);
     let undriven: Vec<f32> = render_under_pedal(f32::NAN);
     let struck: f32 = rms_between(&driven, 0.0, 0.1);
@@ -692,7 +683,7 @@ fn a_full_pedal_grows_a_note_under_the_bow_and_the_wind() {
     println!("{kind:?} under a full pedal: RMS {struck:.4} over 0-0.1 s, {grown:.4} over \
               0.3-0.6 s; at 0.1 s {:.4}, at 0.9 s {late:.4} (undriven {undriven_late:.4}); \
               peak {:.4}",
-             rms_around(&driven, 0.1), peak_of(&driven));
+             rms_around(&driven, 0.1), peak_magnitude(&driven));
     assert!(driven.iter().all(|sample| sample.is_finite()), "{kind:?}: not finite");
     assert!(grown > struck, "{kind:?}: {struck} over the strike, {grown} at mid-leg");
     assert!(late > 2.0 * undriven_late,
@@ -708,10 +699,7 @@ fn a_heel_pedal_neither_bows_nor_blows() {
     params.energy.kind = kind;
     params.energy.ex_post_energizing_ms = 1000.0;
     let render_under_pedal = |pedal_position: f32| -> Vec<f32> {
-      let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
-      let mut voices: VoiceMap = VoiceMap::new();
-      voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
-      render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, pedal_position) };
+      render_one_struck_note(&params, 220.0, 1.0, pedal_position) };
     let heel: Vec<f32> = render_under_pedal(0.0);
     assert!(rms_around(&heel, 0.9) < rms_around(&heel, 0.1), "{kind:?}: the note did not decay");
     assert_eq!(heel, render_under_pedal(f32::NAN), "{kind:?}: a heel pedal renders unlike none"); }}
@@ -735,7 +723,7 @@ fn the_bow_and_the_wind_stay_bounded_at_the_defaults() {
       render_seconds_under_pedal(&mut renderer, &mut voices, &params, 3.0, 1.0);
     let modal_id: VoiceId = (pitches.len() - 1) as VoiceId;
     assert!(renderer.voice_kind(modal_id).expect("the top voice").as_modal().is_some());
-    let peak: f32 = peak_of(&rendered);
+    let peak: f32 = peak_magnitude(&rendered);
     println!("{kind:?} at the defaults, a pre-charged chord under a full pedal: peak {peak:.4} \
               over 3 s");
     assert!(rendered.iter().all(|sample| sample.is_finite()), "{kind:?}: not finite");
@@ -756,7 +744,7 @@ fn each_kind_precharges_its_own_waveshape_at_the_shared_amplitude() {
   for kind in [EnergyKind::Ebow, EnergyKind::Bow, EnergyKind::Wind] {
     let mut params: StringsParams = StringsParams::default();
     params.energy.kind = kind;
-    let tau: f32 = t60_seconds(&params.string, f0) / 1000.0_f32.ln();
+    let tau: f32 = amplitude_time_constant_seconds(&params.string, f0);
     let amplitude: f32 = precharge_amplitude(&history, birth, &params.energy, tau, SAMPLE_RATE);
     let mut voice: StringVoice =
       StringVoice::new(&params, 0, f0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()));
@@ -781,8 +769,8 @@ fn each_kind_precharges_its_own_waveshape_at_the_shared_amplitude() {
       let strongest: usize = strongest_harmonic(fill, string_loop.f0(), 40);
       let held: f32 = fill.iter().map(|sample| sample * sample).sum();
       println!("{kind:?}: A0 {amplitude:.5}, fill peak {:.5} (A0 / {} = {peak_per_loop:.5}), \
-                strongest partial {strongest}", peak_of(fill), voice.loop_count());
-      assert!(relative_error(peak_of(fill), peak_per_loop) < 0.01, "{kind:?}: fill peak");
+                strongest partial {strongest}", peak_magnitude(fill), voice.loop_count());
+      assert!(relative_error(peak_magnitude(fill), peak_per_loop) < 0.01, "{kind:?}: fill peak");
       assert_eq!(strongest, expected_partial, "{kind:?}: the fill's strongest partial");
       assert!(relative_error(string_loop.energy(), held) < 1e-4,
               "{kind:?}: the loop holds {} of a fill of {held}", string_loop.energy()); }}}
@@ -826,7 +814,7 @@ fn the_howl_path_sustains_a_struck_note_and_stays_bounded() {
     (at_one_second, at_three_seconds, rendered) };
   let (howl_at_1, howl_at_3, howled): (f32, f32, Vec<f32>) = energies_and_output(20.0);
   let (plain_at_1, plain_at_3, _): (f32, f32, Vec<f32>) = energies_and_output(0.0);
-  let peak: f32 = peak_of(&howled);
+  let peak: f32 = peak_magnitude(&howled);
   println!("howl at gain 20: energy {howl_at_1:.4} at 1 s, {howl_at_3:.4} at 3 s, peak over \
             10 s {peak:.4}, RMS at 9.9 s {:.4}; no howl: {plain_at_1:.4}, {plain_at_3:.4}",
            rms_around(&howled, 9.9));
@@ -955,10 +943,7 @@ fn a_modal_voice_starts_at_a_loop_voice_s_level() {
       let mut params: StringsParams = StringsParams::default();
       params.body.mix = 0.0;
       params.modal.crossover_hz = crossover_hz;
-      let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
-      let mut voices: VoiceMap = VoiceMap::new();
-      voices.insert(finger_key(0), struck_voice_state(0, f0, SAMPLE_RATE));
-      let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 0.03);
+      let rendered: Vec<f32> = render_one_struck_note(&params, f0, 0.03, f32::NAN);
       spectrum_magnitude_at(&hann_windowed(&rendered), f0 as f64) };
     let ratio: f64 = fundamental_of(f0 / 2.0) / fundamental_of(0.0);
     println!("fundamental at {f0} Hz over the first 30 ms, modal over loops: {ratio:.4}");
@@ -994,23 +979,14 @@ fn modal_voices_in_the_junction_stay_passive_and_ring_in_sympathy() {
     string_voices.insert(silent_id, VoiceKind::Modal(ModalVoice::new(
       &params, silent_id, 2.0 * loop_pitches[2], SAMPLE_RATE, 0, Vec::new(),
       Arc::from(Vec::new()))));
-    let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
-    let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
-    let mut arriving_waves: Vec<f32> = Vec::with_capacity(16);
-    let mut block_energies: Vec<f32> = Vec::new();
     let mut silent_energy_at_half_a_second: f32 = 0.0;
-    for block_index in 0 .. seconds(3.0) / block {
-      for _ in 0 .. block {
-        couple_through_junction(
-          &mut string_voices, &mut junction, &mut howl, &mut arriving_waves); }
-      if block_index == seconds(0.5) / block {
-        silent_energy_at_half_a_second = string_voices[&silent_id].energy(); }
-      if string_voices.values().all(|voice| voice.excitation_finished()) {
-        block_energies.push(string_voices.values().map(|voice| voice.energy()).sum()); }}
-    let quarter_second_means: Vec<f32> = block_energies
-      .chunks_exact(blocks_per_quarter_second)
-      .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
-      .collect();
+    let block_energies: Vec<f32> = block_energies_of_voices_after_the_excitation(
+      &mut string_voices, &params, block, seconds(3.0) / block,
+      |block_index, string_voices| {
+        if block_index == seconds(0.5) / block {
+          silent_energy_at_half_a_second = string_voices[&silent_id].energy(); }});
+    let quarter_second_means: Vec<f32> =
+      means_of_chunks(&block_energies, blocks_per_quarter_second);
     let largest_rise: f32 = largest_relative_rise(&quarter_second_means);
     println!("modal members at r = {heaviness}: energy from {:.4} to {:.4e}, largest quarter \
               second rise {largest_rise:+.3e}, the silent modal voice at 0.5 s \
@@ -1063,16 +1039,40 @@ fn block_energies_after_the_excitation(
   block_count: usize,
 ) -> Vec<f32> {
   let mut string_voices: BTreeMap<VoiceId, VoiceKind> = struck_string_voices(params, pitches);
+  block_energies_of_voices_after_the_excitation(
+    &mut string_voices, params, block, block_count, |_, _| {}) }
+
+/// `block_energies_after_the_excitation` for prebuilt
+/// `string_voices`, calling `after_block` with each block's index
+/// and the voices once the block is rendered.
+fn block_energies_of_voices_after_the_excitation(
+  string_voices: &mut BTreeMap<VoiceId, VoiceKind>,
+  params: &StringsParams,
+  block: usize,
+  block_count: usize,
+  mut after_block: impl FnMut(usize, &BTreeMap<VoiceId, VoiceKind>),
+) -> Vec<f32> {
   let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
   let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
-  let mut arriving_waves: Vec<f32> = Vec::with_capacity(3 * pitches.len());
+  let mut arriving_waves: Vec<f32> = Vec::new();
   let mut energies: Vec<f32> = Vec::with_capacity(block_count);
-  for _ in 0 .. block_count {
+  for block_index in 0 .. block_count {
     for _ in 0 .. block {
-      couple_through_junction(&mut string_voices, &mut junction, &mut howl, &mut arriving_waves); }
+      couple_through_junction(string_voices, &mut junction, &mut howl, &mut arriving_waves); }
+    after_block(block_index, string_voices);
     if string_voices.values().all(|voice| voice.excitation_finished()) {
       energies.push(string_voices.values().map(|voice| voice.energy()).sum()); }}
   energies }
+
+/// The mean of each whole run of `chunk_length` values, in order; a
+/// shorter run left at the end is dropped.
+fn means_of_chunks(
+  values: &[f32],
+  chunk_length: usize,
+) -> Vec<f32> {
+  values.chunks_exact(chunk_length)
+    .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+    .collect() }
 
 /// The largest `next / previous - 1` over consecutive values; 0 when
 /// none rises.
@@ -1097,6 +1097,20 @@ fn struck_string_voices(
       voice.set_gain(1.0);
       (index as VoiceId, voice) })
     .collect() }
+
+/// One voice struck at `f0` under `params` and rendered alone for
+/// `duration` seconds by a fresh renderer, the energy pedal held at
+/// `pedal_position` (NaN: never reported).
+fn render_one_struck_note(
+  params: &StringsParams,
+  f0: f32,
+  duration: f32,
+  pedal_position: f32,
+) -> Vec<f32> {
+  let mut renderer: StringsRenderer = StringsRenderer::new(*params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, f0, SAMPLE_RATE));
+  render_seconds_under_pedal(&mut renderer, &mut voices, params, duration, pedal_position) }
 
 /// Renders `duration` seconds in 128-frame mono blocks, as the audio
 /// callback would, at amplitude 0.15, with no energy pedal.
@@ -1143,8 +1157,7 @@ fn rms_around(
   signal: &[f32],
   at_seconds: f32,
 ) -> f32 {
-  let window: &[f32] = &signal[seconds(at_seconds - 0.01) .. seconds(at_seconds + 0.01)];
-  (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt() }
+  rms_between(signal, at_seconds - 0.01, at_seconds + 0.01) }
 
 /// The RMS of `signal` from `start_seconds` to `end_seconds`.
 fn rms_between(
@@ -1172,11 +1185,6 @@ fn finger_key(
   index: usize,
 ) -> VoiceSource {
   VoiceSource::SurfaceFinger { grid: 0, cell: (index as i32, 0) }}
-
-fn peak_of(
-  signal: &[f32],
-) -> f32 {
-  signal.iter().fold(0.0, |peak, sample| peak.max(sample.abs())) }
 
 fn relative_error(
   measured: f32,
