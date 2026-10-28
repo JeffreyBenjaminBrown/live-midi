@@ -3,7 +3,7 @@
 //! without grids.
 //!
 //! cargo run -p tools --bin strings_harness -- [--rig NAME | --rig-file PATH]
-//!   [--scene NAME] [--out DIR]
+//!   [--scene NAME] [--out DIR] [--pedal TRACE]
 //!
 //! '--rig' loads the named rig from 'rigs/', '--rig-file' a rig at
 //! any path; the harness then renders with the first 'cpal_strings'
@@ -13,6 +13,16 @@
 //! writes into 'target/strings-harness/' at the repository root. Each
 //! scene lands in 'DIR/<scene>.wav'; the harness prints each file's
 //! path and peak.
+//!
+//! The energy pedal. A scene may script the pedal's raw position
+//! ('pedal_swell' does); the others leave it unreported (NaN), as an
+//! unplugged pedal is. '--pedal TRACE' replaces every rendered
+//! scene's pedal: 'TRACE' is 'none' (unreported) or comma-separated
+//! 'SECONDS:POSITION' points in time order, joined by straight lines,
+//! the first point's position held before it and the last's after it
+//! ('0:0,1:1' rises from heel to toe over the first second and stays
+//! there; '0:0' is a pedal resting at the heel). The engine reads the
+//! position once per block, as the audio callback does.
 //!
 //! A scene drives the engine as the surfaces runtime does: between
 //! 128-frame blocks it inserts and edits 'VoiceState's in a
@@ -44,17 +54,26 @@ const DEFAULT_AMPLITUDE: f32 = 0.15;
 /// Every scene's voices are on this grid.
 const GRID: usize = 0;
 
-const SCENE_NAMES: [&str; 4] = ["single_notes", "chord", "restrike", "sympathy"];
+const SCENE_NAMES: [&str; 5] = ["single_notes", "chord", "restrike", "pedal_swell", "sympathy"];
 
 /// The chord of 'chord' and 'restrike': a major triad with its octave,
 /// 4:5:6:8 on 110 Hz.
 const CHORD_HZ: [f32; 4] = [110.0, 137.5, 165.0, 220.0];
 
-/// A scripted scene: its events, in time order, and its length.
+/// A scripted scene: its events, in time order, its length, and its
+/// energy pedal (`None`: never reported).
 struct Scene {
   name: &'static str,
   duration_seconds: f32,
-  events: Vec<(f32, SceneEvent)>, }
+  events: Vec<(f32, SceneEvent)>,
+  pedal: Option<PedalTrace>, }
+
+/// The energy pedal's raw position over time: `(seconds, position)`
+/// points in time order, joined by straight lines, the first point's
+/// position held before it and the last's after it.
+#[derive(Clone, Debug)]
+struct PedalTrace {
+  points: Vec<(f32, f32)>, }
 
 /// What a scene does to the voice map at a moment, as the surfaces
 /// runtime's grid threads would.
@@ -74,7 +93,9 @@ enum SceneEvent {
 struct Options {
   scene_names: Vec<String>,
   out_dir: PathBuf,
-  rig_source: Option<RigSource>, }
+  rig_source: Option<RigSource>,
+  /// '--pedal': `Some(None)` is 'none', an unreported pedal.
+  pedal_override: Option<Option<PedalTrace>>, }
 
 /// Where '--rig' or '--rig-file' says the rig is.
 enum RigSource {
@@ -95,7 +116,7 @@ fn main(
     Err(message) => {
       eprintln!("strings_harness: {message}");
       eprintln!("usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME] \
-                 [--out DIR]; scenes: {}",
+                 [--out DIR] [--pedal none | SECONDS:POSITION,...]; scenes: {}",
                 SCENE_NAMES.join(", "));
       return ExitCode::from(2); }};
   let rendering: Rendering = match rendering_from(options.rig_source.as_ref()) {
@@ -107,7 +128,9 @@ fn main(
     eprintln!("strings_harness: cannot create {}: {error}", options.out_dir.display());
     return ExitCode::FAILURE; }
   for scene_name in &options.scene_names {
-    let scene: Scene = scene_named(scene_name).expect("parse_options checked the name");
+    let mut scene: Scene = scene_named(scene_name).expect("parse_options checked the name");
+    if let Some(pedal) = &options.pedal_override {
+      scene.pedal = pedal.clone(); }
     let rendered: Vec<f32> = render_scene(&scene, &rendering);
     let path: PathBuf = options.out_dir.join(format!("{}.wav", scene.name));
     if let Err(error) = write_mono_wav(&path, &rendered, rendering.sample_rate) {
@@ -124,6 +147,7 @@ fn parse_options(
   let mut scene_names: Vec<String> = Vec::new();
   let mut out_dir: Option<PathBuf> = None;
   let mut rig_source: Option<RigSource> = None;
+  let mut pedal_override: Option<Option<PedalTrace>> = None;
   let mut remaining: IntoIter<String> = arguments.into_iter();
   while let Some(argument) = remaining.next() {
     match argument.as_str() {
@@ -143,10 +167,39 @@ fn parse_options(
           RigSource::Named(value)
         } else {
           RigSource::File(PathBuf::from(value)) }); }
+      "--pedal" => {
+        let trace: String = remaining.next().ok_or("--pedal needs 'none' or a trace")?;
+        pedal_override = Some(parse_pedal_trace(&trace)?); }
       other => return Err(format!("unknown argument {other}")), }}
   if scene_names.is_empty() {
     scene_names = SCENE_NAMES.iter().map(|name| name.to_string()).collect(); }
-  Ok(Options { scene_names, out_dir: out_dir.unwrap_or_else(default_out_dir), rig_source }) }
+  Ok(Options {
+    scene_names,
+    out_dir: out_dir.unwrap_or_else(default_out_dir),
+    rig_source,
+    pedal_override, }) }
+
+/// '--pedal''s value: 'none' is `None`; otherwise comma-separated
+/// 'SECONDS:POSITION' points, their times finite and in order.
+fn parse_pedal_trace(
+  text: &str,
+) -> Result<Option<PedalTrace>, String> {
+  if text == "none" {
+    return Ok(None); }
+  let points: Vec<(f32, f32)> = text.split(',')
+    .map(|point| {
+      let (seconds, position): (&str, &str) = point.split_once(':')
+        .ok_or(format!("--pedal point {point:?} is not SECONDS:POSITION"))?;
+      let parse = |field: &str| -> Result<f32, String> {
+        field.trim().parse::<f32>()
+          .ok()
+          .filter(|value| value.is_finite())
+          .ok_or(format!("--pedal point {point:?}: {field:?} is not a finite number")) };
+      Ok((parse(seconds)?, parse(position)?)) })
+    .collect::<Result<Vec<(f32, f32)>, String>>()?;
+  if points.windows(2).any(|pair| pair[1].0 < pair[0].0) {
+    return Err(format!("--pedal {text:?}: the points' times must not go back")); }
+  Ok(Some(PedalTrace { points })) }
 
 /// The rig's first 'cpal_strings' sink as a rendering, or the
 /// defaults without a rig.
@@ -184,6 +237,7 @@ fn scene_named(
     "single_notes" => Some(single_notes_scene()),
     "chord" => Some(chord_scene()),
     "restrike" => Some(restrike_scene()),
+    "pedal_swell" => Some(pedal_swell_scene()),
     "sympathy" => Some(sympathy_scene()),
     _ => None, }}
 
@@ -200,7 +254,7 @@ fn single_notes_scene(
       [ (start, SceneEvent::Strike { cell, freq: *freq }),
         (start + 1.5, SceneEvent::Release { cell }) ] })
     .collect();
-  Scene { name: "single_notes", duration_seconds: 12.0, events }}
+  Scene { name: "single_notes", duration_seconds: 12.0, events, pedal: None }}
 
 /// A major chord with its octave (110, 137.5, 165, 220 Hz: 4:5:6:8)
 /// held 4 s, then released.
@@ -208,7 +262,7 @@ fn chord_scene(
 ) -> Scene {
   let mut events: Vec<(f32, SceneEvent)> = chord_strikes(0.0);
   events.extend((0 .. CHORD_HZ.len() as i32).map(|cell| (4.0, SceneEvent::Release { cell })));
-  Scene { name: "chord", duration_seconds: 4.5, events }}
+  Scene { name: "chord", duration_seconds: 4.5, events, pedal: None }}
 
 /// The chord struck and sustained (its fingers lift at 0.5 s with
 /// sustain on), and its fifth struck again at 2 s: the runtime cuts
@@ -224,7 +278,21 @@ fn restrike_scene(
   events.push((2.0, SceneEvent::Strike {
     cell: restruck_cell, freq: CHORD_HZ[restruck_cell as usize] }));
   events.push((2.5, SceneEvent::Sustain { cell: restruck_cell, pitch: restruck_cell }));
-  Scene { name: "restrike", duration_seconds: 6.0, events }}
+  Scene { name: "restrike", duration_seconds: 6.0, events, pedal: None }}
+
+/// The energy pedal rises from the heel at 0 s to the toe at 1 s,
+/// when a 220 Hz note is struck, and stays at the toe through the
+/// note's ex-post leg and beyond; the note is held to 4 s, then
+/// released. The pre-charge gathers the rise; the drive feeds the
+/// note until its window closes.
+fn pedal_swell_scene(
+) -> Scene {
+  let cell: i32 = 0;
+  let events: Vec<(f32, SceneEvent)> = vec![
+    (1.0, SceneEvent::Strike { cell, freq: 220.0 }),
+    (4.0, SceneEvent::Release { cell }) ];
+  let pedal: PedalTrace = PedalTrace { points: vec![(0.0, 0.0), (1.0, 1.0)] };
+  Scene { name: "pedal_swell", duration_seconds: 4.5, events, pedal: Some(pedal) }}
 
 /// Four notes struck at 0 s and held (165, 220, 330 and 440 Hz: the
 /// 3rd, 4th, 6th and 8th harmonics of 55 Hz), ringing quietly by 3 s
@@ -238,7 +306,7 @@ fn sympathy_scene(
     .map(|(index, freq)| (0.0, SceneEvent::Strike { cell: index as i32, freq: *freq }))
     .collect();
   events.push((3.0, SceneEvent::Strike { cell: quiet_hz.len() as i32, freq: 110.0 }));
-  Scene { name: "sympathy", duration_seconds: 8.0, events }}
+  Scene { name: "sympathy", duration_seconds: 8.0, events, pedal: None }}
 
 /// The chord's four strikes at `time`, one cell each.
 fn chord_strikes(
@@ -251,7 +319,8 @@ fn chord_strikes(
 
 /// The scene rendered in `BLOCK_FRAMES`-frame mono blocks, each
 /// event applied to the map before the first block that starts at or
-/// after its time.
+/// after its time, and each block handed the pedal's position at its
+/// start (NaN without a pedal).
 fn render_scene(
   scene: &Scene,
   rendering: &Rendering,
@@ -269,12 +338,35 @@ fn render_scene(
     while next_event < scene.events.len() && scene.events[next_event].0 <= block_start_seconds {
       apply_event(&mut voices, &mut next_voice_id, scene.events[next_event].1, sample_rate);
       next_event += 1; }
+    let pedal_position: f32 = scene.pedal.as_ref()
+      .map_or(f32::NAN, |pedal| pedal.position_at(block_start_seconds));
     renderer.render_block(
       &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &rendering.params,
-      f32::NAN);
+      pedal_position);
     rendered.extend_from_slice(&block); }
   rendered.truncate(total_frames);
   rendered }
+
+impl PedalTrace {
+  /// The position at `seconds`: the straight line between the points
+  /// around it, or the nearer end's position outside them.
+  fn position_at(
+    &self,
+    seconds: f32,
+  ) -> f32 {
+    let Some(&(first_seconds, first_position)) = self.points.first() else {
+      return f32::NAN; };
+    if seconds <= first_seconds {
+      return first_position; }
+    for pair in self.points.windows(2) {
+      let ((start_seconds, start_position), (end_seconds, end_position)): ((f32, f32), (f32, f32)) =
+        (pair[0], pair[1]);
+      if seconds <= end_seconds {
+        if end_seconds <= start_seconds {
+          return end_position; }
+        let fraction: f32 = (seconds - start_seconds) / (end_seconds - start_seconds);
+        return start_position + fraction * (end_position - start_position); }}
+    self.points[self.points.len() - 1].1 }}
 
 /// `event` done to `voices` as the runtime's 'SurfaceSink' does it
 /// ('note_on', 'note_off', 'sustain_note', 'cut_sustained').
