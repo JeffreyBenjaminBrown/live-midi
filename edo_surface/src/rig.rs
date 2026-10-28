@@ -2044,12 +2044,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
       }
     }
     if let SinkRig::CpalSampler { sample_rate, buffer_frames, amplitude, .. } = sink {
-      if *sample_rate == 0 || *buffer_frames == 0 {
-        return Err(format!("sink {:?} sample_rate and buffer_frames must be positive", sink.id()));
-      }
-      if !amplitude.is_finite() || *amplitude < 0.0 {
-        return Err(format!("sink {:?} amplitude must be nonnegative", sink.id()));
-      }
+      validate_sink_stream(sink.id(), *sample_rate, *buffer_frames, *amplitude)?;
     }
     validate_strings_sink(sink)?;
   }
@@ -2173,7 +2168,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
   Ok(())
 }
 
-/// A `cpal_strings` sink's stream and damper, checked as `cpal_synth`'s are, and its
+/// A `cpal_strings` sink's stream (`validate_sink_stream`), its damper, and its
 /// engine parameters by `StringsParams::validate`, the error prefixed with the sink
 /// id. Any other kind passes.
 fn validate_strings_sink(
@@ -2182,16 +2177,27 @@ fn validate_strings_sink(
   let SinkRig::CpalStrings { id, sample_rate, buffer_frames, amplitude, release_secs, .. } = sink
   else {
     return Ok(( )); };
-  if *sample_rate == 0 || *buffer_frames == 0 {
-    return Err(format!("sink {id:?} sample_rate and buffer_frames must be positive")); }
-  if !amplitude.is_finite() || *amplitude < 0.0 {
-    return Err(format!("sink {id:?} amplitude must be nonnegative")); }
+  validate_sink_stream(id, *sample_rate, *buffer_frames, *amplitude)?;
   { // A zero release would cut a released string off in one sample.
     if !release_secs.is_finite() || *release_secs <= 0.0 {
       return Err(format!("sink {id:?} release_secs must be positive")); }}
   let strings_params: StringsParams =
     sink.strings_params().expect("a cpal_strings sink has strings params");
   strings_params.validate().map_err(|error| format!("sink {id:?} {error}")) }
+
+/// A cpal sink's stream and level: a positive `sample_rate` and
+/// `buffer_frames`, and a finite, nonnegative `amplitude`.
+fn validate_sink_stream(
+  sink_id: &str,
+  sample_rate: u32,
+  buffer_frames: u32,
+  amplitude: f32,
+) -> Result<(), String> {
+  if sample_rate == 0 || buffer_frames == 0 {
+    return Err(format!("sink {sink_id:?} sample_rate and buffer_frames must be positive")); }
+  if !amplitude.is_finite() || amplitude < 0.0 {
+    return Err(format!("sink {sink_id:?} amplitude must be nonnegative")); }
+  Ok(( )) }
 
 /// The `[[expression_pedals]]` bindings. Each pedal arrives on its own channel (1 or
 /// 2, the MPC-20's two) and plugs into a grid (`monome`) in a `role`, two independent

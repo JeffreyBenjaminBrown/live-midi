@@ -887,7 +887,7 @@ Each kind with a full pedal grows a struck note over its
 ex-post leg; with the pedal at 0 it decays as without; both
 stay finite and below 0.95.
 
-** TODO Slice 9: organize, record, and the two-question check
+** DONE Slice 9: organize, record, and the two-question check
 *** Corrections carried from slice 8
 **** Rename 'bow_force' to 'bow_slipperiness'
 In the friction table 'bow = (|delta * bow_force| + 0.75)^-4' a

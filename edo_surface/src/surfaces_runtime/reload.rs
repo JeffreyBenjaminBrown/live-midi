@@ -23,7 +23,8 @@ use super::GridThread;
 /// instrument can adopt without rebinding grids, sockets, or streams: the synth
 /// master amplitude, the distortion curve, the four timbres, the tuning, the pluck
 /// envelope, the slide/trail knobs, the strings engine's parameters, and the drum
-/// samplers' master gains. See TODO/misc.org "rig reload".
+/// samplers' master gains. What else a rig sets (layout, ports, a sink's kind) needs
+/// a restart.
 pub(crate) struct Live {
   /// Bumped on every successful reload; grid threads refresh their copies when it
   /// moves (the audio callback reads the params fresh every callback).

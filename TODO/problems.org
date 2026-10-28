@@ -1,0 +1,239 @@
+#+title: Problems found in passing
+Problems noticed while doing something else: duplication,
+inelegance, deviations from a specification, bugs. One headline
+each; a plan that will fix one prefixes it 'FIX PLANNED: '.
+
+* Quasi-duplication left in the strings engine
+** The two voice kinds repeat their shared state
+'StringVoice' ('strings/voice.rs') and 'ModalVoice'
+('strings/modal.rs') each hold the same seven fields (birth, the
+excitation stream, the gain, the energy parameters, the drive
+state, the energy factor, the pedal's power) with the same seven
+accessors, and 'VoiceKind' forwards fourteen methods to one or
+the other by hand. Each also calls 'energy::drive' the same way.
+One struct holding the shared part and an enum of the members
+(loops, or modes) would remove about a hundred lines and leave
+'drive' one caller. Not done in plan 02: it would coin a type
+name and change every test that builds a voice.
+** Three rings index by hand
+'Loop' (the delay line), 'HowlPath' (the howl's delay) and
+'PedalHistory' each keep a 'Vec' and a write index and compute
+'(index + length - delay) % length'. 'Loop' and 'HowlPath' both
+write one sample and read one at a delay; one small ring type
+could serve both ('Loop' also grows its ring and sums the wave
+in flight). 'PedalHistory' is indexed by absolute grid point and
+fits less well.
+** The body's resonator and a modal mode share only their poles
+'body::Resonator' is 'b0 (1 - z^-2)' over the pole pair, run in
+direct form I, peak gain near 1; the wind's bandpass already
+reuses it. A modal mode is 'beta (r cos(theta) z^-1 - r^2 z^-2)'
+over the same pole pair, run from its all-pole state so that its
+output depends only on earlier inputs (the junction needs the
+arriving wave before it runs) and so that its stored energy can
+be read from that state. The forms disagree, so one second-order
+type would need a mode switch; only the pole pair's design
+('2 r cos(theta)', 'r^2') is common, two lines.
+** Two milliseconds-to-samples helpers
+'howl::delay_samples' and 'exciter::knock_length_samples' are
+both 'round(ms / 1000 * sample_rate)', at least 1.
+** Three ceilings below Nyquist
+The exciter's cutoff clamps at
+'HIGHEST_EXCITATION_CUTOFF_FRACTION_OF_SAMPLE_RATE' (0.45), body
+modes, modal modes and the wind's bandpass at
+'body::HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE' (0.45), and the
+junction's damping lowpass at a literal 0.49. They mean different
+things (a lowpass cutoff, a resonance), but nothing says why the
+junction's differs.
+** The pedal's power is computed twice per voice per sample
+The renderer calls 'energy::ex_post_energy_factor' and
+'energy::pedal_power' for every voice every sample; both raise
+the pedal to 'pedal_energy_exponent' with 'powf', and the pedal
+moves only once per block. Once per block per distinct exponent
+would do.
+** The tests' modal render repeats the plain loop render
+The crossover test runs a lone 'ModalVoice' by the same
+read-then-write loop as 'render_plain_karplus_strong' does a
+'Loop'. A trait for "a junction member" would let one helper do
+both; the two types share no trait today.
+** The harness and the tests each build their own render loop
+'tools/strings/strings_harness.rs' and 'strings/tests.rs' both
+render a 'VoiceMap' in 128-frame blocks and both define a
+'finger_key'. The harness is a binary and the tests are
+'#[cfg(test)]', so sharing needs a public helper in
+'strings::scripted_voices'.
+
+* VoiceState construction and release
+** Every 'VoiceState' constructor spells out all 27 fields
+'SurfaceSink::note_on_with_phase_and_gain' and four more sites in
+'surfaces_runtime/synth.rs', 'sawwave::voices::
+spawn_accretion_voice', the fingered voice in 'sawwave/state.rs',
+the looper's sink ('buried/midi_pulse/looper_runtime/sink.rs'),
+'strings::scripted_voices::struck_voice_state' and about
+twenty-five tests each list every field. A constructor for a
+struck voice at rest (every gain 1, no glide, slide or pulse, the
+default timbre) plus struct-update syntax would serve all of
+them; 'struck_voice_state' is already that constructor for the
+strings sink's attack and could honestly become the runtime's,
+with the attack ramp and the pluck envelope as arguments.
+** The release ramp is written out eight times
+'target_env = 0; ramp_per_sample = env / (release_secs *
+sample_rate)' appears in 'SurfaceSink::note_off',
+'sustain_note', 'cut_sustained', 'end_chord_voices',
+'end_loop_voices', 'end_drones_at', 'sawwave::voices::
+ramp_chord_accretion_to_zero' and
+'strings::scripted_voices::release_voice_state'. Only some also
+clear 'pending_attack'; see the next headline.
+'release_voice_state' could be the one helper.
+** Possible bug: a release that keeps a pending attack re-strikes
+'note_off' clears 'pending_attack' ("a finger lifting
+mid-drag-dip must NOT re-strike"), but 'sustain_note' (its branch
+that finds the drone key taken and releases the finger's voice in
+place), 'cut_sustained' and 'end_drones_at' do not. A drag sets
+a pending attack on the dragged voice, a drone included. A voice
+still inside a drag's 2 ms dip when one of those ends it would
+reach silence, take its pending attack, and sound again at full
+level with nothing left to end it. Unverified; the window is 2
+ms.
+
+* Structural problems in the old code
+** About twenty free functions in 'synth.rs' walk the voice map
+'surfaces_runtime/synth.rs' (2949 lines) has eighteen free
+functions taking '&Arc<Mutex<VoiceMap>>', each locking the map
+and filtering it by 'VoiceSource' ('set_grid_fader_gain',
+'end_drones_at', 'retimbre_voices', ...), beside 'SurfaceSink'
+methods that do the same through 'self.voices'. A voice-map type
+with methods for "the voices of this grid", "the drones at these
+pitches" and the release would replace the repeated lock, match
+and loop.
+** The cpal glue is copied four times
+'surfaces_runtime/audio.rs', 'drumkit_runtime/audio.rs',
+'buried/midi_pulse/looper_runtime/audio.rs' and
+'buried/midi_pulse/sawwave_runtime.rs' each choose the JACK host,
+pick a device and format, and build the stream. 'audio.rs' says
+the copies are on purpose (no test reaches cpal), but every fix
+to device selection must be made four times.
+** 'VoiceState' copies everything for every engine
+'VoiceState' is 'Copy' and carries the sawwave engine's
+oscillator phase, AM, FM, timbre crossfade and factored pulse
+beside the control state both engines read. The strings engine
+reads only the envelope, the pitch and the gain factors, and the
+grid threads snapshot all of it under the map lock. Splitting the
+control state from the oscillator state would let each engine
+own its own.
+** One engine had to be threaded through five files
+Adding the strings engine touched 'audio.rs' (two new
+arguments to 'start', a branch in the callback), 'settings.rs',
+'reload.rs', 'pedal_volume.rs' (a new argument to
+'expression_pedal_loop') and 'mod.rs' (the new atomic, passed to
+both). The sub-problems:
+*** 'Settings' is flat
+The play sink decides fifteen fields of 'Settings', so
+'resolve_sink_settings' builds a 'SinkSettings' and
+'resolve_settings' copies it back field by field. A nested
+'Settings.sink' would be one field.
+*** 'LiveParams' mirrors 'Settings' by hand
+'reload::live_params' copies nineteen fields one by one; every
+hot-reloadable setting is added in three places ('Settings',
+'LiveParams', 'live_params').
+*** Loose arguments instead of a shared-state struct
+'audio::start' takes nine arguments and 'expression_pedal_loop'
+nine, both under 'allow(clippy::too_many_arguments)'; each new
+cross-thread word ('pedal_slide_frac', 'string_energy_position')
+is one more 'Arc' passed by hand from 'run'.
+*** The play grids' sink is found twice
+'resolve_settings' and 'rig::validate_string_energy_pedal' each
+find the first 'edo_note_grid' and look up its sink. A
+'Rig::play_grids_sink' would be the one rule.
+** 'validate_rig' checks a cpal_synth's stream by itself
+'rig::validate_sink_stream' now serves the 'cpal_sampler' and
+'cpal_strings' sinks; the 'cpal_synth' arm still checks its
+sample rate, buffer and amplitude inline, interleaved with its
+own keys.
+
+* Names in the strings engine that deserve a decision
+** "String voice" means two things
+The plan's vocabulary defines a string voice as the engine's
+per-voice state; in the code 'StringVoice' is the loops kind
+only, while the renderer's map 'string_voices' (and its local
+variables 'string_voice') holds 'VoiceKind's, modal ones too.
+'StringsRenderer::string_voice' returns only a loops voice,
+'voice_kind' either.
+** 'StringsParams' and 'StringParams' differ by one letter
+The first is every strings parameter, the second its 'string'
+table.
+** "Loop" already names a recorded loop
+'strings::loop_dsp::Loop' is one delay-line loop, but the
+surfaces runtime's compact loops, 'VoiceSource::SurfaceLoop',
+'end_loop_voices', the looper and 'TimbreTarget::Loop' use
+"loop" for a recorded musical loop. The strings tests say "a loop
+voice" for a voice of loops, which in 'synth.rs' is a voice that
+a compact loop plays.
+** "Energy" has three meanings
+The energy pedal's energy ('EnergyParams', 'energy_factor', the
+'energy' table), the stored energy of a loop (sum of squares,
+'Loop::energy', 'VoiceKind::energy'), and 'pick_energy', which is
+a peak amplitude.
+** "Power" is the pedal's exponent, not a signal's power
+'energy::pedal_power' is 'pedal ^ pedal_energy_exponent'; the
+tests also say "heard power" for a mean square.
+** "Dry" names two things
+'exciter::dry_table' is a note's own table as against the knock;
+the body's 'mix' blends the "dry" sum with the bank's "wet" one.
+** 'wind_speed_hz_max' is a frequency
+It is the Strouhal frequency at full pedal, in Hz; "speed" names
+the wind it stands for.
+** 'struck_voice_state' is any exciter kind's
+"Struck" also names 'ExciterKind::Strike'; the helper builds the
+voice for a pluck too.
+** "Junction" and "bridge" are one thing
+The type is 'Junction' and the rig table 'bridge'
+('bridge.heaviness', 'bridge_velocity'); the plan fixed both
+words.
+** "Member" is not in the plan's vocabulary
+"Junction member" (a loop, or a whole modal voice) entered with
+the modal voice; it has one meaning throughout the code.
+
+* Open listening questions
+** Sympathy is gentle at the default heaviness 3000
+A lighter bridge is stronger sympathy and shorter notes
+together; at 3000 the bridge alone gives a 110 Hz note a T60 of
+about 42 s and a 1760 Hz note 2.6 s. Whether 3000 is the right
+default is for Jeff's ears.
+** The pre-charge sits about 18 dB under the strike
+At 'precharge_gain' 0.5 a full pedal's pre-charge is about 18 dB
+below the default strike; about 4 would match it.
+** A modal note drains half as fast through the bridge
+A modal note is one junction member where a two-unison loop note
+is two, so near the crossover it rings about 20 percent longer
+(a T60 of about 1.1 s against 0.9 s at 2000 Hz and heaviness
+3000). Counting a modal voice as 'unison_count' members would
+match them; the plan says one member.
+** A modal note is brighter than a loop note
+Over its first 0.2 s a modal note's RMS is 1.4 to 1.7 times a
+loop note's at the same pitch, because the upper modes' decay
+stops falling at 'high_frequency_hz' while a loop's one-pole loss
+keeps darkening. Extending the line past the reference measured
+too dark.
+** The wind's pre-charge sits 26 cents under its partial
+The plan puts the pre-charge sine at 'k f0'; the stiff string's
+partial sits higher (2010 against 1980 Hz for the 9th of 220 Hz).
+** A bowed chord runs near the clamp
+Five pre-charged notes under a full pedal peak near 0.85; a
+bigger chord can reach 0.95.
+** The bow's squeaks are measured only as the strongest partial
+From a 'bow_velocity * bow_slipperiness' of about 1.5 the 55 and
+110 Hz notes have their 4th partial strongest; whether that
+sounds like a squeak has not been heard.
+** The howl's level and its dead spot
+'howl.level' defaults to 0.003 (0.3 pinned every register at the
+clamp). At the default 5 ms delay an 880 Hz note's fundamental is
+out of phase with the howl and sustains only on another partial.
+** The body boosts the partials on its modes
+The bank is normalized to keep white noise's RMS, so its wet
+output is fourteen times the raw bank (norm 0.0696), and a voice
+at 'mix' 0.5 peaks about 2.4 times higher than at 'mix' 0.
+** The DC blocker leaves the upper partials 1.4 cents flat
+At 'f0 / 200'; 'f0 / 500' would give 0.55 cents but hold an
+in-loop DC offset longer. A rig knob is cheap.
+** Nothing has been listened to
+Every scene and test of plan 02 was checked numerically only.
