@@ -181,6 +181,13 @@ window is open is dropped from the engine (not from the map; the
 map's entry stays until the runtime removes it) and respawned
 if the voice is struck again. This keeps a hundred silent drones
 from costing a hundred delay lines.
+**** TODO UPDATED [Claude] after slice 3: no reaping
+A reaped string cannot ring in sympathy, and a sustained drone
+is exactly the string Jeff wants other keys to excite. A loop
+costs little (32 coupled loops ran at about one percent of a
+core in the discussion's simulation). So a string voice lives
+as long as its 'VoiceState' is in the map, silent or not, and
+nothing else drops it. Slice 4 removes slice 3's reaper.
 ** One loop
 *** Period and tuning
 The loop's round trip is 'P = sample_rate / f0' samples. It is
@@ -239,6 +246,23 @@ octaves and fifths, with no drive, and asserts the total stored
 energy (sum of squares of all delay lines) never rises from one
 block to the next after the excitation ends, for 'r' in {1, 50,
 500}.
+*** TODO UPDATED [Claude] after slice 3: the bridge is lossy
+A real-valued bridge impedance is a resistance: the in-phase
+mode of a voice's loops loses the factor '(r - N) / (r + N)'
+per round trip, and a lone loop loses '1 - 2 / (N + r)'. At
+'r = 50' a 110 Hz note reached -40 dB in 0.43 s against a T60
+curve of 6.8 s. This is physics, not a bug: a light bridge
+radiates. The T60 curve therefore means the string's decay
+against a rigid bridge, and the bridge adds its own loss, which
+grows with pitch (more round trips per second): at 'r = 3000'
+the bridge alone gives a T60 of about 42 s at 110 Hz and 2.6 s
+at 1760 Hz. The default heaviness becomes 3000 (slice 4 changes
+'StringsParams::default()'), and the rig's documentation of
+'bridge.heaviness' (slice 6) states this trade: smaller 'r' is
+stronger sympathy and shorter notes, together. Compensating the
+loss filter for the bridge is unsafe: the anti-phase modes see
+the junction as unity, so a loss filter above 'g' can exceed 1
+there.
 *** 'r' may not be 0
 Validation rejects 'bridge.heaviness <= 0'. (At 'r = 0' and 'N
 = 1' the write is '-v', which halves the pitch.)
@@ -687,6 +711,29 @@ in its report. It listens to nothing (it cannot); the report
 notes any scene whose peak or decay looks wrong numerically.
 
 ** TODO Slice 4: rig schema, settings, reload, engine switch
+*** Corrections carried from slice 3
+**** Remove the silent-string reaper
+See the UPDATED note under "Silent strings are reaped": a
+string voice lives exactly as long as its 'VoiceState'. Delete
+the reaper and its bookkeeping (the kept-reaped-ids set) and the
+test that asserts reaping, keeping the test that a voice removed
+from the map drops its string voice.
+**** Default bridge heaviness 3000
+See the UPDATED note under "The junction". Change the default
+in 'params.rs' and any test that assumed 50; the sympathy test's
+relative bounds should still hold (re-measure).
+**** Slice 3's names the rig schema maps onto
+'StringsParams' with nested 'StringParams', 'ExciterParams',
+'EnergyParams', 'BridgeParams', 'BodyParams', 'HowlParams',
+'ModalParams', enums 'ExciterKind' and 'EnergyKind';
+'StringsRenderer::new(params, sample_rate)', 'render_block(voices,
+data, channels, sample_rate, amplitude, &params)' adopting
+changed params at the top of each block; the public field
+'slide_slew_secs' to set from '[slide].pedal_smoother_ms' as
+'audio.rs' sets 'BlockRenderer::slide_slew_secs';
+'strings::scripted_voices::{struck_voice_state,
+release_voice_state}' for tests; the harness in
+'tools/strings/strings_harness.rs' takes '--out' and '--scene'.
 *** What
 In 'rig.rs': 'SinkRig::CpalStrings { id, sample_rate,
 buffer_frames, amplitude, release_secs, string: StringRig,
