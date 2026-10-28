@@ -432,25 +432,20 @@ fn the_renderer_follows_the_map_by_voice_id() {
   assert!(renderer.string_voice(0).is_none());
   assert_eq!(renderer.string_voice(1).expect("voice 1").birth(), birth); }
 
-/// A held voice whose string has decayed to silence is reaped from
-/// the engine (not the map) after a second, and is not respawned
-/// while it stays in the map.
+/// A held voice whose string has decayed to silence keeps its string
+/// voice, so it can still ring in sympathy.
 #[test]
-fn a_silent_string_is_reaped_and_stays_reaped() {
+fn a_silent_held_string_keeps_its_string_voice() {
   let mut params: StringsParams = StringsParams::default();
   params.string.t60_seconds_at_55hz = 0.05;
   params.string.t60_seconds_at_1760hz = 0.05;
   let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
   let mut voices: VoiceMap = VoiceMap::new();
   voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
-  render_seconds(&mut renderer, &mut voices, &params, 0.5);
-  assert_eq!(renderer.voice_count(), 1, "reaped before a second");
-  let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 1.0);
-  assert_eq!(renderer.voice_count(), 0, "not reaped");
-  assert_eq!(voices.len(), 1, "reaping touched the map");
-  render_seconds(&mut renderer, &mut voices, &params, 0.1);
-  assert_eq!(renderer.voice_count(), 0, "respawned");
-  assert!(peak_of(&rendered[seconds(0.9) ..]) < 1e-6); }
+  let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 2.0);
+  assert!(peak_of(&rendered[seconds(1.5) ..]) < 1e-6, "the string is not yet silent");
+  assert_eq!(voices.len(), 1);
+  assert_eq!(renderer.voice_count(), 1, "the silent string voice was dropped"); }
 
 /// Changed parameters are adopted at the next block: the renderer's
 /// parameters move, and a sounding loop is retuned to the new decay.

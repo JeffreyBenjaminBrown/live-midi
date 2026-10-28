@@ -156,7 +156,9 @@ pub enum EnergyKind {
 pub struct BridgeParams {
   /// Unitless, > 0. The bridge impedance over one loop's: near 0 is a
   /// light bridge (strong coupling), large is heavy (weak, piano-like
-  /// coupling).
+  /// coupling). Being real, it is a resistance: a lighter bridge also
+  /// drains every string faster, the more so the higher the pitch, so
+  /// smaller is stronger sympathy and shorter notes together.
   pub heaviness: f32,
   /// Hz, > 0. Cutoff of the one-pole lowpass on the bridge velocity;
   /// lower keeps the coupling to the low partials.
@@ -239,7 +241,7 @@ impl Default for StringsParams {
         wind_q: 8.0,
         wind_gain: 0.1, },
       bridge: BridgeParams {
-        heaviness: 50.0,
+        heaviness: 3000.0,
         damping_hz: 6000.0, },
       body: BodyParams {
         mix: 0.5,

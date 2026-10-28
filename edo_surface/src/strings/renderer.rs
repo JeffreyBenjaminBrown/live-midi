@@ -13,15 +13,12 @@
 //! junction, writes every loop back, sums each voice's loops times
 //! its gain coefficient and the sink's amplitude, runs the sum
 //! through the body, clamps it to +-0.95 and writes it to every
-//! channel of the frame. After the block it reaps silent strings.
+//! channel of the frame.
 //!
-//! A string is silent when its voice has been in the map for over
-//! `REAP_AFTER_SECONDS`, its excitation has streamed in, and its
-//! loops' energy is below `SILENT_STRING_ENERGY`. Its string voice
-//! is dropped (the map entry stays until the runtime removes it) and
-//! its id is remembered as reaped, so it is not respawned while it
-//! stays in the map: a hundred silent drones then cost no delay
-//! lines.
+//! A string voice lives exactly as long as its `VoiceState` is in
+//! the map, silent or not: a silent sustained string must still be
+//! there to ring in sympathy when another key excites it, and a loop
+//! costs little.
 //!
 //! Nothing allocates per sample: the scratch buffers are sized at
 //! block rate, and the map is filtered in place.
@@ -36,13 +33,6 @@ use crate::voices::{step_voice_controls, SLIDE_SLEW_SECS};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A string voice younger than this, in seconds, is never reaped.
-pub const REAP_AFTER_SECONDS: f32 = 1.0;
-
-/// A string voice whose loops' energy (sum of squares of every delay
-/// line) is below this is silent.
-pub const SILENT_STRING_ENERGY: f32 = 1e-10;
-
 /// The output's clamp, as the sawwave engine's.
 pub const OUTPUT_CLAMP: f32 = 0.95;
 
@@ -56,8 +46,6 @@ pub struct StringsRenderer {
   /// Ordered by id, so the junction sums the loops in the same order
   /// on every run.
   string_voices: BTreeMap<VoiceId, StringVoice>,
-  /// Ids reaped as silent and still in the map.
-  reaped_voice_ids: Vec<VoiceId>,
   /// Scratch: the ids in the map this block, sorted.
   voice_ids_in_map: Vec<VoiceId>,
   /// Scratch: every loop's arriving wave this sample, voice by voice
@@ -81,7 +69,6 @@ impl StringsRenderer {
       body: BodyBank::new(&params.body, sample_rate),
       knock_table: Arc::from(knock_table(&params.exciter, &params.body, sample_rate)),
       string_voices: BTreeMap::new(),
-      reaped_voice_ids: Vec::new(),
       voice_ids_in_map: Vec::new(),
       arriving_waves: Vec::new(),
       sample_clock: 0,
@@ -112,8 +99,7 @@ impl StringsRenderer {
     for frame in data.chunks_mut(channels.max(1)) {
       let sample: f32 = self.render_sample(voices, amplitude);
       for out in frame.iter_mut() {
-        *out = sample; }}
-    self.reap_silent_strings(); }
+        *out = sample; }}}
 
   /// How many string voices the engine holds.
   pub fn voice_count(
@@ -158,7 +144,7 @@ impl StringsRenderer {
       self.knock_table =
         Arc::from(knock_table(&params.exciter, &params.body, self.sample_rate)); }}
 
-  /// Drops the string voices and reaped ids whose voice left the map,
+  /// Drops the string voices whose voice left the map,
   /// spawns a struck string voice for every id new to the engine,
   /// and sizes the scratch for this block's loops.
   fn sync_with_voice_map(
@@ -170,11 +156,9 @@ impl StringsRenderer {
     self.voice_ids_in_map.sort_unstable();
     { // Forget what left the map.
       let ids_in_map: &[VoiceId] = &self.voice_ids_in_map;
-      self.string_voices.retain(|id, _| ids_in_map.binary_search(id).is_ok());
-      self.reaped_voice_ids.retain(|id| ids_in_map.binary_search(id).is_ok()); }
+      self.string_voices.retain(|id, _| ids_in_map.binary_search(id).is_ok()); }
     for voice in voices.values() {
-      let known: bool = self.string_voices.contains_key(&voice.id)
-        || self.reaped_voice_ids.contains(&voice.id);
+      let known: bool = self.string_voices.contains_key(&voice.id);
       if !known && voice.freq.is_finite() && voice.freq > 0.0 {
         let string_voice: StringVoice = self.spawn_struck(voice);
         self.string_voices.insert(voice.id, string_voice); }}
@@ -229,25 +213,7 @@ impl StringsRenderer {
       if let Some(string_voice) = string_voices.get_mut(&voice.id) {
         string_voice.set_gain(step.gain * step.factored_pulse);
         string_voice.retune_if_moved(&params.string, voice.freq); }
-      true }); }
-
-  /// Drops the string voices that are silent (see the module
-  /// comment) and remembers their ids as reaped.
-  fn reap_silent_strings(
-    &mut self,
-  ) {
-    let sample_clock: u64 = self.sample_clock;
-    let youngest_reapable_age: u64 = (REAP_AFTER_SECONDS * self.sample_rate) as u64;
-    let reaped_voice_ids: &mut Vec<VoiceId> = &mut self.reaped_voice_ids;
-    self.string_voices.retain(|id, string_voice| {
-      // An energy window, once the energy pedal exists, will keep a
-      // string from being reaped while it is open; none is open yet.
-      let silent: bool = sample_clock - string_voice.birth() > youngest_reapable_age
-        && string_voice.excitation_finished()
-        && string_voice.energy() < SILENT_STRING_ENERGY;
-      if silent {
-        reaped_voice_ids.push(*id); }
-      !silent }); }}
+      true }); }}
 
 /// One sample of the junction over every loop of `string_voices`:
 /// reads each loop's arriving wave into `arriving_waves` (cleared
