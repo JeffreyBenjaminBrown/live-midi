@@ -21,8 +21,8 @@
 //! sample_rate`.
 
 use crate::strings::params::{
-  dispersion_applies, inharmonicity_b, round_trip_gain, t60_seconds, StringParams,
-  MAX_DISPERSION_SECTIONS,
+  amplitude_after_t60_decay, dispersion_applies, inharmonicity_b, round_trip_gain, t60_seconds,
+  StringParams, MAX_DISPERSION_SECTIONS,
 };
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
@@ -247,12 +247,13 @@ pub fn design_loop(
   sample_rate: f32,
 ) -> LoopDesign {
   let w0: f64 = 2.0 * PI * f0 as f64 / sample_rate as f64;
-  let period_samples: f64 = sample_rate as f64 / f0 as f64;
   let dc_blocker: FirstOrderCoefficients = design_dc_blocker(f0, sample_rate);
   let loss: FirstOrderCoefficients = design_loss(params, f0, sample_rate, &dc_blocker);
-  let delay_without_dispersion: f64 = period_samples
-    - first_order_phase_delay_samples(&loss, w0)
-    - first_order_phase_delay_samples(&dc_blocker, w0);
+  let delay_without_dispersion: f64 = {
+    let period_samples: f64 = sample_rate as f64 / f0 as f64;
+    period_samples
+      - first_order_phase_delay_samples(&loss, w0)
+      - first_order_phase_delay_samples(&dc_blocker, w0) };
   let (dispersion_section_count, dispersion_allpass): (usize, FirstOrderCoefficients) = {
     // The chain is dropped when its delay would not leave the tuning
     // allpass its minimum: a pitch in tune matters more than a stretch.
@@ -262,10 +263,11 @@ pub fn design_loop(
     let leaves_the_tuning_its_minimum: bool = delay_without_dispersion - chain_delay
       >= MINIMUM_DELAY_SAMPLES as f64 + MINIMUM_TUNING_DELAY_SAMPLES;
     if leaves_the_tuning_its_minimum { (section_count, allpass) } else { (0, allpass) }};
-  let delay_for_line_and_tuning: f64 = delay_without_dispersion
-    - dispersion_section_count as f64 * first_order_phase_delay_samples(&dispersion_allpass, w0);
-  let (delay_samples, tuning_delay_samples): (usize, f64) =
-    split_delay_into_whole_and_fraction(delay_for_line_and_tuning);
+  let (delay_samples, tuning_delay_samples): (usize, f64) = {
+    let delay_for_line_and_tuning: f64 = delay_without_dispersion
+      - dispersion_section_count as f64
+        * first_order_phase_delay_samples(&dispersion_allpass, w0);
+    split_delay_into_whole_and_fraction(delay_for_line_and_tuning) };
   LoopDesign {
     delay_samples,
     tuning_delay_samples: tuning_delay_samples as f32,
@@ -337,9 +339,9 @@ fn design_loss(
   let pole: f64 = if w_high >= PI || w_high <= w0 {
     0.0
   } else {
-    let loop_gain_at_high: f64 = 10.0_f64.powf(
-      -3.0 / (f0 as f64 * t60_seconds(params, f0) as f64
-        * params.high_frequency_t60_ratio as f64));
+    let loop_gain_at_high: f64 = amplitude_after_t60_decay(
+      1.0 / f0 as f64,
+      t60_seconds(params, f0) as f64 * params.high_frequency_t60_ratio as f64);
     let gain_at_high: f64 = loop_gain_at_high / first_order_magnitude(dc_blocker, w_high);
     let requested_pole: f64 = one_pole_loss_pole(gain_at_high / gain_at_f0, w0, w_high);
     // The darkest pole whose gain at w0, relative to its DC gain, is

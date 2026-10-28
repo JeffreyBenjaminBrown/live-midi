@@ -16,7 +16,7 @@
 //! the noise has a fixed seed and nothing else is random.
 
 use crate::strings::body::BodyModes;
-use crate::strings::first_order::{one_pole_lowpass, FirstOrderCoefficients, FirstOrderState};
+use crate::strings::first_order::{filtered_from_rest, one_pole_lowpass};
 use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{BodyParams, ExciterKind, ExciterParams};
 use std::f64::consts::PI;
@@ -126,9 +126,7 @@ fn lowpassed(
   cutoff_hz: f32,
   sample_rate: f32,
 ) -> Vec<f32> {
-  let coefficients: FirstOrderCoefficients = one_pole_lowpass(cutoff_hz, sample_rate);
-  let mut state: FirstOrderState = FirstOrderState::default();
-  input.iter().map(|sample| state.tick(&coefficients, *sample)).collect() }
+  filtered_from_rest(&one_pole_lowpass(cutoff_hz, sample_rate), input) }
 
 /// `requested_hz`, clamped below
 /// `HIGHEST_EXCITATION_CUTOFF_FRACTION_OF_SAMPLE_RATE` of the sample
@@ -168,12 +166,18 @@ fn knock_length_samples(
 
 /// `table` scaled so its largest magnitude is `peak` (unchanged if it
 /// is all zeros).
-fn normalized_to_peak(
+pub fn normalized_to_peak(
   table: Vec<f32>,
   peak: f32,
 ) -> Vec<f32> {
-  let largest: f32 = table.iter().fold(0.0, |largest, sample| largest.max(sample.abs()));
+  let largest: f32 = peak_magnitude(&table);
   if largest > 0.0 {
     let scale: f32 = peak / largest;
     table.iter().map(|sample| sample * scale).collect()
   } else { table }}
+
+/// The largest magnitude in `signal`, 0 for an empty one.
+pub fn peak_magnitude(
+  signal: &[f32],
+) -> f32 {
+  signal.iter().fold(0.0, |largest, sample| largest.max(sample.abs())) }

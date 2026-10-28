@@ -138,17 +138,15 @@ impl VoiceKind {
       VoiceKind::Modal(modal_voice) =>
         modal_voice.precharge(amplitude, pedal_power_at_birth, string, sample_rate), }}
 
-  /// Retunes the voice to `f0` if it has moved by more than
-  /// `RETUNE_RELATIVE_THRESHOLD`.
+  /// Retunes the voice to `f0` if it has moved from the voice's pitch
+  /// by more than `RETUNE_RELATIVE_THRESHOLD`.
   pub fn retune_if_moved(
     &mut self,
     params: &StringsParams,
     f0: f32,
   ) {
-    match self {
-      VoiceKind::Loops(string_voice) => string_voice.retune_if_moved(&params.string, f0),
-      VoiceKind::Modal(modal_voice) =>
-        modal_voice.retune_if_moved(&params.string, &params.modal, f0), }}
+    if (f0 / self.f0() - 1.0).abs() > RETUNE_RELATIVE_THRESHOLD {
+      self.retune(params, f0); }}
 
   /// Retunes the voice to `f0` under `params`: a string voice's
   /// loops from the string table, a modal voice's modes from the
@@ -297,16 +295,6 @@ impl StringVoice {
         &self.energy, pedal_power_at_birth, &string_loop.design().loss, string_loop.f0(),
         sample_rate, string_loop.design().delay_samples, peak_per_loop);
       string_loop.add_table(&waveshape); }}
-
-  /// Retunes the loops to `f0` if it has moved from the voice's
-  /// pitch by more than `RETUNE_RELATIVE_THRESHOLD`.
-  pub fn retune_if_moved(
-    &mut self,
-    string: &StringParams,
-    f0: f32,
-  ) {
-    if (f0 / self.f0 - 1.0).abs() > RETUNE_RELATIVE_THRESHOLD {
-      self.retune(string, f0); }}
 
   /// Retunes every loop to `f0`, its unison offset recomputed from
   /// `string.unison_detune_cents`, and every coefficient from

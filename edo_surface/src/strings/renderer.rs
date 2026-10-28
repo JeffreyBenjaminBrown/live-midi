@@ -47,15 +47,12 @@ use crate::strings::exciter::{dry_table, knock_table};
 use crate::strings::howl::HowlPath;
 use crate::strings::junction::Junction;
 use crate::strings::modal::ModalVoice;
-use crate::strings::params::{t60_seconds, StringsParams};
+use crate::strings::params::{amplitude_time_constant_seconds, StringsParams};
 use crate::strings::voice::{StringVoice, VoiceKind};
 use crate::types::{VoiceId, VoiceMap, VoiceState, VoiceStep};
-use crate::voices::{step_voice_controls, SLIDE_SLEW_SECS};
+use crate::voices::{step_voice_controls, OUTPUT_CLAMP, SLIDE_SLEW_SECS};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-/// The output's clamp, as the sawwave engine's.
-pub const OUTPUT_CLAMP: f32 = 0.95;
 
 pub struct StringsRenderer {
   params: StringsParams,
@@ -239,12 +236,9 @@ impl StringsRenderer {
     } else {
       VoiceKind::Loops(StringVoice::new(
         &self.params, voice.id, voice.freq, self.sample_rate, self.sample_clock, dry, knock)) };
-    let precharge: f32 = {
-      let amplitude_time_constant_seconds: f32 =
-        t60_seconds(&self.params.string, voice.freq) / 1000.0_f32.ln();
-      precharge_amplitude(
-        &self.pedal_history, self.sample_clock, &self.params.energy,
-        amplitude_time_constant_seconds, self.sample_rate) };
+    let precharge: f32 = precharge_amplitude(
+      &self.pedal_history, self.sample_clock, &self.params.energy,
+      amplitude_time_constant_seconds(&self.params.string, voice.freq), self.sample_rate);
     if precharge > 0.0 {
       let pedal_power_at_birth: f32 = pedal_power(&self.params.energy, self.pedal_position);
       string_voice.precharge(

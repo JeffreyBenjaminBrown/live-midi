@@ -47,6 +47,7 @@
 //! parameters plays.
 
 use edo_surface::rig::{load_named_rig, load_rig_file, Rig, SinkRig};
+use edo_surface::strings::exciter::peak_magnitude;
 use edo_surface::strings::params::EnergyKind;
 use edo_surface::strings::scripted_voices::{release_voice_state, struck_voice_state};
 use edo_surface::strings::{StringsParams, StringsRenderer};
@@ -197,7 +198,7 @@ fn main(
     if let Err(error) = write_mono_wav(&path, &rendered, rendering.sample_rate) {
       eprintln!("strings_harness: cannot write {}: {error}", path.display());
       return ExitCode::FAILURE; }
-    let peak: f32 = rendered.iter().fold(0.0, |peak, sample| peak.max(sample.abs()));
+    let peak: f32 = peak_magnitude(&rendered);
     let shown_path: PathBuf = fs::canonicalize(&path).unwrap_or(path);
     println!("{}  peak {peak:.4}", shown_path.display()); }
   ExitCode::SUCCESS }

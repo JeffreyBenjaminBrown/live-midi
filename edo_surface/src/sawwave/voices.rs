@@ -132,6 +132,10 @@ pub const GAIN_SLEW_SECS: f32 = 0.02;
 /// of the renderer gets, and the fallback when a rig sets no `[slide]` table.
 pub const SLIDE_SLEW_SECS: f32 = 0.03;
 
+/// Every render engine clamps its output to +-this, below full scale, so
+/// whatever the mix does it never clips the device.
+pub const OUTPUT_CLAMP: f32 = 0.95;
+
 /// The slow-AM LFO wave (bipolar, in [-1,1]) at `phase`, morphed by `shape` in
 /// [0,1] within `family`. shape 0 = the soft end (sine / triangle), shape 1 = a
 /// near-square (edge-limited so it never clicks); in between it interpolates.
@@ -633,22 +637,10 @@ pub fn step_voice_controls(
   // slew (GAIN_SLEW_SECS), per sub-sample, so a sweeping pedal never steps the
   // amplitude at CC rate (zipper). Snaps when close; identity (1.0 -> 1.0)
   // everywhere pedals don't exist.
-  let gap = v.grid_gain_target - v.grid_gain;
-  if gap != 0.0 {
-    v.grid_gain += gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
-    if (v.grid_gain_target - v.grid_gain).abs() < 1e-4 {
-      v.grid_gain = v.grid_gain_target;
-    }
-  }
+  slew_gain_toward(&mut v.grid_gain, v.grid_gain_target, frac, sample_rate);
   // The global volume pedal: the same slew as the grid pedal's. Identity wherever
   // that pedal doesn't exist.
-  let global_gap = v.global_pedal_gain_target - v.global_pedal_gain;
-  if global_gap != 0.0 {
-    v.global_pedal_gain += global_gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
-    if (v.global_pedal_gain_target - v.global_pedal_gain).abs() < 1e-4 {
-      v.global_pedal_gain = v.global_pedal_gain_target;
-    }
-  }
+  slew_gain_toward(&mut v.global_pedal_gain, v.global_pedal_gain_target, frac, sample_rate);
   let gain: f32 = // The volume chain is stored components multiplied here, never baked
     // together: the timbre slot's amplitude, the grid fader's gain, the pedal's
     // grid_gain, and the new-notes pedal's level at the voice's onset
@@ -658,6 +650,22 @@ pub fn step_voice_controls(
       * v.global_pedal_gain;
   VoiceStep { alive: true, factored_pulse, gain }
 }
+
+/// One per-voice gain's slew toward `target` over `frac` of a sample: the gap
+/// closes by `frac / (GAIN_SLEW_SECS * sample_rate)` of itself (all of it at most),
+/// and the gain snaps to `target` once within 1e-4. A gain already at its target is
+/// left untouched.
+fn slew_gain_toward(
+  gain: &mut f32,
+  target: f32,
+  frac: f32,
+  sample_rate: f32,
+) {
+  let gap: f32 = target - *gain;
+  if gap != 0.0 {
+    *gain += gap * (frac / (GAIN_SLEW_SECS * sample_rate)).min(1.0);
+    if (target - *gain).abs() < 1e-4 {
+      *gain = target; }}}
 
 /// A stateful per-stream renderer. With `oversample > 1` it runs the mix at N x the
 /// output rate and decimates back down, so audio-rate AM / FM / waveshaping don't
@@ -749,9 +757,9 @@ impl BlockRenderer {
         } else {
           makeup_state += (target - makeup_state) * slew_coeff;
         }
-        (clean + makeup_state * distort(dirt, stage.curve)).clamp(-0.95, 0.95)
+        (clean + makeup_state * distort(dirt, stage.curve)).clamp(-OUTPUT_CLAMP, OUTPUT_CLAMP)
       }
-      None => (clean + dirt).clamp(-0.95, 0.95),
+      None => (clean + dirt).clamp(-OUTPUT_CLAMP, OUTPUT_CLAMP),
     };
     match &mut self.decimator {
       // Plain path: one sub-step per output sample, no filtering, no latency.

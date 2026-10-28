@@ -505,7 +505,25 @@ pub fn round_trip_gain(
   string: &StringParams,
   f0: f32,
 ) -> f32 {
-  10.0_f32.powf(-3.0 / (f0 * t60_seconds(string, f0))) }
+  amplitude_after_t60_decay(1.0 / f0 as f64, t60_seconds(string, f0) as f64) as f32 }
+
+/// Seconds for the amplitude of a note at `f0` to fall by a factor
+/// `e`: `T60(f0) / ln(1000)`, its decay's time constant.
+pub fn amplitude_time_constant_seconds(
+  string: &StringParams,
+  f0: f32,
+) -> f32 {
+  t60_seconds(string, f0) / 1000.0_f32.ln() }
+
+/// The factor to which a decay that falls 60 dB (a factor 10^-3) in
+/// `t60_seconds` brings an amplitude over `elapsed_seconds`:
+/// `10 ^ (-3 elapsed / t60)`. Over one round trip it is a loop's gain
+/// (`round_trip_gain`), over one sample a resonator's pole radius.
+pub fn amplitude_after_t60_decay(
+  elapsed_seconds: f64,
+  t60_seconds: f64,
+) -> f64 {
+  10.0_f64.powf(-3.0 * elapsed_seconds / t60_seconds) }
 
 /// Whether a loop at `f0` carries a dispersion chain: it has sections
 /// and `B(f0)` is above the perceptual threshold, below which the

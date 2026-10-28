@@ -35,6 +35,14 @@ impl FirstOrderState {
     self.previous_output = output;
     output }}
 
+/// `input` through the filter of `coefficients`, from rest.
+pub fn filtered_from_rest(
+  coefficients: &FirstOrderCoefficients,
+  input: &[f32],
+) -> Vec<f32> {
+  let mut state: FirstOrderState = FirstOrderState::default();
+  input.iter().map(|sample| state.tick(coefficients, *sample)).collect() }
+
 /// The first-order allpass `(a + z^-1) / (1 + a z^-1)` whose phase
 /// delay at `w` is exactly `delay_samples`:
 /// `a = sin((1 - d) w / 2) / sin((1 + d) w / 2)`. As `w` falls this

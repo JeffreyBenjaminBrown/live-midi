@@ -107,8 +107,11 @@
 //! sounds a silent string too, and its level is `wind_gain`'s, not
 //! `energy.drive_limit`'s.
 
-use crate::strings::body::Resonator;
-use crate::strings::first_order::{one_pole_highpass, FirstOrderCoefficients, FirstOrderState};
+use crate::strings::body::{Resonator, HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE};
+use crate::strings::exciter::normalized_to_peak;
+use crate::strings::first_order::{
+  filtered_from_rest, one_pole_highpass, FirstOrderCoefficients, FirstOrderState,
+};
 use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{EnergyKind, EnergyParams};
 use crate::types::VoiceId;
@@ -145,10 +148,6 @@ pub const BOW_DRIVE_HIGHPASS_BELOW_F0: f32 = 10.0;
 
 /// The wind's Strouhal frequency is clamped to at least this, Hz.
 pub const LOWEST_STROUHAL_HZ: f32 = 20.0;
-
-/// The wind's Strouhal frequency is clamped to at most this fraction
-/// of the sample rate, where a bandpass is still a resonance.
-pub const HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE: f32 = 0.45;
 
 /// The wind's bandpass is redesigned when the Strouhal frequency
 /// has moved by more than this fraction (1 percent, 17 cents) from
@@ -255,25 +254,28 @@ pub fn precharge_amplitude(
     return 0.0; }
   let step_samples: f64 = history.step_samples();
   let step_seconds: f64 = step_samples / sample_rate as f64;
-  let birth_seconds: f64 = birth as f64 / sample_rate as f64;
-  let ex_post_seconds: f64 = energy.ex_post_energizing_ms as f64 / 1000.0;
-  let tau: f64 = amplitude_time_constant_seconds as f64;
-  let first_point: u64 =
-    ((birth as f64 - ex_ante_seconds * sample_rate as f64) / step_samples).ceil().max(0.0) as u64;
-  let last_point: u64 = (birth as f64 / step_samples).floor() as u64;
-  let decay_per_point: f64 = (-step_seconds / tau).exp();
-  let mut decay_since_point: f64 = (-(birth_seconds - last_point as f64 * step_seconds) / tau).exp();
-  let mut sum: f64 = 0.0;
-  for point in (first_point ..= last_point).rev() {
-    // Walking back from birth, each point has decayed one step more.
-    let pedal: f32 = history.position_at_point(point);
-    if pedal > 0.0 {
-      let point_seconds: f64 = point as f64 * step_seconds;
-      let triangle: f64 = tri(point_seconds, birth_seconds, ex_ante_seconds, ex_post_seconds);
-      sum += triangle
-        * (pedal as f64).powf(energy.pedal_energy_exponent as f64)
-        * decay_since_point; }
-    decay_since_point *= decay_per_point; }
+  let sum: f64 = {
+    let birth_seconds: f64 = birth as f64 / sample_rate as f64;
+    let ex_post_seconds: f64 = energy.ex_post_energizing_ms as f64 / 1000.0;
+    let tau: f64 = amplitude_time_constant_seconds as f64;
+    let first_point: u64 = ((birth as f64 - ex_ante_seconds * sample_rate as f64) / step_samples)
+      .ceil().max(0.0) as u64;
+    let last_point: u64 = (birth as f64 / step_samples).floor() as u64;
+    let decay_per_point: f64 = (-step_seconds / tau).exp();
+    let mut decay_since_point: f64 =
+      (-(birth_seconds - last_point as f64 * step_seconds) / tau).exp();
+    let mut sum: f64 = 0.0;
+    for point in (first_point ..= last_point).rev() {
+      // Walking back from birth, each point has decayed one step more.
+      let pedal: f32 = history.position_at_point(point);
+      if pedal > 0.0 {
+        let point_seconds: f64 = point as f64 * step_seconds;
+        let triangle: f64 = tri(point_seconds, birth_seconds, ex_ante_seconds, ex_post_seconds);
+        sum += triangle
+          * (pedal as f64).powf(energy.pedal_energy_exponent as f64)
+          * decay_since_point; }
+      decay_since_point *= decay_per_point; }
+    sum };
   (energy.precharge_gain as f64 * step_seconds * sum) as f32 }
 
 /// The energy factor `tri(t) * pedal ^ e` of a voice born at engine
@@ -287,16 +289,12 @@ pub fn ex_post_energy_factor(
   sample_rate: f32,
   pedal_position: f32,
 ) -> f32 {
-  let ex_post_samples: f64 = energy.ex_post_energizing_ms as f64 / 1000.0 * sample_rate as f64;
-  let since_birth: f64 = now.saturating_sub(birth) as f64;
-  if since_birth > ex_post_samples {
+  let triangle: f64 = { // On the ex-post leg, so the ex-ante leg's length is moot.
+    let since_birth_seconds: f64 = now.saturating_sub(birth) as f64 / sample_rate as f64;
+    tri(since_birth_seconds, 0.0, 0.0, energy.ex_post_energizing_ms as f64 / 1000.0) };
+  if triangle <= 0.0 {
     return 0.0; }
-  let pedal: f32 = reported_position(pedal_position);
-  if pedal <= 0.0 {
-    return 0.0; }
-  let triangle: f32 =
-    if ex_post_samples > 0.0 { (1.0 - since_birth / ex_post_samples) as f32 } else { 1.0 };
-  triangle * pedal.powf(energy.pedal_energy_exponent) }
+  triangle as f32 * pedal_power(energy, pedal_position) }
 
 /// The pedal's power `pedal ^ e` at `pedal_position` (NaN when it
 /// never reported, which counts as 0) under `energy`: the factor
@@ -358,10 +356,7 @@ pub fn precharge_waveshape(
       let partial_number: u32 =
         wind_precharge_partial_number(energy, pedal_power_at_birth, f0, sample_rate);
       sine_waveshape(partial_number as f32 * f0, sample_rate, length) }};
-  let unscaled_peak: f32 = unscaled.iter().fold(0.0, |largest, value| largest.max(value.abs()));
-  if unscaled_peak <= 0.0 {
-    return unscaled; }
-  unscaled.iter().map(|value| value * peak / unscaled_peak).collect() }
+  normalized_to_peak(unscaled, peak) }
 
 /// What the drive of `energy.kind` adds into every loop of a voice
 /// this sample, given the voice's `state`, the energy factor `tri(t) *
@@ -526,14 +521,16 @@ pub fn wind_precharge_partial_number(
 
 /// The Strouhal frequency `f_s = energy.wind_speed_hz_max *
 /// pedal_power`, clamped to [`LOWEST_STROUHAL_HZ`,
-/// `HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE * sample_rate`].
+/// `body::HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE * sample_rate`]: as
+/// high as a body mode may sit, since the wind's bandpass is a body
+/// mode's resonator.
 pub fn strouhal_frequency_hz(
   energy: &EnergyParams,
   pedal_power: f32,
   sample_rate: f32,
 ) -> f32 {
   (energy.wind_speed_hz_max * pedal_power)
-    .clamp(LOWEST_STROUHAL_HZ, HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE * sample_rate) }
+    .clamp(LOWEST_STROUHAL_HZ, HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE * sample_rate) }
 
 /// The seed of the wind noise of the voice `voice_id`: its id mixed
 /// (Knuth's multiplicative hash) into `WIND_NOISE_SEED_BASE`, so
@@ -572,13 +569,12 @@ fn bow_waveshape(
   sample_rate: f32,
   length: usize,
 ) -> Vec<f32> {
-  let mut loss_state: FirstOrderState = FirstOrderState::default();
-  (0 .. length)
+  let sawtooth: Vec<f32> = (0 .. length)
     .map(|index| {
       let cycles: f64 = f0 as f64 * index as f64 / sample_rate as f64;
-      let sawtooth: f32 = (2.0 * cycles.fract() - 1.0) as f32;
-      loss_state.tick(loss, sawtooth) })
-    .collect() }
+      (2.0 * cycles.fract() - 1.0) as f32 })
+    .collect();
+  filtered_from_rest(loss, &sawtooth) }
 
 /// `sin(2 pi frequency t)` at the first `length` samples.
 fn sine_waveshape(

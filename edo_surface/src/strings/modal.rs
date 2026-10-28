@@ -60,10 +60,10 @@ use crate::strings::energy::{drive, precharge_waveshape, DriveState};
 use crate::strings::exciter::period_samples;
 use crate::strings::loop_dsp::design_loop;
 use crate::strings::params::{
-  inharmonicity_b, round_trip_gain, t60_seconds, EnergyParams, ModalParams, StringParams,
-  StringsParams, MAX_MODAL_MODES,
+  amplitude_after_t60_decay, inharmonicity_b, round_trip_gain, t60_seconds, EnergyParams,
+  ModalParams, StringParams, StringsParams, MAX_MODAL_MODES,
 };
-use crate::strings::voice::{ExcitationStream, RETUNE_RELATIVE_THRESHOLD};
+use crate::strings::voice::ExcitationStream;
 use crate::types::VoiceId;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -175,17 +175,6 @@ impl ModalVoice {
       &self.energy, pedal_power_at_birth, &design_loop(string, self.f0, sample_rate).loss,
       self.f0, sample_rate, period_samples(self.f0, sample_rate), amplitude);
     self.excitation.add_into_dry_table(&waveshape); }
-
-  /// Re-designs the modes at `f0` if it has moved from the voice's
-  /// pitch by more than `RETUNE_RELATIVE_THRESHOLD`.
-  pub fn retune_if_moved(
-    &mut self,
-    string: &StringParams,
-    modal: &ModalParams,
-    f0: f32,
-  ) {
-    if (f0 / self.f0 - 1.0).abs() > RETUNE_RELATIVE_THRESHOLD {
-      self.retune(string, modal, f0); }}
 
   /// Re-designs every mode at `f0` from `string` and `modal`, keeping
   /// the states of the modes that stay; modes that join start from
@@ -327,7 +316,7 @@ pub fn design_modes(
     if frequency_hz >= highest_hz {
       break; }
     let t60: f64 = mode_t60_seconds(string, f0, frequency_hz as f32) as f64;
-    let pole_radius: f64 = (-1000.0_f64.ln() / (t60 * sample_rate as f64)).exp();
+    let pole_radius: f64 = amplitude_after_t60_decay(1.0 / sample_rate as f64, t60);
     let angle: f64 = 2.0 * PI * frequency_hz / sample_rate as f64;
     designs[mode_count] = ModeDesign {
       frequency_hz: frequency_hz as f32,
