@@ -1,0 +1,784 @@
+#+title: Plan: the strings engine and the energy-pedal rig
+
+* Assignment and authority
+This plan is the executable form of the decisions in
+'TODO/resonance/01_discussion.org' (Jeff's vision, my reply, and
+his answers). Nothing here is open for discussion; the discussion
+is background nobody needs to read. Jeff asked that each slice be
+executed unattended by one Opus 5.5 agent at high effort, and
+that the orchestrator (Claude Fable) review each slice and keep
+the record in '03_review.org'. The target state Jeff named:
+** He can try it on the monome
+With the six-key shift pad, the push-the-cell-below sustain
+handle, and the three sustain buttons (OFF, ON, TOGGLE).
+** The config hot-reloads
+'r' then Enter at the running shell, as every surfaces rig does.
+** The config file is obvious
+One grouping headline holds the parameters we discussed, another
+the parameters he might also enjoy. Enums where a choice is among
+kinds, floats elsewhere. Every parameter states its units, its
+useful range, its qualitative purpose, and then the math of what
+it does to the system. The tree nests as the problem divides,
+not at a uniform depth. The rig format already lets him regroup
+and annotate headlines freely as long as the keywords stay; that
+must remain so.
+** Where he has not chosen, code a few options behind an enum
+Strings only, but pluck and strike both, and the three ways of
+putting continuous energy into a string.
+
+* Commits
+Each slice ends with one or a few git commits, each naming this
+plan and the slice ("plan 02, slice 3: ...") in its title line.
+The slice's last commit also marks the slice headline here DONE
+and carries the slice's docs. Commit messages follow
+'coding-advice/commit-messages.org': a title, and a detail only
+when the changes are disparate or the codebase does not already
+describe them. Every commit ends with the line
+'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'.
+Agents commit only files the slice touched. The untracked
+'coding-advice/', 'docker-typedb-rust/' and 'run.sh' are Jeff's
+and are never added, and 'TODO/resonance/03_review.org' is the
+orchestrator's.
+
+* Scope
+** In
+*** A second render engine, the strings engine
+Beside the sawwave engine, selected per rig by a new sink kind
+'cpal_strings'. It renders the same shared voice map the grid
+threads already drive, so every press, release, sustain, shift,
+volume and pedal path of the surfaces runtime works unchanged.
+*** A string voice
+An extended Karplus-Strong loop with fractional-delay tuning, a
+loss filter specified as decay time in seconds, an optional
+dispersion allpass chain, one to three unison loops per note, a
+deterministic pluck or strike excitation with a synthetic body
+knock, and a DC blocker.
+*** The junction
+One shared bridge that couples every sounding loop, passive by
+construction, with its heaviness as the one knob.
+*** The body
+A bank of parallel resonators on the summed output.
+*** The energy pedal
+A new expression-pedal role whose history pre-charges a string
+at key-down and whose live position drives the string for a
+window after key-down, through Jeff's asymmetric triangle and
+exponent.
+*** The listening harness
+A binary that renders scripted scenes to WAV files from a rig's
+string parameters, so parameters can be judged by ear without
+grids.
+*** The rig 'energy-pedal_monome' and its readme
+*** Hot reload of every string parameter
+*** The options
+The howl path, the modal crossover for the top register, and
+the bow and wind energy kinds.
+** Out
+Recorded impulse responses and convolution (synthetic body
+only; Jeff chose synthetic). Positive-real bridge filters with
+modes (the bridge is a scalar and a one-pole lowpass; a modal
+bridge is a later plan). Reworking the old rigs beyond what the
+changed types force. Velocity.
+
+* Vocabulary
+Terms coined or fixed by this plan. Code, docs and rig keys use
+these words and no synonyms.
+** The sawwave engine
+The existing per-voice oscillator render in
+'edo_surface/src/sawwave/voices.rs' ('accumulate_voices',
+'BlockRenderer'). Rigs select it with a 'cpal_synth' sink.
+** The strings engine
+The new render in 'edo_surface/src/strings/'. Rigs select it
+with a 'cpal_strings' sink.
+** Voice control state
+The 'VoiceState' in 'sawwave/types.rs': the control-rate facts
+about a voice (frequency, envelope, the gain components) that
+both engines read. The grid threads write it; neither engine
+owns it. It stays 'Copy' and heap-free.
+** String voice
+The strings engine's per-voice audio state, keyed by 'VoiceId'.
+It holds one or more loops and the exciter and drive state.
+** Loop
+One delay-line loop: delay line, tuning allpass, dispersion
+chain, loss filter, DC blocker. A string voice with
+'unison_count' 2 has two loops, each a member of the junction.
+** Junction
+The shared bridge. Every loop hands it the wave arriving at the
+bridge and takes back the bridge velocity minus that wave.
+** Bridge heaviness
+The junction's 'r': the bridge impedance over one loop's. 'r'
+near 0 is a light bridge (strong, self-normalizing coupling);
+'r' large is a heavy bridge (weak, piano-like coupling).
+** Body
+The radiation filter on the summed output: a bank of parallel
+second-order resonators. Not inside any loop.
+** Knock
+The body's own short response to being hit, convolved into the
+exciter's table. Synthesized from the same body parameters.
+** Exciter
+What starts a note: the table read into the loops at key-down.
+Two kinds, 'pluck' and 'strike'.
+** Energy pedal
+The expression pedal in role 'string_energy'. Rig-wide.
+** Energy window
+Per note: from key-down minus 'ex_ante_energizing_ms' to
+key-down plus 'ex_post_energizing_ms'. The triangle is 0 at the
+start, 1 at key-down, 0 at the end, linear on each side.
+** Pre-charge
+The energy a string holds at key-down from the pedal's history
+over the ex-ante leg, computed as one weighted sum and written
+into the loops as one period of a waveshape.
+** Drive
+The per-sample signal added into a loop by the energy source
+during the ex-post leg. Its gain is 'k'.
+** Growth rate
+Nepers per second of amplitude growth the drive aims for; the
+pedal maps to this, and 'k' is derived from it per note so the
+feel is register-independent.
+** Howl path
+The optional active loop: sum of all loops, gain, tanh, delay,
+added into every loop. Off by default.
+** Crossover
+The pitch above which a note is a modal voice (a few resonators)
+instead of loops.
+** Energy kind
+Which continuous-energy model the drive uses: 'ebow', 'bow' or
+'wind'.
+** Harness
+The 'strings_harness' binary in 'tools/strings/'.
+
+* Agreed behavior
+** The strings engine renders the shared voice map
+*** Every 'VoiceState' in the map is a sounding string voice
+The engine keeps a string voice for each 'VoiceState.id' it
+sees. A new id spawns a string voice tuned to 'freq' and reads
+the exciter table (scaled by 'pick_energy') plus the pre-charge
+into its loops. An id that leaves the map drops its string
+voice. A 'VoiceState' whose 'env' and 'target_env' are both 0
+leaves the map exactly as it does now.
+*** The output of a voice is its loops' sum times its gains
+The gain coefficient is the one the sawwave engine computes:
+'env * timbre.gain * fader_gain * grid_gain * new_pedal_gain *
+global_pedal_gain * amplitude', with the factored pulse and the
+timbre's AM ignored (the strings engine has no AM, FM or
+waveform; a timbre's 'gain' still applies). The envelope is the
+damper: 'note_off' ramps 'env' to 0 over 'release_secs' and the
+string falls silent; a sustained (drone) voice keeps 'env' at 1
+and rings on its own decay.
+*** The engine retunes a loop when its voice's 'freq' moves
+Glides, pedal slides, edit retunes and the crowded-pitch ratio
+all move 'freq'. When a loop's target pitch differs from its
+current one by more than 0.01 percent, the loop retunes (delay
+length, tuning allpass, loss and dispersion coefficients).
+*** Keying by id survives a sustain
+'SurfaceSink::sustain_note' moves a 'VoiceState' from its cell
+key to a drone key without changing 'id', so the string voice
+continues. Keying by 'VoiceSource' would restart it; the engine
+must key by 'VoiceId'.
+*** Silent strings are reaped
+A string voice whose voice has been in the map for over one
+second and whose loops' energy has fallen below 1e-10 while no
+window is open is dropped from the engine (not from the map; the
+map's entry stays until the runtime removes it) and respawned
+if the voice is struck again. This keeps a hundred silent drones
+from costing a hundred delay lines.
+** One loop
+*** Period and tuning
+The loop's round trip is 'P = sample_rate / f0' samples. It is
+'N' integer samples of delay plus a first-order Thiran allpass
+with fractional delay 'D' in [0.5, 1.5), minus the phase delay
+at 'f0' of the loss filter and of the dispersion chain, all
+subtracted so the loop sounds at 'f0'. 'a = (1 - D) / (1 + D)'
+and 'H(z) = (a + z^-1) / (1 + a z^-1)'. A unit test asserts the
+rendered pitch within 2 cents at 55, 440, 1760 and 3000 Hz.
+*** Loss
+A one-pole 'H(z) = g (1 + a) / (1 + a z^-1)', 'a' in (-1, 0].
+The per-round-trip gain at 'f0' is
+'g = 10 ^ (-3 / (f0 * T60(f0)))' where 'T60(f0)' is the decay
+time curve: log-linear in 'log2(f0)' between
+'string.t60_seconds_at_55hz' and 'string.t60_seconds_at_1760hz',
+extrapolated beyond. 'a' is set so that the round-trip gain at
+the reference frequency 'string.high_frequency_hz' (default
+4000) is 'g_hf = 10 ^ (-3 / (f0 * T60(f0) *
+string.high_frequency_t60_ratio))', solved in closed form from
+'|H(e^jw)|^2 = g^2 (1 + a)^2 / (1 + 2 a cos w + a^2)'. If the
+reference frequency is at or above Nyquist, 'a' is 0. A unit
+test asserts a rendered T60 within 10 percent at 110 and 880 Hz.
+*** Dispersion
+'M = string.dispersion_sections' identical first-order allpass
+sections with the Rauhala-Välimäki coefficient from 'B(f0)' and
+'f0', as in Faust's 'piano_dispersion_filter' (the formula and
+constants are quoted in
+'01_discussion/lit_strings-and-bodies.org' under "Fix 6"). 'B'
+is log-linear in 'log2(f0)' between
+'string.inharmonicity_b_at_55hz' and
+'string.inharmonicity_b_at_1760hz'. The chain is skipped
+(zero sections, zero delay) when 'M' is 0 or when 'B' is below
+the perceptual threshold 'exp(2.54 ln f0 - 24.6)'. Its phase
+delay at 'f0' is subtracted from the loop delay.
+*** DC blocker
+'y = x - x1 + 0.995 y1' inside the loop, after the loss filter.
+*** Unisons
+'string.unison_count' loops (1 to 3), the k-th detuned by
+'(k - (count - 1) / 2) * string.unison_detune_cents', all with
+the same loss. The exciter table is split equally among them.
+Each is its own junction member.
+** The junction
+*** The formula
+Per sample, with 'N' the number of loops currently in the
+engine and 'r = bridge.heaviness':
+'v_b = L( (2 / (N + r)) * sum_i v_i )', where 'v_i' is the wave
+arriving at the bridge from loop i (its delay-line read after
+tuning, dispersion and loss) and 'L' is a one-pole lowpass with
+DC gain 1 and cutoff 'bridge.damping_hz'. Each loop then writes
+'v_i - v_b + excitation_i + drive_i' into its delay line (the
+nut's inversion folded in). With 'r > 0' and 'L' of gain at
+most 1 the junction removes energy or leaves it; it never adds.
+*** Stability test
+A unit test excites 32 loops at pitches including unisons,
+octaves and fifths, with no drive, and asserts the total stored
+energy (sum of squares of all delay lines) never rises from one
+block to the next after the excitation ends, for 'r' in {1, 50,
+500}.
+*** 'r' may not be 0
+Validation rejects 'bridge.heaviness <= 0'. (At 'r = 0' and 'N
+= 1' the write is '-v', which halves the pitch.)
+*** Per sample, inside the callback
+The junction runs sample by sample. No whole-buffer delay sits
+in the coupling path (the discussion records why: it diverges).
+** The body
+'body.mode_count' parallel second-order resonators, center
+frequencies log-spaced from 'body.lowest_hz' to
+'body.highest_hz' with a deterministic per-mode jitter from
+'body.seed', each of bandwidth 'f_k / body.q', with gains
+falling as '1 / sqrt(f_k / lowest_hz)'. Output is
+'(1 - body.mix) * dry + body.mix * wet / norm' where 'norm'
+makes a white-noise input's RMS equal in and out. 'mix' 0 is
+exactly the dry sum. The same bank, impulse-excited and
+multiplied by 'exp(-t / (knock_ms / 6.9))', is the knock table.
+** The exciter
+*** Pluck
+White noise from a fixed seed, one period long, through a
+one-pole lowpass whose cutoff is 'exciter.brightness' times
+'f0' (clamped below Nyquist), then the position comb
+'1 - z^-round(position * P)' with 'exciter.position' in (0,
+0.5], then convolved with the knock table scaled by
+'exciter.knock_mix'. Total amplitude normalized so the table's
+peak is 'exciter.pick_energy'.
+*** Strike
+'exciter.strike_pulses' raised-cosine pulses, each of width
+'exciter.hammer_contact_fraction * P' samples, spaced one pulse
+width apart, through the same lowpass, comb and knock,
+normalized the same way.
+*** Determinism
+The same parameters and pitch give the same table every time.
+** The energy pedal
+*** Role and plumbing
+A new 'PedalRole::StringEnergy' ('role = "string_energy"'),
+rig-wide (its 'monome' is ignored if given and may be left
+out), at most one per rig, and only on a rig whose play grids
+use a 'cpal_strings' sink (validation rejects it otherwise).
+'pedal_toggle' windows may not name this role. The pedal thread
+publishes the pedal's normalized position (through its taper,
+so 'range_db' and the curve knobs work as for the other roles)
+into one shared 'AtomicU32' of f32 bits, NaN until the first
+CC. The strings engine reads it every callback and keeps its own
+history ring of one position per callback, long enough for the
+longest 'ex_ante_energizing_ms' (10 s).
+*** The window
+For a string voice born at engine time 'T' (the callback in
+which its id first appears), 'tri(t)' is
+'(t - (T - ex_ante)) / ex_ante' on '[T - ex_ante, T]',
+'1 - (t - T) / ex_post' on '[T, T + ex_post]', and 0 elsewhere.
+'ex_ante = energy.ex_ante_energizing_ms', 'ex_post =
+energy.ex_post_energizing_ms'. 'pedal(t)' is the history
+position at 't', taken as 0 where unreported (NaN).
+'e = energy.pedal_energy_exponent' (validated > 0). The energy
+factor is 'tri(t) * pedal(t) ^ e'.
+*** The pre-charge
+At birth the engine computes
+'A0 = energy.precharge_gain * sum_j dt * tri(t_j) * pedal(t_j)^e
+* exp(-(T - t_j) / tau)' over the history samples in the
+ex-ante leg, with 'dt' the callback period in seconds and
+'tau = T60(f0) / ln(1000)' the voice's amplitude time constant.
+It then adds to each loop's delay line one period of the
+pre-charge waveshape scaled by 'A0 / unison_count': for 'ebow'
+a sine at 'f0' plus 0.2 of a sine at '2 f0'; for 'bow' a
+sawtooth through the loop's own loss filter; for 'wind' a sine
+at the partial nearest the Strouhal frequency (see the wind
+kind below). With no pedal history (never reported) 'A0' is 0.
+*** The drive, ebow kind
+During the ex-post leg each loop adds per sample
+'drive = k * A * tanh(v / A)', with 'v' the loop's own arriving
+wave, 'A = energy.drive_limit', and 'k = max(0, exp(rate / f0)
+- g)' where 'rate = energy.growth_rate_per_second_max * tri(t)
+* pedal(t)^e' and 'g' is the loop's round-trip gain at 'f0'.
+Below the natural loss 'k' is 0 and the drive does nothing.
+Outside the window 'k' is 0. A test asserts that a note with a
+full pedal and a 1 s ex-post leg grows and a note with the pedal
+at 0 decays as without the pedal.
+*** Only the window gates the drive
+Whether a finger holds the note, whether it is sustained, and
+whether it has been retriggered do not enter. A re-strike makes
+a new 'VoiceState' (a new id), hence a new window.
+** Hot reload
+Every string parameter is in 'LiveParams' (so 'StringsParams'
+is 'Copy'). The engine compares the params it last used with
+the ones read each callback: a change to loss, dispersion,
+bridge, body, howl or crossover parameters is applied to
+sounding loops at once (filters recomputed; the body bank
+rebuilt); a change to exciter or energy parameters applies to
+notes born afterward. A test adopts a rig with a changed
+'t60_seconds_at_55hz' through 'adopt_rig' and asserts the
+renderer's next block uses it.
+** The harness
+'cargo run -p tools --bin strings_harness -- [--rig NAME]
+[--scene NAME] [--out DIR]' renders each scene to
+'DIR/<scene>.wav' (default 'target/strings-harness/', mono f32,
+the rig's sample rate), printing each file's path and peak.
+Without '--rig' it uses 'StringsParams::default()'. Scenes:
+'single_notes' (55, 110, 220, 440, 880, 1760 Hz, each 2 s with
+the damper at 1.5 s), 'chord' (four notes held 4 s),
+'restrike' (the chord sustained, one note struck again at 2 s),
+'pedal_swell' (pedal 0 to 1 over the second before a key-down,
+held through the ex-post leg), 'sympathy' (one loud note struck
+while four others ring quietly). The harness drives the engine
+exactly as the runtime does: by inserting and editing
+'VoiceState's in a 'VoiceMap' and calling the engine's block
+render, so what it renders is what the rig plays.
+** The rig 'energy-pedal_monome'
+Derived from 'volpedal-newnotes-and-global_granular-sustain':
+the same tuning (41-EDO, 110 Hz, x-step 8, y-step 1), two
+unpinned 16x16 grids of which either may be absent, each with
+an 'edo_note_grid' with 'sustain_handle = "below"' and
+'flash_sustained', an 'edo_shift_pad' at [13, 0, 15, 1], and
+the three 'accrete_control' cells at (6, 15), (7, 15), (8, 15)
+with 'needs_holding' initially on. No waveform selector, no
+volume strip, no pedal toggles. One 'cpal_strings' sink. One
+'[[expression_pedals]]' entry, channel 1, role 'string_energy'.
+Its readme follows the volpedal readme's shape.
+** The options
+*** Howl path
+'howl.gain' (0 = off), 'howl.level', 'howl.delay_ms' in [0.5,
+20]. Per sample: 'h = howl.level * tanh(howl.gain * sum_i v_i)'
+is delayed 'howl.delay_ms' and added into every loop's write.
+Bounded for any gain because tanh is.
+*** Modal crossover
+A note whose 'f0' is above 'modal.crossover_hz' is rendered by
+'modal.mode_count' second-order resonators at
+'k f0 sqrt(1 + B k^2)' with per-mode round-trip-equivalent
+decay from the same T60 curve and ratio, excited by the same
+table, instead of loops. It is a junction member whose arriving
+wave is its output and which adds '-v_b' to its input. The
+crossover defaults to 2000 Hz; 0 disables it.
+*** Bow kind
+'energy.kind = "bow"': the drive is the STK friction table,
+'bow = (|(v_b - v) * slope| + 0.75)^-4' clamped to [0.0025,
+0.245] with 'v_b = energy.bow_velocity * tri(t) * pedal(t)^e',
+added as '(v_b - v) * bow', with 'slope = energy.bow_force' in
+[1, 10]. Expect non-starts at extreme settings; the readme says
+so.
+*** Wind kind
+'energy.kind = "wind"': the drive is white noise through a
+second-order bandpass at the Strouhal frequency
+'f_s = energy.wind_speed_hz_max * pedal(t)^e' with Q
+'energy.wind_q', scaled by 'tri(t) * energy.wind_gain'. The
+partial nearest 'f_s' blooms.
+** What stays as it is
+*** Every 'cpal_synth' rig renders bit-identically
+The control-stepping refactor must not change the sawwave
+output. The agent proves it by rendering a scripted voice map
+before and after the refactor and diffing the buffers (a
+one-time check, not a workspace member).
+*** The grid threads do not know which engine renders
+No surfaces-runtime module outside 'audio.rs', 'settings.rs',
+'reload.rs' and 'pedal_volume.rs' changes for the engine.
+*** Default behaviors Jeff sees
+Sustain via the handle, the three sustain buttons' semantics,
+the shift pad, 'r' reload, the red report for missing gear, and
+the pedal bridge requirement all behave as the volpedal readme
+describes.
+
+* Pitfalls the slices must respect
+Facts about the existing code, with where they live.
+** The sawwave render reaps voices inside 'accumulate_voices'
+'voices.retain(...)' in 'sawwave/voices.rs' drops a voice when
+'env == 0 && target_env == 0'. The strings engine must do the
+same reaping (the runtime relies on the map shrinking) and must
+drop the matching string voice.
+** 'VoiceState' is 'Copy' and the grid threads clone it
+Every grid thread snapshots and edits 'VoiceState's under the
+map lock ('surfaces_runtime/synth.rs', some 30 free functions).
+Adding a heap field would break 'Copy'; adding any field means
+touching every constructor ('note_on_with_phase_and_gain',
+'spawn_accretion_voice', the looper's sink, the tests). Do not
+add fields. The engine's per-voice state lives in the engine.
+** The audio callback owns the renderer
+'surfaces_runtime/audio.rs' moves a 'BlockRenderer' into the
+cpal closure and reads 'live.params' every callback. The
+strings engine's renderer is owned the same way; it is never
+shared with a grid thread. 'start_null' (headless runs) builds
+no renderer at all.
+** 'resolve_settings' insists on 'cpal_synth'
+'surfaces_runtime/settings.rs' lines 254-280 find the first
+'edo_note_grid', look up its sink and destructure
+'SinkRig::CpalSynth', erroring otherwise. This is the one place
+the strings sink is admitted. The sawwave-only fields it fills
+('oversample', 'sustain_level', 'decay_secs', the distortion
+knobs, 'crowded_pitch_planck_deviation',
+'retrigger_tail_detune_cents', 'attack') take these values for
+a strings sink: oversample 1, sustain_level 1.0, decay_secs 0
+(the pluck envelope off; 'pluck_envelope' returns (peak, 1.0)
+for either), attack 0.001, distortion off with makeup 1.0 and
+auto off, crowded deviation 0, retrigger detune 0.
+** 'LiveParams' is 'Copy' and read every callback
+'surfaces_runtime/reload.rs': 'live_params' builds it from
+'Settings'; 'adopt_rig' replaces it and bumps 'generation';
+'refresh_live' copies the grid-thread subset. 'StringsParams'
+goes in as 'Option<StringsParams>' ('None' for sawwave rigs)
+and must be 'Copy', so it holds no 'Vec'; the body's mode table
+is derived in the renderer.
+** The pedal thread dispatches on 'PedalTarget'
+'surfaces_runtime/pedal_volume.rs', 'expression_pedal_loop':
+the 'match target' handles 'Grid' and, in one arm, 'NewNote'
+and 'Global', which 'continue' before the grid-volume code. A
+'StringEnergy' arm goes beside them. 'PedalTarget' is in
+'settings.rs' (line 227) and resolved from 'PedalRole' at line
+590. 'LiveParams.expression_pedals' is read fresh each poll, so
+the role is hot-reloadable like the others.
+** Pedal validation lives in two functions
+'rig.rs' 'validate_expression_pedals' (line 2109) and
+'validate_pedal_toggles' (line 2236). The first matches on
+'PedalRole' exhaustively (a new variant must be handled); the
+second rejects 'GridVolume' for toggles and must also reject
+'StringEnergy'. 'PedalRole' has '#[default] GridVolume' and
+'rename_all = "snake_case"'.
+** 'SinkRig' is a tagged enum with 'deny_unknown_fields'
+'rig.rs' line 633: '#[serde(tag = "kind", rename_all =
+"snake_case", deny_unknown_fields)]'. A nested struct field
+(e.g. 'string: StringRig') inside the 'CpalStrings' variant
+gives '[[sinks]].string.t60_seconds_at_55hz' in TOML, which in
+the org format is a 'TABLE string' under the 'ELEM sinks'.
+Grouping headlines between them are transparent
+('rig_org.rs' line 13: "its descendants attach to the nearest
+enclosing TABLE/ELEM"). Nested structs need their own
+'deny_unknown_fields' so a misspelled key is loud.
+** Every rig in 'rigs/' is loaded by a test
+'rig.rs' 'loads_default_rigs' (line 3399) parses every
+non-readme '.org' in 'rigs/'. The new rig must parse and
+validate from the moment it is added.
+** Mock-grid tests serialize and rewrite ports
+'surfaces_runtime/tests.rs': 'MOCK_LOCK' serializes them;
+'volpedal_rig_runs_against_one_and_two_mock_grids' (line 2474)
+is the model: it loads the rig, rewrites the two
+'listen_port's to free ones, resolves settings, and drives the
+mock grids. The new rig's test copies that shape and reads
+every cell it presses from the resolved settings, never from
+literals ('README_AI.org', "Tests must read the rig").
+** The dispatch binary does not care about the sink kind
+'buried/midi_pulse/midi_pulse.rs' 'is_surfaces_rig' (line 126)
+checks for an 'edo_note_grid' and no 'LoopDisplay'; a
+'cpal_strings' rig dispatches to the surfaces runtime
+unchanged. But grep 'cpal_synth' across 'buried/' and
+'edo_surface/' for any predicate or message that assumes it
+(e.g. 'is_monome_sawwave_rig', 'print_startup') and leave them
+correct.
+** 'hound' is a dependency of 'edo_surface', not of 'tools'
+'edo_surface/Cargo.toml' has 'hound = "3"'; 'tools/Cargo.toml'
+does not. The harness in 'tools/' adds it there.
+** 'cpal' glue is duplicated on purpose
+'audio.rs' says so in its header: untestable cpal glue is
+duplicated rather than shared. Do not factor it; add the engine
+switch inside the existing closure.
+** Formatting and naming rules
+'coding-advice/formatting.org' (old-style 'mod.rs', a type on
+every 'let', callers before callees, no internal 'use', comments
+inside the block they describe, trailing brackets on the last
+line, no empty lines inside functions), 'coding-advice/names.org'
+(long clear names; never rename existing things),
+'coding-advice/no-legacy-support.org', 'coding-advice/
+common-gotchas.md' (ignore its skg-specific parts). Org docs
+wrap at 65 columns and quote code with single apostrophes; rig
+readmes follow the existing readmes' style.
+** The test suite
+'cargo test -p edo_surface' runs about 30 s and is green (695
+tests) at this plan's start. 'cargo test --workspace' also
+builds 'buried' and 'tools'. Run one suite at a time.
+
+* Code map
+** Existing, read before changing
+'edo_surface/src/sawwave/voices.rs' (the render loop, the
+'BlockRenderer', 'pluck_envelope'); 'sawwave/types.rs'
+('VoiceState', 'VoiceMap', 'VoiceSource', 'Timbre');
+'surfaces_runtime/audio.rs' (the cpal stream);
+'surfaces_runtime/settings.rs' ('Settings', 'resolve_settings',
+'PedalTarget'); 'surfaces_runtime/reload.rs' ('LiveParams',
+'adopt_rig'); 'surfaces_runtime/pedal_volume.rs'
+('expression_pedal_loop'); 'surfaces_runtime/synth.rs'
+('SurfaceSink::note_on_with_phase_and_gain', 'note_off',
+'sustain_note'); 'rig.rs' ('SinkRig', 'ExpressionPedalRig',
+'PedalRole', the validators); 'rig_org.rs' (the org format);
+'rigs/README.org' ("Output sinks", "Expression pedals");
+'rigs/volpedal-newnotes-and-global_granular-sustain.org' and
+its readme; 'expression_pedals.rs' (the MIDI side; unchanged);
+'tools/Cargo.toml'.
+** New
+'edo_surface/src/strings/mod.rs' (the module list and the
+engine's public surface: 'StringsParams', 'StringsRenderer');
+'strings/params.rs' ('StringsParams' and its 'Default', the
+T60 and B curves as functions of 'f0'); 'strings/loop_dsp.rs'
+(delay line, Thiran, loss, dispersion, DC blocker: one 'Loop');
+'strings/exciter.rs'; 'strings/body.rs'; 'strings/junction.rs';
+'strings/energy.rs' (history ring, window, pre-charge, the
+three drive kinds); 'strings/voice.rs' ('StringVoice', later
+the modal voice); 'strings/renderer.rs' (the block render over
+a 'VoiceMap'); 'strings/tests.rs'. 'tools/strings/
+strings_harness.rs'. 'rigs/energy-pedal_monome.org' and
+'rigs/energy-pedal_monome_readme.org'.
+** Changed
+'sawwave/voices.rs' (the control stepping split out);
+'rig.rs' ('SinkRig::CpalStrings' and nested param structs,
+'PedalRole::StringEnergy', validation); 'settings.rs';
+'reload.rs'; 'audio.rs'; 'pedal_volume.rs'; 'lib.rs' ('pub mod
+strings'); 'rigs/README.org'; 'README_USER.org';
+'ORIENTATION.org' (one paragraph naming the new instrument and
+engine); 'tools/Cargo.toml'.
+
+* Implementation sequence
+Each slice ends with its tests green ('cargo test -p
+edo_surface' at least; the slices that touch 'tools/' or
+'buried/' run 'cargo test --workspace'). A slice's agent writes
+its report to 'TODO/resonance/03_review/slice-N.org' in the
+shape 'coding-advice/orchestration.org' gives (commits; suites
+run with counts and every failure classified; deviations with
+reasons; what was left unfinished; whether the headline is
+DONE). The one expected stop is none; stopping is otherwise for
+the conditions in 'coding-advice/when-to-stop.org'.
+
+** TODO Slice 1: split voice control stepping out of the render
+*** What
+In 'sawwave/voices.rs', 'accumulate_voices' both steps a
+voice's control state (envelope, pluck decay, pending attack,
+glide, slide, factored pulse, the two gain slews, the LFO
+phases) and renders its oscillator. The slice will split the
+control stepping into a function the strings engine can call:
+'step_voice_controls(v: &mut VoiceState, frac, sample_rate,
+slide_slew_secs) -> VoiceStep' where 'VoiceStep' says whether
+the voice is still alive and carries the per-sample factors the
+render needs ('factored_pulse', and the gain coefficient
+without AM: 'env * timbre.gain * fader_gain * grid_gain *
+new_pedal_gain * global_pedal_gain'). 'accumulate_voices' will
+call it and then do only what is sawwave-specific (LFOs, dt,
+osc, AM, xfade). The LFO phase advance may stay in
+'accumulate_voices' or move; what the strings engine needs is
+the alive flag, the gain coefficient and the factored pulse.
+*** Proof of bit-identity
+Before changing anything, the agent renders a fixed script (a
+few voices with attack, pluck decay, a note_off, a glide, a
+slide, a pending attack, a timbre xfade, a factored pulse, and
+oversample 2 with distortion) through 'BlockRenderer' to a
+buffer and saves it under 'target/'. After the refactor it
+renders again and asserts equality. This check is one-time and
+is not committed as a test; the report says it passed.
+*** Tests
+The existing suite, green.
+
+** TODO Slice 2: one loop, the exciter, the T60 and B curves
+*** What
+'strings/params.rs' with 'StringsParams' (every parameter named
+in "Agreed behavior", grouped as nested 'Copy' structs 'String',
+'Exciter', 'Energy', 'Bridge', 'Body', 'Howl', 'Modal' whose
+field names are the rig keys), its 'Default' (the values the
+rig will ship; see the defaults list below), and the functions
+'t60_seconds(params, f0)', 'inharmonicity_b(params, f0)',
+'round_trip_gain(params, f0)'. 'strings/loop_dsp.rs' with
+'Loop': construction from '(params, f0, sample_rate)', 'retune',
+'read_arriving() -> f32', 'write(v)', and the coefficient math
+of "One loop". 'strings/exciter.rs' with the pluck and strike
+tables and the knock (the knock needs the body bank's impulse
+response; put the bank's design, 'BodyModes::design(params,
+sample_rate)', in 'strings/body.rs' in this slice, with the
+runtime filter in slice 3).
+*** Defaults
+t60 at 55 Hz 10 s, at 1760 Hz 1.5 s; high-frequency ratio 0.3
+at 4000 Hz; unison_count 2, detune 1.2 cents; B at 55 Hz 1e-4,
+at 1760 Hz 5e-3; dispersion_sections 4. Exciter strike, 2
+pulses, hammer_contact_fraction 0.12, brightness 6, position
+0.125, knock_mix 0.3, knock_ms 60, pick_energy 0.5. Bridge
+heaviness 50, damping 6000 Hz. Body mix 0.5, 24 modes, 90 to
+6000 Hz, q 30, seed 1. Energy: ebow, ex_ante 300 ms, ex_post
+600 ms, exponent 2, growth_rate_per_second_max 8, drive_limit
+0.4, precharge_gain 0.5. Howl gain 0. Modal crossover 2000 Hz,
+8 modes. Bow velocity 0.2, force 3. Wind speed 2000 Hz, q 8,
+gain 0.1.
+*** Tests
+Pitch within 2 cents at 55, 440, 1760, 3000 Hz (measure by
+zero crossings or autocorrelation of a rendered loop with a
+pluck). T60 within 10 percent at 110 and 880 Hz. Dispersion
+skipped below the threshold and nonzero above. Both exciter
+kinds deterministic, peak equal to 'pick_energy', length one
+period plus the knock. 'StringsParams::default()' passes the
+validation the rig will later apply (write the validator here
+as 'StringsParams::validate(&self) -> Result<(), String>').
+
+** TODO Slice 3: junction, body, renderer, harness
+*** What
+'strings/junction.rs' (the formula, with its lowpass);
+'strings/body.rs' (the runtime bank and the mix);
+'strings/voice.rs' ('StringVoice': loops, birth time, the
+exciter read-out); 'strings/renderer.rs' ('StringsRenderer':
+'new(params, sample_rate)', 'render_block(&mut self, voices:
+&mut VoiceMap, data: &mut [f32], channels, sample_rate,
+amplitude, params)', keyed by 'VoiceId', spawning, retuning,
+reaping and dropping as "Agreed behavior" says, calling
+'step_voice_controls' from slice 1, running the junction per
+sample, summing voice outputs times their gain coefficients,
+then the body, then the clamp to +-0.95 the sawwave render
+applies). No energy pedal yet: the pre-charge is 0 and 'k' is
+0. 'tools/strings/strings_harness.rs' with the scenes except
+'pedal_swell' (added in slice 5), the 'VoiceState' helper that
+builds a voice as 'SurfaceSink' does (attack 0.001, release
+0.05, pluck envelope off), and 'hound' added to 'tools/
+Cargo.toml'. The harness takes '--out' and '--scene'; '--rig'
+arrives in slice 4.
+*** Tests
+The junction stability test. A renderer test: three voices,
+render 2 s, output finite, peak below 0.95, nonzero; a note_off
+voice's contribution falls below -60 dB within 'release_secs'
++ 50 ms; a voice removed from the map drops its string voice
+(inspect the renderer's count). The sympathy test: a loop at
+220 Hz excited, a silent loop at 220 Hz present; after 0.5 s
+the silent loop's energy is above 1e-6 with 'r = 20' and below
+that with 'r = 5000' (coupling weakens with heaviness).
+*** Listening
+The agent renders all scenes and lists the WAV paths and peaks
+in its report. It listens to nothing (it cannot); the report
+notes any scene whose peak or decay looks wrong numerically.
+
+** TODO Slice 4: rig schema, settings, reload, engine switch
+*** What
+In 'rig.rs': 'SinkRig::CpalStrings { id, sample_rate,
+buffer_frames, amplitude, release_secs, string: StringRig,
+exciter: ExciterRig, energy: EnergyRig, bridge: BridgeRig, body:
+BodyRig, howl: HowlRig, modal: ModalRig }', every nested struct
+'Deserialize' with 'deny_unknown_fields' and serde defaults
+equal to 'StringsParams::default()' (so a rig may omit any
+key), enums 'kind = "pluck" | "strike"' and 'kind = "ebow" |
+"bow" | "wind"' with 'rename_all = "snake_case"', and a
+conversion to 'StringsParams' followed by
+'StringsParams::validate' inside 'validate_rig'. In
+'settings.rs': admit the strings sink as the pitfall says, with
+'Settings.strings: Option<StringsParams>'. In 'reload.rs':
+'LiveParams.strings'. In 'audio.rs': when 'Settings.strings' is
+'Some', the closure owns a 'StringsRenderer' and calls it
+instead of 'BlockRenderer::render_with_distortion', reading
+'params.strings' each callback. Add '--rig NAME' to the harness
+(load the rig, take its first 'cpal_strings' sink's params and
+sample rate). Document the sink in 'rigs/README.org' under
+"Output sinks" (a short pointer to the rig file, where each
+parameter is documented in place) and 'print_startup' or any
+'cpal_synth' assumption found by the grep.
+*** Tests
+A rig fixture (inline TOML in a test) with a 'cpal_strings'
+sink resolves; one with a misspelled nested key is rejected
+naming the key; one with 'heaviness = 0' is rejected; the
+hot-reload test from "Agreed behavior" (adopt a changed
+'t60_seconds_at_55hz', assert the renderer's params moved:
+expose 'StringsRenderer::params(&self)' for it). The existing
+suite green.
+
+** TODO Slice 5: the energy pedal
+*** What
+'PedalRole::StringEnergy', 'PedalTarget::StringEnergy',
+validation (rig-wide, at most one, strings sink required, no
+toggle), the shared 'AtomicU32' position published by the pedal
+thread, 'strings/energy.rs' (the history ring fed each
+callback, 'tri', the pre-charge sum, the pre-charge waveshape
+fill, and the ebow drive), wired into 'StringVoice' and the
+renderer. The harness gains the 'pedal_swell' scene and a
+'--pedal' option that feeds a scripted pedal trace. Document
+the role in 'rigs/README.org' under "Expression pedals".
+*** Tests
+Pre-charge: a constant full pedal over a 300 ms ex-ante leg
+gives 'A0' equal to the closed-form integral within 1 percent;
+no history gives 0. The drive growth and decay test from
+"Agreed behavior". Validation: the role on a 'cpal_synth' rig
+is rejected; two such pedals are rejected; a 'pedal_toggle' in
+the role is rejected.
+
+** TODO Slice 6: the rig, its readme, the mock run, user docs
+*** What
+'rigs/energy-pedal_monome.org' as "Agreed behavior" describes,
+with the sink's parameters under two grouping headlines
+('parameters we talked about': string, exciter, energy, bridge,
+body; 'parameters you might also enjoy': howl, modal, the bow
+and wind fields of energy, unison and dispersion details), each
+parameter's body giving units, useful range, qualitative
+purpose, and the math. 'rigs/energy-pedal_monome_readme.org'
+(run, layout, the pedal, sustain, shift, hot reload, what is
+deliberately not there, how to add a 'global_volume' pedal on
+channel 2). 'README_USER.org' gains the run line;
+'ORIENTATION.org' gains a paragraph on the strings engine and
+the rig. The mock-run test for the rig, shaped like the
+volpedal one: both grids, then one grid; a press sounds (a
+voice appears), the handle sustains it, OFF clears it, the
+shift pad moves the register.
+*** Tests
+'loads_default_rigs' passes with the new rig; the mock-run
+test; 'cargo test --workspace' green.
+
+** TODO Slice 7: the howl path and the modal crossover
+*** What
+'howl' as "Agreed behavior" says, in the renderer. 'ModalVoice'
+in 'strings/voice.rs' behind the same interface as
+'StringVoice' (an enum or a trait object; the renderer does not
+care), chosen at birth by 'f0 > modal.crossover_hz'. Both
+documented in the rig under the second grouping headline, with
+the readme's cautions (the howl locks pitches toward just
+ratios; the crossover trades harmonics for stability at the
+top).
+*** Tests
+Howl: with 'howl.gain' 20 a struck note's energy after 3 s is
+above its energy at 1 s (sustain), and the output stays finite
+and below 0.95 for 10 s. Crossover: a note at 3000 Hz with the
+crossover at 2000 is a modal voice (inspect), its pitch within
+2 cents, its T60 within 10 percent; a note at 1000 Hz is loops.
+
+** TODO Slice 8: the bow and wind energy kinds
+*** What
+In 'strings/energy.rs', the two drives of "The options", the
+pre-charge waveshapes for each, 'energy.kind' honored at birth,
+their parameters documented in the rig, and a harness scene per
+kind ('pedal_swell_bow', 'pedal_swell_wind').
+*** Tests
+Each kind with a full pedal grows a struck note over its
+ex-post leg; with the pedal at 0 it decays as without; both
+stay finite and below 0.95.
+
+** TODO Slice 9: organize, record, and the two-question check
+*** What
+Read the strings engine as a whole and remove quasi-duplication
+within it and against 'sawwave/' (the slice-1 split is the
+seam; look for a second copy of gain stepping, envelope math,
+delay-line code in 'buried/', filter design helpers). Where a
+duplication cannot be removed cheaply, record it in
+'TODO/problems.org' (create the file if absent, with a one-line
+header saying what it holds). Also record there, as separate
+headlines, structural problems noticed in the old code that
+this plan did not fix (Jeff gave license to reshape the repo;
+this slice lists what deserves it rather than doing it). Then
+answer the two questions of 'coding-advice/plans.org' "After
+each plan": what terms did this plan's code coin or reuse, and
+does its code cite anything under 'TODO/'; fix a citation by
+moving the cited fact into the code's own comment. Finally,
+'cargo test --workspace' green, and the report.
+
+* Verification and completion
+The plan is complete when every slice headline is DONE, 'cargo
+test --workspace' is green, the rig loads and its mock-run test
+passes, the harness renders every scene to finite audio below
+the clamp, and the orchestrator's review in '03_review.org'
+records each slice's report, the deviations carried into this
+plan, and the wrap-up. Deviations a slice makes on the "how"
+go in that slice's report; corrections the orchestrator carries
+into a later slice are added under that slice's headline as
+"Corrections carried from slice N" before its launch.

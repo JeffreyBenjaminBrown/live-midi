@@ -1,0 +1,11 @@
+#+title: Review of plan 02: the strings engine and the energy-pedal rig
+
+* How this record is kept
+One Opus 5.5 agent per slice of '02_plan.org', launched by the
+orchestrator (Claude Fable) with the brief 'coding-advice/
+orchestration.org' describes. Each agent writes its own report
+to '03_review/slice-N.org'; the orchestrator reads the report
+and the diff, records the verdict and any corrections here, and
+launches the next slice. The wrap-up goes at the end.
+
+* Slices
