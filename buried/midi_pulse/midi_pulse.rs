@@ -1,6 +1,6 @@
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiOutput};
-use edo_surface::rig::{self, Rig, PianoMappingRig};
+use edo_surface::rig::{self, Rig, PianoMappingRig, SinkRig};
 use midi_pulse::mapping::PianoMapper;
 use midi_pulse::piano_runtime::PianoRuntime;
 use edo_surface::midi;
@@ -121,8 +121,9 @@ fn is_drumkit_rig(rig: &Rig) -> bool {
 
 /// The surfaces runtime: at least one `edo_note_grid`, no `loop_display` (that is the
 /// looper), and something that only surfaces composes -- a softstep window (drums), an
-/// edo grid on more than one monome (the two play grids), or a `waveform_selector`.
-/// Precise enough that every existing rig keeps its current runtime.
+/// edo grid on more than one monome (the two play grids), a `waveform_selector`, or a
+/// `cpal_strings` sink (only surfaces runs the strings engine). Precise enough that
+/// every existing rig keeps its current runtime.
 fn is_surfaces_rig(rig: &Rig) -> bool {
   use edo_surface::rig::MonomeWindowRig;
   let has_edo_grid = rig
@@ -151,7 +152,14 @@ fn is_surfaces_rig(rig: &Rig) -> bool {
     .monome_windows
     .iter()
     .any(|w| matches!(w, MonomeWindowRig::WaveformSelector { .. }));
-  !rig.softstep_windows.is_empty() || distinct_grid_monomes.len() > 1 || has_selector
+  let has_strings_sink: bool = rig
+    .sinks
+    .iter()
+    .any(|sink| matches!(sink, SinkRig::CpalStrings { .. }));
+  !rig.softstep_windows.is_empty()
+    || distinct_grid_monomes.len() > 1
+    || has_selector
+    || has_strings_sink
 }
 
 /// Keyed on the looper-only `loop_display` kind, so it is strictly more specific
@@ -248,7 +256,7 @@ mod dispatch_tests {
   //! arm must not change any existing rig's runtime, so we assert the routing of
   //! each real rig family by name.
   use super::*;
-  use edo_surface::rig::load_named_rig;
+  use edo_surface::rig::{load_named_rig, parse_rig};
 
   #[test]
   fn surfaces_rig_routes_to_surfaces_only() {
@@ -296,6 +304,31 @@ mod dispatch_tests {
     let c = load_named_rig("monome-looper-58-8-1").expect("loads");
     assert!(is_looper_rig(&c), "loop_display -> looper");
     assert!(!is_surfaces_rig(&c), "a looper is excluded by its loop_display");
+  }
+
+  /// The sawwave rig's one grid, its sink swapped for a strings sink, runs on surfaces:
+  /// no other runtime has the strings engine.
+  #[test]
+  fn a_single_grid_strings_rig_routes_to_surfaces() {
+    let mut c: Rig = load_named_rig("monome-edo-sawwave").expect("loads");
+    let strings_rig: Rig = parse_rig(
+      r#"version = 1
+id = "strings"
+title = "a strings sink"
+
+[[sinks]]
+id = "strings"
+kind = "cpal_strings"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.2
+"#,
+    )
+    .expect("a strings sink parses");
+    let strings_sink: SinkRig = strings_rig.sinks[0].clone();
+    c.sinks = vec![strings_sink];
+    assert!(!is_monome_sawwave_rig(&c), "no cpal_synth sink -> not sawwave");
+    assert!(is_surfaces_rig(&c), "a strings sink -> surfaces");
   }
 
   #[test]

@@ -235,6 +235,7 @@ fn deep_merge(dst: &mut toml::Table, src: toml::Table) {
 mod tests {
   use super::*;
   use crate::rig::{MonomeWindowRig, SinkRig};
+  use crate::strings::StringsParams;
 
   const SAWWAVE_ORG: &str = r#"
 * a monome EDO sawwave rig
@@ -565,5 +566,34 @@ A grouping headline inside the TABLE: its PARAMs still land in [trail].
     let org = "\n\n* rig\nsome prose\n  indented prose\n** PARAM version = 1\nmore prose\n** PARAM id = \"r\"\n** PARAM title = \"R\"\n";
     let rig = parse_org_rig(org).expect("parses despite the prose");
     assert_eq!(rig.id, "r");
+  }
+
+  /// A strings sink's tables are TABLEs under its ELEM, and grouping headlines between
+  /// them -- the two groups its rig documents its parameters in -- are transparent.
+  #[test]
+  fn a_strings_sinks_tables_nest_under_its_elem_through_grouping() {
+    let org = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** ELEM sinks
+*** PARAM id = "strings"
+*** PARAM kind = "cpal_strings"
+*** PARAM sample_rate = 48000
+*** PARAM buffer_frames = 128
+*** PARAM amplitude = 0.2
+*** parameters we talked about
+**** TABLE string
+***** the decay curve
+****** PARAM t60_seconds_at_55hz = 7.5
+*** parameters you might also enjoy
+**** TABLE howl
+***** PARAM gain = 2.5
+"#;
+    let rig: Rig = parse_org_rig(org).expect("parses");
+    let strings: StringsParams = rig.sinks[0].strings_params().expect("a strings sink");
+    assert_eq!(strings.string.t60_seconds_at_55hz, 7.5);
+    assert_eq!(strings.howl.gain, 2.5);
   }
 }

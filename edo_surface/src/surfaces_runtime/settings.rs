@@ -7,9 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::rig::{
-  AccreteControlKind, AmShapeFamilyRig, EditmodeControlKind, HandleSide, MonomeWindowRig,
-  PedalRole, Rig, SinkRig, SoftstepWindowRig, WaveformChoice,
+  default_distortion_scale, default_distortion_shape, AccreteControlKind, AmShapeFamilyRig,
+  EditmodeControlKind, HandleSide, MonomeWindowRig, PedalRole, Rig, SinkRig, SoftstepWindowRig,
+  WaveformChoice,
 };
+use crate::strings::scripted_voices::STRIKE_ATTACK_SECS;
+use crate::strings::StringsParams;
 
 use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Waveform};
 use crate::voices::Distortion;
@@ -169,7 +172,7 @@ pub(super) struct Settings {
   pub(super) fund: f64,
   pub(super) sample_rate: u32,
   pub(super) buffer_frames: u32,
-  /// The synth master gain -- the single "synth volume" knob, from the cpal_synth sink's
+  /// The synth master gain -- the single "synth volume" knob, from the play grids' sink's
   /// `amplitude` (applies to both grids; the per-grid volume strips trim below it).
   pub(super) amplitude: f32,
   pub(super) oversample: u32,
@@ -218,7 +221,29 @@ pub(super) struct Settings {
   /// The EX-P volume pedals (`[[expression_pedals]]`), resolved to
   /// `(pedal index = MPC-20 channel - 1, what it drives, taper)`.
   pub(super) expression_pedals: Vec<(usize, PedalTarget, PedalVolumeCurve)>,
+  /// The strings engine's parameters when the play grids' sink is `cpal_strings`, which
+  /// selects that engine; `None` for a `cpal_synth` sink, the sawwave engine.
+  pub(super) strings: Option<StringsParams>,
 }
+
+/// The fields of `Settings` the play grids' sink decides. A `cpal_strings` sink gives
+/// the sawwave-only ones the values that make them inert (see `resolve_sink_settings`).
+struct SinkSettings {
+  sample_rate: u32,
+  buffer_frames: u32,
+  amplitude: f32,
+  oversample: u32,
+  attack: f32,
+  release: f32,
+  sustain_level: f32,
+  decay_secs: f32,
+  retrigger_tail_detune_cents: f32,
+  crowded_pitch_planck_deviation: f32,
+  distortion: Distortion,
+  distortion_makeup: f32,
+  distortion_auto_makeup: bool,
+  distortion_makeup_slew_secs: f32,
+  strings: Option<StringsParams>, }
 
 /// What one EX-P volume pedal drives: the rig's two plugs (`monome` x `role`)
 /// resolved to grid indices (= positions in `Settings::grids`); `None` = every grid
@@ -270,15 +295,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     .iter()
     .find(|s| s.id() == sink_id)
     .ok_or("edo_note_grid references an unknown sink")?;
-  let SinkRig::CpalSynth {
-    sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
-    distortion_scale, distortion_shape, distortion_makeup, distortion_auto_makeup,
-    distortion_makeup_slew_ms, sustain_level, decay_secs, retrigger_tail_detune_cents,
-    crowded_pitch_planck_deviation, ..
-  } = sink
-  else {
-    return Err("surfaces requires a cpal_synth sink for the play grids".into());
-  };
+  let sink_settings: SinkSettings = resolve_sink_settings(sink)?;
 
   let rect_on = |monome_id: &str, pred: fn(&MonomeWindowRig) -> bool| {
     rig
@@ -605,25 +622,25 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     y_step: tuning.y_step as i32,
     edo: tuning.edo as i32,
     fund: tuning.fundamental_hz,
-    sample_rate: *sample_rate,
-    buffer_frames: *buffer_frames,
-    amplitude: *amplitude,
-    oversample: *oversample,
-    attack: *attack_secs,
-    release: *release_secs,
-    sustain_level: *sustain_level,
-    decay_secs: *decay_secs,
-    retrigger_tail_detune_cents: *retrigger_tail_detune_cents,
-    crowded_pitch_planck_deviation: *crowded_pitch_planck_deviation,
+    sample_rate: sink_settings.sample_rate,
+    buffer_frames: sink_settings.buffer_frames,
+    amplitude: sink_settings.amplitude,
+    oversample: sink_settings.oversample,
+    attack: sink_settings.attack,
+    release: sink_settings.release,
+    sustain_level: sink_settings.sustain_level,
+    decay_secs: sink_settings.decay_secs,
+    retrigger_tail_detune_cents: sink_settings.retrigger_tail_detune_cents,
+    crowded_pitch_planck_deviation: sink_settings.crowded_pitch_planck_deviation,
     timbres: resolve_timbre_slots(rig),
     am_shape_family: match rig.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
       AmShapeFamilyRig::SinToSquare => AmShapeFamily::SinToSquare,
       AmShapeFamilyRig::TriToSquare => AmShapeFamily::TriToSquare,
     },
-    distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
-    distortion_makeup: *distortion_makeup,
-    distortion_auto_makeup: *distortion_auto_makeup,
-    distortion_makeup_slew_secs: *distortion_makeup_slew_ms / 1000.0,
+    distortion: sink_settings.distortion,
+    distortion_makeup: sink_settings.distortion_makeup,
+    distortion_auto_makeup: sink_settings.distortion_auto_makeup,
+    distortion_makeup_slew_secs: sink_settings.distortion_makeup_slew_secs,
     has_drums: !rig.softstep_windows.is_empty(),
     trail_clobber_radius: trail.clobber_radius,
     trails_max: trail.max,
@@ -633,8 +650,62 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     tap_window: Duration::from_millis(tap_tempo.window_ms),
     echo_input: rig.echo_input,
     expression_pedals,
+    strings: sink_settings.strings,
   })
 }
+
+/// What the play grids' sink decides: a `cpal_synth` sink's own values, or, for a
+/// `cpal_strings` sink, its stream, amplitude and release, its engine parameters, and
+/// the sawwave-only fields set inert: no oversampling, the pluck envelope off
+/// (`sustain_level` 1, `decay_secs` 0), a 1 ms attack, the distortion's default curve
+/// with a unit makeup and no automatic makeup (the strings engine applies no
+/// distortion), no crowded-pitch separation, and no retrigger detune.
+fn resolve_sink_settings(
+  sink: &SinkRig,
+) -> Result<SinkSettings, Box<dyn std::error::Error>> {
+  match sink {
+    SinkRig::CpalSynth {
+      sample_rate, buffer_frames, amplitude, attack_secs, release_secs, oversample,
+      distortion_scale, distortion_shape, distortion_makeup, distortion_auto_makeup,
+      distortion_makeup_slew_ms, sustain_level, decay_secs, retrigger_tail_detune_cents,
+      crowded_pitch_planck_deviation, ..
+    } => Ok(SinkSettings {
+      sample_rate: *sample_rate,
+      buffer_frames: *buffer_frames,
+      amplitude: *amplitude,
+      oversample: *oversample,
+      attack: *attack_secs,
+      release: *release_secs,
+      sustain_level: *sustain_level,
+      decay_secs: *decay_secs,
+      retrigger_tail_detune_cents: *retrigger_tail_detune_cents,
+      crowded_pitch_planck_deviation: *crowded_pitch_planck_deviation,
+      distortion: Distortion { scale: *distortion_scale, shape: *distortion_shape },
+      distortion_makeup: *distortion_makeup,
+      distortion_auto_makeup: *distortion_auto_makeup,
+      distortion_makeup_slew_secs: *distortion_makeup_slew_ms / 1000.0,
+      strings: None, }),
+    SinkRig::CpalStrings { sample_rate, buffer_frames, amplitude, release_secs, .. } =>
+      Ok(SinkSettings {
+        sample_rate: *sample_rate,
+        buffer_frames: *buffer_frames,
+        amplitude: *amplitude,
+        oversample: 1,
+        attack: STRIKE_ATTACK_SECS,
+        release: *release_secs,
+        sustain_level: 1.0,
+        decay_secs: 0.0,
+        retrigger_tail_detune_cents: 0.0,
+        crowded_pitch_planck_deviation: 0.0,
+        distortion: Distortion {
+          scale: default_distortion_scale(),
+          shape: default_distortion_shape(), },
+        distortion_makeup: 1.0,
+        distortion_auto_makeup: false,
+        distortion_makeup_slew_secs: 0.0,
+        strings: sink.strings_params(), }),
+    SinkRig::Midi { .. } | SinkRig::CpalSampler { .. } =>
+      Err("surfaces requires a cpal_synth or a cpal_strings sink for the play grids".into()), }}
 
 /// The rig's `[[timbres]]` mapped onto the four selector slots (validation
 /// guarantees exactly four when present); absent = the plain waveforms.

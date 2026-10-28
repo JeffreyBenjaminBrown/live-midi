@@ -5,12 +5,18 @@
 //! The field names are the rig keys: `string.t60_seconds_at_55hz`
 //! in a rig is `StringsParams.string.t60_seconds_at_55hz` here. The
 //! rig file carries the longer prose on each; the doc comments here
-//! give units and purpose.
+//! give units and purpose. The seven nested structs are the rig's
+//! own schema: a `cpal_strings` sink deserializes its `string`,
+//! `exciter`, `energy`, `bridge`, `body`, `howl` and `modal` tables
+//! straight into them, a key or table the rig omits takes its value
+//! from `StringsParams::default()`, and an unknown key is an error.
 //!
 //! The struct is `Copy` (no `Vec`) because the runtime's live,
 //! hot-reloadable parameters are `Copy` and are read every audio
 //! callback; anything derived and heap-backed (the body's mode table,
 //! the delay lines) lives in the renderer.
+
+use serde::Deserialize;
 
 /// The pitch of the lower anchor of the decay-time and inharmonicity
 /// curves.
@@ -39,7 +45,8 @@ pub struct StringsParams {
 /// are log-log: the logarithm of the value is linear in `log2(f0)`
 /// through the 55 Hz and 1760 Hz anchors, extrapolated beyond them
 /// (a power law in `f0`, so it stays positive at every pitch).
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct StringParams {
   /// Seconds for a 55 Hz note's fundamental to fall 60 dB. The
   /// low anchor of the decay-time curve `T60(f0)`.
@@ -72,7 +79,8 @@ pub struct StringParams {
   pub dispersion_sections: u32, }
 
 /// What starts a note: the table read into the loops at key-down.
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExciterParams {
   pub kind: ExciterKind,
   /// Peak of the excitation table, in loop amplitude units (the
@@ -99,7 +107,8 @@ pub struct ExciterParams {
   /// 60 dB over this time.
   pub knock_ms: f32, }
 
-#[derive(Copy, Debug, Clone, PartialEq, Eq)]
+#[derive(Copy, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExciterKind {
   /// Filtered white noise one period long: a plectrum or finger.
   Pluck,
@@ -107,7 +116,8 @@ pub enum ExciterKind {
   Strike, }
 
 /// How the energy pedal puts energy into a string around key-down.
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct EnergyParams {
   pub kind: EnergyKind,
   /// Milliseconds, in [0, 10000]. The energy window opens this long
@@ -142,7 +152,8 @@ pub struct EnergyParams {
   /// Unitless, >= 0. The wind noise's gain into the loop.
   pub wind_gain: f32, }
 
-#[derive(Copy, Debug, Clone, PartialEq, Eq)]
+#[derive(Copy, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnergyKind {
   /// A feedback driver: the loop's own wave, saturated, added back.
   Ebow,
@@ -152,7 +163,8 @@ pub enum EnergyKind {
   Wind, }
 
 /// The shared bridge every sounding loop meets.
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct BridgeParams {
   /// Unitless, > 0. The bridge impedance over one loop's: near 0 is a
   /// light bridge (strong coupling), large is heavy (weak, piano-like
@@ -166,7 +178,8 @@ pub struct BridgeParams {
 
 /// The radiating body: parallel resonators on the summed output, and
 /// the source of the exciter's knock.
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct BodyParams {
   /// Unitless, in [0, 1]. Output is `(1 - mix) dry + mix wet`; 0 is
   /// exactly the dry sum.
@@ -185,7 +198,8 @@ pub struct BodyParams {
   pub seed: u32, }
 
 /// The optional active loop that sustains everything it hears.
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct HowlParams {
   /// Unitless, >= 0. Gain of the summed loops into the tanh; 0 turns
   /// the howl path off.
@@ -197,7 +211,8 @@ pub struct HowlParams {
   pub delay_ms: f32, }
 
 /// The register above which a note is a few resonators, not loops.
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModalParams {
   /// Hz, >= 0. A note above this is a modal voice; 0 disables the
   /// crossover.
@@ -257,6 +272,38 @@ impl Default for StringsParams {
       modal: ModalParams {
         crossover_hz: 2000.0,
         mode_count: 8, }, }}}
+
+// Each table's default is its part of `StringsParams::default()`, so a
+// rig that omits a key or a whole table gets the one copy of each
+// number above.
+
+impl Default for StringParams {
+  fn default() -> StringParams {
+    StringsParams::default().string }}
+
+impl Default for ExciterParams {
+  fn default() -> ExciterParams {
+    StringsParams::default().exciter }}
+
+impl Default for EnergyParams {
+  fn default() -> EnergyParams {
+    StringsParams::default().energy }}
+
+impl Default for BridgeParams {
+  fn default() -> BridgeParams {
+    StringsParams::default().bridge }}
+
+impl Default for BodyParams {
+  fn default() -> BodyParams {
+    StringsParams::default().body }}
+
+impl Default for HowlParams {
+  fn default() -> HowlParams {
+    StringsParams::default().howl }}
+
+impl Default for ModalParams {
+  fn default() -> ModalParams {
+    StringsParams::default().modal }}
 
 impl StringsParams {
   /// Checks every range the doc comments state. The error names the

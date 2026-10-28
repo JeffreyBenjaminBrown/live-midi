@@ -2,6 +2,12 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::strings::params::{
+  BodyParams, BridgeParams, EnergyParams, ExciterParams, HowlParams, ModalParams, StringParams,
+};
+use crate::strings::scripted_voices::RELEASE_SECS;
+use crate::strings::StringsParams;
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Rig {
@@ -714,17 +720,50 @@ pub enum SinkRig {
     buffer_frames: u32,
     amplitude: f32,
   },
+  /// The strings engine ('strings/mod.rs'): a physically modelled string per voice,
+  /// all coupled through one bridge and radiated through a body. It renders the same
+  /// voice map a `cpal_synth` sink does, through the same cpal/JACK output path. The
+  /// seven tables are `StringsParams`' own (their keys are its fields, documented in
+  /// 'strings/params.rs'); any key or whole table may be omitted and takes
+  /// `StringsParams::default()`'s value, and an unknown key is an error.
+  CpalStrings {
+    id: String,
+    sample_rate: u32,
+    buffer_frames: u32,
+    amplitude: f32,
+    /// The damper: seconds for a released note's envelope to ramp to 0. Default 0.05.
+    #[serde(default = "default_strings_release_secs")]
+    release_secs: f32,
+    #[serde(default)]
+    string: StringParams,
+    #[serde(default)]
+    exciter: ExciterParams,
+    #[serde(default)]
+    energy: EnergyParams,
+    #[serde(default)]
+    bridge: BridgeParams,
+    #[serde(default)]
+    body: BodyParams,
+    #[serde(default)]
+    howl: HowlParams,
+    #[serde(default)]
+    modal: ModalParams,
+  },
 }
+
+fn default_strings_release_secs(
+) -> f32 {
+  RELEASE_SECS }
 
 fn default_oversample() -> u32 {
   1
 }
 
-fn default_distortion_scale() -> f32 {
+pub(crate) fn default_distortion_scale() -> f32 {
   1.0 // "strong" on a unit-scale mix -- clearly a pedal, not a subtlety
 }
 
-fn default_distortion_shape() -> f32 {
+pub(crate) fn default_distortion_shape() -> f32 {
   2.0 // the smooth sweet spot (y / sqrt(1 + (y/s)^2))
 }
 
@@ -761,9 +800,28 @@ impl SinkRig {
     match self {
       SinkRig::Midi { id }
       | SinkRig::CpalSynth { id, .. }
-      | SinkRig::CpalSampler { id, .. } => id,
+      | SinkRig::CpalSampler { id, .. }
+      | SinkRig::CpalStrings { id, .. } => id,
     }
   }
+
+  /// A `cpal_strings` sink's seven tables as the engine's parameters; `None` for every
+  /// other kind.
+  pub fn strings_params(
+    &self,
+  ) -> Option<StringsParams> {
+    match self {
+      SinkRig::CpalStrings { string, exciter, energy, bridge, body, howl, modal, .. } =>
+        Some(StringsParams {
+          string: *string,
+          exciter: *exciter,
+          energy: *energy,
+          bridge: *bridge,
+          body: *body,
+          howl: *howl,
+          modal: *modal, }),
+      SinkRig::Midi { .. } | SinkRig::CpalSynth { .. } | SinkRig::CpalSampler { .. } =>
+        None, }}
 }
 
 // Not `Eq`: the `TimbreEditor` variant carries f32 row ranges (like `LoopEvent`
@@ -1976,6 +2034,7 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
         return Err(format!("sink {:?} amplitude must be nonnegative", sink.id()));
       }
     }
+    validate_strings_sink(sink)?;
   }
 
   let mut record_control_kinds: HashSet<RecordControlKind> = HashSet::new();
@@ -2096,6 +2155,26 @@ pub fn validate_rig(rig: &Rig) -> Result<(), String> {
 
   Ok(())
 }
+
+/// A `cpal_strings` sink's stream and damper, checked as `cpal_synth`'s are, and its
+/// engine parameters by `StringsParams::validate`, the error prefixed with the sink
+/// id. Any other kind passes.
+fn validate_strings_sink(
+  sink: &SinkRig,
+) -> Result<(), String> {
+  let SinkRig::CpalStrings { id, sample_rate, buffer_frames, amplitude, release_secs, .. } = sink
+  else {
+    return Ok(( )); };
+  if *sample_rate == 0 || *buffer_frames == 0 {
+    return Err(format!("sink {id:?} sample_rate and buffer_frames must be positive")); }
+  if !amplitude.is_finite() || *amplitude < 0.0 {
+    return Err(format!("sink {id:?} amplitude must be nonnegative")); }
+  { // A zero release would cut a released string off in one sample.
+    if !release_secs.is_finite() || *release_secs <= 0.0 {
+      return Err(format!("sink {id:?} release_secs must be positive")); }}
+  let strings_params: StringsParams =
+    sink.strings_params().expect("a cpal_strings sink has strings params");
+  strings_params.validate().map_err(|error| format!("sink {id:?} {error}")) }
 
 /// The `[[expression_pedals]]` bindings. Each pedal arrives on its own channel (1 or
 /// 2, the MPC-20's two) and plugs into a grid (`monome`) in a `role`, two independent
@@ -3393,6 +3472,7 @@ fn require_ref(label: &str, value: &str, valid: &HashSet<&str>) -> Result<(), St
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::strings::params::{EnergyKind, ExciterKind};
 
   #[test]
   fn loads_default_rigs() {
@@ -5526,4 +5606,84 @@ select.size = [16, 16]
     let err = parse_rig(&toml).expect_err("two toggles on one monome should fail");
     assert!(err.contains("more than one distortion_toggle"), "{err}");
   }
+
+  // ---- The strings sink's schema. ----
+
+  /// A rig holding one `cpal_strings` sink and nothing else; `tables` is TOML appended
+  /// after the sink's own keys (its `[sinks.<table>]` sub-tables).
+  const STRINGS_SINK_ONLY: &str = r#"version = 1
+id = "strings-schema"
+title = "a strings sink"
+
+[[sinks]]
+id = "strings"
+kind = "cpal_strings"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.2
+"#;
+
+  fn parse_strings_sink_rig(
+    tables: &str,
+  ) -> Result<Rig, String> {
+    parse_rig(&format!("{STRINGS_SINK_ONLY}{tables}")) }
+
+  /// With every table and the release omitted, the sink is the engine's defaults.
+  #[test]
+  fn a_strings_sink_with_every_table_omitted_takes_the_engine_defaults() {
+    let rig: Rig = parse_strings_sink_rig("").expect("a bare strings sink parses");
+    assert_eq!(rig.sinks[0].strings_params(), Some(StringsParams::default()));
+    let SinkRig::CpalStrings { release_secs, .. } = &rig.sinks[0] else {
+      panic!("expected a cpal_strings sink, got {:?}", rig.sinks[0]); };
+    assert_eq!(*release_secs, default_strings_release_secs()); }
+
+  /// A key given in a table lands in that table's field, both kinds parse from their
+  /// snake_case names, and every key not given keeps its default.
+  #[test]
+  fn a_strings_sink_reads_each_table_into_the_engine_params() {
+    let defaults: StringsParams = StringsParams::default();
+    let changed_t60_seconds_at_55hz: f32 = defaults.string.t60_seconds_at_55hz + 1.0;
+    let changed_heaviness: f32 = defaults.bridge.heaviness + 1.0;
+    let rig: Rig = parse_strings_sink_rig(&format!(
+      "[sinks.string]\nt60_seconds_at_55hz = {changed_t60_seconds_at_55hz:?}\n\
+       [sinks.exciter]\nkind = \"pluck\"\n\
+       [sinks.energy]\nkind = \"bow\"\n\
+       [sinks.bridge]\nheaviness = {changed_heaviness:?}\n"))
+      .expect("the strings sink parses");
+    let mut expected: StringsParams = defaults;
+    expected.string.t60_seconds_at_55hz = changed_t60_seconds_at_55hz;
+    expected.exciter.kind = ExciterKind::Pluck;
+    expected.energy.kind = EnergyKind::Bow;
+    expected.bridge.heaviness = changed_heaviness;
+    assert_eq!(rig.sinks[0].strings_params(), Some(expected)); }
+
+  /// A misspelled key in a nested table is an error that names it, not a silent default.
+  #[test]
+  fn a_misspelled_strings_key_is_rejected_naming_it() {
+    let err: String = parse_strings_sink_rig("[sinks.string]\nt60_second_at_55hz = 3.0\n")
+      .expect_err("a misspelled key should fail");
+    assert!(err.contains("t60_second_at_55hz"), "{err}");
+    let err: String = parse_strings_sink_rig("[sinks.exciter]\nkind = \"plucked\"\n")
+      .expect_err("an unknown exciter kind should fail");
+    assert!(err.contains("plucked"), "{err}"); }
+
+  /// The engine's own validation runs on the sink, its error naming the sink and key.
+  #[test]
+  fn a_weightless_bridge_is_rejected() {
+    let err: String = parse_strings_sink_rig("[sinks.bridge]\nheaviness = 0\n")
+      .expect_err("heaviness 0 should fail");
+    assert!(err.contains("bridge.heaviness"), "{err}");
+    assert!(err.contains("\"strings\""), "{err}"); }
+
+  /// The damper must take some time, and the stream must have a rate and a buffer.
+  #[test]
+  fn a_strings_sinks_release_and_stream_are_checked() {
+    let err: String = parse_rig(&STRINGS_SINK_ONLY.replace(
+      "amplitude = 0.2\n", "amplitude = 0.2\nrelease_secs = 0.0\n"))
+      .expect_err("release_secs 0 should fail");
+    assert!(err.contains("release_secs"), "{err}");
+    let err: String = parse_rig(&STRINGS_SINK_ONLY.replace(
+      "buffer_frames = 128\n", "buffer_frames = 0\n"))
+      .expect_err("buffer_frames 0 should fail");
+    assert!(err.contains("buffer_frames"), "{err}"); }
 }

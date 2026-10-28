@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::drumkit_runtime::audio::SamplerAmplitude;
 use crate::expression_pedals::NUM_PEDALS;
 use crate::rig::{load_named_rig, Rig, SinkRig};
+use crate::strings::StringsParams;
 
 use crate::voices::{Distortion, Makeup};
 
@@ -21,8 +22,8 @@ use super::GridThread;
 /// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
 /// instrument can adopt without rebinding grids, sockets, or streams: the synth
 /// master amplitude, the distortion curve, the four timbres, the tuning, the pluck
-/// envelope, the slide/trail knobs, and the drum samplers' master gains. See
-/// TODO/misc.org "rig reload".
+/// envelope, the slide/trail knobs, the strings engine's parameters, and the drum
+/// samplers' master gains. See TODO/misc.org "rig reload".
 pub(crate) struct Live {
   /// Bumped on every successful reload; grid threads refresh their copies when it
   /// moves (the audio callback reads the params fresh every callback).
@@ -109,6 +110,11 @@ pub(crate) struct LiveParams {
   /// pedals never spawns the thread -- adding the first pedal needs a restart,
   /// like any other bound resource.
   pub expression_pedals: [Option<(PedalTarget, PedalVolumeCurve)>; NUM_PEDALS],
+  /// Every parameter of the strings engine (`None` on a sawwave rig), read by the audio
+  /// callback each block; the renderer adopts a change at once or for notes born
+  /// afterward, as `StringsRenderer::render_block` says. Which engine renders is fixed
+  /// at start: a reload that changes the sink's kind needs a restart.
+  pub strings: Option<StringsParams>,
 }
 
 /// The live subset of resolved settings.
@@ -138,6 +144,7 @@ pub(super) fn live_params(s: &Settings) -> LiveParams {
     trail_clobber_radius: s.trail_clobber_radius,
     trails_max: s.trails_max,
     expression_pedals,
+    strings: s.strings,
   }
 }
 
@@ -158,7 +165,7 @@ pub(super) fn live_makeup(s: &Settings) -> Arc<Makeup> {
 pub(super) fn reload_live(name: &str, live: &Live) {
   match load_named_rig(name).and_then(|rig| adopt_rig(&rig, live)) {
     Ok(()) => println!(
-      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / retrigger detune / slide / trail / pedal curves / drum volume applied (layout + ports need a restart)",
+      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / retrigger detune / slide / trail / pedal curves / string parameters / drum volume applied (layout + ports + the sink's kind need a restart)",
     ),
     Err(e) => eprintln!("reload of {name} failed; keeping the running parameters: {e}"),
   }
@@ -213,6 +220,10 @@ pub(super) fn refresh_live(rt: &mut GridThread) {
 mod tests {
   use super::*;
   use crate::drumkit_runtime::audio::Sampler;
+  use crate::rig::parse_rig;
+  use crate::strings::scripted_voices::struck_voice_state;
+  use crate::strings::StringsRenderer;
+  use crate::types::{VoiceMap, VoiceSource};
 
   /// A `Live` as `run` builds one, minus the drum registration.
   fn live_for(rig: &Rig) -> Live {
@@ -266,4 +277,104 @@ mod tests {
     adopt_rig(&rig, &live).expect("a drumless reload still succeeds");
     assert_eq!(live.generation.load(Ordering::SeqCst), 1, "and still bumps the generation");
   }
+
+  /// One play grid on a `cpal_strings` sink; `sink_tables` is TOML appended right
+  /// after the sink's own keys (its `[sinks.<table>]` sub-tables).
+  fn strings_rig(
+    sink_tables: &str,
+  ) -> Rig {
+    parse_rig(&format!(
+      r#"version = 1
+id = "strings-reload"
+title = "a strings sink under a play grid"
+[[tunings]]
+id = "main"
+edo = 41
+x_step = 8
+y_step = 1
+fundamental_hz = 110
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/a"
+select.size = [16, 16]
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "strings"
+[[sinks]]
+id = "strings"
+kind = "cpal_strings"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.2
+{sink_tables}"#))
+      .expect("the strings rig parses") }
+
+  /// A strings sink resolves to its engine parameters, with the sawwave-only fields
+  /// inert, and every omitted table is the engine's default.
+  #[test]
+  fn a_strings_sink_resolves_to_its_params_with_the_sawwave_fields_inert() {
+    let bare: Rig = strings_rig("");
+    let bare_settings: Settings = resolve_settings(&bare).expect("the bare rig resolves");
+    assert_eq!(bare_settings.strings, Some(StringsParams::default()));
+    assert_eq!(bare_settings.oversample, 1);
+    assert_eq!(bare_settings.sustain_level, 1.0, "the pluck envelope is off");
+    assert_eq!(bare_settings.decay_secs, 0.0, "the pluck envelope is off");
+    assert!(!bare_settings.distortion_auto_makeup);
+    assert_eq!(bare_settings.crowded_pitch_planck_deviation, 0.0);
+    assert_eq!(bare_settings.retrigger_tail_detune_cents, 0.0);
+    let tuned: Rig = strings_rig("[sinks.body]\nmix = 0.0\n");
+    let tuned_settings: Settings = resolve_settings(&tuned).expect("the tuned rig resolves");
+    assert_eq!(tuned_settings.strings, tuned.sinks[0].strings_params());
+    assert_ne!(tuned_settings.strings, bare_settings.strings); }
+
+  /// A sawwave rig carries no strings parameters, so its audio stays the sawwave engine.
+  #[test]
+  fn a_sawwave_rig_resolves_without_strings_params() {
+    let rig: Rig = load_named_rig("2-edogrids_ss-accrete_ss-pulse").expect("pulse rig loads");
+    assert!(live_for(&rig).params.lock().unwrap().strings.is_none()); }
+
+  /// The point of reload for the strings engine: edit `t60_seconds_at_55hz` in the rig,
+  /// press 'r', and the running renderer's next block uses it.
+  #[test]
+  fn a_reload_moves_the_strings_renderers_decay() {
+    let mut rig: Rig = strings_rig("");
+    let live: Live = live_for(&rig);
+    let sample_rate: f32 =
+      resolve_settings(&rig).expect("the rig resolves").sample_rate as f32;
+    let started: StringsParams =
+      live.params.lock().unwrap().strings.expect("a strings rig has strings params");
+    let mut renderer: StringsRenderer = StringsRenderer::new(started, sample_rate);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(
+      VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) },
+      struck_voice_state(0, 220.0, sample_rate));
+    let mut block: [f32; 128] = [0.0; 128];
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    let edited_t60_seconds_at_55hz: f32 = started.string.t60_seconds_at_55hz / 2.0;
+    { // The edit Jeff makes in the rig file.
+      let SinkRig::CpalStrings { string, .. } = &mut rig.sinks[0] else {
+        panic!("expected a cpal_strings sink, got {:?}", rig.sinks[0]); };
+      string.t60_seconds_at_55hz = edited_t60_seconds_at_55hz; }
+    adopt_rig(&rig, &live).expect("the edited rig adopts");
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    assert_eq!(renderer.params().string.t60_seconds_at_55hz, edited_t60_seconds_at_55hz);
+    assert_ne!(renderer.params().string.t60_seconds_at_55hz, started.string.t60_seconds_at_55hz); }
+
+  /// One block as the audio callback renders it: the live amplitude and strings
+  /// parameters read fresh.
+  fn render_live_block(
+    renderer: &mut StringsRenderer,
+    voices: &mut VoiceMap,
+    block: &mut [f32],
+    sample_rate: f32,
+    live: &Live,
+  ) {
+    let params: LiveParams = *live.params.lock().unwrap();
+    let strings: StringsParams = params.strings.expect("the live params hold strings params");
+    renderer.render_block(voices, block, 1, sample_rate, params.amplitude, &strings); }
 }

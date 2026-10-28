@@ -184,7 +184,7 @@ fn run(
         }
       }
     });
-    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves / drum volume).");
+    println!("press 'r' + Enter to hot-reload the rig (amplitude / timbres / tuning / pluck / slide / trail / distortion curve + makeup / pedal curves / string parameters / drum volume).");
   }
 
   // Discover whatever grids are actually connected and assign each configured grid a
@@ -249,7 +249,7 @@ fn run(
   }
 
   // Shared audio: one voice map + one synth stream; each voice carries its grid's
-  // waveform and its grid's volume gain, and the render sums them all. The cpal_synth
+  // waveform and its grid's volume gain, and the render sums them all. The play grids'
   // sink's `amplitude` is the single master "synth volume" (both grids); the per-grid
   // volume strips are live trims that multiply below it.
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
@@ -343,6 +343,7 @@ fn run(
       s.am_shape_family,
       Arc::clone(&live),
       Arc::clone(&distortion_on),
+      s.strings,
     )?
   };
 

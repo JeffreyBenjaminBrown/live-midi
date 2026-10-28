@@ -1,6 +1,7 @@
 //! The surfaces synth's cpal output stream: one shared voice map summed by the
 //! block renderer, feeding both grids' voices at once (each voice carries its own
-//! grid's waveform). Mirrors `looper_runtime::audio` / `sawwave_runtime` for
+//! grid's waveform). A `cpal_strings` sink swaps the sawwave engine's renderer for
+//! the strings engine's inside the same callback. Mirrors `looper_runtime::audio` / `sawwave_runtime` for
 //! host/format/JACK selection -- duplicated rather than factored, matching the
 //! codebase's convention that untestable cpal glue is duplicated (a shared helper
 //! would carry regression risk with no test to catch it). Launch under `pw-jack`.
@@ -8,9 +9,11 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use super::reload::LiveParams;
 use super::Live;
+use crate::strings::{StringsParams, StringsRenderer};
 use crate::types::{AmShapeFamily, VoiceMap, VoiceSource};
 use crate::voices::{BlockRenderer, DistortionStage};
 
@@ -37,6 +40,7 @@ pub(crate) fn start(
   am_shape_family: AmShapeFamily,
   live: Arc<Live>,
   distortion_on: Arc<Vec<AtomicBool>>,
+  strings: Option<StringsParams>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
   // card via PipeWire, rather than cpal's default ALSA host grabbing the device
@@ -79,9 +83,25 @@ pub(crate) fn start(
   // snapshot, reused across callbacks to keep allocation out of the audio path.
   let mut renderer = BlockRenderer::new(oversample);
   let mut flags = vec![false; distortion_on.len()];
+  let mut strings_renderer: Option<StringsRenderer> = // owned the same way, if the sink is strings
+    strings.map(|params| StringsRenderer::new(params, sample_rate));
   let stream = device.build_output_stream(
     &stream_config,
     move |data: &mut [f32], _| {
+      if let Some(strings_renderer) = strings_renderer.as_mut() {
+        // The strings engine. Its parameters, the master amplitude and the
+        // pedal-slide smoother are hot-reloadable, so they are read fresh each
+        // callback; a reload to a rig without strings parameters (another sink
+        // kind, which needs a restart) keeps the ones running. The distortion
+        // toggles are ignored: the strings engine has no distortion bus.
+        let (amplitude, strings_params): (f32, StringsParams) = {
+          let p: MutexGuard<LiveParams> = live.params.lock().unwrap_or_else(|e| e.into_inner());
+          strings_renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
+          (p.amplitude, p.strings.unwrap_or(*strings_renderer.params())) };
+        let mut voices: MutexGuard<VoiceMap> = voices.lock().unwrap_or_else(|e| e.into_inner());
+        strings_renderer.render_block(
+          &mut voices, data, channels, sample_rate, amplitude, &strings_params);
+        return; }
       // The master amplitude + distortion curve are hot-reloadable ('r'), and the
       // per-grid distortion toggles are live -- read everything fresh each callback.
       // The pedal-slide smoother is live too (`[slide].pedal_smoother_ms`); a cheap
