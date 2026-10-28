@@ -64,6 +64,17 @@ pub fn one_pole_lowpass(
   let pole: f64 = (-2.0 * PI * cutoff_hz as f64 / sample_rate as f64).exp();
   FirstOrderCoefficients { b0: (1.0 - pole) as f32, b1: 0.0, a1: -pole as f32 }}
 
+/// `y = k (x - x1) + R y1` with `R = exp(-2 pi cutoff / fs)` and `k =
+/// (1 + R) / 2`: a one-pole highpass with gain 0 at DC and exactly 1
+/// at Nyquist.
+pub fn one_pole_highpass(
+  cutoff_hz: f32,
+  sample_rate: f32,
+) -> FirstOrderCoefficients {
+  let pole: f64 = (-2.0 * PI * cutoff_hz as f64 / sample_rate as f64).exp();
+  let gain: f64 = (1.0 + pole) / 2.0;
+  FirstOrderCoefficients { b0: gain as f32, b1: -gain as f32, a1: -pole as f32 }}
+
 /// `|H(e^jw)|` of a first-order filter.
 pub fn first_order_magnitude(
   coefficients: &FirstOrderCoefficients,

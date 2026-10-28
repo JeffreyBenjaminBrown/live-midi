@@ -32,7 +32,8 @@
 //! step and `tau = T60(f0) / ln(1000)` the voice's amplitude time
 //! constant. It is written into each loop as one delay line's worth
 //! of the steady state the drive would have left, scaled to the peak
-//! `A0 / unison_count`.
+//! `A0 / unison_count`: the waveshape of the voice's energy kind
+//! (`precharge_waveshape`). `A0` is the same sum for every kind.
 //!
 //! The drive, ebow kind. During the ex-post leg the voice computes
 //! one drive sample `k * A * tanh(v / A)` and adds it to every one of
@@ -59,8 +60,58 @@
 //! pedal lengthens the sustain, and a full one at the window's peak
 //! grows every register at the same rate. The tanh bounds what the
 //! drive adds to `k A`, so no pedal makes a string run away.
+//!
+//! The drive, bow kind. A bow moving at `v_bow = energy.bow_velocity
+//! * f`, `f` the energy factor, rubs the string, whose speed under it
+//! is `v`, the mean of the voice's loops' arriving waves. With `delta
+//! = v_bow - v`, the voice's one drive sample is `delta * bow`, where
+//! `bow = clamp((|delta / f * energy.bow_force| + 0.75) ^ -4, 0.0025,
+//! 0.245)` is STK's friction table ('BowTable') between the bounds
+//! of Elements' ('resonator.cc'). Where the table sits at its upper
+//! bound (`|delta / f * bow_force|` below about 0.67) the bow grips:
+//! the drive pulls the string toward the bow's speed, which damps
+//! it. Beyond, the table falls as the inverse fourth power and the
+//! bow slips; there the drive shrinks as `delta` grows, a negative
+//! resistance that feeds the string's motion until the grip limits
+//! it. The bow's speed sets the level the string settles at, so
+//! `energy.drive_limit` does not apply to the bow. The drive sample
+//! passes a one-pole highpass at `f0 / 10` (`DriveState`), which keeps
+//! the friction from driving the loop's near-DC motion.
+//!
+//! The table reads `delta / f`, not `delta`: the bow's force falls
+//! with its speed, as a player's does to stay inside the Schelleng
+//! window, so the bow's motion keeps its shape and only its size
+//! follows `f`. A bow slowed with its force held (a table reading
+//! `delta`) grips: it would not speak under a light pedal, and it
+//! would stop every bowed string as the window closed. So whether
+//! the bow speaks depends on `bow_velocity * bow_force` and not on
+//! the pedal: below about 0.7 it grips throughout and damps the
+//! string (a non-start); from about 0.8 to 2 it speaks, at about the
+//! same level in every register; above, the low strings lock onto
+//! an upper partial (a squeak), and from about 2.5 they slip
+//! throughout and the bow adds little (it skates).
+//!
+//! The drive, wind kind. White noise in [-1, 1) from the voice's own
+//! seeded generator (`WindSource`, its seed from the voice's id, so
+//! no two notes blow the same noise) passes the second-order bandpass
+//! of `body::Resonator` (peak gain about 1) at the Strouhal frequency
+//! `f_s = energy.wind_speed_hz_max * pedal(t) ^ e`, clamped to [20
+//! Hz, 0.45 sample_rate], of bandwidth `f_s / energy.wind_q`, and is
+//! scaled by `tri(t) * energy.wind_gain`; the voice adds that one
+//! sample to every loop. The string's partial nearest `f_s` gathers
+//! the noise and blooms, the more the longer it rings; as the pedal
+//! rises `f_s` climbs the partials, as wind over an aeolian harp's
+//! string jumps from harmonic to harmonic. The bandpass is
+//! redesigned, its state kept, when `f_s` has moved by more than 1
+//! percent. The noise does not depend on the string's motion, so it
+//! sounds a silent string too, and its level is `wind_gain`'s, not
+//! `energy.drive_limit`'s.
 
+use crate::strings::body::Resonator;
+use crate::strings::first_order::{one_pole_highpass, FirstOrderCoefficients, FirstOrderState};
+use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{EnergyKind, EnergyParams};
+use crate::types::VoiceId;
 use std::f64::consts::PI;
 
 /// The history's grid: points per second of engine time.
@@ -75,6 +126,40 @@ pub const HISTORY_SECONDS: f64 = 10.0;
 /// under a feedback driver settles.
 pub const EBOW_SECOND_HARMONIC: f32 = 0.2;
 
+/// The bow's friction table is `(|delta / f * bow_force| +
+/// BOW_TABLE_OFFSET) ^ -4`, clamped to [`BOW_TABLE_MINIMUM`,
+/// `BOW_TABLE_MAXIMUM`] (STK's 'BowTable' with Elements' bounds).
+pub const BOW_TABLE_OFFSET: f32 = 0.75;
+
+pub const BOW_TABLE_MINIMUM: f32 = 0.0025;
+
+pub const BOW_TABLE_MAXIMUM: f32 = 0.245;
+
+/// The bow's drive passes a one-pole highpass at `f0` over this
+/// before it enters the loops: the friction's negative resistance
+/// acts at every frequency, and below about the loop's DC blocker
+/// (`loop_dsp::DC_BLOCKER_CUTOFF_BELOW_F0`) the loop is too weakly
+/// damped to hold it, so an unfiltered bow sets the string's
+/// near-DC motion wandering by several hundredths at a few Hz.
+pub const BOW_DRIVE_HIGHPASS_BELOW_F0: f32 = 10.0;
+
+/// The wind's Strouhal frequency is clamped to at least this, Hz.
+pub const LOWEST_STROUHAL_HZ: f32 = 20.0;
+
+/// The wind's Strouhal frequency is clamped to at most this fraction
+/// of the sample rate, where a bandpass is still a resonance.
+pub const HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE: f32 = 0.45;
+
+/// The wind's bandpass is redesigned when the Strouhal frequency
+/// has moved by more than this fraction (1 percent, 17 cents) from
+/// the one it was designed at; finer moves are inaudible in a band
+/// `1 / wind_q` wide.
+pub const WIND_REDESIGN_RELATIVE_THRESHOLD: f32 = 0.01;
+
+/// Mixed with the voice's id into the seed of the voice's wind
+/// noise.
+pub const WIND_NOISE_SEED_BASE: u32 = 0x57D1_0001;
+
 /// The pedal's position on a fixed grid of engine time, as the module
 /// comment describes.
 pub struct PedalHistory {
@@ -86,6 +171,25 @@ pub struct PedalHistory {
   step_samples: f64,
   /// The points below this one have been recorded.
   recorded_point_count: u64, }
+
+/// A voice's own drive state, which `drive` reads and advances: the
+/// wind kind's noise and bandpass, and the bow kind's highpass. Every
+/// voice holds one; each kind uses its own part.
+pub struct DriveState {
+  wind: WindSource,
+  /// At `f0 / BOW_DRIVE_HIGHPASS_BELOW_F0`, `f0` the voice's pitch at
+  /// birth.
+  bow_highpass: FirstOrderCoefficients,
+  bow_highpass_state: FirstOrderState, }
+
+/// A voice's wind: its own white noise and the bandpass at the
+/// Strouhal frequency it passes through.
+pub struct WindSource {
+  noise: DeterministicNoise,
+  bandpass: Resonator,
+  /// Hz: the Strouhal frequency the bandpass was last designed at.
+  designed_center_hz: f32,
+  sample_rate: f32, }
 
 impl PedalHistory {
   /// An empty history (every point unreported) for an engine at
@@ -226,41 +330,50 @@ pub fn tri(
     0.0 }}
 
 /// `length` samples (one delay line's worth) of the pre-charge
-/// waveshape of `kind` for a loop at `f0`, scaled so its peak is
-/// `peak`. The first sample is the one the loop reads next.
+/// waveshape of `energy.kind` for a loop at `f0` whose loss filter
+/// is `loss`, scaled so its peak is `peak`. The first sample is the
+/// one the loop reads next. `pedal_power_at_birth` is `pedal ^ e` at
+/// the voice's birth, which picks the wind's partial.
 ///
 /// The ebow's is a sine at `f0` plus `EBOW_SECOND_HARMONIC` of a sine
-/// at `2 f0`. The bow's (a sawtooth through the loop's own loss) and
-/// the wind's (a sine at the partial nearest the Strouhal frequency)
-/// arrive with their drives in slice 8 of
-/// 'TODO/resonance/02_plan.org'; until then they take the ebow's.
+/// at `2 f0`: nearly a sine, as a string under a magnet settles. The
+/// bow's is a sawtooth at `f0` passed once through `loss` from rest:
+/// the bowed string's locked spectrum, its upper partials as dulled
+/// as one round trip dulls them. The wind's is a sine at the partial
+/// `k f0` nearest the Strouhal frequency at birth
+/// (`wind_precharge_partial_number`), the one the wind blooms.
 pub fn precharge_waveshape(
-  kind: EnergyKind,
+  energy: &EnergyParams,
+  pedal_power_at_birth: f32,
+  loss: &FirstOrderCoefficients,
   f0: f32,
   sample_rate: f32,
   length: usize,
   peak: f32,
 ) -> Vec<f32> {
-  let unscaled: Vec<f32> = match kind {
-    EnergyKind::Ebow | EnergyKind::Bow | EnergyKind::Wind =>
-      ebow_waveshape(f0, sample_rate, length), };
+  let unscaled: Vec<f32> = match energy.kind {
+    EnergyKind::Ebow => ebow_waveshape(f0, sample_rate, length),
+    EnergyKind::Bow => bow_waveshape(loss, f0, sample_rate, length),
+    EnergyKind::Wind => {
+      let partial_number: u32 =
+        wind_precharge_partial_number(energy, pedal_power_at_birth, f0, sample_rate);
+      sine_waveshape(partial_number as f32 * f0, sample_rate, length) }};
   let unscaled_peak: f32 = unscaled.iter().fold(0.0, |largest, value| largest.max(value.abs()));
   if unscaled_peak <= 0.0 {
     return unscaled; }
   unscaled.iter().map(|value| value * peak / unscaled_peak).collect() }
 
 /// What the drive of `energy.kind` adds into every loop of a voice
-/// this sample, given the energy factor `tri(t) * pedal(t) ^ e`, the
-/// pedal's power `pedal(t) ^ e`, the voice's `f0`, the mean of its
-/// loops' round-trip gains, and the mean of their arriving waves. 0
-/// when the factor is 0, so a voice outside its window, or under a
-/// pedal at the heel, renders exactly as an undriven one.
-///
-/// The bow and wind drives arrive in slice 8 of
-/// 'TODO/resonance/02_plan.org'; until then those kinds drive as the
-/// ebow does.
+/// this sample, given the voice's `state`, the energy factor `tri(t) *
+/// pedal(t) ^ e`, the pedal's power `pedal(t) ^ e`, the voice's `f0`,
+/// the mean of its loops' round-trip gains, and the mean of their
+/// arriving waves. 0 when the factor or the power is 0, with the
+/// state left as it was, so a voice outside its window, or under a
+/// pedal at the heel, renders exactly as an undriven one. See the
+/// module comment for each kind.
 pub fn drive(
   energy: &EnergyParams,
+  state: &mut DriveState,
   energy_factor: f32,
   pedal_power: f32,
   f0: f32,
@@ -270,8 +383,12 @@ pub fn drive(
   if energy_factor <= 0.0 || pedal_power <= 0.0 {
     return 0.0; }
   match energy.kind {
-    EnergyKind::Ebow | EnergyKind::Bow | EnergyKind::Wind =>
-      ebow_drive(energy, energy_factor, pedal_power, f0, round_trip_gain, arriving), }}
+    EnergyKind::Ebow =>
+      ebow_drive(energy, energy_factor, pedal_power, f0, round_trip_gain, arriving),
+    EnergyKind::Bow => {
+      let friction: f32 = bow_drive(energy, energy_factor, arriving);
+      state.bow_highpass_state.tick(&state.bow_highpass, friction) }
+    EnergyKind::Wind => wind_drive(energy, &mut state.wind, energy_factor, pedal_power), }}
 
 /// `k * A * tanh(v / A)` with `A = energy.drive_limit * pedal_power`.
 /// See the module comment. `pedal_power` must be above 0.
@@ -301,6 +418,130 @@ pub fn ebow_drive_gain(
     energy.growth_rate_per_second_max * factor - natural_decay_rate * (1.0 - factor);
   ((rate / f0).exp() - round_trip_gain).max(0.0) }
 
+/// The bow's `delta * bow_friction(delta / f)`, `delta` the bow's
+/// speed `energy.bow_velocity * f` less the string's `arriving` wave
+/// and `f` the energy factor. See the module comment. `energy_factor`
+/// must be above 0.
+pub fn bow_drive(
+  energy: &EnergyParams,
+  energy_factor: f32,
+  arriving: f32,
+) -> f32 {
+  let bow_speed: f32 = energy.bow_velocity * energy_factor;
+  let speed_difference: f32 = bow_speed - arriving;
+  speed_difference * bow_friction(energy.bow_force, speed_difference / energy_factor) }
+
+/// The friction table `clamp((|scaled_speed_difference * bow_force|
+/// + BOW_TABLE_OFFSET) ^ -4, BOW_TABLE_MINIMUM, BOW_TABLE_MAXIMUM)`.
+/// `scaled_speed_difference` is the bow's speed less the string's,
+/// over the energy factor: the difference as it would be at the
+/// window's peak under a full pedal.
+pub fn bow_friction(
+  bow_force: f32,
+  scaled_speed_difference: f32,
+) -> f32 {
+  ((scaled_speed_difference * bow_force).abs() + BOW_TABLE_OFFSET)
+    .powi(-4)
+    .clamp(BOW_TABLE_MINIMUM, BOW_TABLE_MAXIMUM) }
+
+/// `tri(t) * energy.wind_gain` times this sample of the voice's
+/// wind at the Strouhal frequency of `pedal_power`. The triangle is
+/// the energy factor over the pedal's power. `pedal_power` must be
+/// above 0.
+pub fn wind_drive(
+  energy: &EnergyParams,
+  wind: &mut WindSource,
+  energy_factor: f32,
+  pedal_power: f32,
+) -> f32 {
+  let triangle: f32 = energy_factor / pedal_power;
+  triangle * energy.wind_gain * wind.next_sample(energy, pedal_power) }
+
+impl DriveState {
+  /// The drive state of the voice `voice_id` born at `f0` under
+  /// `energy`, at rest.
+  pub fn new(
+    energy: &EnergyParams,
+    voice_id: VoiceId,
+    f0: f32,
+    sample_rate: f32,
+  ) -> DriveState {
+    DriveState {
+      wind: WindSource::new(energy, voice_id, sample_rate),
+      bow_highpass: one_pole_highpass(f0 / BOW_DRIVE_HIGHPASS_BELOW_F0, sample_rate),
+      bow_highpass_state: FirstOrderState::default(), }}}
+
+impl WindSource {
+  /// The wind of the voice `voice_id` under `energy`, its noise
+  /// seeded from the id (so two voices never blow the same noise) and
+  /// its bandpass at rest, designed at the full pedal's Strouhal
+  /// frequency.
+  pub fn new(
+    energy: &EnergyParams,
+    voice_id: VoiceId,
+    sample_rate: f32,
+  ) -> WindSource {
+    let center_hz: f32 = strouhal_frequency_hz(energy, 1.0, sample_rate);
+    WindSource {
+      noise: DeterministicNoise::new(wind_noise_seed(voice_id)),
+      bandpass: Resonator::new(center_hz, center_hz / energy.wind_q, sample_rate),
+      designed_center_hz: center_hz,
+      sample_rate, }}
+
+  /// One sample of white noise in [-1, 1) through the bandpass at the
+  /// Strouhal frequency of `pedal_power` (bandwidth that over
+  /// `energy.wind_q`, peak gain about 1), redesigned first if that
+  /// frequency has moved by more than `WIND_REDESIGN_RELATIVE_THRESHOLD`.
+  pub fn next_sample(
+    &mut self,
+    energy: &EnergyParams,
+    pedal_power: f32,
+  ) -> f32 {
+    let center_hz: f32 = strouhal_frequency_hz(energy, pedal_power, self.sample_rate);
+    if (center_hz / self.designed_center_hz - 1.0).abs() > WIND_REDESIGN_RELATIVE_THRESHOLD {
+      self.bandpass.redesign(center_hz, center_hz / energy.wind_q, self.sample_rate);
+      self.designed_center_hz = center_hz; }
+    self.bandpass.tick(self.noise.next_bipolar()) }
+
+  /// Hz: the Strouhal frequency the bandpass is designed at.
+  pub fn designed_center_hz(
+    &self,
+  ) -> f32 {
+    self.designed_center_hz }}
+
+/// The `k >= 1` whose partial `k f0` is nearest the Strouhal
+/// frequency of `pedal_power_at_birth`, kept below Nyquist.
+pub fn wind_precharge_partial_number(
+  energy: &EnergyParams,
+  pedal_power_at_birth: f32,
+  f0: f32,
+  sample_rate: f32,
+) -> u32 {
+  let strouhal_hz: f32 = strouhal_frequency_hz(energy, pedal_power_at_birth, sample_rate);
+  let nearest: u32 = (strouhal_hz / f0).round().max(1.0) as u32;
+  let below_nyquist: u32 = ((0.5 * sample_rate / f0).ceil() as u32).saturating_sub(1).max(1);
+  nearest.min(below_nyquist) }
+
+/// The Strouhal frequency `f_s = energy.wind_speed_hz_max *
+/// pedal_power`, clamped to [`LOWEST_STROUHAL_HZ`,
+/// `HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE * sample_rate`].
+pub fn strouhal_frequency_hz(
+  energy: &EnergyParams,
+  pedal_power: f32,
+  sample_rate: f32,
+) -> f32 {
+  (energy.wind_speed_hz_max * pedal_power)
+    .clamp(LOWEST_STROUHAL_HZ, HIGHEST_STROUHAL_FRACTION_OF_SAMPLE_RATE * sample_rate) }
+
+/// The seed of the wind noise of the voice `voice_id`: its id mixed
+/// (Knuth's multiplicative hash) into `WIND_NOISE_SEED_BASE`, so
+/// neighboring ids start far apart in the generator's sequence.
+pub fn wind_noise_seed(
+  voice_id: VoiceId,
+) -> u32 {
+  let folded_id: u32 = (voice_id ^ (voice_id >> 32)) as u32;
+  WIND_NOISE_SEED_BASE ^ folded_id.wrapping_mul(0x9E37_79B9) }
+
 /// A pedal position as the energy reads it: NaN (never reported) is
 /// 0, and the rest is clamped to [0, 1].
 pub fn reported_position(
@@ -319,4 +560,31 @@ fn ebow_waveshape(
     .map(|index| {
       let phase: f64 = 2.0 * PI * f0 as f64 * index as f64 / sample_rate as f64;
       (phase.sin() + EBOW_SECOND_HARMONIC as f64 * (2.0 * phase).sin()) as f32 })
+    .collect() }
+
+/// The rising sawtooth `2 frac(f0 t) - 1` at the first `length`
+/// samples, through `loss` once, from rest.
+fn bow_waveshape(
+  loss: &FirstOrderCoefficients,
+  f0: f32,
+  sample_rate: f32,
+  length: usize,
+) -> Vec<f32> {
+  let mut loss_state: FirstOrderState = FirstOrderState::default();
+  (0 .. length)
+    .map(|index| {
+      let cycles: f64 = f0 as f64 * index as f64 / sample_rate as f64;
+      let sawtooth: f32 = (2.0 * cycles.fract() - 1.0) as f32;
+      loss_state.tick(loss, sawtooth) })
+    .collect() }
+
+/// `sin(2 pi frequency t)` at the first `length` samples.
+fn sine_waveshape(
+  frequency_hz: f32,
+  sample_rate: f32,
+  length: usize,
+) -> Vec<f32> {
+  (0 .. length)
+    .map(|index| {
+      (2.0 * PI * frequency_hz as f64 * index as f64 / sample_rate as f64).sin() as f32 })
     .collect() }

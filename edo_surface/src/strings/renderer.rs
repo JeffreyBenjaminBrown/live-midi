@@ -223,8 +223,9 @@ impl StringsRenderer {
 
   /// A voice for `voice`, born now and struck: its own dry table at
   /// `voice.freq` and the shared knock, and pre-charged from the
-  /// pedal's history over its ex-ante leg. Modal above the
-  /// crossover, of loops otherwise.
+  /// pedal's history over its ex-ante leg, in the waveshape of its
+  /// energy kind at this block's pedal. Modal above the crossover, of
+  /// loops otherwise.
   fn spawn_struck(
     &self,
     voice: &VoiceState,
@@ -234,10 +235,10 @@ impl StringsRenderer {
     let crossover_hz: f32 = self.params.modal.crossover_hz;
     let mut string_voice: VoiceKind = if crossover_hz > 0.0 && voice.freq > crossover_hz {
       VoiceKind::Modal(ModalVoice::new(
-        &self.params, voice.freq, self.sample_rate, self.sample_clock, dry, knock))
+        &self.params, voice.id, voice.freq, self.sample_rate, self.sample_clock, dry, knock))
     } else {
       VoiceKind::Loops(StringVoice::new(
-        &self.params, voice.freq, self.sample_rate, self.sample_clock, dry, knock)) };
+        &self.params, voice.id, voice.freq, self.sample_rate, self.sample_clock, dry, knock)) };
     let precharge: f32 = {
       let amplitude_time_constant_seconds: f32 =
         t60_seconds(&self.params.string, voice.freq) / 1000.0_f32.ln();
@@ -245,7 +246,9 @@ impl StringsRenderer {
         &self.pedal_history, self.sample_clock, &self.params.energy,
         amplitude_time_constant_seconds, self.sample_rate) };
     if precharge > 0.0 {
-      string_voice.precharge(precharge, self.sample_rate); }
+      let pedal_power_at_birth: f32 = pedal_power(&self.params.energy, self.pedal_position);
+      string_voice.precharge(
+        precharge, pedal_power_at_birth, &self.params.string, self.sample_rate); }
     string_voice }
 
   /// One output sample: control steps, the junction, the voices'

@@ -192,16 +192,39 @@ impl BodyMode {
     &self,
     sample_rate: f32,
   ) -> Resonator {
-    let radius: f64 = (-PI * self.bandwidth_hz as f64 / sample_rate as f64).exp();
-    let angle: f64 = 2.0 * PI * self.center_hz as f64 / sample_rate as f64;
-    Resonator {
-      b0: ((1.0 - radius * radius) / 2.0) as f32,
-      a1: (-2.0 * radius * angle.cos()) as f32,
-      a2: (radius * radius) as f32,
-      previous_inputs: [0.0; 2],
-      previous_outputs: [0.0; 2], }}}
+    Resonator::new(self.center_hz, self.bandwidth_hz, sample_rate) }}
 
 impl Resonator {
+  /// The resonator at `center_hz` of bandwidth `bandwidth_hz`, at
+  /// rest.
+  pub fn new(
+    center_hz: f32,
+    bandwidth_hz: f32,
+    sample_rate: f32,
+  ) -> Resonator {
+    let mut resonator: Resonator = Resonator {
+      b0: 0.0,
+      a1: 0.0,
+      a2: 0.0,
+      previous_inputs: [0.0; 2],
+      previous_outputs: [0.0; 2], };
+    resonator.redesign(center_hz, bandwidth_hz, sample_rate);
+    resonator }
+
+  /// Moves the resonator to `center_hz` and `bandwidth_hz`, keeping
+  /// its state, so a moving center glides rather than restarts.
+  pub fn redesign(
+    &mut self,
+    center_hz: f32,
+    bandwidth_hz: f32,
+    sample_rate: f32,
+  ) {
+    let radius: f64 = (-PI * bandwidth_hz as f64 / sample_rate as f64).exp();
+    let angle: f64 = 2.0 * PI * center_hz as f64 / sample_rate as f64;
+    self.b0 = ((1.0 - radius * radius) / 2.0) as f32;
+    self.a1 = (-2.0 * radius * angle.cos()) as f32;
+    self.a2 = (radius * radius) as f32; }
+
   pub fn tick(
     &mut self,
     input: f32,

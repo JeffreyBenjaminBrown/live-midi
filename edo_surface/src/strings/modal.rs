@@ -56,13 +56,15 @@
 //! `Re G > -0.45`.
 
 use crate::strings::body::HIGHEST_MODE_FRACTION_OF_SAMPLE_RATE;
-use crate::strings::energy::{drive, precharge_waveshape};
+use crate::strings::energy::{drive, precharge_waveshape, DriveState};
 use crate::strings::exciter::period_samples;
+use crate::strings::loop_dsp::design_loop;
 use crate::strings::params::{
   inharmonicity_b, round_trip_gain, t60_seconds, EnergyParams, ModalParams, StringParams,
   StringsParams, MAX_MODAL_MODES,
 };
 use crate::strings::voice::{ExcitationStream, RETUNE_RELATIVE_THRESHOLD};
+use crate::types::VoiceId;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
@@ -116,17 +118,21 @@ pub struct ModalVoice {
   gain: f32,
   /// The energy parameters at birth: the voice's window and drive.
   energy: EnergyParams,
+  /// The voice's own state of the drive: the wind's noise and
+  /// bandpass, the bow's highpass.
+  drive_state: DriveState,
   /// This sample's energy factor, set by the renderer.
   energy_factor: f32,
   /// This sample's `pedal(t) ^ e`, set by the renderer.
   pedal_power: f32, }
 
 impl ModalVoice {
-  /// A voice at `f0` Hz born at engine sample `birth`, its modes at
-  /// rest, and the two tables to stream in (empty for a voice that
-  /// rings only by sympathy).
+  /// The voice `voice_id` at `f0` Hz born at engine sample `birth`,
+  /// its modes at rest, and the two tables to stream in (empty for a
+  /// voice that rings only by sympathy).
   pub fn new(
     params: &StringsParams,
+    voice_id: VoiceId,
     f0: f32,
     sample_rate: f32,
     birth: u64,
@@ -147,21 +153,27 @@ impl ModalVoice {
       excitation: ExcitationStream::new(dry_table, knock_table),
       gain: 0.0,
       energy: params.energy,
+      drive_state: DriveState::new(&params.energy, voice_id, f0, sample_rate),
       energy_factor: 0.0,
       pedal_power: 0.0, }}
 
   /// Adds the pre-charge into the input stream: one period of the
   /// waveshape of the voice's energy kind at `f0`, peaking at
-  /// `amplitude` (`energy::precharge_waveshape`), which the bank
-  /// then plays as a loop holding that period would. Call it at
+  /// `amplitude`, under the pedal's power `pedal_power_at_birth`
+  /// (`energy::precharge_waveshape`), which the bank then plays as a
+  /// loop holding that period would. The bow's waveshape passes the
+  /// loss filter a loop at `f0` would have under `string`. Call it at
   /// birth, before the first sample.
   pub fn precharge(
     &mut self,
     amplitude: f32,
+    pedal_power_at_birth: f32,
+    string: &StringParams,
     sample_rate: f32,
   ) {
     let waveshape: Vec<f32> = precharge_waveshape(
-      self.energy.kind, self.f0, sample_rate, period_samples(self.f0, sample_rate), amplitude);
+      &self.energy, pedal_power_at_birth, &design_loop(string, self.f0, sample_rate).loss,
+      self.f0, sample_rate, period_samples(self.f0, sample_rate), amplitude);
     self.excitation.add_into_dry_table(&waveshape); }
 
   /// Re-designs the modes at `f0` if it has moved from the voice's
@@ -211,7 +223,8 @@ impl ModalVoice {
   /// Writes this sample's input, `-bridge_velocity + excitation +
   /// drive + howl_feedback`, which every mode reads next sample, and
   /// advances the excitation. `arriving` is this sample's output from
-  /// `read_arriving`; the drive is `energy::drive` on it.
+  /// `read_arriving`; the drive is `energy::drive` on it, with the
+  /// voice's drive state.
   pub fn write_back(
     &mut self,
     arriving: f32,
@@ -220,8 +233,8 @@ impl ModalVoice {
   ) {
     let excitation: f32 = self.excitation.next_sample();
     let drive: f32 = drive(
-      &self.energy, self.energy_factor, self.pedal_power, self.f0, self.round_trip_gain,
-      arriving);
+      &self.energy, &mut self.drive_state, self.energy_factor, self.pedal_power, self.f0,
+      self.round_trip_gain, arriving);
     self.pending_input = -bridge_velocity + excitation + drive + howl_feedback; }
 
   /// About the energy a loop holding the bank's motion would (the sum

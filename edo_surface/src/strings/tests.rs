@@ -3,12 +3,14 @@
 //! is the loop alone, before any junction; then come the exciter,
 //! the body, the curves and validation; then the junction, the
 //! renderer over a voice map, and sympathy between strings; then the
-//! energy pedal's pre-charge and drive; then the howl path and the
-//! modal voices above the crossover.
+//! energy pedal's pre-charge and drive (the ebow's, then the bow's
+//! and the wind's); then the howl path and the modal voices above
+//! the crossover.
 
 use crate::strings::body::{BodyBank, BodyMode, BodyModes};
 use crate::strings::energy::{
-  drive, ebow_drive_gain, pedal_power, precharge_amplitude, PedalHistory,
+  drive, ebow_drive_gain, pedal_power, precharge_amplitude, precharge_waveshape, DriveState,
+  PedalHistory, WindSource,
 };
 use crate::strings::exciter::{dry_table, knock_table, period_samples};
 use crate::strings::first_order::{
@@ -21,7 +23,8 @@ use crate::strings::modal::{mode_t60_seconds, ModalVoice, ModeDesign};
 use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{
   dispersion_applies, inharmonicity_b, inharmonicity_perceptual_threshold, round_trip_gain,
-  t60_seconds, BodyParams, ExciterKind, HowlParams, StringParams, StringsParams,
+  t60_seconds, BodyParams, EnergyKind, EnergyParams, ExciterKind, HowlParams, StringParams,
+  StringsParams,
 };
 use crate::strings::renderer::{couple_through_junction, StringsRenderer};
 use crate::strings::scripted_voices::{release_voice_state, struck_voice_state, RELEASE_SECS};
@@ -204,7 +207,10 @@ fn validation_accepts_the_defaults_and_names_a_bad_key() {
     ("string.dispersion_sections", |p| p.string.dispersion_sections = 17),
     ("body.highest_hz", |p| p.body.highest_hz = p.body.lowest_hz),
     ("exciter.hammer_contact_fraction", |p| p.exciter.hammer_contact_fraction = 0.4),
-    ("energy.bow_force", |p| p.energy.bow_force = 0.5), ];
+    ("energy.bow_force", |p| p.energy.bow_force = 0.5),
+    ("energy.bow_force", |p| p.energy.bow_force = 11.0),
+    ("energy.bow_velocity", |p| p.energy.bow_velocity = 0.0),
+    ("energy.bow_velocity", |p| p.energy.bow_velocity = 2.5), ];
   for (key, spoil) in cases {
     let mut params: StringsParams = StringsParams::default();
     spoil(&mut params);
@@ -357,7 +363,7 @@ fn a_silent_string_rings_by_sympathy_more_under_a_lighter_bridge() {
     params.bridge.heaviness = heaviness;
     let mut string_voices: BTreeMap<VoiceId, VoiceKind> = struck_string_voices(&params, &[220.0]);
     string_voices.insert(1, VoiceKind::Loops(StringVoice::new(
-      &params, 220.0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()))));
+      &params, 1, 220.0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()))));
     let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
     let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
     let mut arriving_waves: Vec<f32> = Vec::with_capacity(4);
@@ -607,9 +613,11 @@ fn the_drive_saturates_at_its_limit_times_the_pedal_power() {
     let power: f32 = pedal_power(&params.energy, pedal_position);
     let energy_factor: f32 = power;
     let k: f32 = ebow_drive_gain(&params.energy, energy_factor, f0, gain);
-    let saturated: f32 = drive(&params.energy, energy_factor, power, f0, gain, 100.0);
+    let mut state: DriveState = DriveState::new(&params.energy, 0, f0, SAMPLE_RATE);
+    let saturated: f32 = drive(&params.energy, &mut state, energy_factor, power, f0, gain, 100.0);
     let small_wave: f32 = 1e-4;
-    let linear: f32 = drive(&params.energy, energy_factor, power, f0, gain, small_wave);
+    let linear: f32 =
+      drive(&params.energy, &mut state, energy_factor, power, f0, gain, small_wave);
     println!("pedal {pedal_position}: k {k:.3e}, saturated drive {saturated:.3e}, \
               k * limit * power {:.3e}", k * params.energy.drive_limit * power);
     assert!(k > 0.0);
@@ -650,6 +658,152 @@ fn a_full_pedal_drives_the_unisons_of_a_voice_in_phase() {
             {driven:.3} under a full pedal, {undriven:.3} under none");
   assert!(driven > 1.5, "the driven unisons drifted apart: {driven}");
   assert!(driven > undriven, "the drive did not hold the unisons together"); }
+
+/// Under a full pedal and a 1 s ex-post leg the bow and the wind
+/// each grow a softly struck 220 Hz note (the body off): its RMS over
+/// 0.3 to 0.6 s is above its RMS over the first 0.1 s, and near the
+/// leg's end (0.9 s) it is still well above the undriven note's.
+///
+/// Unlike the ebow, whose growth rate accumulates while the triangle
+/// falls, the bow and the wind set the note's level from the
+/// triangle itself (the bow's speed is `bow_velocity * tri * p ^ e`,
+/// the wind's noise is scaled by `tri`), so a driven note peaks early
+/// in the leg and follows the triangle down: at 0.9 s it is below its
+/// level at 0.1 s, as it should be, and the growth is measured from
+/// the strike instead.
+#[test]
+fn a_full_pedal_grows_a_note_under_the_bow_and_the_wind() {
+  for kind in [EnergyKind::Bow, EnergyKind::Wind] {
+    let mut params: StringsParams = StringsParams::default();
+    params.body.mix = 0.0;
+    params.energy.kind = kind;
+    params.energy.ex_post_energizing_ms = 1000.0;
+    params.exciter.pick_energy = 0.05;
+    let render_under_pedal = |pedal_position: f32| -> Vec<f32> {
+      let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+      let mut voices: VoiceMap = VoiceMap::new();
+      voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+      render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, pedal_position) };
+    let driven: Vec<f32> = render_under_pedal(1.0);
+    let undriven: Vec<f32> = render_under_pedal(f32::NAN);
+    let struck: f32 = rms_between(&driven, 0.0, 0.1);
+    let grown: f32 = rms_between(&driven, 0.3, 0.6);
+    let (late, undriven_late): (f32, f32) = (rms_around(&driven, 0.9), rms_around(&undriven, 0.9));
+    println!("{kind:?} under a full pedal: RMS {struck:.4} over 0-0.1 s, {grown:.4} over \
+              0.3-0.6 s; at 0.1 s {:.4}, at 0.9 s {late:.4} (undriven {undriven_late:.4}); \
+              peak {:.4}",
+             rms_around(&driven, 0.1), peak_of(&driven));
+    assert!(driven.iter().all(|sample| sample.is_finite()), "{kind:?}: not finite");
+    assert!(grown > struck, "{kind:?}: {struck} over the strike, {grown} at mid-leg");
+    assert!(late > 2.0 * undriven_late,
+            "{kind:?}: {late} at 0.9 s against {undriven_late} undriven"); }}
+
+/// Under a pedal at the heel the bow and the wind add nothing: the
+/// note decays (its RMS at 0.9 s below its RMS at 0.1 s) and renders
+/// exactly as it does with no pedal at all.
+#[test]
+fn a_heel_pedal_neither_bows_nor_blows() {
+  for kind in [EnergyKind::Bow, EnergyKind::Wind] {
+    let mut params: StringsParams = StringsParams::default();
+    params.energy.kind = kind;
+    params.energy.ex_post_energizing_ms = 1000.0;
+    let render_under_pedal = |pedal_position: f32| -> Vec<f32> {
+      let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+      let mut voices: VoiceMap = VoiceMap::new();
+      voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+      render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, pedal_position) };
+    let heel: Vec<f32> = render_under_pedal(0.0);
+    assert!(rms_around(&heel, 0.9) < rms_around(&heel, 0.1), "{kind:?}: the note did not decay");
+    assert_eq!(heel, render_under_pedal(f32::NAN), "{kind:?}: a heel pedal renders unlike none"); }}
+
+/// At the defaults, a pedal held full from a second before a chord
+/// (four loop voices and one modal voice above the crossover, all
+/// pre-charged) through 3 s keeps the output finite and below the
+/// clamp, under either kind.
+#[test]
+fn the_bow_and_the_wind_stay_bounded_at_the_defaults() {
+  for kind in [EnergyKind::Bow, EnergyKind::Wind] {
+    let mut params: StringsParams = StringsParams::default();
+    params.energy.kind = kind;
+    let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, 1.0);
+    let pitches: [f32; 5] = [110.0, 165.0, 220.0, 330.0, 2.0 * params.modal.crossover_hz];
+    for (index, freq) in pitches.iter().enumerate() {
+      voices.insert(finger_key(index), struck_voice_state(index as VoiceId, *freq, SAMPLE_RATE)); }
+    let rendered: Vec<f32> =
+      render_seconds_under_pedal(&mut renderer, &mut voices, &params, 3.0, 1.0);
+    let modal_id: VoiceId = (pitches.len() - 1) as VoiceId;
+    assert!(renderer.voice_kind(modal_id).expect("the top voice").as_modal().is_some());
+    let peak: f32 = peak_of(&rendered);
+    println!("{kind:?} at the defaults, a pre-charged chord under a full pedal: peak {peak:.4} \
+              over 3 s");
+    assert!(rendered.iter().all(|sample| sample.is_finite()), "{kind:?}: not finite");
+    assert!(peak < 0.95, "{kind:?}: peak {peak}"); }}
+
+/// A constant full pedal over the ex-ante leg pre-charges a two-loop
+/// 220 Hz voice with the same `A0` whatever the kind, and each kind's
+/// fill (one delay line's worth of its waveshape, through the loop's
+/// own loss for the bow) peaks at `A0 / unison_count` within 1
+/// percent and is what the voice adds to each loop. The ebow's and
+/// the bow's fills are strongest at the fundamental; the wind's at
+/// the partial nearest the Strouhal frequency of the pedal at birth.
+#[test]
+fn each_kind_precharges_its_own_waveshape_at_the_shared_amplitude() {
+  let f0: f32 = 220.0;
+  let birth: u64 = SAMPLE_RATE as u64;
+  let history: PedalHistory = history_of_a_constant_pedal(1.0, birth, SAMPLE_RATE);
+  for kind in [EnergyKind::Ebow, EnergyKind::Bow, EnergyKind::Wind] {
+    let mut params: StringsParams = StringsParams::default();
+    params.energy.kind = kind;
+    let tau: f32 = t60_seconds(&params.string, f0) / 1000.0_f32.ln();
+    let amplitude: f32 = precharge_amplitude(&history, birth, &params.energy, tau, SAMPLE_RATE);
+    let mut voice: StringVoice =
+      StringVoice::new(&params, 0, f0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()));
+    let peak_per_loop: f32 = amplitude / voice.loop_count() as f32;
+    let power_at_birth: f32 = pedal_power(&params.energy, 1.0);
+    let fills: Vec<Vec<f32>> = voice.loops().iter()
+      .map(|string_loop| precharge_waveshape(
+        &params.energy, power_at_birth, &string_loop.design().loss, string_loop.f0(),
+        SAMPLE_RATE, string_loop.design().delay_samples, peak_per_loop))
+      .collect();
+    voice.precharge(amplitude, power_at_birth, SAMPLE_RATE);
+    let expected_partial: usize = match kind {
+      EnergyKind::Ebow | EnergyKind::Bow => 1,
+      EnergyKind::Wind => {
+        let strouhal_hz: f32 = params.energy.wind_speed_hz_max * power_at_birth;
+        (1 ..= 40)
+          .min_by(|a, b| {
+            let distance = |k: &usize| (*k as f32 * f0 - strouhal_hz).abs();
+            distance(a).total_cmp(&distance(b)) })
+          .expect("a partial") }};
+    for (fill, string_loop) in fills.iter().zip(voice.loops().iter()) {
+      let strongest: usize = strongest_harmonic(fill, string_loop.f0(), 40);
+      let held: f32 = fill.iter().map(|sample| sample * sample).sum();
+      println!("{kind:?}: A0 {amplitude:.5}, fill peak {:.5} (A0 / {} = {peak_per_loop:.5}), \
+                strongest partial {strongest}", peak_of(fill), voice.loop_count());
+      assert!(relative_error(peak_of(fill), peak_per_loop) < 0.01, "{kind:?}: fill peak");
+      assert_eq!(strongest, expected_partial, "{kind:?}: the fill's strongest partial");
+      assert!(relative_error(string_loop.energy(), held) < 1e-4,
+              "{kind:?}: the loop holds {} of a fill of {held}", string_loop.energy()); }}}
+
+/// Each voice blows its own noise (two ids, two sequences), and its
+/// bandpass follows the pedal, redesigned only when the Strouhal
+/// frequency moves by more than 1 percent.
+#[test]
+fn every_voice_blows_its_own_wind_following_the_pedal() {
+  let energy: EnergyParams = StringsParams::default().energy;
+  let mut first: WindSource = WindSource::new(&energy, 0, SAMPLE_RATE);
+  let mut second: WindSource = WindSource::new(&energy, 1, SAMPLE_RATE);
+  let first_samples: Vec<f32> = (0 .. 64).map(|_| first.next_sample(&energy, 1.0)).collect();
+  let second_samples: Vec<f32> = (0 .. 64).map(|_| second.next_sample(&energy, 1.0)).collect();
+  assert_ne!(first_samples, second_samples);
+  first.next_sample(&energy, 0.5);
+  assert_eq!(first.designed_center_hz(), energy.wind_speed_hz_max * 0.5);
+  first.next_sample(&energy, 0.504);
+  assert_eq!(first.designed_center_hz(), energy.wind_speed_hz_max * 0.5);
+  first.next_sample(&energy, 0.6);
+  assert_eq!(first.designed_center_hz(), energy.wind_speed_hz_max * 0.6); }
 
 /// The howl path sustains a struck note: at `howl.gain` 20 (and a
 /// `level` of 0.003) a 220 Hz note's stored energy at 3 s is above
@@ -767,7 +921,7 @@ fn a_note_above_the_crossover_is_modal_in_tune_and_decays_with_the_curve() {
   let expected_t60: f64 = t60_seconds(&params.string, modal_f0) as f64;
   let measured_t60: f64 = {
     let mut voice: ModalVoice = ModalVoice::new(
-      &params, modal_f0, SAMPLE_RATE, 0, one_period_of_sine(modal_f0), Arc::from(Vec::new()));
+      &params, 0, modal_f0, SAMPLE_RATE, 0, one_period_of_sine(modal_f0), Arc::from(Vec::new()));
     let alone: Vec<f32> = (0 .. seconds(expected_t60 as f32 * 0.8 + 0.5))
       .map(|_| {
         let arriving: f32 = voice.read_arriving();
@@ -830,14 +984,16 @@ fn modal_voices_in_the_junction_stay_passive_and_ring_in_sympathy() {
       struck_string_voices(&params, &loop_pitches);
     let knock: Arc<[f32]> = Arc::from(knock_table(&params.exciter, &params.body, SAMPLE_RATE));
     for (index, f0) in modal_pitches.iter().enumerate() {
+      let id: VoiceId = (loop_pitches.len() + index) as VoiceId;
       let mut voice: VoiceKind = VoiceKind::Modal(ModalVoice::new(
-        &params, *f0, SAMPLE_RATE, 0, dry_table(&params.exciter, *f0, SAMPLE_RATE),
+        &params, id, *f0, SAMPLE_RATE, 0, dry_table(&params.exciter, *f0, SAMPLE_RATE),
         Arc::clone(&knock)));
       voice.set_gain(1.0);
-      string_voices.insert((loop_pitches.len() + index) as VoiceId, voice); }
+      string_voices.insert(id, voice); }
     let silent_id: VoiceId = (loop_pitches.len() + modal_pitches.len()) as VoiceId;
     string_voices.insert(silent_id, VoiceKind::Modal(ModalVoice::new(
-      &params, 2.0 * loop_pitches[2], SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()))));
+      &params, silent_id, 2.0 * loop_pitches[2], SAMPLE_RATE, 0, Vec::new(),
+      Arc::from(Vec::new()))));
     let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
     let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
     let mut arriving_waves: Vec<f32> = Vec::with_capacity(16);
@@ -936,8 +1092,8 @@ fn struck_string_voices(
     .enumerate()
     .map(|(index, f0)| {
       let mut voice: VoiceKind = VoiceKind::Loops(StringVoice::new(
-        params, *f0, SAMPLE_RATE, 0, dry_table(&params.exciter, *f0, SAMPLE_RATE),
-        Arc::clone(&knock)));
+        params, index as VoiceId, *f0, SAMPLE_RATE, 0,
+        dry_table(&params.exciter, *f0, SAMPLE_RATE), Arc::clone(&knock)));
       voice.set_gain(1.0);
       (index as VoiceId, voice) })
     .collect() }
@@ -989,6 +1145,28 @@ fn rms_around(
 ) -> f32 {
   let window: &[f32] = &signal[seconds(at_seconds - 0.01) .. seconds(at_seconds + 0.01)];
   (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt() }
+
+/// The RMS of `signal` from `start_seconds` to `end_seconds`.
+fn rms_between(
+  signal: &[f32],
+  start_seconds: f32,
+  end_seconds: f32,
+) -> f32 {
+  let window: &[f32] = &signal[seconds(start_seconds) .. seconds(end_seconds)];
+  (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt() }
+
+/// The `k` in 1 ..= `highest` at which the Hann-windowed spectrum of
+/// `signal` is largest at `k f0`.
+fn strongest_harmonic(
+  signal: &[f32],
+  f0: f32,
+  highest: usize,
+) -> usize {
+  let windowed: Vec<f64> = hann_windowed(signal);
+  let magnitude = |k: &usize| -> f64 { spectrum_magnitude_at(&windowed, *k as f64 * f0 as f64) };
+  (1 ..= highest)
+    .max_by(|a, b| magnitude(a).total_cmp(&magnitude(b)))
+    .expect("at least one harmonic") }
 
 fn finger_key(
   index: usize,

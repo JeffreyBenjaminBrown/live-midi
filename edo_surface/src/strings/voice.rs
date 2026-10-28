@@ -21,15 +21,17 @@
 //! whole voice, taken from the mean of its loops' arriving waves and
 //! added to every loop, so the unisons are driven together; it reads
 //! the energy factor and the pedal's power the renderer hands the
-//! voice each sample. The howl is the howl path's sample
+//! voice each sample, and the voice's own drive state
+//! (`energy::DriveState`: the wind's noise, the bow's highpass). The howl is the howl path's sample
 //! (`howl::HowlPath`), the same for every loop. A voice keeps the
 //! energy parameters it was born under, so a change to them applies
 //! to notes born afterward.
 
-use crate::strings::energy::{drive, precharge_waveshape};
+use crate::strings::energy::{drive, precharge_waveshape, DriveState};
 use crate::strings::loop_dsp::Loop;
 use crate::strings::modal::ModalVoice;
 use crate::strings::params::{EnergyParams, StringParams, StringsParams};
+use crate::types::VoiceId;
 use std::sync::Arc;
 
 /// A voice retunes its loops when its `VoiceState.freq` has moved
@@ -69,6 +71,9 @@ pub struct StringVoice {
   gain: f32,
   /// The energy parameters at birth: the voice's window and drive.
   energy: EnergyParams,
+  /// The voice's own state of the drive: the wind's noise and
+  /// bandpass, the bow's highpass.
+  drive_state: DriveState,
   /// This sample's energy factor `tri(t) * pedal(t) ^ e`
   /// (`energy::ex_post_energy_factor`), set by the renderer; 0 outside
   /// the window.
@@ -116,15 +121,22 @@ impl VoiceKind {
       VoiceKind::Modal(modal_voice) =>
         modal_voice.write_back(arriving_waves[0], bridge_velocity, howl_feedback), }}
 
-  /// Adds the pre-charge of peak `amplitude`. Call it at birth.
+  /// Adds the pre-charge of peak `amplitude`, its waveshape that of
+  /// the voice's energy kind under the pedal's power
+  /// `pedal_power_at_birth` (`energy::precharge_waveshape`). Call it at
+  /// birth, with the `string` parameters the voice was born under.
   pub fn precharge(
     &mut self,
     amplitude: f32,
+    pedal_power_at_birth: f32,
+    string: &StringParams,
     sample_rate: f32,
   ) {
     match self {
-      VoiceKind::Loops(string_voice) => string_voice.precharge(amplitude, sample_rate),
-      VoiceKind::Modal(modal_voice) => modal_voice.precharge(amplitude, sample_rate), }}
+      VoiceKind::Loops(string_voice) =>
+        string_voice.precharge(amplitude, pedal_power_at_birth, sample_rate),
+      VoiceKind::Modal(modal_voice) =>
+        modal_voice.precharge(amplitude, pedal_power_at_birth, string, sample_rate), }}
 
   /// Retunes the voice to `f0` if it has moved by more than
   /// `RETUNE_RELATIVE_THRESHOLD`.
@@ -236,11 +248,13 @@ impl VoiceKind {
       VoiceKind::Modal(modal_voice) => Some(modal_voice), }}}
 
 impl StringVoice {
-  /// A voice at `f0` Hz born at engine sample `birth`, with
-  /// `string.unison_count` silent loops and the two tables to stream
-  /// in. Pass empty tables for a voice that rings only by sympathy.
+  /// The voice `voice_id` at `f0` Hz born at engine sample `birth`,
+  /// with `string.unison_count` silent loops and the two tables to
+  /// stream in. Pass empty tables for a voice that rings only by
+  /// sympathy.
   pub fn new(
     params: &StringsParams,
+    voice_id: VoiceId,
     f0: f32,
     sample_rate: f32,
     birth: u64,
@@ -261,23 +275,27 @@ impl StringVoice {
       excitation: ExcitationStream::new(dry_table, knock_table),
       gain: 0.0,
       energy: params.energy,
+      drive_state: DriveState::new(&params.energy, voice_id, f0, sample_rate),
       energy_factor: 0.0,
       pedal_power: 0.0, }}
 
   /// Adds the pre-charge into every loop: one delay line's worth of
-  /// the waveshape of the voice's energy kind at the loop's own pitch,
-  /// its peak `amplitude / unison_count` (`energy::precharge_waveshape`).
-  /// Call it at birth, before the first sample.
+  /// the waveshape of the voice's energy kind at the loop's own pitch
+  /// and through its own loss filter, its peak `amplitude /
+  /// unison_count` (`energy::precharge_waveshape`), under the pedal's
+  /// power `pedal_power_at_birth`. Call it at birth, before the first
+  /// sample.
   pub fn precharge(
     &mut self,
     amplitude: f32,
+    pedal_power_at_birth: f32,
     sample_rate: f32,
   ) {
     let peak_per_loop: f32 = amplitude / self.loops.len() as f32;
     for string_loop in self.loops.iter_mut() {
       let waveshape: Vec<f32> = precharge_waveshape(
-        self.energy.kind, string_loop.f0(), sample_rate, string_loop.design().delay_samples,
-        peak_per_loop);
+        &self.energy, pedal_power_at_birth, &string_loop.design().loss, string_loop.f0(),
+        sample_rate, string_loop.design().delay_samples, peak_per_loop);
       string_loop.add_table(&waveshape); }}
 
   /// Retunes the loops to `f0` if it has moved from the voice's
@@ -340,10 +358,10 @@ impl StringVoice {
 
   /// The one drive sample every loop of the voice takes this sample:
   /// `energy::drive` at the voice's pitch, from the mean of its loops'
-  /// round-trip gains and of their `arriving_waves`. 0 outside the
-  /// window, with nothing computed.
+  /// round-trip gains and of their `arriving_waves`, and the voice's
+  /// drive state. 0 outside the window, with nothing computed.
   pub fn drive_of_the_voice(
-    &self,
+    &mut self,
     arriving_waves: &[f32],
   ) -> f32 {
     if self.energy_factor <= 0.0 || self.pedal_power <= 0.0 {
@@ -353,8 +371,8 @@ impl StringVoice {
     let mean_round_trip_gain: f32 = self.loops.iter()
       .map(|string_loop| string_loop.round_trip_gain())
       .sum::<f32>() / loop_count;
-    drive(&self.energy, self.energy_factor, self.pedal_power, self.f0, mean_round_trip_gain,
-          mean_arriving) }
+    drive(&self.energy, &mut self.drive_state, self.energy_factor, self.pedal_power, self.f0,
+          mean_round_trip_gain, mean_arriving) }
 
   /// The sum of every loop's stored energy (`Loop::energy`).
   pub fn energy(

@@ -26,7 +26,7 @@ use crate::strings::params::{
 };
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
-  FirstOrderCoefficients, FirstOrderState,
+  one_pole_highpass, FirstOrderCoefficients, FirstOrderState,
 };
 use std::f64::consts::PI;
 
@@ -289,19 +289,16 @@ fn split_delay_into_whole_and_fraction(
   } else {
     (whole as usize, delay_for_line_and_tuning - whole) }}
 
-/// The normalized DC blocker `y = k (x - x1) + R y1`, `k = (1 + R) /
-/// 2`, with its cutoff `f0 / DC_BLOCKER_CUTOFF_BELOW_F0`. The factor
-/// `k` makes its gain exactly 1 at Nyquist and below 1 everywhere
-/// else (the unnormalized `x - x1 + R y1` gains `2 / (1 + R)` at the
-/// top, which a loop with little loss there would amplify forever).
+/// The normalized DC blocker (`first_order::one_pole_highpass`) with
+/// its cutoff `f0 / DC_BLOCKER_CUTOFF_BELOW_F0`. Its gain is below 1
+/// everywhere below Nyquist (the unnormalized `x - x1 + R y1` gains
+/// `2 / (1 + R)` at the top, which a loop with little loss there
+/// would amplify forever).
 fn design_dc_blocker(
   f0: f32,
   sample_rate: f32,
 ) -> FirstOrderCoefficients {
-  let cutoff_hz: f64 = f0 as f64 / DC_BLOCKER_CUTOFF_BELOW_F0 as f64;
-  let pole: f64 = (-2.0 * PI * cutoff_hz / sample_rate as f64).exp();
-  let gain: f64 = (1.0 + pole) / 2.0;
-  FirstOrderCoefficients { b0: gain as f32, b1: -gain as f32, a1: -pole as f32 }}
+  one_pole_highpass(f0 / DC_BLOCKER_CUTOFF_BELOW_F0, sample_rate) }
 
 /// The one-pole loss `H(z) = g (1 + a) / (1 + a z^-1)`, `a` in
 /// [`DARKEST_LOSS_POLE`, 0]. It is designed so that the loop

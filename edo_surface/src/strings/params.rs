@@ -145,18 +145,24 @@ pub struct EnergyParams {
   /// Unitless, >= 0. Scales the pedal-history sum into the amplitude
   /// written into the loops at key-down.
   pub precharge_gain: f32,
-  /// Loop velocity units, >= 0. The bow's speed at full pedal (the
-  /// `bow` kind only).
+  /// Loop velocity units, in (0, 2]. The bow's speed at full pedal
+  /// and the window's peak (the `bow` kind only); the level a bowed
+  /// string settles at follows it. `drive_limit` does not apply to
+  /// the bow.
   pub bow_velocity: f32,
   /// Unitless slope of the bow's friction table, in [1, 10] (the
-  /// `bow` kind only); higher grips harder.
+  /// `bow` kind only): larger narrows the speed difference at which
+  /// the bow still grips, so it slips sooner. With `bow_velocity` it
+  /// decides whether the bow speaks: their product from about 0.8 to
+  /// 2 does.
   pub bow_force: f32,
   /// Hz, > 0. The Strouhal frequency at full pedal (the `wind` kind
   /// only); the partial nearest it blooms.
   pub wind_speed_hz_max: f32,
   /// Unitless, > 0. The quality factor of the wind's noise bandpass.
   pub wind_q: f32,
-  /// Unitless, >= 0. The wind noise's gain into the loop.
+  /// Unitless, >= 0. The wind noise's gain into the loop, at the
+  /// window's peak. `drive_limit` does not apply to the wind.
   pub wind_gain: f32, }
 
 #[derive(Copy, Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -260,11 +266,11 @@ impl Default for StringsParams {
         growth_rate_per_second_max: 8.0,
         drive_limit: 0.8,
         precharge_gain: 0.5,
-        bow_velocity: 0.2,
+        bow_velocity: 0.3,
         bow_force: 3.0,
         wind_speed_hz_max: 2000.0,
         wind_q: 8.0,
-        wind_gain: 0.1, },
+        wind_gain: 0.5, },
       bridge: BridgeParams {
         heaviness: 3000.0,
         damping_hz: 6000.0, },
@@ -379,7 +385,7 @@ fn validate_energy(
     "energy.growth_rate_per_second_max", energy.growth_rate_per_second_max, 0.0)?;
   require_above("energy.drive_limit", energy.drive_limit, 0.0)?;
   require_at_least("energy.precharge_gain", energy.precharge_gain, 0.0)?;
-  require_at_least("energy.bow_velocity", energy.bow_velocity, 0.0)?;
+  require_above_and_at_most("energy.bow_velocity", energy.bow_velocity, 0.0, 2.0)?;
   require_within("energy.bow_force", energy.bow_force, 1.0, 10.0)?;
   require_above("energy.wind_speed_hz_max", energy.wind_speed_hz_max, 0.0)?;
   require_above("energy.wind_q", energy.wind_q, 0.0)?;
