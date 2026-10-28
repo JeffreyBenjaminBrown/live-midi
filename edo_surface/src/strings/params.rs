@@ -31,6 +31,11 @@ pub const HIGH_ANCHOR_HZ: f32 = 1760.0;
 /// `string.dispersion_sections` while a note sounds allocates nothing.
 pub const MAX_DISPERSION_SECTIONS: u32 = 16;
 
+/// The most resonators one modal voice may have. A modal voice holds
+/// this many mode states in place, so changing `modal.mode_count`
+/// while a note sounds allocates nothing.
+pub const MAX_MODAL_MODES: u32 = 32;
+
 #[derive(Copy, Debug, Clone, PartialEq)]
 pub struct StringsParams {
   pub string: StringParams,
@@ -206,8 +211,9 @@ pub struct HowlParams {
   /// Unitless, >= 0. Gain of the summed loops into the tanh; 0 turns
   /// the howl path off.
   pub gain: f32,
-  /// Loop amplitude units, >= 0. The tanh's output is scaled by this
-  /// before it is added into every loop.
+  /// Loop amplitude units, in [0, 1]. The tanh's output is scaled by
+  /// this before it is added into every loop; a sustained note
+  /// settles near `4 / pi * level / (1 - g)`, `g` its round-trip gain.
   pub level: f32,
   /// Milliseconds, in [0.5, 20]. The howl path's delay.
   pub delay_ms: f32, }
@@ -219,7 +225,9 @@ pub struct ModalParams {
   /// Hz, >= 0. A note above this is a modal voice; 0 disables the
   /// crossover.
   pub crossover_hz: f32,
-  /// Count, 1 to 32. Resonators per modal voice.
+  /// Count, 1 to 32. Resonators per modal voice, at the stiff
+  /// string's partials; those at or above 0.45 times the sample rate
+  /// are left out.
   pub mode_count: u32, }
 
 impl Default for StringsParams {
@@ -269,7 +277,7 @@ impl Default for StringsParams {
         seed: 1, },
       howl: HowlParams {
         gain: 0.0,
-        level: 0.3,
+        level: 0.003,
         delay_ms: 5.0, },
       modal: ModalParams {
         crossover_hz: 2000.0,
@@ -401,7 +409,7 @@ fn validate_howl(
   howl: &HowlParams,
 ) -> Result<(), String> {
   require_at_least("howl.gain", howl.gain, 0.0)?;
-  require_at_least("howl.level", howl.level, 0.0)?;
+  require_within("howl.level", howl.level, 0.0, 1.0)?;
   require_within("howl.delay_ms", howl.delay_ms, 0.5, 20.0)?;
   Ok(( )) }
 
@@ -409,7 +417,7 @@ fn validate_modal(
   modal: &ModalParams,
 ) -> Result<(), String> {
   require_at_least("modal.crossover_hz", modal.crossover_hz, 0.0)?;
-  require_count_within("modal.mode_count", modal.mode_count, 1, 32)?;
+  require_count_within("modal.mode_count", modal.mode_count, 1, MAX_MODAL_MODES)?;
   Ok(( )) }
 
 fn require_above(

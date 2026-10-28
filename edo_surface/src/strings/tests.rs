@@ -3,7 +3,8 @@
 //! is the loop alone, before any junction; then come the exciter,
 //! the body, the curves and validation; then the junction, the
 //! renderer over a voice map, and sympathy between strings; then the
-//! energy pedal's pre-charge and drive.
+//! energy pedal's pre-charge and drive; then the howl path and the
+//! modal voices above the crossover.
 
 use crate::strings::body::{BodyBank, BodyMode, BodyModes};
 use crate::strings::energy::{
@@ -13,16 +14,18 @@ use crate::strings::exciter::{dry_table, knock_table, period_samples};
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
 };
+use crate::strings::howl::HowlPath;
 use crate::strings::junction::Junction;
 use crate::strings::loop_dsp::{design_loop, Loop, LoopDesign};
+use crate::strings::modal::{mode_t60_seconds, ModalVoice, ModeDesign};
 use crate::strings::noise::DeterministicNoise;
 use crate::strings::params::{
   dispersion_applies, inharmonicity_b, inharmonicity_perceptual_threshold, round_trip_gain,
-  t60_seconds, BodyParams, ExciterKind, StringParams, StringsParams,
+  t60_seconds, BodyParams, ExciterKind, HowlParams, StringParams, StringsParams,
 };
 use crate::strings::renderer::{couple_through_junction, StringsRenderer};
 use crate::strings::scripted_voices::{release_voice_state, struck_voice_state, RELEASE_SECS};
-use crate::strings::voice::StringVoice;
+use crate::strings::voice::{StringVoice, VoiceKind};
 use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -193,6 +196,10 @@ fn validation_accepts_the_defaults_and_names_a_bad_key() {
     ("body.mix", |p| p.body.mix = 1.5),
     ("howl.delay_ms", |p| p.howl.delay_ms = 0.1),
     ("howl.delay_ms", |p| p.howl.delay_ms = 25.0),
+    ("howl.level", |p| p.howl.level = 1.5),
+    ("howl.gain", |p| p.howl.gain = -1.0),
+    ("modal.mode_count", |p| p.modal.mode_count = 33),
+    ("modal.crossover_hz", |p| p.modal.crossover_hz = -1.0),
     ("string.t60_seconds_at_55hz", |p| p.string.t60_seconds_at_55hz = f32::NAN),
     ("string.dispersion_sections", |p| p.string.dispersion_sections = 17),
     ("body.highest_hz", |p| p.body.highest_hz = p.body.lowest_hz),
@@ -348,13 +355,14 @@ fn a_silent_string_rings_by_sympathy_more_under_a_lighter_bridge() {
   for heaviness in [20.0_f32, 5000.0] {
     let mut params: StringsParams = StringsParams::default();
     params.bridge.heaviness = heaviness;
-    let mut string_voices: BTreeMap<VoiceId, StringVoice> = struck_string_voices(&params, &[220.0]);
-    string_voices.insert(
-      1, StringVoice::new(&params, 220.0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new())));
+    let mut string_voices: BTreeMap<VoiceId, VoiceKind> = struck_string_voices(&params, &[220.0]);
+    string_voices.insert(1, VoiceKind::Loops(StringVoice::new(
+      &params, 220.0, SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()))));
     let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
+    let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
     let mut arriving_waves: Vec<f32> = Vec::with_capacity(4);
     for _ in 0 .. seconds(0.5) {
-      couple_through_junction(&mut string_voices, &mut junction, &mut arriving_waves); }
+      couple_through_junction(&mut string_voices, &mut junction, &mut howl, &mut arriving_waves); }
     let struck_energy: f32 = string_voices[&0].energy();
     let silent_energy: f32 = string_voices[&1].energy();
     println!("sympathy at r = {heaviness}: struck string {struck_energy:.4e}, \
@@ -643,6 +651,251 @@ fn a_full_pedal_drives_the_unisons_of_a_voice_in_phase() {
   assert!(driven > 1.5, "the driven unisons drifted apart: {driven}");
   assert!(driven > undriven, "the drive did not hold the unisons together"); }
 
+/// The howl path sustains a struck note: at `howl.gain` 20 (and a
+/// `level` of 0.003) a 220 Hz note's stored energy at 3 s is above
+/// its energy at 1 s, where without the howl it has decayed by
+/// then, and over 10 s the output stays finite and below the clamp.
+#[test]
+fn the_howl_path_sustains_a_struck_note_and_stays_bounded() {
+  let energies_and_output = |howl_gain: f32| -> (f32, f32, Vec<f32>) {
+    let mut params: StringsParams = StringsParams::default();
+    params.howl.gain = howl_gain;
+    params.howl.level = 0.003;
+    let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+    let mut rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 1.0);
+    let at_one_second: f32 = renderer.voice_kind(0).expect("voice 0").energy();
+    rendered.extend(render_seconds(&mut renderer, &mut voices, &params, 2.0));
+    let at_three_seconds: f32 = renderer.voice_kind(0).expect("voice 0").energy();
+    rendered.extend(render_seconds(&mut renderer, &mut voices, &params, 7.0));
+    (at_one_second, at_three_seconds, rendered) };
+  let (howl_at_1, howl_at_3, howled): (f32, f32, Vec<f32>) = energies_and_output(20.0);
+  let (plain_at_1, plain_at_3, _): (f32, f32, Vec<f32>) = energies_and_output(0.0);
+  let peak: f32 = peak_of(&howled);
+  println!("howl at gain 20: energy {howl_at_1:.4} at 1 s, {howl_at_3:.4} at 3 s, peak over \
+            10 s {peak:.4}, RMS at 9.9 s {:.4}; no howl: {plain_at_1:.4}, {plain_at_3:.4}",
+           rms_around(&howled, 9.9));
+  assert!(howl_at_3 > howl_at_1,
+          "the howl did not sustain: {howl_at_1} at 1 s, {howl_at_3} at 3 s");
+  assert!(plain_at_3 < plain_at_1, "without the howl the note did not decay");
+  assert!(howled.iter().all(|sample| sample.is_finite()));
+  assert!(peak < 0.95, "the howl reached the clamp: peak {peak}"); }
+
+/// At `howl.gain` 0 the howl path is off: it adds exactly 0 and
+/// stores nothing, so a render under any `level` and `delay_ms` is
+/// identical, sample for sample, to the default render (the junction
+/// alone).
+#[test]
+fn a_howl_gain_of_zero_is_the_junction_alone() {
+  let render_with = |level: f32, delay_ms: f32| -> Vec<f32> {
+    let mut params: StringsParams = StringsParams::default();
+    params.howl.gain = 0.0;
+    params.howl.level = level;
+    params.howl.delay_ms = delay_ms;
+    let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    for (index, freq) in [110.0_f32, 165.0, 220.0].iter().enumerate() {
+      voices.insert(finger_key(index), struck_voice_state(index as VoiceId, *freq, SAMPLE_RATE)); }
+    render_seconds(&mut renderer, &mut voices, &params, 1.0) };
+  let defaults: StringsParams = StringsParams::default();
+  let reference: Vec<f32> = render_with(defaults.howl.level, defaults.howl.delay_ms);
+  assert_eq!(render_with(1.0, 20.0), reference);
+  assert_eq!(render_with(0.0, 0.5), reference);
+  let mut path: HowlPath =
+    HowlPath::new(&HowlParams { gain: 0.0, level: 1.0, delay_ms: 0.5 }, SAMPLE_RATE);
+  assert!(!path.is_on());
+  for _ in 0 .. 100 {
+    assert_eq!(path.feedback(1.0), 0.0); }}
+
+/// The howl reloads at the next block: a note struck with the howl off
+/// that has it turned on (gain 20, level 0.003) at 0.5 s holds more energy at 3 s
+/// than at 1 s, and turned off again at 3 s, it decays.
+#[test]
+fn the_renderer_adopts_a_changed_howl_at_the_next_block() {
+  let off: StringsParams = StringsParams::default();
+  let mut on: StringsParams = off;
+  on.howl.gain = 20.0;
+  on.howl.level = 0.003;
+  let mut renderer: StringsRenderer = StringsRenderer::new(off, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  let energy_of = |renderer: &StringsRenderer| -> f32 {
+    renderer.voice_kind(0).expect("voice 0").energy() };
+  render_seconds(&mut renderer, &mut voices, &off, 0.5);
+  render_seconds(&mut renderer, &mut voices, &on, 0.5);
+  let at_one_second: f32 = energy_of(&renderer);
+  render_seconds(&mut renderer, &mut voices, &on, 2.0);
+  let at_three_seconds: f32 = energy_of(&renderer);
+  render_seconds(&mut renderer, &mut voices, &off, 2.0);
+  let at_five_seconds: f32 = energy_of(&renderer);
+  println!("howl on at 0.5 s, off at 3 s: energy {at_one_second:.4} at 1 s, \
+            {at_three_seconds:.4} at 3 s, {at_five_seconds:.4} at 5 s");
+  assert!(at_three_seconds > at_one_second, "turned on, the howl did not sustain the note");
+  assert!(at_five_seconds < 0.5 * at_three_seconds, "turned off, the howl still sustains"); }
+
+/// With the crossover at 2000 Hz a 3000 Hz note is a modal voice, a
+/// 1000 Hz note one of loops; with the crossover at 0 the 3000 Hz note
+/// is loops too. The modal note sounds within 2 cents of its pitch
+/// (the body off, through the junction, measured as the loop's pitch
+/// is), and alone, filled with one period of its fundamental, decays
+/// 60 dB in `T60(f0)` within 10 percent; each of its modes rings with
+/// the T60 the curve and the ratio give it.
+#[test]
+fn a_note_above_the_crossover_is_modal_in_tune_and_decays_with_the_curve() {
+  let mut params: StringsParams = StringsParams::default();
+  params.body.mix = 0.0;
+  params.modal.crossover_hz = 2000.0;
+  let modal_f0: f32 = 3000.0;
+  let kind_and_render = |params: &StringsParams, f0: f32| -> (bool, Vec<f32>) {
+    let mut renderer: StringsRenderer = StringsRenderer::new(*params, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(finger_key(0), struck_voice_state(0, f0, SAMPLE_RATE));
+    let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, params, 1.0);
+    let voice: &VoiceKind = renderer.voice_kind(0).expect("voice 0");
+    assert_eq!(voice.as_modal().is_some(), voice.as_loops().is_none());
+    (voice.as_modal().is_some(), rendered) };
+  let (modal_is_modal, modal_render): (bool, Vec<f32>) = kind_and_render(&params, modal_f0);
+  assert!(modal_is_modal, "{modal_f0} Hz above a 2000 Hz crossover is not modal");
+  assert!(!kind_and_render(&params, 1000.0).0, "1000 Hz below a 2000 Hz crossover is modal");
+  { // A crossover of 0 disables it.
+    let mut disabled: StringsParams = params;
+    disabled.modal.crossover_hz = 0.0;
+    assert!(!kind_and_render(&disabled, modal_f0).0, "a crossover of 0 still makes modal voices"); }
+  let measured_hz: f64 = partial_frequency_near(&modal_render[seconds(0.05) ..], modal_f0 as f64);
+  let error_cents: f64 = cents_between(measured_hz, modal_f0 as f64);
+  let expected_t60: f64 = t60_seconds(&params.string, modal_f0) as f64;
+  let measured_t60: f64 = {
+    let mut voice: ModalVoice = ModalVoice::new(
+      &params, modal_f0, SAMPLE_RATE, 0, one_period_of_sine(modal_f0), Arc::from(Vec::new()));
+    let alone: Vec<f32> = (0 .. seconds(expected_t60 as f32 * 0.8 + 0.5))
+      .map(|_| {
+        let arriving: f32 = voice.read_arriving();
+        voice.write_back(arriving, 0.0, 0.0);
+        arriving })
+      .collect();
+    for mode in voice.modes() {
+      let expected_mode_t60: f32 = mode_t60_seconds(&params.string, modal_f0, mode.frequency_hz);
+      assert!(relative_error(mode.t60_seconds, expected_mode_t60) < 1e-5);
+      let radius_t60: f32 = -(1000.0_f32.ln()) / (SAMPLE_RATE * mode.pole_radius.ln());
+      assert!(relative_error(radius_t60, expected_mode_t60) < 1e-3,
+              "the mode at {} Hz rings {radius_t60} s, expected {expected_mode_t60} s",
+              mode.frequency_hz); }
+    t60_from_rms_envelope(&alone) };
+  let t60_error: f64 = measured_t60 / expected_t60 - 1.0;
+  println!("modal voice at {modal_f0} Hz: pitch {measured_hz:.4} Hz ({error_cents:+.4} cents), \
+            T60 {measured_t60:.4} s against {expected_t60:.4} s ({:+.3} percent)",
+           100.0 * t60_error);
+  assert!(error_cents.abs() < 2.0, "the modal voice sounds {error_cents} cents off");
+  assert!(t60_error.abs() < 0.1, "the modal voice decays in {measured_t60} s"); }
+
+/// A modal voice starts at a loop voice's level: just above the
+/// crossover, each of three pitches struck as a modal voice and as
+/// loops (the crossover at 0) has, over its first 30 ms, the same
+/// fundamental within 10 percent. Its gains `2 / P` make it so; see
+/// 'modal.rs'.
+#[test]
+fn a_modal_voice_starts_at_a_loop_voice_s_level() {
+  for f0 in [2500.0_f32, 3000.0, 3500.0] {
+    let fundamental_of = |crossover_hz: f32| -> f64 {
+      let mut params: StringsParams = StringsParams::default();
+      params.body.mix = 0.0;
+      params.modal.crossover_hz = crossover_hz;
+      let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+      let mut voices: VoiceMap = VoiceMap::new();
+      voices.insert(finger_key(0), struck_voice_state(0, f0, SAMPLE_RATE));
+      let rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, &params, 0.03);
+      spectrum_magnitude_at(&hann_windowed(&rendered), f0 as f64) };
+    let ratio: f64 = fundamental_of(f0 / 2.0) / fundamental_of(0.0);
+    println!("fundamental at {f0} Hz over the first 30 ms, modal over loops: {ratio:.4}");
+    assert!((ratio - 1.0).abs() < 0.1,
+            "at {f0} Hz the modal fundamental is {ratio} of the loops'"); }}
+
+/// Modal voices are junction members like loops: struck and silent
+/// modal voices among struck loop voices, under a bridge from very
+/// light to heavy, stay finite, and their total stored energy,
+/// averaged over successive quarter seconds, never rises once the
+/// excitation has streamed in. A silent modal voice an octave above a
+/// struck loop voice rings in sympathy.
+#[test]
+fn modal_voices_in_the_junction_stay_passive_and_ring_in_sympathy() {
+  let loop_pitches: [f32; 3] = [750.0, 1000.0, 1500.0];
+  let modal_pitches: [f32; 2] = [2250.0, 3000.0];
+  let block: usize = 128;
+  let blocks_per_quarter_second: usize = seconds(0.25) / block;
+  for heaviness in [1.0_f32, 50.0, 500.0] {
+    let mut params: StringsParams = StringsParams::default();
+    params.bridge.heaviness = heaviness;
+    let mut string_voices: BTreeMap<VoiceId, VoiceKind> =
+      struck_string_voices(&params, &loop_pitches);
+    let knock: Arc<[f32]> = Arc::from(knock_table(&params.exciter, &params.body, SAMPLE_RATE));
+    for (index, f0) in modal_pitches.iter().enumerate() {
+      let mut voice: VoiceKind = VoiceKind::Modal(ModalVoice::new(
+        &params, *f0, SAMPLE_RATE, 0, dry_table(&params.exciter, *f0, SAMPLE_RATE),
+        Arc::clone(&knock)));
+      voice.set_gain(1.0);
+      string_voices.insert((loop_pitches.len() + index) as VoiceId, voice); }
+    let silent_id: VoiceId = (loop_pitches.len() + modal_pitches.len()) as VoiceId;
+    string_voices.insert(silent_id, VoiceKind::Modal(ModalVoice::new(
+      &params, 2.0 * loop_pitches[2], SAMPLE_RATE, 0, Vec::new(), Arc::from(Vec::new()))));
+    let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
+    let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
+    let mut arriving_waves: Vec<f32> = Vec::with_capacity(16);
+    let mut block_energies: Vec<f32> = Vec::new();
+    let mut silent_energy_at_half_a_second: f32 = 0.0;
+    for block_index in 0 .. seconds(3.0) / block {
+      for _ in 0 .. block {
+        couple_through_junction(
+          &mut string_voices, &mut junction, &mut howl, &mut arriving_waves); }
+      if block_index == seconds(0.5) / block {
+        silent_energy_at_half_a_second = string_voices[&silent_id].energy(); }
+      if string_voices.values().all(|voice| voice.excitation_finished()) {
+        block_energies.push(string_voices.values().map(|voice| voice.energy()).sum()); }}
+    let quarter_second_means: Vec<f32> = block_energies
+      .chunks_exact(blocks_per_quarter_second)
+      .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+      .collect();
+    let largest_rise: f32 = largest_relative_rise(&quarter_second_means);
+    println!("modal members at r = {heaviness}: energy from {:.4} to {:.4e}, largest quarter \
+              second rise {largest_rise:+.3e}, the silent modal voice at 0.5 s \
+              {silent_energy_at_half_a_second:.3e}",
+             block_energies[0], block_energies[block_energies.len() - 1]);
+    assert!(block_energies.iter().all(|energy| energy.is_finite()));
+    assert!(largest_rise <= 0.0, "r = {heaviness}: the energy rose by {largest_rise}");
+    assert!(silent_energy_at_half_a_second > 0.0, "r = {heaviness}: no sympathy"); }}
+
+/// A sounding modal voice is re-designed when `modal.mode_count` or
+/// the string table changes, and keeps its kind when the crossover
+/// moves; a note struck after the crossover moved takes the new one.
+#[test]
+fn the_renderer_adopts_changed_modal_params() {
+  let mut params: StringsParams = StringsParams::default();
+  params.modal.crossover_hz = 2000.0;
+  params.modal.mode_count = 4;
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  voices.insert(finger_key(0), struck_voice_state(0, 3000.0, SAMPLE_RATE));
+  render_seconds(&mut renderer, &mut voices, &params, 0.05);
+  let modes_of = |renderer: &StringsRenderer| -> Vec<ModeDesign> {
+    renderer.voice_kind(0).expect("voice 0").as_modal().expect("modal").modes().to_vec() };
+  assert_eq!(modes_of(&renderer).len(), 4);
+  let mut fewer: StringsParams = params;
+  fewer.modal.mode_count = 2;
+  render_seconds(&mut renderer, &mut voices, &fewer, 0.01);
+  assert_eq!(modes_of(&renderer).len(), 2);
+  let mut shorter: StringsParams = fewer;
+  shorter.string.t60_seconds_at_1760hz = 0.5;
+  let t60_before: f32 = modes_of(&renderer)[0].t60_seconds;
+  render_seconds(&mut renderer, &mut voices, &shorter, 0.01);
+  assert!(modes_of(&renderer)[0].t60_seconds < t60_before);
+  let mut no_crossover: StringsParams = shorter;
+  no_crossover.modal.crossover_hz = 0.0;
+  render_seconds(&mut renderer, &mut voices, &no_crossover, 0.01);
+  assert!(renderer.voice_kind(0).expect("voice 0").as_modal().is_some());
+  voices.insert(finger_key(1), struck_voice_state(1, 3000.0, SAMPLE_RATE));
+  render_seconds(&mut renderer, &mut voices, &no_crossover, 0.01);
+  assert!(renderer.voice_kind(1).expect("voice 1").as_loops().is_some()); }
+
 /// Renders struck `pitches` through one junction for `block_count`
 /// blocks of `block` samples and returns the stored energy (every
 /// voice's `energy`) at the end of each block after both tables have
@@ -653,13 +906,14 @@ fn block_energies_after_the_excitation(
   block: usize,
   block_count: usize,
 ) -> Vec<f32> {
-  let mut string_voices: BTreeMap<VoiceId, StringVoice> = struck_string_voices(params, pitches);
+  let mut string_voices: BTreeMap<VoiceId, VoiceKind> = struck_string_voices(params, pitches);
   let mut junction: Junction = Junction::new(&params.bridge, SAMPLE_RATE);
+  let mut howl: HowlPath = HowlPath::new(&params.howl, SAMPLE_RATE);
   let mut arriving_waves: Vec<f32> = Vec::with_capacity(3 * pitches.len());
   let mut energies: Vec<f32> = Vec::with_capacity(block_count);
   for _ in 0 .. block_count {
     for _ in 0 .. block {
-      couple_through_junction(&mut string_voices, &mut junction, &mut arriving_waves); }
+      couple_through_junction(&mut string_voices, &mut junction, &mut howl, &mut arriving_waves); }
     if string_voices.values().all(|voice| voice.excitation_finished()) {
       energies.push(string_voices.values().map(|voice| voice.energy()).sum()); }}
   energies }
@@ -671,19 +925,19 @@ fn largest_relative_rise(
 ) -> f32 {
   values.windows(2).fold(0.0, |largest, pair| largest.max(pair[1] / pair[0] - 1.0)) }
 
-/// One string voice per pitch, struck with the dry table and the
-/// knock of `params`, keyed by its index, all with gain 1.
+/// One string voice of loops per pitch, struck with the dry table and
+/// the knock of `params`, keyed by its index, all with gain 1.
 fn struck_string_voices(
   params: &StringsParams,
   pitches: &[f32],
-) -> BTreeMap<VoiceId, StringVoice> {
+) -> BTreeMap<VoiceId, VoiceKind> {
   let knock: Arc<[f32]> = Arc::from(knock_table(&params.exciter, &params.body, SAMPLE_RATE));
   pitches.iter()
     .enumerate()
     .map(|(index, f0)| {
-      let mut voice: StringVoice = StringVoice::new(
+      let mut voice: VoiceKind = VoiceKind::Loops(StringVoice::new(
         params, *f0, SAMPLE_RATE, 0, dry_table(&params.exciter, *f0, SAMPLE_RATE),
-        Arc::clone(&knock));
+        Arc::clone(&knock)));
       voice.set_gain(1.0);
       (index as VoiceId, voice) })
     .collect() }
