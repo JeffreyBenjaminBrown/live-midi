@@ -2314,6 +2314,7 @@
           PedalRole::GridVolume => PedalTarget::Grid(some.expect("grid_volume names a monome")),
           PedalRole::NewNoteVolume => PedalTarget::NewNote(some),
           PedalRole::GlobalVolume => PedalTarget::Global(some),
+          PedalRole::StringEnergy => PedalTarget::StringEnergy,
         };
         (p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p))
       })

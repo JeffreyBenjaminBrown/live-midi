@@ -270,7 +270,8 @@ fn render_scene(
       apply_event(&mut voices, &mut next_voice_id, scene.events[next_event].1, sample_rate);
       next_event += 1; }
     renderer.render_block(
-      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &rendering.params);
+      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &rendering.params,
+      f32::NAN);
     rendered.extend_from_slice(&block); }
   rendered.truncate(total_frames);
   rendered }

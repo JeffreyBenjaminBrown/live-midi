@@ -10,12 +10,15 @@
 //! note's loops and the excitation it streams into them. `junction`
 //! is the bridge that couples every loop. `body` designs and runs
 //! the bank of body resonators. `exciter` builds the tables that
-//! start a note. `noise` is the deterministic random source the
+//! start a note. `energy` is the energy pedal's part: the pedal's
+//! history, the window around key-down, the pre-charge a string
+//! holds at birth and the drive that feeds it afterward. `noise` is the deterministic random source the
 //! exciter and the body share. `renderer` runs all of it over the
 //! voice map, block by block. `scripted_voices` builds `VoiceState`s
 //! as the surfaces runtime does, for the harness and the tests.
 
 pub mod body;
+pub mod energy;
 pub mod exciter;
 pub mod first_order;
 pub mod junction;

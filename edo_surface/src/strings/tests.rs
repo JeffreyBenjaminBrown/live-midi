@@ -2,9 +2,11 @@
 //! plain Karplus-Strong string (it writes back what arrives), which
 //! is the loop alone, before any junction; then come the exciter,
 //! the body, the curves and validation; then the junction, the
-//! renderer over a voice map, and sympathy between strings.
+//! renderer over a voice map, and sympathy between strings; then the
+//! energy pedal's pre-charge and drive.
 
 use crate::strings::body::{BodyBank, BodyMode, BodyModes};
+use crate::strings::energy::{precharge_amplitude, PedalHistory};
 use crate::strings::exciter::{dry_table, knock_table, period_samples};
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
@@ -464,6 +466,125 @@ fn the_renderer_adopts_changed_params_at_the_next_block() {
   let gain_after: f32 = renderer.string_voice(0).expect("voice 0").loops()[0].round_trip_gain();
   assert!(gain_after < gain_before, "the loop kept its gain {gain_before} (now {gain_after})"); }
 
+/// A constant full pedal over the whole ex-ante leg (300 ms here)
+/// pre-charges a string with what the closed form of the plan's sum
+/// gives: `precharge_gain * integral over s in [0, ex_ante] of (s /
+/// ex_ante) exp(-(ex_ante - s) / tau) ds`, which is `precharge_gain *
+/// (tau (1 - E) - tau^2 / ex_ante (1 - E (1 + ex_ante / tau)))` with
+/// `E = exp(-ex_ante / tau)`, within 1 percent, at a sample rate whose
+/// millisecond is a whole number of samples and at one whose is not.
+#[test]
+fn a_constant_full_pedal_precharges_as_the_closed_form_integral() {
+  let mut params: StringsParams = StringsParams::default();
+  params.energy.ex_ante_energizing_ms = 300.0;
+  let f0: f32 = 220.0;
+  let tau: f64 = t60_seconds(&params.string, f0) as f64 / 1000.0_f64.ln();
+  let ex_ante_seconds: f64 = params.energy.ex_ante_energizing_ms as f64 / 1000.0;
+  let expected: f64 = {
+    let decayed_over_the_leg: f64 = (-ex_ante_seconds / tau).exp();
+    params.energy.precharge_gain as f64
+      * (tau * (1.0 - decayed_over_the_leg)
+         - tau * tau / ex_ante_seconds
+           * (1.0 - decayed_over_the_leg * (1.0 + ex_ante_seconds / tau))) };
+  for sample_rate in [SAMPLE_RATE, 44_100.0] {
+    let birth: u64 = sample_rate as u64;
+    let history: PedalHistory = history_of_a_constant_pedal(1.0, birth, sample_rate);
+    let measured: f32 = precharge_amplitude(&history, birth, &params.energy, tau as f32, sample_rate);
+    println!("pre-charge of a full pedal over {} ms at {sample_rate} Hz: {measured:.6}, \
+              closed form {expected:.6}", params.energy.ex_ante_energizing_ms);
+    assert!(relative_error(measured, expected as f32) < 0.01,
+            "pre-charge {measured}, closed form {expected}"); }}
+
+/// A pedal that never reported (no history, or a history of NaN)
+/// pre-charges nothing, and so does a pedal at the heel.
+#[test]
+fn an_unreported_or_heel_pedal_precharges_nothing() {
+  let params: StringsParams = StringsParams::default();
+  let birth: u64 = SAMPLE_RATE as u64;
+  let tau: f32 = t60_seconds(&params.string, 220.0) / 1000.0_f32.ln();
+  let empty: PedalHistory = PedalHistory::new(SAMPLE_RATE);
+  assert_eq!(precharge_amplitude(&empty, birth, &params.energy, tau, SAMPLE_RATE), 0.0);
+  for position in [f32::NAN, 0.0] {
+    let history: PedalHistory = history_of_a_constant_pedal(position, birth, SAMPLE_RATE);
+    assert_eq!(precharge_amplitude(&history, birth, &params.energy, tau, SAMPLE_RATE), 0.0,
+               "a pedal at {position} pre-charged"); }}
+
+/// Under a full pedal and a 1 s ex-post leg a struck note grows: its
+/// RMS (20 ms windows, the body off) at 0.9 s is above its RMS at 0.1
+/// s. Under a pedal at the heel it decays (0.9 s below 0.1 s), and
+/// renders exactly as it does with no pedal at all.
+///
+/// The note is struck at a tenth of the drive's limit, so what is
+/// measured is the drive's growth and not its limiter. Struck near
+/// the limit (the default strike's loops start at about the default
+/// limit), the tanh flattens the growth within a few tenths of a
+/// second, and the level it then sustains follows `k`, which falls
+/// with the triangle, so by 0.9 s the note is back near where it was
+/// at 0.1 s.
+#[test]
+fn a_full_pedal_grows_a_note_over_its_window_and_a_heel_pedal_does_not() {
+  let mut params: StringsParams = StringsParams::default();
+  params.body.mix = 0.0;
+  params.energy.ex_post_energizing_ms = 1000.0;
+  params.exciter.pick_energy = params.energy.drive_limit / 10.0;
+  let render_under_pedal = |pedal_position: f32| -> Vec<f32> {
+    let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+    render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, pedal_position) };
+  let full: Vec<f32> = render_under_pedal(1.0);
+  let heel: Vec<f32> = render_under_pedal(0.0);
+  let unreported: Vec<f32> = render_under_pedal(f32::NAN);
+  let (full_early, full_late): (f32, f32) = (rms_around(&full, 0.1), rms_around(&full, 0.9));
+  let (heel_early, heel_late): (f32, f32) = (rms_around(&heel, 0.1), rms_around(&heel, 0.9));
+  println!("full pedal: RMS {full_early:.4} at 0.1 s, {full_late:.4} at 0.9 s, peak {:.4}; \
+            heel pedal: {heel_early:.4}, {heel_late:.4}", peak_of(&full));
+  assert!(full.iter().all(|sample| sample.is_finite()));
+  assert!(full_late > full_early, "a full pedal: {full_early} at 0.1 s, {full_late} at 0.9 s");
+  assert!(heel_late < heel_early, "a heel pedal: {heel_early} at 0.1 s, {heel_late} at 0.9 s");
+  assert_eq!(heel, unreported, "a heel pedal renders unlike no pedal"); }
+
+/// Only the window gates the drive: a voice born under a full pedal
+/// that stays full grows over its ex-post leg, and once the leg is
+/// over its stored energy, averaged over successive 50 ms, never
+/// rises again. (Block by block it may: the delay line holds a few
+/// samples less than a period, so the sum of squares of a peaky wave
+/// wobbles by a percent or two as the wave's shape drifts.)
+#[test]
+fn a_full_pedal_stops_feeding_a_note_when_its_window_closes() {
+  let mut params: StringsParams = StringsParams::default();
+  params.energy.ex_post_energizing_ms = 500.0;
+  params.exciter.pick_energy = params.energy.drive_limit / 10.0;
+  let block_seconds: f32 = 128.0 / SAMPLE_RATE;
+  let blocks_per_50_ms: usize = seconds(0.05) / 128;
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  render_seconds_under_pedal(&mut renderer, &mut voices, &params, 1.0, 1.0);
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  let ex_post_seconds: f32 = params.energy.ex_post_energizing_ms / 1000.0;
+  let mut energies: Vec<(f32, f32)> = Vec::new();
+  let mut since_birth: f32 = 0.0;
+  while since_birth < ex_post_seconds + 1.5 {
+    render_seconds_under_pedal(&mut renderer, &mut voices, &params, block_seconds, 1.0);
+    since_birth += block_seconds;
+    energies.push((since_birth, renderer.string_voice(0).expect("voice 0").energy())); }
+  let energy_at = |seconds: f32| -> f32 {
+    energies.iter().find(|(time, _)| *time >= seconds).expect("rendered that long").1 };
+  let after_the_window: Vec<f32> = energies.iter()
+    .filter(|(time, _)| *time > ex_post_seconds)
+    .map(|(_, energy)| *energy)
+    .collect::<Vec<f32>>()
+    .chunks_exact(blocks_per_50_ms)
+    .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+    .collect();
+  let largest_rise: f32 = largest_relative_rise(&after_the_window);
+  println!("window gate: energy {:.4} at 0.05 s, {:.4} at the window's end, {:.4} 1.5 s \
+            later (50 ms mean); largest rise of the 50 ms means after the window \
+            {largest_rise:+.3e}",
+           energy_at(0.05), energy_at(ex_post_seconds), after_the_window[after_the_window.len() - 1]);
+  assert!(energy_at(ex_post_seconds) > energy_at(0.05), "the note did not grow in its window");
+  assert!(largest_rise <= 0.0, "the energy rose by {largest_rise} after the window"); }
+
 /// Renders struck `pitches` through one junction for `block_count`
 /// blocks of `block` samples and returns the stored energy (every
 /// voice's `energy`) at the end of each block after both tables have
@@ -510,19 +631,52 @@ fn struck_string_voices(
     .collect() }
 
 /// Renders `duration` seconds in 128-frame mono blocks, as the audio
-/// callback would, at amplitude 0.15.
+/// callback would, at amplitude 0.15, with no energy pedal.
 fn render_seconds(
   renderer: &mut StringsRenderer,
   voices: &mut VoiceMap,
   params: &StringsParams,
   duration: f32,
 ) -> Vec<f32> {
+  render_seconds_under_pedal(renderer, voices, params, duration, f32::NAN) }
+
+/// `render_seconds` with the energy pedal held at `pedal_position`
+/// (NaN: never reported).
+fn render_seconds_under_pedal(
+  renderer: &mut StringsRenderer,
+  voices: &mut VoiceMap,
+  params: &StringsParams,
+  duration: f32,
+  pedal_position: f32,
+) -> Vec<f32> {
   let mut rendered: Vec<f32> = Vec::with_capacity(seconds(duration));
   let mut block: [f32; 128] = [0.0; 128];
   while rendered.len() < seconds(duration) {
-    renderer.render_block(voices, &mut block, 1, SAMPLE_RATE, 0.15, params);
+    renderer.render_block(voices, &mut block, 1, SAMPLE_RATE, 0.15, params, pedal_position);
     rendered.extend_from_slice(&block); }
   rendered }
+
+/// A pedal history at `sample_rate` recorded in 128-frame blocks
+/// from engine time 0 through the block containing `through`, the
+/// pedal at `position` throughout.
+fn history_of_a_constant_pedal(
+  position: f32,
+  through: u64,
+  sample_rate: f32,
+) -> PedalHistory {
+  let mut history: PedalHistory = PedalHistory::new(sample_rate);
+  let block: u64 = 128;
+  for block_start in (0 ..= through).step_by(block as usize) {
+    history.record_block(block_start, block as usize, position); }
+  history }
+
+/// The RMS of `signal` over the 20 ms centered on `at_seconds`.
+fn rms_around(
+  signal: &[f32],
+  at_seconds: f32,
+) -> f32 {
+  let window: &[f32] = &signal[seconds(at_seconds - 0.01) .. seconds(at_seconds + 0.01)];
+  (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt() }
 
 fn finger_key(
   index: usize,

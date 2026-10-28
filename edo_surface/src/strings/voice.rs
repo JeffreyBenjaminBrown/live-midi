@@ -9,10 +9,15 @@
 //! of the engine, then calls `write_back`, which writes each loop's
 //! `v_i - v_b + excitation / unison_count + drive_i`. The excitation
 //! is one sample of the dry table plus one of the knock table while
-//! either lasts, so a table of any length streams in over time.
+//! either lasts, so a table of any length streams in over time. The
+//! drive is the energy pedal's (`energy::drive`), from the energy
+//! factor the renderer hands the voice each sample; a voice keeps the
+//! energy parameters it was born under, so a change to them applies
+//! to notes born afterward.
 
+use crate::strings::energy::{drive, precharge_waveshape};
 use crate::strings::loop_dsp::Loop;
-use crate::strings::params::{StringParams, StringsParams};
+use crate::strings::params::{EnergyParams, StringParams, StringsParams};
 use std::sync::Arc;
 
 /// A voice retunes its loops when its `VoiceState.freq` has moved
@@ -39,7 +44,13 @@ pub struct StringVoice {
   /// This sample's gain coefficient (`VoiceStep.gain` times its
   /// factored pulse), set by the renderer before the voice's output
   /// is summed.
-  gain: f32, }
+  gain: f32,
+  /// The energy parameters at birth: the voice's window and drive.
+  energy: EnergyParams,
+  /// This sample's energy factor `tri(t) * pedal(t) ^ e`
+  /// (`energy::ex_post_energy_factor`), set by the renderer; 0 outside
+  /// the window.
+  energy_factor: f32, }
 
 impl StringVoice {
   /// A voice at `f0` Hz born at engine sample `birth`, with
@@ -67,7 +78,25 @@ impl StringVoice {
       dry_table,
       knock_table,
       excitation_position: 0,
-      gain: 0.0, }}
+      gain: 0.0,
+      energy: params.energy,
+      energy_factor: 0.0, }}
+
+  /// Adds the pre-charge into every loop: one delay line's worth of
+  /// the waveshape of the voice's energy kind at the loop's own pitch,
+  /// its peak `amplitude / unison_count` (`energy::precharge_waveshape`).
+  /// Call it at birth, before the first sample.
+  pub fn precharge(
+    &mut self,
+    amplitude: f32,
+    sample_rate: f32,
+  ) {
+    let peak_per_loop: f32 = amplitude / self.loops.len() as f32;
+    for string_loop in self.loops.iter_mut() {
+      let waveshape: Vec<f32> = precharge_waveshape(
+        self.energy.kind, string_loop.f0(), sample_rate, string_loop.design().delay_samples,
+        peak_per_loop);
+      string_loop.add_table(&waveshape); }}
 
   /// Retunes the loops to `f0` if it has moved from the voice's
   /// pitch by more than `RETUNE_RELATIVE_THRESHOLD`.
@@ -120,12 +149,10 @@ impl StringVoice {
     bridge_velocity: f32,
   ) {
     let excitation_per_loop: f32 = self.next_excitation_sample() / self.loops.len() as f32;
-    for (loop_index, (string_loop, arriving)) in self.loops
-      .iter_mut()
-      .zip(arriving_waves.iter())
-      .enumerate()
-    {
-      let drive: f32 = drive_into_loop(loop_index, *arriving);
+    let energy: EnergyParams = self.energy;
+    let energy_factor: f32 = self.energy_factor;
+    for (string_loop, arriving) in self.loops.iter_mut().zip(arriving_waves.iter()) {
+      let drive: f32 = drive_into_loop(&energy, energy_factor, string_loop, *arriving);
       string_loop.write(arriving - bridge_velocity + excitation_per_loop + drive); }}
 
   /// The sum of every loop's stored energy (`Loop::energy`).
@@ -150,6 +177,18 @@ impl StringVoice {
     &self,
   ) -> f32 {
     self.gain }
+
+  pub fn set_energy_factor(
+    &mut self,
+    energy_factor: f32,
+  ) {
+    self.energy_factor = energy_factor; }
+
+  /// The energy parameters the voice was born under.
+  pub fn energy_params(
+    &self,
+  ) -> &EnergyParams {
+    &self.energy }
 
   pub fn birth(
     &self,
@@ -183,16 +222,17 @@ impl StringVoice {
     self.dry_table.get(position).copied().unwrap_or(0.0)
       + self.knock_table.get(position).copied().unwrap_or(0.0) }}
 
-/// What the energy source adds into loop `loop_index` this sample,
-/// given the wave arriving from it. No energy source drives a string
-/// yet (there is no energy pedal), so it adds nothing; the drive
-/// will be computed here from the energy window and the arriving
-/// wave.
+/// What the energy source adds into `string_loop` this sample, given
+/// the voice's energy parameters and factor and the wave arriving
+/// from the loop: `energy::drive` at the loop's own pitch and
+/// round-trip gain (a unison loop's detune moves both a little).
 fn drive_into_loop(
-  _loop_index: usize,
-  _arriving: f32,
+  energy: &EnergyParams,
+  energy_factor: f32,
+  string_loop: &Loop,
+  arriving: f32,
 ) -> f32 {
-  0.0 }
+  drive(energy, energy_factor, string_loop.f0(), string_loop.round_trip_gain(), arriving) }
 
 /// Cents by which the `unison_index`-th of `unison_count` loops is
 /// detuned: `(k - (count - 1) / 2) * detune_cents`, symmetric about

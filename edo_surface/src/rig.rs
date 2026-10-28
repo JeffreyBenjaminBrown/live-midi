@@ -136,7 +136,8 @@ fn default_timbre_amplitude() -> f32 {
 /// One EX-P expression pedal (they reach us via the MPC-20 host bridge -- see
 /// `expression_pedals.rs`, NOT the SoftSteps' own EX-P jacks, whose CC the decoder
 /// deliberately drops) bound as a volume pedal for one monome's grid, or in one of the
-/// rig-wide `role`s (a new note's starting level, or a live global volume): the pedal's
+/// rig-wide `role`s (a new note's starting level, a live global volume, or the strings
+/// engine's energy, which reads the position untapered): the pedal's
 /// reliable ~1..119 CC travel maps to a position 0..1, tapered into the amplitude
 /// factor by the standard fader law -- an EXPONENTIAL (dB-linear) curve over most
 /// of the travel, SPLICED to a linear fade over the first `curve_initial_lin_frac`
@@ -151,8 +152,9 @@ pub struct ExpressionPedalRig {
   /// one per channel).
   pub channel: u8,
   /// WHERE the pedal plugs in: the monome whose grid it drives (must have an
-  /// `edo_note_grid`). Required for `role = "grid_volume"`; for the other roles,
-  /// leaving it out plugs the pedal into every grid at once.
+  /// `edo_note_grid`). Required for `role = "grid_volume"`; refused for the rig-wide
+  /// `role = "string_energy"`; for the other roles, leaving it out plugs the pedal into
+  /// every grid at once.
   #[serde(default)]
   pub monome: Option<String>,
   /// WHAT the pedal does there -- the second, independent plug. See [`PedalRole`].
@@ -196,6 +198,11 @@ pub enum PedalRole {
   /// A live volume over every note, held or sustained: moving it rescales whatever is
   /// sounding (slewed) and everything struck later.
   GlobalVolume,
+  /// The strings engine's energy pedal ('strings/energy.rs'): rig-wide (it names no
+  /// `monome`), at most one per rig, and only over a `cpal_strings` play sink. Its raw
+  /// position, untapered, is the energy; the sink's `energy.pedal_energy_exponent`
+  /// is the one shaping, so it takes none of the volume taper's knobs.
+  StringEnergy,
 }
 
 fn default_timbre_freq() -> f32 {
@@ -804,6 +811,16 @@ impl SinkRig {
       | SinkRig::CpalStrings { id, .. } => id,
     }
   }
+
+  /// The sink's `kind` as a rig spells it.
+  pub fn kind_name(
+    &self,
+  ) -> &'static str {
+    match self {
+      SinkRig::Midi { .. } => "midi",
+      SinkRig::CpalSynth { .. } => "cpal_synth",
+      SinkRig::CpalSampler { .. } => "cpal_sampler",
+      SinkRig::CpalStrings { .. } => "cpal_strings", }}
 
   /// A `cpal_strings` sink's seven tables as the engine's parameters; `None` for every
   /// other kind.
@@ -2184,7 +2201,8 @@ fn validate_strings_sink(
 /// - `new_note_volume` and `global_volume` take a `monome` or, without one, every
 ///   grid; at most one of each role per grid. A new-note pedal stays off grids with
 ///   chord or loop blocks (whose voices no finger strikes, so whether it should reach
-///   them is undecided).
+///   them is undecided);
+/// - `string_energy` is checked by `validate_string_energy_pedal`.
 fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
   let grid_monomes = edo_grid_monomes(rig);
   let on_monome = |m: &str, f: fn(&MonomeWindowRig) -> bool| {
@@ -2192,6 +2210,7 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
   };
   let mut channels: HashSet<u8> = HashSet::new();
   let mut covered: HashSet<(PedalRole, &str)> = HashSet::new();
+  let mut string_energy_pedal_seen: bool = false;
   for p in &rig.expression_pedals {
     if !(1..=2).contains(&p.channel) {
       return Err(format!(
@@ -2211,6 +2230,12 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
       }
     }
     let grids: Vec<&str> = match (p.role, p.monome.as_deref()) {
+      (PedalRole::StringEnergy, _) => {
+        // Rig-wide: it covers no grid, so none of the per-grid checks below apply.
+        validate_string_energy_pedal(rig, p, string_energy_pedal_seen)?;
+        string_energy_pedal_seen = true;
+        continue;
+      }
       (_, Some(m)) => vec![m],
       (PedalRole::GridVolume, None) => {
         return Err(format!(
@@ -2260,6 +2285,8 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
           }
         }
         PedalRole::GlobalVolume => {}
+        // Never reached: the match on the grids above continued.
+        PedalRole::StringEnergy => {}
       }
     }
     if let Some(range_db) = p.range_db {
@@ -2295,6 +2322,54 @@ fn validate_expression_pedals(rig: &Rig) -> Result<(), String> {
   }
   Ok(())
 }
+
+/// A `string_energy` expression pedal: rig-wide, so it names no `monome`; at most one
+/// per rig (`already_seen` says whether an earlier pedal took the role); only over a
+/// `cpal_strings` sink under the play grids (the first `edo_note_grid`'s `sink`, as
+/// `resolve_settings` reads it); and with none of the volume taper's knobs, since the
+/// engine reads the raw position and the sink's `energy.pedal_energy_exponent` is
+/// its shaping.
+fn validate_string_energy_pedal(
+  rig: &Rig,
+  pedal: &ExpressionPedalRig,
+  already_seen: bool,
+) -> Result<(), String> {
+  let channel: u8 = pedal.channel;
+  if let Some(monome) = &pedal.monome {
+    return Err(format!(
+      "expression pedal (channel {channel}) is a string_energy pedal, which is rig-wide; \
+       leave out its monome (it names {monome:?})")); }
+  if already_seen {
+    return Err(format!(
+      "expression pedal (channel {channel}) is a second string_energy pedal; a rig has at \
+       most one")); }
+  { // The taper knobs: the energy is the raw position.
+    let taper_keys: [(&str, bool); 3] = [
+      ("range_db", pedal.range_db.is_some()),
+      ("curve_initial_lin_frac", pedal.curve_initial_lin_frac.is_some()),
+      ("curve_remainder_exp_db", pedal.curve_remainder_exp_db.is_some()) ];
+    if let Some((key, _)) = taper_keys.iter().find(|(_, given)| *given) {
+      return Err(format!(
+        "expression pedal (channel {channel}) is a string_energy pedal and may not take \
+         {key}: the engine reads its raw position, and the sink's \
+         energy.pedal_energy_exponent is its one shaping")); }}
+  let play_sink_id: &str = rig.monome_windows.iter()
+    .find_map(|w| match w {
+      MonomeWindowRig::EdoNoteGrid { sink, .. } => Some(sink.as_str()),
+      _ => None, })
+    .ok_or(format!(
+      "expression pedal (channel {channel}) is a string_energy pedal, but the rig has no \
+       edo_note_grid"))?;
+  let play_sink: &SinkRig = rig.sinks.iter()
+    .find(|sink| sink.id() == play_sink_id)
+    .ok_or(format!("the play grids' sink {play_sink_id:?} is not declared"))?;
+  match play_sink {
+    SinkRig::CpalStrings { .. } => Ok(( )),
+    SinkRig::Midi { .. } | SinkRig::CpalSynth { .. } | SinkRig::CpalSampler { .. } =>
+      Err(format!(
+        "expression pedal (channel {channel}) is a string_energy pedal, but the play \
+         grids' sink {play_sink_id:?} is a {} sink; the role needs a cpal_strings sink",
+        play_sink.kind_name())), }}
 
 /// The monomes that carry an `edo_note_grid`, in rig order.
 fn edo_grid_monomes(rig: &Rig) -> Vec<&str> {
@@ -2339,10 +2414,13 @@ fn validate_pedal_toggles(rig: &Rig) -> Result<(), String> {
     if !grid_monomes.contains(&target) {
       return Err(format!("pedal_toggle window {id:?} controls {target:?}, which has no edo_note_grid"));
     }
-    if *role == PedalRole::GridVolume {
-      return Err(format!(
-        "pedal_toggle window {id:?}: role must be \"new_note_volume\" or \"global_volume\"",
-      ));
+    match role {
+      PedalRole::GridVolume | PedalRole::StringEnergy => {
+        return Err(format!(
+          "pedal_toggle window {id:?}: role must be \"new_note_volume\" or \"global_volume\"",
+        ));
+      }
+      PedalRole::NewNoteVolume | PedalRole::GlobalVolume => {}
     }
     if !seen.insert((*role, target)) {
       return Err(format!("monome {target:?} has two {role:?} pedal_toggles"));
@@ -5674,6 +5752,106 @@ amplitude = 0.2
       .expect_err("heaviness 0 should fail");
     assert!(err.contains("bridge.heaviness"), "{err}");
     assert!(err.contains("\"strings\""), "{err}"); }
+
+  // ---- The strings engine's energy pedal (role = "string_energy"). ----
+
+  /// One play grid over a `cpal_strings` sink with every table omitted.
+  const STRINGS_PLAY_GRID: &str = r#"version = 1
+id = "strings-play-grid"
+title = "a play grid over a strings sink"
+
+[[tunings]]
+id = "main"
+edo = 41
+x_step = 8
+y_step = 1
+fundamental_hz = 110
+
+[[sinks]]
+id = "strings"
+kind = "cpal_strings"
+sample_rate = 48000
+buffer_frames = 128
+amplitude = 0.2
+
+[[monomes]]
+id = "a"
+listen_port = 9000
+prefix = "/a"
+select.size = [16, 16]
+
+[[monome_windows]]
+id = "grid-a"
+monome = "a"
+kind = "edo_note_grid"
+rect = [0, 0, 15, 15]
+tuning = "main"
+sink = "strings"
+"#;
+
+  /// An energy pedal on channel 1; `extra` is appended to its table.
+  fn string_energy_pedal(
+    extra: &str,
+  ) -> String {
+    format!("\n[[expression_pedals]]\nchannel = 1\nrole = \"string_energy\"\n{extra}") }
+
+  /// The role parses from its snake_case name and is accepted over a strings sink whose
+  /// tables are all omitted.
+  #[test]
+  fn a_string_energy_pedal_over_a_strings_sink_is_accepted() {
+    let rig: Rig = parse_rig(&format!("{STRINGS_PLAY_GRID}{}", string_energy_pedal("")))
+      .expect("an energy pedal over a strings sink validates");
+    assert_eq!(rig.expression_pedals[0].role, PedalRole::StringEnergy);
+    assert_eq!(rig.sinks[0].strings_params(), Some(StringsParams::default())); }
+
+  /// Over a sawwave sink the role is rejected, naming the sink's kind and the kind it
+  /// needs.
+  #[test]
+  fn a_string_energy_pedal_over_a_sawwave_sink_is_rejected() {
+    let err: String = parse_rig(&format!("{SURFACES_MIN}{}", string_energy_pedal("")))
+      .expect_err("an energy pedal over a cpal_synth sink should fail");
+    assert!(err.contains("cpal_synth") && err.contains("cpal_strings"), "{err}"); }
+
+  /// A rig has at most one energy pedal, and it is rig-wide, so it names no monome.
+  #[test]
+  fn a_second_or_a_per_grid_string_energy_pedal_is_rejected() {
+    let second: String = string_energy_pedal("").replace("channel = 1", "channel = 2");
+    let err: String =
+      parse_rig(&format!("{STRINGS_PLAY_GRID}{}{second}", string_energy_pedal("")))
+        .expect_err("two energy pedals should fail");
+    assert!(err.contains("at most one"), "{err}");
+    let err: String =
+      parse_rig(&format!("{STRINGS_PLAY_GRID}{}", string_energy_pedal("monome = \"a\"\n")))
+        .expect_err("an energy pedal naming a monome should fail");
+    assert!(err.contains("rig-wide"), "{err}"); }
+
+  /// The energy is the raw position: each of the volume taper's knobs is rejected on
+  /// the role, by name.
+  #[test]
+  fn a_string_energy_pedal_takes_no_taper_knob() {
+    for knob in ["range_db = 20.0", "curve_initial_lin_frac = 0.1", "curve_remainder_exp_db = 50.0"] {
+      let key: &str = knob.split(' ').next().expect("a key");
+      let err: String =
+        parse_rig(&format!("{STRINGS_PLAY_GRID}{}", string_energy_pedal(&format!("{knob}\n"))))
+          .expect_err("a taper knob on an energy pedal should fail");
+      assert!(err.contains(key) && err.contains("pedal_energy_exponent"), "{err}"); }}
+
+  /// No grid opts in or out of the energy pedal: a `pedal_toggle` in its role is
+  /// rejected.
+  #[test]
+  fn a_pedal_toggle_in_the_string_energy_role_is_rejected() {
+    let toggle: &str = r#"
+[[monome_windows]]
+id = "energy-toggle"
+monome = "a"
+kind = "pedal_toggle"
+rect = [0, 15, 0, 15]
+role = "string_energy"
+"#;
+    let err: String =
+      parse_rig(&format!("{STRINGS_PLAY_GRID}{toggle}{}", string_energy_pedal("")))
+        .expect_err("a string_energy pedal_toggle should fail");
+    assert!(err.contains("energy-toggle") && err.contains("role must be"), "{err}"); }
 
   /// The damper must take some time, and the stream must have a rate and a buffer.
   #[test]

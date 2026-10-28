@@ -223,7 +223,7 @@ mod tests {
   use crate::rig::parse_rig;
   use crate::strings::scripted_voices::struck_voice_state;
   use crate::strings::StringsRenderer;
-  use crate::types::{VoiceMap, VoiceSource};
+  use crate::types::{VoiceId, VoiceMap, VoiceSource};
 
   /// A `Live` as `run` builds one, minus the drum registration.
   fn live_for(rig: &Rig) -> Live {
@@ -365,6 +365,51 @@ amplitude = 0.2
     assert_eq!(renderer.params().string.t60_seconds_at_55hz, edited_t60_seconds_at_55hz);
     assert_ne!(renderer.params().string.t60_seconds_at_55hz, started.string.t60_seconds_at_55hz); }
 
+  /// A changed `ex_post_energizing_ms` reaches the renderer at its next block and
+  /// applies to notes born afterward: a note sounding at the reload keeps the window it
+  /// was born with.
+  #[test]
+  fn a_reload_moves_the_energy_window_of_notes_born_afterward() {
+    let mut rig: Rig = strings_rig("");
+    let live: Live = live_for(&rig);
+    let sample_rate: f32 =
+      resolve_settings(&rig).expect("the rig resolves").sample_rate as f32;
+    let started: StringsParams =
+      live.params.lock().unwrap().strings.expect("a strings rig has strings params");
+    let mut renderer: StringsRenderer = StringsRenderer::new(started, sample_rate);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(
+      VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) },
+      struck_voice_state(0, 220.0, sample_rate));
+    let mut block: [f32; 128] = [0.0; 128];
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    let edited_ex_post_energizing_ms: f32 = started.energy.ex_post_energizing_ms * 2.0 + 1.0;
+    { // The edit Jeff makes in the rig file.
+      let SinkRig::CpalStrings { energy, .. } = &mut rig.sinks[0] else {
+        panic!("expected a cpal_strings sink, got {:?}", rig.sinks[0]); };
+      energy.ex_post_energizing_ms = edited_ex_post_energizing_ms; }
+    adopt_rig(&rig, &live).expect("the edited rig adopts");
+    voices.insert(
+      VoiceSource::SurfaceFinger { grid: 0, cell: (1, 0) },
+      struck_voice_state(1, 330.0, sample_rate));
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    assert_eq!(renderer.params().energy.ex_post_energizing_ms, edited_ex_post_energizing_ms);
+    let window_ms = |id: VoiceId| -> f32 {
+      renderer.string_voice(id).expect("the voice sounds").energy_params().ex_post_energizing_ms };
+    assert_eq!(window_ms(0), started.energy.ex_post_energizing_ms, "the sounding note's window moved");
+    assert_eq!(window_ms(1), edited_ex_post_energizing_ms, "the new note took the old window"); }
+
+  /// A `string_energy` pedal over a strings sink resolves to the rig-wide energy
+  /// target, on the pedal index its channel names.
+  #[test]
+  fn a_string_energy_pedal_resolves_to_the_rig_wide_target() {
+    let rig: Rig = strings_rig("[[expression_pedals]]\nchannel = 2\nrole = \"string_energy\"\n");
+    let settings: Settings = resolve_settings(&rig).expect("the rig resolves");
+    let channel: usize = rig.expression_pedals[0].channel as usize;
+    let resolved: Vec<(usize, PedalTarget)> =
+      settings.expression_pedals.iter().map(|(pedal, target, _)| (*pedal, *target)).collect();
+    assert_eq!(resolved, vec![(channel - 1, PedalTarget::StringEnergy)]); }
+
   /// One block as the audio callback renders it: the live amplitude and strings
   /// parameters read fresh.
   fn render_live_block(
@@ -376,5 +421,5 @@ amplitude = 0.2
   ) {
     let params: LiveParams = *live.params.lock().unwrap();
     let strings: StringsParams = params.strings.expect("the live params hold strings params");
-    renderer.render_block(voices, block, 1, sample_rate, params.amplitude, &strings); }
+    renderer.render_block(voices, block, 1, sample_rate, params.amplitude, &strings, f32::NAN); }
 }

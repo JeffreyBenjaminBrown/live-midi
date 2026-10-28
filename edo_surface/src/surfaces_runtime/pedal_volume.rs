@@ -151,6 +151,12 @@ pub(super) fn apply_pedal_gain(
 /// in the shared `pedal_levels`, which each note reads once, as it starts
 /// (`set_new_note_pedal`). A GLOBAL pedal move records it and re-aims every voice on
 /// the grids it reaches, as far as each grid's opt-in allows (`set_global_pedal`).
+///
+/// The strings engine's ENERGY pedal takes the shortest path of all: its raw
+/// position (no taper) goes into `string_energy_position` as f32 bits for the audio
+/// callback, NaN until its first CC, as `pedal_slide_frac` does; and back to NaN
+/// whenever no pedal holds the role (a reload took it away), so the engine never
+/// drives from a stale position.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
@@ -159,6 +165,7 @@ pub(super) fn expression_pedal_loop(
   pedal_levels: SharedPedalLevels,
   pedal_slide_on: Arc<Vec<AtomicBool>>,
   pedal_slide_frac: Arc<Vec<AtomicU32>>,
+  string_energy_position: Arc<AtomicU32>,
   ring: Arc<Mutex<Vec<GridRing>>>,
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
 ) {
@@ -187,11 +194,24 @@ pub(super) fn expression_pedal_loop(
     let num_grids = pedal_levels.lock().unwrap_or_else(|e| e.into_inner()).new_note.len();
     let mut new_note_bound = vec![false; num_grids];
     let mut global_bound = vec![false; num_grids];
+    let string_energy_bound: bool =
+      map.iter().any(|binding| matches!(binding, Some((PedalTarget::StringEnergy, _))));
+    if !string_energy_bound {
+      string_energy_position.store(f32::NAN.to_bits(), Ordering::Relaxed);
+    }
     for (pedal, binding) in map.iter().enumerate() {
       let Some((target, curve)) = *binding else { continue };
       let p = pedals[pedal];
       let grid = match target {
         PedalTarget::Grid(grid) => grid,
+        PedalTarget::StringEnergy => {
+          // The raw position, 0 at the heel and 1 at the toe: the engine's exponent is
+          // the whole shaping. No CC yet = the NaN sentinel stays.
+          if p.updates > 0 {
+            string_energy_position.store(p.norm.to_bits(), Ordering::Relaxed);
+          }
+          continue;
+        }
         PedalTarget::NewNote(grids) | PedalTarget::Global(grids) => {
           let global = matches!(target, PedalTarget::Global(_));
           let targets: Vec<usize> = match grids {

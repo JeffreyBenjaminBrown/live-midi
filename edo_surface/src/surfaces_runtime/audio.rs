@@ -8,7 +8,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::reload::LiveParams;
@@ -40,6 +40,7 @@ pub(crate) fn start(
   am_shape_family: AmShapeFamily,
   live: Arc<Live>,
   distortion_on: Arc<Vec<AtomicBool>>,
+  string_energy_position: Arc<AtomicU32>,
   strings: Option<StringsParams>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
@@ -93,14 +94,16 @@ pub(crate) fn start(
         // pedal-slide smoother are hot-reloadable, so they are read fresh each
         // callback; a reload to a rig without strings parameters (another sink
         // kind, which needs a restart) keeps the ones running. The distortion
-        // toggles are ignored: the strings engine has no distortion bus.
+        // toggles are ignored: the strings engine has no distortion bus. The energy
+        // pedal's raw position is read once per callback (NaN until it reports).
         let (amplitude, strings_params): (f32, StringsParams) = {
           let p: MutexGuard<LiveParams> = live.params.lock().unwrap_or_else(|e| e.into_inner());
           strings_renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
           (p.amplitude, p.strings.unwrap_or(*strings_renderer.params())) };
+        let pedal_position: f32 = f32::from_bits(string_energy_position.load(Ordering::Relaxed));
         let mut voices: MutexGuard<VoiceMap> = voices.lock().unwrap_or_else(|e| e.into_inner());
         strings_renderer.render_block(
-          &mut voices, data, channels, sample_rate, amplitude, &strings_params);
+          &mut voices, data, channels, sample_rate, amplitude, &strings_params, pedal_position);
         return; }
       // The master amplitude + distortion curve are hot-reloadable ('r'), and the
       // per-grid distortion toggles are live -- read everything fresh each callback.

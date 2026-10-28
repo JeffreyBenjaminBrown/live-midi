@@ -15,6 +15,14 @@
 //! through the body, clamps it to +-0.95 and writes it to every
 //! channel of the frame.
 //!
+//! The energy pedal's position arrives once per block. The renderer
+//! records it in its pedal history before the block's births, so a
+//! string born in the block is pre-charged from the history over its
+//! ex-ante leg (`energy::precharge_amplitude`), and per sample it
+//! hands every voice in its ex-post leg the energy factor of this
+//! block's position (`energy::ex_post_energy_factor`), from which the
+//! voice's loops take their drive. See 'energy.rs'.
+//!
 //! A string voice lives exactly as long as its `VoiceState` is in
 //! the map, silent or not: a silent sustained string must still be
 //! there to ring in sympathy when another key excites it, and a loop
@@ -24,9 +32,12 @@
 //! block rate, and the map is filtered in place.
 
 use crate::strings::body::BodyBank;
+use crate::strings::energy::{
+  ex_post_energy_factor, precharge_amplitude, reported_position, PedalHistory,
+};
 use crate::strings::exciter::{dry_table, knock_table};
 use crate::strings::junction::Junction;
-use crate::strings::params::StringsParams;
+use crate::strings::params::{t60_seconds, StringsParams};
 use crate::strings::voice::StringVoice;
 use crate::types::{VoiceId, VoiceMap, VoiceState, VoiceStep};
 use crate::voices::{step_voice_controls, SLIDE_SLEW_SECS};
@@ -53,6 +64,12 @@ pub struct StringsRenderer {
   arriving_waves: Vec<f32>,
   /// Engine time: samples rendered since construction.
   sample_clock: u64,
+  /// The energy pedal's position on a millisecond grid of engine
+  /// time, for the pre-charge.
+  pedal_history: PedalHistory,
+  /// The energy pedal's position this block, in [0, 1] (0 when it
+  /// never reported).
+  pedal_position: f32,
   /// The pedal-slide pitch smoother's time constant handed to
   /// `step_voice_controls`, as `BlockRenderer::slide_slew_secs`.
   pub slide_slew_secs: f32, }
@@ -72,13 +89,17 @@ impl StringsRenderer {
       voice_ids_in_map: Vec::new(),
       arriving_waves: Vec::new(),
       sample_clock: 0,
+      pedal_history: PedalHistory::new(sample_rate),
+      pedal_position: 0.0,
       slide_slew_secs: SLIDE_SLEW_SECS, }}
 
   /// Renders `data` (interleaved, `channels` per frame) from
   /// `voices`, as the module comment describes. `params` are the
   /// live parameters; when they differ from the ones last used they
   /// are adopted first. A changed `sample_rate` starts the engine
-  /// over (every voice in the map is struck again).
+  /// over (every voice in the map is struck again, and the pedal
+  /// history is forgotten). `pedal_position` is the energy pedal's
+  /// raw position in [0, 1], NaN while it has never reported.
   #[allow(clippy::too_many_arguments)]
   pub fn render_block(
     &mut self,
@@ -88,6 +109,7 @@ impl StringsRenderer {
     sample_rate: f32,
     amplitude: f32,
     params: &StringsParams,
+    pedal_position: f32,
   ) {
     if sample_rate != self.sample_rate {
       let slide_slew_secs: f32 = self.slide_slew_secs;
@@ -95,6 +117,10 @@ impl StringsRenderer {
       self.slide_slew_secs = slide_slew_secs;
     } else if *params != self.params {
       self.adopt_params(params); }
+    { // The pedal, before the births that read its history.
+      let block_frames: usize = data.len() / channels.max(1);
+      self.pedal_history.record_block(self.sample_clock, block_frames, pedal_position);
+      self.pedal_position = reported_position(pedal_position); }
     self.sync_with_voice_map(voices);
     for frame in data.chunks_mut(channels.max(1)) {
       let sample: f32 = self.render_sample(voices, amplitude);
@@ -125,7 +151,8 @@ impl StringsRenderer {
   /// the junction, and body changes rebuild the bank (its resonators
   /// start from rest). Exciter and body changes rebuild the knock,
   /// which notes born afterward stream; a sounding note finishes the
-  /// tables it was born with.
+  /// tables it was born with. Energy changes reach notes born
+  /// afterward: a voice keeps the energy parameters of its birth.
   fn adopt_params(
     &mut self,
     params: &StringsParams,
@@ -167,18 +194,28 @@ impl StringsRenderer {
     self.arriving_waves.reserve(loop_count.saturating_sub(self.arriving_waves.len())); }
 
   /// A string voice for `voice`, born now and struck: its own dry
-  /// table at `voice.freq` and the shared knock.
+  /// table at `voice.freq` and the shared knock, and pre-charged from
+  /// the pedal's history over its ex-ante leg.
   fn spawn_struck(
     &self,
     voice: &VoiceState,
   ) -> StringVoice {
-    StringVoice::new(
+    let mut string_voice: StringVoice = StringVoice::new(
       &self.params,
       voice.freq,
       self.sample_rate,
       self.sample_clock,
       dry_table(&self.params.exciter, voice.freq, self.sample_rate),
-      Arc::clone(&self.knock_table)) }
+      Arc::clone(&self.knock_table));
+    let precharge: f32 = {
+      let amplitude_time_constant_seconds: f32 =
+        t60_seconds(&self.params.string, voice.freq) / 1000.0_f32.ln();
+      precharge_amplitude(
+        &self.pedal_history, self.sample_clock, &self.params.energy,
+        amplitude_time_constant_seconds, self.sample_rate) };
+    if precharge > 0.0 {
+      string_voice.precharge(precharge, self.sample_rate); }
+    string_voice }
 
   /// One output sample: control steps, the junction, the voices'
   /// sum, the body and the clamp.
@@ -195,14 +232,16 @@ impl StringsRenderer {
 
   /// Steps every voice's control state one sample. A finished voice
   /// leaves the map and drops its string voice; a living one hands
-  /// its string voice this sample's gain and retunes it if its
-  /// `freq` moved.
+  /// its string voice this sample's gain and energy factor and
+  /// retunes it if its `freq` moved.
   fn step_controls_of_every_voice(
     &mut self,
     voices: &mut VoiceMap,
   ) {
     let sample_rate: f32 = self.sample_rate;
     let slide_slew_secs: f32 = self.slide_slew_secs;
+    let now: u64 = self.sample_clock;
+    let pedal_position: f32 = self.pedal_position;
     let string_voices: &mut BTreeMap<VoiceId, StringVoice> = &mut self.string_voices;
     let params: &StringsParams = &self.params;
     voices.retain(|_, voice| {
@@ -212,6 +251,9 @@ impl StringsRenderer {
         return false; }
       if let Some(string_voice) = string_voices.get_mut(&voice.id) {
         string_voice.set_gain(step.gain * step.factored_pulse);
+        let energy_factor: f32 = ex_post_energy_factor(
+          string_voice.energy_params(), string_voice.birth(), now, sample_rate, pedal_position);
+        string_voice.set_energy_factor(energy_factor);
         string_voice.retune_if_moved(&params.string, voice.freq); }
       true }); }}
 

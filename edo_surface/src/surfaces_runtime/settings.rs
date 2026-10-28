@@ -256,6 +256,9 @@ pub(super) enum PedalTarget {
   NewNote(Option<usize>),
   /// `role = "global_volume"`: a live multiplier on every note there.
   Global(Option<usize>),
+  /// `role = "string_energy"`: the strings engine's energy pedal, rig-wide. The pedal
+  /// thread publishes its raw position for the audio callback; its taper is unused.
+  StringEnergy,
 }
 
 pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -608,6 +611,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         PedalRole::GridVolume => PedalTarget::Grid(some_grid?),
         PedalRole::NewNoteVolume => PedalTarget::NewNote(some_grid),
         PedalRole::GlobalVolume => PedalTarget::Global(some_grid),
+        PedalRole::StringEnergy => PedalTarget::StringEnergy,
       };
       Some((p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p)))
     })

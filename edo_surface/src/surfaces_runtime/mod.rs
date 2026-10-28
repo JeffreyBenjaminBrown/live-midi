@@ -281,6 +281,11 @@ fn run(
   // apart (see `PedalSlideState::adopt_first_reading`).
   let pedal_slide_frac: Arc<Vec<AtomicU32>> =
     Arc::new((0..num_grids).map(|_| AtomicU32::new(f32::NAN.to_bits())).collect());
+  // The strings engine's energy pedal (`role = "string_energy"`): one word, one way.
+  // The pedal thread publishes the pedal's raw position as f32 bits, the strings
+  // engine reads it once per audio callback; NaN until the pedal first reports, as
+  // above.
+  let string_energy_position: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
   // The polyrhythm state (tap tempo + tempo factor): one instrument-wide machine,
   // both grids' pads. The base tempo is seeded at 1 Hz for every rig, so the
   // tempo-factor controls multiply something from bring-up -- a rig with no tap
@@ -343,6 +348,7 @@ fn run(
       s.am_shape_family,
       Arc::clone(&live),
       Arc::clone(&distortion_on),
+      Arc::clone(&string_energy_position),
       s.strings,
     )?
   };
@@ -507,12 +513,13 @@ fn run(
     let levels = Arc::clone(&pedal_levels);
     let slide_on = Arc::clone(&pedal_slide_on);
     let slide_frac = Arc::clone(&pedal_slide_frac);
+    let energy_position: Arc<AtomicU32> = Arc::clone(&string_energy_position);
     let ring_for_pedals = Arc::clone(&ring);
     let held_for_pedals = Arc::clone(&held_all);
     thread::spawn(move || {
       expression_pedal_loop(
         live_for_pedals, voices_for_pedals, gains, levels, slide_on, slide_frac,
-        ring_for_pedals, held_for_pedals,
+        energy_position, ring_for_pedals, held_for_pedals,
       )
     });
   }
