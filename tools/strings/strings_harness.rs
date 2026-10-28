@@ -5,6 +5,8 @@
 //! cargo run -p tools --bin strings_harness -- [--rig NAME | --rig-file PATH]
 //!   [--scene NAME] [--out DIR] [--pedal TRACE]
 //!
+//! '--help' prints the options and the scenes.
+//!
 //! '--rig' loads the named rig from 'rigs/', '--rig-file' a rig at
 //! any path; the harness then renders with the first 'cpal_strings'
 //! sink's parameters, sample rate and amplitude. Without either it
@@ -42,6 +44,24 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::vec::IntoIter;
+
+/// What '--help' prints, and what a bad argument prints after its
+/// error; `{scenes}` is replaced by the scene names.
+const USAGE: &str = "\
+usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME]... [--out DIR]
+                       [--pedal TRACE]
+  --rig NAME        render with the first cpal_strings sink of rigs/NAME.org
+  --rig-file PATH   the same, from a rig at any path
+                    (without either: the engine's defaults at 48 kHz)
+  --scene NAME      render this scene (repeatable; default: every scene):
+                    {scenes}
+  --out DIR         write DIR/<scene>.wav (default: target/strings-harness/)
+  --pedal TRACE     the energy pedal's raw position (0 heel, 1 toe) for every
+                    rendered scene, replacing the scene's own: 'none' (never
+                    reported), or SECONDS:POSITION points in time order joined
+                    by straight lines, the first point's position held before
+                    it and the last's after it. '0:0,1:1' rises over the first
+                    second and stays at the toe; '0:0' rests at the heel.";
 
 /// The sample rate without a rig.
 const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
@@ -111,13 +131,15 @@ struct Rendering {
 
 fn main(
 ) -> ExitCode {
-  let options: Options = match parse_options(env::args().skip(1).collect()) {
+  let arguments: Vec<String> = env::args().skip(1).collect();
+  if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
+    println!("{}", usage());
+    return ExitCode::SUCCESS; }
+  let options: Options = match parse_options(arguments) {
     Ok(options) => options,
     Err(message) => {
       eprintln!("strings_harness: {message}");
-      eprintln!("usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME] \
-                 [--out DIR] [--pedal none | SECONDS:POSITION,...]; scenes: {}",
-                SCENE_NAMES.join(", "));
+      eprintln!("{}", usage());
       return ExitCode::from(2); }};
   let rendering: Rendering = match rendering_from(options.rig_source.as_ref()) {
     Ok(rendering) => rendering,
@@ -140,6 +162,10 @@ fn main(
     let shown_path: PathBuf = fs::canonicalize(&path).unwrap_or(path);
     println!("{}  peak {peak:.4}", shown_path.display()); }
   ExitCode::SUCCESS }
+
+fn usage(
+) -> String {
+  USAGE.replace("{scenes}", &SCENE_NAMES.join(", ")) }
 
 fn parse_options(
   arguments: Vec<String>,

@@ -766,7 +766,7 @@ hot-reload test from "Agreed behavior" (adopt a changed
 expose 'StringsRenderer::params(&self)' for it). The existing
 suite green.
 
-** TODO Slice 5: the energy pedal
+** DONE Slice 5: the energy pedal
 *** Corrections carried from slice 4
 **** The energy pedal publishes its raw position, not a taper
 Jeff's exponent is the whole shaping he asked for ("linear might
