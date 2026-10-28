@@ -582,7 +582,7 @@ is not committed as a test; the report says it passed.
 *** Tests
 The existing suite, green.
 
-** TODO Slice 2: one loop, the exciter, the T60 and B curves
+** DONE Slice 2: one loop, the exciter, the T60 and B curves
 *** What
 'strings/params.rs' with 'StringsParams' (every parameter named
 in "Agreed behavior", grouped as nested 'Copy' structs 'String',

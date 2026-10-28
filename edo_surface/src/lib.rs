@@ -57,3 +57,6 @@ pub mod windows;
 // The runtimes the latest rig runs.
 pub mod drumkit_runtime;
 pub mod surfaces_runtime;
+
+// The strings render engine (a `cpal_strings` sink), beside the sawwave one.
+pub mod strings;
