@@ -1,4 +1,4 @@
-#+title: Review of plan 02: the strings engine and the energy-pedal rig
+#+title: Review of plan 02: strings engine, energy-pedal rig
 
 * How this record is kept
 One Opus 5.5 agent per slice of '02_plan.org', launched by the
