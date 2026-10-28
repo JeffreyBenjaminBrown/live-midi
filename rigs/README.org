@@ -303,10 +303,12 @@ hold the engine's parameters:
 - ~howl~ -- an optional active loop that sustains what it hears.
 - ~modal~ -- the pitch above which a note is a few resonators instead of loops.
 
-Every parameter is documented in place in the rig that uses it. Any key or whole
-table may be left out and takes its value from ~StringsParams::default()~
-(~edo_surface/src/strings/params.rs~); a misspelled key is an error. The whole sink
-hot-reloads with ~r~, except a change of sink kind, which needs a restart.
+Every parameter is documented in place in the rig that uses it,
+[[file:energy-pedal_monome.org]] (its player reference is
+[[file:energy-pedal_monome_readme.org]]). Any key or whole table may be left out and
+takes its value from ~StringsParams::default()~ (~edo_surface/src/strings/params.rs~);
+a misspelled key is an error. The seven tables and ~amplitude~ hot-reload with ~r~;
+~sample_rate~, ~buffer_frames~, ~release_secs~ and a change of sink kind need a restart.
 
 * Timbres (the waveform strip's four choices)
 

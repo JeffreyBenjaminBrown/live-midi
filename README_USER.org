@@ -31,6 +31,22 @@ pw-jack cargo run --bin midi_pulse -- monomes_two-timbres_sustain_chords
 Read [[file:rigs/monomes_two-timbres_sustain_chords_readme.org][its short player manual]] for the layout, sustain, chord modes, freehand loop
 recording/playback, targeted timbre/volume controls, and per-device persistence.
 
+The strings instrument needs one or two unpinned 16x16 monomes and,
+for its energy pedal, the pedal bridge.  Every note is a modelled
+string, struck by its key, ringing in sympathy with every other
+sounding string through one shared bridge, and swelled by the EX-P
+on channel 1 around each key-down.  It keeps the volpedal rig's
+sustain handle, sustain buttons and shift pad, and has no timbre or
+volume keys:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- energy-pedal_monome
+#+end_src
+
+Read [[file:rigs/energy-pedal_monome_readme.org][its player manual]] for the layout, the pedal, sustain, hot
+reload and the listening harness; the rig file documents every
+string parameter with its range and math.
+
 The daily instrument has two variants.  They are identical except that the newer
 SoftStep controls either the factored pulse or the drumkit:
 

@@ -1,0 +1,181 @@
+#+title: Monomes: coupled strings and an energy pedal
+
+* Run
+Connect one or two 16x16 monomes. For the energy pedal, run
+=tools/pedals/bridge.sh= on the HOST first, in a terminal you
+leave open, every session. Then, from the repository root inside
+the container:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- energy-pedal_monome
+#+end_src
+
+Either physical grid can be used alone. The rig looks for the
+pedal only at startup: if the bridge wasn't running then, it
+prints a red "expression pedals skipped" line and plays on with
+no pedal energy (every note is struck, nothing blooms) until
+restarted. A working pedal prints "expression pedals: connected"
+instead. Ctrl-C blanks the grids and stops audio.
+
+* Layout
+#+begin_example
+       x=0                                     13    14    15
+y=0  | . . . . . . . . . . . . .              SHIFT SHIFT SHIFT
+y=1  | . . . . . . . . . . . . .              SHIFT SHIFT SHIFT
+     |
+     |                   EDO PLAY SURFACE
+     |
+y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
+                   x=6  x=7  x=8
+#+end_example
+Everything but the shift pad and the three sustain buttons is
+play surface: 41-EDO from 110 Hz, eight steps per cell rightward
+and one step per cell downward. A control at rest flashes dim on
+the shared 150 ms clock; a lit control is solid bright. A held
+note is solid bright, and a sustained note no finger holds
+flashes bright on that same clock.
+
+Every note is a string. A key strikes it (as a piano hammer
+does), and it rings on its own decay, longer in the bass than in
+the treble. Every sounding string, held or sustained, shares one
+bridge with every other, so a struck note sets the others
+ringing in sympathy where their partials meet, in any tuning.
+The sound passes through a resonating body.
+
+* The pedal
+The EX-P on MPC-20 channel 1 is the energy pedal. It adds energy
+to a string around the moment its key goes down; the strike
+itself is always there, at the same level for every key.
+** the window
+Each key-down has a window around it, shaped like a lopsided
+triangle: it rises from nothing 300 ms before the key-down to
+full weight at the key-down, then falls back to nothing 600 ms
+after. Only the window decides which notes the pedal reaches: a
+note is fed whether or not a finger still holds it, sustained or
+not, and never after its window closes. Striking the key again
+opens a new window. Notes outside their windows just ring.
+** before the key: pre-energizing
+The pedal's recent history counts. If the pedal was down in the
+moments before you strike, the string starts with that energy
+already in it, as if it had been bowed silently: you hear
+nothing until the key goes down, and then the note starts
+fuller. Energy from early in the window counts for less, since
+the string would have partly rung it away.
+** after the key: the bloom
+After the key-down the pedal drives the string live, feeding the
+string's own motion back into it, so the note swells from the
+strike (and from whatever sympathetic ringing it has) rather
+than starting anew. As the window closes the drive fades and
+the note settles back to its own decay.
+** heel and toe
+At the heel the pedal adds nothing: notes are struck and decay
+exactly as with no pedal. A little pedal lengthens a note's
+sustain; more makes it swell; full toe at the key-down swells it
+fastest, at the same rate in every register, up to a ceiling.
+The ceiling rises with the pedal, so a light pedal blooms to a
+low level and a full one to the full level.
+** the exponent
+The pedal's travel is raised to a power, 2 here, before it acts:
+half pedal is a quarter of the energy. So the first part of the
+travel gives fine control of light energy and the last part
+does the most. =pedal_energy_exponent= in the rig changes it.
+** knobs
+The window's two legs, the exponent, the bloom's speed and
+ceiling, and how much of the history the pre-charge takes are
+in the rig's energy table, each with its range and its math.
+Until the pedal first moves it puts in nothing, so an unplugged
+pedal leaves plain struck strings. If the pedal arrives on
+channel 2, change the =channel= in the rig.
+
+* Sustain
+Each grid has its own sustained set. OFF, ON and TOGGLE act on
+their own grid only. A sustained string keeps ringing on its own
+decay, and keeps taking part in the sympathy: a sustained chord
+rings along with what you play over it.
+** the handle: the cell below a note
+Press the cell directly below a sounding note to toggle that
+note's sustain. The press never sounds. Sustaining a held note
+keeps it ringing after you lift your finger. Pressing the handle
+of a sustained note un-sustains it, which ends it unless a
+finger still holds it. The cell above a note is an ordinary
+note.
+
+The handle is geometric, so it stays put when the tuning
+changes. With this tuning it is also the pitch one EDO step
+above the note, which therefore can't be played from that cell
+while the note sounds. A note on the bottom row, or directly
+above OFF, ON or TOGGLE, has no handle. The rig can move the
+handle to another side with =sustain_handle=.
+** OFF
+Ends every sustained note on this grid that no finger holds.
+Held notes keep sounding, now unsustained.
+** ON
+Notes already held, and notes played while ON is live, join the
+sustained set.
+** TOGGLE WHAT ON MEANS
+Bright means ON is momentary: hold it. Dim means ON latches: tap
+it on, tap it off. It starts bright.
+
+* Shift
+The four arrow cells move the visible register one cell. The two
+outer top corners move it one octave.
+
+* Hot reload
+Edit the rig, then press =r= then Enter in the terminal running
+it. The new values apply without a restart:
+** at once, to strings already sounding
+The string table (decay, the upper partials' decay, detune,
+stiffness, dispersion), the bridge, the body (its resonators
+restart from rest, a brief dip), =amplitude= and the tuning.
+** to notes struck afterward
+The exciter table (kind, pick energy, brightness, position,
+hammer, knock), the energy table (the window, the exponent, the
+drive, the pre-charge) and =unison_count=.
+** only after a restart
+=sample_rate=, =buffer_frames=, =release_secs=, the grid layout,
+the ports, and a change of sink kind.
+A rig that fails to load or validate leaves the running values
+in place and says why.
+
+* Listening without grids
+The harness renders scripted scenes with this rig's string
+parameters to WAV files, to judge a parameter change by ear:
+
+#+begin_src sh
+cargo run -p tools --bin strings_harness -- --rig energy-pedal_monome
+#+end_src
+
+It writes =target/strings-harness/<scene>.wav= for each scene
+(single notes across the range, a chord, a re-strike over a
+sustained chord, a pedal swell, sympathy) and prints each path
+and peak. =--scene NAME= renders one, =--pedal TRACE= scripts the
+pedal (='0:0,1:1'= rises from heel to toe over the first second),
+=--out DIR= writes elsewhere; =--help= lists them all.
+
+* Deliberately not here
+No timbre keys and no volume keys (a string has no waveform, and
+the pedal is not a volume pedal), no chord storage, no loops, no
+tone-target cell, no edit mode, no SoftSteps, no square or
+diamond dances.
+
+A global volume pedal on the second EX-P can be added: put this
+under the rig's "the energy pedal" headline, after the energy
+pedal's own =ELEM=, without the two-space indent, and restart.
+It is a live level over every note, held or sustained, on every
+grid, and fades to silence at the heel (the volpedal rig's
+=curve_*= knobs work on it too).
+
+#+begin_example
+  *** ELEM expression_pedals
+  **** PARAM channel = 2
+  **** PARAM role = "global_volume"
+#+end_example
+
+* More detail
+The rig itself, with every value and its math:
+[[file:energy-pedal_monome.org]].
+The plan and the design discussion:
+[[file:../TODO/resonance/02_plan.org]] and
+[[file:../TODO/resonance/01_discussion.org]].
+The sink and the pedal role in general, and the rig format:
+[[file:README.org]] ("Output sinks", "Expression pedals").

@@ -108,6 +108,28 @@ level (=synth::aim_global_pedal=). Both are per-voice factors in
 =sawwave/types.rs=, multiplied in =sawwave/voices.rs=. The handle sides are
 =Handles= in =settings.rs=.
 
+* the strings instrument: energy-pedal_monome
+The volpedal rig's grids, tuning, sustain handle, sustain buttons
+and shift pad (no timbre or volume keys), played through the
+*strings engine* (=edo_surface/src/strings/=) instead of the sawwave
+engine: every note an extended Karplus-Strong string (=loop_dsp.rs=,
+one to three unison loops per note in =voice.rs=), struck or plucked
+by a deterministic table (=exciter.rs=), every sounding loop coupled
+through one passive bridge (=junction.rs=), the sum through a bank of
+body resonators (=body.rs=). A rig selects it with a =cpal_strings=
+sink, whose nested tables deserialize straight into =StringsParams=
+(=params.rs=); =renderer.rs= renders the same shared voice map the
+grid threads drive, keyed by =VoiceId=, so every surfaces path works
+unchanged, and =surfaces_runtime/audio.rs= owns it when
+=Settings.strings= is =Some=. One EX-P in role =string_energy=
+pre-charges a string from the pedal's history at key-down and drives
+it for a window afterward (=energy.rs=). Player reference:
+[[./rigs/energy-pedal_monome_readme.org]]; rig (every parameter
+documented in place, with its math): =rigs/energy-pedal_monome.org=;
+design: =TODO/resonance/= (=01_discussion.org=, =02_plan.org=,
+=03_review.org=). Listen without grids:
+=cargo run -p tools --bin strings_harness -- --rig energy-pedal_monome=.
+
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.
 - Reference: [[./rigs/monome-looper-58-8-1_readme.org]];

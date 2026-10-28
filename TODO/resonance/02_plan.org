@@ -810,7 +810,7 @@ no history gives 0. The drive growth and decay test from
 is rejected; two such pedals are rejected; a 'pedal_toggle' in
 the role is rejected.
 
-** TODO Slice 6: the rig, its readme, the mock run, user docs
+** DONE Slice 6: the rig, its readme, the mock run, user docs
 *** Corrections carried from slice 5
 **** The drive limit rises with the pedal
 Slice 5 found that at 'drive_limit' 0.4 the tanh flattens the
