@@ -2578,6 +2578,153 @@
     }
   }
 
+  /// The energy-pedal rig (the strings engine) against two mock grids, then one,
+  /// through real OSC. Headless, so no renderer runs; what is under test is the
+  /// surfaces plumbing over a `cpal_strings` sink, read from the run's voice map: a
+  /// press strikes a voice, the sustain handle keeps that voice ringing as a drone
+  /// once the finger lifts, OFF releases it, and the shift pad moves the register, so
+  /// the same cell strikes a pitch the shift's interval away. Every cell comes from
+  /// the resolved settings.
+  #[test]
+  fn energy_pedal_rig_runs_against_two_and_one_mock_grids() {
+    use crate::edo_play::{register_delta, shift_for_cell, Shift};
+    use crate::mock_monome::{wait_until, GridSpec, MockGrid, MockRig};
+    use crate::types::{VoiceId, VoiceSource, VoiceState};
+    use std::sync::MutexGuard;
+
+    let _guard: MutexGuard<()> = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let secs: fn(u64) -> Duration = Duration::from_secs;
+    struct Cells {
+      note: (i32, i32),
+      handle: (i32, i32),
+      clear: (i32, i32),
+      shift_right: (i32, i32),
+      /// The frequency ratio a press of `shift_right` moves the register by.
+      shift_right_ratio: f32,
+      mode: ((i32, i32), bool),
+    }
+    let load = |ports: [u16; 2]| -> (Rig, Cells) {
+      let mut rig: Rig = load_named_rig("energy-pedal_monome").expect("rig loads");
+      rig.monomes[0].listen_port = ports[0];
+      rig.monomes[1].listen_port = ports[1];
+      let s: Settings = resolve_settings(&rig).expect("rig resolves");
+      assert!(s.strings.is_some(), "the rig renders with the strings engine");
+      let g: &GridSettings = &s.grids[0];
+      let offset: (i32, i32) = g.handles.sustain.expect("the rig has a sustain handle");
+      let (note, handle): ((i32, i32), (i32, i32)) = note_with_handle(&g.overlays, offset);
+      let [x0, y0, x1, y1] = g.overlays.scroll_rect;
+      let shift_right: (i32, i32) = (y0..=y1)
+        .flat_map(|y| (x0..=x1).map(move |x| (x, y)))
+        .find(|cell| shift_for_cell(g.overlays.scroll_rect, *cell) == Some(Shift::Right))
+        .expect("the shift pad has a rightward arrow");
+      let steps: i32 = register_delta(Shift::Right, s.x_step, s.y_step, s.edo);
+      let cells: Cells = Cells {
+        note,
+        handle,
+        clear: one_cell(g.overlays.clear_rect),
+        shift_right,
+        shift_right_ratio: 2.0_f32.powf(steps as f32 / s.edo as f32),
+        mode: (one_cell(g.overlays.needs_holding_rect), grid_needs_holding_initially_on(&rig, g)),
+      };
+      (rig, cells)
+    };
+    let start = |rig: Rig, mock: &MockRig, what: &'static str| -> (MockRun, Arc<Mutex<VoiceMap>>) {
+      *VOICES_OF_THE_LATEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+      let run: MockRun = MockRun::start(rig, mock.detector_port(), what);
+      let latest = || VOICES_OF_THE_LATEST_RUN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+      assert!(wait_until(secs(5), || latest().is_some()), "the run builds its voice map");
+      (run, latest().expect("the run's voice map"))
+    };
+    // The voice a finger holds at `cell` on any grid, if one is striking there.
+    let fingered = |voices: &Arc<Mutex<VoiceMap>>, cell: (i32, i32)| -> Option<VoiceState> {
+      voices.lock().unwrap().iter().find_map(|(source, voice)| {
+        let on_cell = matches!(source, VoiceSource::SurfaceFinger { cell: c, .. } if *c == cell);
+        (on_cell && voice.target_env > 0.0).then_some(*voice)
+      })
+    };
+    let droning = |voices: &Arc<Mutex<VoiceMap>>, id: VoiceId| -> bool {
+      voices.lock().unwrap().iter().any(|(source, voice)| {
+        matches!(source, VoiceSource::SurfaceDrone { .. }) && voice.id == id && voice.target_env > 0.0
+      })
+    };
+    let ringing = |voices: &Arc<Mutex<VoiceMap>>, id: VoiceId| -> bool {
+      voices.lock().unwrap().values().any(|voice| voice.id == id && voice.target_env > 0.0)
+    };
+
+    {
+      let mock: MockRig = MockRig::start(
+        0,
+        &[GridSpec::grid_256("energy-pedal-left"), GridSpec::grid_256("energy-pedal-right")],
+      )
+      .expect("start two mock grids");
+      let (rig, cells): (Rig, Cells) = load([19240, 19241]);
+      let (_run, voices): (MockRun, Arc<Mutex<VoiceMap>>) =
+        start(rig, &mock, "two-grid energy-pedal rig");
+      let a: &MockGrid = mock.grid(0);
+      let b: &MockGrid = mock.grid(1);
+      assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
+
+      // A press strikes a voice; its handle sustains it; lifting the finger leaves the
+      // same voice ringing as a drone.
+      b.press(cells.note.0, cells.note.1);
+      assert!(wait_until(secs(3), || fingered(&voices, cells.note).is_some()), "the press sounds");
+      let struck: VoiceState = fingered(&voices, cells.note).expect("the struck voice");
+      b.tap(cells.handle.0, cells.handle.1);
+      thread::sleep(Duration::from_millis(100));
+      assert!(
+        fingered(&voices, cells.handle).is_none(),
+        "the handle press strikes nothing of its own",
+      );
+      b.release(cells.note.0, cells.note.1);
+      assert!(
+        wait_until(secs(3), || droning(&voices, struck.id)),
+        "sustained by its handle, the voice outlives the finger",
+      );
+
+      // OFF ends the sustained voice.
+      b.tap(cells.clear.0, cells.clear.1);
+      assert!(wait_until(secs(3), || !ringing(&voices, struck.id)), "OFF releases the drone");
+
+      // The shift pad moves the register: the same cell now strikes the pitch one
+      // rightward shift away.
+      b.tap(cells.shift_right.0, cells.shift_right.1);
+      thread::sleep(Duration::from_millis(100));
+      b.press(cells.note.0, cells.note.1);
+      assert!(
+        wait_until(secs(3), || fingered(&voices, cells.note).is_some_and(|v| v.id != struck.id)),
+        "the shifted press sounds",
+      );
+      let shifted: VoiceState = fingered(&voices, cells.note).expect("the shifted voice");
+      let ratio: f32 = shifted.freq / struck.freq;
+      assert!(
+        (ratio / cells.shift_right_ratio - 1.0).abs() < 1e-4,
+        "shifted by {ratio}, expected {}",
+        cells.shift_right_ratio,
+      );
+      b.release(cells.note.0, cells.note.1);
+      assert!(wait_until(secs(3), || !ringing(&voices, shifted.id)), "the release lets it go");
+    }
+
+    {
+      let mock: MockRig = MockRig::start(0, &[GridSpec::grid_256("energy-pedal-solo")])
+        .expect("start one mock grid");
+      let (rig, cells): (Rig, Cells) = load([19242, 19243]);
+      let (_run, voices): (MockRun, Arc<Mutex<VoiceMap>>) =
+        start(rig, &mock, "one-grid energy-pedal rig");
+      let solo: &MockGrid = mock.grid(0);
+      assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
+      let ((x, y), momentary): ((i32, i32), bool) = cells.mode;
+      if momentary {
+        assert!(wait_until(secs(3), || solo.level_at(x, y) == 15), "the mode switch boots momentary");
+      }
+      solo.press(cells.note.0, cells.note.1);
+      assert!(wait_until(secs(3), || fingered(&voices, cells.note).is_some()), "one grid plays");
+      let struck: VoiceState = fingered(&voices, cells.note).expect("the struck voice");
+      solo.release(cells.note.0, cells.note.1);
+      assert!(wait_until(secs(3), || !ringing(&voices, struck.id)), "unsustained, it is released");
+    }
+  }
+
   /// The new unpinned rig's actual device seam: one arbitrary 16x16 grid is a
   /// complete instrument, while adding a second binds a distinct second surface
   /// with independent tone-target state and working momentary chord controls.

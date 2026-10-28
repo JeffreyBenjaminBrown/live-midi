@@ -1,0 +1,650 @@
+* energy-pedal_monome
+** about
+TOML-in-org format reference: [[file:README.org]]
+Player reference: [[file:energy-pedal_monome_readme.org]]
+Design: [[file:../TODO/resonance/02_plan.org]], and beside it
+the discussion: [[file:../TODO/resonance/01_discussion.org]].
+Run from the repository root:
+=pw-jack cargo run --bin midi_pulse -- energy-pedal_monome=
+Derived from
+[[file:volpedal-newnotes-and-global_granular-sustain.org]]:
+the same tuning, the same two unpinned grids, the same sustain
+handle one cell below each sounding note, the same three sustain
+buttons and the same six-key shift pad. Every note is a modelled
+string instead of a sawwave voice: struck, coupled to every
+other sounding string through one bridge, radiated through a
+body. One EX-P pedal puts energy into the strings around each
+key-down. There are no timbre keys, volume keys or pedal
+toggles.
+*** how this file is read
+Only a headline that begins with 'PARAM', 'TABLE' or 'ELEM'
+carries data. A 'PARAM' belongs to the nearest 'TABLE' or 'ELEM'
+above it in the tree. Every other headline (such as "the math"
+or "parameters we talked about having access to") only groups,
+and every body (the lines under a headline) is a note the loader
+ignores. So the grouping headlines and the notes may be moved,
+renamed, added or deleted freely, as long as each 'PARAM' stays
+under its 'TABLE' and each 'TABLE' under the sink's 'ELEM'. A
+'TABLE' may even appear twice under one 'ELEM' (say, once under
+each grouping headline); the two merge. A misspelled key is an
+error at load, never silently ignored. A key left out takes the
+engine's default ('StringsParams::default()' in
+'edo_surface/src/strings/params.rs'); this file sets every one
+explicitly, at that default, so each is here to read and edit.
+** identity
+*** PARAM version = 1
+*** PARAM id = "energy-pedal_monome"
+*** PARAM title = "Monomes: coupled strings, struck and bloomed by an energy pedal"
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 41
+*** PARAM x_step = 8
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 110
+Pitch rises by 8 EDO steps to the right and 1 step downward.
+Pitch 0 is 110 Hz. So the sustain handle (the cell directly below
+a note) is also the cell one EDO step above it.
+** ELEM sinks
+The strings engine. 'rigs/README.org', "Output sinks", has the
+short version; every parameter is documented here, in place.
+*** PARAM id = "strings"
+*** PARAM kind = "cpal_strings"
+*** the stream
+Both need a restart to change.
+**** PARAM sample_rate = 48000
+Hz. Whatever the audio server runs at; 48000 or 44100.
+**** PARAM buffer_frames = 128
+Frames per audio callback. 64 to 512 are the useful range.
+***** the math
+The block's latency is 'buffer_frames / sample_rate': 128 frames
+at 48 kHz is 2.7 ms. The energy pedal is read once per block.
+*** the level and the damper
+**** PARAM amplitude = 0.15
+Unitless master level, in (0, 1]. Useful from about 0.05 to 0.4;
+raise it if a single note is too quiet, lower it if chords hit
+the clamp. Reloads live with 'r'.
+***** the math
+'out = clamp(body(amplitude * sum over voices of gain_v * sum
+over the voice's loops of v_i), -0.95, 0.95)', where 'v_i' is
+the wave a loop delivers to the bridge and 'gain_v' the voice's
+envelope times its timbre, fader and pedal gains, as the sawwave
+engine computes them. The clamp is the sawwave engine's too.
+**** PARAM release_secs = 0.05
+Seconds, > 0. The damper: how long a released note takes to fall
+silent. Useful from 0.01 (a hard damper) to about 1 (a soft
+one). A sustained note is not released and rings on its own
+decay. Needs a restart to change.
+***** the math
+On key-up the voice's envelope 'env' ramps linearly from where
+it is to 0 over 'release_secs', and the voice's output is scaled
+by it. When 'env' reaches 0 the voice leaves the voice map and
+its string leaves the engine, so it no longer rings in sympathy
+with the others.
+*** parameters we talked about having access to
+**** TABLE string
+One string: how it decays over pitch, how many unison loops a
+note has, and how stiff it is. Each loop is an extended
+Karplus-Strong loop: a delay line, then a tuning allpass, the
+dispersion chain, the loss filter and a DC blocker, after which
+the wave arrives at the bridge and is written back.
+A change here reaches every sounding string at once, except
+'unison_count', which applies to notes struck afterward.
+***** the math of one loop
+The loop's round trip is 'P = sample_rate / f0' samples: 'N'
+whole samples of delay plus the tuning allpass's fractional
+delay 'D' in [0.5, 1.5), plus the phase delays at 'f0' of the
+dispersion chain, the loss filter and the DC blocker. The tuning
+allpass '(a + z^-1) / (1 + a z^-1)' takes whatever delay 'P'
+leaves, its coefficient chosen to be exact at 'f0'
+('a = sin((1 - D) w0 / 2) / sin((1 + D) w0 / 2)', 'w0 = 2 pi f0
+/ sample_rate'), so the fundamental sounds at 'f0'. The DC
+blocker 'y = k (x - x1) + R y1', 'k = (1 + R) / 2', has its
+cutoff at 'f0 / 200'; the loss filter and the tuning absorb its
+small loss and lead at 'f0'.
+***** decay
+****** PARAM t60_seconds_at_55hz = 10.0
+Seconds, > 0. How long a 55 Hz note's fundamental takes to fall
+60 dB against a rigid bridge: the low anchor of the decay curve.
+Useful from about 2 (a guitar) to 30 (a long piano bass). Longer
+is more sustain in the low register.
+******* the math
+The decay curve is a straight line in log-log:
+'T60(f0) = t60_seconds_at_55hz * (t60_seconds_at_1760hz /
+t60_seconds_at_55hz) ^ (log2(f0 / 55) / 5)', extrapolated beyond
+the anchors (55 Hz and 1760 Hz are five octaves apart). At the
+defaults it is 6.8 s at 110 Hz, 3.2 s at 440 Hz, 2.2 s at 880 Hz.
+The loop's gain per round trip at 'f0' is then
+'g = 10 ^ (-3 / (f0 * T60(f0)))', since 'f0 * T60(f0)' round
+trips make a factor of 10^-3 (60 dB). The bridge adds its own
+loss on top (see 'heaviness'): decay rates add, so the heard
+'1 / T60' is the string's '1 / T60(f0)' plus the bridge's.
+****** PARAM t60_seconds_at_1760hz = 1.5
+Seconds, > 0. The same at 1760 Hz: the high anchor of the decay
+curve. Useful from about 0.3 to 5. Longer is more ring in the
+treble; set both anchors equal for a decay that does not depend
+on pitch.
+******* the math
+'T60(f0)' as under 't60_seconds_at_55hz', with this as its value
+at 1760 Hz. Its ratio to the low anchor sets the slope: at the
+defaults 'T60' falls by a factor of 0.68 per octave.
+****** PARAM high_frequency_t60_ratio = 0.3
+Unitless, in (0, 1]. How much faster the upper partials die than
+the fundamental. 1 keeps every partial ringing as long as the
+fundamental (bright, metallic, Karplus-Strong-like); 0.1 is a
+dark, quickly mellowing tail. Useful from 0.1 to 1.
+******* the math
+The loss filter is the one-pole 'H(z) = g (1 + a) / (1 + a
+z^-1)', 'a' in [-0.99, 0]. Its gain at 'f0' is 'g'; at
+'high_frequency_hz' it is 'g_hf = 10 ^ (-3 / (f0 * T60(f0) *
+high_frequency_t60_ratio))', so a partial there decays with
+'T60(f0) * high_frequency_t60_ratio'. 'a' is solved in closed
+form from '|H(e^jw)|^2 = g^2 (1 + a)^2 / (1 + 2 a cos w + a^2)'
+at the two frequencies. At the defaults a 4 kHz partial of a
+110 Hz note decays in about 2 s. When one pole cannot reach the
+request, 'a' stops at -0.99, and it is kept from a DC gain above
+1: the string never gains energy at any frequency.
+****** PARAM high_frequency_hz = 4000.0
+Hz, > 0. The frequency at which 'high_frequency_t60_ratio' is
+met: the reference of the high-frequency loss. Useful from about
+2000 to 10000. Lower makes the ratio bite on lower partials.
+******* the math
+'H' meets 'g_hf' at 'w_hf = 2 pi high_frequency_hz /
+sample_rate'. If the reference is at or above Nyquist, or at or
+below the note's 'f0', the loss filter is flat ('a = 0') and
+every partial decays with 'T60(f0)'.
+***** unisons
+Two or three strings per note, as on a piano. The bridge
+couples them: when they move together they push the bridge and
+lose energy into it fast (the prompt sound); when they move
+against each other the bridge barely moves and they linger (the
+aftersound). The slight detune trades energy between the two,
+which is the beating. Both loops have the same loss; the
+two-stage decay comes from the bridge.
+****** PARAM unison_count = 2
+Count, 1 to 3. Loops per note. 1 is one clean string; 2 or 3
+beat and give the two-stage decay. Each loop costs about as much
+as the note did with one. Applies to notes struck afterward.
+******* the math
+The note's excitation, pre-charge and output are shared out:
+each loop takes '1 / unison_count' of the excitation table and
+of the pre-charge, and the voice's output is the sum of its
+loops. Each loop is its own member of the bridge. The energy
+pedal drives all of a note's loops with one drive (see the
+energy table).
+****** PARAM unison_detune_cents = 1.2
+Cents, in [0, 100]. How far apart the unisons are tuned. 0 is
+no beating; 0.2 to 2 is piano-like; above about 5 it is a
+chorus, then an out-of-tune double.
+******* the math
+The k-th of 'unison_count' loops (k from 0) sounds at
+'f0 * 2 ^ ((k - (unison_count - 1) / 2) * unison_detune_cents /
+1200)', symmetric about 'f0'. Two loops 'c' cents apart at 'f0'
+beat at about 'f0 * c / 1731' Hz: 0.15 Hz for 1.2 cents at
+220 Hz.
+***** stiffness
+A stiff string's partials run sharp of exact harmonics, more so
+the higher the partial: the piano's stretched, slightly bell-like
+color. A nylon or gut string is nearly perfectly harmonic.
+****** PARAM inharmonicity_b_at_55hz = 1e-4
+Unitless, in (0, 0.1]. The stiffness 'B' at 55 Hz: the low
+anchor of the stiffness curve. Useful from 1e-5 (barely) to
+1e-3 (a short, stiff bass string).
+******* the math
+A stiff string's n-th partial sits at
+'f_n = n * f0 * sqrt(1 + B * n^2)'. At 'B = 1e-4' the tenth
+partial is 8.6 cents sharp; at 5e-3 the third is 38 cents sharp.
+'B(f0) = inharmonicity_b_at_55hz * (inharmonicity_b_at_1760hz /
+inharmonicity_b_at_55hz) ^ (log2(f0 / 55) / 5)', a log-log line
+like the decay curve. Where 'B(f0)' is at or below the audible
+threshold 'exp(2.54 ln(f0) - 24.6)' (5.5e-7 at 55 Hz, 1.1e-4 at
+440 Hz, 3.6e-3 at 1760 Hz) the dispersion chain is left out.
+****** PARAM inharmonicity_b_at_1760hz = 5e-3
+Unitless, in (0, 0.1]. The stiffness 'B' at 1760 Hz: the high
+anchor. Useful from 1e-4 to 2e-2. Piano treble strings are stiff
+for their length, so the curve usually rises with pitch.
+******* the math
+'B(f0)' as under 'inharmonicity_b_at_55hz', with this as its
+value at 1760 Hz. At the defaults the threshold overtakes 'B'
+a little above 2 kHz, so the top of the range is harmonic.
+****** PARAM dispersion_sections = 4
+Count, 0 to 16. First-order allpass sections in each loop's
+dispersion chain. 0 removes stiffness entirely; more sections
+stretch more partials accurately and cost a little more. Useful
+from 2 to 8.
+******* the math
+'M = dispersion_sections' identical sections
+'(a + z^-1) / (1 + a z^-1)' with Rauhala and Välimäki's
+coefficient: with 'Bc = max(B(f0), 1e-6)' and the piano key
+number 'Ikey = 12 log2(f0 / 27.5) + 1',
+'kd = exp(-0.00179 ln(Bc)^2 - 0.0233 ln(Bc) - 2.93)',
+'Cd = exp((0.0126 ln(M) + 0.0606) ln(Bc) - 0.00825 ln(M) +
+1.97)', 'D = exp(Cd - Ikey * kd)', 'a = (1 - D) / (1 + D)'. The
+chain's phase delay at 'f0' is subtracted from the loop's delay,
+so the fundamental stays in tune while the upper partials, which
+the chain delays less, run sharp. The chain is also dropped when
+it would leave the tuning allpass less than its minimum delay
+(only at very high pitch).
+**** TABLE exciter
+What starts a note: the "pick energy" of the discussion. At
+key-down a table is read into the note's loops, one sample per
+sample, as the plectrum or hammer would push the string. A
+change here applies to notes struck afterward.
+***** PARAM kind = "strike"
+An enum: "pluck" or "strike". A pluck is a plectrum or finger:
+noise, bright and breathy. A strike is a hammer: a few smooth
+force pulses, round and piano-like.
+****** the math
+'pluck': one period ('P = sample_rate / f0' samples, rounded) of
+white noise in [-1, 1) from a fixed seed. 'strike':
+'strike_pulses' raised-cosine pulses 'sin^2', each 'w =
+round(hammer_contact_fraction * P)' samples wide, the j-th
+starting at '2 j w', in a table one period long. Either table
+then goes through the lowpass ('brightness') and the comb
+('position') and is scaled to peak 'pick_energy'. The same
+parameters and pitch give the same table every time.
+***** PARAM pick_energy = 0.5
+Loop amplitude units, in (0, 1]. How hard a key strikes its
+string: the peak of the excitation table. The monome has no
+velocity, so this is every note's attack level; the energy
+pedal adds to it. Useful from 0.1 to 0.8.
+****** the math
+The table is normalized so its largest sample is 'pick_energy'
+and each of the note's loops takes '1 / unison_count' of it. The
+knock is scaled by it too (its energy is '(knock_mix *
+pick_energy)^2'). What is heard is the loops' sum times
+'amplitude', so a single note peaks near 'pick_energy *
+amplitude' before the body.
+***** the tone of the attack
+****** PARAM brightness = 6.0
+Unitless, > 0. The excitation's lowpass cutoff in multiples of
+the note's pitch. 1 to 2 is a soft felt or a thumb; 6 to 12 a
+hard hammer or a pick; above about 20 it is unfiltered. Higher
+is a brighter attack.
+******* the math
+'y = (1 - p) x + p y1', 'p = exp(-2 pi fc / sample_rate)', with
+'fc = min(brightness * f0, 0.45 * sample_rate)'. The knock
+passes the same lowpass at the fixed 'fc = brightness * 110' Hz,
+since the knock is shared by every note.
+****** PARAM position = 0.125
+Fraction of the string's length from the bridge, in (0, 0.5],
+at which it is plucked or struck. Near 0.5 (the middle) is
+hollow, like a clarinet; near 0.1 is full and bright; very near
+0 is thin and nasal. A piano hammer sits at about 1/8.
+******* the math
+The comb 'y[n] = x[n] - x[n - round(position * P)]', applied
+around the one-period table. The n-th harmonic is scaled by
+'2 |sin(pi n position)|', so every harmonic that is a multiple
+of '1 / position' vanishes: at 0.125, the 8th, 16th, and so on.
+***** the hammer, for a strike only
+****** PARAM strike_pulses = 2
+Count, 1 to 8. Force pulses of a strike: a hammer that bounces
+on the string before it leaves. 1 is one clean blow; 2 or 3 a
+slightly buzzy, piano-like contact. Ignored by a pluck.
+******* the math
+The pulses each last 'w' samples, separated by gaps of 'w', so
+the train spans '(2 * strike_pulses - 1) * w' samples, which
+validation keeps within one period.
+****** PARAM hammer_contact_fraction = 0.12
+Fraction of one period that each pulse lasts, > 0, with
+'(2 * strike_pulses - 1) * hammer_contact_fraction' at most 1.
+Wider is a softer hammer with fewer high partials. Useful from
+0.03 to 0.3. Ignored by a pluck.
+******* the math
+'w = round(hammer_contact_fraction * P)'. A raised-cosine pulse
+of width 'w' has little energy above about '2 / w' cycles per
+sample, so at 0.12 the pulses alone roll off above about the
+16th harmonic, before the lowpass.
+***** the knock
+The body's own short response to being hit, heard at the attack
+as the thump of wood. It is cut from the body's resonators (see
+the body table), so a different body knocks differently.
+****** PARAM knock_mix = 0.3
+Unitless, in [0, 1]. How loud the knock is beside the string's
+own excitation. 0 is no knock; 0.5 a pronounced one.
+******* the math
+The knock table is the body's impulse response, windowed and
+lowpassed, scaled to energy (sum of squares)
+'(knock_mix * pick_energy)^2', and streamed into the loops in
+parallel with the dry table from key-down.
+****** PARAM knock_ms = 60.0
+Milliseconds, in (0, 1000]. How long the knock lasts. 20 is a
+tight click; 150 a boomy thud.
+******* the math
+The table is 'knock_ms' long, under the window
+'exp(-t / (knock_ms / 6.9))', which falls 60 dB over 'knock_ms'.
+**** TABLE energy
+How the energy pedal puts "bow energy" into a string: the energy
+that, unlike the pick energy, arrives continuously. Around each
+key-down there is a window shaped like an asymmetric triangle:
+0 at key-down minus 'ex_ante_energizing_ms', rising linearly to
+1 at key-down, falling linearly to 0 at key-down plus
+'ex_post_energizing_ms'. Times the pedal's position raised to
+'pedal_energy_exponent', it is how much energy enters the string
+at each moment. Before key-down the string is moving but its mic
+is off: at key-down the engine adds up what the pedal's recent
+history would have put into it (the pre-charge). After key-down
+the pedal drives the string live (the drive) until the window
+closes. Only the window decides: a note is driven whether or not
+a finger still holds it, sustained or not, and never after its
+window; striking the key again opens a new window. The pedal
+reads 0 at the heel and 1 at the toe, and counts as 0 until it
+first moves. A change here applies to notes struck afterward.
+***** the math of the window
+For a note struck at time 'T', with 'a = ex_ante_energizing_ms'
+and 'b = ex_post_energizing_ms' (in seconds):
+'tri(t) = (t - (T - a)) / a' on '[T - a, T]',
+'tri(t) = 1 - (t - T) / b' on '[T, T + b]', and 0 elsewhere.
+The energy factor is 'f(t) = tri(t) * pedal(t) ^ e', with
+'e = pedal_energy_exponent'.
+***** PARAM kind = "ebow"
+An enum: how the drive puts energy in. The only kind the engine
+has is "ebow": a magnet under the string that feeds the string's
+own motion back into it, so the note blooms from what it already
+holds (the strike, a sympathetic ring) without squeaks or
+non-starts. Other kinds are added under 'parameters you might
+also enjoy' as they land.
+****** the math
+The drive, per sample, during '[T, T + b]': see 'drive_limit'
+and 'growth_rate_per_second_max'. The pre-charge's waveshape is
+nearly a sine, as a string under a magnet settles: one delay
+line's worth of 'sin(2 pi f0 t) + 0.2 sin(4 pi f0 t)'.
+***** the window
+****** PARAM ex_ante_energizing_ms = 300.0
+Milliseconds, in [0, 10000]. How far back before key-down the
+pedal's history counts. With the pedal already down when a key
+is struck, the note starts with energy in it, as if it had been
+bowed silently. 0 turns the pre-charge off. Useful from 50 to
+2000.
+******* the math
+The pre-charge, computed once at key-down from the pedal's
+history kept at one point per millisecond:
+'A0 = precharge_gain * sum over the points t_j in [T - a, T] of
+dt * tri(t_j) * pedal(t_j) ^ e * exp(-(T - t_j) / tau)', with
+'dt = 0.001' s and 'tau = T60(f0) / ln(1000)' the string's own
+amplitude time constant, so energy put in early has partly
+decayed by key-down. Each loop then gets one delay line's worth
+of the kind's waveshape, scaled to the peak 'A0 / unison_count',
+added on top of the strike.
+****** PARAM ex_post_energizing_ms = 600.0
+Milliseconds, in [0, 60000]. How long after key-down the pedal
+keeps driving the note, its weight falling linearly to 0. Short
+(100 to 300) is a swell on the attack; long (1000 to 5000) lets
+the pedal sustain and swell a note well after it is struck. 0
+turns the drive off.
+******* the math
+The drive acts while 'tri(t) > 0' after 'T', with
+'tri(t) = 1 - (t - T) / b'. Under a constant full pedal the
+drive's growth summed over the leg, before the limit, is
+'(growth_rate_per_second_max - lambda) * b / 2' nepers ('lambda'
+the string's own decay rate, below): about 17 dB at 220 Hz with
+the defaults.
+***** PARAM pedal_energy_exponent = 2.0
+Unitless, > 0. The pedal's curve. 1 is linear in the pedal's
+travel; above 1 the first part of the travel does little and the
+last part much, which gives fine control of light energy; below
+1 a little pedal goes a long way. Useful from 1 to 4.
+****** the math
+The pedal's position 'p' (0 at the heel, 1 at the toe) enters as
+'p ^ pedal_energy_exponent' everywhere: in the energy factor
+'f = tri * p ^ e' of the pre-charge and of the drive's growth
+rate, and in the drive's limit 'A = drive_limit * p ^ e'. At 2,
+half pedal is a quarter of the energy.
+***** the drive
+****** PARAM growth_rate_per_second_max = 8.0
+Nepers per second, >= 0. How fast a note grows under a full
+pedal at the window's peak. 8 nepers per second is about 69 dB
+per second. The same pedal grows every register at the same
+rate. Useful from 2 (a slow bloom) to 20 (a snap).
+******* the math
+The pedal moves the growth rate from the string's own decay to
+this: 'rate = growth_rate_per_second_max * f - lambda * (1 -
+f)', with 'lambda = -f0 ln(g) = ln(1000) / T60(f0)' (about 1.5
+nepers per second at 220 Hz). The drive gain per round trip is
+'k = max(0, exp(rate / f0) - g)': added to the loop's own 'g',
+it makes the amplitude grow by 'rate' nepers per second. At the
+heel 'f = 0', 'rate = -lambda' and 'k = 0', so the string decays
+exactly as undriven; a light pedal lengthens the sustain; past
+the point where 'rate' crosses 0 the note grows.
+****** PARAM drive_limit = 0.8
+Loop amplitude units, > 0. The ceiling the bloom flattens at, at
+full pedal; a lighter pedal blooms to a proportionally lower
+ceiling. No pedal can make a string run away. Useful from 0.1
+to 1.5; the output clamps at 0.95 after 'amplitude' and the body.
+******* the math
+One drive sample per note, added to every one of its loops:
+'drive = k * A * tanh(v / A)', with 'v' the mean of the note's
+loops' arriving waves and 'A = drive_limit * p ^ e'. One drive
+for all the unisons, as one magnet under the whole course, keeps
+them in phase while they grow. Below 'A' the drive is about
+'k * v' and the note grows exponentially at 'rate'; above it the
+drive adds at most 'k * A' per sample, so the growth turns at
+most linear and the note levels off where the string's loss
+removes what the drive adds (for a sine, about '(4 / pi) * k *
+A / (1 - g)'). As 'tri' falls, 'k' falls and the note settles
+back toward its own decay.
+***** PARAM precharge_gain = 0.5
+Per second of full-pedal triangle, >= 0. How much of the pedal's
+recent history is in the note at key-down. 0 turns the
+pre-charge off. With the defaults a full pedal held through the
+whole 300 ms ex-ante leg pre-charges a 220 Hz note to a peak of
+about 0.065, against a 'pick_energy' of 0.5; about 4 makes the
+pre-charge as loud as the strike. Useful from 0 to 5.
+****** the math
+'A0' (see 'ex_ante_energizing_ms') is proportional to this. For
+a constant full pedal over a leg 'a' short beside 'tau',
+'A0' is about 'precharge_gain * a / 2'.
+**** TABLE bridge
+The one bridge every sounding string meets. Each string hands
+the bridge the wave arriving at it, and takes back that wave
+minus the bridge's motion, so every sounding string hears every
+other: sympathetic ringing, between any pitches, in any tuning.
+Only sounding strings take part: a held or sustained note rings
+in sympathy, an unplayed key has no string. A change here
+reaches every sounding string at once.
+***** PARAM heaviness = 3000.0
+Unitless, > 0. The bridge's impedance over one string's. A
+heavy bridge (large) barely moves: weak sympathy and long notes,
+as on a piano. A light bridge (small) moves freely: strong
+sympathy, and notes that drain into it fast. The two come
+together; there is no strong sympathy with long notes. Useful
+from about 100 (a light, buzzy box) to 10000 (strings nearly
+independent).
+****** the math
+With 'N' loops sounding in the engine and 'r = heaviness', the
+bridge's velocity each sample is
+'v_b = L((2 / (N + r)) * sum over every loop of v_i)', and loop
+i writes back 'v_i - v_b' (plus its excitation and drive). 'L'
+is the lowpass of 'damping_hz'. The bridge never adds energy for
+any 'r > 0'. Being a real number, the impedance is a resistance:
+per round trip a lone loop keeps '1 - 2 / (N + r)' of its
+amplitude, and the in-phase motion of a note's 'n' unisons keeps
+'1 - 2 n / (N + r)', which is a bridge decay time of about
+'T60_bridge = ln(1000) * (N + r) / (2 n f0)': more round trips
+per second, so it grows with pitch. A two-unison note alone at
+'r = 3000' loses 60 dB to the bridge in about 46 s at 110 Hz,
+13 s at 440 Hz and 5.5 s at 1760 Hz (measured; at the top the
+damping lowpass softens it); at 'r = 300', in about 4.7 s, 1.5 s
+and 0.8 s; at 'r = 50', in about 1.1 s and 0.5 s. Decay rates
+add: the heard '1 / T60' is the string's '1 / T60(f0)' plus
+'1 / T60_bridge'. So the decay curve of the string table means
+the string against a rigid bridge, and a lighter bridge shortens
+every note, the high ones most. A silent string hears the others
+through '-v_b': each round trip it takes '2 / (N + r)' of their
+summed waves, which builds up only where its partials meet
+theirs.
+***** PARAM damping_hz = 6000.0
+Hz, > 0. The cutoff of a lowpass on the bridge's motion. Lower
+keeps the coupling (and the drain into the bridge) to the low
+partials; higher lets the upper partials ring in sympathy too.
+Useful from 1000 to 20000 (it is kept below Nyquist).
+****** the math
+'L(z) = (1 - p) / (1 - p z^-1)', 'p = exp(-2 pi damping_hz /
+sample_rate)', gain 1 at DC. Above the cutoff the bridge passes
+less of the summed wave, so those frequencies neither couple nor
+drain as much.
+**** TABLE body
+The resonating body on the summed output: what turns strings
+into an instrument. A bank of resonators, like the modes of a
+soundboard or a guitar top, colors everything and, through the
+knock, the attack. It is outside the strings, so it cannot make
+them unstable. A change here rebuilds the body at once (its
+resonators start from rest, a brief dip) and rebuilds the knock
+for notes struck afterward.
+***** PARAM mix = 0.5
+Unitless, in [0, 1]. How much of the output is the body's. 0 is
+the bare strings; 1 only the body.
+****** the math
+'out = (1 - mix) * dry + mix * wet / norm', with 'dry' the
+strings' sum, 'wet' the bank's output, and 'norm' the bank's RMS
+gain on white noise (measured once per parameter change), so the
+body leaves a broadband signal at the level it came in. 'mix 0'
+is exactly the dry sum.
+***** the modes
+****** PARAM mode_count = 24
+Count, 1 to 128. Resonators in the bank. A few is a small,
+boxy, colored body; 20 to 60 a full one. Useful from 8 to 64.
+******* the math
+The k-th of 'M = mode_count' centers is
+'f_k = lowest_hz * 2 ^ (k * s + j_k)', with
+'s = log2(highest_hz / lowest_hz) / (M - 1)' octaves between
+neighbors and 'j_k' a jitter of up to '0.3 * s' either way from
+'seed', so the modes do not fall on a regular grid. Each mode's
+gain is '1 / sqrt(f_k / lowest_hz)', falling toward the top.
+Modes at or above 0.45 times the sample rate are left out.
+****** PARAM lowest_hz = 90.0
+Hz, > 0. The lowest mode's nominal center: the body's deepest
+resonance. A guitar's air mode is near 100 Hz; a piano
+soundboard goes lower. Useful from 50 to 300.
+******* the math
+'f_0 = lowest_hz' before jitter; the gains are relative to it.
+****** PARAM highest_hz = 6000.0
+Hz, above 'lowest_hz'. The highest mode's nominal center. Lower
+is a darker body. Useful from 2000 to 12000.
+******* the math
+'f_(M-1) = highest_hz' before jitter.
+****** PARAM q = 30.0
+Unitless, > 0. Each mode's sharpness. Low (5 to 15) is a damped,
+smooth body; high (50 to 200) a ringing, resonant one whose
+modes can be heard as pitches. Useful from 10 to 100.
+******* the math
+Mode k has bandwidth 'f_k / q': poles at radius
+'R = exp(-pi f_k / (q * sample_rate))' and angle
+'2 pi f_k / sample_rate', in the resonator
+'H(z) = ((1 - R^2) / 2) (1 - z^-2) / (1 - 2 R cos(theta) z^-1 +
+R^2 z^-2)'. It rings with a T60 of about '2.2 q / f_k' seconds:
+0.33 s for a 200 Hz mode at 'q = 30'.
+****** PARAM seed = 1
+Any integer, >= 0. Picks the jitter of the mode centers: another
+seed is another body of the same size and shape. Try a few.
+******* the math
+The seed of the deterministic noise that draws each 'j_k'.
+*** parameters you might also enjoy
+Later options are added here as they land.
+** the energy pedal
+It reaches the runtime through the MPC-20 -> host bridge: run
+=tools/pedals/bridge.sh= on the HOST before starting the rig,
+which looks for the "MPC-20 pedals" port only at startup
+(without it, a red note, and no pedal). The pedal is rig-wide,
+so it names no monome. Its curve is the sink's
+'pedal_energy_exponent', so it takes none of the volume pedals'
+taper knobs. Use channel 2 if the pedal is cabled there.
+*** ELEM expression_pedals
+**** PARAM channel = 1
+**** PARAM role = "string_energy"
+** grid A: the first available 16x16 monome
+*** ELEM monomes
+**** PARAM id = "a"
+**** PARAM listen_port = 9000
+**** PARAM prefix = "/energy-pedal-a"
+**** PARAM select.size = [16, 16]
+No serial pin: whichever matching monome serialosc reports first
+may fill A.
+*** ELEM monome_windows
+**** PARAM id = "grid-a"
+**** PARAM monome = "a"
+**** PARAM kind = "edo_note_grid"
+**** PARAM rect = [0, 0, 15, 15]
+**** PARAM tuning = "main"
+**** PARAM sink = "strings"
+**** PARAM sustain_handle = "below"
+**** PARAM edit_handle = "none"
+**** PARAM flash_sustained = true
+Press the cell directly below a sounding note to toggle that
+note's sustain; the press never sounds. "above", "left" and
+"right" also work. There is no edit mode here, so the edit
+handle is off. Sustained notes no finger holds flash bright on
+the same 150 ms clock as the resting controls' dim flash; held
+notes stay steady.
+*** ELEM monome_windows
+**** PARAM id = "sustain-clear-a"
+**** PARAM monome = "a"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [6, 15, 6, 15]
+**** PARAM control = "clear"
+OFF: end every sustained note on this grid that no finger holds.
+*** ELEM monome_windows
+**** PARAM id = "sustain-accrete-a"
+**** PARAM monome = "a"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [7, 15, 7, 15]
+**** PARAM control = "accrete"
+ON: notes held now, and notes played while it is on, join the
+sustained set.
+*** ELEM monome_windows
+**** PARAM id = "sustain-mode-a"
+**** PARAM monome = "a"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [8, 15, 8, 15]
+**** PARAM control = "needs_holding"
+**** PARAM initially_on = true
+TOGGLE WHAT ON MEANS: bright = ON is momentary (hold it), dim =
+ON latches (tap it on, tap it off). Starts bright.
+*** ELEM monome_windows
+**** PARAM id = "shift-a"
+**** PARAM monome = "a"
+**** PARAM kind = "edo_shift_pad"
+**** PARAM rect = [13, 0, 15, 1]
+The four arrows move the register one cell; the two top corners
+move it one octave.
+** grid B: the second available 16x16 monome
+If only one grid is connected, this whole logical surface is
+skipped and A plays on.
+*** ELEM monomes
+**** PARAM id = "b"
+**** PARAM listen_port = 9001
+**** PARAM prefix = "/energy-pedal-b"
+**** PARAM select.size = [16, 16]
+*** ELEM monome_windows
+**** PARAM id = "grid-b"
+**** PARAM monome = "b"
+**** PARAM kind = "edo_note_grid"
+**** PARAM rect = [0, 0, 15, 15]
+**** PARAM tuning = "main"
+**** PARAM sink = "strings"
+**** PARAM sustain_handle = "below"
+**** PARAM edit_handle = "none"
+**** PARAM flash_sustained = true
+*** ELEM monome_windows
+**** PARAM id = "sustain-clear-b"
+**** PARAM monome = "b"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [6, 15, 6, 15]
+**** PARAM control = "clear"
+*** ELEM monome_windows
+**** PARAM id = "sustain-accrete-b"
+**** PARAM monome = "b"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [7, 15, 7, 15]
+**** PARAM control = "accrete"
+*** ELEM monome_windows
+**** PARAM id = "sustain-mode-b"
+**** PARAM monome = "b"
+**** PARAM kind = "accrete_control"
+**** PARAM rect = [8, 15, 8, 15]
+**** PARAM control = "needs_holding"
+**** PARAM initially_on = true
+*** ELEM monome_windows
+**** PARAM id = "shift-b"
+**** PARAM monome = "b"
+**** PARAM kind = "edo_shift_pad"
+**** PARAM rect = [13, 0, 15, 1]

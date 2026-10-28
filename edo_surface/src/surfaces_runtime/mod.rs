@@ -116,6 +116,12 @@ const NO_RECT: [i32; 4] = [-1, -1, -1, -1];
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
+/// The voice map of the latest `run()`, for the mock-rig tests: a mock grid shows what
+/// the runtime lit, and this shows what it sounds. The tests that read it hold
+/// `MOCK_LOCK`, so one slot serves them all.
+#[cfg(test)]
+static VOICES_OF_THE_LATEST_RUN: Mutex<Option<Arc<Mutex<VoiceMap>>>> = Mutex::new(None);
+
 /// Dropped at the end of every grid thread: setting STOP releases the siblings, so
 /// one thread's death (clean, early return, or panic) tears the runtime down instead
 /// of leaving a zombie grid loop.
@@ -253,6 +259,10 @@ fn run(
   // sink's `amplitude` is the single master "synth volume" (both grids); the per-grid
   // volume strips are live trims that multiply below it.
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(HashMap::new()));
+  #[cfg(test)]
+  {
+    *VOICES_OF_THE_LATEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&voices));
+  }
   let crowded = Arc::new(Mutex::new(synth::CrowdedPitches::new(
     s.crowded_pitch_planck_deviation,
   )));
