@@ -65,12 +65,12 @@
 //! * f`, `f` the energy factor, rubs the string, whose speed under it
 //! is `v`, the mean of the voice's loops' arriving waves. With `delta
 //! = v_bow - v`, the voice's one drive sample is `delta * bow`, where
-//! `bow = clamp((|delta / f * energy.bow_force| + 0.75) ^ -4, 0.0025,
-//! 0.245)` is STK's friction table ('BowTable') between the bounds
-//! of Elements' ('resonator.cc'). Where the table sits at its upper
-//! bound (`|delta / f * bow_force|` below about 0.67) the bow grips:
-//! the drive pulls the string toward the bow's speed, which damps
-//! it. Beyond, the table falls as the inverse fourth power and the
+//! `bow = clamp((|delta / f * energy.bow_slipperiness| + 0.75) ^ -4,
+//! 0.0025, 0.245)` is STK's friction table ('BowTable') between the
+//! bounds of Elements' ('resonator.cc'). Where the table sits at its
+//! upper bound (`|delta / f * bow_slipperiness|` below about 0.67)
+//! the bow grips: the drive pulls the string toward the bow's speed,
+//! which damps it. Beyond, the table falls as the inverse fourth power and the
 //! bow slips; there the drive shrinks as `delta` grows, a negative
 //! resistance that feeds the string's motion until the grip limits
 //! it. The bow's speed sets the level the string settles at, so
@@ -84,8 +84,8 @@
 //! follows `f`. A bow slowed with its force held (a table reading
 //! `delta`) grips: it would not speak under a light pedal, and it
 //! would stop every bowed string as the window closed. So whether
-//! the bow speaks depends on `bow_velocity * bow_force` and not on
-//! the pedal: below about 0.7 it grips throughout and damps the
+//! the bow speaks depends on `bow_velocity * bow_slipperiness` and
+//! not on the pedal: below about 0.7 it grips throughout and damps the
 //! string (a non-start); from about 0.8 to 2 it speaks, at about the
 //! same level in every register; above, the low strings lock onto
 //! an upper partial (a squeak), and from about 2.5 they slip
@@ -126,7 +126,7 @@ pub const HISTORY_SECONDS: f64 = 10.0;
 /// under a feedback driver settles.
 pub const EBOW_SECOND_HARMONIC: f32 = 0.2;
 
-/// The bow's friction table is `(|delta / f * bow_force| +
+/// The bow's friction table is `(|delta / f * bow_slipperiness| +
 /// BOW_TABLE_OFFSET) ^ -4`, clamped to [`BOW_TABLE_MINIMUM`,
 /// `BOW_TABLE_MAXIMUM`] (STK's 'BowTable' with Elements' bounds).
 pub const BOW_TABLE_OFFSET: f32 = 0.75;
@@ -429,18 +429,20 @@ pub fn bow_drive(
 ) -> f32 {
   let bow_speed: f32 = energy.bow_velocity * energy_factor;
   let speed_difference: f32 = bow_speed - arriving;
-  speed_difference * bow_friction(energy.bow_force, speed_difference / energy_factor) }
+  speed_difference
+    * bow_friction(energy.bow_slipperiness, speed_difference / energy_factor) }
 
-/// The friction table `clamp((|scaled_speed_difference * bow_force|
-/// + BOW_TABLE_OFFSET) ^ -4, BOW_TABLE_MINIMUM, BOW_TABLE_MAXIMUM)`.
+/// The friction table `clamp((|scaled_speed_difference *
+/// bow_slipperiness| + BOW_TABLE_OFFSET) ^ -4, BOW_TABLE_MINIMUM,
+/// BOW_TABLE_MAXIMUM)`.
 /// `scaled_speed_difference` is the bow's speed less the string's,
 /// over the energy factor: the difference as it would be at the
 /// window's peak under a full pedal.
 pub fn bow_friction(
-  bow_force: f32,
+  bow_slipperiness: f32,
   scaled_speed_difference: f32,
 ) -> f32 {
-  ((scaled_speed_difference * bow_force).abs() + BOW_TABLE_OFFSET)
+  ((scaled_speed_difference * bow_slipperiness).abs() + BOW_TABLE_OFFSET)
     .powi(-4)
     .clamp(BOW_TABLE_MINIMUM, BOW_TABLE_MAXIMUM) }
 

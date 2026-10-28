@@ -342,15 +342,15 @@ The ebow is a magnet under the string that feeds the string's own
 motion back into it, so the note blooms from what it already
 holds (the strike, a sympathetic ring) without squeaks or
 non-starts; it reads 'growth_rate_per_second_max' and
-'drive_limit'. The bow rubs the string at a speed the pedal
-sets: rosin bite and a locked, bright spectrum, but it can fail
-to speak or squeak; it reads 'bow_velocity' and 'bow_force'. The
-wind blows noise across the string and the partial nearest its
-pitch blooms, climbing the series as the pedal rises; it reads
-'wind_speed_hz_max', 'wind_q' and 'wind_gain'. All three read
-the window, 'pedal_energy_exponent' and 'precharge_gain'. The
-bow's and the wind's parameters are under 'parameters you might
-also enjoy', in a second energy table.
+'drive_limit'. The bow rubs the string at a speed the pedal sets:
+rosin bite and a locked, bright spectrum, but it can fail to
+speak or squeak; it reads 'bow_velocity' and 'bow_slipperiness'.
+The wind blows noise across the string and the partial nearest
+its pitch blooms, climbing the series as the pedal rises; it
+reads 'wind_speed_hz_max', 'wind_q' and 'wind_gain'. All three
+read the window, 'pedal_energy_exponent' and 'precharge_gain'.
+The bow's and the wind's parameters are under 'parameters you
+might also enjoy', in a second energy table.
 ****** the math
 The drive, per sample, during '[T, T + b]': for the ebow see
 'drive_limit' and 'growth_rate_per_second_max', for the bow and
@@ -578,28 +578,28 @@ lighter pedal bowing the same way, softer. It speaks at about
 the same level in every register, with rosin bite and a bright,
 locked spectrum, but only inside a window of its two settings:
 outside it the bow grips and damps the string, squeaks, or
-skates (see 'bow_force').
+skates (see 'bow_slipperiness').
 ****** the math of the bow
 With 'f = tri(t) * p ^ e' the energy factor, the bow moves at
 'v_bow = bow_velocity * f'. With 'v' the string's speed under the
-bow (the mean of the note's loops' arriving waves) and
-'delta = v_bow - v', one drive sample per note is added to every
-one of its loops: 'delta * bow', where
-'bow = clamp((|delta / f * bow_force| + 0.75) ^ -4, 0.0025,
-0.245)' is the friction table (STK's, between the bounds of
-Mutable Instruments Elements'), the result passed through a
-one-pole highpass at 'f0 / 10'. While '|delta / f * bow_force|'
-is below about 0.67 the table sits at its top and the bow grips,
-pulling the string toward its own speed, which damps it. Beyond,
-the table falls steeply and the bow slips; there the drive
-shrinks as 'delta' grows, which feeds the string's motion until
-the grip holds it. The table reads 'delta / f', not 'delta': the
-bow's force falls with its speed, as a player keeps a bow inside
-its playable window, so a lighter pedal and the closing window
-make the same motion smaller. (Read at 'delta', a slowing bow
-would grip and stop every string near the window's end.) The
-highpass keeps the friction from pushing the string's slow,
-near-DC motion. 'drive_limit' does not apply.
+bow (the mean of the note's loops' arriving waves) and 'delta =
+v_bow - v', one drive sample per note is added to every one of
+its loops: 'delta * bow', where 'bow = clamp((|delta / f *
+bow_slipperiness| + 0.75) ^ -4, 0.0025, 0.245)' is the friction
+table (STK's, between the bounds of Mutable Instruments
+Elements'), the result passed through a one-pole highpass at 'f0
+/ 10'. While '|delta / f * bow_slipperiness|' is below about 0.67
+the table sits at its top and the bow grips, pulling the string
+toward its own speed, which damps it. Beyond, the table falls
+steeply and the bow slips; there the drive shrinks as 'delta'
+grows, which feeds the string's motion until the grip holds it.
+The table reads 'delta / f', not 'delta': the bow's force falls
+with its speed, as a player keeps a bow inside its playable
+window, so a lighter pedal and the closing window make the same
+motion smaller. (Read at 'delta', a slowing bow would grip and
+stop every string near the window's end.) The highpass keeps the
+friction from pushing the string's slow, near-DC motion.
+'drive_limit' does not apply.
 ****** PARAM bow_velocity = 0.3
 Loop velocity units, in (0, 2]. The bow's speed at full pedal and
 the window's peak: how loud a bowed note is. At 0.3 a softly
@@ -607,30 +607,30 @@ struck 220 Hz note bowed at full pedal peaks near 0.19 (body
 off), where the shipped strike alone peaks near 0.08. Useful from
 0.1 to 0.6.
 Changing it alone also moves whether the bow speaks: see
-'bow_force'.
+'bow_slipperiness'.
 ******* the math
-'v_bow = bow_velocity * f'. With 'bow_velocity * bow_force' held,
-the bowed motion is the same shape at any 'bow_velocity' and
-scales with it (the strike does not).
-****** PARAM bow_force = 3.0
+'v_bow = bow_velocity * f'. With 'bow_velocity *
+bow_slipperiness' held, the bowed motion is the same shape at any
+'bow_velocity' and scales with it (the strike does not).
+****** PARAM bow_slipperiness = 3.0
 Unitless, in [1, 10]. The friction table's slope: how small a
 difference between the bow's speed and the string's already
-makes the bow slip. Despite the name, larger slips sooner: a
-lighter grip. Its product with 'bow_velocity' decides whether the
-bow speaks. Below about 0.7 the bow grips throughout and damps
-the note instead of driving it (a non-start: the note dies
-faster than under no pedal). From about 0.8 to 2 it speaks, at
+makes the bow slip. Larger slips sooner: a lighter grip. Its
+product with 'bow_velocity' decides whether the bow speaks.
+Below about 0.7 the bow grips throughout and damps the note
+instead of driving it (a non-start: the note dies faster than
+under no pedal). From about 0.8 to 2 it speaks, at
 about the same level from 55 to 1760 Hz (0.9 as shipped). From
 about 1.5 the low strings lock onto their 4th partial (a
 squeak). From about 2.5 the bow slips throughout and adds little
 (it skates), the low strings first.
 ******* the math
 'bow = clamp((|x| + 0.75) ^ -4, 0.0025, 0.245)' with
-'x = delta / f * bow_force'. The table leaves its top at
+'x = delta / f * bow_slipperiness'. The table leaves its top at
 '|x| = 0.245 ^ (-1/4) - 0.75 = 0.67'. With the string at rest
 under the bow, 'delta / f = bow_velocity', so
-'x = bow_velocity * bow_force', and at or below 0.67 the bow
-grips until something else moves the string: about 0.7 speaks
+'x = bow_velocity * bow_slipperiness', and at or below 0.67 the
+bow grips until something else moves the string: about 0.7 speaks
 after the shipped strike, not after a soft one.
 ***** the wind
 Wind across the string, as across an aeolian harp: the partial

@@ -155,7 +155,7 @@ pub struct EnergyParams {
   /// the bow still grips, so it slips sooner. With `bow_velocity` it
   /// decides whether the bow speaks: their product from about 0.8 to
   /// 2 does.
-  pub bow_force: f32,
+  pub bow_slipperiness: f32,
   /// Hz, > 0. The Strouhal frequency at full pedal (the `wind` kind
   /// only); the partial nearest it blooms.
   pub wind_speed_hz_max: f32,
@@ -267,7 +267,7 @@ impl Default for StringsParams {
         drive_limit: 0.8,
         precharge_gain: 0.5,
         bow_velocity: 0.3,
-        bow_force: 3.0,
+        bow_slipperiness: 3.0,
         wind_speed_hz_max: 2000.0,
         wind_q: 8.0,
         wind_gain: 0.5, },
@@ -386,7 +386,7 @@ fn validate_energy(
   require_above("energy.drive_limit", energy.drive_limit, 0.0)?;
   require_at_least("energy.precharge_gain", energy.precharge_gain, 0.0)?;
   require_above_and_at_most("energy.bow_velocity", energy.bow_velocity, 0.0, 2.0)?;
-  require_within("energy.bow_force", energy.bow_force, 1.0, 10.0)?;
+  require_within("energy.bow_slipperiness", energy.bow_slipperiness, 1.0, 10.0)?;
   require_above("energy.wind_speed_hz_max", energy.wind_speed_hz_max, 0.0)?;
   require_above("energy.wind_q", energy.wind_q, 0.0)?;
   require_at_least("energy.wind_gain", energy.wind_gain, 0.0)?;

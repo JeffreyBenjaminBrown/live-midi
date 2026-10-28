@@ -158,18 +158,18 @@ exponent and the pre-charge work the same for all three; the
 bloom's speed and ceiling (=growth_rate_per_second_max= and
 =drive_limit=) are the ebow's alone.
 ** the bow
-The pedal sets the bow's speed: strongest at the key-down,
-fading as the window closes, and a lighter pedal bows the same
-way, softer. A bowed note has rosin bite and a bright, locked
-spectrum, at about the same level in every register. Caution:
-the bow has non-starts and squeaks at extreme settings. Whether
-it speaks depends on =bow_velocity= times =bow_force=: below
+The pedal sets the bow's speed: strongest at the key-down, fading
+as the window closes, and a lighter pedal bows the same way,
+softer. A bowed note has rosin bite and a bright, locked
+spectrum, at about the same level in every register. Caution: the
+bow has non-starts and squeaks at extreme settings. Whether it
+speaks depends on =bow_velocity= times =bow_slipperiness=: below
 about 0.7 the bow grips the string and damps it (the note dies
-sooner than with no pedal), from about 1.5 the low strings
-squeak (they lock onto their 4th partial), and from about 2.5
-the bow skates and adds little. As shipped the product is 0.9,
-which speaks everywhere; =bow_velocity= alone is the loudness
-if you keep the product.
+sooner than with no pedal), from about 1.5 the low strings squeak
+(they lock onto their 4th partial), and from about 2.5 the bow
+skates and adds little. As shipped the product is 0.9, which
+speaks everywhere; =bow_velocity= alone is the loudness if you
+keep the product.
 ** the wind
 Noise blown across the string, as across an aeolian harp. The
 partial nearest the wind's pitch blooms, and as the pedal rises

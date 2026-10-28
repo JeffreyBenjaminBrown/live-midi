@@ -632,6 +632,6 @@ A grouping headline inside the TABLE: its PARAMs still land in [trail].
     assert_eq!(strings.energy.bow_velocity, 0.7);
     assert_eq!(strings.energy.wind_q, 12.0);
     let defaults: StringsParams = StringsParams::default();
-    assert_eq!(strings.energy.bow_force, defaults.energy.bow_force);
+    assert_eq!(strings.energy.bow_slipperiness, defaults.energy.bow_slipperiness);
   }
 }

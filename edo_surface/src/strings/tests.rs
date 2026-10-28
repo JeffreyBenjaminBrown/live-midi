@@ -207,8 +207,8 @@ fn validation_accepts_the_defaults_and_names_a_bad_key() {
     ("string.dispersion_sections", |p| p.string.dispersion_sections = 17),
     ("body.highest_hz", |p| p.body.highest_hz = p.body.lowest_hz),
     ("exciter.hammer_contact_fraction", |p| p.exciter.hammer_contact_fraction = 0.4),
-    ("energy.bow_force", |p| p.energy.bow_force = 0.5),
-    ("energy.bow_force", |p| p.energy.bow_force = 11.0),
+    ("energy.bow_slipperiness", |p| p.energy.bow_slipperiness = 0.5),
+    ("energy.bow_slipperiness", |p| p.energy.bow_slipperiness = 11.0),
     ("energy.bow_velocity", |p| p.energy.bow_velocity = 0.0),
     ("energy.bow_velocity", |p| p.energy.bow_velocity = 2.5), ];
   for (key, spoil) in cases {
