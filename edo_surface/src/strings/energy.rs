@@ -34,22 +34,31 @@
 //! of the steady state the drive would have left, scaled to the peak
 //! `A0 / unison_count`.
 //!
-//! The drive, ebow kind. During the ex-post leg each loop adds
-//! `k * A * tanh(v / A)` per sample, with `v` the loop's own arriving
-//! wave, `A = energy.drive_limit`, `g` the loop's round-trip gain at
-//! its `f0`, and `k = max(0, exp(rate / f0) - g)`: the gain that,
-//! added to `g`, makes the loop's amplitude grow by `rate` nepers per
-//! second. (The drive adds to the wave after the loss, so the loop's
-//! gain is `g (1 + k)` rather than `g + k`; the two differ by `(1 -
-//! g) k`, a fraction of a percent of the growth for any musical
-//! decay.) The pedal moves `rate` from `-lambda`, the string's own
-//! decay rate (`lambda = -f0 ln g`, at which `k` is 0 and the string
-//! decays as if undriven), to `energy.growth_rate_per_second_max`:
-//! `rate = growth_rate_per_second_max * f - lambda * (1 - f)` with `f`
-//! the energy factor. So a pedal at the heel adds nothing, a light
+//! The drive, ebow kind. During the ex-post leg the voice computes
+//! one drive sample `k * A * tanh(v / A)` and adds it to every one of
+//! its loops, with `v` the mean of the voice's loops' arriving waves,
+//! `A = energy.drive_limit * pedal(t) ^ e`, `g` the mean of the loops'
+//! round-trip gains at their `f0`s, and `k = max(0, exp(rate / f0) -
+//! g)`: the gain that, added to `g`, makes the amplitude of the
+//! loops' common (in-phase) motion grow by `rate` nepers per second.
+//! One drive over the whole course, as one magnet under all of a
+//! note's unison strings, keeps the unisons in phase while they grow;
+//! a drive per loop, each from its own wave, would let their slight
+//! detune pull them apart, and the heard sum would fall while the
+//! loops kept their energy. (The drive adds to the wave after the
+//! loss, so the gain per round trip is `g (1 + k)` rather than `g +
+//! k`; the two differ by `(1 - g) k`, a fraction of a percent of the
+//! growth for any musical decay.) The limit `A` rises with the pedal,
+//! so a light pedal blooms to a low ceiling and a full one to
+//! `energy.drive_limit`. The pedal moves `rate` from `-lambda`, the
+//! string's own decay rate (`lambda = -f0 ln g`, at which `k` is 0
+//! and the string decays as if undriven), to
+//! `energy.growth_rate_per_second_max`: `rate =
+//! growth_rate_per_second_max * f - lambda * (1 - f)` with `f` the
+//! energy factor. So a pedal at the heel adds nothing, a light
 //! pedal lengthens the sustain, and a full one at the window's peak
 //! grows every register at the same rate. The tanh bounds what the
-//! drive adds, so no pedal makes a string run away.
+//! drive adds to `k A`, so no pedal makes a string run away.
 
 use crate::strings::params::{EnergyKind, EnergyParams};
 use std::f64::consts::PI;
@@ -185,6 +194,16 @@ pub fn ex_post_energy_factor(
     if ex_post_samples > 0.0 { (1.0 - since_birth / ex_post_samples) as f32 } else { 1.0 };
   triangle * pedal.powf(energy.pedal_energy_exponent) }
 
+/// The pedal's power `pedal ^ e` at `pedal_position` (NaN when it
+/// never reported, which counts as 0) under `energy`: the factor
+/// that scales the drive's limit.
+pub fn pedal_power(
+  energy: &EnergyParams,
+  pedal_position: f32,
+) -> f32 {
+  let pedal: f32 = reported_position(pedal_position);
+  if pedal <= 0.0 { 0.0 } else { pedal.powf(energy.pedal_energy_exponent) }}
+
 /// The asymmetric triangle at `time_seconds` for a voice born at
 /// `birth_seconds`: 0 at `birth - ex_ante`, 1 at `birth`, 0 at `birth
 /// + ex_post`, linear between, 0 outside. An empty leg (0 seconds)
@@ -230,11 +249,12 @@ pub fn precharge_waveshape(
     return unscaled; }
   unscaled.iter().map(|value| value * peak / unscaled_peak).collect() }
 
-/// What the drive of `energy.kind` adds into a loop this sample,
-/// given the energy factor, the loop's `f0` and round-trip gain, and
-/// its arriving wave `arriving`. 0 when the factor is 0, so a voice
-/// outside its window, or under a pedal at the heel, renders exactly
-/// as an undriven one.
+/// What the drive of `energy.kind` adds into every loop of a voice
+/// this sample, given the energy factor `tri(t) * pedal(t) ^ e`, the
+/// pedal's power `pedal(t) ^ e`, the voice's `f0`, the mean of its
+/// loops' round-trip gains, and the mean of their arriving waves. 0
+/// when the factor is 0, so a voice outside its window, or under a
+/// pedal at the heel, renders exactly as an undriven one.
 ///
 /// The bow and wind drives arrive in slice 8 of
 /// 'TODO/resonance/02_plan.org'; until then those kinds drive as the
@@ -242,25 +262,28 @@ pub fn precharge_waveshape(
 pub fn drive(
   energy: &EnergyParams,
   energy_factor: f32,
+  pedal_power: f32,
   f0: f32,
   round_trip_gain: f32,
   arriving: f32,
 ) -> f32 {
-  if energy_factor <= 0.0 {
+  if energy_factor <= 0.0 || pedal_power <= 0.0 {
     return 0.0; }
   match energy.kind {
     EnergyKind::Ebow | EnergyKind::Bow | EnergyKind::Wind =>
-      ebow_drive(energy, energy_factor, f0, round_trip_gain, arriving), }}
+      ebow_drive(energy, energy_factor, pedal_power, f0, round_trip_gain, arriving), }}
 
-/// `k * A * tanh(v / A)`. See the module comment.
+/// `k * A * tanh(v / A)` with `A = energy.drive_limit * pedal_power`.
+/// See the module comment. `pedal_power` must be above 0.
 pub fn ebow_drive(
   energy: &EnergyParams,
   energy_factor: f32,
+  pedal_power: f32,
   f0: f32,
   round_trip_gain: f32,
   arriving: f32,
 ) -> f32 {
-  let limit: f32 = energy.drive_limit;
+  let limit: f32 = energy.drive_limit * pedal_power;
   ebow_drive_gain(energy, energy_factor, f0, round_trip_gain) * limit * (arriving / limit).tanh() }
 
 /// The ebow's `k = max(0, exp(rate / f0) - g)`, with `rate` moved by

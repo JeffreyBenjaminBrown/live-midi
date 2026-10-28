@@ -20,8 +20,9 @@
 //! string born in the block is pre-charged from the history over its
 //! ex-ante leg (`energy::precharge_amplitude`), and per sample it
 //! hands every voice in its ex-post leg the energy factor of this
-//! block's position (`energy::ex_post_energy_factor`), from which the
-//! voice's loops take their drive. See 'energy.rs'.
+//! block's position (`energy::ex_post_energy_factor`) and the pedal's
+//! power (`energy::pedal_power`, which scales the drive's limit), from
+//! which the voice takes its drive. See 'energy.rs'.
 //!
 //! A string voice lives exactly as long as its `VoiceState` is in
 //! the map, silent or not: a silent sustained string must still be
@@ -33,7 +34,7 @@
 
 use crate::strings::body::BodyBank;
 use crate::strings::energy::{
-  ex_post_energy_factor, precharge_amplitude, reported_position, PedalHistory,
+  ex_post_energy_factor, pedal_power, precharge_amplitude, reported_position, PedalHistory,
 };
 use crate::strings::exciter::{dry_table, knock_table};
 use crate::strings::junction::Junction;
@@ -232,8 +233,8 @@ impl StringsRenderer {
 
   /// Steps every voice's control state one sample. A finished voice
   /// leaves the map and drops its string voice; a living one hands
-  /// its string voice this sample's gain and energy factor and
-  /// retunes it if its `freq` moved.
+  /// its string voice this sample's gain, energy factor and pedal
+  /// power, and retunes it if its `freq` moved.
   fn step_controls_of_every_voice(
     &mut self,
     voices: &mut VoiceMap,
@@ -254,6 +255,8 @@ impl StringsRenderer {
         let energy_factor: f32 = ex_post_energy_factor(
           string_voice.energy_params(), string_voice.birth(), now, sample_rate, pedal_position);
         string_voice.set_energy_factor(energy_factor);
+        let power: f32 = pedal_power(string_voice.energy_params(), pedal_position);
+        string_voice.set_pedal_power(power);
         string_voice.retune_if_moved(&params.string, voice.freq); }
       true }); }}
 

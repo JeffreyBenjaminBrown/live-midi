@@ -133,7 +133,9 @@ pub struct EnergyParams {
   /// aims for at full pedal and the window's peak.
   pub growth_rate_per_second_max: f32,
   /// Loop amplitude units, > 0. The drive saturates as `A tanh(v /
-  /// A)` with `A` this, which bounds what it can add.
+  /// A)` with `A` this times `pedal ^ pedal_energy_exponent`, which
+  /// bounds what it can add: a light pedal blooms to a low ceiling,
+  /// a full one to this.
   pub drive_limit: f32,
   /// Unitless, >= 0. Scales the pedal-history sum into the amplitude
   /// written into the loops at key-down.
@@ -248,7 +250,7 @@ impl Default for StringsParams {
         ex_post_energizing_ms: 600.0,
         pedal_energy_exponent: 2.0,
         growth_rate_per_second_max: 8.0,
-        drive_limit: 0.4,
+        drive_limit: 0.8,
         precharge_gain: 0.5,
         bow_velocity: 0.2,
         bow_force: 3.0,

@@ -6,7 +6,9 @@
 //! energy pedal's pre-charge and drive.
 
 use crate::strings::body::{BodyBank, BodyMode, BodyModes};
-use crate::strings::energy::{precharge_amplitude, PedalHistory};
+use crate::strings::energy::{
+  drive, ebow_drive_gain, pedal_power, precharge_amplitude, PedalHistory,
+};
 use crate::strings::exciter::{dry_table, knock_table, period_samples};
 use crate::strings::first_order::{
   allpass_with_phase_delay, first_order_magnitude, first_order_phase_delay_samples,
@@ -516,8 +518,7 @@ fn an_unreported_or_heel_pedal_precharges_nothing() {
 ///
 /// The note is struck at a tenth of the drive's limit, so what is
 /// measured is the drive's growth and not its limiter. Struck near
-/// the limit (the default strike's loops start at about the default
-/// limit), the tanh flattens the growth within a few tenths of a
+/// the limit, the tanh flattens the growth within a few tenths of a
 /// second, and the level it then sustains follows `k`, which falls
 /// with the triangle, so by 0.9 s the note is back near where it was
 /// at 0.1 s.
@@ -584,6 +585,63 @@ fn a_full_pedal_stops_feeding_a_note_when_its_window_closes() {
            energy_at(0.05), energy_at(ex_post_seconds), after_the_window[after_the_window.len() - 1]);
   assert!(energy_at(ex_post_seconds) > energy_at(0.05), "the note did not grow in its window");
   assert!(largest_rise <= 0.0, "the energy rose by {largest_rise} after the window"); }
+
+/// The drive saturates at its limit times the pedal's power: a wave
+/// far above the limit takes `k * drive_limit * pedal ^ e`, so a
+/// light pedal blooms to a lower ceiling than a full one, while a
+/// wave far below it takes `k * v` whatever the pedal.
+#[test]
+fn the_drive_saturates_at_its_limit_times_the_pedal_power() {
+  let params: StringsParams = StringsParams::default();
+  let f0: f32 = 220.0;
+  let gain: f32 = round_trip_gain(&params.string, f0);
+  for pedal_position in [1.0_f32, 0.5] {
+    let power: f32 = pedal_power(&params.energy, pedal_position);
+    let energy_factor: f32 = power;
+    let k: f32 = ebow_drive_gain(&params.energy, energy_factor, f0, gain);
+    let saturated: f32 = drive(&params.energy, energy_factor, power, f0, gain, 100.0);
+    let small_wave: f32 = 1e-4;
+    let linear: f32 = drive(&params.energy, energy_factor, power, f0, gain, small_wave);
+    println!("pedal {pedal_position}: k {k:.3e}, saturated drive {saturated:.3e}, \
+              k * limit * power {:.3e}", k * params.energy.drive_limit * power);
+    assert!(k > 0.0);
+    assert!(relative_error(saturated, k * params.energy.drive_limit * power) < 1e-4,
+            "pedal {pedal_position}: saturated drive {saturated}");
+    assert!(relative_error(linear, k * small_wave) < 1e-3,
+            "pedal {pedal_position}: small-wave drive {linear}"); }}
+
+/// A voice's unisons take one drive, from the mean of their waves,
+/// so they grow together. The measure is the heard power over the
+/// stored energy, relative to a one-loop voice's: 2 for two loops in
+/// phase, falling as they drift apart. Under a full pedal the two
+/// default unisons still sum near coherently at 0.6 s (about 1.7);
+/// undriven they have drifted to about 0.5 by then, and a drive per
+/// loop, each from its own wave, leaves them drifting just so.
+#[test]
+fn a_full_pedal_drives_the_unisons_of_a_voice_in_phase() {
+  let mut params: StringsParams = StringsParams::default();
+  params.body.mix = 0.0;
+  params.energy.ex_post_energizing_ms = 1000.0;
+  params.exciter.pick_energy = params.energy.drive_limit / 10.0;
+  let heard_power_over_energy = |unison_count: u32, pedal_position: f32| -> f32 {
+    let mut params: StringsParams = params;
+    params.string.unison_count = unison_count;
+    let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+    let rendered: Vec<f32> =
+      render_seconds_under_pedal(&mut renderer, &mut voices, &params, 0.6, pedal_position);
+    let last_20_ms: &[f32] = &rendered[rendered.len() - seconds(0.02) ..];
+    let heard_power: f32 =
+      last_20_ms.iter().map(|sample| sample * sample).sum::<f32>() / last_20_ms.len() as f32;
+    heard_power / renderer.string_voice(0).expect("voice 0").energy() };
+  let coherence_under = |pedal_position: f32| -> f32 {
+    heard_power_over_energy(2, pedal_position) / heard_power_over_energy(1, pedal_position) };
+  let (driven, undriven): (f32, f32) = (coherence_under(1.0), coherence_under(0.0));
+  println!("two unisons at 0.6 s, heard power over energy relative to one loop's: \
+            {driven:.3} under a full pedal, {undriven:.3} under none");
+  assert!(driven > 1.5, "the driven unisons drifted apart: {driven}");
+  assert!(driven > undriven, "the drive did not hold the unisons together"); }
 
 /// Renders struck `pitches` through one junction for `block_count`
 /// blocks of `block` samples and returns the stored energy (every
