@@ -726,8 +726,9 @@ relative bounds should still hold (re-measure).
 'StringsParams' with nested 'StringParams', 'ExciterParams',
 'EnergyParams', 'BridgeParams', 'BodyParams', 'HowlParams',
 'ModalParams', enums 'ExciterKind' and 'EnergyKind';
-'StringsRenderer::new(params, sample_rate)', 'render_block(voices,
-data, channels, sample_rate, amplitude, &params)' adopting
+'StringsRenderer::new(params, sample_rate)',
+'render_block(voices, data, channels, sample_rate, amplitude,
+&params)' adopting
 changed params at the top of each block; the public field
 'slide_slew_secs' to set from '[slide].pedal_smoother_ms' as
 'audio.rs' sets 'BlockRenderer::slide_slew_secs';
@@ -766,6 +767,24 @@ expose 'StringsRenderer::params(&self)' for it). The existing
 suite green.
 
 ** TODO Slice 5: the energy pedal
+*** Corrections carried from slice 4
+**** The energy pedal publishes its raw position, not a taper
+Jeff's exponent is the whole shaping he asked for ("linear might
+not feel right; let's provide pedal-energy-exponent"), and the
+fader-law taper would put a dB curve under it. So the pedal
+thread publishes 'p.norm' itself (0 at the heel, 1 at the toe),
+and validation rejects 'range_db' and the 'curve_*' knobs on a
+'string_energy' pedal, naming the reason. The "Role and
+plumbing" sentence about the taper is superseded by this.
+**** Names slice 4 fixed
+'SinkRig::CpalStrings' holds the nested 'strings::params'
+structs directly (they derive 'Deserialize'); 'Settings.strings'
+and 'LiveParams.strings' are 'Option<StringsParams>';
+'audio::start' takes the option and owns a 'StringsRenderer'
+when it is 'Some'; the harness takes '--rig NAME' or
+'--rig-file PATH'. Slice 3 left the drive seam
+'voice::drive_into_loop' (returns 0) and 'StringVoice::birth';
+'Loop::add_table' is for the one-period pre-charge fill.
 *** What
 'PedalRole::StringEnergy', 'PedalTarget::StringEnergy',
 validation (rig-wide, at most one, strings sink required, no
