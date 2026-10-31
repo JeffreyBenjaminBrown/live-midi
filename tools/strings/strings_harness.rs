@@ -671,14 +671,29 @@ fn write_mono_wav(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use edo_surface::rig::PedalTargetRig;
+  use edo_surface::strings::pedal_targets::resolve_pedal_target;
   use edo_surface::voices::OUTPUT_CLAMP;
 
-  const TWO_PEDALS_RIG: &str = "two-pedals_monome";
-
-  fn two_pedals_rendering(
+  /// The defaults (the rigless rendering: the engine's defaults at
+  /// the default sample rate and amplitude, the channel 1 pedal as
+  /// the energy pedal) plus two targets on the channel 2 pedal,
+  /// chosen so the squeal catches without reaching the clamp:
+  /// 'howl.gain' from 0 at the heel, which turns the howl off, to 20
+  /// at the toe, and 'howl.level' from 0.0015 to 0.003. The values
+  /// are the test's own, not a rig's, so tuning a rig cannot break a
+  /// test.
+  fn squeal_targets_rendering(
   ) -> Rendering {
-    rendering_from(Some(&RigSource::Named(TWO_PEDALS_RIG.to_string())))
-      .expect("the two-pedals rig renders") }
+    let mut rendering: Rendering = rigless_rendering();
+    let targets: [(&str, f32, f32); 2] = [("howl.gain", 0.0, 20.0), ("howl.level", 0.0015, 0.003)];
+    for (slot, (parameter, min, max)) in targets.iter().enumerate() {
+      rendering.strings_pedals.pedal_targets[1][slot] = Some(
+        resolve_pedal_target(
+          &PedalTargetRig { parameter: parameter.to_string(), min: *min, max: *max },
+          &rendering.params)
+          .expect("the squeal target resolves against the defaults") ); }
+    rendering }
 
   fn rms(
     samples: &[f32],
@@ -686,13 +701,14 @@ mod tests {
     let sum_of_squares: f32 = samples.iter().map(|sample| sample * sample).sum();
     (sum_of_squares / samples.len() as f32).sqrt() }
 
-  /// Under 'two-pedals_monome', 'squeal' is finite and below the
+  /// Under the defaults with the squeal targets
+  /// ('squeal_targets_rendering'), 'squeal' is finite and below the
   /// clamp, and its last second is louder than the second before
   /// the channel 2 pedal starts to rise: the howl the pedal brings
   /// on sustains and grows the chord, which alone would decay.
   #[test]
   fn squeal_grows_after_the_channel_2_pedal_rises_and_stays_below_the_clamp() {
-    let rendering: Rendering = two_pedals_rendering();
+    let rendering: Rendering = squeal_targets_rendering();
     let scene: Scene = squeal_scene();
     let rendered: Vec<f32> = render_scene(&scene, &rendering);
     assert!(rendered.iter().all(|sample| sample.is_finite()), "the squeal is finite");
@@ -710,11 +726,11 @@ mod tests {
       "the last second's RMS {last_second} does not exceed {before_the_rise}, the second's \
        before the pedal rises"); }
 
-  /// Every scene renders under 'two-pedals_monome' to finite audio
-  /// below the clamp.
+  /// Every scene renders under the defaults with the squeal targets
+  /// ('squeal_targets_rendering') to finite audio below the clamp.
   #[test]
-  fn every_scene_renders_under_the_two_pedals_rig() {
-    let rendering: Rendering = two_pedals_rendering();
+  fn every_scene_renders_under_the_defaults_with_squeal_targets() {
+    let rendering: Rendering = squeal_targets_rendering();
     for scene_name in SCENE_NAMES {
       let scene: Scene = scene_named(scene_name).expect("every listed scene exists");
       let rendered: Vec<f32> = render_scene(&scene, &rendering);
