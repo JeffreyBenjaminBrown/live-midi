@@ -234,7 +234,7 @@ fn deep_merge(dst: &mut toml::Table, src: toml::Table) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::rig::{MonomeWindowRig, SinkRig};
+  use crate::rig::{MonomeWindowRig, PedalRole, PedalTargetRig, SinkRig};
   use crate::strings::params::EnergyKind;
   use crate::strings::StringsParams;
 
@@ -633,5 +633,64 @@ A grouping headline inside the TABLE: its PARAMs still land in [trail].
     assert_eq!(strings.energy.wind_q, 12.0);
     let defaults: StringsParams = StringsParams::default();
     assert_eq!(strings.energy.bow_slipperiness, defaults.energy.bow_slipperiness);
+  }
+
+  /// A pedal's targets are ELEMs under its ELEM: the first under a grouping headline
+  /// under the pedal, with prose under it, the second directly under the pedal; both
+  /// land on the pedal, in order. Pins the shape so that a change to the reader cannot
+  /// flatten them.
+  #[test]
+  fn a_pedals_targets_nest_under_its_elem_through_grouping_and_prose() {
+    let org: &str = r#"
+* rig
+** PARAM version = 1
+** PARAM id = "r"
+** PARAM title = "R"
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 41
+*** PARAM x_step = 8
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 110
+** ELEM sinks
+*** PARAM id = "strings"
+*** PARAM kind = "cpal_strings"
+*** PARAM sample_rate = 48000
+*** PARAM buffer_frames = 128
+*** PARAM amplitude = 0.2
+** ELEM monomes
+*** PARAM id = "a"
+*** PARAM listen_port = 9000
+*** PARAM prefix = "/a"
+*** PARAM select.size = [16, 16]
+** ELEM monome_windows
+*** PARAM id = "grid-a"
+*** PARAM monome = "a"
+*** PARAM kind = "edo_note_grid"
+*** PARAM rect = [0, 0, 15, 15]
+*** PARAM tuning = "main"
+*** PARAM sink = "strings"
+** the pedals
+*** ELEM expression_pedals
+**** PARAM channel = 2
+**** PARAM role = "string_parameters"
+**** what the squeal pedal moves
+A grouping headline between the pedal and its first target.
+***** ELEM targets
+****** PARAM parameter = "howl.gain"
+****** PARAM min = 0.0
+****** PARAM max = 20.0
+Any prose here is ignored by the loader.
+**** ELEM targets
+***** PARAM parameter = "howl.level"
+***** PARAM min = 0.003
+***** PARAM max = 0.006
+"#;
+    let rig: Rig = parse_org_rig(org).expect("parses");
+    assert_eq!(rig.expression_pedals.len(), 1);
+    assert_eq!(rig.expression_pedals[0].role, PedalRole::StringParameters);
+    assert_eq!(rig.expression_pedals[0].targets, vec![
+      PedalTargetRig { parameter: "howl.gain".to_string(), min: 0.0, max: 20.0 },
+      PedalTargetRig { parameter: "howl.level".to_string(), min: 0.003, max: 0.006 } ]);
   }
 }

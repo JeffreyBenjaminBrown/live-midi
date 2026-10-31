@@ -567,7 +567,7 @@ green, its commits, and its headline DONE. Deviations on the
 expects: none. Stopping is otherwise for the conditions in
 'coding-advice/when-to-stop.org'.
 
-** TODO Slice 1: the rig side: targets, the role, validation
+** DONE Slice 1: the rig side: targets, the role, validation
 *** What
 'PedalTargetRig' and 'ExpressionPedalRig.targets' in 'rig.rs';
 'PedalRole::StringParameters'; 'strings/pedal_targets.rs' with

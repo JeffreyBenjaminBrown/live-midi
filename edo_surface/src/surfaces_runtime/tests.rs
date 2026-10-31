@@ -2304,7 +2304,7 @@
     let expected: Vec<(usize, PedalTarget, PedalVolumeCurve)> = rig
       .expression_pedals
       .iter()
-      .map(|p| {
+      .filter_map(|p| {
         use crate::rig::PedalRole;
         let grid = |m: &String| {
           s.grids.iter().position(|g| &g.monome_id == m).expect("a pedal's grid")
@@ -2315,8 +2315,9 @@
           PedalRole::NewNoteVolume => PedalTarget::NewNote(some),
           PedalRole::GlobalVolume => PedalTarget::Global(some),
           PedalRole::StringEnergy => PedalTarget::StringEnergy,
+          PedalRole::StringParameters => return None,
         };
-        (p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p))
+        Some((p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p)))
       })
       .collect();
     assert_eq!(s.expression_pedals, expected);

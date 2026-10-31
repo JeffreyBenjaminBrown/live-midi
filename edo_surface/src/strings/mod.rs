@@ -19,6 +19,8 @@
 //! exciter and the body share. `renderer` runs all of it over the
 //! voice map, block by block. `scripted_voices` builds `VoiceState`s
 //! as the surfaces runtime does, for the harness and the tests.
+//! `pedal_targets` holds which parameters an expression pedal may
+//! move and computes the parameters a block renders with.
 
 pub mod body;
 pub mod energy;
@@ -30,6 +32,7 @@ pub mod loop_dsp;
 pub mod modal;
 pub mod noise;
 pub mod params;
+pub mod pedal_targets;
 pub mod renderer;
 pub mod scripted_voices;
 pub mod voice;

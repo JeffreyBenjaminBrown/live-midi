@@ -612,6 +612,9 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         PedalRole::NewNoteVolume => PedalTarget::NewNote(some_grid),
         PedalRole::GlobalVolume => PedalTarget::Global(some_grid),
         PedalRole::StringEnergy => PedalTarget::StringEnergy,
+        // Binds no volume path, and the pedal thread does not yet publish its
+        // position: the parameters pedal is not in the map.
+        PedalRole::StringParameters => return None,
       };
       Some((p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p)))
     })
