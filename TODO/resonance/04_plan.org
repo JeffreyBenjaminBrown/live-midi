@@ -733,6 +733,11 @@ birth, so a target on the floor shapes the next note. Also:
 'body.mix' moves live; 'knock_mix' is no longer "convolved into
 the table" but scales the knock at birth, so the rig's knock
 text should say so where the copy says otherwise.
+*** Corrections carried from slice 4
+The key is 'square_dance', read when a grid thread starts (an
+'r' reload refreshes only the trail, slide and tap knobs, so a
+change needs a restart; the rig's one sentence on the key says
+so). It goes at the depth of each grid's 'flash_sustained'.
 *** What
 The rig as under "The rig 'two-pedals_monome'", copied from the
 working tree's 'rigs/energy-pedal_monome.org' (dirty with
