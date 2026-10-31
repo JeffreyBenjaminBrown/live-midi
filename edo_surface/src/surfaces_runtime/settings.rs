@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::rig::{
-  default_distortion_scale, default_distortion_shape, AccreteControlKind, AmShapeFamilyRig,
-  EditmodeControlKind, HandleSide, MonomeWindowRig, PedalRole, Rig, SinkRig, SoftstepWindowRig,
-  WaveformChoice,
+  default_distortion_scale, default_distortion_shape, play_grids_sink, AccreteControlKind,
+  AmShapeFamilyRig, EditmodeControlKind, HandleSide, MonomeWindowRig, PedalRole, Rig, SinkRig,
+  SoftstepWindowRig, WaveformChoice,
 };
 use crate::strings::pedal_targets::{
   resolve_strings_pedals, PedalTargetsPerChannel, ResolvedStringsPedals,
@@ -294,12 +294,13 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
   }
   let index_of = |monome_id: &str| grid_monomes.iter().position(|m| *m == monome_id);
 
-  // The tuning + sink come from the first edo grid (all grids share them here).
-  let (tuning_id, sink_id) = rig
+  // The tuning + sink come from the first edo grid (all grids share them here); the
+  // sink by the one rule for the play grids' sink (`rig::play_grids_sink`).
+  let tuning_id: String = rig
     .monome_windows
     .iter()
     .find_map(|w| match w {
-      MonomeWindowRig::EdoNoteGrid { tuning, sink, .. } => Some((tuning.clone(), sink.clone())),
+      MonomeWindowRig::EdoNoteGrid { tuning, .. } => Some(tuning.clone()),
       _ => None,
     })
     .ok_or("a surfaces rig needs an edo_note_grid")?;
@@ -308,11 +309,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     .iter()
     .find(|t| t.id == tuning_id)
     .ok_or("edo_note_grid references an unknown tuning")?;
-  let sink = rig
-    .sinks
-    .iter()
-    .find(|s| s.id() == sink_id)
-    .ok_or("edo_note_grid references an unknown sink")?;
+  let sink: &SinkRig = play_grids_sink(rig).ok_or("edo_note_grid references an unknown sink")?;
   let sink_settings: SinkSettings = resolve_sink_settings(sink)?;
 
   let rect_on = |monome_id: &str, pred: fn(&MonomeWindowRig) -> bool| {

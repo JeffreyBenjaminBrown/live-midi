@@ -30,6 +30,7 @@ use crate::strings::renderer::{couple_through_junction, StringsRenderer};
 use crate::strings::scripted_voices::{release_voice_state, struck_voice_state, RELEASE_SECS};
 use crate::strings::voice::{ExcitationStream, StringVoice, VoiceKind};
 use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
+use crate::voices::OUTPUT_CLAMP;
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -420,7 +421,7 @@ fn the_renderer_renders_three_voices_finite_below_the_clamp() {
   let peak: f32 = peak_magnitude(&rendered);
   println!("three voices: peak {peak:.4}");
   assert!(rendered.iter().all(|sample| sample.is_finite()));
-  assert!(peak < 0.95, "peak {peak} reaches the clamp");
+  assert!(peak < OUTPUT_CLAMP, "peak {peak} reaches the clamp");
   assert!(peak > 1e-3, "peak {peak} is silent");
   assert_eq!(renderer.voice_count(), 3); }
 
@@ -796,7 +797,7 @@ fn a_floor_of_one_keeps_an_ebow_note_growing_after_its_leg() {
   assert!(floored_late > floored_early,
           "floor 1: {floored_early} at 2.5 s, {floored_late} at 3 s");
   assert!(closed_late < closed_early, "floor 0: {closed_early} at 2.5 s, {closed_late} at 3 s");
-  assert!(floored_peak < 0.95, "floor 1: peak {floored_peak}"); }
+  assert!(floored_peak < OUTPUT_CLAMP, "floor 1: peak {floored_peak}"); }
 
 /// The drive saturates at its limit times the pedal's power: a wave
 /// far above the limit takes `k * drive_limit * pedal ^ e`, so a
@@ -931,7 +932,7 @@ fn the_bow_and_the_wind_stay_bounded_at_the_defaults() {
     println!("{kind:?} at the defaults, a pre-charged chord under a full pedal: peak {peak:.4} \
               over 3 s");
     assert!(rendered.iter().all(|sample| sample.is_finite()), "{kind:?}: not finite");
-    assert!(peak < 0.95, "{kind:?}: peak {peak}"); }}
+    assert!(peak < OUTPUT_CLAMP, "{kind:?}: peak {peak}"); }}
 
 /// A constant full pedal over the ex-ante leg pre-charges a two-loop
 /// 220 Hz voice with the same `A0` whatever the kind, and each kind's
@@ -1026,7 +1027,7 @@ fn the_howl_path_sustains_a_struck_note_and_stays_bounded() {
           "the howl did not sustain: {howl_at_1} at 1 s, {howl_at_3} at 3 s");
   assert!(plain_at_3 < plain_at_1, "without the howl the note did not decay");
   assert!(howled.iter().all(|sample| sample.is_finite()));
-  assert!(peak < 0.95, "the howl reached the clamp: peak {peak}"); }
+  assert!(peak < OUTPUT_CLAMP, "the howl reached the clamp: peak {peak}"); }
 
 /// At `howl.gain` 0 the howl path is off: it adds exactly 0 and
 /// stores nothing, so a render under any `level` and `delay_ms` is

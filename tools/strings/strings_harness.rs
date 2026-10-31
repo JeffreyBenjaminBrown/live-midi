@@ -671,10 +671,7 @@ fn write_mono_wav(
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  /// The output clamp of the strings engine: a sample at it was
-  /// clipped.
-  const CLAMP: f32 = 0.95;
+  use edo_surface::voices::OUTPUT_CLAMP;
 
   const TWO_PEDALS_RIG: &str = "two-pedals_monome";
 
@@ -700,7 +697,7 @@ mod tests {
     let rendered: Vec<f32> = render_scene(&scene, &rendering);
     assert!(rendered.iter().all(|sample| sample.is_finite()), "the squeal is finite");
     let peak: f32 = peak_magnitude(&rendered);
-    assert!(peak < CLAMP, "the squeal peaks at {peak}, at the clamp");
+    assert!(peak < OUTPUT_CLAMP, "the squeal peaks at {peak}, at the clamp");
     let frames_per_second: usize = rendering.sample_rate.round() as usize;
     let rise_seconds: f32 =
       scene.pedal2.as_ref().expect("the squeal scripts the channel 2 pedal").points[0].0;
@@ -725,7 +722,7 @@ mod tests {
         rendered.iter().all(|sample| sample.is_finite()),
         "{scene_name} is not finite");
       let peak: f32 = peak_magnitude(&rendered);
-      assert!(peak < CLAMP, "{scene_name} peaks at {peak}, at the clamp"); }}
+      assert!(peak < OUTPUT_CLAMP, "{scene_name} peaks at {peak}, at the clamp"); }}
 
   /// Without a rig, the channel 1 pedal is the energy pedal, as
   /// before pedal targets: 'pedal_swell' blooms louder than the same

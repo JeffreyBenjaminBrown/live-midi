@@ -759,7 +759,7 @@ still renders. Workspace suite green. The agent listens to
 container has them; otherwise reads the peak and RMS trace it
 prints) and records in its report what it heard or measured.
 
-** TODO Slice 6: organize, record, the two-question check
+** DONE Slice 6: organize, record, the two-question check
 *** Corrections carried from slice 5
 Slice 5 made 'rig::play_grids_sink' pub (the harness needs the
 sink's rate and amplitude too) and left two older lookups of

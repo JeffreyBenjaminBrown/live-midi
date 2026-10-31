@@ -60,7 +60,9 @@ both; the two types share no trait today.
 render a 'VoiceMap' in 128-frame blocks and both define a
 'finger_key'. The harness is a binary and the tests are
 '#[cfg(test)]', so sharing needs a public helper in
-'strings::scripted_voices'.
+'strings::scripted_voices'. Their RMS helpers are two as well
+('rms' in the harness's tests, 'rms_between' in the strings
+tests).
 
 * VoiceState construction and release
 ** Every 'VoiceState' constructor spells out all 27 fields
@@ -142,15 +144,17 @@ cross-thread word ('pedal_slide_frac', 'string_energy_position')
 is one more 'Arc' passed by hand from 'run'.
 The pedal positions are now one array, 'pedal_positions', a word
 per pedal, where 'string_energy_position' was one word more.
-*** The play grids' sink is found twice
-'resolve_settings' and 'rig::validate_string_energy_pedal' each
-find the first 'edo_note_grid' and look up its sink. A
-'Rig::play_grids_sink' would be the one rule.
 ** 'validate_rig' checks a cpal_synth's stream by itself
 'rig::validate_sink_stream' now serves the 'cpal_sampler' and
 'cpal_strings' sinks; the 'cpal_synth' arm still checks its
 sample rate, buffer and amplitude inline, interleaved with its
 own keys.
+** A pedal role is spelled twice
+'PedalRole' takes its rig spelling from
+'serde(rename_all = "snake_case")', and 'PedalRole::rig_spelling'
+(plan 04) spells every role again by hand for messages. A new
+role must be added to both, and nothing checks that they agree;
+a test deserializing each 'rig_spelling' back to its role would.
 
 * Names in the strings engine that deserve a decision
 ** "String voice" means two things
@@ -194,6 +198,15 @@ words.
 ** "Member" is not in the plan's vocabulary
 "Junction member" (a loop, or a whole modal voice) entered with
 the modal voice; it has one meaning throughout the code.
+** "Pedal target" and 'PedalTarget' are two things
+Plan 04's pedal target is a (parameter, min, max) triple
+('PedalTargetRig', 'StringsPedalTarget', 'pedal_targets'); the
+older 'settings::PedalTarget' is what a pedal's role drives (a
+grid, every grid, the energy). 'LiveParams' holds both, as
+'expression_pedals' and 'pedal_targets', and
+'PedalTarget::StringParameters' binds the pedal whose only job
+is its pedal targets. The plan kept the old name; a rename of
+'PedalTarget' (to 'PedalBinding', say) would end the clash.
 
 * Open listening questions
 ** Sympathy is gentle at the default heaviness 3000

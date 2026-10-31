@@ -169,10 +169,9 @@ pub struct ResolvedStringsPedals {
 /// Resolves a rig's pedals against the play sink's parameters: each
 /// pedal's targets, in rig order, into its channel's row, and the
 /// channel of its 'string_energy' pedal. 'resolve_settings' calls this
-/// for the live parameters and the harness for its render, so the two
-/// cannot disagree. The rig's validation ('validate_pedal_targets'
-/// in 'rig.rs') refuses everything that fails here first; the error
-/// is for a rig built without it.
+/// for the live parameters, the harness for its render, and the rig's
+/// validation ('validate_pedal_targets' in 'rig.rs') to refuse at
+/// load what would fail here, so the three cannot disagree.
 pub fn resolve_strings_pedals(
   rig: &Rig,
   sink_params: &StringsParams,
@@ -258,11 +257,13 @@ fn not_targetable_message(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::rig::rig_dir;
   use crate::strings::params::{
     BodyParams, BridgeParams, EnergyParams, ExciterParams, HowlParams, ModalParams, StringParams,
   };
   use std::cell::RefCell;
   use std::collections::HashSet;
+  use std::fs;
 
   /// No pedal's targets, every pedal unreported.
   fn no_targets(
@@ -405,4 +406,36 @@ mod tests {
     assert!(error.contains("body.q") && error.contains("rebuilds a table"), "{error}");
     for (key, _) in TARGETABLE_PARAMETERS {
       assert!(error.contains(key), "{error}"); }}
+
+  /// 'rigs/README.org' quotes 'TARGETABLE_PARAMETERS' under "Pedal
+  /// targets": the '- ' lines after the one ending "one line per
+  /// table:" are the list's keys, in its order, one line per table,
+  /// each key between tildes.
+  #[test]
+  fn the_rig_readme_quotes_the_targetable_list() {
+    let readme: String = fs::read_to_string(rig_dir().join("README.org"))
+      .expect("rigs/README.org reads");
+    let quoted_lines: Vec<&str> = readme.lines()
+      .skip_while(|line| !line.ends_with("one line per table:"))
+      .skip(1)
+      .take_while(|line| line.starts_with("- "))
+      .collect();
+    assert_eq!(quoted_lines, targetable_parameters_one_line_per_table()); }
+
+  /// 'TARGETABLE_PARAMETERS' as the rig README quotes it: an org list
+  /// item per table, its keys between tildes, joined by commas. A
+  /// table whose keys are not adjacent in the list fails here.
+  fn targetable_parameters_one_line_per_table(
+  ) -> Vec<String> {
+    let mut tables: Vec<(&str, Vec<String>)> = Vec::new();
+    for (key, _) in TARGETABLE_PARAMETERS {
+      let (table, _): (&str, &str) = key.split_once('.').expect("a key is 'table.field'");
+      match tables.last_mut() {
+        Some((last_table, keys)) if *last_table == table => keys.push(format!("~{key}~")),
+        _ => {
+          assert!(
+            tables.iter().all(|(earlier_table, _)| *earlier_table != table),
+            "the {table} keys are not adjacent in 'TARGETABLE_PARAMETERS'");
+          tables.push((table, vec![format!("~{key}~")])); }}}
+    tables.iter().map(|(_, keys)| format!("- {}", keys.join(", "))).collect() }
 }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::strings::params::{
   BodyParams, BridgeParams, EnergyParams, ExciterParams, HowlParams, ModalParams, StringParams,
 };
-use crate::strings::pedal_targets::{resolve_pedal_target, MAX_PEDAL_TARGETS};
+use crate::strings::pedal_targets::resolve_strings_pedals;
 use crate::strings::scripted_voices::RELEASE_SECS;
 use crate::strings::StringsParams;
 
@@ -2430,8 +2430,7 @@ fn validate_rig_wide_strings_pedal(
     .ok_or(format!(
       "expression pedal (channel {channel}) is a {role} pedal, but the rig has no \
        edo_note_grid"))?;
-  let play_sink: &SinkRig = rig.sinks.iter()
-    .find(|sink| sink.id() == play_sink_id)
+  let play_sink: &SinkRig = play_grids_sink(rig)
     .ok_or(format!("the play grids' sink {play_sink_id:?} is not declared"))?;
   match play_sink {
     SinkRig::CpalStrings { .. } => Ok(( )),
@@ -2455,11 +2454,12 @@ fn play_grids_sink_id(
 /// at 'r' with the old parameters still playing: only a `string_energy` or
 /// `string_parameters` pedal carries them (a volume role's position passes through its
 /// taper, and a target wants the raw one); a `string_parameters` pedal carries at least
-/// one; no pedal carries more than `MAX_PEDAL_TARGETS`; a parameter is targeted at most
-/// once across the rig's pedals (which would win is a question nobody should answer);
-/// and each target resolves against the play sink's parameters
-/// (`resolve_pedal_target`). Runs after `validate_expression_pedals`, which put both
-/// strings roles over a `cpal_strings` play sink.
+/// one; a parameter is targeted at most once across the rig's pedals (which would win
+/// is a question nobody should answer); and the rig's pedals resolve as the runtime
+/// and the harness resolve them (`resolve_strings_pedals`: no pedal carries more than
+/// `MAX_PEDAL_TARGETS`, and each target resolves against the play sink's parameters).
+/// Runs after `validate_expression_pedals`, which put both strings roles over a
+/// `cpal_strings` play sink.
 fn validate_pedal_targets(
   rig: &Rig,
 ) -> Result<(), String> {
@@ -2481,15 +2481,6 @@ fn validate_pedal_targets(
       return Err(format!(
         "expression pedal (channel {channel}): a string_parameters pedal with no targets \
          does nothing")); }
-    if pedal.targets.len() > MAX_PEDAL_TARGETS {
-      return Err(format!(
-        "expression pedal (channel {channel}) carries {} targets; a pedal carries at most \
-         {MAX_PEDAL_TARGETS}",
-        pedal.targets.len())); }
-    let sink_params: StringsParams = play_grids_strings_params(rig)
-      .ok_or(format!(
-        "expression pedal (channel {channel}) carries targets, but the play grids' sink \
-         is not a cpal_strings sink"))?;
     for target in &pedal.targets {
       if let Some(earlier_channel) =
         targeted_parameters.insert(target.parameter.as_str(), channel) {
@@ -2501,9 +2492,12 @@ fn validate_pedal_targets(
         return Err(format!(
           "pedal target {:?} is given {where_given}; a parameter takes at most one target \
            across the rig",
-          target.parameter)); }
-      resolve_pedal_target(target, &sink_params)
-        .map_err(|error| format!("expression pedal (channel {channel}): {error}"))?; }}
+          target.parameter)); }}}
+  if targeted_parameters.is_empty() {
+    return Ok(( )); }
+  let sink_params: StringsParams = play_grids_strings_params(rig)
+    .ok_or("pedal targets need the play grids' sink to be a cpal_strings sink")?;
+  resolve_strings_pedals(rig, &sink_params)?;
   Ok(( )) }
 
 /// The play grids' sink's strings parameters; `None` without a play grid, or when its
@@ -2514,8 +2508,8 @@ fn play_grids_strings_params(
   play_grids_sink(rig)?.strings_params() }
 
 /// The sink the play grids play into (the first `edo_note_grid`'s); `None` without a
-/// play grid, or when that sink is undeclared. The strings harness renders with it, so
-/// the harness and the pedal targets' validation read one sink.
+/// play grid, or when that sink is undeclared. `resolve_settings`, the strings pedals'
+/// validation and the strings harness all find it here, so they read one sink.
 pub fn play_grids_sink(
   rig: &Rig,
 ) -> Option<&SinkRig> {
@@ -3703,7 +3697,7 @@ fn require_ref(label: &str, value: &str, valid: &HashSet<&str>) -> Result<(), St
 mod tests {
   use super::*;
   use crate::strings::params::{EnergyKind, ExciterKind};
-  use crate::strings::pedal_targets::TARGETABLE_PARAMETERS;
+  use crate::strings::pedal_targets::{MAX_PEDAL_TARGETS, TARGETABLE_PARAMETERS};
 
   #[test]
   fn loads_default_rigs() {
