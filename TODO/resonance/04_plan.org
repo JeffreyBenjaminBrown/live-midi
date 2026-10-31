@@ -1,0 +1,733 @@
+#+title: Plan: pedal targets, and the two-pedal strings rig
+
+* Assignment and authority
+This plan is the executable form of what Jeff asked for on
+2026-10-31 after playing 'energy-pedal_monome': that an
+expression pedal may be assigned not to one role but to any
+number of (parameter, min, max) triples, each its own org
+headline under which he can write what he likes; that a second
+pedal should push the strings into feedback, "like a guitar
+close to an amp"; and that this lands in a new rig beside the
+one he is tuning, which this plan does not touch. Nothing here
+is open for discussion. The run follows 'coding-advice/
+orchestration.org': one Opus 5.5 agent per slice at high
+effort, the orchestrator (Claude Fable) reviewing each slice
+and keeping the record in '05_review.org'. The target state:
+** A pedal may carry targets
+Under a pedal's 'ELEM expression_pedals', any number of
+'ELEM targets' headlines, each with 'PARAM parameter',
+'PARAM min' and 'PARAM max', and any prose. The rig format
+already nests them this way ('rig_org.rs'); no syntax changes.
+** The channel 1 pedal is the energy pedal and sets the pluck
+Its role stays 'string_energy'; its one target is
+'exciter.pick_energy', so the heel is a soft pluck and the toe a
+hard one, while its history and window do what they do now.
+** The channel 2 pedal brings on the squeal
+A pedal of the new role 'string_parameters' with targets on the
+howl path and the bridge: at the heel the rig sounds exactly as
+without it, at the toe every note sustains and brightens.
+** Everything hot-reloads
+A target added, removed or re-ranged in the rig applies at the
+next 'r' Enter, through the pedal's current position.
+** No square dance
+When a note is sustained through its handle, the four cells
+diagonal to it start flashing in a circle (the "square dance",
+'surfaces_runtime/dance.rs'). Jeff does not want it on this
+rig: a grid gains a key to turn it off.
+** The rig 'two-pedals_monome'
+A copy of Jeff's 'energy-pedal_monome' with its pedal section
+rewritten and the square dance off, and a readme. His rig and
+its readme are not edited.
+
+* Commits
+Each slice ends with one or a few git commits, each naming this
+plan and the slice ("plan 04, slice 2: ...") in its title line.
+The slice's last commit also marks the slice headline here DONE
+and carries the slice's docs. Messages follow
+'coding-advice/commit-messages.org': a title, and a detail only
+when the changes are disparate or the codebase does not already
+describe them. Every commit ends with the line
+'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'.
+Agents commit only files the slice touched. The untracked
+'coding-advice/', 'docker-typedb-rust/' and 'run.sh' are Jeff's
+and are never added. 'rigs/energy-pedal_monome.org',
+'README_USER.org' and 'TODO.org' are dirty with Jeff's own edits before the run
+begins, and 'rigs/energy-pedal_monome_not-nasal.org' is an
+untracked rig of his; none of the four is edited, added or
+committed by any slice.
+'TODO/resonance/05_review.org' is the orchestrator's.
+
+* Scope
+** In
+*** Pedal targets
+A rig-level notion: an expression pedal carries a list of
+targets, each naming one float parameter of the strings engine
+and the values it takes at the heel and at the toe. The engine
+renders with the rig's parameters overridden by every target
+whose pedal has reported.
+*** The role 'string_parameters'
+A pedal whose only job is its targets.
+*** Per-channel pedal positions
+The pedal thread publishes every pedal's raw position, one
+atomic per MPC-20 channel; the audio callback reads what the
+live parameters say each one means. This replaces the single
+'string_energy_position' word.
+*** The knock scaled at birth
+So that 'exciter.pick_energy' and 'exciter.knock_mix' can move
+at pedal rate without rebuilding the knock table.
+*** 'body.mix' live
+So that it can be a target without rebuilding the bank.
+*** The energy window's floor
+A new energy parameter: the level the ex-post leg ramps down
+to, instead of always 0.
+*** The harness renders both pedals and the rig's targets
+*** The grid key 'square_dance'
+*** The rig 'two-pedals_monome', its readme, user docs
+** Out
+Targets on integer or enum parameters; targets on parameters
+whose change rebuilds a table (listed under "Agreed behavior");
+per-target tapers or exponents (linear in the raw position
+only; Jeff asked for triples); pedal toggles for the new role;
+any change to 'rigs/energy-pedal_monome.org' or its readme;
+the sawwave engine's parameters as targets; everything in
+'TODO/problems.org' except what the slices touch in passing.
+
+* Vocabulary
+Terms coined or fixed by this plan. Code, docs and rig keys use
+these words and no synonyms. The words of '02_plan.org' (string
+voice, loop, junction, body, knock, exciter, energy pedal,
+energy window, howl path, harness) keep their meanings.
+** Pedal target
+One (parameter, min, max) triple on an expression pedal: the
+rig's 'ELEM targets' under an 'ELEM expression_pedals'. In
+code, 'PedalTargetRig' in the rig and 'StringsPedalTarget'
+resolved. Not to be confused with the existing
+'settings::PedalTarget', which names what a pedal's role drives
+(a grid, every grid, the energy); this plan renames nothing
+there.
+** Target parameter
+The strings parameter a pedal target names, spelled as the
+sink's validation messages already spell it: the table and the
+key, 'howl.gain', 'exciter.pick_energy', 'bridge.heaviness'.
+** Targetable
+A strings parameter that may be a target parameter: a float
+whose change the engine applies without rebuilding a table.
+The one list is 'strings/pedal_targets.rs'.
+** Pedal position
+A pedal's raw normalized position in [0, 1], 0 at the heel, 1
+at the toe, as 'expression_pedals::Pedal::norm' reports it. NaN
+means the pedal has never reported.
+** Effective parameters
+The 'StringsParams' the engine renders a block with: the live
+parameters with every target of every reported pedal applied.
+** The parameters pedal
+A pedal of role 'string_parameters'. Rig-wide, like the energy
+pedal.
+** Square dance
+The codebase's existing name ('dance.rs') for the single dim
+cell that circles a sustained note's four diagonal neighbours.
+The diamond dance is its twin for an edited note, at the four
+orthogonal neighbours; this plan leaves the diamond alone.
+
+* Agreed behavior
+** The rig
+*** The schema
+'ExpressionPedalRig' gains 'targets: Vec<PedalTargetRig>',
+serde default empty. 'PedalTargetRig { parameter: String, min:
+f32, max: f32 }' with 'deny_unknown_fields'. In org:
+  #+begin_example
+  *** ELEM expression_pedals
+  **** PARAM channel = 2
+  **** PARAM role = "string_parameters"
+  **** ELEM targets
+  ***** PARAM parameter = "howl.gain"
+  ***** PARAM min = 0.0
+  ***** PARAM max = 20.0
+  Any prose here is ignored by the loader.
+  **** ELEM targets
+  ***** PARAM parameter = "howl.level"
+  ***** PARAM min = 0.003
+  ***** PARAM max = 0.006
+  #+end_example
+'rig_org.rs' already turns a nested 'ELEM targets' into the
+pedal's 'targets' array (its frame stack closes by org depth,
+and grouping headlines are transparent); a test in slice 1
+asserts it for this exact shape, including a grouping headline
+between the pedal and its targets and prose under a target.
+*** The role
+'PedalRole::StringParameters' ('role = "string_parameters"').
+Rig-wide like 'string_energy': it names no 'monome', takes none
+of the taper knobs, and needs a 'cpal_strings' sink under the
+play grids. Unlike the energy pedal, a rig may have one per
+channel. It must have at least one target; a parameters pedal
+without targets is refused ("a string_parameters pedal with no
+targets does nothing").
+*** Which pedals may carry targets
+Any pedal in role 'string_energy' or 'string_parameters'. A
+pedal in a volume role with targets is refused, naming the two
+roles that take them: the volume roles' positions pass through
+a taper, and a target wants the raw position.
+*** Validation of a target
+Each is checked when the rig loads, so a typo fails at 'r' with
+the rig's old parameters still playing, never mid-performance:
+**** The parameter must be targetable
+Otherwise the error names the parameter and lists every
+targetable one.
+**** The same parameter at most once across the rig's pedals
+Two pedals, or two targets of one pedal, on one parameter are
+refused: which would win is a question nobody should answer.
+**** min and max must each be legal values
+The whole 'StringsParams' with that parameter set to 'min' must
+pass 'StringsParams::validate', and so must it with 'max'. Every
+validated range is an interval and the one coupled constraint
+(the strike's span in periods) is monotone in its float, so
+every position between is legal too. 'min' above 'max' is
+allowed and inverts the pedal. 'min' equal to 'max' is allowed
+and pins the parameter (a way to try a value without editing
+the sink).
+** The runtime
+*** Per-channel positions
+'mod.rs' makes 'pedal_positions: Arc<[AtomicU32; NUM_PEDALS]>',
+each NaN bits. The pedal thread stores pedal 'i''s 'norm' into
+slot 'i' whenever 'updates > 0', for every pedal in the reader
+whatever its role or whether the rig binds it; a slot never
+returns to NaN once set (a reload cannot un-report a pedal, and
+what the position means is the live parameters' business). The
+single 'string_energy_position' and its NaN-on-unbound rule go.
+*** What the live parameters carry
+'LiveParams' gains 'pedal_targets: [[Option<StringsPedalTarget>;
+MAX_PEDAL_TARGETS]; NUM_PEDALS]' and 'string_energy_pedal:
+Option<usize>' (the channel index of the energy pedal, 'None'
+without one). 'MAX_PEDAL_TARGETS' is 16, enough for every
+targetable parameter at once on one pedal; validation refuses
+more per pedal. 'LiveParams' stays 'Copy'.
+*** 'StringsPedalTarget'
+'Copy': the parameter's key as '&'static str' (for messages and
+tests), its setter 'fn(&mut StringsParams, f32)', 'min', 'max'.
+Resolved from a 'PedalTargetRig' by 'strings/pedal_targets.rs'.
+*** Effective parameters each callback
+In 'audio.rs', after reading 'p.strings', the callback reads
+each slot of 'pedal_positions' and applies every target of the
+pedals that have reported: 'value = min + (max - min) *
+position', 'setter(&mut params, value)'. A pedal that has never
+reported leaves its targets' parameters at the rig's values.
+The energy pedal's position is slot 'string_energy_pedal', NaN
+when 'None'. The function that does this,
+'strings::pedal_targets::apply_pedal_targets(params, targets,
+positions) -> StringsParams', is pure, so the harness and the
+tests call the same one.
+*** The engine adopts the effective parameters as it does now
+'StringsRenderer::render_block' already compares the parameters
+it is handed with the last ones and adopts a change
+('adopt_params'). A moving pedal therefore retunes every voice
+each block when it targets a 'string' key, reconfigures the
+junction for a 'bridge' key and the howl for a 'howl' key, and
+reaches notes born afterward for an 'exciter' or 'energy' key.
+No new path into the engine.
+*** Hot reload
+'reload::live_params' resolves the targets and the energy
+channel from 'Settings'; 'adopt_rig' replaces them with the
+rest. A reload that removes a pedal's targets leaves the rig's
+values in force from the next callback; one that adds targets
+applies them through the position already in the slot.
+** The engine
+*** The knock is scaled at birth
+'exciter::knock_table' returns the body's windowed, lowpassed
+impulse response normalized to unit energy (sum of squares 1),
+and depends on 'exciter.brightness', 'exciter.knock_ms' and the
+body alone. 'ExcitationStream' gains a 'knock_scale: f32' set at
+birth to 'knock_mix * pick_energy' and multiplies the knock
+sample by it. 'adopt_params' rebuilds the knock only when those
+three inputs change (compare the fields, not the struct). The
+rendered attack is unchanged to within f32 rounding; a test
+renders a struck note before and after the change at the
+defaults and asserts the peak and the energy within 1e-4
+relative. 'knock_mix' 0 is still an empty knock.
+*** 'body.mix' is live
+'BodyBank' gains 'set_mix'; 'adopt_params' calls it when only
+'mix' changed and rebuilds the bank only when 'mode_count',
+'lowest_hz', 'highest_hz', 'q' or 'seed' changed. The knock
+rebuild follows the same five fields.
+*** The energy window's floor
+'EnergyParams' gains 'ex_post_energizing_floor: f32', unitless
+in [0, 1], default 0, validated in that range, rig key
+'energy.ex_post_energizing_floor'. 'energy::tri' on the ex-post
+leg becomes 'floor + (1 - floor) * (1 - t / ex_post)' for 't' in
+'(0, ex_post]' and 'floor' after it, so that with a floor above
+0 the window never closes on the ex-post side: the drive goes on
+at 'floor * pedal ^ e' for as long as the note sounds and the
+pedal is down. 'tri' takes the floor as an argument; the ex-ante
+leg and the value 1 at birth are unchanged, so the pre-charge
+('precharge_amplitude') is unaffected. 'ex_post_energy_factor'
+keeps returning 0 when the triangle is 0 (floor 0 after the leg,
+as today). At the default of 0 every existing test and render
+is unchanged. The ebow's rate at factor 'f' is already 'f *
+growth_rate_per_second_max - (1 - f) * natural_decay_rate', so a
+floor above 'decay / (growth_max + decay)' makes a held-pedal
+note grow to its limit instead of settling; the rig's text for
+the key says so. A voice keeps the energy parameters of its
+birth, so a changed floor reaches notes struck afterward.
+*** The targetable parameters
+Exactly these, as 'strings/pedal_targets.rs' lists them; the
+list is the one source and the rig README quotes it:
+'string.t60_seconds_at_55hz', 'string.t60_seconds_at_1760hz',
+'string.high_frequency_hz', 'string.high_frequency_t60_ratio',
+'string.unison_detune_cents', 'string.inharmonicity_b_at_55hz',
+'string.inharmonicity_b_at_1760hz', 'exciter.pick_energy',
+'exciter.position', 'exciter.hammer_contact_fraction',
+'exciter.knock_mix', 'energy.ex_ante_energizing_ms',
+'energy.ex_post_energizing_ms',
+'energy.ex_post_energizing_floor', 'energy.pedal_energy_exponent',
+'energy.growth_rate_per_second_max', 'energy.drive_limit',
+'energy.precharge_gain', 'energy.bow_velocity',
+'energy.bow_slipperiness', 'energy.wind_speed_hz_max',
+'energy.wind_q', 'energy.wind_gain', 'bridge.heaviness',
+'bridge.damping_hz', 'body.mix', 'howl.gain', 'howl.level',
+'howl.delay_ms', 'modal.crossover_hz'. Not targetable, and
+refused by name: every integer and enum key, and
+'exciter.brightness', 'exciter.knock_ms', 'body.lowest_hz',
+'body.highest_hz', 'body.q' (each rebuilds a table; the body's
+rebuild also measures its normalization on a second of noise).
+A test asserts that every float field of 'StringsParams' is
+either in the list or in the refused list, by setting each
+through the list and comparing with a hand-set struct, so a
+field added later must be placed.
+** The square dance is a grid knob
+'edo_note_grid' gains 'square_dance: bool', serde default
+true, beside 'flash_sustained'. False means this grid never
+draws the square dance for its sustained pitches (chord voices
+included, since they share the loop in 'mod.rs'). The diamond
+dance, the off-screen indicator and 'flash_sustained' are not
+affected. Every existing rig behaves as before (the default is
+the current behavior). The new rig sets it false on both grids.
+** The harness
+'--pedal TRACE' keeps its meaning (the channel 1 pedal; the
+energy pedal when the rig binds one there) and '--pedal2 TRACE'
+is the channel 2 pedal. The harness resolves the rig's pedal
+targets and energy channel the way 'reload::live_params' does
+(a shared function in 'surfaces_runtime' or in 'strings', the
+agent's choice, as long as there is one) and applies them per
+block through 'apply_pedal_targets'. Without '--rig' there are
+no targets. A new scene 'squeal': the 'chord' scene's four
+notes struck and held, the channel 2 pedal rising from 0 at 1 s
+to 1 at 3 s and held to 6 s; rendered under 'two-pedals_monome'
+it must grow after the pedal rises and stay below the clamp.
+** The rig 'two-pedals_monome'
+*** Derivation
+A copy of 'rigs/energy-pedal_monome.org' as it stands in the
+working tree when slice 5 starts (Jeff's arrangement, his
+values), with: 'id = "two-pedals_monome"', a title naming the
+two pedals, the "pedal connection" section rewritten as below,
+the 'TODO jeff' headline about role options removed (this plan
+answers it), and 'square_dance = false' added under each grid
+beside its 'flash_sustained', with one sentence saying what it
+turns off. The agent copies the file; it does not re-derive it
+from the committed version.
+*** The pedals
+**** Channel 1: 'string_energy', one target
+'exciter.pick_energy' from 0.15 to 0.8, with prose: the heel is
+a soft pluck under a note that then blooms from the pedal's
+history; the toe is a hard pluck. The energy table's
+'pedal_energy_exponent' still shapes the energy, not the pluck,
+which is linear in the travel.
+**** Channel 2: 'string_parameters', four targets
+'howl.gain' 0 to 20 (off at the heel; at 20 every note
+sustains, per the rig's own documentation of the key);
+'howl.level' 0.003 to 0.006 (a louder settle as the pedal
+rises; the rig's text says 0.01 nears the clamp); 'bridge.
+heaviness' from the sink's value to one tenth of it (more
+sympathy as it squeals, the trade documented beside the key);
+'string.high_frequency_t60_ratio' from the sink's value to 0.9
+(the tail brightens as the amp takes over). Each target's
+headline carries one or two sentences of why. The agent
+listens to the 'squeal' harness scene and may move 'howl.level'
+and the heaviness floor within the rig's documented useful
+ranges if the squeal clips or fails to start, recording the
+numbers it chose in its report.
+*** The energy table
+Gains 'PARAM ex_post_energizing_floor = 0.0' beside
+'ex_post_energizing_ms', documented as every parameter there
+is: units and range, purpose (a floor above 0 keeps the pedal
+feeding a note for as long as it sounds), the math (the triangle
+with the floor, and the growth threshold under "The energy
+window's floor"), and the trade (sustained notes under a held
+pedal never die on their own).
+*** Both grids
+Unchanged from the copy: the two 'edo_note_grid's, their sustain
+handles and buttons, the shift pads.
+*** The readme
+'rigs/two-pedals_monome_readme.org' from the energy-pedal
+readme's shape, with a section per pedal and a section "Giving a
+pedal other parameters" that shows the triple form and points
+to the README's list of targetable parameters.
+** User documentation
+'rigs/README.org' under "Expression pedals": a paragraph "Pedal
+targets" with the org shape, the two roles that take them, the
+validation rules above, and the targetable list quoted from
+'pedal_targets.rs' (one line per table). 'rigs/README.org'
+"Output sinks" if it mentions the energy pedal alone.
+'README_USER.org' and 'ORIENTATION.org' where they list rigs
+or pedal roles.
+** What stays as it is
+*** Every 'cpal_synth' rig behaves as before
+The volume roles, their tapers, pedal slide and the unity-
+before-first-CC rule do not change. The pedal thread's volume
+paths read 'p.norm' as now; only the publishing of positions is
+added beside them.
+*** The energy pedal
+Its history, window, pre-charge and drive are untouched. Its
+position reaches the engine through a slot instead of its own
+word; a test asserts the engine sees the same positions.
+*** The engine's output at the defaults
+With no pedal targets and the knock change, a struck note
+renders within 1e-4 relative of before (the test above).
+*** 'rigs/energy-pedal_monome.org' and its readme
+Not edited by any slice. They keep working as they are: a
+pedal without 'targets' is a pedal as before.
+*** Default behaviors Jeff sees
+Sustain via the handle, the three sustain buttons, the shift
+pad, 'r' reload, the red report for missing gear and the pedal
+bridge requirement all behave as the energy-pedal readme
+describes.
+
+* Pitfalls the slices must respect
+Facts about the existing code, with where they live. Read from
+the code on 2026-10-31 at commit 7e11bc9.
+** 'LiveParams' is 'Copy' and read under a mutex every callback
+'surfaces_runtime/reload.rs' line 114 holds 'strings:
+Option<StringsParams>'; 'settings.rs' line 113 holds
+'expression_pedals: [Option<(PedalTarget, PedalVolumeCurve)>;
+NUM_PEDALS]', a fixed array because the struct is 'Copy'. The
+targets go in as fixed arrays too. 'reload::live_params' copies
+'Settings' field by field (nineteen fields; 'TODO/problems.org'
+notes it): a new live field is added in 'Settings', 'LiveParams'
+and 'live_params'.
+** Three readers of the pedal map, two writers of the position
+The pedal map 'LiveParams.expression_pedals' is read by
+'pedal_volume::expression_pedal_loop' (line 194, each poll) and
+by nothing else; 'string_energy_position' is written there
+(lines 198-212) and read in 'audio.rs' line 103 only; 'mod.rs'
+line 297 creates it and passes it to both 'audio::start' (line
+45 of 'audio.rs') and the pedal thread (line 526 of 'mod.rs').
+'reload.rs' tests (line 403) assert the energy pedal resolves
+to 'PedalTarget::StringEnergy'. Replacing the word touches all
+five places and nothing else; grep 'string_energy_position'
+before and after.
+** The pedal thread polls; it does not get callbacks
+'expression_pedal_loop' loops on 'reader.pedals()' (a copy of
+both pedals' state) with a sleep, and 'p.updates == 0' is the
+never-reported test. Publishing positions is one store per
+pedal per poll, cheap enough to do unconditionally.
+** 'resolve_settings' maps roles to targets with 'filter_map'
+'settings.rs' lines 601-618: a pedal whose monome does not
+resolve is silently dropped ('some_grid?'). A parameters pedal
+has no monome and must not be dropped; give it its own
+'PedalTarget' variant ('StringParameters') so the volume paths'
+match stays exhaustive and skips it as they skip 'StringEnergy'.
+** Pedal validation lives in two functions
+'rig.rs' 'validate_expression_pedals' (line 2212) walks the
+pedals, checks channels and monomes, and 'continue's for the
+energy role after 'validate_string_energy_pedal' (line 2338),
+which also finds the play grids' sink. The parameters role
+takes the same branch with the same helper generalized (the
+"at most one" rule applies to the energy role only). The
+targets' checks go in a sibling 'validate_pedal_targets(rig)'
+run from 'validate_rig' (line 1932), since the "same parameter
+at most once" rule spans pedals. 'validate_pedal_toggles' (line
+2396) already refuses the energy role in a toggle; refuse the
+new role beside it.
+** 'ExpressionPedalRig' has 'deny_unknown_fields'
+'rig.rs' line 149. A 'targets' field must be declared there or
+every rig with a target fails to parse. 'PedalRole' derives
+'Default' as 'GridVolume' (line 187); the three rigs that omit
+'role' rely on it, so the default stays.
+** 'adopt_params' compares whole tables
+'strings/renderer.rs' lines 176-197: 'params.body !=
+previous.body' rebuilds the bank and the knock, 'params.exciter
+!= previous.exciter' rebuilds the knock. 'BodyBank::new' (body.rs
+line 78) measures its normalization on seconds of white noise:
+far too costly per block. The field-wise comparisons under "The
+engine" replace these two.
+** The knock table bakes in 'pick_energy' and 'knock_mix'
+'strings/exciter.rs' line 84: 'scale = knock_mix * pick_energy /
+energy.sqrt()'. 'ExcitationStream::next_sample' (voice.rs line
+435) adds the knock sample unscaled. 'StringVoice::new' and
+'ModalVoice::new' both take the knock 'Arc'; both get the scale.
+The pre-charge adds into the dry table only
+('add_into_dry_table', line 454) and is unaffected.
+** The dry table is built per note at birth
+'renderer.rs' line 230: 'dry_table(&self.params.exciter,
+voice.freq, ...)' in 'spawn_struck'. So 'pick_energy',
+'position' and 'hammer_contact_fraction' already take effect at
+the next note with no rebuild; only the knock stood in the way.
+** 'retune' keeps the wave in flight
+'loop_dsp.rs' line 129: a retune recomputes coefficients and
+keeps the delay line and filter states; only a dispersion
+section that joins the chain starts from rest. So a pedal on a
+'string' key retunes every voice every block it moves without
+a click. 'ModalVoice::retune' (modal.rs) likewise. 'Junction::
+reconfigure' (junction.rs) keeps the lowpass state; 'HowlPath::
+reconfigure' (howl.rs) keeps the ring unless the path was off,
+and its ring is sized for 'MAX_HOWL_DELAY_MS', so 'delay_ms'
+moves without allocating.
+** The energy parameters are a voice's at birth
+'renderer.rs' comment above 'adopt_params': "a voice keeps the
+energy parameters of its birth". A target on an 'energy' key
+therefore shapes the next note, not the sounding one. The rig
+README says so in the targets paragraph.
+** The harness builds its own render loop
+'tools/strings/strings_harness.rs' lines 460-490 render blocks
+with one pedal trace; 'rendering_from' (line 296) loads the rig
+and takes the first strings sink's params. The targets and the
+second pedal go into 'Rendering' and the loop; the harness
+cannot see 'surfaces_runtime' private items ('pub(super)'), so
+whatever it shares with 'reload::live_params' must be 'pub' in
+'edo_surface'.
+** Every rig in 'rigs/' is loaded by a test
+'rig.rs' line 3563 'loads_default_rigs' loads every '.org' and
+'.toml' there except readmes. The new rig is swept the moment it
+exists; it must validate. 'surfaces_runtime/tests.rs' line 2607
+runs 'energy-pedal_monome' through the mock grids; the new rig
+gets the same run (copy the test's shape, not its body, if the
+cells are the same; one helper parameterized by rig name is
+better).
+** Mock-grid tests serialize
+'tests.rs' holds 'MOCK_LOCK'; a mock-run test takes it. Two
+full 'cargo test' runs at once collide on ports; run the suites
+one at a time.
+** The square dance is gated by 'Overlays::compact()' alone
+'surfaces_runtime/mod.rs' line 1165: 'if !rt.overlays.compact()'
+around the loop that inserts 'dance::diagonal_cell' for every
+sustained and chord pitch. 'compact()' ('settings.rs' line 118)
+is true for grids with a 'volume_delta', 'momentary_chord_block'
+or 'compact_loop_block'; the new rig has none, so today nothing
+can turn the dance off there. A grid knob reaches that line the
+way 'flash_sustained' does: 'MonomeWindowRig::EdoNoteGrid'
+('rig.rs' line 868), 'GridSettings' ('settings.rs' lines 143 and
+550-578, where the grid's fields are pulled from the rig),
+'GridThread''s knobs ('mod.rs' lines 641 and 854), the gate. The
+'rigs/README.org' documents 'flash_sustained' at lines 370, 428
+and 448; the new key goes beside it in all three places.
+** 'rig_org.rs' closes frames by depth
+Lines 69-92: a headline closes every open frame not shallower
+than it, then opens its own if it is a TABLE or ELEM. An 'ELEM
+targets' under a grouping headline under the pedal still
+attaches to the pedal, since grouping headlines open no frame.
+A test must pin this for the targets shape so a later change to
+the reader cannot silently flatten them.
+** Formatting and naming rules
+'coding-advice/formatting.org' (types on every 'let', signature
+lines, old-style 'mod.rs', brackets on the closing line, single
+apostrophes in org) and 'names.org' (long names, no gratuitous
+renames). 'string_energy_position' is removed, not renamed: it
+stops existing as a word because positions are per channel.
+** The test suite
+'cargo test -p edo_surface' (749 tests at 7e11bc9, about 40 s
+warm) and 'cargo test --workspace' (981) are the suites. Run
+one at a time. 'cargo build --workspace' is warm.
+
+* Code map
+** Existing, read before changing
+'edo_surface/src/rig.rs' (the pedal rig types at 147-205, the
+sink at 736, 'validate_rig' at 1932, pedal validation
+2212-2395, toggles 2396, the rig sweep 3563);
+'edo_surface/src/rig_org.rs' (the whole reader, 330 lines);
+'edo_surface/src/surfaces_runtime/settings.rs' (PedalTarget
+251, resolve 590-660); 'reload.rs' (LiveParams 100-150,
+'live_params', 'adopt_rig', the tests at 220-426); 'audio.rs'
+(the closure 85-120); 'pedal_volume.rs' (the loop 150-300);
+'mod.rs' (280-335 the atomics, 505-545 the thread spawn);
+'edo_surface/src/expression_pedals.rs' ('Pedal', 'NUM_PEDALS');
+'edo_surface/src/strings/{params,renderer,exciter,voice,modal,
+body}.rs'; 'tools/strings/strings_harness.rs';
+'rigs/energy-pedal_monome.org', its readme, 'rigs/README.org'
+1020-1130.
+** New
+'edo_surface/src/strings/pedal_targets.rs' (the targetable list,
+'StringsPedalTarget', 'resolve_pedal_target', 'apply_pedal_
+targets', 'MAX_PEDAL_TARGETS'); 'rigs/two-pedals_monome.org';
+'rigs/two-pedals_monome_readme.org';
+'TODO/resonance/05_review.org' (the orchestrator's) and
+'05_review/slice-N.org' (the agents').
+** Changed
+'rig.rs', 'settings.rs', 'reload.rs', 'audio.rs',
+'pedal_volume.rs', 'mod.rs' (the pedal atomics and the dance
+gate), 'strings/{mod,renderer,exciter,
+voice,modal,body,tests}.rs', 'surfaces_runtime/tests.rs',
+'tools/strings/strings_harness.rs', 'rigs/README.org',
+'README_USER.org', 'ORIENTATION.org', 'TODO/problems.org' (the
+"Loose arguments" entry gains a line that the pedal positions
+are now one array).
+
+* Implementation sequence
+Each slice is one agent. A slice ends with its tests, the suites
+green, its commits, and its headline DONE. Deviations on the
+"how" go in the agent's report at
+'TODO/resonance/05_review/slice-N.org'. The one stop this plan
+expects: none. Stopping is otherwise for the conditions in
+'coding-advice/when-to-stop.org'.
+
+** TODO Slice 1: the rig side: targets, the role, validation
+*** What
+'PedalTargetRig' and 'ExpressionPedalRig.targets' in 'rig.rs';
+'PedalRole::StringParameters'; 'strings/pedal_targets.rs' with
+the targetable list, 'StringsPedalTarget', 'MAX_PEDAL_TARGETS',
+'resolve_pedal_target(&PedalTargetRig, &StringsParams) ->
+Result<StringsPedalTarget, String>' (the three checks under
+"Validation of a target" that concern one target) and
+'apply_pedal_targets'. In 'rig.rs': the parameters role through
+the generalized energy-pedal helper; 'validate_pedal_targets'
+(targets only on the two roles; at most 'MAX_PEDAL_TARGETS' per
+pedal; a parameters pedal has at least one; the same parameter
+at most once across the rig; each target resolves against the
+play sink's 'StringsParams'); the toggle refusal. Nothing in
+the runtime yet.
+*** Tests
+In 'rig_org.rs': the org shape from "The schema", with a
+grouping headline between the pedal and its first target and
+prose under a target, parses to a pedal with two targets in
+order. In 'rig.rs': a rig fixture (inline TOML, as the strings
+sink tests at 5696 do) with a parameters pedal and two targets
+validates; a target on 'body.q' is refused and the message
+lists 'howl.gain'; one on 'string.unison_count' is refused; a
+'howl.gain' target with 'min = -1' is refused naming
+'howl.gain'; two targets on 'howl.gain' across two pedals are
+refused; a parameters pedal without targets is refused; a
+'grid_volume' pedal with a target is refused; a 'string_energy'
+pedal with a 'exciter.pick_energy' target validates. In
+'pedal_targets.rs': every float field placed (the test under
+"The targetable parameters"); 'apply_pedal_targets' with a
+pedal at 0.25 on 'howl.gain' 0..20 gives 5; an unreported pedal
+(NaN) leaves the value; 'min' above 'max' inverts. Suite green.
+
+** TODO Slice 2: the runtime: positions, targets, live params
+*** What
+'mod.rs': 'pedal_positions'. 'pedal_volume.rs': publish every
+pedal's position each poll; remove the energy branch's store
+and the NaN-on-unbound rule; the parameters role's
+'PedalTarget::StringParameters' is skipped like 'StringEnergy'.
+'settings.rs': the variant; 'Settings.pedal_targets' and
+'Settings.string_energy_pedal' resolved from the rig (the
+resolution shared with the harness: a 'pub fn' in 'strings/
+pedal_targets.rs' taking '&Rig' and the sink's params, or
+wherever the agent finds it reads best, as long as the harness
+and 'resolve_settings' call one function). 'reload.rs': the two
+live fields. 'audio.rs': 'start' takes the positions array in
+place of the one word; the callback computes the effective
+parameters and the energy position as under "Effective
+parameters each callback". Update the 'problems.org' entry.
+*** Tests
+In 'reload.rs' tests: a rig with a parameters pedal on
+'howl.gain' 0..20 resolves to live targets at channel index 1
+and 'string_energy_pedal' 'None'; one with the energy pedal on
+channel 2 resolves 'string_energy_pedal' 'Some(1)'; a reload
+that removes the target empties the slot. In 'audio.rs' or the
+strings tests: with the positions array set to 0.5 on channel 2
+and those live targets, the parameters the renderer adopts have
+'howl.gain' 10 (expose the effective-parameters computation as
+a function the callback calls, and test the function). The
+energy pedal: the existing energy tests ('reload.rs' 403 and
+the strings tests that pass a position) keep passing with the
+position read from the slot. Suite green. Run the mock-grid
+test of 'energy-pedal_monome' and confirm it still passes.
+
+** TODO Slice 3: the engine: knock at birth, mix live, adoption
+*** What
+'exciter::knock_table' to unit energy; 'ExcitationStream.
+knock_scale' set in 'StringVoice::new' and 'ModalVoice::new'
+from the params at birth; 'BodyBank::set_mix'; 'adopt_params'
+field-wise as under "The engine" (the bank on the five shape
+fields, the knock on 'brightness', 'knock_ms' and the five, the
+mix by 'set_mix'). The renderer's doc comment above
+'adopt_params' updated to say which fields rebuild what. The
+energy window's floor as under "The energy window's floor":
+the field, its default and validation, 'tri' with the floor,
+and the module comment of 'energy.rs' where it states the
+triangle. The targetable list of slice 1 gains the key.
+*** Tests
+'tri' at the floor: with floor 0.3 and an ex-post leg of 1 s,
+the value is 1 at birth, 0.65 at 0.5 s, 0.3 at 1 s and 0.3 at
+10 s; with floor 0 the old values. A note under a full pedal
+with floor 1 and the ebow kind is still growing 3 s after birth
+with a 0.5 s ex-post leg; with floor 0 it is decaying by then.
+A floor of 1.5 is refused naming the key. The before-and-after
+render at the defaults (peak and energy within 1e-4 relative; the agent captures the "before" numbers
+from the parent commit in a one-time run and writes them into
+the test as constants with the commit hash in a comment). A
+'pick_energy' change between two notes changes the second note's
+peak and rebuilds no knock (assert the 'Arc' pointer is the
+same before and after: expose it for tests). A 'body.mix'
+change between two blocks changes the output without resetting
+the resonators (assert the block after the change is not the
+block a fresh bank would give). A 'body.q' change still rebuilds
+(the knock 'Arc' changes). Suite green.
+
+** TODO Slice 4: the grid key 'square_dance'
+*** What
+As under "The square dance is a grid knob" and the pitfall "The
+square dance is gated by 'Overlays::compact()' alone": the rig
+field, its passage through 'GridSettings' and the grid thread's
+knobs, the gate 'if !rt.overlays.compact() && rt.knobs.
+square_dance', and the three README places. Nothing else in the
+paint path changes.
+*** Tests
+A rig fixture with 'square_dance = false' resolves to a
+'GridSettings' with it false and one without the key to true.
+If the paint path has a unit test that drives 'dance_cells' from
+a sustained pitch (look in 'tests.rs' for 'diagonal_cell' or
+"square"), add its negative: with the knob false, a sustained
+pitch puts nothing in 'dance_cells'; if the cells are only
+computed inside the grid thread's loop, say so in the report
+and test the knob's passage alone. Suite green.
+
+** TODO Slice 5: the rig, its readme, the harness, user docs
+*** What
+The rig as under "The rig 'two-pedals_monome'", copied from the
+working tree's 'rigs/energy-pedal_monome.org' (dirty with
+Jeff's edits; copy it, never stage it). The readme. The
+harness: '--pedal2', the targets and energy channel from the
+rig through the shared function, the 'squeal' scene, usage
+text. 'rigs/README.org' "Pedal targets"; 'README_USER.org' and
+'ORIENTATION.org' where they list rigs. The mock-grid run for
+the new rig, parameterized with the existing one's.
+*** Tests
+'loads_default_rigs' passes with the new rig; the mock-grid run
+of 'two-pedals_monome' passes; the harness renders 'squeal'
+under the rig to finite audio below the clamp, and the RMS of
+its last second exceeds the RMS of the second before the pedal
+rises (a test in the harness or in 'strings/tests.rs' through
+the shared function, the agent's choice); every other scene
+still renders. Workspace suite green. The agent listens to
+'squeal' and 'chord' under the new rig (sox or aplay if the
+container has them; otherwise reads the peak and RMS trace it
+prints) and records in its report what it heard or measured.
+
+** TODO Slice 6: organize, record, the two-question check
+*** What
+Read every diff of slices 1 to 5 for duplication with what
+existed ('coding-advice/code-reviews.org', the duplication and
+vocabulary questions): the two roles' rig-wide validation, the
+harness's and the runtime's resolution of targets, any copy of
+the min-max interpolation. Fold what is folded cheaply; list the
+rest in 'TODO/problems.org'. Answer the two questions of
+'plans.org' "After each plan": which terms this plan's code
+coined or reused ("pedal target", "targetable", "effective
+parameters", "parameters pedal") and whether it means one thing
+each place; whether any code cites 'TODO/'. Record both answers
+in the slice's report. Check 'rigs/README.org''s targetable list
+against 'pedal_targets.rs' by a test that renders the list and
+compares with the README's lines, or by reading, and say which.
+*** Tests
+Suite green; nothing else new unless folding needs it.
+
+* Verification and completion
+The plan is complete when every slice headline is DONE, 'cargo
+test --workspace' is green, both rigs load and their mock-run
+tests pass, the harness renders every scene under
+'two-pedals_monome' to finite audio below the clamp, and the
+orchestrator's review in '05_review.org' records each slice's
+report, the deviations carried into this plan, and the wrap-up.
+Deviations a slice makes on the "how" go in that slice's
+report; corrections the orchestrator carries into a later slice
+are added under that slice's headline as "Corrections carried
+from slice N" before its launch.
