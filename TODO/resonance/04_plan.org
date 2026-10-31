@@ -760,6 +760,18 @@ container has them; otherwise reads the peak and RMS trace it
 prints) and records in its report what it heard or measured.
 
 ** TODO Slice 6: organize, record, the two-question check
+*** Corrections carried from slice 5
+Slice 5 made 'rig::play_grids_sink' pub (the harness needs the
+sink's rate and amplitude too) and left two older lookups of
+the play grids' sink beside it: 'validate_rig_wide_strings_pedal'
+in 'rig.rs' finds the sink by id itself, and 'resolve_settings'
+in 'settings.rs' finds it its own way. Fold both onto
+'play_grids_sink' if the fold is cheap. The README's targetable
+list is one physical line per table, in 'TARGETABLE_PARAMETERS'
+order, so a test can render and compare it. Slice 5 moved the
+copied sink's 'howl.level' from Jeff's 0.02 to 0.003 so the
+'howl' scene stays below the clamp; that is recorded for Jeff
+in the review, not for slice 6 to revisit.
 *** What
 Read every diff of slices 1 to 5 for duplication with what
 existed ('coding-advice/code-reviews.org', the duplication and
