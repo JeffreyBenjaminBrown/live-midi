@@ -5,14 +5,18 @@
 //! The window. A string voice born at engine time `T` (the block in
 //! which its id first appears) has the asymmetric triangle `tri(t)`:
 //! 0 at `T - ex_ante`, rising linearly to 1 at `T`, falling linearly
-//! to 0 at `T + ex_post`, and 0 outside, with `ex_ante` and `ex_post`
-//! the voice's `energy.ex_ante_energizing_ms` and
-//! `energy.ex_post_energizing_ms`. The energy factor at `t` is
+//! to the floor `F` at `T + ex_post` (`F + (1 - F) (1 - (t - T) /
+//! ex_post)` between), `F` after it, and 0 before `T - ex_ante`, with
+//! `ex_ante`, `ex_post` and `F` the voice's
+//! `energy.ex_ante_energizing_ms`, `energy.ex_post_energizing_ms` and
+//! `energy.ex_post_energizing_floor`. The energy factor at `t` is
 //! `tri(t) * pedal(t) ^ e`, with `e = energy.pedal_energy_exponent`
 //! and `pedal(t)` the pedal's raw position in [0, 1] (0 where it never
 //! reported). Only the window gates the energy: a held, a sustained
 //! and a released note are driven alike while it is open, and never
-//! after it closes.
+//! after it closes. At a floor of 0 it closes at `T + ex_post`; above
+//! 0 it never closes, and the pedal feeds the note at `F * pedal(t) ^
+//! e` for as long as it sounds.
 //!
 //! The history. The pedal thread publishes one position, which the
 //! audio callback reads once per block. `PedalHistory` keeps it on a
@@ -35,7 +39,7 @@
 //! `A0 / unison_count`: the waveshape of the voice's energy kind
 //! (`precharge_waveshape`). `A0` is the same sum for every kind.
 //!
-//! The drive, ebow kind. During the ex-post leg the voice computes
+//! The drive, ebow kind. While the window is open the voice computes
 //! one drive sample `k * A * tanh(v / A)` and adds it to every one of
 //! its loops, with `v` the mean of the voice's loops' arriving waves,
 //! `A = energy.drive_limit * pedal(t) ^ e`, `g` the mean of the loops'
@@ -270,7 +274,9 @@ pub fn precharge_amplitude(
       let pedal: f32 = history.position_at_point(point);
       if pedal > 0.0 {
         let point_seconds: f64 = point as f64 * step_seconds;
-        let triangle: f64 = tri(point_seconds, birth_seconds, ex_ante_seconds, ex_post_seconds);
+        let triangle: f64 = tri(
+          point_seconds, birth_seconds, ex_ante_seconds, ex_post_seconds,
+          energy.ex_post_energizing_floor as f64);
         sum += triangle
           * (pedal as f64).powf(energy.pedal_energy_exponent as f64)
           * decay_since_point; }
@@ -281,7 +287,8 @@ pub fn precharge_amplitude(
 /// The energy factor `tri(t) * pedal ^ e` of a voice born at engine
 /// sample `birth` under `energy`, at engine sample `now` (not before
 /// `birth`) with the pedal at `pedal_position` (NaN when it never
-/// reported, which counts as 0). 0 once the window has closed.
+/// reported, which counts as 0). 0 once the window has closed, which
+/// at a floor above 0 it never does.
 pub fn ex_post_energy_factor(
   energy: &EnergyParams,
   birth: u64,
@@ -291,7 +298,8 @@ pub fn ex_post_energy_factor(
 ) -> f32 {
   let triangle: f64 = { // On the ex-post leg, so the ex-ante leg's length is moot.
     let since_birth_seconds: f64 = now.saturating_sub(birth) as f64 / sample_rate as f64;
-    tri(since_birth_seconds, 0.0, 0.0, energy.ex_post_energizing_ms as f64 / 1000.0) };
+    tri(since_birth_seconds, 0.0, 0.0, energy.ex_post_energizing_ms as f64 / 1000.0,
+        energy.ex_post_energizing_floor as f64) };
   if triangle <= 0.0 {
     return 0.0; }
   triangle as f32 * pedal_power(energy, pedal_position) }
@@ -307,14 +315,17 @@ pub fn pedal_power(
   if pedal <= 0.0 { 0.0 } else { pedal.powf(energy.pedal_energy_exponent) }}
 
 /// The asymmetric triangle at `time_seconds` for a voice born at
-/// `birth_seconds`: 0 at `birth - ex_ante`, 1 at `birth`, 0 at `birth
-/// + ex_post`, linear between, 0 outside. An empty leg (0 seconds)
-/// leaves only the 1 at birth on its side.
+/// `birth_seconds`: 0 at `birth - ex_ante`, 1 at `birth`,
+/// `ex_post_floor` at `birth + ex_post`, linear between,
+/// `ex_post_floor` after and 0 before. An empty leg (0 seconds)
+/// leaves only the 1 at birth on its side: the floor right after it,
+/// 0 right before.
 pub fn tri(
   time_seconds: f64,
   birth_seconds: f64,
   ex_ante_seconds: f64,
   ex_post_seconds: f64,
+  ex_post_floor: f64,
 ) -> f64 {
   let after_birth: f64 = time_seconds - birth_seconds;
   if after_birth == 0.0 {
@@ -323,9 +334,9 @@ pub fn tri(
     if ex_ante_seconds > 0.0 && -after_birth <= ex_ante_seconds {
       1.0 + after_birth / ex_ante_seconds } else { 0.0 }
   } else if ex_post_seconds > 0.0 && after_birth <= ex_post_seconds {
-    1.0 - after_birth / ex_post_seconds
+    ex_post_floor + (1.0 - ex_post_floor) * (1.0 - after_birth / ex_post_seconds)
   } else {
-    0.0 }}
+    ex_post_floor }}
 
 /// `length` samples (one delay line's worth) of the pre-charge
 /// waveshape of `energy.kind` for a loop at `f0` whose loss filter

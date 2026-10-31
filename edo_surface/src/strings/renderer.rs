@@ -23,8 +23,9 @@
 //! records it in its pedal history before the block's births, so a
 //! string born in the block is pre-charged from the history over its
 //! ex-ante leg (`energy::precharge_amplitude`), and per sample it
-//! hands every voice in its ex-post leg the energy factor of this
-//! block's position (`energy::ex_post_energy_factor`) and the pedal's
+//! hands every voice the energy factor of this block's position
+//! (`energy::ex_post_energy_factor`: 0 once the voice's window has
+//! closed, which at a floor above 0 it never does) and the pedal's
 //! power (`energy::pedal_power`, which scales the drive's limit), from
 //! which the voice takes its drive. See 'energy.rs'.
 //!
@@ -47,7 +48,9 @@ use crate::strings::exciter::{dry_table, knock_table};
 use crate::strings::howl::HowlPath;
 use crate::strings::junction::Junction;
 use crate::strings::modal::ModalVoice;
-use crate::strings::params::{amplitude_time_constant_seconds, StringsParams};
+use crate::strings::params::{
+  amplitude_time_constant_seconds, BodyParams, ExciterParams, StringsParams,
+};
 use crate::strings::voice::{StringVoice, VoiceKind};
 use crate::types::{VoiceId, VoiceMap, VoiceState, VoiceStep};
 use crate::voices::{step_voice_controls, OUTPUT_CLAMP, SLIDE_SLEW_SECS};
@@ -60,7 +63,8 @@ pub struct StringsRenderer {
   junction: Junction,
   howl: HowlPath,
   body: BodyBank,
-  /// The knock every voice born under `params` streams in.
+  /// The knock every voice born under `params` streams in, at unit
+  /// energy; each voice scales it at birth.
   knock_table: Arc<[f32]>,
   /// Ordered by id, so the junction sums the members in the same
   /// order on every run.
@@ -148,6 +152,13 @@ impl StringsRenderer {
   ) -> &StringsParams {
     &self.params }
 
+  /// The knock every voice born now streams, at unit energy. The
+  /// same 'Arc' until a change rebuilds it (see `adopt_params`).
+  pub fn shared_knock_table(
+    &self,
+  ) -> &Arc<[f32]> {
+    &self.knock_table }
+
   /// The string voice of `id`, if the engine holds one of loops.
   pub fn string_voice(
     &self,
@@ -167,12 +178,19 @@ impl StringsRenderer {
   /// voice's modes are re-designed), and a changed `modal.mode_count`
   /// re-designs every modal voice; a changed `modal.crossover_hz`
   /// reaches notes born afterward. Bridge changes reconfigure the
-  /// junction, howl changes the howl path, and body changes rebuild
-  /// the bank (its resonators start from rest). Exciter and body
-  /// changes rebuild the knock, which notes born afterward stream; a
-  /// sounding note finishes the tables it was born with. Energy
-  /// changes reach notes born afterward: a voice keeps the energy
-  /// parameters of its birth.
+  /// junction, howl changes the howl path. A change to the body's
+  /// shape (`body.mode_count`, `lowest_hz`, `highest_hz`, `q` or
+  /// `seed`) rebuilds the bank (its resonators start from rest); a
+  /// change to `body.mix` alone moves the mix and keeps the bank
+  /// ringing. The knock is rebuilt only when the body's shape,
+  /// `exciter.brightness` or `exciter.knock_ms` changed; notes born
+  /// afterward stream the new one, and a sounding note finishes the
+  /// tables it was born with. Every other exciter change
+  /// (`pick_energy`, `knock_mix`, the dry table's fields) rebuilds
+  /// nothing and reaches notes born afterward, which build their dry
+  /// table and scale the knock at birth. Energy changes reach notes
+  /// born afterward: a voice keeps the energy parameters of its
+  /// birth.
   fn adopt_params(
     &mut self,
     params: &StringsParams,
@@ -190,9 +208,12 @@ impl StringsRenderer {
       self.junction.reconfigure(&params.bridge, self.sample_rate); }
     if params.howl != previous.howl {
       self.howl.reconfigure(&params.howl); }
-    if params.body != previous.body {
-      self.body = BodyBank::new(&params.body, self.sample_rate); }
-    if params.exciter != previous.exciter || params.body != previous.body {
+    let body_rebuilt: bool = body_shape_changed(&previous.body, &params.body);
+    if body_rebuilt {
+      self.body = BodyBank::new(&params.body, self.sample_rate);
+    } else if params.body.mix != previous.body.mix {
+      self.body.set_mix(params.body.mix); }
+    if body_rebuilt || knock_exciter_fields_changed(&previous.exciter, &params.exciter) {
       self.knock_table =
         Arc::from(knock_table(&params.exciter, &params.body, self.sample_rate)); }}
 
@@ -286,6 +307,26 @@ impl StringsRenderer {
         string_voice.set_pedal_power(power);
         string_voice.retune_if_moved(params, voice.freq); }
       true }); }}
+
+/// Whether the body's bank differs between `previous` and `params`:
+/// any field but `mix`. The bank and the knock are built from these.
+fn body_shape_changed(
+  previous: &BodyParams,
+  params: &BodyParams,
+) -> bool {
+  params.mode_count != previous.mode_count
+    || params.lowest_hz != previous.lowest_hz
+    || params.highest_hz != previous.highest_hz
+    || params.q != previous.q
+    || params.seed != previous.seed }
+
+/// Whether the exciter fields the knock table is built from
+/// (`brightness`, `knock_ms`) differ between `previous` and `params`.
+fn knock_exciter_fields_changed(
+  previous: &ExciterParams,
+  params: &ExciterParams,
+) -> bool {
+  params.brightness != previous.brightness || params.knock_ms != previous.knock_ms }
 
 /// One sample of the junction and the howl path over every member
 /// of `string_voices`: reads each member's arriving wave into

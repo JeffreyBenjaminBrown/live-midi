@@ -651,7 +651,7 @@ the strings tests that pass a position) keep passing with the
 position read from the slot. Suite green. Run the mock-grid
 test of 'energy-pedal_monome' and confirm it still passes.
 
-** TODO Slice 3: the engine: knock at birth, mix live, adoption
+** DONE Slice 3: the engine: knock at birth, mix live, adoption
 *** What
 'exciter::knock_table' to unit energy; 'ExcitationStream.
 knock_scale' set in 'StringVoice::new' and 'ModalVoice::new'

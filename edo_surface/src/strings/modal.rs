@@ -63,7 +63,7 @@ use crate::strings::params::{
   amplitude_after_t60_decay, inharmonicity_b, round_trip_gain, t60_seconds, EnergyParams,
   ModalParams, StringParams, StringsParams, MAX_MODAL_MODES,
 };
-use crate::strings::voice::ExcitationStream;
+use crate::strings::voice::{knock_scale_at_birth, ExcitationStream};
 use crate::types::VoiceId;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -129,7 +129,8 @@ pub struct ModalVoice {
 impl ModalVoice {
   /// The voice `voice_id` at `f0` Hz born at engine sample `birth`,
   /// its modes at rest, and the two tables to stream in (empty for a
-  /// voice that rings only by sympathy).
+  /// voice that rings only by sympathy), the knock scaled by
+  /// `voice::knock_scale_at_birth(params)`.
   pub fn new(
     params: &StringsParams,
     voice_id: VoiceId,
@@ -150,7 +151,7 @@ impl ModalVoice {
       mode_count,
       round_trip_gain: round_trip_gain(&params.string, f0),
       pending_input: 0.0,
-      excitation: ExcitationStream::new(dry_table, knock_table),
+      excitation: ExcitationStream::new(dry_table, knock_table, knock_scale_at_birth(params)),
       gain: 0.0,
       energy: params.energy,
       drive_state: DriveState::new(&params.energy, voice_id, f0, sample_rate),

@@ -9,8 +9,8 @@
 
 use crate::strings::body::{BodyBank, BodyMode, BodyModes};
 use crate::strings::energy::{
-  drive, ebow_drive_gain, pedal_power, precharge_amplitude, precharge_waveshape, DriveState,
-  PedalHistory, WindSource,
+  drive, ebow_drive_gain, ex_post_energy_factor, pedal_power, precharge_amplitude,
+  precharge_waveshape, tri, DriveState, PedalHistory, WindSource,
 };
 use crate::strings::exciter::{dry_table, knock_table, peak_magnitude, period_samples};
 use crate::strings::first_order::{
@@ -28,7 +28,7 @@ use crate::strings::params::{
 };
 use crate::strings::renderer::{couple_through_junction, StringsRenderer};
 use crate::strings::scripted_voices::{release_voice_state, struck_voice_state, RELEASE_SECS};
-use crate::strings::voice::{StringVoice, VoiceKind};
+use crate::strings::voice::{ExcitationStream, StringVoice, VoiceKind};
 use crate::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -128,7 +128,9 @@ fn dispersion_is_skipped_below_the_threshold_and_stretches_above() {
 
 /// Both exciter kinds give the same dry table on every call, one
 /// period long and peaking at `pick_energy`; the knock is the same on
-/// every call too, and its energy is `(knock_mix * pick_energy)^2`.
+/// every call too, at unit energy whatever `knock_mix` and
+/// `pick_energy`, and a note streams it at energy `(knock_mix *
+/// pick_energy)^2`: not at all at a `knock_mix` of 0.
 #[test]
 fn both_exciter_kinds_are_deterministic_and_normalized() {
   let defaults: StringsParams = StringsParams::default();
@@ -143,15 +145,31 @@ fn both_exciter_kinds_are_deterministic_and_normalized() {
       assert!((peak - params.exciter.pick_energy).abs() < 1e-6,
               "{kind:?} at {f0} Hz peaks at {peak}");
       assert_eq!(first.len(), period_samples(f0, SAMPLE_RATE)); }}
-  for knock_mix in [0.0_f32, 0.3, 1.0] {
+  let default_knock: Vec<f32> = knock_table(&defaults.exciter, &defaults.body, SAMPLE_RATE);
+  for (knock_mix, pick_energy) in [(0.0_f32, 0.5_f32), (0.3, 0.5), (1.0, 0.5), (0.3, 0.1)] {
     let mut params: StringsParams = defaults;
     params.exciter.knock_mix = knock_mix;
+    params.exciter.pick_energy = pick_energy;
     let knock: Vec<f32> = knock_table(&params.exciter, &params.body, SAMPLE_RATE);
     assert_eq!(knock, knock_table(&params.exciter, &params.body, SAMPLE_RATE));
-    let energy: f32 = knock.iter().map(|sample| sample * sample).sum();
-    let expected: f32 = (knock_mix * params.exciter.pick_energy).powi(2);
-    assert!((energy - expected).abs() <= 1e-4 * expected.max(1e-6),
-            "knock_mix {knock_mix}: knock energy {energy}, expected {expected}"); }}
+    assert_eq!(knock, default_knock, "the knock table moved with knock_mix or pick_energy");
+    let table_energy: f32 = knock.iter().map(|sample| sample * sample).sum();
+    assert!((table_energy - 1.0).abs() <= 1e-4, "the knock table's energy is {table_energy}");
+    let streamed: Vec<f32> = {
+      let mut stream: ExcitationStream =
+        ExcitationStream::new(Vec::new(), Arc::from(knock), knock_mix * pick_energy);
+      let mut streamed: Vec<f32> = Vec::new();
+      while !stream.finished() {
+        streamed.push(stream.next_sample()); }
+      streamed };
+    let streamed_energy: f32 = streamed.iter().map(|sample| sample * sample).sum();
+    let expected: f32 = (knock_mix * pick_energy).powi(2);
+    println!("knock_mix {knock_mix}, pick_energy {pick_energy}: streamed knock energy               {streamed_energy:.6e}, expected {expected:.6e}, {} samples", streamed.len());
+    assert!((streamed_energy - expected).abs() <= 1e-4 * expected.max(1e-6),
+            "knock_mix {knock_mix}: streamed knock energy {streamed_energy}, \
+             expected {expected}");
+    if knock_mix == 0.0 {
+      assert!(streamed.is_empty(), "a knock_mix of 0 still streams a knock"); }}}
 
 /// The body's centers rise from about `lowest_hz` to about
 /// `highest_hz` in order, each bandwidth is its center over `q`, the
@@ -210,7 +228,9 @@ fn validation_accepts_the_defaults_and_names_a_bad_key() {
     ("energy.bow_slipperiness", |p| p.energy.bow_slipperiness = 0.5),
     ("energy.bow_slipperiness", |p| p.energy.bow_slipperiness = 11.0),
     ("energy.bow_velocity", |p| p.energy.bow_velocity = 0.0),
-    ("energy.bow_velocity", |p| p.energy.bow_velocity = 2.5), ];
+    ("energy.bow_velocity", |p| p.energy.bow_velocity = 2.5),
+    ("energy.ex_post_energizing_floor", |p| p.energy.ex_post_energizing_floor = 1.5),
+    ("energy.ex_post_energizing_floor", |p| p.energy.ex_post_energizing_floor = -0.1), ];
   for (key, spoil) in cases {
     let mut params: StringsParams = StringsParams::default();
     spoil(&mut params);
@@ -480,6 +500,128 @@ fn the_renderer_adopts_changed_params_at_the_next_block() {
   let gain_after: f32 = renderer.string_voice(0).expect("voice 0").loops()[0].round_trip_gain();
   assert!(gain_after < gain_before, "the loop kept its gain {gain_before} (now {gain_after})"); }
 
+/// Scaling the knock at a note's birth, rather than baking
+/// `knock_mix * pick_energy` into the shared table, leaves the render
+/// at the defaults as it was: a struck note of loops (220 Hz) and a
+/// modal one (3000 Hz), each rendered alone for 1 s, peak and carry
+/// the energy (sum of squares) they did before the change, within
+/// 1e-4 relative. The constants were measured once at commit f717fb0,
+/// the parent of the change.
+#[test]
+fn a_struck_note_renders_as_before_the_knock_was_scaled_at_birth() {
+  let peak_and_energy_before: [(f32, f32, f64); 2] = [
+    (220.0, 1.525116712e-1, 5.650005450e1),
+    (3000.0, 6.011803448e-2, 1.139704978e0) ];
+  let params: StringsParams = StringsParams::default();
+  for (f0, peak_before, energy_before) in peak_and_energy_before {
+    let rendered: Vec<f32> = render_one_struck_note(&params, f0, 1.0, f32::NAN);
+    let peak: f32 = peak_magnitude(&rendered);
+    let energy: f64 = rendered.iter().map(|sample| (*sample as f64) * (*sample as f64)).sum();
+    println!("struck at {f0} Hz: peak {peak:.9e} (before {peak_before:.9e}), energy \
+              {energy:.9e} (before {energy_before:.9e})");
+    assert!(relative_error(peak, peak_before) < 1e-4, "{f0} Hz: peak {peak}, was {peak_before}");
+    assert!((energy / energy_before - 1.0).abs() < 1e-4,
+            "{f0} Hz: energy {energy}, was {energy_before}"); }}
+
+/// A `pick_energy` change between two notes reaches the second note,
+/// whose peak follows it (the render is linear in it: the dry table
+/// peaks at it and the knock is scaled by it), and rebuilds no knock:
+/// the renderer's shared knock is the same 'Arc' before and after.
+/// The first note leaves the map and the body rings out for a second
+/// before the second is struck, so each peak is its note's alone.
+#[test]
+fn a_pick_energy_change_reaches_the_next_note_and_rebuilds_no_knock() {
+  let soft: StringsParams = StringsParams::default();
+  let mut hard: StringsParams = soft;
+  hard.exciter.pick_energy = 2.0 * soft.exciter.pick_energy;
+  let mut renderer: StringsRenderer = StringsRenderer::new(soft, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  let knock_before: Arc<[f32]> = Arc::clone(renderer.shared_knock_table());
+  voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+  let first_peak: f32 = peak_magnitude(&render_seconds(&mut renderer, &mut voices, &soft, 0.3));
+  voices.clear();
+  render_seconds(&mut renderer, &mut voices, &hard, 1.0);
+  assert!(Arc::ptr_eq(&knock_before, renderer.shared_knock_table()),
+          "a pick_energy change rebuilt the knock");
+  voices.insert(finger_key(1), struck_voice_state(1, 220.0, SAMPLE_RATE));
+  let second_peak: f32 = peak_magnitude(&render_seconds(&mut renderer, &mut voices, &hard, 0.3));
+  println!("pick_energy {} then {}: peaks {first_peak:.5} then {second_peak:.5}",
+           soft.exciter.pick_energy, hard.exciter.pick_energy);
+  assert!(relative_error(second_peak / first_peak, 2.0) < 0.01,
+          "doubling pick_energy took the peak from {first_peak} to {second_peak}");
+  { // So does a knock_mix change.
+    let mut less_knock: StringsParams = hard;
+    less_knock.exciter.knock_mix = 0.1;
+    render_seconds(&mut renderer, &mut voices, &less_knock, 0.01);
+    assert!(Arc::ptr_eq(&knock_before, renderer.shared_knock_table()),
+            "a knock_mix change rebuilt the knock"); }}
+
+/// A `body.mix` change between two blocks moves the output without
+/// resetting the body's resonators. The body runs on the strings'
+/// sum and never feeds back, so a sum rendered with the body off
+/// (mix 0) is what the body hears in every render. After the change
+/// from 0.5 to 0.8 the block is the one a renderer at 0.8 all along
+/// gives (the resonators kept ringing), not the one a fresh bank at
+/// 0.8 would give from that block on, nor the one 0.5 gives.
+#[test]
+fn a_body_mix_change_moves_the_output_without_resetting_the_body() {
+  let half: StringsParams = StringsParams::default();
+  let mut more: StringsParams = half;
+  more.body.mix = 0.8;
+  let mut dry: StringsParams = half;
+  dry.body.mix = 0.0;
+  let block_after_the_change = |before: &StringsParams, after: &StringsParams| -> Vec<f32> {
+    let mut renderer: StringsRenderer = StringsRenderer::new(*before, SAMPLE_RATE);
+    let mut voices: VoiceMap = VoiceMap::new();
+    voices.insert(finger_key(0), struck_voice_state(0, 220.0, SAMPLE_RATE));
+    let mut rendered: Vec<f32> = render_seconds(&mut renderer, &mut voices, before, 0.2);
+    rendered.extend(render_seconds(&mut renderer, &mut voices, after, 128.0 / SAMPLE_RATE));
+    rendered };
+  let changed: Vec<f32> = block_after_the_change(&half, &more);
+  let all_along: Vec<f32> = block_after_the_change(&more, &more);
+  let unchanged: Vec<f32> = block_after_the_change(&half, &half);
+  let from_a_fresh_bank: Vec<f32> = {
+    let strings_sum: Vec<f32> = block_after_the_change(&dry, &dry);
+    let mut fresh: BodyBank = BodyBank::new(&more.body, SAMPLE_RATE);
+    strings_sum[strings_sum.len() - 128 ..].iter().map(|sample| fresh.process(*sample)).collect() };
+  let last_block = |rendered: &[f32]| -> Vec<f32> { rendered[rendered.len() - 128 ..].to_vec() };
+  let distance = |a: &[f32], b: &[f32]| -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max) };
+  let changed_block: Vec<f32> = last_block(&changed);
+  let peak: f32 = peak_magnitude(&changed_block);
+  println!("body.mix 0.5 to 0.8: the block after the change is {:.3e} from 0.8 all along, \
+            {:.3e} from a fresh bank, {:.3e} from 0.5; its peak {peak:.4}",
+           distance(&changed_block, &last_block(&all_along)),
+           distance(&changed_block, &from_a_fresh_bank),
+           distance(&changed_block, &last_block(&unchanged)));
+  assert_eq!(changed_block, last_block(&all_along), "the mix change reset the body");
+  assert!(distance(&changed_block, &from_a_fresh_bank) > 0.01 * peak,
+          "the block is a fresh bank's");
+  assert!(distance(&changed_block, &last_block(&unchanged)) > 0.01 * peak,
+          "the mix change did not move the output"); }
+
+/// A change to the body's shape (`body.q`) or to the knock's
+/// exciter fields (`exciter.brightness`) rebuilds the knock: the
+/// renderer's shared knock is another 'Arc'.
+#[test]
+fn a_body_q_or_brightness_change_rebuilds_the_knock() {
+  let params: StringsParams = StringsParams::default();
+  let mut renderer: StringsRenderer = StringsRenderer::new(params, SAMPLE_RATE);
+  let mut voices: VoiceMap = VoiceMap::new();
+  render_seconds(&mut renderer, &mut voices, &params, 0.01);
+  let mut narrower: StringsParams = params;
+  narrower.body.q = 2.0 * params.body.q;
+  let before_q: Arc<[f32]> = Arc::clone(renderer.shared_knock_table());
+  render_seconds(&mut renderer, &mut voices, &narrower, 0.01);
+  assert!(!Arc::ptr_eq(&before_q, renderer.shared_knock_table()),
+          "a body.q change kept the knock");
+  let mut brighter: StringsParams = narrower;
+  brighter.exciter.brightness = 2.0 * narrower.exciter.brightness;
+  let before_brightness: Arc<[f32]> = Arc::clone(renderer.shared_knock_table());
+  render_seconds(&mut renderer, &mut voices, &brighter, 0.01);
+  assert!(!Arc::ptr_eq(&before_brightness, renderer.shared_knock_table()),
+          "an exciter.brightness change kept the knock"); }
+
 /// A constant full pedal over the whole ex-ante leg (300 ms here)
 /// pre-charges a string with what the closed form of the pre-charge
 /// sum (see 'energy.rs') gives: `precharge_gain * integral over s in [0, ex_ante] of (s /
@@ -593,6 +735,68 @@ fn a_full_pedal_stops_feeding_a_note_when_its_window_closes() {
            energy_at(0.05), energy_at(ex_post_seconds), after_the_window[after_the_window.len() - 1]);
   assert!(energy_at(ex_post_seconds) > energy_at(0.05), "the note did not grow in its window");
   assert!(largest_rise <= 0.0, "the energy rose by {largest_rise} after the window"); }
+
+/// The window's floor: with a floor of 0.3 and a 1 s ex-post leg the
+/// triangle is 1 at birth, 0.65 halfway down the leg, 0.3 at its end
+/// and 0.3 long after; with a floor of 0 it is 1, 0.5, 0 and 0, as
+/// before the floor. The ex-ante leg is the floor's no business, and
+/// a full pedal's energy factor long after the leg is the floor.
+#[test]
+fn the_window_falls_to_its_floor_and_stays_there() {
+  let triangle = |after_birth_seconds: f64, floor: f64| -> f64 {
+    tri(after_birth_seconds, 0.0, 0.3, 1.0, floor) };
+  for (after_birth_seconds, at_floor_0_3, at_floor_0) in
+    [(0.0_f64, 1.0_f64, 1.0_f64), (0.5, 0.65, 0.5), (1.0, 0.3, 0.0), (10.0, 0.3, 0.0)] {
+    assert!((triangle(after_birth_seconds, 0.3) - at_floor_0_3).abs() < 1e-12,
+            "floor 0.3 at {after_birth_seconds} s: {}", triangle(after_birth_seconds, 0.3));
+    assert!((triangle(after_birth_seconds, 0.0) - at_floor_0).abs() < 1e-12,
+            "floor 0 at {after_birth_seconds} s: {}", triangle(after_birth_seconds, 0.0)); }
+  for before_birth_seconds in [0.1_f64, 0.15, 0.3, 0.5] {
+    assert_eq!(triangle(-before_birth_seconds, 0.3), triangle(-before_birth_seconds, 0.0),
+               "the floor moved the ex-ante leg at {before_birth_seconds} s before birth"); }
+  let mut energy: EnergyParams = StringsParams::default().energy;
+  energy.ex_post_energizing_ms = 1000.0;
+  let ten_seconds: u64 = (10.0 * SAMPLE_RATE) as u64;
+  assert_eq!(ex_post_energy_factor(&energy, 0, ten_seconds, SAMPLE_RATE, 1.0), 0.0);
+  energy.ex_post_energizing_floor = 0.3;
+  assert!((ex_post_energy_factor(&energy, 0, ten_seconds, SAMPLE_RATE, 1.0) - 0.3).abs() < 1e-6); }
+
+/// Under a full pedal, the ebow, and a 0.5 s ex-post leg, a floor of
+/// 1 keeps feeding a note after the leg: 3 s after birth it is still
+/// growing (its RMS over the 100 ms around 3 s above that around 2.5
+/// s; the body off). With a floor of 0 the window closed at 0.5 s and
+/// the note is decaying by then.
+///
+/// The growth rate is 1 neper per second and the note struck at a
+/// hundredth of the drive's limit, so that at 3 s it is still well
+/// below the limit: at the default 8 nepers per second it would have
+/// reached the tanh within a second and sit there, neither growing
+/// nor decaying.
+#[test]
+fn a_floor_of_one_keeps_an_ebow_note_growing_after_its_leg() {
+  let mut params: StringsParams = StringsParams::default();
+  params.body.mix = 0.0;
+  params.energy.kind = EnergyKind::Ebow;
+  params.energy.ex_post_energizing_ms = 500.0;
+  params.energy.growth_rate_per_second_max = 1.0;
+  params.exciter.pick_energy = params.energy.drive_limit / 100.0;
+  let rms_at_two_and_a_half_and_three = |floor: f32| -> (f32, f32, f32) {
+    let mut params: StringsParams = params;
+    params.energy.ex_post_energizing_floor = floor;
+    let rendered: Vec<f32> = render_one_struck_note(&params, 220.0, 3.1, 1.0);
+    ( rms_between(&rendered, 2.45, 2.55),
+      rms_between(&rendered, 2.95, 3.05),
+      peak_magnitude(&rendered) ) };
+  let (floored_early, floored_late, floored_peak): (f32, f32, f32) =
+    rms_at_two_and_a_half_and_three(1.0);
+  let (closed_early, closed_late, _): (f32, f32, f32) = rms_at_two_and_a_half_and_three(0.0);
+  println!("ebow, full pedal, 0.5 s leg: floor 1 RMS {floored_early:.4e} at 2.5 s, \
+            {floored_late:.4e} at 3 s (peak {floored_peak:.4}); floor 0 {closed_early:.4e}, \
+            {closed_late:.4e}");
+  assert!(floored_late > floored_early,
+          "floor 1: {floored_early} at 2.5 s, {floored_late} at 3 s");
+  assert!(closed_late < closed_early, "floor 0: {closed_early} at 2.5 s, {closed_late} at 3 s");
+  assert!(floored_peak < 0.95, "floor 1: peak {floored_peak}"); }
 
 /// The drive saturates at its limit times the pedal's power: a wave
 /// far above the limit takes `k * drive_limit * pedal ^ e`, so a

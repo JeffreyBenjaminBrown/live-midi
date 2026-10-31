@@ -106,7 +106,9 @@ pub struct ExciterParams {
   /// is a softer hammer. Ignored by the pluck.
   pub hammer_contact_fraction: f32,
   /// Unitless, in [0, 1]. How much of the body's knock (its impulse
-  /// response, windowed) is convolved into the table.
+  /// response, windowed) a note streams in beside its dry table: the
+  /// knock's energy is `(knock_mix * pick_energy)^2`, taken at the
+  /// note's birth.
   pub knock_mix: f32,
   /// Milliseconds, in (0, 1000]. The knock's length; its window falls
   /// 60 dB over this time.
@@ -128,9 +130,18 @@ pub struct EnergyParams {
   /// Milliseconds, in [0, 10000]. The energy window opens this long
   /// before key-down; the pedal's history over it is the pre-charge.
   pub ex_ante_energizing_ms: f32,
-  /// Milliseconds, in [0, 60000]. The window closes this long after
-  /// key-down; over it the live pedal drives the string.
+  /// Milliseconds, in [0, 60000]. The window falls this long after
+  /// key-down, to `ex_post_energizing_floor`; over it the live pedal
+  /// drives the string.
   pub ex_post_energizing_ms: f32,
+  /// Unitless, in [0, 1]. The level the window falls to over the
+  /// ex-post leg and keeps after it. At 0 the window closes; above 0
+  /// the pedal feeds the note for as long as it sounds, and an ebow
+  /// note under a held pedal grows to its limit instead of settling
+  /// once `floor * pedal ^ pedal_energy_exponent` is above `decay /
+  /// (growth_rate_per_second_max + decay)`, `decay` the string's own
+  /// decay rate (`ln(1000) / T60(f0)` nepers per second).
+  pub ex_post_energizing_floor: f32,
   /// Unitless, > 0. The pedal position is raised to this power; above
   /// 1 the travel's bottom does little and its top much.
   pub pedal_energy_exponent: f32,
@@ -262,6 +273,7 @@ impl Default for StringsParams {
         kind: EnergyKind::Ebow,
         ex_ante_energizing_ms: 300.0,
         ex_post_energizing_ms: 600.0,
+        ex_post_energizing_floor: 0.0,
         pedal_energy_exponent: 2.0,
         growth_rate_per_second_max: 8.0,
         drive_limit: 0.8,
@@ -380,6 +392,8 @@ fn validate_energy(
 ) -> Result<(), String> {
   require_within("energy.ex_ante_energizing_ms", energy.ex_ante_energizing_ms, 0.0, 10_000.0)?;
   require_within("energy.ex_post_energizing_ms", energy.ex_post_energizing_ms, 0.0, 60_000.0)?;
+  require_within(
+    "energy.ex_post_energizing_floor", energy.ex_post_energizing_floor, 0.0, 1.0)?;
   require_above("energy.pedal_energy_exponent", energy.pedal_energy_exponent, 0.0)?;
   require_at_least(
     "energy.growth_rate_per_second_max", energy.growth_rate_per_second_max, 0.0)?;

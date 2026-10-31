@@ -89,6 +89,18 @@ impl BodyBank {
     bank.reset();
     bank }
 
+  /// Moves the mix to `mix` without rebuilding the bank: the
+  /// resonators keep ringing. A bank at mix 0 does not run its
+  /// resonators, so one leaving mix 0 starts them from rest, as a new
+  /// bank would, rather than from a state left from before.
+  pub fn set_mix(
+    &mut self,
+    mix: f32,
+  ) {
+    if self.mix <= 0.0 && mix > 0.0 {
+      self.reset(); }
+    self.mix = mix; }
+
   /// One sample of the engine's mono sum through the body.
   pub fn process(
     &mut self,

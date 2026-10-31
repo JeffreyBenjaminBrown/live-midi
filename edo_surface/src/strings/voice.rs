@@ -15,8 +15,9 @@
 //! wave arriving at the bridge), runs the junction on all the loops
 //! of the engine, then calls `write_back`, which writes each loop's
 //! `v_i - v_b + excitation / unison_count + drive + howl`. The excitation
-//! is one sample of the dry table plus one of the knock table while
-//! either lasts, so a table of any length streams in over time. The
+//! is one sample of the dry table plus one of the knock table, scaled
+//! by `exciter.knock_mix * exciter.pick_energy` at the voice's birth,
+//! while either lasts, so a table of any length streams in over time. The
 //! drive is the energy pedal's (`energy::drive`), one sample for the
 //! whole voice, taken from the mean of its loops' arriving waves and
 //! added to every loop, so the unisons are driven together; it reads
@@ -50,9 +51,13 @@ pub struct ExcitationStream {
   /// One period of the note's own excitation; empty for a voice
   /// that rings only by sympathy.
   dry_table: Vec<f32>,
-  /// The body's knock, shared by every voice born under the same
-  /// parameters; empty for a voice that rings only by sympathy.
+  /// The body's knock at unit energy, shared by every voice born
+  /// under the same knock parameters; empty for a voice that rings
+  /// only by sympathy, or whose `knock_scale` is 0.
   knock_table: Arc<[f32]>,
+  /// `exciter.knock_mix * exciter.pick_energy` at the voice's birth:
+  /// each knock sample is multiplied by it.
+  knock_scale: f32,
   /// How far into both tables the voice has streamed.
   position: usize, }
 
@@ -248,8 +253,8 @@ impl VoiceKind {
 impl StringVoice {
   /// The voice `voice_id` at `f0` Hz born at engine sample `birth`,
   /// with `string.unison_count` silent loops and the two tables to
-  /// stream in. Pass empty tables for a voice that rings only by
-  /// sympathy.
+  /// stream in, the knock scaled by `knock_scale_at_birth(params)`.
+  /// Pass empty tables for a voice that rings only by sympathy.
   pub fn new(
     params: &StringsParams,
     voice_id: VoiceId,
@@ -270,7 +275,7 @@ impl StringVoice {
       f0,
       birth,
       loops,
-      excitation: ExcitationStream::new(dry_table, knock_table),
+      excitation: ExcitationStream::new(dry_table, knock_table, knock_scale_at_birth(params)),
       gain: 0.0,
       energy: params.energy,
       drive_state: DriveState::new(&params.energy, voice_id, f0, sample_rate),
@@ -424,14 +429,22 @@ impl StringVoice {
     &self.loops }}
 
 impl ExcitationStream {
+  /// The stream of `dry_table` and of `knock_table` times
+  /// `knock_scale`. A `knock_scale` of 0 (a `knock_mix` of 0) drops
+  /// the knock, so the stream is the dry table alone and ends with
+  /// it.
   pub fn new(
     dry_table: Vec<f32>,
     knock_table: Arc<[f32]>,
+    knock_scale: f32,
   ) -> ExcitationStream {
-    ExcitationStream { dry_table, knock_table, position: 0 }}
+    let knock_table: Arc<[f32]> =
+      if knock_scale > 0.0 { knock_table } else { Arc::from(Vec::new()) };
+    ExcitationStream { dry_table, knock_table, knock_scale, position: 0 }}
 
-  /// This sample of the dry table plus this sample of the knock (0
-  /// past either's end), and the read position moved on.
+  /// This sample of the dry table plus this sample of the knock times
+  /// `knock_scale` (0 past either's end), and the read position moved
+  /// on.
   pub fn next_sample(
     &mut self,
   ) -> f32 {
@@ -440,7 +453,7 @@ impl ExcitationStream {
     let position: usize = self.position;
     self.position += 1;
     self.dry_table.get(position).copied().unwrap_or(0.0)
-      + self.knock_table.get(position).copied().unwrap_or(0.0) }
+      + self.knock_table.get(position).copied().unwrap_or(0.0) * self.knock_scale }
 
   /// Whether both tables have streamed in entirely.
   pub fn finished(
@@ -459,6 +472,13 @@ impl ExcitationStream {
       self.dry_table.resize(table.len(), 0.0); }
     for (dry, value) in self.dry_table.iter_mut().zip(table.iter()) {
       *dry += value; }}}
+
+/// What a voice born under `params` multiplies the shared knock by:
+/// `exciter.knock_mix * exciter.pick_energy`.
+pub fn knock_scale_at_birth(
+  params: &StringsParams,
+) -> f32 {
+  params.exciter.knock_mix * params.exciter.pick_energy }
 
 /// Cents by which the `unison_index`-th of `unison_count` loops is
 /// detuned: `(k - (count - 1) / 2) * detune_cents`, symmetric about

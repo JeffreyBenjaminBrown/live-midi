@@ -7,10 +7,12 @@
 //! is the body's own short response to being hit: its impulse
 //! response under an exponential window, through the same kind of
 //! lowpass at a fixed `exciter.brightness` times 110 Hz, at unit
-//! energy times `exciter.knock_mix * exciter.pick_energy`. The dry
-//! table depends on the note's pitch; the knock does not, so the
-//! renderer builds it once per parameter change and every note
-//! shares it.
+//! energy. A note scales the knock as it streams it, by
+//! `exciter.knock_mix * exciter.pick_energy` at its birth
+//! ('voice::ExcitationStream'). The dry table depends on the note's
+//! pitch; the knock does not, and depends on `exciter.brightness`,
+//! `exciter.knock_ms` and the body alone, so the renderer builds it
+//! only when one of those changes, and every note shares it.
 //!
 //! The same parameters and pitch give the same tables every time:
 //! the noise has a fixed seed and nothing else is random.
@@ -56,16 +58,15 @@ pub fn dry_table(
 
 /// The body's impulse response, `knock_ms` long, under the window
 /// `exp(-t / (knock_ms / 6.9))`, through the one-pole lowpass at
-/// `brightness * KNOCK_LOWPASS_REFERENCE_HZ`, scaled to energy (sum
-/// of squares) `(knock_mix * pick_energy)^2`. Empty when `knock_mix`
-/// is 0.
+/// `brightness * KNOCK_LOWPASS_REFERENCE_HZ`, scaled to unit energy
+/// (sum of squares 1). It reads no field of `exciter` but
+/// `brightness` and `knock_ms`; a note scales it by `knock_mix *
+/// pick_energy` as it streams it.
 pub fn knock_table(
   exciter: &ExciterParams,
   body: &BodyParams,
   sample_rate: f32,
 ) -> Vec<f32> {
-  if exciter.knock_mix <= 0.0 {
-    return Vec::new(); }
   let length: usize = knock_length_samples(exciter, sample_rate);
   let response: Vec<f32> =
     BodyModes::design(body, sample_rate).impulse_response(sample_rate, length);
@@ -81,7 +82,7 @@ pub fn knock_table(
     sample_rate);
   let energy: f32 = smoothed.iter().map(|sample| sample * sample).sum();
   if energy > 0.0 {
-    let scale: f32 = exciter.knock_mix * exciter.pick_energy / energy.sqrt();
+    let scale: f32 = 1.0 / energy.sqrt();
     smoothed.iter().map(|sample| sample * scale).collect()
   } else { smoothed }}
 
