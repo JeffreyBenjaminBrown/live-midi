@@ -604,7 +604,7 @@ pedal with a 'exciter.pick_energy' target validates. In
 pedal at 0.25 on 'howl.gain' 0..20 gives 5; an unreported pedal
 (NaN) leaves the value; 'min' above 'max' inverts. Suite green.
 
-** TODO Slice 2: the runtime: positions, targets, live params
+** DONE Slice 2: the runtime: positions, targets, live params
 *** Corrections carried from slice 1
 Slice 1 had to place 'PedalRole::StringParameters' in the two
 exhaustive role matches of 'settings.rs' ('resolve_settings')

@@ -11,6 +11,9 @@ use crate::rig::{
   EditmodeControlKind, HandleSide, MonomeWindowRig, PedalRole, Rig, SinkRig, SoftstepWindowRig,
   WaveformChoice,
 };
+use crate::strings::pedal_targets::{
+  resolve_strings_pedals, PedalTargetsPerChannel, ResolvedStringsPedals,
+};
 use crate::strings::scripted_voices::STRIKE_ATTACK_SECS;
 use crate::strings::StringsParams;
 
@@ -224,6 +227,12 @@ pub(super) struct Settings {
   /// The strings engine's parameters when the play grids' sink is `cpal_strings`, which
   /// selects that engine; `None` for a `cpal_synth` sink, the sawwave engine.
   pub(super) strings: Option<StringsParams>,
+  /// Every pedal's targets ('strings/pedal_targets.rs'), indexed by pedal (= MPC-20
+  /// channel - 1); none on a sawwave rig.
+  pub(super) pedal_targets: PedalTargetsPerChannel,
+  /// The energy pedal's index (= MPC-20 channel - 1): which pedal position the
+  /// strings engine's energy reads. `None` without a `string_energy` pedal.
+  pub(super) string_energy_pedal: Option<usize>,
 }
 
 /// The fields of `Settings` the play grids' sink decides. A `cpal_strings` sink gives
@@ -259,6 +268,10 @@ pub(super) enum PedalTarget {
   /// `role = "string_energy"`: the strings engine's energy pedal, rig-wide. The pedal
   /// thread publishes its raw position for the audio callback; its taper is unused.
   StringEnergy,
+  /// `role = "string_parameters"`: the parameters pedal, rig-wide, whose only job is
+  /// its targets. The volume paths skip it as they skip `StringEnergy`; its taper is
+  /// unused.
+  StringParameters,
 }
 
 pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error::Error>> {
@@ -612,13 +625,17 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
         PedalRole::NewNoteVolume => PedalTarget::NewNote(some_grid),
         PedalRole::GlobalVolume => PedalTarget::Global(some_grid),
         PedalRole::StringEnergy => PedalTarget::StringEnergy,
-        // Binds no volume path, and the pedal thread does not yet publish its
-        // position: the parameters pedal is not in the map.
-        PedalRole::StringParameters => return None,
+        PedalRole::StringParameters => PedalTarget::StringParameters,
       };
       Some((p.channel as usize - 1, target, PedalVolumeCurve::from_rig(p)))
     })
     .collect();
+  let strings_pedals: ResolvedStringsPedals =
+    match &sink_settings.strings {
+      Some(sink_params) => resolve_strings_pedals(rig, sink_params)?,
+      // A sawwave rig has none: validation put both strings roles over a cpal_strings
+      // sink.
+      None => ResolvedStringsPedals::default(), };
 
   Ok(Settings {
     grids,
@@ -658,6 +675,8 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     echo_input: rig.echo_input,
     expression_pedals,
     strings: sink_settings.strings,
+    pedal_targets: strings_pedals.pedal_targets,
+    string_energy_pedal: strings_pedals.string_energy_pedal,
   })
 }
 

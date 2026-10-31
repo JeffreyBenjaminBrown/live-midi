@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::reload::LiveParams;
 use super::Live;
+use crate::expression_pedals::NUM_PEDALS;
+use crate::strings::pedal_targets::effective_params_and_energy_position;
 use crate::strings::{StringsParams, StringsRenderer};
 use crate::types::{AmShapeFamily, VoiceMap, VoiceSource};
 use crate::voices::{BlockRenderer, DistortionStage};
@@ -40,7 +42,7 @@ pub(crate) fn start(
   am_shape_family: AmShapeFamily,
   live: Arc<Live>,
   distortion_on: Arc<Vec<AtomicBool>>,
-  string_energy_position: Arc<AtomicU32>,
+  pedal_positions: Arc<[AtomicU32; NUM_PEDALS]>,
   strings: Option<StringsParams>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
   // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
@@ -94,16 +96,22 @@ pub(crate) fn start(
         // pedal-slide smoother are hot-reloadable, so they are read fresh each
         // callback; a reload to a rig without strings parameters (another sink
         // kind, which needs a restart) keeps the ones running. The distortion
-        // toggles are ignored: the strings engine has no distortion bus. The energy
-        // pedal's raw position is read once per callback (NaN until it reports).
-        let (amplitude, strings_params): (f32, StringsParams) = {
-          let p: MutexGuard<LiveParams> = live.params.lock().unwrap_or_else(|e| e.into_inner());
-          strings_renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
-          (p.amplitude, p.strings.unwrap_or(*strings_renderer.params())) };
-        let pedal_position: f32 = f32::from_bits(string_energy_position.load(Ordering::Relaxed));
+        // toggles are ignored: the strings engine has no distortion bus. Every pedal's
+        // raw position is read once per callback (NaN until it reports); the live
+        // pedal targets turn them into the effective parameters, and the energy
+        // pedal's slot is the energy's position.
+        let p: LiveParams = // a copy, so the lock is held only for it
+          *live.params.lock().unwrap_or_else(|e| e.into_inner());
+        strings_renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
+        let strings_params: StringsParams = p.strings.unwrap_or(*strings_renderer.params());
+        let positions: [f32; NUM_PEDALS] = read_pedal_positions(&pedal_positions);
+        let (effective_params, energy_position): (StringsParams, f32) =
+          effective_params_and_energy_position(
+            &strings_params, &p.pedal_targets, p.string_energy_pedal, &positions);
         let mut voices: MutexGuard<VoiceMap> = voices.lock().unwrap_or_else(|e| e.into_inner());
         strings_renderer.render_block(
-          &mut voices, data, channels, sample_rate, amplitude, &strings_params, pedal_position);
+          &mut voices, data, channels, sample_rate, p.amplitude, &effective_params,
+          energy_position);
         return; }
       // The master amplitude + distortion curve are hot-reloadable ('r'), and the
       // per-grid distortion toggles are live -- read everything fresh each callback.
@@ -155,3 +163,10 @@ pub(crate) fn start(
   stream.play()?;
   Ok(Audio { _stream: Some(stream), sample_rate })
 }
+
+/// Every pedal's position as the pedal thread last published it, NaN for a pedal that
+/// has never reported.
+fn read_pedal_positions(
+  pedal_positions: &[AtomicU32; NUM_PEDALS],
+) -> [f32; NUM_PEDALS] {
+  pedal_positions.each_ref().map(|slot| f32::from_bits(slot.load(Ordering::Relaxed))) }

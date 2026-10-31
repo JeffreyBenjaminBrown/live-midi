@@ -5,14 +5,16 @@
 //! 'ELEM expression_pedals' ('rig::PedalTargetRig'); this module
 //! resolves each against the sink's parameters into a
 //! 'StringsPedalTarget' and computes the effective parameters a block
-//! renders with ('apply_pedal_targets').
+//! renders with ('apply_pedal_targets'). 'resolve_strings_pedals' is
+//! the one resolution of a rig's pedals for the engine, shared by the
+//! runtime's settings and the harness.
 //!
 //! A parameter is targetable when it is a float whose change the
 //! engine applies without rebuilding a table. 'TARGETABLE_PARAMETERS'
 //! is the one list of them; the rig README quotes it.
 
 use crate::expression_pedals::NUM_PEDALS;
-use crate::rig::PedalTargetRig;
+use crate::rig::{PedalRole, PedalTargetRig, Rig};
 use crate::strings::StringsParams;
 
 /// The most targets one pedal may carry. Validation refuses more, so
@@ -27,6 +29,9 @@ pub type PedalTargetSetter = fn(&mut StringsParams, f32);
 /// Every pedal's resolved targets, indexed by pedal (the MPC-20
 /// channel minus 1), filled from the front.
 pub type PedalTargetsPerChannel = [[Option<StringsPedalTarget>; MAX_PEDAL_TARGETS]; NUM_PEDALS];
+
+/// No pedal carries a target.
+pub const NO_PEDAL_TARGETS: PedalTargetsPerChannel = [[None; MAX_PEDAL_TARGETS]; NUM_PEDALS];
 
 /// Every targetable parameter, spelled as the rig and the sink's
 /// validation messages spell it, with the setter that writes it.
@@ -151,6 +156,62 @@ pub fn resolve_pedal_target(
       "pedal target {parameter}: its {end} {value} is not a legal value ({error})"))?; }
   Ok(StringsPedalTarget { parameter, setter, min: target.min, max: target.max }) }
 
+/// A rig's pedals as the strings engine reads them: every pedal's
+/// resolved targets, and the energy pedal's index (its MPC-20 channel
+/// minus 1), 'None' without one. The default is a rig with neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ResolvedStringsPedals {
+  pub pedal_targets: PedalTargetsPerChannel,
+  pub string_energy_pedal: Option<usize>, }
+
+/// Resolves a rig's pedals against the play sink's parameters: each
+/// pedal's targets, in rig order, into its channel's row, and the
+/// channel of its 'string_energy' pedal. 'resolve_settings' calls this
+/// for the live parameters and the harness for its render, so the two
+/// cannot disagree. The rig's validation ('validate_pedal_targets'
+/// in 'rig.rs') refuses everything that fails here first; the error
+/// is for a rig built without it.
+pub fn resolve_strings_pedals(
+  rig: &Rig,
+  sink_params: &StringsParams,
+) -> Result<ResolvedStringsPedals, String> {
+  let mut resolved: ResolvedStringsPedals = ResolvedStringsPedals::default();
+  for pedal in &rig.expression_pedals {
+    let channel: u8 = pedal.channel;
+    let pedal_index: usize = usize::from(channel).checked_sub(1)
+      .filter(|index| *index < NUM_PEDALS)
+      .ok_or(format!("expression pedal channel {channel} is not 1..={NUM_PEDALS}"))?;
+    if pedal.role == PedalRole::StringEnergy {
+      resolved.string_energy_pedal = Some(pedal_index); }
+    if pedal.targets.len() > MAX_PEDAL_TARGETS {
+      return Err(format!(
+        "expression pedal (channel {channel}) carries {} targets; a pedal carries at most \
+         {MAX_PEDAL_TARGETS}",
+        pedal.targets.len())); }
+    for (slot, target) in resolved.pedal_targets[pedal_index].iter_mut().zip(&pedal.targets) {
+      *slot = Some(resolve_pedal_target(target, sink_params)
+        .map_err(|error| format!("expression pedal (channel {channel}): {error}"))?); }}
+  Ok(resolved) }
+
+/// What the strings engine renders one block with: the effective
+/// parameters ('apply_pedal_targets'), and the energy pedal's position,
+/// read from its slot of 'positions' (NaN without an energy pedal, or
+/// before it reports). The audio callback calls this every block with
+/// the positions the pedal thread last published.
+pub fn effective_params_and_energy_position(
+  live_params: &StringsParams,
+  pedal_targets: &PedalTargetsPerChannel,
+  string_energy_pedal: Option<usize>,
+  positions: &[f32; NUM_PEDALS],
+) -> (StringsParams, f32) {
+  let effective_params: StringsParams =
+    apply_pedal_targets(live_params, pedal_targets, positions);
+  let energy_position: f32 =
+    string_energy_pedal
+    .and_then(|pedal_index| positions.get(pedal_index).copied())
+    .unwrap_or(f32::NAN);
+  (effective_params, energy_position) }
+
 /// The effective parameters: 'live_params' with every target of
 /// every pedal that has reported applied at that pedal's position.
 /// 'positions' is indexed like 'targets'; a NaN position is a pedal
@@ -204,7 +265,7 @@ mod tests {
   /// No pedal's targets, every pedal unreported.
   fn no_targets(
   ) -> PedalTargetsPerChannel {
-    [[None; MAX_PEDAL_TARGETS]; NUM_PEDALS] }
+    NO_PEDAL_TARGETS }
 
   fn resolved(
     parameter: &str,

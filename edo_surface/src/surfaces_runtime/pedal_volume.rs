@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::expression_pedals::NUM_PEDALS;
+use crate::expression_pedals::{Pedal, NUM_PEDALS};
 
 use crate::types::{VoiceMap, VoiceSource};
 
@@ -152,11 +152,11 @@ pub(super) fn apply_pedal_gain(
 /// (`set_new_note_pedal`). A GLOBAL pedal move records it and re-aims every voice on
 /// the grids it reaches, as far as each grid's opt-in allows (`set_global_pedal`).
 ///
-/// The strings engine's ENERGY pedal takes the shortest path of all: its raw
-/// position (no taper) goes into `string_energy_position` as f32 bits for the audio
-/// callback, NaN until its first CC, as `pedal_slide_frac` does; and back to NaN
-/// whenever no pedal holds the role (a reload took it away), so the engine never
-/// drives from a stale position.
+/// The strings engine's pedals (the energy pedal and the parameters pedal) take the
+/// shortest path of all, and none of the volume paths: every pedal's raw position (no
+/// taper) goes into its slot of `pedal_positions` each poll, whatever its role or
+/// whether the rig binds it (`publish_pedal_positions`), and the audio callback reads
+/// what the live parameters say each slot means.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expression_pedal_loop(
   live: Arc<Live>,
@@ -165,7 +165,7 @@ pub(super) fn expression_pedal_loop(
   pedal_levels: SharedPedalLevels,
   pedal_slide_on: Arc<Vec<AtomicBool>>,
   pedal_slide_frac: Arc<Vec<AtomicU32>>,
-  string_energy_position: Arc<AtomicU32>,
+  pedal_positions: Arc<[AtomicU32; NUM_PEDALS]>,
   ring: Arc<Mutex<Vec<GridRing>>>,
   held_all: Arc<Mutex<Vec<HashMap<(i32, i32), i32>>>>,
 ) {
@@ -191,27 +191,18 @@ pub(super) fn expression_pedal_loop(
     last_generation = generation;
     let map = live.params.lock().unwrap_or_else(|e| e.into_inner()).expression_pedals;
     let pedals = reader.pedals();
+    publish_pedal_positions(&pedals, &pedal_positions);
     let num_grids = pedal_levels.lock().unwrap_or_else(|e| e.into_inner()).new_note.len();
     let mut new_note_bound = vec![false; num_grids];
     let mut global_bound = vec![false; num_grids];
-    let string_energy_bound: bool =
-      map.iter().any(|binding| matches!(binding, Some((PedalTarget::StringEnergy, _))));
-    if !string_energy_bound {
-      string_energy_position.store(f32::NAN.to_bits(), Ordering::Relaxed);
-    }
     for (pedal, binding) in map.iter().enumerate() {
       let Some((target, curve)) = *binding else { continue };
       let p = pedals[pedal];
       let grid = match target {
         PedalTarget::Grid(grid) => grid,
-        PedalTarget::StringEnergy => {
-          // The raw position, 0 at the heel and 1 at the toe: the engine's exponent is
-          // the whole shaping. No CC yet = the NaN sentinel stays.
-          if p.updates > 0 {
-            string_energy_position.store(p.norm.to_bits(), Ordering::Relaxed);
-          }
-          continue;
-        }
+        // The strings pedals: their positions were published above, and they drive no
+        // volume.
+        PedalTarget::StringEnergy | PedalTarget::StringParameters => continue,
         PedalTarget::NewNote(grids) | PedalTarget::Global(grids) => {
           let global = matches!(target, PedalTarget::Global(_));
           let targets: Vec<usize> = match grids {
@@ -338,6 +329,19 @@ pub(super) fn expression_pedal_loop(
   }
 }
 
+/// Every pedal's raw position (0 at the heel, 1 at the toe) into its slot as f32
+/// bits, whatever its role or whether the rig binds it. A pedal that has never
+/// reported leaves its slot alone, so the slot keeps its NaN until the first CC, and
+/// a slot never returns to NaN once set: a reload cannot un-report a pedal, and what
+/// the position means is the live parameters' business.
+fn publish_pedal_positions(
+  pedals: &[Pedal; NUM_PEDALS],
+  pedal_positions: &[AtomicU32; NUM_PEDALS],
+) {
+  for (pedal, slot) in pedals.iter().zip(pedal_positions) {
+    if pedal.updates > 0 {
+      slot.store(pedal.norm.to_bits(), Ordering::Relaxed); }}}
+
 /// A new-note pedal move: set the level that notes struck from now on start at, on
 /// each of `grids`. Nothing already sounding is touched -- that is the whole behaviour.
 pub(super) fn set_new_note_pedal(levels: &SharedPedalLevels, grids: &[usize], gain: f32) {
@@ -380,6 +384,27 @@ mod tests {
   use crate::surfaces_runtime::ring::GridRing;
   use crate::types::{Timbre, VoiceSource};
   use std::collections::HashMap;
+
+  /// Each poll publishes every reported pedal's raw position into its own slot, and a
+  /// pedal that has never reported leaves its NaN.
+  #[test]
+  fn every_reported_pedal_publishes_its_position_into_its_slot() {
+    let pedal_positions: [AtomicU32; NUM_PEDALS] =
+      [const { AtomicU32::new(f32::NAN.to_bits()) }; NUM_PEDALS];
+    let read = |pedal_index: usize| -> f32 {
+      f32::from_bits(pedal_positions[pedal_index].load(Ordering::Relaxed)) };
+    let mut pedals: [Pedal; NUM_PEDALS] = [Pedal::default(); NUM_PEDALS];
+    publish_pedal_positions(&pedals, &pedal_positions);
+    assert!((0..NUM_PEDALS).all(|pedal_index| read(pedal_index).is_nan()), "nothing reported");
+    let last: usize = NUM_PEDALS - 1;
+    pedals[last] = Pedal { raw: 60, norm: 0.5, updates: 3 };
+    publish_pedal_positions(&pedals, &pedal_positions);
+    assert_eq!(read(last), 0.5, "the reported pedal's slot holds its position");
+    assert!(read(0).is_nan(), "the unreported pedal's slot keeps its NaN");
+    pedals[0] = Pedal { raw: 1, norm: 0.0, updates: 1 };
+    publish_pedal_positions(&pedals, &pedal_positions);
+    assert_eq!(read(0), 0.0, "a full heel is a position, not NaN");
+    assert_eq!(read(last), 0.5); }
 
   /// A rig pedal's taper: `range_db` makes a finite, never-silent range; without it,
   /// the fader law with whichever curve_* knobs the rig gives (defaults otherwise).

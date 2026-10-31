@@ -132,7 +132,7 @@ The play sink decides fifteen fields of 'Settings', so
 'resolve_settings' copies it back field by field. A nested
 'Settings.sink' would be one field.
 *** 'LiveParams' mirrors 'Settings' by hand
-'reload::live_params' copies nineteen fields one by one; every
+'reload::live_params' copies twenty-one fields one by one; every
 hot-reloadable setting is added in three places ('Settings',
 'LiveParams', 'live_params').
 *** Loose arguments instead of a shared-state struct
@@ -140,6 +140,8 @@ hot-reloadable setting is added in three places ('Settings',
 nine, both under 'allow(clippy::too_many_arguments)'; each new
 cross-thread word ('pedal_slide_frac', 'string_energy_position')
 is one more 'Arc' passed by hand from 'run'.
+The pedal positions are now one array, 'pedal_positions', a word
+per pedal, where 'string_energy_position' was one word more.
 *** The play grids' sink is found twice
 'resolve_settings' and 'rig::validate_string_energy_pedal' each
 find the first 'edo_note_grid' and look up its sink. A

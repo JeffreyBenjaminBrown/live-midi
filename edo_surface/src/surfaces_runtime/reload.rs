@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::drumkit_runtime::audio::SamplerAmplitude;
 use crate::expression_pedals::NUM_PEDALS;
 use crate::rig::{load_named_rig, Rig, SinkRig};
+use crate::strings::pedal_targets::PedalTargetsPerChannel;
 use crate::strings::StringsParams;
 
 use crate::voices::{Distortion, Makeup};
@@ -116,6 +117,14 @@ pub(crate) struct LiveParams {
   /// afterward, as `StringsRenderer::render_block` says. Which engine renders is fixed
   /// at start: a reload that changes the sink's kind needs a restart.
   pub strings: Option<StringsParams>,
+  /// Every pedal's targets, indexed by pedal (= MPC-20 channel - 1). The audio
+  /// callback applies them each block at the positions the pedal thread publishes
+  /// ('apply_pedal_targets'), so a reload that adds, removes or re-ranges a target
+  /// applies it at the next block through the pedal's current position.
+  pub pedal_targets: PedalTargetsPerChannel,
+  /// The energy pedal's index (= MPC-20 channel - 1), whose published position the
+  /// strings engine's energy reads; `None` without a `string_energy` pedal.
+  pub string_energy_pedal: Option<usize>,
 }
 
 /// The live subset of resolved settings.
@@ -146,6 +155,8 @@ pub(super) fn live_params(s: &Settings) -> LiveParams {
     trails_max: s.trails_max,
     expression_pedals,
     strings: s.strings,
+    pedal_targets: s.pedal_targets,
+    string_energy_pedal: s.string_energy_pedal,
   }
 }
 
@@ -166,7 +177,7 @@ pub(super) fn live_makeup(s: &Settings) -> Arc<Makeup> {
 pub(super) fn reload_live(name: &str, live: &Live) {
   match load_named_rig(name).and_then(|rig| adopt_rig(&rig, live)) {
     Ok(()) => println!(
-      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / retrigger detune / slide / trail / pedal curves / string parameters / drum volume applied (layout + ports + the sink's kind need a restart)",
+      "reloaded {name}: amplitude / distortion / timbres / tuning / pluck / retrigger detune / slide / trail / pedal curves / string parameters / pedal targets / drum volume applied (layout + ports + the sink's kind need a restart)",
     ),
     Err(e) => eprintln!("reload of {name} failed; keeping the running parameters: {e}"),
   }
@@ -222,6 +233,7 @@ mod tests {
   use super::*;
   use crate::drumkit_runtime::audio::Sampler;
   use crate::rig::parse_rig;
+  use crate::strings::pedal_targets::{effective_params_and_energy_position, StringsPedalTarget};
   use crate::strings::scripted_voices::struck_voice_state;
   use crate::strings::StringsRenderer;
   use crate::types::{VoiceId, VoiceMap, VoiceSource};
@@ -355,14 +367,14 @@ amplitude = 0.2
       VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) },
       struck_voice_state(0, 220.0, sample_rate));
     let mut block: [f32; 128] = [0.0; 128];
-    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &NO_POSITIONS);
     let edited_t60_seconds_at_55hz: f32 = started.string.t60_seconds_at_55hz / 2.0;
     { // The edit Jeff makes in the rig file.
       let SinkRig::CpalStrings { string, .. } = &mut rig.sinks[0] else {
         panic!("expected a cpal_strings sink, got {:?}", rig.sinks[0]); };
       string.t60_seconds_at_55hz = edited_t60_seconds_at_55hz; }
     adopt_rig(&rig, &live).expect("the edited rig adopts");
-    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &NO_POSITIONS);
     assert_eq!(renderer.params().string.t60_seconds_at_55hz, edited_t60_seconds_at_55hz);
     assert_ne!(renderer.params().string.t60_seconds_at_55hz, started.string.t60_seconds_at_55hz); }
 
@@ -383,7 +395,7 @@ amplitude = 0.2
       VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) },
       struck_voice_state(0, 220.0, sample_rate));
     let mut block: [f32; 128] = [0.0; 128];
-    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &NO_POSITIONS);
     let edited_ex_post_energizing_ms: f32 = started.energy.ex_post_energizing_ms * 2.0 + 1.0;
     { // The edit Jeff makes in the rig file.
       let SinkRig::CpalStrings { energy, .. } = &mut rig.sinks[0] else {
@@ -393,7 +405,7 @@ amplitude = 0.2
     voices.insert(
       VoiceSource::SurfaceFinger { grid: 0, cell: (1, 0) },
       struck_voice_state(1, 330.0, sample_rate));
-    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live);
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &NO_POSITIONS);
     assert_eq!(renderer.params().energy.ex_post_energizing_ms, edited_ex_post_energizing_ms);
     let window_ms = |id: VoiceId| -> f32 {
       renderer.string_voice(id).expect("the voice sounds").energy_params().ex_post_energizing_ms };
@@ -411,16 +423,137 @@ amplitude = 0.2
       settings.expression_pedals.iter().map(|(pedal, target, _)| (*pedal, *target)).collect();
     assert_eq!(resolved, vec![(channel - 1, PedalTarget::StringEnergy)]); }
 
-  /// One block as the audio callback renders it: the live amplitude and strings
-  /// parameters read fresh.
+  /// The rig's 'string_energy' pedal resolves to its pedal index, the slot of the
+  /// published positions the energy reads.
+  #[test]
+  fn an_energy_pedal_on_channel_two_reads_slot_one() {
+    let rig: Rig = strings_rig("[[expression_pedals]]\nchannel = 2\nrole = \"string_energy\"\n");
+    let params: LiveParams = *live_for(&rig).params.lock().unwrap();
+    assert_eq!(params.string_energy_pedal, Some(1));
+    assert!(params.pedal_targets.iter().flatten().all(Option::is_none), "the pedal has no targets"); }
+
+  /// A parameters pedal on channel 2 with one 'howl.gain' target resolves to live
+  /// targets in pedal index 1, and to no energy pedal.
+  #[test]
+  fn a_parameters_pedal_resolves_to_live_targets_at_its_index() {
+    let rig: Rig = strings_rig(PARAMETERS_PEDAL_ON_HOWL_GAIN);
+    let params: LiveParams = *live_for(&rig).params.lock().unwrap();
+    assert_eq!(params.string_energy_pedal, None);
+    let target: StringsPedalTarget = params.pedal_targets[1][0].expect("the target is live");
+    assert_eq!((target.parameter, target.min, target.max), ("howl.gain", 0.0, 20.0));
+    assert!(params.pedal_targets[1][1..].iter().all(Option::is_none), "one target, at the front");
+    assert!(params.pedal_targets[0].iter().all(Option::is_none), "channel 1 carries none"); }
+
+  /// With the parameters pedal halfway down, the parameters the renderer adopts have
+  /// 'howl.gain' halfway along its 0..20, and nothing else moved.
+  #[test]
+  fn the_renderer_adopts_a_target_at_its_pedals_position() {
+    let rig: Rig = strings_rig(PARAMETERS_PEDAL_ON_HOWL_GAIN);
+    let live: Live = live_for(&rig);
+    let sample_rate: f32 = resolve_settings(&rig).expect("the rig resolves").sample_rate as f32;
+    let started: StringsParams =
+      live.params.lock().unwrap().strings.expect("a strings rig has strings params");
+    let mut renderer: StringsRenderer = StringsRenderer::new(started, sample_rate);
+    let mut voices: VoiceMap = VoiceMap::new();
+    let mut block: [f32; 128] = [0.0; 128];
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &[f32::NAN, 0.5]);
+    let mut expected: StringsParams = started;
+    expected.howl.gain = 10.0;
+    assert_eq!(*renderer.params(), expected); }
+
+  /// A reload that removes a pedal's target empties its slot in the live targets, so
+  /// the rig's value is in force from the next block though the pedal stays down.
+  #[test]
+  fn a_reload_that_removes_a_target_empties_its_slot() {
+    let mut rig: Rig = strings_rig(
+      "[[expression_pedals]]\nchannel = 2\nrole = \"string_energy\"\n\
+       [[expression_pedals.targets]]\nparameter = \"exciter.pick_energy\"\nmin = 0.25\nmax = 0.75\n");
+    let live: Live = live_for(&rig);
+    let sample_rate: f32 = resolve_settings(&rig).expect("the rig resolves").sample_rate as f32;
+    let started: StringsParams =
+      live.params.lock().unwrap().strings.expect("a strings rig has strings params");
+    assert!(live.params.lock().unwrap().pedal_targets[1][0].is_some(), "the target is live");
+    let mut renderer: StringsRenderer = StringsRenderer::new(started, sample_rate);
+    let mut voices: VoiceMap = VoiceMap::new();
+    let mut block: [f32; 128] = [0.0; 128];
+    let positions: [f32; NUM_PEDALS] = [f32::NAN, 1.0];
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &positions);
+    assert_eq!(renderer.params().exciter.pick_energy, 0.75, "the toe applies the target's max");
+    rig.expression_pedals[0].targets.clear(); // the edit Jeff makes in the rig file
+    adopt_rig(&rig, &live).expect("the edited rig adopts");
+    let params: LiveParams = *live.params.lock().unwrap();
+    assert!(params.pedal_targets[1][0].is_none(), "the slot is empty");
+    assert_eq!(params.string_energy_pedal, Some(1), "the pedal is still the energy pedal");
+    render_live_block(&mut renderer, &mut voices, &mut block, sample_rate, &live, &positions);
+    assert_eq!(*renderer.params(), started, "the rig's value is back"); }
+
+  /// The energy pedal's position reaches the engine through its slot: blocks rendered
+  /// through the slots are the blocks the position passed straight in renders, and
+  /// another pedal's slot does not drive the energy.
+  #[test]
+  fn the_engine_sees_the_energy_pedals_slot() {
+    let rig: Rig = strings_rig("[[expression_pedals]]\nchannel = 2\nrole = \"string_energy\"\n");
+    let live: Live = live_for(&rig);
+    let sample_rate: f32 = resolve_settings(&rig).expect("the rig resolves").sample_rate as f32;
+    let started: StringsParams =
+      live.params.lock().unwrap().strings.expect("a strings rig has strings params");
+    let mut through_the_slot: StringsRenderer = StringsRenderer::new(started, sample_rate);
+    let mut passed_straight: StringsRenderer = StringsRenderer::new(started, sample_rate);
+    let mut voices_through_the_slot: VoiceMap = VoiceMap::new();
+    voices_through_the_slot.insert(
+      VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) },
+      struck_voice_state(0, 220.0, sample_rate));
+    let mut voices_passed_straight: VoiceMap = voices_through_the_slot.clone();
+    let mut block_through_the_slot: [f32; 128] = [0.0; 128];
+    let mut block_passed_straight: [f32; 128] = [0.0; 128];
+    for _ in 0..50 {
+      render_live_block(
+        &mut through_the_slot, &mut voices_through_the_slot, &mut block_through_the_slot,
+        sample_rate, &live, &[0.2, 0.7]);
+      passed_straight.render_block(
+        &mut voices_passed_straight, &mut block_passed_straight, 1, sample_rate,
+        live.params.lock().unwrap().amplitude, &started, 0.7);
+      assert_eq!(block_through_the_slot, block_passed_straight); }
+    { // The position matters: the same blocks with no pedal end elsewhere.
+      let mut without_a_pedal: StringsRenderer = StringsRenderer::new(started, sample_rate);
+      let mut voices_without_a_pedal: VoiceMap = VoiceMap::new();
+      voices_without_a_pedal.insert(
+        VoiceSource::SurfaceFinger { grid: 0, cell: (0, 0) },
+        struck_voice_state(0, 220.0, sample_rate));
+      let mut block_without_a_pedal: [f32; 128] = [0.0; 128];
+      for _ in 0..50 {
+        render_live_block(
+          &mut without_a_pedal, &mut voices_without_a_pedal, &mut block_without_a_pedal,
+          sample_rate, &live, &NO_POSITIONS); }
+      assert_ne!(block_without_a_pedal, block_passed_straight); }
+    let (_, energy_position): (StringsParams, f32) = effective_params_and_energy_position(
+      &started, &live.params.lock().unwrap().pedal_targets, Some(1), &[0.9, f32::NAN]);
+    assert!(energy_position.is_nan(), "channel 1's position is not the energy's"); }
+
+  /// A parameters pedal on channel 2: 'howl.gain' from 0 at the heel to 20 at the toe.
+  const PARAMETERS_PEDAL_ON_HOWL_GAIN: &str =
+    "[[expression_pedals]]\nchannel = 2\nrole = \"string_parameters\"\n\
+     [[expression_pedals.targets]]\nparameter = \"howl.gain\"\nmin = 0.0\nmax = 20.0\n";
+
+  /// Every pedal unreported.
+  const NO_POSITIONS: [f32; NUM_PEDALS] = [f32::NAN; NUM_PEDALS];
+
+  /// One block as the audio callback renders it: the live amplitude, strings
+  /// parameters and pedal targets read fresh, and the pedals at 'positions' (what the
+  /// callback reads from the slots the pedal thread publishes).
   fn render_live_block(
     renderer: &mut StringsRenderer,
     voices: &mut VoiceMap,
     block: &mut [f32],
     sample_rate: f32,
     live: &Live,
+    positions: &[f32; NUM_PEDALS],
   ) {
     let params: LiveParams = *live.params.lock().unwrap();
     let strings: StringsParams = params.strings.expect("the live params hold strings params");
-    renderer.render_block(voices, block, 1, sample_rate, params.amplitude, &strings, f32::NAN); }
+    let (effective_params, energy_position): (StringsParams, f32) =
+      effective_params_and_energy_position(
+        &strings, &params.pedal_targets, params.string_energy_pedal, positions);
+    renderer.render_block(
+      voices, block, 1, sample_rate, params.amplitude, &effective_params, energy_position); }
 }
