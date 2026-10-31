@@ -46,16 +46,15 @@ The slice's last commit also marks the slice headline here DONE
 and carries the slice's docs. Messages follow
 'coding-advice/commit-messages.org': a title, and a detail only
 when the changes are disparate or the codebase does not already
-describe them. Every commit ends with the line
-'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'.
-Agents commit only files the slice touched. The untracked
-'coding-advice/', 'docker-typedb-rust/' and 'run.sh' are Jeff's
-and are never added. 'rigs/energy-pedal_monome.org',
-'README_USER.org' and 'TODO.org' are dirty with Jeff's own
-edits before the run begins, and 'rigs/energy-pedal_monome_not-nasal.org' is an
-untracked rig of his; none of the four is edited, added or
-committed by any slice.
-'TODO/resonance/05_review.org' is the orchestrator's.
+describe them. Every commit ends with the line 'Co-Authored-By:
+Claude Opus 5.5 <noreply@anthropic.com>'. Agents commit only
+files the slice touched. The untracked 'coding-advice/',
+'docker-typedb-rust/' and 'run.sh' are Jeff's and are never
+added. 'rigs/energy-pedal_monome.org', 'README_USER.org' and
+'TODO.org' are dirty with Jeff's own edits before the run begins,
+and 'rigs/energy-pedal_monome_not-nasal.org' is an untracked rig
+of his; none of the four is edited, added or committed by any
+slice. 'TODO/resonance/05_review.org' is the orchestrator's.
 
 * Scope
 ** In
@@ -268,8 +267,8 @@ note grow to its limit instead of settling; the rig's text for
 the key says so. A voice keeps the energy parameters of its
 birth, so a changed floor reaches notes struck afterward.
 *** The targetable parameters
-Exactly these, as 'strings/pedal_targets.rs' lists them; the
-list is the one source and the rig README quotes it:
+Exactly these, as 'strings/pedal_targets.rs' lists them; the list
+is the one source and the rig README quotes it:
 'string.t60_seconds_at_55hz', 'string.t60_seconds_at_1760hz',
 'string.high_frequency_hz', 'string.high_frequency_t60_ratio',
 'string.unison_detune_cents', 'string.inharmonicity_b_at_55hz',
@@ -278,7 +277,8 @@ list is the one source and the rig README quotes it:
 'exciter.knock_mix', 'energy.ex_ante_energizing_ms',
 'energy.ex_post_energizing_ms',
 'energy.ex_post_energizing_floor',
-'energy.pedal_energy_exponent', 'energy.growth_rate_per_second_max', 'energy.drive_limit',
+'energy.pedal_energy_exponent',
+'energy.growth_rate_per_second_max', 'energy.drive_limit',
 'energy.precharge_gain', 'energy.bow_velocity',
 'energy.bow_slipperiness', 'energy.wind_speed_hz_max',
 'energy.wind_q', 'energy.wind_gain', 'bridge.heaviness',
@@ -287,11 +287,11 @@ list is the one source and the rig README quotes it:
 refused by name: every integer and enum key, and
 'exciter.brightness', 'exciter.knock_ms', 'body.lowest_hz',
 'body.highest_hz', 'body.q' (each rebuilds a table; the body's
-rebuild also measures its normalization on a second of noise).
-A test asserts that every float field of 'StringsParams' is
-either in the list or in the refused list, by setting each
-through the list and comparing with a hand-set struct, so a
-field added later must be placed.
+rebuild also measures its normalization on a second of noise). A
+test asserts that every float field of 'StringsParams' is either
+in the list or in the refused list, by setting each through the
+list and comparing with a hand-set struct, so a field added later
+must be placed.
 ** The square dance is a grid knob
 'edo_note_grid' gains 'square_dance: bool', serde default
 true, beside 'flash_sustained'. False means this grid never
@@ -645,22 +645,22 @@ the field, its default and validation, 'tri' with the floor,
 and the module comment of 'energy.rs' where it states the
 triangle. The targetable list of slice 1 gains the key.
 *** Tests
-'tri' at the floor: with floor 0.3 and an ex-post leg of 1 s,
-the value is 1 at birth, 0.65 at 0.5 s, 0.3 at 1 s and 0.3 at
-10 s; with floor 0 the old values. A note under a full pedal
-with floor 1 and the ebow kind is still growing 3 s after birth
-with a 0.5 s ex-post leg; with floor 0 it is decaying by then.
-A floor of 1.5 is refused naming the key. The before-and-after
-render at the defaults (peak and energy within 1e-4 relative;
-the agent captures the "before" numbers from the parent commit in a one-time run and writes them into
-the test as constants with the commit hash in a comment). A
-'pick_energy' change between two notes changes the second note's
-peak and rebuilds no knock (assert the 'Arc' pointer is the
-same before and after: expose it for tests). A 'body.mix'
-change between two blocks changes the output without resetting
-the resonators (assert the block after the change is not the
-block a fresh bank would give). A 'body.q' change still rebuilds
-(the knock 'Arc' changes). Suite green.
+'tri' at the floor: with floor 0.3 and an ex-post leg of 1 s, the
+value is 1 at birth, 0.65 at 0.5 s, 0.3 at 1 s and 0.3 at 10 s;
+with floor 0 the old values. A note under a full pedal with floor
+1 and the ebow kind is still growing 3 s after birth with a 0.5 s
+ex-post leg; with floor 0 it is decaying by then. A floor of 1.5
+is refused naming the key. The before-and-after render at the
+defaults (peak and energy within 1e-4 relative; the agent
+captures the "before" numbers from the parent commit in a
+one-time run and writes them into the test as constants with the
+commit hash in a comment). A 'pick_energy' change between two
+notes changes the second note's peak and rebuilds no knock
+(assert the 'Arc' pointer is the same before and after: expose it
+for tests). A 'body.mix' change between two blocks changes the
+output without resetting the resonators (assert the block after
+the change is not the block a fresh bank would give). A 'body.q'
+change still rebuilds (the knock 'Arc' changes). Suite green.
 
 ** TODO Slice 4: the grid key 'square_dance'
 *** What
