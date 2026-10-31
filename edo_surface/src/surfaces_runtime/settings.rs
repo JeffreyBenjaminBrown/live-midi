@@ -144,6 +144,8 @@ pub(super) struct GridSettings {
   pub(super) handles: Handles,
   /// Whether this grid flashes its sustained notes (`edo_note_grid` `flash_sustained`).
   pub(super) flash_sustained: bool,
+  /// Whether this grid draws the square dance (`edo_note_grid` `square_dance`).
+  pub(super) square_dance: bool,
   /// The grids this grid's `pedal_toggle` buttons opt in or out (their `controls`;
   /// itself when absent), as grid indices.
   pub(super) new_note_toggle_controls: usize,
@@ -560,22 +562,23 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     // The neighbour handles: the rig's sides, defaulting to edit-below / sustain-above.
     // (A momentary-chord grid has none at all -- keys.rs skips the handle path there,
     // and validation rejects setting them on one.)
-    let (handles, flash_sustained) = rig
+    let (handles, flash_sustained, square_dance): (Handles, bool, bool) = rig
       .monome_windows
       .iter()
       .find_map(|w| match w {
         MonomeWindowRig::EdoNoteGrid {
-          monome, edit_handle, sustain_handle, flash_sustained, ..
+          monome, edit_handle, sustain_handle, flash_sustained, square_dance, ..
         } if monome == monome_id => Some((
           Handles {
             edit: edit_handle.unwrap_or(HandleSide::Below).note_offset(),
             sustain: sustain_handle.unwrap_or(HandleSide::Above).note_offset(),
           },
           *flash_sustained,
+          *square_dance,
         )),
         _ => None,
       })
-      .unwrap_or((Handles::DEFAULT, false));
+      .unwrap_or((Handles::DEFAULT, false, true));
     grids.push(GridSettings {
       monome_id: monome_id.to_string(),
       select: monome_cfg.select.clone(),
@@ -589,6 +592,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
       overlays,
       handles,
       flash_sustained,
+      square_dance,
       new_note_toggle_controls: new_note_controls.unwrap_or(own_index),
       global_toggle_controls: global_controls.unwrap_or(own_index),
     });

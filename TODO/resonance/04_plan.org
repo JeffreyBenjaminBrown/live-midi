@@ -682,7 +682,7 @@ output without resetting the resonators (assert the block after
 the change is not the block a fresh bank would give). A 'body.q'
 change still rebuilds (the knock 'Arc' changes). Suite green.
 
-** TODO Slice 4: the grid key 'square_dance'
+** DONE Slice 4: the grid key 'square_dance'
 *** What
 As under "The square dance is a grid knob" and the pitfall "The
 square dance is gated by 'Overlays::compact()' alone": the rig

@@ -368,7 +368,8 @@ the grid they drive with ~monome~.
 *** ~edo_note_grid~ note handles and looks
 ~edit_handle~ and ~sustain_handle~ pick which neighbour of a sounding note
 toggles its edit mode or its sustain, or ~"none"~. ~flash_sustained~ makes
-fingerless sustained notes flash.
+fingerless sustained notes flash. ~square_dance = false~ stops the square dance
+on that grid.
 *** ~accrete_control~ ~needs_holding~, ~pedal_toggle~
 ~initially_on~ picks whether the button starts on.
 ** connections that are still fixed in code
@@ -426,6 +427,7 @@ sink = "synth"
 sustain_handle = "below"   # the volpedal rig: thumb under a note sustains it
 edit_handle = "none"       # and there is no edit mode
 flash_sustained = true     # sustained notes no finger holds flash bright
+square_dance = false       # and no dim cell circles them
 #+end_src
 
 A ~pedal_toggle~ is a one-cell opt-in for one of the volpedal pedal roles
@@ -448,6 +450,12 @@ initially_on = true         # default
 ~flash_sustained~ (default false) makes the sustained notes that no finger holds
 flash bright, on the same clock as that grid's resting controls flash dim; held
 notes stay steady.
+
+~square_dance~ (default true) draws the square dance: one dim cell circling the
+four diagonal neighbours of each sustained note and chord voice on that grid.
+False turns it off there; the diamond dance around an edited note, the
+off-screen octave hints and ~flash_sustained~ are unaffected. A grid of the
+compact family never draws it, whatever the key says.
 
 Built-in unbundled window kinds:
 

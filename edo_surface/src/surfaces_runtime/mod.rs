@@ -642,6 +642,7 @@ fn run(
       volume_delta_controls_index: g.volume_delta_controls_index,
       handles: g.handles,
       flash_sustained: g.flash_sustained,
+      square_dance: g.square_dance,
       new_note_toggle_controls: g.new_note_toggle_controls,
       global_toggle_controls: g.global_toggle_controls,
     };
@@ -855,6 +856,8 @@ struct Knobs {
   handles: settings::Handles,
   /// Whether this grid flashes the sustained notes no finger holds.
   flash_sustained: bool,
+  /// Whether this grid draws the square dance (outside the compact family).
+  square_dance: bool,
   /// The grids this grid's `pedal_toggle` buttons opt in or out.
   new_note_toggle_controls: usize,
   global_toggle_controls: usize,
@@ -1165,7 +1168,9 @@ fn grid_thread(mut rt: GridThread) {
     // CHORD voices square-dance exactly like sustained ones (Jeff: same dance for
     // both) -- they are the other kind of playing-while-not-fingered voice, and the
     // marker reads the same either way.
-    if !rt.overlays.compact() {
+    // The rig may turn it off per grid (`square_dance`); the compact family never
+    // draws it.
+    if !rt.overlays.compact() && rt.knobs.square_dance {
       for pitch in sustained.iter().copied().chain(chord_pitches.iter().copied()) {
         for (x, y) in cells_for_pitch(&rt, register, pitch) {
           dance_cells.insert(dance::diagonal_cell((x, y), elapsed));

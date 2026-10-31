@@ -836,6 +836,10 @@ fn default_crowded_pitch_planck_deviation() -> f32 {
   0.0
 }
 
+fn default_square_dance() -> bool {
+  true // the long-standing look: every grid outside the compact family dances
+}
+
 impl SinkRig {
   pub fn id(&self) -> &str {
     match self {
@@ -900,6 +904,12 @@ pub enum MonomeWindowRig {
     /// runtime). Held notes stay steady. Absent = false.
     #[serde(default)]
     flash_sustained: bool,
+    /// The square dance (`surfaces_runtime/dance.rs`): one dim cell circling the four
+    /// diagonal neighbours of each sustained note and chord voice on this grid
+    /// (surfaces runtime). False turns it off on this grid; the diamond dance, the
+    /// off-screen hints and `flash_sustained` stay as they are. Absent = true.
+    #[serde(default = "default_square_dance")]
+    square_dance: bool,
   },
   ChordWipeButton {
     id: String,

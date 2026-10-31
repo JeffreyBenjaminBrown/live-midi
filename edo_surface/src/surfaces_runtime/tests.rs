@@ -91,6 +91,7 @@
         volume_delta_controls_index: 0,
         handles: g.handles,
         flash_sustained: g.flash_sustained,
+        square_dance: g.square_dance,
         new_note_toggle_controls: g.new_note_toggle_controls,
         global_toggle_controls: g.global_toggle_controls,
       },
@@ -2051,6 +2052,7 @@
       loop_clear_tap_ms: 300,
       handles: Handles::DEFAULT,
       flash_sustained: false,
+      square_dance: true,
       new_note_toggle_controls: controls_index,
       global_toggle_controls: controls_index,
       overlays: Overlays {
@@ -2466,6 +2468,67 @@
     assert_eq!(lit(true, true), set(&[1, 2, 3]), "bright half: everything lit");
     assert_eq!(lit(true, false), set(&[1, 3]), "dark half: only the fingerless sustained note drops");
     assert_eq!(lit(false, false), set(&[1, 2, 3]), "without the flag sustained notes hold steady");
+  }
+
+  /// `square_dance`: a grid whose `edo_note_grid` sets it false resolves to a
+  /// `GridSettings` with it false; a grid without the key resolves to true, the
+  /// long-standing look. (The dance cells themselves are computed inside the grid
+  /// thread's loop, which no unit test drives, so this pins the knob's passage.)
+  #[test]
+  fn square_dance_resolves_false_where_the_rig_says_and_true_by_default() {
+    let rig_name: &str = "2-edogrids_ss-accrete_ss-pulse";
+    let source: String = std::fs::read_to_string(
+      crate::rig::rig_dir().join(format!("{rig_name}.org")) )
+      .expect("read the shipped rig");
+    assert!(
+      !source.contains("square_dance"),
+      "fixture is stale: {rig_name} now sets square_dance itself" );
+    let untouched: Settings = resolve_settings(
+      &crate::rig_org::parse_org_rig(&source).expect("parses") )
+      .expect("resolves");
+    assert!(untouched.grids.len() >= 2, "the fixture has two play grids");
+    for g in &untouched.grids {
+      assert!(g.square_dance, "{}: without the key the grid dances", g.monome_id);
+    }
+    let rig: Rig = crate::rig_org::parse_org_rig(
+      &square_dance_off_on_first_grid(&source) )
+      .expect("edited rig parses");
+    let undanced_monomes: Vec<String> = rig
+      .monome_windows
+      .iter()
+      .filter_map(|w| match w {
+        MonomeWindowRig::EdoNoteGrid { monome, square_dance: false, .. } =>
+          Some(monome.clone()),
+        _ => None, })
+      .collect();
+    assert_eq!(undanced_monomes.len(), 1, "the rig reads the key on the one grid that sets it");
+    let s: Settings = resolve_settings(&rig).expect("edited rig resolves");
+    for g in &s.grids {
+      assert_eq!(
+        g.square_dance,
+        g.monome_id != undanced_monomes[0],
+        "{}: only the grid that sets square_dance = false stops dancing",
+        g.monome_id );
+    }
+  }
+
+  /// The org rig `source` with `square_dance = false` added under its first
+  /// `edo_note_grid`, at that window's PARAM depth.
+  fn square_dance_off_on_first_grid(
+    source: &str,
+  ) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut added: bool = false;
+    for line in source.lines() {
+      lines.push(line.to_string());
+      let (stars, rest): (&str, &str) = line.split_once(' ').unwrap_or(("", line));
+      if !added && rest.starts_with("PARAM kind = \"edo_note_grid\"") {
+        lines.push(format!("{stars} PARAM square_dance = false"));
+        added = true;
+      }
+    }
+    assert!(added, "the fixture has an edo_note_grid");
+    lines.join("\n")
   }
 
   /// The volpedal rig against one and two mock grids through real OSC. LED
