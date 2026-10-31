@@ -197,9 +197,12 @@ single 'string_energy_position' and its NaN-on-unbound rule go.
 'LiveParams' gains 'pedal_targets: [[Option<StringsPedalTarget>;
 MAX_PEDAL_TARGETS]; NUM_PEDALS]' and 'string_energy_pedal:
 Option<usize>' (the channel index of the energy pedal, 'None'
-without one). 'MAX_PEDAL_TARGETS' is 16, enough for every
-targetable parameter at once on one pedal; validation refuses
-more per pedal. 'LiveParams' stays 'Copy'.
+without one). 'MAX_PEDAL_TARGETS' is 16; validation refuses
+more per pedal.
+**** UPDATED [Claude] after slice 1: 16 is not "every parameter"
+The targetable list has 29 keys (30 with the floor), so one
+pedal carries at most 16 of them. Sixteen stays: nobody needs
+more on one foot, and the array is copied every callback. 'LiveParams' stays 'Copy'.
 *** 'StringsPedalTarget'
 'Copy': the parameter's key as '&'static str' (for messages and
 tests), its setter 'fn(&mut StringsParams, f32)', 'min', 'max'.
@@ -601,6 +604,22 @@ pedal at 0.25 on 'howl.gain' 0..20 gives 5; an unreported pedal
 (NaN) leaves the value; 'min' above 'max' inverts. Suite green.
 
 ** TODO Slice 2: the runtime: positions, targets, live params
+*** Corrections carried from slice 1
+Slice 1 had to place 'PedalRole::StringParameters' in the two
+exhaustive role matches of 'settings.rs' ('resolve_settings')
+and 'surfaces_runtime/tests.rs'; both return 'None' for it now.
+Replace both with 'PedalTarget::StringParameters'. Slice 1's
+names: everything lives in 'strings/pedal_targets.rs'
+('TARGETABLE_PARAMETERS', 'TABLE_REBUILDING_PARAMETERS',
+'MAX_PEDAL_TARGETS', 'PedalTargetSetter',
+'PedalTargetsPerChannel' = '[[Option<StringsPedalTarget>;
+MAX_PEDAL_TARGETS]; NUM_PEDALS]', 'StringsPedalTarget' with
+'value_at', 'resolve_pedal_target', 'apply_pedal_targets(&
+StringsParams, &PedalTargetsPerChannel, &[f32; NUM_PEDALS]) ->
+StringsParams'); in 'rig.rs', 'PedalRole::rig_spelling',
+'play_grids_sink_id', 'play_grids_strings_params' and
+'validate_rig_wide_strings_pedal'. Use these; coin nothing that
+duplicates them.
 *** What
 'mod.rs': 'pedal_positions'. 'pedal_volume.rs': publish every
 pedal's position each poll; remove the energy branch's store
