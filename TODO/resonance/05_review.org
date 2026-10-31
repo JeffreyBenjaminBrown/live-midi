@@ -239,3 +239,23 @@ measured anti-nasal values; 'two-pedals_monome' was copied from
 'energy-pedal_monome' as it stood, so it has the nasal ones.
 Whichever rig wins, the other two can take its sink by copying
 the 'string', 'exciter' and 'body' tables.
+
+* After the run
+** The not-nasal values moved into the new rig
+Commit 2fd954a (Opus 5.5, medium): the eight sink values of
+'rigs/energy-pedal_monome_not-nasal.org' (decay at 1760 Hz,
+both stiffness anchors, brightness, one hammer pulse, knock
+mix, body mode count and q) into 'two-pedals_monome'. Suites
+unchanged at 781 and 1016.
+** Two harness tests read a tunable rig; they no longer do
+Slice 5's 'squeal' and every-scene tests rendered
+'two-pedals_monome' from 'rigs/' and asserted on its sound,
+against Jeff's rule that tests must not depend on parameters
+he tunes. Commit b61a094 rebuilds both on a fixture: the
+defaults plus two channel 2 targets made in the test
+('howl.gain' 0..20, 'howl.level' 0.0015..0.003, chosen so the
+squeal catches without reaching the clamp; at the rig's
+0.003..0.006 the defaults clipped). The plan asked for the
+rig-reading form; that was the plan's error, and the advice
+should say: a test may load a shipped rig to read its layout,
+never to assert on what it renders.
