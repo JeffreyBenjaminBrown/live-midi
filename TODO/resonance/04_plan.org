@@ -701,6 +701,20 @@ computed inside the grid thread's loop, say so in the report
 and test the knob's passage alone. Suite green.
 
 ** TODO Slice 5: the rig, its readme, the harness, user docs
+*** Corrections carried from slice 2
+The harness calls slice 2's
+'strings::pedal_targets::resolve_strings_pedals(&Rig,
+&StringsParams) -> Result<ResolvedStringsPedals, String>' once
+(fields 'pedal_targets' and 'string_energy_pedal'; the default
+is no targets and no energy pedal, for a run without '--rig'),
+and per block 'effective_params_and_energy_position(&params,
+&resolved.pedal_targets, resolved.string_energy_pedal,
+&[pedal1, pedal2])', which returns the parameters to render
+with and the position to hand to 'render_block'. The harness
+today takes the first 'cpal_strings' sink while validation
+takes the play grids' sink ('rig.rs' 'play_grids_strings_params',
+private): make that function 'pub' and have the harness use it,
+so both read one sink.
 *** What
 The rig as under "The rig 'two-pedals_monome'", copied from the
 working tree's 'rigs/energy-pedal_monome.org' (dirty with
