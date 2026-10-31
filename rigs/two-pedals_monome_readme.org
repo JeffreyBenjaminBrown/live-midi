@@ -1,0 +1,204 @@
+#+title: Monomes: coupled strings under two pedals
+
+* Run
+Connect one or two 16x16 monomes and two EX-P pedals to the
+MPC-20, on channels 1 and 2. Run 'tools/pedals/bridge.sh' on the
+HOST first, in a terminal you leave open, every session. Then,
+from the repository root inside the container:
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- two-pedals_monome
+#+end_src
+
+Either physical grid can be used alone. The rig looks for the
+pedals only at startup: if the bridge wasn't running then, it
+prints a red "expression pedals skipped" line and plays on with
+no pedals (every note is struck at the rig's own level, nothing
+blooms, nothing squeals) until restarted. Working pedals print
+"expression pedals: connected" instead. Ctrl-C blanks the grids
+and stops audio.
+
+* Layout
+#+begin_example
+       x=0                                     13    14    15
+y=0  | . . . . . . . . . . . . .              SHIFT SHIFT SHIFT
+y=1  | . . . . . . . . . . . . .              SHIFT SHIFT SHIFT
+     |
+     |                   EDO PLAY SURFACE
+     |
+y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
+                   x=6  x=7  x=8
+#+end_example
+Everything but the shift pad and the three sustain buttons is
+play surface: 41-EDO from 110 Hz, eight steps per cell rightward
+and one step per cell downward. A control at rest flashes dim on
+the shared 150 ms clock; a lit control is solid bright. A held
+note is solid bright, and a sustained note no finger holds
+flashes bright on that same clock. No dim cell circles a
+sustained note: the rig turns the square dance off.
+
+Every note is a string. A key strikes it (as a piano hammer
+does), and it rings on its own decay, longer in the bass than in
+the treble. Every sounding string, held or sustained, shares one
+bridge with every other, so a struck note sets the others
+ringing in sympathy where their partials meet, in any tuning.
+The sound passes through a resonating body.
+
+* The energy pedal: channel 1
+** what it does as the energy-pedal rig's pedal does
+It adds energy to a string around the moment its key goes down:
+its history just before the key-down pre-charges the string, and
+its position drives the string for a while after, so the note
+blooms. The window around each key-down, the heel and toe, and
+the exponent work as [[file:energy-pedal_monome_readme.org]]
+describes under "The pedal"; the window's lengths are this rig's
+'ex_ante_energizing_ms' and 'ex_post_energizing_ms'.
+** it also sets how hard a key strikes
+At the heel a key strikes softly, at the toe hard, in a straight
+line between (the rig's target on 'exciter.pick_energy', 0.15 to
+0.8). The strike is set at the key-down, so moving the pedal
+afterward changes the bloom of a sounding note but not its
+attack. Pressing down as you play is both a harder strike and
+more energy; a soft strike with the pedal rising after it is a
+quiet attack that swells.
+** the window's floor
+The energy table's 'ex_post_energizing_floor', 0 as shipped,
+says where the window ends after a key-down. Above 0 the window
+never closes, so the pedal keeps feeding every note it reached
+for as long as the note sounds; high enough, a sustained note
+under a held pedal grows to its ceiling and never dies on its
+own. The rig gives the thresholds per register.
+** before the pedal first moves
+Until it first moves the pedal puts in nothing, and keys strike
+at the rig's own 'pick_energy'.
+
+* The parameters pedal: channel 2, the squeal
+** at the heel, nothing
+At the heel the rig sounds exactly as it would without this
+pedal.
+** toward the toe, feedback
+As the pedal rises the strings start to feed back, like a guitar
+brought close to its amplifier. Four things move together:
+*** the howl's gain, from off to 20
+The howl is an active loop: every sounding string, summed,
+saturated, delayed a few milliseconds and fed back into every
+string. Low notes catch first; by the toe every note sustains.
+*** the howl's level, from 0.003 to 0.006
+How loud a howling note settles: louder toward the toe, and well
+under the clamp.
+*** the bridge, from heavy to light
+Its heaviness falls to a tenth, so the strings ring more in
+sympathy and feed each other. A light bridge drains notes fast;
+the howl makes up for it.
+*** the tail, brighter
+The upper partials ring nearly as long as the fundamental.
+** what you hear
+Held and sustained notes stop decaying and settle at a level of
+their own, swelling as the pedal comes down. In the harness's
+'squeal' scene a chord that alone falls to a quarter of its level
+within two seconds instead swells past its struck level while the
+pedal rises, and holds near it. Released notes still stop: the
+damper wins. All four act at once on sounding notes, so rocking
+the pedal back toward the heel lets them decay again.
+** caution: the howl locks pitches
+Among several notes the partials they share win the saturation,
+which pulls near-unisons, near-fifths and near-octaves toward
+just ratios. That fights the EDO tuning, the more the nearer the
+toe.
+
+* Giving a pedal other parameters
+Each pedal's targets are in the rig under "pedal connection", one
+'ELEM targets' headline each, with three keys: the parameter, its
+value at the heel and its value at the toe. In a block like this
+the headlines are indented two spaces; in the rig they start at
+the margin, at the depth of the targets already there:
+
+#+begin_example
+  ***** ELEM targets
+  Any notes here are for you; the loader ignores them.
+  ****** PARAM parameter = "body.mix"
+  ****** PARAM min = 0.3
+  ****** PARAM max = 0.0
+#+end_example
+
+That one would dry the sound out as the pedal comes down: 'min'
+above 'max' runs the parameter backward. 'min' equal to 'max'
+pins it, a way to try a value without editing the sink. Only the
+two strings pedals take targets (the energy pedal, and a pedal
+whose role is 'string_parameters'). A pedal carries at most 16; a
+parameter may have one target in the whole rig, so the energy
+pedal's 'exciter.pick_energy' cannot also go on channel 2; and
+'min' and 'max' must each be a value the parameter accepts. Only
+floats the engine can change without rebuilding a table are
+targetable: [[file:README.org]], "Expression pedals", "Pedal
+targets", lists them. A target on an 'energy' or 'exciter' key,
+or on 'modal.crossover_hz', reaches the notes struck afterward;
+the rest reach the sounding strings at once. A rig that breaks a
+rule fails at 'r' and the old values play on.
+
+* Sustain
+Each grid has its own sustained set. OFF, ON and TOGGLE act on
+their own grid only. A sustained string keeps ringing on its own
+decay, and keeps taking part in the sympathy and the howl.
+** the handle: the cell below a note
+Press the cell directly below a sounding note to toggle that
+note's sustain. The press never sounds. Sustaining a held note
+keeps it ringing after you lift your finger. Pressing the handle
+of a sustained note un-sustains it, which ends it unless a
+finger still holds it. The cell above a note is an ordinary
+note. A note on the bottom row, or directly above OFF, ON or
+TOGGLE, has no handle.
+** OFF
+Ends every sustained note on this grid that no finger holds.
+Held notes keep sounding, now unsustained.
+** ON
+Notes already held, and notes played while ON is live, join the
+sustained set.
+** TOGGLE WHAT ON MEANS
+Bright means ON is momentary: hold it. Dim means ON latches: tap
+it on, tap it off. It starts bright.
+
+* Shift
+The four arrow cells move the visible register one cell. The two
+outer top corners move it one octave.
+
+* The top register, the bow and the wind
+The strings are the energy-pedal rig's, so its readme's "Two
+options" and "Two more kinds of pedal energy" hold here too:
+[[file:energy-pedal_monome_readme.org]].
+
+* Hot reload
+Edit the rig, then press 'r' then Enter in the terminal running
+it. Everything the energy-pedal readme lists under "Hot reload"
+reloads the same way here. A pedal target added, removed or
+re-ranged applies at once, through where the pedal is now.
+'square_dance' needs a restart.
+
+* Listening without grids
+The harness renders scripted scenes with this rig's string
+parameters and pedal targets to WAV files:
+
+#+begin_src sh
+cargo run -p tools --bin strings_harness -- --rig two-pedals_monome
+#+end_src
+
+Its 'squeal' scene strikes a chord and holds it while the channel
+2 pedal rises from the heel at 1 s to the toe at 3 s. '--pedal
+TRACE' scripts the channel 1 pedal and '--pedal2 TRACE' the
+channel 2 pedal for every scene ('0:0,1:1' rises from heel to toe
+over the first second); '--help' lists the rest.
+
+* Deliberately not here
+No timbre keys and no volume keys, no chord storage, no loops, no
+tone-target cell, no edit mode, no SoftSteps, no square dance,
+and no volume pedal: both EX-Ps are in use.
+
+* More detail
+The rig itself, with every value and its math:
+[[file:two-pedals_monome.org]].
+The plans and the design discussion:
+[[file:../TODO/resonance/04_plan.org]],
+[[file:../TODO/resonance/02_plan.org]] and
+[[file:../TODO/resonance/01_discussion.org]].
+The pedal roles and targets in general, and the rig format:
+[[file:README.org]] ("Output sinks", "Expression pedals").

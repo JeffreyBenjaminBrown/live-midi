@@ -3,34 +3,47 @@
 //! without grids.
 //!
 //! cargo run -p tools --bin strings_harness -- [--rig NAME | --rig-file PATH]
-//!   [--scene NAME] [--out DIR] [--pedal TRACE] [--howl GAIN] [--energy KIND]
+//!   [--scene NAME] [--out DIR] [--pedal TRACE] [--pedal2 TRACE] [--howl GAIN]
+//!   [--energy KIND]
 //!
 //! '--help' prints the options and the scenes.
 //!
 //! '--rig' loads the named rig from 'rigs/', '--rig-file' a rig at
-//! any path; the harness then renders with the first 'cpal_strings'
-//! sink's parameters, sample rate and amplitude. Without either it
-//! renders 'StringsParams::default()' at 48 kHz and amplitude 0.15.
+//! any path; the harness then renders with the parameters, sample
+//! rate and amplitude of the sink the rig's play grids play into
+//! ('rig::play_grids_sink', the sink the pedal targets' validation
+//! reads), or of its first 'cpal_strings' sink if it has no play
+//! grid, and with the rig's pedal targets and energy pedal. Without
+//! either it renders 'StringsParams::default()' at 48 kHz and
+//! amplitude 0.15, with no targets and the channel 1 pedal as the
+//! energy pedal.
 //! Without '--scene' it renders every scene; without '--out' it
 //! writes into 'target/strings-harness/' at the repository root. Each
 //! scene lands in 'DIR/<scene>.wav'; the harness prints each file's
 //! path and peak.
 //!
-//! The energy pedal. A scene may script the pedal's raw position
-//! ('pedal_swell' does); the others leave it unreported (NaN), as an
-//! unplugged pedal is. '--pedal TRACE' replaces every rendered
-//! scene's pedal: 'TRACE' is 'none' (unreported) or comma-separated
+//! The pedals. A scene may script either pedal's raw position
+//! ('pedal_swell' scripts the channel 1 pedal, 'squeal' the channel
+//! 2 pedal); a pedal a scene does not script is unreported (NaN), as
+//! an unplugged pedal is. '--pedal TRACE' replaces every rendered
+//! scene's channel 1 pedal and '--pedal2 TRACE' its channel 2 pedal:
+//! 'TRACE' is 'none' (unreported) or comma-separated
 //! 'SECONDS:POSITION' points in time order, joined by straight lines,
 //! the first point's position held before it and the last's after it
 //! ('0:0,1:1' rises from heel to toe over the first second and stays
-//! there; '0:0' is a pedal resting at the heel). The engine reads the
-//! position once per block, as the audio callback does.
+//! there; '0:0' is a pedal resting at the heel). What a pedal does is
+//! the rig's: the energy pedal's position reaches the engine's
+//! energy, and every target of a reported pedal moves its parameter
+//! ('strings::pedal_targets'). Each block reads both positions at
+//! its start, as the audio callback does, through the callback's own
+//! 'effective_params_and_energy_position'.
 //!
 //! The howl path. A scene may set the howl's gain over the rig's
 //! ('howl' sets 'HOWL_SCENE_GAIN'); the others render the rig's own
 //! 'howl.gain' (0, off, as shipped). '--howl GAIN' sets the howl's
 //! gain for every rendered scene, over both; the howl's level and
-//! delay stay the rig's.
+//! delay stay the rig's. A pedal target on 'howl.gain' overrides all
+//! of these while its pedal reports.
 //!
 //! The energy kind. A scene may set the energy pedal's kind over the
 //! rig's ('pedal_swell_bow' and 'pedal_swell_wind' are 'pedal_swell'
@@ -46,9 +59,14 @@
 //! the map. So what it renders is what a rig with the same
 //! parameters plays.
 
-use edo_surface::rig::{load_named_rig, load_rig_file, Rig, SinkRig};
+use edo_surface::expression_pedals::NUM_PEDALS;
+use edo_surface::rig::{load_named_rig, load_rig_file, play_grids_sink, Rig, SinkRig};
 use edo_surface::strings::exciter::peak_magnitude;
 use edo_surface::strings::params::EnergyKind;
+use edo_surface::strings::pedal_targets::{
+  effective_params_and_energy_position, resolve_strings_pedals, ResolvedStringsPedals,
+  NO_PEDAL_TARGETS,
+};
 use edo_surface::strings::scripted_voices::{release_voice_state, struck_voice_state};
 use edo_surface::strings::{StringsParams, StringsRenderer};
 use edo_surface::types::{VoiceId, VoiceMap, VoiceSource, VoiceState};
@@ -64,23 +82,29 @@ use std::vec::IntoIter;
 /// error; `{scenes}` is replaced by the scene names.
 const USAGE: &str = "\
 usage: strings_harness [--rig NAME | --rig-file PATH] [--scene NAME]... [--out DIR]
-                       [--pedal TRACE] [--howl GAIN] [--energy KIND]
-  --rig NAME        render with the first cpal_strings sink of rigs/NAME.org
+                       [--pedal TRACE] [--pedal2 TRACE] [--howl GAIN] [--energy KIND]
+  --rig NAME        render with rigs/NAME.org: the cpal_strings sink its play
+                    grids play into, its pedal targets and its energy pedal
   --rig-file PATH   the same, from a rig at any path
-                    (without either: the engine's defaults at 48 kHz)
+                    (without either: the engine's defaults at 48 kHz, no pedal
+                    targets, the channel 1 pedal as the energy pedal)
   --scene NAME      render this scene (repeatable; default: every scene):
                     {scenes}
   --out DIR         write DIR/<scene>.wav (default: target/strings-harness/)
-  --pedal TRACE     the energy pedal's raw position (0 heel, 1 toe) for every
-                    rendered scene, replacing the scene's own: 'none' (never
-                    reported), or SECONDS:POSITION points in time order joined
-                    by straight lines, the first point's position held before
-                    it and the last's after it. '0:0,1:1' rises over the first
-                    second and stays at the toe; '0:0' rests at the heel.
+  --pedal TRACE     the channel 1 pedal's raw position (0 heel, 1 toe) for
+                    every rendered scene, replacing the scene's own: 'none'
+                    (never reported), or SECONDS:POSITION points in time order
+                    joined by straight lines, the first point's position held
+                    before it and the last's after it. '0:0,1:1' rises over the
+                    first second and stays at the toe; '0:0' rests at the
+                    heel. It is the energy pedal when the rig binds one on
+                    channel 1, and moves the rig's channel 1 targets.
+  --pedal2 TRACE    the same for the channel 2 pedal ('squeal' scripts it).
   --howl GAIN       the howl path's gain (howl.gain, >= 0; 0 is off) for every
                     rendered scene, replacing the rig's and the scene's own
                     (the 'howl' scene sets 20); the level and delay stay the
-                    rig's.
+                    rig's. A pedal target on howl.gain wins while its pedal
+                    reports.
   --energy KIND     the energy pedal's kind (energy.kind: ebow, bow or wind) for
                     every rendered scene, replacing the rig's and the scene's
                     own ('pedal_swell_bow' sets bow, 'pedal_swell_wind' wind);
@@ -97,9 +121,9 @@ const DEFAULT_AMPLITUDE: f32 = 0.15;
 /// Every scene's voices are on this grid.
 const GRID: usize = 0;
 
-const SCENE_NAMES: [&str; 9] = [
+const SCENE_NAMES: [&str; 10] = [
   "single_notes", "chord", "restrike", "pedal_swell", "pedal_swell_bow", "pedal_swell_wind",
-  "sympathy", "howl", "treble"];
+  "sympathy", "howl", "treble", "squeal"];
 
 /// The howl gain the 'howl' scene renders with: well above the
 /// threshold at which the default level sustains a note.
@@ -110,17 +134,19 @@ const HOWL_SCENE_GAIN: f32 = 20.0;
 const CHORD_HZ: [f32; 4] = [110.0, 137.5, 165.0, 220.0];
 
 /// A scripted scene: its events, in time order, its length, its
-/// energy pedal (`None`: never reported), and the howl gain and
-/// energy kind it sets over the rig's (`None`: the rig's).
+/// channel 1 and channel 2 pedals (`None`: never reported), and the
+/// howl gain and energy kind it sets over the rig's (`None`: the
+/// rig's).
 struct Scene {
   name: &'static str,
   duration_seconds: f32,
   events: Vec<(f32, SceneEvent)>,
   pedal: Option<PedalTrace>,
+  pedal2: Option<PedalTrace>,
   howl_gain: Option<f32>,
   energy_kind: Option<EnergyKind>, }
 
-/// The energy pedal's raw position over time: `(seconds, position)`
+/// A pedal's raw position over time: `(seconds, position)`
 /// points in time order, joined by straight lines, the first point's
 /// position held before it and the last's after it.
 #[derive(Clone, Debug)]
@@ -148,6 +174,8 @@ struct Options {
   rig_source: Option<RigSource>,
   /// '--pedal': `Some(None)` is 'none', an unreported pedal.
   pedal_override: Option<Option<PedalTrace>>,
+  /// '--pedal2', likewise.
+  pedal2_override: Option<Option<PedalTrace>>,
   /// '--howl'.
   howl_override: Option<f32>,
   /// '--energy'.
@@ -159,11 +187,13 @@ enum RigSource {
   File(PathBuf), }
 
 /// What the scenes render with: a strings sink's parameters, its
-/// sample rate and its amplitude.
+/// sample rate and its amplitude, and the rig's pedals as the engine
+/// reads them.
 struct Rendering {
   params: StringsParams,
   sample_rate: f32,
-  amplitude: f32, }
+  amplitude: f32,
+  strings_pedals: ResolvedStringsPedals, }
 
 fn main(
 ) -> ExitCode {
@@ -189,6 +219,8 @@ fn main(
     let mut scene: Scene = scene_named(scene_name).expect("parse_options checked the name");
     if let Some(pedal) = &options.pedal_override {
       scene.pedal = pedal.clone(); }
+    if let Some(pedal2) = &options.pedal2_override {
+      scene.pedal2 = pedal2.clone(); }
     if options.howl_override.is_some() {
       scene.howl_gain = options.howl_override; }
     if options.energy_override.is_some() {
@@ -214,6 +246,7 @@ fn parse_options(
   let mut out_dir: Option<PathBuf> = None;
   let mut rig_source: Option<RigSource> = None;
   let mut pedal_override: Option<Option<PedalTrace>> = None;
+  let mut pedal2_override: Option<Option<PedalTrace>> = None;
   let mut howl_override: Option<f32> = None;
   let mut energy_override: Option<EnergyKind> = None;
   let mut remaining: IntoIter<String> = arguments.into_iter();
@@ -235,9 +268,14 @@ fn parse_options(
           RigSource::Named(value)
         } else {
           RigSource::File(PathBuf::from(value)) }); }
-      "--pedal" => {
-        let trace: String = remaining.next().ok_or("--pedal needs 'none' or a trace")?;
-        pedal_override = Some(parse_pedal_trace(&trace)?); }
+      "--pedal" | "--pedal2" => {
+        let trace: String =
+          remaining.next().ok_or(format!("{argument} needs 'none' or a trace"))?;
+        let parsed: Option<PedalTrace> = parse_pedal_trace(&argument, &trace)?;
+        if argument == "--pedal" {
+          pedal_override = Some(parsed);
+        } else {
+          pedal2_override = Some(parsed); }}
       "--howl" => {
         let gain: String = remaining.next().ok_or("--howl needs a gain")?;
         let parsed: f32 = gain.trim().parse::<f32>()
@@ -256,12 +294,15 @@ fn parse_options(
     out_dir: out_dir.unwrap_or_else(default_out_dir),
     rig_source,
     pedal_override,
+    pedal2_override,
     howl_override,
     energy_override, }) }
 
-/// '--pedal''s value: 'none' is `None`; otherwise comma-separated
-/// 'SECONDS:POSITION' points, their times finite and in order.
+/// The value of '--pedal' or '--pedal2' (`flag`, for messages):
+/// 'none' is `None`; otherwise comma-separated 'SECONDS:POSITION'
+/// points, their times finite and in order.
 fn parse_pedal_trace(
+  flag: &str,
   text: &str,
 ) -> Result<Option<PedalTrace>, String> {
   if text == "none" {
@@ -269,16 +310,16 @@ fn parse_pedal_trace(
   let points: Vec<(f32, f32)> = text.split(',')
     .map(|point| {
       let (seconds, position): (&str, &str) = point.split_once(':')
-        .ok_or(format!("--pedal point {point:?} is not SECONDS:POSITION"))?;
+        .ok_or(format!("{flag} point {point:?} is not SECONDS:POSITION"))?;
       let parse = |field: &str| -> Result<f32, String> {
         field.trim().parse::<f32>()
           .ok()
           .filter(|value| value.is_finite())
-          .ok_or(format!("--pedal point {point:?}: {field:?} is not a finite number")) };
+          .ok_or(format!("{flag} point {point:?}: {field:?} is not a finite number")) };
       Ok((parse(seconds)?, parse(position)?)) })
     .collect::<Result<Vec<(f32, f32)>, String>>()?;
   if points.windows(2).any(|pair| pair[1].0 < pair[0].0) {
-    return Err(format!("--pedal {text:?}: the points' times must not go back")); }
+    return Err(format!("{flag} {text:?}: the points' times must not go back")); }
   Ok(Some(PedalTrace { points })) }
 
 /// '--energy''s value, as the rig spells 'energy.kind'.
@@ -291,26 +332,51 @@ fn parse_energy_kind(
     "wind" => Ok(EnergyKind::Wind),
     _ => Err(format!("--energy {text:?} is not ebow, bow or wind")), }}
 
-/// The rig's first 'cpal_strings' sink as a rendering, or the
+/// The rig's strings sink as a rendering, with its pedals resolved
+/// as the runtime resolves them ('resolve_strings_pedals'), or the
 /// defaults without a rig.
 fn rendering_from(
   rig_source: Option<&RigSource>,
 ) -> Result<Rendering, String> {
   let Some(rig_source) = rig_source else {
-    return Ok(Rendering {
-      params: StringsParams::default(),
-      sample_rate: DEFAULT_SAMPLE_RATE,
-      amplitude: DEFAULT_AMPLITUDE, }); };
+    return Ok(rigless_rendering()); };
   let rig: Rig = match rig_source {
     RigSource::Named(name) => load_named_rig(name)?,
     RigSource::File(path) => load_rig_file(path)?, };
-  rig.sinks.iter()
-    .find_map(|sink| match sink {
-      SinkRig::CpalStrings { sample_rate, amplitude, .. } => Some(Rendering {
-        params: sink.strings_params()?,
-        sample_rate: *sample_rate as f32,
-        amplitude: *amplitude, }),
-      _ => None, })
+  let sink: &SinkRig = rendered_sink(&rig)?;
+  let SinkRig::CpalStrings { sample_rate, amplitude, .. } = sink else {
+    return Err(format!(
+      "rig {:?}: its play grids' sink {:?} is not a cpal_strings sink", rig.id, sink.id())); };
+  let params: StringsParams = sink.strings_params()
+    .ok_or(format!("rig {:?}: its strings sink has no strings parameters", rig.id))?;
+  let strings_pedals: ResolvedStringsPedals = resolve_strings_pedals(&rig, &params)
+    .map_err(|error| format!("rig {:?}: {error}", rig.id))?;
+  Ok(Rendering {
+    params,
+    sample_rate: *sample_rate as f32,
+    amplitude: *amplitude,
+    strings_pedals, }) }
+
+/// The engine's defaults, no pedal targets, and the channel 1 pedal
+/// as the energy pedal, so that '--pedal' and 'pedal_swell' put
+/// energy in without a rig, as they always have.
+fn rigless_rendering(
+) -> Rendering {
+  Rendering {
+    params: StringsParams::default(),
+    sample_rate: DEFAULT_SAMPLE_RATE,
+    amplitude: DEFAULT_AMPLITUDE,
+    strings_pedals: ResolvedStringsPedals {
+      pedal_targets: NO_PEDAL_TARGETS,
+      string_energy_pedal: Some(0), }, }}
+
+/// The sink the rig's play grids play into, or, for a rig with no
+/// play grid, its first 'cpal_strings' sink.
+fn rendered_sink(
+  rig: &Rig,
+) -> Result<&SinkRig, String> {
+  play_grids_sink(rig)
+    .or_else(|| rig.sinks.iter().find(|sink| matches!(sink, SinkRig::CpalStrings { .. })))
     .ok_or(format!("rig {:?} has no cpal_strings sink", rig.id)) }
 
 /// 'target/strings-harness/' under the repository root (the parent
@@ -333,6 +399,7 @@ fn scene_named(
     "sympathy" => Some(sympathy_scene()),
     "howl" => Some(howl_scene()),
     "treble" => Some(treble_scene()),
+    "squeal" => Some(squeal_scene()),
     _ => None, }}
 
 /// 55, 110, 220, 440, 880 and 1760 Hz one after another, each 2 s,
@@ -342,8 +409,8 @@ fn single_notes_scene(
   let events: Vec<(f32, SceneEvent)> =
     successive_notes(&[55.0, 110.0, 220.0, 440.0, 880.0, 1760.0]);
   Scene {
-    name: "single_notes", duration_seconds: 12.0, events, pedal: None, howl_gain: None,
-    energy_kind: None }}
+    name: "single_notes", duration_seconds: 12.0, events, pedal: None, pedal2: None,
+    howl_gain: None, energy_kind: None }}
 
 /// A major chord with its octave (110, 137.5, 165, 220 Hz: 4:5:6:8)
 /// held 4 s, then released.
@@ -352,7 +419,7 @@ fn chord_scene(
   let mut events: Vec<(f32, SceneEvent)> = chord_strikes(0.0);
   events.extend((0 .. CHORD_HZ.len() as i32).map(|cell| (4.0, SceneEvent::Release { cell })));
   Scene {
-    name: "chord", duration_seconds: 4.5, events, pedal: None, howl_gain: None,
+    name: "chord", duration_seconds: 4.5, events, pedal: None, pedal2: None, howl_gain: None,
     energy_kind: None }}
 
 /// The chord struck and sustained (its fingers lift at 0.5 s with
@@ -370,8 +437,8 @@ fn restrike_scene(
     cell: restruck_cell, freq: CHORD_HZ[restruck_cell as usize] }));
   events.push((2.5, SceneEvent::Sustain { cell: restruck_cell, pitch: restruck_cell }));
   Scene {
-    name: "restrike", duration_seconds: 6.0, events, pedal: None, howl_gain: None,
-    energy_kind: None }}
+    name: "restrike", duration_seconds: 6.0, events, pedal: None, pedal2: None,
+    howl_gain: None, energy_kind: None }}
 
 /// The energy pedal rises from the heel at 0 s to the toe at 1 s,
 /// when a 220 Hz note is struck, and stays at the toe through the
@@ -389,7 +456,8 @@ fn pedal_swell_scene(
     (4.0, SceneEvent::Release { cell }) ];
   let pedal: PedalTrace = PedalTrace { points: vec![(0.0, 0.0), (1.0, 1.0)] };
   Scene {
-    name, duration_seconds: 4.5, events, pedal: Some(pedal), howl_gain: None, energy_kind }}
+    name, duration_seconds: 4.5, events, pedal: Some(pedal), pedal2: None, howl_gain: None,
+    energy_kind }}
 
 /// Four notes struck at 0 s and held (165, 220, 330 and 440 Hz: the
 /// 3rd, 4th, 6th and 8th harmonics of 55 Hz), ringing quietly by 3 s
@@ -404,8 +472,8 @@ fn sympathy_scene(
     .collect();
   events.push((3.0, SceneEvent::Strike { cell: quiet_hz.len() as i32, freq: 110.0 }));
   Scene {
-    name: "sympathy", duration_seconds: 8.0, events, pedal: None, howl_gain: None,
-    energy_kind: None }}
+    name: "sympathy", duration_seconds: 8.0, events, pedal: None, pedal2: None,
+    howl_gain: None, energy_kind: None }}
 
 /// The chord struck and held 5 s with the howl path on (gain
 /// `HOWL_SCENE_GAIN`, the rig's level and delay), then released: the
@@ -416,7 +484,7 @@ fn howl_scene(
   let mut events: Vec<(f32, SceneEvent)> = chord_strikes(0.0);
   events.extend((0 .. CHORD_HZ.len() as i32).map(|cell| (5.0, SceneEvent::Release { cell })));
   Scene {
-    name: "howl", duration_seconds: 6.0, events, pedal: None,
+    name: "howl", duration_seconds: 6.0, events, pedal: None, pedal2: None,
     howl_gain: Some(HOWL_SCENE_GAIN), energy_kind: None }}
 
 /// 1500, 2500 and 3500 Hz one after another, each 2 s, the damper at
@@ -426,8 +494,21 @@ fn treble_scene(
 ) -> Scene {
   let events: Vec<(f32, SceneEvent)> = successive_notes(&[1500.0, 2500.0, 3500.0]);
   Scene {
-    name: "treble", duration_seconds: 6.0, events, pedal: None, howl_gain: None,
-    energy_kind: None }}
+    name: "treble", duration_seconds: 6.0, events, pedal: None, pedal2: None,
+    howl_gain: None, energy_kind: None }}
+
+/// The chord struck at 0 s and held to the end at 6 s, the channel
+/// 2 pedal resting at the heel until 1 s, rising to the toe at 3 s
+/// and held there. Under a rig whose channel 2 pedal brings on the
+/// howl ('two-pedals_monome'), the chord decays as struck until the
+/// pedal rises, then sustains and grows on the howl.
+fn squeal_scene(
+) -> Scene {
+  let events: Vec<(f32, SceneEvent)> = chord_strikes(0.0);
+  let pedal2: PedalTrace = PedalTrace { points: vec![(1.0, 0.0), (3.0, 1.0)] };
+  Scene {
+    name: "squeal", duration_seconds: 6.0, events, pedal: None, pedal2: Some(pedal2),
+    howl_gain: None, energy_kind: None }}
 
 /// `pitches_hz` one after another, each struck on its own cell 2 s
 /// after the one before and released 1.5 s after its strike.
@@ -454,9 +535,11 @@ fn chord_strikes(
 
 /// The scene rendered in `BLOCK_FRAMES`-frame mono blocks, each
 /// event applied to the map before the first block that starts at or
-/// after its time, and each block handed the pedal's position at its
-/// start (NaN without a pedal), under the rendering's parameters with
-/// the scene's howl gain and energy kind, where it sets them.
+/// after its time. Each block renders with the effective parameters
+/// and the energy position of both pedals' positions at its start
+/// (NaN for a pedal the scene leaves unreported), over the
+/// rendering's parameters with the scene's howl gain and energy kind,
+/// where it sets them.
 fn render_scene(
   scene: &Scene,
   rendering: &Rendering,
@@ -481,13 +564,29 @@ fn render_scene(
     while next_event < scene.events.len() && scene.events[next_event].0 <= block_start_seconds {
       apply_event(&mut voices, &mut next_voice_id, scene.events[next_event].1, sample_rate);
       next_event += 1; }
-    let pedal_position: f32 = scene.pedal.as_ref()
-      .map_or(f32::NAN, |pedal| pedal.position_at(block_start_seconds));
+    let pedal_positions: [f32; NUM_PEDALS] = [
+      position_at(scene.pedal.as_ref(), block_start_seconds),
+      position_at(scene.pedal2.as_ref(), block_start_seconds) ];
+    let (effective_params, energy_position): (StringsParams, f32) =
+      effective_params_and_energy_position(
+        &params,
+        &rendering.strings_pedals.pedal_targets,
+        rendering.strings_pedals.string_energy_pedal,
+        &pedal_positions);
     renderer.render_block(
-      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &params, pedal_position);
+      &mut voices, &mut block, 1, sample_rate, rendering.amplitude, &effective_params,
+      energy_position);
     rendered.extend_from_slice(&block); }
   rendered.truncate(total_frames);
   rendered }
+
+/// A scene's pedal's position at `seconds`; NaN for a pedal the
+/// scene leaves unreported.
+fn position_at(
+  pedal: Option<&PedalTrace>,
+  seconds: f32,
+) -> f32 {
+  pedal.map_or(f32::NAN, |pedal| pedal.position_at(seconds)) }
 
 impl PedalTrace {
   /// The position at `seconds`: the straight line between the points
@@ -568,3 +667,78 @@ fn write_mono_wav(
   for sample in samples {
     writer.write_sample(*sample)?; }
   writer.finalize() }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The output clamp of the strings engine: a sample at it was
+  /// clipped.
+  const CLAMP: f32 = 0.95;
+
+  const TWO_PEDALS_RIG: &str = "two-pedals_monome";
+
+  fn two_pedals_rendering(
+  ) -> Rendering {
+    rendering_from(Some(&RigSource::Named(TWO_PEDALS_RIG.to_string())))
+      .expect("the two-pedals rig renders") }
+
+  fn rms(
+    samples: &[f32],
+  ) -> f32 {
+    let sum_of_squares: f32 = samples.iter().map(|sample| sample * sample).sum();
+    (sum_of_squares / samples.len() as f32).sqrt() }
+
+  /// Under 'two-pedals_monome', 'squeal' is finite and below the
+  /// clamp, and its last second is louder than the second before
+  /// the channel 2 pedal starts to rise: the howl the pedal brings
+  /// on sustains and grows the chord, which alone would decay.
+  #[test]
+  fn squeal_grows_after_the_channel_2_pedal_rises_and_stays_below_the_clamp() {
+    let rendering: Rendering = two_pedals_rendering();
+    let scene: Scene = squeal_scene();
+    let rendered: Vec<f32> = render_scene(&scene, &rendering);
+    assert!(rendered.iter().all(|sample| sample.is_finite()), "the squeal is finite");
+    let peak: f32 = peak_magnitude(&rendered);
+    assert!(peak < CLAMP, "the squeal peaks at {peak}, at the clamp");
+    let frames_per_second: usize = rendering.sample_rate.round() as usize;
+    let rise_seconds: f32 =
+      scene.pedal2.as_ref().expect("the squeal scripts the channel 2 pedal").points[0].0;
+    let rise_frame: usize = (rise_seconds * rendering.sample_rate).round() as usize;
+    let before_the_rise: f32 =
+      rms(&rendered[rise_frame.saturating_sub(frames_per_second) .. rise_frame]);
+    let last_second: f32 = rms(&rendered[rendered.len() - frames_per_second ..]);
+    assert!(
+      last_second > before_the_rise,
+      "the last second's RMS {last_second} does not exceed {before_the_rise}, the second's \
+       before the pedal rises"); }
+
+  /// Every scene renders under 'two-pedals_monome' to finite audio
+  /// below the clamp.
+  #[test]
+  fn every_scene_renders_under_the_two_pedals_rig() {
+    let rendering: Rendering = two_pedals_rendering();
+    for scene_name in SCENE_NAMES {
+      let scene: Scene = scene_named(scene_name).expect("every listed scene exists");
+      let rendered: Vec<f32> = render_scene(&scene, &rendering);
+      assert!(
+        rendered.iter().all(|sample| sample.is_finite()),
+        "{scene_name} is not finite");
+      let peak: f32 = peak_magnitude(&rendered);
+      assert!(peak < CLAMP, "{scene_name} peaks at {peak}, at the clamp"); }}
+
+  /// Without a rig, the channel 1 pedal is the energy pedal, as
+  /// before pedal targets: 'pedal_swell' blooms louder than the same
+  /// scene with that pedal unreported.
+  #[test]
+  fn without_a_rig_the_channel_1_pedal_is_the_energy_pedal() {
+    let rendering: Rendering = rendering_from(None).expect("the defaults render");
+    let swelled: Scene = scene_named("pedal_swell").expect("the scene exists");
+    let mut unpedalled: Scene = scene_named("pedal_swell").expect("the scene exists");
+    unpedalled.pedal = None;
+    let swelled_rms: f32 = rms(&render_scene(&swelled, &rendering));
+    let unpedalled_rms: f32 = rms(&render_scene(&unpedalled, &rendering));
+    assert!(
+      swelled_rms > unpedalled_rms,
+      "the swell's RMS {swelled_rms} does not exceed {unpedalled_rms}, unpedalled"); }
+}

@@ -130,6 +130,24 @@ design: =TODO/resonance/= (=01_discussion.org=, =02_plan.org=,
 =03_review.org=). Listen without grids:
 =cargo run -p tools --bin strings_harness -- --rig energy-pedal_monome=.
 
+* the strings instrument with two pedals: two-pedals_monome
+A copy of energy-pedal_monome whose pedals carry *pedal targets*:
+(parameter, min, max) triples, each an =ELEM targets= under a pedal,
+moving one float of =StringsParams= linearly with the pedal's raw
+position. The channel 1 energy pedal also sets the strike
+(=exciter.pick_energy=); the channel 2 pedal, role
+=string_parameters=, brings on the howl, a lighter bridge and a
+brighter tail: the squeal. Both grids set =square_dance = false=.
+Runtime pieces: =strings/pedal_targets.rs= holds the targetable list,
+=resolve_strings_pedals= (called by =resolve_settings= and by the
+harness) and =effective_params_and_energy_position=, which the audio
+callback (=surfaces_runtime/audio.rs=) calls every block with the
+per-channel positions the pedal thread publishes. Player reference:
+[[./rigs/two-pedals_monome_readme.org]]; rig:
+=rigs/two-pedals_monome.org=; design: =TODO/resonance/04_plan.org=.
+Listen without grids:
+=cargo run -p tools --bin strings_harness -- --rig two-pedals_monome --scene squeal=.
+
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.
 - Reference: [[./rigs/monome-looper-58-8-1_readme.org]];

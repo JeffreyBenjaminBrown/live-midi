@@ -700,7 +700,7 @@ pitch puts nothing in 'dance_cells'; if the cells are only
 computed inside the grid thread's loop, say so in the report
 and test the knob's passage alone. Suite green.
 
-** TODO Slice 5: the rig, its readme, the harness, user docs
+** DONE Slice 5: the rig, its readme, the harness, user docs
 *** Corrections carried from slice 2
 The harness calls slice 2's
 'strings::pedal_targets::resolve_strings_pedals(&Rig,

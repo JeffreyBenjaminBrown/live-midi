@@ -2642,15 +2642,33 @@
     }
   }
 
-  /// The energy-pedal rig (the strings engine) against two mock grids, then one,
-  /// through real OSC. Headless, so no renderer runs; what is under test is the
-  /// surfaces plumbing over a `cpal_strings` sink, read from the run's voice map: a
-  /// press strikes a voice, the sustain handle keeps that voice ringing as a drone
-  /// once the finger lifts, OFF releases it, and the shift pad moves the register, so
-  /// the same cell strikes a pitch the shift's interval away. Every cell comes from
-  /// the resolved settings.
+  /// The energy-pedal rig against two mock grids, then one.
   #[test]
   fn energy_pedal_rig_runs_against_two_and_one_mock_grids() {
+    strings_rig_runs_against_two_and_one_mock_grids(
+      "energy-pedal_monome",
+      [19240, 19241, 19242, 19243]); }
+
+  /// The two-pedals rig, the energy-pedal rig with its pedals rewritten and the
+  /// square dance off, against two mock grids, then one.
+  #[test]
+  fn two_pedals_rig_runs_against_two_and_one_mock_grids() {
+    strings_rig_runs_against_two_and_one_mock_grids(
+      "two-pedals_monome",
+      [19250, 19251, 19252, 19253]); }
+
+  /// A strings rig (`rig_name`, with the energy-pedal rig's grids) against two mock
+  /// grids, then one, through real OSC, its monomes listening on `ports` (the two
+  /// grids' run, then the one grid's). Headless, so no renderer runs; what is under
+  /// test is the surfaces plumbing over a `cpal_strings` sink, read from the run's
+  /// voice map: a press strikes a voice, the sustain handle keeps that voice ringing
+  /// as a drone once the finger lifts, OFF releases it, and the shift pad moves the
+  /// register, so the same cell strikes a pitch the shift's interval away. Every cell
+  /// comes from the resolved settings.
+  fn strings_rig_runs_against_two_and_one_mock_grids(
+    rig_name: &'static str,
+    ports: [u16; 4],
+  ) {
     use crate::edo_play::{register_delta, shift_for_cell, Shift};
     use crate::mock_monome::{wait_until, GridSpec, MockGrid, MockRig};
     use crate::types::{VoiceId, VoiceSource, VoiceState};
@@ -2668,7 +2686,7 @@
       mode: ((i32, i32), bool),
     }
     let load = |ports: [u16; 2]| -> (Rig, Cells) {
-      let mut rig: Rig = load_named_rig("energy-pedal_monome").expect("rig loads");
+      let mut rig: Rig = load_named_rig(rig_name).expect("rig loads");
       rig.monomes[0].listen_port = ports[0];
       rig.monomes[1].listen_port = ports[1];
       let s: Settings = resolve_settings(&rig).expect("rig resolves");
@@ -2718,12 +2736,13 @@
     {
       let mock: MockRig = MockRig::start(
         0,
-        &[GridSpec::grid_256("energy-pedal-left"), GridSpec::grid_256("energy-pedal-right")],
+        &[
+          GridSpec::grid_256(&format!("{rig_name}-left")),
+          GridSpec::grid_256(&format!("{rig_name}-right")) ],
       )
       .expect("start two mock grids");
-      let (rig, cells): (Rig, Cells) = load([19240, 19241]);
-      let (_run, voices): (MockRun, Arc<Mutex<VoiceMap>>) =
-        start(rig, &mock, "two-grid energy-pedal rig");
+      let (rig, cells): (Rig, Cells) = load([ports[0], ports[1]]);
+      let (_run, voices): (MockRun, Arc<Mutex<VoiceMap>>) = start(rig, &mock, rig_name);
       let a: &MockGrid = mock.grid(0);
       let b: &MockGrid = mock.grid(1);
       assert!(wait_until(secs(5), || a.registered() && b.registered()), "both grids register");
@@ -2770,11 +2789,10 @@
     }
 
     {
-      let mock: MockRig = MockRig::start(0, &[GridSpec::grid_256("energy-pedal-solo")])
+      let mock: MockRig = MockRig::start(0, &[GridSpec::grid_256(&format!("{rig_name}-solo"))])
         .expect("start one mock grid");
-      let (rig, cells): (Rig, Cells) = load([19242, 19243]);
-      let (_run, voices): (MockRun, Arc<Mutex<VoiceMap>>) =
-        start(rig, &mock, "one-grid energy-pedal rig");
+      let (rig, cells): (Rig, Cells) = load([ports[2], ports[3]]);
+      let (_run, voices): (MockRun, Arc<Mutex<VoiceMap>>) = start(rig, &mock, rig_name);
       let solo: &MockGrid = mock.grid(0);
       assert!(wait_until(secs(5), || solo.registered()), "the lone arbitrary grid registers");
       let ((x, y), momentary): ((i32, i32), bool) = cells.mode;

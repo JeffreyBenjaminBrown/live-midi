@@ -47,6 +47,18 @@ Read [[file:rigs/energy-pedal_monome_readme.org][its player manual]] for the lay
 reload and the listening harness; the rig file documents every
 string parameter with its range and math.
 
+The same strings with two pedals: the EX-P on channel 1 is the
+energy pedal and also sets how hard a key strikes, and the one on
+channel 2 brings on the squeal (the strings feed back, like a
+guitar close to its amplifier):
+
+#+begin_src sh
+pw-jack cargo run --bin midi_pulse -- two-pedals_monome
+#+end_src
+
+Read [[file:rigs/two-pedals_monome_readme.org][its player manual]] for the two pedals and how to give a pedal
+other parameters.
+
 The daily instrument has two variants.  They are identical except that the newer
 SoftStep controls either the factored pulse or the drumkit:
 

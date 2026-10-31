@@ -2511,10 +2511,17 @@ fn validate_pedal_targets(
 fn play_grids_strings_params(
   rig: &Rig,
 ) -> Option<StringsParams> {
+  play_grids_sink(rig)?.strings_params() }
+
+/// The sink the play grids play into (the first `edo_note_grid`'s); `None` without a
+/// play grid, or when that sink is undeclared. The strings harness renders with it, so
+/// the harness and the pedal targets' validation read one sink.
+pub fn play_grids_sink(
+  rig: &Rig,
+) -> Option<&SinkRig> {
   let play_sink_id: &str = play_grids_sink_id(rig)?;
   rig.sinks.iter()
-    .find(|sink| sink.id() == play_sink_id)?
-    .strings_params() }
+    .find(|sink| sink.id() == play_sink_id) }
 
 /// The monomes that carry an `edo_note_grid`, in rig order.
 fn edo_grid_monomes(rig: &Rig) -> Vec<&str> {
