@@ -715,6 +715,24 @@ today takes the first 'cpal_strings' sink while validation
 takes the play grids' sink ('rig.rs' 'play_grids_strings_params',
 private): make that function 'pub' and have the harness use it,
 so both read one sink.
+*** Corrections carried from slice 3
+The floor key is 'energy.ex_post_energizing_floor', f32 in
+[0, 1], default 0, thirtieth in 'TARGETABLE_PARAMETERS'. The
+rig's text for it states: the window falls over the ex-post leg
+to the floor and stays there, so above 0 the pedal feeds a note
+for as long as it sounds, at 'floor * pedal ^
+pedal_energy_exponent'; an ebow note grows to its limit instead
+of settling once that factor exceeds 'decay /
+(growth_rate_per_second_max + decay)' with 'decay = ln(1000) /
+T60(f0)', about 0.08 at 55 Hz, 0.16 at 220 Hz and 0.37 at 1760
+Hz at the defaults (the bridge's drain raises these a little);
+the trade (sustained notes under a held pedal never die on
+their own); and that a voice keeps the energy parameters of its
+birth, so a target on the floor shapes the next note. Also:
+'pick_energy' and 'knock_mix' targets rebuild nothing;
+'body.mix' moves live; 'knock_mix' is no longer "convolved into
+the table" but scales the knock at birth, so the rig's knock
+text should say so where the copy says otherwise.
 *** What
 The rig as under "The rig 'two-pedals_monome'", copied from the
 working tree's 'rigs/energy-pedal_monome.org' (dirty with
