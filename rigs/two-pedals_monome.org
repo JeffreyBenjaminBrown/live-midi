@@ -116,7 +116,7 @@ The loop's gain per round trip at 'f0' is then
 trips make a factor of 10^-3 (60 dB). The bridge adds its own
 loss on top (see 'heaviness'): decay rates add, so the heard
 '1 / T60' is the string's '1 / T60(f0)' plus the bridge's.
-****** PARAM t60_seconds_at_1760hz = 1.5
+****** PARAM t60_seconds_at_1760hz = 3.0
 Seconds, > 0. The same at 1760 Hz: the high anchor of the decay
 curve. Useful from about 0.3 to 5. Longer is more ring in the
 treble; set both anchors equal for a decay that does not depend
@@ -183,7 +183,7 @@ beat at about 'f0 * c / 1731' Hz: 0.15 Hz for 1.2 cents at
 A stiff string's partials run sharp of exact harmonics, more so
 the higher the partial: the piano's stretched, slightly bell-like
 color. A nylon or gut string is nearly perfectly harmonic.
-****** PARAM inharmonicity_b_at_55hz = 1e-4
+****** PARAM inharmonicity_b_at_55hz = 2e-5
 Unitless, in (0, 0.1]. The stiffness 'B' at 55 Hz: the low
 anchor of the stiffness curve. Useful from 1e-5 (barely) to
 1e-3 (a short, stiff bass string).
@@ -196,7 +196,7 @@ inharmonicity_b_at_55hz) ^ (log2(f0 / 55) / 5)', a log-log line
 like the decay curve. Where 'B(f0)' is at or below the audible
 threshold 'exp(2.54 ln(f0) - 24.6)' (5.5e-7 at 55 Hz, 1.1e-4 at
 440 Hz, 3.6e-3 at 1760 Hz) the dispersion chain is left out.
-****** PARAM inharmonicity_b_at_1760hz = 1e-3
+****** PARAM inharmonicity_b_at_1760hz = 3e-4
 Unitless, in (0, 0.1]. The stiffness 'B' at 1760 Hz: the high
 anchor. Useful from 1e-4 to 2e-2. Piano treble strings are stiff
 for their length, so the curve usually rises with pitch.
@@ -256,7 +256,7 @@ pick_energy)^2'). What is heard is the loops' sum times
 'amplitude', so a single note peaks near 'pick_energy *
 amplitude' before the body.
 ***** the tone of the attack
-****** PARAM brightness = 6.0
+****** PARAM brightness = 16.0
 Unitless, > 0. The excitation's lowpass cutoff in multiples of
 the note's pitch. 1 to 2 is a soft felt or a thumb; 6 to 12 a
 hard hammer or a pick; above about 20 it is unfiltered. Higher
@@ -277,7 +277,7 @@ around the one-period table. The n-th harmonic is scaled by
 '2 |sin(pi n position)|', so every harmonic that is a multiple
 of '1 / position' vanishes: at 0.125, the 8th, 16th, and so on.
 ***** the hammer, for a strike only
-****** PARAM strike_pulses = 2
+****** PARAM strike_pulses = 1
 Count, 1 to 8. Force pulses of a strike: a hammer that bounces
 on the string before it leaves. 1 is one clean blow; 2 or 3 a
 slightly buzzy, piano-like contact. Ignored by a pluck.
@@ -299,7 +299,7 @@ sample, so at 0.12 the pulses alone roll off above about the
 The body's own short response to being hit, heard at the attack
 as the thump of wood. It is cut from the body's resonators (see
 the body table), so a different body knocks differently.
-****** PARAM knock_mix = 0.3
+****** PARAM knock_mix = 0.1
 Unitless, in [0, 1]. How loud the knock is beside the string's
 own excitation. 0 is no knock; 0.5 a pronounced one.
 ******* the math
@@ -562,7 +562,7 @@ gain on white noise (measured once per parameter change), so the
 body leaves a broadband signal at the level it came in. 'mix 0'
 is exactly the dry sum.
 ***** the modes
-****** PARAM mode_count = 64
+****** PARAM mode_count = 48
 Count, 1 to 128. Resonators in the bank. A few is a small,
 boxy, colored body; 20 to 60 a full one. Useful from 8 to 64.
 ******* the math
@@ -584,7 +584,7 @@ Hz, above 'lowest_hz'. The highest mode's nominal center. Lower
 is a darker body. Useful from 2000 to 12000.
 ******* the math
 'f_(M-1) = highest_hz' before jitter.
-****** PARAM q = 60
+****** PARAM q = 12.0
 Unitless, > 0. Each mode's sharpness. Low (5 to 15) is a damped,
 smooth body; high (50 to 200) a ringing, resonant one whose
 modes can be heard as pitches. Useful from 10 to 100.
