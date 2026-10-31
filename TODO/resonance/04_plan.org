@@ -51,8 +51,8 @@ describe them. Every commit ends with the line
 Agents commit only files the slice touched. The untracked
 'coding-advice/', 'docker-typedb-rust/' and 'run.sh' are Jeff's
 and are never added. 'rigs/energy-pedal_monome.org',
-'README_USER.org' and 'TODO.org' are dirty with Jeff's own edits before the run
-begins, and 'rigs/energy-pedal_monome_not-nasal.org' is an
+'README_USER.org' and 'TODO.org' are dirty with Jeff's own
+edits before the run begins, and 'rigs/energy-pedal_monome_not-nasal.org' is an
 untracked rig of his; none of the four is edited, added or
 committed by any slice.
 'TODO/resonance/05_review.org' is the orchestrator's.
@@ -277,8 +277,8 @@ list is the one source and the rig README quotes it:
 'exciter.position', 'exciter.hammer_contact_fraction',
 'exciter.knock_mix', 'energy.ex_ante_energizing_ms',
 'energy.ex_post_energizing_ms',
-'energy.ex_post_energizing_floor', 'energy.pedal_energy_exponent',
-'energy.growth_rate_per_second_max', 'energy.drive_limit',
+'energy.ex_post_energizing_floor',
+'energy.pedal_energy_exponent', 'energy.growth_rate_per_second_max', 'energy.drive_limit',
 'energy.precharge_gain', 'energy.bow_velocity',
 'energy.bow_slipperiness', 'energy.wind_speed_hz_max',
 'energy.wind_q', 'energy.wind_gain', 'bridge.heaviness',
@@ -651,8 +651,8 @@ the value is 1 at birth, 0.65 at 0.5 s, 0.3 at 1 s and 0.3 at
 with floor 1 and the ebow kind is still growing 3 s after birth
 with a 0.5 s ex-post leg; with floor 0 it is decaying by then.
 A floor of 1.5 is refused naming the key. The before-and-after
-render at the defaults (peak and energy within 1e-4 relative; the agent captures the "before" numbers
-from the parent commit in a one-time run and writes them into
+render at the defaults (peak and energy within 1e-4 relative;
+the agent captures the "before" numbers from the parent commit in a one-time run and writes them into
 the test as constants with the commit hash in a comment). A
 'pick_energy' change between two notes changes the second note's
 peak and rebuilds no knock (assert the 'Arc' pointer is the
