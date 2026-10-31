@@ -202,7 +202,8 @@ more per pedal.
 **** UPDATED [Claude] after slice 1: 16 is not "every parameter"
 The targetable list has 29 keys (30 with the floor), so one
 pedal carries at most 16 of them. Sixteen stays: nobody needs
-more on one foot, and the array is copied every callback. 'LiveParams' stays 'Copy'.
+more on one foot, and the array is copied every callback.
+'LiveParams' stays 'Copy'.
 *** 'StringsPedalTarget'
 'Copy': the parameter's key as '&'static str' (for messages and
 tests), its setter 'fn(&mut StringsParams, f32)', 'min', 'max'.
