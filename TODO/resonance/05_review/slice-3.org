@@ -1,0 +1,120 @@
+#+title: Plan 04, slice 3: the engine: knock at birth, mix live
+
+* The commits
+- '92bba9a' plan 04, slice 3: the knock scaled at birth,
+  body.mix live, the energy window's floor (the code, the
+  tests, and the headline DONE).
+
+* The suites
+- 'cargo test -p edo_surface': 778 passed, 0 failed (772 at the
+  start plus 6 new).
+- 'cargo test --workspace': 1010 passed, 0 failed (1004 plus the
+  same 6).
+- No failures to classify. The build's warnings ('is_editing',
+  'size', 'SurfaceSink::new') are pre-existing.
+- After both suites, the amend changed one module comment in
+  'renderer.rs' and nothing else; it builds.
+
+* Deviations from the plan's "how"
+** A 'knock_mix' of 0 empties the voice's knock, not the table
+'knock_table' no longer reads 'knock_mix', so the shared table
+is never empty for that reason (moving 'knock_mix' off 0 must
+not rebuild it). 'ExcitationStream::new' takes the scale and
+drops the knock when the scale is 0, so the voice's stream is
+the dry table alone and ends with it, as before.
+** The scale is one function
+'voice::knock_scale_at_birth(&StringsParams)', called by
+'StringVoice::new' and 'ModalVoice::new'. Their signatures are
+unchanged; they read the scale from the 'params' they already
+take, so the tests that build voices directly needed no edit.
+** 'set_mix' restarts the resonators when leaving mix 0
+A bank at mix 0 skips its resonators. 'set_mix' from 0 to above
+0 resets them, as a new bank would start, so a pedal sweeping
+'body.mix' up from 0 does not resume a state from long ago.
+Between two mixes above 0 they keep ringing.
+** The field-wise comparisons are two named functions
+'body_shape_changed' (every body field but 'mix') and
+'knock_exciter_fields_changed' ('brightness', 'knock_ms') in
+'renderer.rs'; the knock rebuilds on either, the bank on the
+first.
+** The test accessor
+'StringsRenderer::shared_knock_table() -> &Arc<[f32]>' is 'pub'
+(not test-only); the tests compare it with 'Arc::ptr_eq'.
+** The "before" render covers both voice kinds
+A 220 Hz note (loops) and a 3000 Hz note (modal, above the
+default 2000 Hz crossover), each struck alone at the defaults
+and rendered for 1 s. Measured at f717fb0's code (HEAD
+'a17a2a9' differs from it only in the plan): 220 Hz peak
+1.525116712e-1, energy 5.650005450e1; 3000 Hz peak
+6.011803448e-2, energy 1.139704978e0. After: relative changes
+about 4e-7 (peak) and 1.5e-5 (energy) at 220 Hz.
+** The growing ebow note needs a slow growth rate
+'a_floor_of_one_keeps_an_ebow_note_growing_after_its_leg' sets
+'growth_rate_per_second_max' to 1 and 'pick_energy' to a
+hundredth of 'drive_limit': at the default 8 nepers per second
+the note reaches the tanh within a second and sits there, so
+"still growing at 3 s" could not be observed. Growth is RMS over
+100 ms around 3 s above that around 2.5 s.
+** Doc comments beyond the plan's list
+'params.rs' 'knock_mix' no longer says the knock is "convolved
+into the table"; 'ex_post_energizing_ms' says the window falls
+to the floor. 'renderer.rs''s module comment no longer says the
+factor goes only to voices in their ex-post leg. 'energy.rs''s
+ebow paragraph says "while the window is open".
+
+* Tests added
+In 'strings/tests.rs':
+'a_struck_note_renders_as_before_the_knock_was_scaled_at_birth';
+'a_pick_energy_change_reaches_the_next_note_and_rebuilds_no_knock'
+(doubling 'pick_energy' doubles the second note's peak within
+1 percent; the 'Arc' is the same; a 'knock_mix' change keeps it
+too);
+'a_body_mix_change_moves_the_output_without_resetting_the_body'
+(0.5 to 0.8: the block after the change equals, bit for bit,
+the block of a renderer at 0.8 all along; it differs from a
+fresh bank at 0.8 fed the same strings sum, and from 0.5);
+'a_body_q_or_brightness_change_rebuilds_the_knock';
+'the_window_falls_to_its_floor_and_stays_there';
+'a_floor_of_one_keeps_an_ebow_note_growing_after_its_leg'.
+The floor of 1.5 (and -0.1) refused naming the key is two rows
+in 'validation_accepts_the_defaults_and_names_a_bad_key'.
+
+* Fixtures changed
+- 'both_exciter_kinds_are_deterministic_and_normalized': it
+  asserted the knock table's energy was '(knock_mix *
+  pick_energy)^2'. Now the table is at unit energy and the same
+  for every 'knock_mix' and 'pick_energy', and the stream
+  ('ExcitationStream') carries '(knock_mix * pick_energy)^2',
+  nothing at all at a 'knock_mix' of 0.
+- 'pedal_targets.rs' 'every_float_field_is_targetable_or_refused'
+  gains the floor's line, as the plan asks.
+
+* Left unfinished
+Nothing of this slice's.
+
+* The headline
+DONE.
+
+* What the next slices must know
+- The key is 'energy.ex_post_energizing_floor', an 'f32',
+  unitless, in [0, 1], default 0.0 (serde default; rigs
+  without it behave as before). It is in
+  'TARGETABLE_PARAMETERS' right after
+  'energy.ex_post_energizing_ms' (30 keys now).
+- What the rig text (slice 5) should say: the window falls over
+  the ex-post leg to the floor instead of to 0 and stays there,
+  so above 0 the pedal feeds a note for as long as it sounds,
+  at 'floor * pedal ^ pedal_energy_exponent'. For the ebow the
+  note grows to its limit instead of settling when that factor
+  exceeds 'decay / (growth_rate_per_second_max + decay)',
+  'decay = ln(1000) / T60(f0)' nepers per second. At the
+  default T60s and a growth rate of 8: about 0.08 at 55 Hz,
+  0.16 at 220 Hz, 0.37 at 1760 Hz (the bridge's drain raises
+  these a little). The trade: sustained notes under a held
+  pedal never die on their own. A voice keeps the energy
+  parameters of its birth, so a floor target shapes the next
+  note, not the sounding one.
+- The ex-ante leg and the pre-charge do not read the floor.
+- 'pick_energy' and 'knock_mix' as targets rebuild nothing;
+  'body.mix' moves through 'BodyBank::set_mix'.
+- No synonyms met.

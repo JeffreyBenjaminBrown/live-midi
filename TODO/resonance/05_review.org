@@ -1,0 +1,241 @@
+#+title: Review of plan 04: pedal targets, two-pedal rig
+
+* How this record is kept
+One Opus 5.5 agent per slice of '04_plan.org', launched by the
+orchestrator (Claude Fable) with the brief 'coding-advice/
+orchestration.org' describes. Each agent writes its own report
+to '05_review/slice-N.org'; the orchestrator reads the report
+and the diff, records the verdict and any corrections here, and
+launches the next slice. The wrap-up goes at the end.
+
+* Slices
+** Slice 1: the rig side: targets, the role, validation
+*** Launched 2026-10-31 06:05 UTC
+Baseline commit 5a77692; 749 tests green in 'edo_surface' in
+about 33 s.
+*** Reported 2026-10-31 06:13 UTC, about 8 minutes
+Commit f46f482. Suites 766 ('edo_surface', 17 new) and 998
+(workspace) green. The org-shape test pins a grouping headline
+between the pedal and its first target, with prose under it.
+Deviations, all accepted: the two exhaustive role matches in
+the runtime return 'None' for the new role until slice 2; the
+energy-pedal helper keeps its name and calls a shared
+'validate_rig_wide_strings_pedal'; a hand-written 'PartialEq'
+on the target (function pointers compare unreliably); a
+'TABLE_REBUILDING_PARAMETERS' list so the refusal states its
+reason. The plan's claim that 16 targets hold "every
+targetable parameter" was wrong (29 keys); 16 stays, the plan
+says so now. The floor key is left for slice 3, as briefed.
+Verdict: accepted. Carried into slice 2: the two 'None' arms
+and slice 1's names.
+** Slice 2: the runtime: positions, targets, live params
+*** Launched 2026-10-31 06:15 UTC
+*** Reported 2026-10-31 06:24 UTC, about 7 minutes
+Commit f717fb0. Suites 772 ('edo_surface', 6 new) and 1004
+(workspace) green; the mock-grid run of 'energy-pedal_monome'
+passes. 'string_energy_position' is gone from the code.
+Deviations, all accepted: the resolution is
+'resolve_strings_pedals' returning a Copy
+'ResolvedStringsPedals'; the callback's function
+'effective_params_and_energy_position' is public in
+'pedal_targets.rs' so the harness shares it; the callback
+copies 'LiveParams' whole and drops the lock; publishing is its
+own testable function. A bit-identity test shows blocks driven
+through the slots match blocks given the position directly.
+Verdict: accepted. Carried into slice 5: the harness's calls,
+and one sink for the harness and validation.
+** Slice 3: the engine: knock at birth, mix live, adoption
+*** Launched 2026-10-31 06:26 UTC
+*** Reported 2026-10-31 06:34 UTC, about 8 minutes
+Commit 92bba9a (amended once by its author for a comment).
+Suites 778 ('edo_surface', 6 new) and 1010 (workspace) green;
+the orchestrator reran 'edo_surface' after the amend: 778 green.
+Deviations, all accepted: a note born at 'knock_mix' 0 drops the
+knock in 'ExcitationStream::new' rather than through the table;
+one 'knock_scale_at_birth' for both voice kinds; a bank moving
+from mix 0 starts its resonators from rest (they were not run
+at 0); the before-and-after render covers a loop note and a
+modal note, largest drift 1.5e-5; the growing-ebow test uses a
+rate of 1 Np/s because at 8 the note saturates within a second.
+Verdict: accepted. Carried into slice 5: the floor key's text
+for the rig, the knock text.
+** Slice 4: the grid key 'square_dance'
+*** Launched 2026-10-31 06:36 UTC
+*** Reported 2026-10-31 06:41 UTC, about 4 minutes
+Commit 4a5a811. Suites 779 and 1011 green. The key passes as
+'flash_sustained' does; the gate adds '&& square_dance'.
+No negative paint test: 'dance_cells' is computed only inside
+the grid thread's loop, so the test covers the knob's passage.
+The README uses tildes for code, as that file does. Verdict:
+accepted. Carried into slice 5: the key's placement and that it
+needs a restart, not a reload.
+** Slice 5: the rig, its readme, the harness, user docs
+*** Launched 2026-10-31 06:43 UTC
+*** Reported 2026-10-31 06:55 UTC, about 12 minutes
+Commit ff0270f. Suites 780 ('edo_surface') and 1015 (workspace,
+three harness tests added) green. The rig, its readme, the
+harness's '--pedal2' and 'squeal' scene, the README paragraph,
+'ORIENTATION.org' and one paragraph in 'README_USER.org' (added
+through the index so Jeff's uncommitted edit there stays his;
+the orchestrator checked 'git diff' shows only his edit).
+Deviations, all accepted: 'play_grids_sink' is the pub function
+(the harness needs rate and amplitude too); without '--rig' the
+channel 1 pedal stays the energy pedal, as '--pedal' promised;
+the knock and body text in the copy corrected further than the
+plan listed. Measured, not heard: 'squeal' is identical to
+'chord' until the pedal rises, catches by 1.5 s, overshoots to
+an RMS of 0.17 while the pedal rises and settles near 0.10 at
+the toe, peak 0.33; every scene renders below the clamp.
+**** For Jeff: 'howl.level' in the copy is 0.003, not his 0.02
+At 0.02 the 'howl' scene hit the clamp, and 0.02 is above the
+key's documented range. Live it changes nothing (the sink's
+gain is 0, and the pedal's target sets the level once it
+reports). His own rig keeps 0.02.
+**** For Jeff: the copied rig cites renamed headlines
+Prose in the copy still names the grouping headlines
+"parameters we talked about having access to" and "parameters
+you might also enjoy", which he has since renamed in his rig;
+the agent left his text alone.
+Verdict: accepted. Carried into slice 6: two older lookups of
+the play grids' sink to fold onto 'play_grids_sink'.
+** Slice 6: organize, record, the two-question check
+*** Launched 2026-10-31 06:58 UTC
+*** Reported 2026-10-31 07:05 UTC, about 7 minutes
+Commit f64ea59. Suites 781 and 1016 green (one new test, the
+README's targetable list against 'TARGETABLE_PARAMETERS').
+Folded: the play grids' sink is found once ('play_grids_sink');
+target validation calls 'resolve_strings_pedals' instead of
+repeating it, so validation, the runtime and the harness
+resolve pedals with one function; every clamp literal is
+'OUTPUT_CLAMP'. Listed in 'TODO/problems.org' instead: a role's
+spelling written twice ('rig_spelling' beside serde); "pedal
+target" and 'settings::PedalTarget' naming two things; two RMS
+helpers in tests. No code cites 'TODO/'. Verdict: accepted.
+
+* Wrap-up
+** Verdict
+The plan is complete: six slices, six DONE headlines, the
+workspace suite at 1016 green (1011 before the plan's code, 981
+before plan 02), the orchestrator's own full run at the end
+agreeing with the agents' counts. Jeff's target state is
+reached at f64ea59: a pedal carries any number of (parameter,
+min, max) triples as nested org headlines with free prose; the
+channel 1 pedal is the energy pedal and sets the pluck; the
+channel 2 pedal brings on the squeal; the energy window has an
+adjustable floor; the square dance has an off switch; the new
+rig 'two-pedals_monome' sits beside Jeff's untouched one. No
+slice stopped. Nothing has been listened to: the squeal's
+settle level and the five target ranges are measured, not
+heard.
+** What the orchestrator checked itself
+Each slice's commit and diff stat; the exposed functions of
+slices 1 and 2 by reading; the 'edo_surface' suite after slice
+3's comment-only amend (778 green); 'git diff README_USER.org'
+after slice 5 (only Jeff's edit); the new rig's pedal section
+(five triples, the floor key, 'square_dance' on both grids);
+the full workspace suite after slice 6 (1016 green).
+** Results
+*** The run
+Launched 06:05 UTC, last report 07:05 UTC: one hour for six
+slices, 4 to 12 minutes each, 12 commits of the agents' and
+the orchestrator's together, 26 files, about 3300 lines added
+and 250 removed. Agent reports are in '05_review/slice-N.org'.
+*** Counts
+Tests 749 to 781 in 'edo_surface' and 981 to 1016 across the
+workspace; 30 targetable parameters, 5 refused by name; 16
+targets per pedal at most.
+** What the slices did beyond the plan's words
+*** Slice 1
+A 'TABLE_REBUILDING_PARAMETERS' list so a refusal states why; a
+hand-written 'PartialEq' for the target (function pointers do
+not compare reliably); the energy helper kept its name and
+gained a shared 'validate_rig_wide_strings_pedal'.
+*** Slice 2
+'resolve_strings_pedals' returning a Copy struct;
+'effective_params_and_energy_position' public so the harness
+shares the callback's function; a bit-identity test of the
+energy pedal through its slot.
+*** Slice 3
+A note born at 'knock_mix' 0 drops the knock at birth; a bank
+rising from mix 0 starts from rest; the before-and-after test
+covers a loop note and a modal note (drift 1.5e-5).
+*** Slice 5
+'play_grids_sink' instead of exposing the params function
+alone; the rigless harness keeps channel 1 as the energy pedal;
+three harness tests; the copied rig's knock, body and energy
+text corrected for slices 3's changes.
+*** Slice 6
+One lookup of the play grids' sink; validation resolves targets
+through the one function; the clamp literal unified.
+** The churn ledger
+*** Plan statements that were wrong
+"16 is enough for every targetable parameter" (29 keys; 16
+stays). The slice 2 correction's "no energy pedal without
+'--rig'" contradicted "'--pedal' keeps its meaning"; slice 5
+kept the latter. The slice 2 pitfall said five places held the
+energy word; it was right.
+*** Defaults moved
+The copied sink's 'howl.level', 0.02 in Jeff's rig, is 0.003 in
+the new one (the clamp, and the key's range). Nothing else.
+*** Names
+'square_dance' for the grid key; 'ex_post_energizing_floor';
+'string_parameters' for the role; 'play_grids_sink'. Slice 6
+reports "pedal target" (the triple) beside the older
+'settings::PedalTarget' (what a role drives) as the one real
+collision; "slot" used for two arrays; "strings pedals" coined
+in code for the two rig-wide roles together; the plan's own
+"heaviness floor" and "channel index" as loose wording.
+*** Cost
+About one agent-hour of Opus 5.5 at high effort, plus the
+orchestrator's triage.
+** What the user sees differently
+*** By decision
+A rig may give any pedal in the 'string_energy' or
+'string_parameters' role a list of targets. Target values are
+linear in the raw travel; 'min' above 'max' inverts; equal
+pins. A target on an 'energy' key shapes the next note, not
+the sounding one. 'square_dance = false' silences the circling
+cell; it needs a restart, like 'flash_sustained'.
+'energy.ex_post_energizing_floor' above 0 keeps a held pedal
+feeding a note for as long as it sounds. The harness takes
+'--pedal2' and renders 'squeal'.
+*** By accident
+None found. Every 'cpal_synth' rig and Jeff's own strings rig
+behave as before; the knock change renders within 1.5e-5.
+** The agents' reports
+'05_review/slice-1.org' to 'slice-6.org', committed with this
+record.
+** Open questions
+*** Whether the squeal sounds like an amp
+Measured only: it catches about half a second after the pedal
+starts rising and settles at an RMS near 0.10 at the toe,
+louder than the struck chord's decay but below the clamp. The
+delay of 4 ms in Jeff's sink picks the partials that win.
+*** Whether the floor should default above 0
+It defaults to 0 (the old behavior). Jeff asked for it to be
+adjustable, not for a value.
+** TODO Decide
+*** TODO Listen to 'two-pedals_monome'
+Run it with both pedals through the bridge. Heel to toe on
+channel 2 should take a held chord from its natural decay into
+sustain and then squeal; channel 1 at the heel should pluck
+softly. If the squeal overshoots as the pedal rises (the
+harness shows an RMS peak of 0.17 before it settles at 0.10),
+narrow 'howl.level''s range or raise its heel value.
+*** TODO 'howl.level' 0.02 or 0.003 in the copy
+The copy has 0.003. Restoring 0.02 makes the harness's 'howl'
+scene clip and one harness test fail; live it does nothing
+until the pedal reports.
+*** TODO The renamed headlines the copy still cites
+Prose in 'two-pedals_monome.org' names "parameters we talked
+about having access to" and "parameters you might also enjoy",
+grouping headlines Jeff has since renamed in his own rig.
+*** TODO "pedal target" beside 'settings::PedalTarget'
+One word, two things. Renaming the older enum (what a role
+drives) would end it; the plan forbade renames there.
+*** TODO The not-nasal values and the two rigs
+'energy-pedal_monome_not-nasal.org' (untracked) has the
+measured anti-nasal values; 'two-pedals_monome' was copied from
+'energy-pedal_monome' as it stood, so it has the nasal ones.
+Whichever rig wins, the other two can take its sink by copying
+the 'string', 'exciter' and 'body' tables.

@@ -1,0 +1,161 @@
+#+title: Plan 04, slice 6: organize, record, two questions
+
+* Commits
+** f64ea59
+plan 04, slice 6: one play-sink lookup, one pedal resolution,
+the README's targetable list checked. One commit; it also marks
+the slice headline DONE in '04_plan.org'.
+
+* Suites
+** 'cargo test -p edo_surface': 781 passed, 0 failed
+780 at the start, plus the README test.
+** 'cargo test --workspace': 1016 passed, 0 failed
+781 + 8 + 180 + 28 + 3 + 16. 1015 at the start, plus the README
+test. No failure on the way.
+
+* Folded
+** the play grids' sink, one lookup
+'resolve_settings' found the first 'edo_note_grid''s sink by
+itself, and 'validate_rig_wide_strings_pedal' found it by id
+after 'play_grids_sink_id'. Both now call 'rig::play_grids_sink'.
+The messages are as before ("edo_note_grid references an unknown
+sink"; "the play grids' sink ... is not declared"), and the
+tuning is still found first. The problems entry "The play grids'
+sink is found twice" is deleted.
+** the targets' validation calls the runtime's resolution
+'validate_pedal_targets' repeated two checks of
+'resolve_strings_pedals' word for word: at most
+'MAX_PEDAL_TARGETS' per pedal, and each target resolved by
+'resolve_pedal_target' with the same message prefix. It now
+keeps only the checks it alone makes (targets only on the two
+strings roles, a parameters pedal has one, one target per
+parameter across the rig) and then calls
+'resolve_strings_pedals' once, so validation, runtime and
+harness resolve a rig's pedals by one function. The doc comments
+of both say so.
+** the clamp
+The harness's tests declared 'CLAMP = 0.95' and four asserts in
+'strings/tests.rs' wrote 0.95 (one of them slice 3's); all now
+read 'voices::OUTPUT_CLAMP', the constant the renderer clamps at.
+** checked, nothing to fold
+The harness resolves through 'resolve_strings_pedals' and
+renders through 'effective_params_and_energy_position'; nothing
+else re-derives a target or the energy slot.
+'StringsPedalTarget::value_at' is the only min-max interpolation
+in the workspace ('PedalTrace::position_at' joins points in
+time, which is a different thing). The two roles' rig-wide check
+is already one function, 'validate_rig_wide_strings_pedal'.
+
+* Listed in 'TODO/problems.org' instead
+** A pedal role is spelled twice
+'PedalRole::rig_spelling' (slice 1) repeats by hand the spelling
+that 'serde(rename_all = "snake_case")' gives. Not folded: serde
+cannot hand out its spelling, and deleting 'rig_spelling' would
+mean hand-written messages per role. The cheap guard is a test
+deserializing each spelling, but the slice adds tests only where
+a fold needs one.
+** "Pedal target" and 'PedalTarget' are two things
+See "Vocabulary" below. Not folded: the plan says it renames
+nothing there.
+** the RMS helpers, added to an existing entry
+The harness's tests' 'rms' and the strings tests' 'rms_between'
+are one more pair under "The harness and the tests each build
+their own render loop": a binary and a '#[cfg(test)]' module
+cannot share a helper without making it public.
+
+* The two questions
+** Vocabulary
+*** "pedal target": two meanings
+In this plan's code it always means the (parameter, min, max)
+triple ('PedalTargetRig', 'StringsPedalTarget', 'pedal_targets',
+'validate_pedal_targets', the README, the rig, the readme). But
+the older 'settings::PedalTarget' is what a pedal's role drives,
+and slice 2 added 'PedalTarget::StringParameters' beside it.
+'LiveParams' and 'Settings' now hold both, as
+'expression_pedals' (of 'PedalTarget') and 'pedal_targets'.
+The plan foresaw the clash and kept the name; it is now in
+'problems.org' under the names.
+*** "targetable": one meaning
+A float the engine applies without rebuilding a table, the keys
+of 'TARGETABLE_PARAMETERS'. Same in 'pedal_targets.rs', the
+'rig.rs' tests, the README, the rig and its readme.
+*** "effective parameters": one meaning
+The parameters a block renders with, targets applied:
+'pedal_targets.rs', 'audio.rs', the harness. Its argument
+'live_params: &StringsParams' in 'apply_pedal_targets' is the
+live strings parameters, not a 'LiveParams', though the function
+'reload::live_params' returns one: a small overload.
+*** "parameters pedal": one meaning
+A pedal of role 'string_parameters', in the code, the README and
+the readme. The code also says "strings pedals" for the energy
+pedal and the parameters pedal together
+('validate_rig_wide_strings_pedal', 'resolve_strings_pedals',
+'ResolvedStringsPedals', 'pedal_volume.rs', the readme); the
+plan never coined that, but it means one thing throughout.
+*** "square dance": one meaning
+The existing 'dance.rs' term, the dim cell circling a sustained
+note's diagonal neighbours; the key, 'Knobs', 'GridSettings',
+the README and the rig use it so.
+*** "floor": one meaning in this plan's work
+The energy window's floor, 'energy.ex_post_energizing_floor',
+everywhere the plan's diffs say it. Older code has another
+floor on a pedal: the volume taper's "exponential's floor"
+('pedal_volume.rs', 'rig.rs' 'curve_*' docs, the README). The
+two never share a sentence, and the new one is always "the
+window's floor"; worth knowing, not worth a rename.
+** Code citing 'TODO/'
+None. No added line of the slices' Rust diffs
+('5a77692..ff0270f') contains "TODO/". The docs do:
+'rigs/README.org''s "Pedal targets" opens with
+"(TODO/resonance/04_plan.org)", as its other pedal paragraphs
+cite their plans; that is the README's convention, not code.
+
+* Synonyms met
+- 'PedalTarget' and "pedal target", above: one word, two things.
+- "slot" names two arrays' entries: a pedal's word in
+  'pedal_positions' ("the energy pedal's slot") and an entry of
+  a pedal's row in 'PedalTargetsPerChannel'
+  ('resolve_strings_pedals' 'for (slot, target)', the reload
+  test "empties its slot").
+- The plan's own text says "the heaviness floor" in slice 5 for
+  the toe value of the 'bridge.heaviness' target, a second floor;
+  the code and the rig never took it up.
+- The plan calls 'string_energy_pedal' "the channel index"; the
+  code says "pedal index (= MPC-20 channel - 1)". One thing.
+
+* How the README list was checked
+By a test: 'the_rig_readme_quotes_the_targetable_list' in
+'strings/pedal_targets.rs' (no existing test reads
+'rigs/README.org'). It renders 'TARGETABLE_PARAMETERS' one org
+list item per table, in order, keys between tildes, and compares
+with the '- ' lines after the README line ending "one line per
+table:". It also fails if a table's keys are not adjacent in the
+list. It passes. By reading: the README's "more than 16 targets"
+matches 'MAX_PEDAL_TARGETS', and its five non-targetable floats
+match 'TABLE_REBUILDING_PARAMETERS'; neither is under test.
+
+* Deviations from the plan's how
+** which error a rig with two faults reports
+With the resolution after the loop, a rig with several faults
+now reports a role, missing-target or duplicate fault before a
+count or value fault on an earlier pedal. Every rig accepted
+before is accepted, every rig refused is refused, and each
+message is unchanged but one: "carries targets, but the play
+grids' sink is not a cpal_strings sink" lost its channel. It
+cannot be reached ('validate_expression_pedals' runs first and
+refuses a strings pedal over another sink).
+** the folded problems entry is deleted, not moved
+'plans.org' says to move a fixed entry to
+'TODO/DONE/problems.org'; that file does not exist here and
+'TODO/problems.org''s header names no such move, so the entry is
+deleted, the git history keeping it.
+** the clamp fold reaches three older asserts
+Three of the four 0.95 literals in 'strings/tests.rs' predate the
+plan; one constant for one value, folded together.
+
+* Unfinished
+Nothing of the slice.
+
+* Headline
+'** DONE Slice 6: organize, record, the two-question check',
+in f64ea59.

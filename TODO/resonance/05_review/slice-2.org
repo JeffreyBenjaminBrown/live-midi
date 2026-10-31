@@ -1,0 +1,113 @@
+#+title: Plan 04, slice 2: positions, targets, live params
+
+* The commits
+- 'f717fb0' plan 04, slice 2: per-pedal positions, live pedal
+  targets, the effective parameters (the code, the tests, the
+  'problems.org' entry, and the headline DONE).
+
+* The suites
+- 'cargo test -p edo_surface': 772 passed, 0 failed (766 at the
+  start plus 6 new).
+- 'cargo test --workspace': 1004 passed, 0 failed (998 plus the
+  same 6).
+- The mock-grid run of 'energy-pedal_monome'
+  ('energy_pedal_rig_runs_against_two_and_one_mock_grids') ran
+  alone and in both suites: passes.
+- No failures to classify. The build's warnings ('is_editing',
+  'size', 'SurfaceSink::new') are pre-existing.
+- 'string_energy_position' grepped after: gone from the code;
+  it survives only in the plan's prose and in the
+  'problems.org' line that says what replaced it.
+
+* Deviations from the plan's "how"
+** Where the shared resolution lives, and its shape
+'strings/pedal_targets.rs' gains 'resolve_strings_pedals(&Rig,
+&StringsParams) -> Result<ResolvedStringsPedals, String>', the
+plan's suggestion. 'ResolvedStringsPedals' is a small 'Copy'
+struct ('pedal_targets', 'string_energy_pedal'; 'Default' is no
+targets and no energy pedal) so the harness gets both values
+from one call. 'Settings' and 'LiveParams' still hold the two
+as separate fields, as the plan says. The function checks the
+channel range and the 16-target cap itself rather than trusting
+validation, so an unvalidated 'Rig' errors instead of panicking.
+'resolve_settings' calls it only when the play sink has strings
+parameters; a sawwave rig gets the default.
+** The function the callback calls
+'effective_params_and_energy_position(&StringsParams,
+&PedalTargetsPerChannel, Option<usize>, &[f32; NUM_PEDALS]) ->
+(StringsParams, f32)', pub in 'strings/pedal_targets.rs' rather
+than in 'audio.rs', so the harness (slice 5) can call the same
+one. It is 'apply_pedal_targets' plus the energy slot (NaN when
+'None'). 'audio.rs' keeps a private 'read_pedal_positions' that
+loads the atomics.
+** The callback copies 'LiveParams' whole
+It used to copy two fields out under the lock; it now copies
+the struct (about 2 KB with the targets) and releases the lock
+at once. Simpler than a four-field tuple, and cheap.
+** Publishing is its own function
+'pedal_volume::publish_pedal_positions', called once per poll
+right after 'reader.pedals()', so a unit test can check it
+without a MIDI port.
+** Small additions
+- 'NO_PEDAL_TARGETS' const in 'pedal_targets.rs'; slice 1's
+  test helper 'no_targets' now returns it.
+- The 'surfaces_runtime/tests.rs' pedal-map test returns to
+  '.map' (slice 1 had made it '.filter_map' for the 'None').
+- The reload message lists "pedal targets" among what 'r'
+  applies.
+- 'problems.org': the "Loose arguments" entry gains its line;
+  the "'LiveParams' mirrors 'Settings'" entry's count goes from
+  nineteen to twenty-one fields.
+- The reload tests' 'render_live_block' helper now takes the
+  positions and goes through the callback's function; existing
+  callers pass all-NaN, which renders exactly as before.
+
+* Tests added
+- 'reload.rs': 'an_energy_pedal_on_channel_two_reads_slot_one';
+  'a_parameters_pedal_resolves_to_live_targets_at_its_index'
+  ('howl.gain' 0..20 at index 1, energy 'None');
+  'the_renderer_adopts_a_target_at_its_pedals_position' (0.5
+  on channel 2 gives 'howl.gain' 10 in 'renderer.params()',
+  nothing else moved);
+  'a_reload_that_removes_a_target_empties_its_slot' (an energy
+  pedal's 'exciter.pick_energy' target removed; uses 0.25..0.75
+  so the toe value is exact in f32);
+  'the_engine_sees_the_energy_pedals_slot' (50 blocks through
+  the slots equal 50 blocks with 0.7 passed straight in, bit
+  for bit; with no pedal they differ; channel 1's slot does not
+  drive the energy).
+- 'pedal_volume.rs':
+  'every_reported_pedal_publishes_its_position_into_its_slot'.
+
+* Fixtures changed
+None. The existing energy test at 'reload.rs' 403 is unchanged
+and passes.
+
+* Left unfinished
+Nothing of this slice's.
+
+* The headline
+DONE.
+
+* What the next slices must know
+- The harness (slice 5) calls
+  'edo_surface::strings::pedal_targets::resolve_strings_pedals(
+  &rig, &sink_params)' for the targets and the energy channel,
+  and per block
+  'effective_params_and_energy_position(&params,
+  &resolved.pedal_targets, resolved.string_energy_pedal,
+  &[pedal, pedal2])', which gives the parameters to render
+  with and the position to pass to 'render_block'. Without
+  '--rig', 'ResolvedStringsPedals::default()'.
+- The rig's play sink lookup the harness must match is
+  'rig.rs' 'play_grids_strings_params' (private); the harness
+  today takes the first strings sink, which is the same sink
+  for every rig in 'rigs/'.
+- Positions: 'mod.rs' 'pedal_positions: Arc<[AtomicU32;
+  NUM_PEDALS]>', written by 'publish_pedal_positions' in
+  'pedal_volume.rs', read by 'audio.rs'. The pedal thread still
+  spawns only when the rig starts with at least one pedal.
+- 'LiveParams.pedal_targets' and 'LiveParams.string_energy_pedal'
+  are live; 'PedalTarget::StringParameters' is in the pedal map
+  and skipped by the volume paths.
+- No synonyms met.

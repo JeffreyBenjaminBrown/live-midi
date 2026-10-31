@@ -1,0 +1,100 @@
+#+title: Plan 04, slice 1: targets, the role, validation
+
+* The commits
+- 'f46f482' plan 04, slice 1: pedal targets in the rig, the
+  parameters pedal, their validation (the code, the tests, and
+  the headline DONE).
+
+* The suites
+- 'cargo test -p edo_surface': 766 passed, 0 failed (749 at the
+  start plus 17 new).
+- 'cargo test --workspace': 998 passed, 0 failed (981 plus the
+  same 17).
+- No failures to classify. The build's warnings (unused
+  'is_editing', 'size', 'SurfaceSink::new', 'set_flip_policy')
+  are pre-existing and in files this slice did not touch.
+
+* Deviations from the plan's "how"
+** The runtime's two exhaustive role matches
+'settings.rs' 'resolve_settings' and the matching test in
+'surfaces_runtime/tests.rs' match on 'PedalRole' exhaustively,
+so the new variant had to be placed there for the crate to
+compile. The plan gives the role its 'PedalTarget::
+StringParameters' in slice 2; here both return 'None' for it
+(the test's '.map' became '.filter_map'), so the parameters
+pedal stays out of the pedal map until slice 2. No rig has such
+a pedal yet, so nothing observable changes.
+** The energy-pedal helper generalized without a rename
+'validate_string_energy_pedal' keeps its name and its
+energy-only rule (at most one per rig) and then calls a new
+'validate_rig_wide_strings_pedal', which holds the shared
+checks (no monome, no taper knobs, a 'cpal_strings' play sink).
+The parameters role calls the shared one directly. The order
+of the energy checks moved: "a second energy pedal" is now
+checked before "names a monome"; both still fail.
+** Small additions
+- 'PedalRole::rig_spelling', for messages that name a role as
+  the rig spells it.
+- 'play_grids_sink_id' and 'play_grids_strings_params' in
+  'rig.rs': the first was the inline lookup in the energy
+  helper; the second feeds 'validate_pedal_targets'.
+- 'TABLE_REBUILDING_PARAMETERS' in 'pedal_targets.rs': the five
+  refused floats, used by the error message (it gives the
+  reason) and by the every-field test.
+- 'StringsPedalTarget' has a hand-written 'PartialEq' (key,
+  min, max; the key fixes the setter), since comparing function
+  pointers is unreliable; 'Debug' and 'Copy' are derived.
+- 'StringsPedalTarget::value_at(position)' holds the one
+  'min + (max - min) * position'.
+- 'PedalTargetsPerChannel', the type alias for
+  '[[Option<StringsPedalTarget>; MAX_PEDAL_TARGETS];
+  NUM_PEDALS]' that 'LiveParams' will carry.
+** Tests beyond the list
+Too many targets on one pedal; one parameter twice on one pedal
+(its own message); the parameters pedal rig-wide, untapered and
+over strings; its 'pedal_toggle' refused; a refused key's
+message in 'pedal_targets.rs'.
+
+* Fixtures changed
+None. The new 'rig.rs' tests reuse 'STRINGS_PLAY_GRID' and
+'SURFACES_MIN' with two new helpers, 'string_parameters_pedal'
+and 'pedal_target'. The 'surfaces_runtime/tests.rs' change is
+the role match above, not a fixture.
+
+* Left unfinished
+- 'energy.ex_post_energizing_floor' is not in
+  'TARGETABLE_PARAMETERS': the field does not exist yet. Slice 3
+  adds it to the list and to the hand-written struct in
+  'every_float_field_is_targetable_or_refused', which will not
+  compile until it does.
+- Nothing else.
+
+* Headline
+DONE.
+
+* For the next slices
+** Where things live
+- 'edo_surface/src/strings/pedal_targets.rs':
+  'TARGETABLE_PARAMETERS' (a '&[(&str, PedalTargetSetter)]'),
+  'TABLE_REBUILDING_PARAMETERS', 'MAX_PEDAL_TARGETS',
+  'PedalTargetSetter', 'PedalTargetsPerChannel',
+  'StringsPedalTarget' (fields 'parameter', 'setter', 'min',
+  'max'), 'resolve_pedal_target(&PedalTargetRig,
+  &StringsParams)', and 'apply_pedal_targets(&StringsParams,
+  &PedalTargetsPerChannel, &[f32; NUM_PEDALS]) ->
+  StringsParams'.
+- 'rig.rs': 'PedalTargetRig', 'ExpressionPedalRig.targets',
+  'PedalRole::StringParameters', 'validate_pedal_targets',
+  'validate_rig_wide_strings_pedal',
+  'play_grids_strings_params' (private; slice 2's shared
+  resolution can use it or 'SinkRig::strings_params').
+** For slice 2
+Replace the two 'return None' arms (in 'settings.rs'
+'resolve_settings' and in 'surfaces_runtime/tests.rs') with
+'PedalTarget::StringParameters'.
+** A number in the plan does not add up
+The plan sets 'MAX_PEDAL_TARGETS' at 16, "enough for every
+targetable parameter at once on one pedal", but the list has 29
+keys (30 with the floor). I kept 16 as the plan states it; one
+pedal can carry 16 of the 30. A larger value only grows
+'LiveParams', which is copied every callback.

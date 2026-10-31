@@ -1,0 +1,61 @@
+#+title: Plan 04, slice 4: the grid key 'square_dance'
+
+* Commit
+'4a5a811' plan 04, slice 4: the grid key 'square_dance' turns a
+grid's square dance off. Files: 'rig.rs', 'settings.rs',
+'mod.rs', 'surfaces_runtime/tests.rs', 'rigs/README.org',
+'TODO/resonance/04_plan.org' (the headline).
+* Suites
+'cargo test -p edo_surface': 779 passed, 0 failed (778 at the
+start plus the new test). 'cargo test --workspace': 1011
+passed, 0 failed (1010 plus the new test). No failures to
+classify. The lib's dead-code warnings ('is_editing',
+'set_flip_policy' and the like) are in code this slice did not
+touch.
+* What was built
+'MonomeWindowRig::EdoNoteGrid' gains 'square_dance: bool' with
+'#[serde(default = "default_square_dance")]' (true), beside
+'flash_sustained'. 'resolve_settings' pulls it with the handles
+and 'flash_sustained' into 'GridSettings.square_dance' (true for
+a monome with no 'edo_note_grid'); 'run' copies it into
+'Knobs.square_dance'; the gate is now 'if !rt.overlays.compact()
+&& rt.knobs.square_dance'. The diamond dance, the off-screen
+hints and 'flash_sustained' are untouched.
+* Tests
+(The test's name is one token wider than 65 columns.)
+'square_dance_resolves_false_where_the_rig_says_and_true_by_default'
+in 'surfaces_runtime/tests.rs': it reads the shipped
+'2-edogrids_ss-accrete_ss-pulse.org' (asserting the rig does not
+already set the key), resolves it (every grid true), then adds
+'PARAM square_dance = false' under its first 'edo_note_grid' at
+that window's depth, checks the parsed rig carries false on
+exactly one grid, and that only that grid's 'GridSettings' is
+false. The negative paint test was not possible: 'dance_cells'
+is computed inside 'grid_thread''s loop and no unit test drives
+it, so the test pins the knob's passage alone (rig to
+'GridSettings'; 'Knobs' is a field copy in 'run', as for
+'flash_sustained').
+* Deviations from the plan's how
+- 'rigs/README.org' marks code with '~...~', as the rest of that
+  file does, not single apostrophes.
+- The README's prose paragraph also says a compact-family grid
+  never draws the dance whatever the key says, since the gate
+  keeps 'compact()'.
+* Fixtures changed
+The 'gs' helper and 'test_grid_thread_for' in
+'surfaces_runtime/tests.rs' gained the new field ('true' and
+'g.square_dance'), since they build 'GridSettings' and 'Knobs'
+by literal. No rig in 'rigs/' was edited.
+* Unfinished
+Nothing in this slice's scope.
+* Headline
+DONE.
+* For slice 5
+The key is 'square_dance = false', a PARAM of each
+'ELEM monome_windows' whose 'kind = "edo_note_grid"', at the
+same depth as that window's 'PARAM flash_sustained' (in the
+working tree's 'energy-pedal_monome.org', lines 841 and 896):
+'**** PARAM square_dance = false'. Like 'flash_sustained' it is
+read when the grid thread starts; an 'r' reload refreshes only
+the trail, slide and tap knobs ('reload.rs' 215-219), so a
+changed 'square_dance' takes a restart.

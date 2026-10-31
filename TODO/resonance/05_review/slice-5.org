@@ -1,0 +1,142 @@
+#+title: Plan 04, slice 5: the rig, its readme, the harness
+
+* Commits
+** ff0270f
+plan 04, slice 5: the rig 'two-pedals_monome', its readme, the
+harness's second pedal and 'squeal'. One commit; it also marks
+the slice headline DONE in '04_plan.org'.
+
+* Suites
+** 'cargo test -p edo_surface': 780 passed, 0 failed
+779 at the start, plus the new mock-grid run of the new rig.
+** 'cargo test --workspace': 1015 passed, 0 failed
+780 + 8 + 180 + 28 + 3 + 16. 1011 at the start, plus the mock
+run and the harness binary's three new tests.
+** one failure on the way, a finding, fixed
+The first run of 'every_scene_renders_under_the_two_pedals_rig'
+failed: the 'howl' scene peaked at 0.95, the clamp. The scene
+plays the sink's own 'howl.level', which the copy had at 0.02.
+See "Numbers moved".
+
+* Deviations from the plan's how
+** a pub 'play_grids_sink' rather than a pub params function
+The harness needs the sink's sample rate and amplitude as well
+as its parameters, so 'rig.rs' gains 'pub fn
+play_grids_sink(&Rig) -> Option<&SinkRig>', and the private
+'play_grids_strings_params' is now built on it. The harness and
+the targets' validation choose one sink by one function.
+'play_grids_strings_params' stays private: nothing outside
+'rig.rs' needs it.
+** without '--rig', channel 1 is the energy pedal
+The slice 2 correction calls the no-rig default "no targets and
+no energy pedal". Taken literally, '--pedal' and 'pedal_swell'
+would put no energy in without a rig, where they always have,
+and the plan says '--pedal' keeps its meaning. So the rigless
+rendering has no targets and 'string_energy_pedal = Some(0)'. A
+test pins it.
+** the fallback sink
+A rig with no play grid falls back to its first 'cpal_strings'
+sink, as the harness always did. A rig whose play grids play a
+non-strings sink is now an error in the harness; before, it took
+the first strings sink anywhere in the rig.
+** the tests live in the harness binary
+Three tests in 'strings_harness.rs': the squeal grows and stays
+below the clamp; every scene renders under the rig to finite
+audio below the clamp; the rigless channel 1 pedal still swells.
+Together they take about 4 s in debug. 'every scene' is a test
+here, not only a manual run.
+** the mock run's name
+The helper passes the rig's name as the run's 'what' (used only
+in the error message), and names the mock grids after the rig.
+** more of the copy's text corrected than the list names
+The copy never said "convolved". Its knock text said the table
+was "scaled to energy (knock_mix * pick_energy)^2", so I
+rewrote it as unit energy, scaled at birth. I also corrected
+the body's "about" ('mix' moves live and rebuilds nothing), and
+the energy "about" and "the math of the window" (the floor). And
+I added a sentence under 'pick_energy' and the howl's "about"
+saying the pedals' targets move them.
+** markup
+'rigs/README.org' keeps the '~code~' markup its section uses. The
+new rig and readme use single apostrophes, wrapped at 65 columns.
+Code and links are never broken, so the title line, one harness
+command and one README link line run long.
+
+* Fixtures changed
+** the energy-pedal mock run became a helper
+'strings_rig_runs_against_two_and_one_mock_grids(rig_name,
+ports)', called by the old test (ports 19240-19243, as before)
+and the new 'two_pedals_rig_runs_against_two_and_one_mock_grids'
+(19250-19253, unused elsewhere). The body is unchanged apart
+from the rig name, the ports and the grid ids.
+
+* Numbers moved
+** the sink's 'howl.level', 0.02 to 0.003
+Jeff's working-tree value 0.02 is above the rig's own documented
+useful range (0.001 to 0.01). It pinned the 'howl' scene at the
+clamp, and the plan's completion needs every scene below it. In
+live play the value is inert: the sink's 'howl.gain' is 0, and
+once the channel 2 pedal reports its target sets the level. 0.003
+is that target's heel value, so every target's 'min' now equals
+the sink's value. Jeff may want 0.02 back; if so, the harness
+test of every scene fails on 'howl'. His own
+'energy-pedal_monome' still has 0.02 and still pins 'howl'.
+** the targets: as the plan lists, nothing moved
+'howl.level' 0.003 to 0.006, 'bridge.heaviness' 3e3 to 3e2,
+'string.high_frequency_t60_ratio' 0.5 to 0.9, 'howl.gain' 0 to
+20, 'exciter.pick_energy' 0.15 to 0.8. The squeal neither clipped
+nor failed to start.
+
+* What I measured
+No sound card, so no listening. These are peaks and RMS per
+0.5 s, read by a pure-python WAV reader from the release build.
+** 'squeal' under 'two-pedals_monome'
+Finite; peak 0.3276. RMS from 0 s: 0.082 0.051 0.028 0.074
+0.155 0.172 0.106 0.099 0.099 0.099 0.098 0.099. The second
+before the rise (0 to 1 s) has RMS 0.068; the last second has
+0.0985. The first second equals 'chord''s exactly, so the heel
+is the rig without the pedal. The howl catches by 1.5 s,
+overshoots while the pedal rises (0.17 at 2.5 s), and settles
+at about 0.099 once it is held at the toe.
+** 'chord' under 'two-pedals_monome'
+Finite; peak 0.3159. RMS: 0.082 0.051 0.030 0.018 0.013 0.009
+0.007 0.004 0.001 (released at 4 s).
+** every scene's peak under the rig
+single_notes 0.141, chord 0.316, restrike 0.316, pedal_swell
+0.330, pedal_swell_bow 0.288, pedal_swell_wind 0.214, sympathy
+0.297, howl 0.339 (at level 0.003), treble 0.084, squeal 0.328.
+The WAV files are deleted.
+
+* Unfinished
+Nothing in the slice. Nobody has listened to the squeal: there
+was no sound card.
+
+* The headline
+DONE.
+
+* What slice 6 must know
+** duplicate sink lookups
+'validate_rig_wide_strings_pedal' ('rig.rs') still finds the
+play sink by id itself. It could call 'play_grids_sink'.
+'resolve_settings' ('settings.rs') finds the grids' sink its own
+way.
+** the README's targetable list
+In "Pedal targets" it is one physical line per table, full
+'table.key' spellings in '~' markup, in
+'TARGETABLE_PARAMETERS' order, ready for a render-and-compare
+test.
+** README_USER.org
+I committed only my paragraph after the energy-pedal entry (the
+lines from "The same strings with two pedals" to "other
+parameters."). To do that I wrote HEAD's file plus that
+paragraph into the index ('git hash-object' and 'git
+update-index'). 'git diff README_USER.org' shows only Jeff's
+"DO THIS each session" edit.
+** vocabulary
+The new text says "the squeal" for what the channel 2 pedal
+brings on. The scene is named 'squeal', and "the howl" stays the
+name of the path. The rig and readme name the channel 2 pedal
+"the parameters pedal", as the plan's vocabulary does. The rig's
+"how this file is read" still names a grouping headline
+"parameters we talked about having access to", which Jeff's copy
+has since renamed: a stale reference, in his text, left alone.
