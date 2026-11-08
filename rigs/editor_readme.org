@@ -214,8 +214,9 @@ No ghosts; the notes still flash while they sound.
 The grid shows nothing of these notes, sounding or not.
 *** setting it
 Select a region (or ctrl-a for whole tracks) and press 'h' to
-step through the three. A lane marks a region whose ghosts are
-not 'yes' with a hatched band. In a track file it is a line like
+step through the three. A lane darkens and hatches a region
+whose ghosts are not 'yes': '/' lines for while-sounding, '\'
+lines for no. In a track file it is a line like
 '12.000 ghosts while-sounding'.
 *** song-wide
 The boundaries track has the same setting, which holds for every

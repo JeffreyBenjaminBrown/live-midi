@@ -34,6 +34,8 @@ const SELECTION: u32 = 0x6FA8FF;
 const RIG_MARK: u32 = 0xE0B050;
 /// The mark of a region whose notes make no scale ghosts.
 const GHOSTLESS: u32 = 0xB07CC6;
+/// Pixels between a ghostless region's hatching lines.
+const HATCH_SPACING: i32 = 9;
 /// Alternate scale ghost sections' bands.
 const SECTION_SHADES: [u32; 2] = [0x3A3550, 0x2E3A48];
 /// One color per timbre slot, left to right.
@@ -388,8 +390,8 @@ fn render_boundary_lines(
     if x >= HEADER_W && x < canvas.width {
       canvas.shade(x, View::lanes_top(), 1, canvas.height - View::lanes_top(), 0xFFFFFF, 70); } } }
 
-/// Where the track's ghosts are other than the default: a hatched band
-/// along the lane's top, labelled with what holds there.
+/// Where the track's ghosts are other than the default: the lane darkened
+/// and hatched, '/' for while-sounding and '\' for no, and labelled.
 fn render_ghostless(
   canvas: &mut Canvas,
   view: &View,
@@ -407,17 +409,23 @@ fn render_ghostless(
   for (from, to, mode) in spans {
     let label: &str = match mode {
       Ghosts::Always => continue,
-      Ghosts::WhileSounding => "ghosts only while sounding",
+      Ghosts::WhileSounding => "while sounding",
       Ghosts::Never => "no ghosts", };
     let x0: i32 = view.x_of(from).max(HEADER_W);
     let x1: i32 = view.x_of(to).min(canvas.width);
     if x1 <= x0 { continue; }
-    canvas.shade(x0, top, x1 - x0, LANE_H - PARAMETER_H - 1, 0x000000, 70);
-    let mut x: i32 = x0 - (x0 % 8);
-    while x < x1 { // hatching along the top
-      canvas.fill(x.max(x0), top, 4.min(x1 - x.max(x0)), 3, GHOSTLESS);
-      x += 8; }
-    canvas.text(x0 + 3, top + 3, label, GHOSTLESS, x1 - x0 - 4); } }
+    let height: i32 = LANE_H - PARAMETER_H - 1;
+    canvas.shade(x0, top, x1 - x0, height, 0x000000, 70);
+    // diagonal hatching: '/' while-sounding, '\' no; anchored to the
+    // window, so it stays put as the band's edges scroll
+    let rising: bool = mode == Ghosts::WhileSounding;
+    for y in top..top + height {
+      for x in x0..x1 {
+        let diagonal: i32 = if rising { x + y } else { x - y };
+        if diagonal.rem_euclid(HATCH_SPACING) == 0 { canvas.shade(x, y, 1, 1, GHOSTLESS, 160); } } }
+    let label_w: i32 = canvas.text_width(label).min(x1 - x0 - 4);
+    canvas.fill(x0 + 1, top + 2, label_w + 4, LINE_H, 0x15171B);
+    canvas.text(x0 + 3, top + 2, label, GHOSTLESS, x1 - x0 - 4); } }
 
 /// The timbre as the strip's color, the volume (-60..0 dB) as a white line
 /// across it.
