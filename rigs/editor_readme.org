@@ -106,6 +106,11 @@ Rename the current track: type, then enter (escape cancels).
 A name is letters, digits, '-', '_' and '.'.
 **** ctrl-k
 Delete the current track.
+**** ctrl-e
+Render the song to an mp3, '<song dir>/<song name>.mp3', in the
+background; the status bar says when it is written. Muted tracks
+stay silent. From a shell, without the window:
+'cargo run --release --bin editor -- songs/my-song --render out.mp3'.
 **** m
 Mute the current track, or unmute it.
 **** up, down

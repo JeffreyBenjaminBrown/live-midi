@@ -1,11 +1,14 @@
 //! The multitrack editor. Player reference: rigs/editor_readme.org.
 //!
 //!   pw-jack cargo run --bin editor -- [SONG_DIR] [--rig RIG] [--headless]
+//!   cargo run --release --bin editor -- SONG_DIR --render OUT.mp3
 //!
 //! SONG_DIR defaults to songs/untitled at the repository root; RIG (a name
 //! under rigs/) to the plain synth. --headless opens no window and reads
 //! commands from stdin instead (play, stop, record, overdub, quit), for
-//! running against the monome mock. MIDI_PULSE_NO_AUDIO=1 opens no sound card.
+//! running against the monome mock. --render writes the song to an mp3 and
+//! quits, touching neither grids nor sound card. MIDI_PULSE_NO_AUDIO=1 opens
+//! no sound card.
 
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -17,6 +20,7 @@ use std::time::{Duration, Instant};
 use edo_surface::audio_output::{open_output, OutputStream};
 use edo_surface::editor::grid_io::start_grids;
 use edo_surface::editor::recorder::RecordMode;
+use edo_surface::editor::render::render_mp3;
 use edo_surface::editor::rig_layout::{editor_rig, EditorRig};
 use edo_surface::editor::session::Session;
 use edo_surface::editor::song::Song;
@@ -38,6 +42,7 @@ struct Arguments {
   song_dir: PathBuf,
   rig: String,
   headless: bool,
+  render_to: Option<PathBuf>,
 }
 
 fn main() {
@@ -49,12 +54,14 @@ fn arguments() -> Arguments {
   let mut arguments: Arguments = Arguments {
     song_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../songs/untitled"),
     rig: DEFAULT_RIG.into(),
-    headless: false, };
+    headless: false,
+    render_to: None, };
   let mut words = std::env::args().skip(1);
   while let Some(word) = words.next() {
     match word.as_str() {
       "--rig" => arguments.rig = words.next().unwrap_or_else(|| DEFAULT_RIG.into()),
       "--headless" => arguments.headless = true,
+      "--render" => arguments.render_to = words.next().map(PathBuf::from),
       dir => arguments.song_dir = PathBuf::from(dir), } }
   arguments }
 
@@ -64,6 +71,10 @@ fn run(arguments: Arguments) -> Result<(), String> {
   let editor: EditorRig = editor_rig(&arguments.rig, &rig)?;
   for ignored in &editor.ignored { println!("editor: ignoring this rig's {ignored}"); }
   let song: Song = Song::load(&arguments.song_dir)?;
+  if let Some(path) = &arguments.render_to {
+    render_mp3(&song.tracks, path)?;
+    println!("editor: rendered {}", path.display());
+    return Ok(()); }
   println!("editor: song {} ({} tracks)", arguments.song_dir.display(), song.tracks.len());
   let voices: Arc<Mutex<VoiceMap>> = Arc::new(Mutex::new(VoiceMap::new()));
   let (sample_rate, buffer_frames): (u32, u32) = stream_request(&rig);

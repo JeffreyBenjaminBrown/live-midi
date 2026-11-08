@@ -14,6 +14,7 @@ pub mod grid_io;
 pub mod live_grid;
 pub mod playback;
 pub mod recorder;
+pub mod render;
 pub mod rig_layout;
 pub mod session;
 pub mod song;

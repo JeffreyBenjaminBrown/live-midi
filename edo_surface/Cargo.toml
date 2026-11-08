@@ -23,3 +23,5 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 cpal = { version = "0.15", features = ["jack"] }
 hound = "3"
+# The editor's mp3 render. Builds the LAME encoder from its bundled C source.
+mp3lame-encoder = "0.3"

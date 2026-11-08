@@ -11,6 +11,7 @@ use minifb::{InputCallback, Key, KeyRepeat, MouseButton, MouseMode, Window, Wind
 use super::canvas::Canvas;
 use super::recorder::RecordMode;
 use super::rig_layout::{editor_rig, EditorRig};
+use super::render::render_mp3;
 use super::session::{edit_scope, Frame, Selection, Session};
 use super::track::Millis;
 use super::track_panel::{self, Request, Row};
@@ -61,6 +62,7 @@ pub fn run_window(
   let mut view: View = View::default();
   let mut drag: Option<Drag> = None;
   let rigs: Vec<String> = editor_rig_names();
+  let shared: Arc<Mutex<Session>> = Arc::clone(session); // for threads the window starts
   let mut frame: Frame = Frame::default();
   while window.is_open() && !stop.load(Ordering::SeqCst) {
     let (width, height) = window.get_size();
@@ -87,7 +89,10 @@ pub fn run_window(
       } else if window.is_key_pressed(Key::F2, KeyRepeat::No) && !session.song.tracks.is_empty() {
         renaming = Some(session.current_name());
       } else {
-        let keep_going: bool = handle_keys(&window, &mut session, &mut view, &rigs, now, &canvas);
+        if window.is_key_pressed(Key::E, KeyRepeat::No)
+        && (window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl)) {
+        start_render(Arc::clone(&shared), &mut session); }
+      let keep_going: bool = handle_keys(&window, &mut session, &mut view, &rigs, now, &canvas);
         if !keep_going { break; } }
       handle_mouse(&window, &mut session, &mut view, &mut drag, now, &canvas);
       session.refresh_frame(now, &mut frame);
@@ -159,6 +164,23 @@ fn handle_keys(
       (Key::L, false, _) => reload_rig(session, now),
       _ => {} } }
   true }
+
+/// Render the song to '<song dir>/<song name>.mp3' on a thread of its own,
+/// reporting in the status bar when it is done.
+fn start_render(
+  shared: Arc<Mutex<Session>>,
+  session: &mut Session,
+) {
+  let tracks = session.song.tracks.clone();
+  let name: String = session.song.dir.file_name()
+    .map_or("song".into(), |name| name.to_string_lossy().into_owned());
+  let path = session.song.dir.join(format!("{name}.mp3"));
+  session.status = format!("rendering {} ...", path.display());
+  std::thread::spawn(move || {
+    let result: Result<(), String> = render_mp3(&tracks, &path);
+    shared.lock().unwrap_or_else(|e| e.into_inner()).status = match result {
+      Ok(()) => format!("rendered {}", path.display()),
+      Err(error) => format!("render failed: {error}"), }; }); }
 
 enum PanelOutcome { Stay, Close, Rename }
 

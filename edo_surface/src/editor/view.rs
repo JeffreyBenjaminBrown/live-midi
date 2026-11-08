@@ -176,6 +176,7 @@ const HELP: &[HelpRow] = &[
   HelpRow::Heading("rigs"),
   HelpRow::Key("g", "next rig"),
   HelpRow::Key("l", "reload the rig"),
+  HelpRow::Key("ctrl-e", "render to mp3"),
   HelpRow::Key("ctrl-q", "quit"),
   HelpRow::Heading("editing"),
   HelpRow::Key("drag", "select time"),
