@@ -104,6 +104,22 @@ fn truncate_notes_sounding_into(
     if note.start < at && note.end() > at {
       note.length = at - note.start; } } }
 
+/// Make `setting` hold throughout `[from, to)`, replacing that kind's
+/// changes there; after `to`, what held before comes back.
+pub fn set_throughout(
+  track: &mut Track,
+  from: Millis,
+  to: Millis,
+  setting: Setting,
+) {
+  let kind: SettingKind = setting.kind();
+  let settings_at_end: Settings = track.settings_before(to);
+  track.changes.retain(|change|
+    change.setting.kind() != kind || change.at < from || change.at >= to);
+  track.changes.push(SettingChange { at: from, setting });
+  restore_settings_at(track, to, &settings_at_end, &[kind]);
+  track.normalize(); }
+
 /// Move every note starting at or after `from`, and every change, by `by`.
 fn shift_from(
   track: &mut Track,
@@ -277,6 +293,15 @@ mod tests {
     assert_eq!(starts, vec![0, 1000, 2000, 3000, 4000]);
     assert_eq!(track.settings_at(2600).timbre, Some(1));
     assert_eq!(track.settings_at(2400).timbre, Some(0)); }
+
+  #[test]
+  fn a_region_set_to_one_timbre_keeps_it_throughout_and_restores_after() {
+    let mut track: Track = sample();
+    set_throughout(&mut track, 500, 2500, Setting::Timbre(3));
+    assert_eq!(track.settings_at(400).timbre, Some(0));
+    assert_eq!(track.settings_at(500).timbre, Some(3));
+    assert_eq!(track.settings_at(1600).timbre, Some(3)); // the change at 1500 is gone
+    assert_eq!(track.settings_at(2500).timbre, Some(1)); }
 
   #[test]
   fn a_take_into_a_new_track_sets_everything_at_its_start() {

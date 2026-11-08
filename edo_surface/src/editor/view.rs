@@ -132,8 +132,10 @@ fn render_status(
     (false, None) => ("STOPPED", 0x444A55), };
   canvas.fill(4, 3, 96, STATUS_H - 6, color);
   canvas.text(10, 4, label, 0xFFFFFF, 90);
+  let speed: String = if frame.speed == 1.0 { String::new() }
+    else { format!("   speed {}x", frame.speed) };
   let summary: String = format!(
-    "{} s   track: {}   rig: {}   {}",
+    "{} s{speed}   track: {}   rig: {}   {}",
     seconds(frame.position), frame.current_name(), frame.rig_name, frame.status);
   let hint: &str = "? help";
   let hint_w: i32 = canvas.text_width(hint);
@@ -153,6 +155,8 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("o", "overdub timbre, volume"),
   HelpRow::Key("esc", "stop"),
   HelpRow::Key("home", "playhead to start"),
+  HelpRow::Key("[, ]", "slower, faster"),
+  HelpRow::Key("\\", "normal speed"),
   HelpRow::Heading("tracks"),
   HelpRow::Key("n", "new track"),
   HelpRow::Key("f2", "rename track"),
@@ -165,6 +169,8 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("ctrl-q", "quit"),
   HelpRow::Heading("editing"),
   HelpRow::Key("drag", "select time"),
+  HelpRow::Key("ctrl-a", "select whole tracks"),
+  HelpRow::Key("1 2 3 4", "timbre of selection"),
   HelpRow::Key("ctrl-click", "a header: add, drop"),
   HelpRow::Key("ctrl-c, -x", "copy, cut"),
   HelpRow::Key("ctrl-v", "paste over"),

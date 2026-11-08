@@ -16,7 +16,9 @@ use super::rig_layout::EditorRig;
 use super::song::{Song, SongTrack};
 use super::sound::Sound;
 use super::track::{Millis, Setting};
-use super::track_edit::{clear, copy, merge_take, paste_inserting, paste_over, remove, Clip};
+use super::track_edit::{
+  clear, copy, merge_take, paste_inserting, paste_over, remove, set_throughout, Clip,
+};
 
 /// A region of time across a set of tracks, adjacent or not.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,8 @@ impl Selection {
 pub enum Transport {
   Stopped,
   Rolling {
+    /// When, and at what position, the music was last at a known place: the
+    /// start, or the last change of speed.
     started: Instant,
     from: Millis,
     playback: Playback,
@@ -82,7 +86,14 @@ pub struct Session {
   /// Counts changes to the tracks, so a view can copy them only when they
   /// changed.
   pub revision: u64,
+  /// How fast the music goes: 1 is as recorded. Recording at another speed
+  /// still stores song time, so a part played slowly plays back at 1 faster.
+  pub speed: f64,
 }
+
+/// The speeds `[` and `]` step through.
+pub const SPEEDS: [f64; 13] =
+  [0.25, 0.35, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
 
 /// What the window draws, copied out of the session so drawing never holds
 /// the session's lock (a key press waiting on a frame is latency).
@@ -97,6 +108,7 @@ pub struct Frame {
   pub recording: Option<RecordMode>,
   pub status: String,
   pub rig_name: String,
+  pub speed: f64,
 }
 
 impl Frame {
@@ -115,7 +127,7 @@ impl Session {
     Session {
       song, live: LiveGrids::new(rig), sound, transport: Transport::Stopped,
       playhead: 0, current_track: 0, selection: None, clipboard: vec![],
-      undo: vec![], redo: vec![], status, born: Instant::now(), revision: 0, } }
+      undo: vec![], redo: vec![], status, born: Instant::now(), revision: 0, speed: 1.0, } }
 
   pub fn is_rolling(&self) -> bool { matches!(self.transport, Transport::Rolling { .. }) }
 
@@ -131,8 +143,8 @@ impl Session {
     now: Instant,
   ) -> Millis {
     match &self.transport {
-      Transport::Rolling { started, from, .. } =>
-        from + now.saturating_duration_since(*started).as_millis() as Millis,
+      Transport::Rolling { started, from, .. } => from
+        + (now.saturating_duration_since(*started).as_secs_f64() * 1000.0 * self.speed) as Millis,
       Transport::Stopped => self.playhead, } }
 
   // === transport ===
@@ -210,6 +222,25 @@ impl Session {
       merge_take(&mut self.song.tracks[target].track, take); }
     self.status = format!("recorded {} take(s) into {}", takes.len(), self.current_name());
     self.save(); }
+
+  /// Step the speed one place along `SPEEDS` (`by` = -1 slower, +1 faster),
+  /// or back to 1 when `by` is 0. While rolling the music carries on from
+  /// where it is.
+  pub fn step_speed(
+    &mut self,
+    now: Instant,
+    by: i32,
+  ) {
+    let here: usize = SPEEDS.iter()
+      .position(|speed| *speed >= self.speed - 1e-9).unwrap_or(SPEEDS.len() - 1);
+    let next: usize = if by == 0 { SPEEDS.iter().position(|s| *s == 1.0).unwrap() }
+      else { (here as i32 + by).clamp(0, SPEEDS.len() as i32 - 1) as usize };
+    let position: Millis = self.position(now);
+    if let Transport::Rolling { started, from, .. } = &mut self.transport {
+      *started = now;
+      *from = position; }
+    self.speed = SPEEDS[next];
+    self.status = format!("speed {}x", self.speed); }
 
   /// Advance playback to now.
   pub fn tick(
@@ -338,6 +369,24 @@ impl Session {
       edit(&mut self.song.tracks[*index].track, &selection); }
     self.status = format!("{verb} {}..{}", seconds(selection.from), seconds(selection.to));
     self.save(); }
+
+  /// Select the whole of the selected tracks (or the current one), from the
+  /// song's start to its end.
+  pub fn select_whole_tracks(&mut self) {
+    if self.song.tracks.is_empty() { return; }
+    let tracks: Vec<usize> = match &self.selection {
+      Some(selection) if !selection.tracks.is_empty() => selection.tracks.clone(),
+      _ => vec![self.current_track], };
+    self.selection = Some(Selection { from: 0, to: self.song.end().max(1), tracks }); }
+
+  /// Give the selection one timbre slot throughout.
+  pub fn set_selection_timbre(
+    &mut self,
+    now: Instant,
+    slot: usize,
+  ) {
+    self.edit_selection(now, &format!("timbre {slot} for"),
+      |track, s| set_throughout(track, s.from, s.to, Setting::Timbre(slot))); }
 
   /// Paste the clipboard at the playhead, its first clip into the current
   /// track and each other one as far below it as it was copied from below
@@ -493,7 +542,8 @@ impl Session {
     frame.rolling = self.is_rolling();
     frame.recording = self.recording_mode();
     frame.status.clone_from(&self.status);
-    frame.rig_name.clone_from(&self.live.rig.name); }
+    frame.rig_name.clone_from(&self.live.rig.name);
+    frame.speed = self.speed; }
 
   pub fn current_name(&self) -> String {
     self.song.tracks.get(self.current_track)
@@ -654,6 +704,39 @@ mod tests {
     let track = &session.song.tracks[0].track;
     assert_eq!(track.settings_at(600).timbre, Some(new_slot));
     assert_eq!(track.settings_at(1600).timbre, track.settings_at(50).timbre, "restored after");
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn a_whole_track_can_be_given_one_timbre() {
+    let (mut session, dir) = session("whole-track-timbre");
+    let t0: Instant = Instant::now();
+    let cell: Cell = note_cell(&session);
+    session.record(t0, RecordMode::Notes);
+    session.key(at(t0, 100), 0, cell, true);
+    session.key(at(t0, 900), 0, cell, false);
+    session.stop(at(t0, 1000));
+    session.select_whole_tracks();
+    session.set_selection_timbre(at(t0, 1000), 3);
+    let track = &session.song.tracks[0].track;
+    assert!(track.notes.iter().all(|note| track.settings_at(note.start).timbre == Some(3)));
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn at_half_speed_a_note_records_in_song_time_and_the_music_moves_half_as_fast() {
+    let (mut session, dir) = session("speed");
+    let t0: Instant = Instant::now();
+    let cell: Cell = note_cell(&session);
+    while session.speed > 0.5 { session.step_speed(t0, -1); }
+    assert_eq!(session.speed, 0.5);
+    session.record(t0, RecordMode::Notes);
+    session.key(at(t0, 1000), 0, cell, true);
+    session.key(at(t0, 2000), 0, cell, false);
+    session.step_speed(at(t0, 2000), 0); // back to 1 mid-roll: no jump
+    assert_eq!(session.position(at(t0, 2000)), 1000);
+    assert_eq!(session.position(at(t0, 2500)), 1500);
+    session.stop(at(t0, 2600));
+    let note = session.song.tracks[0].track.notes[0];
+    assert_eq!((note.start, note.length), (500, 500));
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]

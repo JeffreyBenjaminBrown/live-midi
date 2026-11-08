@@ -82,6 +82,12 @@ Overdub parameters into the current track.
 Stop.
 **** home
 Move the playhead to the start.
+**** [ and ]
+Slower, faster: 0.25x to 2x, in steps. The status bar shows a
+speed other than 1. Pitch does not change. A recording made
+slowly is stored in song time, so it plays back faster at 1x.
+**** \\
+Back to normal speed.
 *** tracks
 **** n
 Add an empty track below the current one.
@@ -98,6 +104,12 @@ Choose the current track.
 **** drag
 Select a region of time across one or more adjacent lanes. A
 click without a drag moves the playhead and chooses the track.
+**** ctrl-a
+Select the whole of the selected tracks (or the current one).
+**** 1, 2, 3, 4
+Give the selection one timbre throughout: the timbre slot 0, 1,
+2 or 3, left to right as on the grid. After the selection the
+timbre goes back to what it was.
 **** ctrl-click a header
 Add that track to the selection, or take it out, so a selection
 can skip tracks.
@@ -144,7 +156,10 @@ has never set takes the grid's value at the recording's start,
 so a new track sounds the way you played it.
 ** overdubbing parameters
 Overdub (o) plays the current track and records only the
-parameters. Notes you play sound but are not kept.
+parameters. Notes you play sound but are not kept. Press r or o
+while playing to start recording there. A timbre or volume key
+you press is heard at once on the track you are recording into,
+not only on your own notes.
 ** two grids
 If both grids play during a recording, the grid that acts first
 records into the current track and the other into a new track
