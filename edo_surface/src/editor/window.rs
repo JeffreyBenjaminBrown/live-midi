@@ -13,7 +13,7 @@ use super::recorder::RecordMode;
 use super::rig_layout::{editor_rig, EditorRig};
 use super::session::{Frame, Selection, Session};
 use super::track::Millis;
-use super::view::{render, Hit, View, HEADER_W};
+use super::view::{render, render_help, Hit, View, HEADER_W};
 use crate::rig::{load_named_rig, rig_dir};
 
 /// A drag that has moved less than this many pixels is a click.
@@ -52,6 +52,8 @@ pub fn run_window(
   window.set_input_callback(Box::new(Typed(Arc::clone(&typed))));
   // a track's new name while it is being typed (F2)
   let mut renaming: Option<String> = None;
+  // the key help covers the window while shown ('?' toggles, escape closes)
+  let mut help_shown: bool = false;
   let mut canvas: Canvas = Canvas::new(1280, 720);
   let mut view: View = View::default();
   let mut drag: Option<Drag> = None;
@@ -65,8 +67,13 @@ pub fn run_window(
       let mut session: MutexGuard<Session> = session.lock().unwrap_or_else(|e| e.into_inner());
       let typed_now: Vec<char> =
         std::mem::take(&mut *typed.lock().unwrap_or_else(|e| e.into_inner()));
-      if renaming.is_some() {
+      if help_shown {
+        if typed_now.contains(&'?') || window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+          help_shown = false; }
+      } else if renaming.is_some() {
         type_name(&window, &mut session, &mut renaming, &typed_now, now);
+      } else if typed_now.contains(&'?') {
+        help_shown = true;
       } else if window.is_key_pressed(Key::F2, KeyRepeat::No) && !session.song.tracks.is_empty() {
         renaming = Some(session.current_name());
       } else {
@@ -78,6 +85,7 @@ pub fn run_window(
         frame.status = format!("rename to: {name}_   (enter keeps, esc cancels)"); } }
     if frame.rolling { view.follow(frame.position, canvas.width); }
     render(&mut canvas, &frame, &view);
+    if help_shown { render_help(&mut canvas); }
     window.update_with_buffer(&canvas.pixels, width, height).map_err(|e| e.to_string())?; }
   stop.store(true, Ordering::SeqCst);
   Ok(()) }

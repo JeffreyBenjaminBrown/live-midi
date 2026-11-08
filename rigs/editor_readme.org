@@ -69,6 +69,8 @@ by its color and the volume by the height of its white line
 (bottom -60 dB, top 0 dB). A gold line marks a later change of
 rig or tuning. The red line is the playhead.
 ** keys
+'?' covers the window with this list in a big font; '?' or
+escape puts it away.
 *** transport
 **** space
 Play from the playhead, or stop.

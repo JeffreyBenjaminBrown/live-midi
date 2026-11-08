@@ -1,8 +1,8 @@
 //! What the editor's window shows, and where a click lands. Pure: it draws
 //! a `Session` onto a `Canvas`; the window module owns the real window.
 //!
-//! Top to bottom: a status bar, a time ruler, one lane per track, and a line
-//! of key help. A lane has a header on the left (the track's name) and its
+//! Top to bottom: a status bar, a time ruler, and one lane per track. The
+//! keys are listed in a help overlay ('?'), drawn by `render_help`. A lane has a header on the left (the track's name) and its
 //! timeline on the right: notes as bars, higher pitches higher, over a strip
 //! showing the timbre (its color) and the volume (the strip's white line).
 //! Time scrolls horizontally, shared by every lane; lanes scroll vertically.
@@ -18,7 +18,6 @@ pub const STATUS_H: i32 = 24;
 pub const RULER_H: i32 = 20;
 pub const LANE_H: i32 = 90;
 pub const PARAMETER_H: i32 = 12;
-pub const HELP_H: i32 = 3 * LINE_H + 4;
 
 const BACKGROUND: u32 = 0x1A1C21;
 const LANE_BACKGROUND: [u32; 2] = [0x22252C, 0x1F2228];
@@ -78,7 +77,7 @@ impl View {
     &self,
     canvas_h: i32,
   ) -> usize {
-    ((canvas_h - Self::lanes_top() - HELP_H) / LANE_H).max(1) as usize }
+    ((canvas_h - Self::lanes_top()) / LANE_H).max(1) as usize }
 
   pub fn hit(
     &self,
@@ -86,7 +85,7 @@ impl View {
     y: i32,
     canvas_h: i32,
   ) -> Hit {
-    if y < STATUS_H || y >= canvas_h - HELP_H { return Hit::Nothing; }
+    if y < STATUS_H || y >= canvas_h { return Hit::Nothing; }
     if y < Self::lanes_top() {
       return if x >= HEADER_W { Hit::Ruler(self.at_of(x)) } else { Hit::Nothing }; }
     let track: usize = self.first_lane + ((y - Self::lanes_top()) / LANE_H) as usize;
@@ -118,9 +117,8 @@ pub fn render(
   render_ruler(canvas, view);
   let x: i32 = view.x_of(frame.position);
   if x >= HEADER_W {
-    canvas.vline(x, STATUS_H, canvas.height - STATUS_H - HELP_H, PLAYHEAD); }
-  render_status(canvas, frame);
-  render_help(canvas); }
+    canvas.vline(x, STATUS_H, canvas.height - STATUS_H, PLAYHEAD); }
+  render_status(canvas, frame); }
 
 fn render_status(
   canvas: &mut Canvas,
@@ -137,18 +135,92 @@ fn render_status(
   let summary: String = format!(
     "{} s   track: {}   rig: {}   {}",
     seconds(frame.position), frame.current_name(), frame.rig_name, frame.status);
-  canvas.text(110, 4, &summary, TEXT, canvas.width - 114); }
+  let hint: &str = "? help";
+  let hint_w: i32 = canvas.text_width(hint);
+  canvas.text(110, 4, &summary, TEXT, canvas.width - 124 - hint_w);
+  canvas.text(canvas.width - hint_w - 8, 4, hint, FAINT_TEXT, hint_w); }
 
-fn render_help(canvas: &mut Canvas) {
-  let top: i32 = canvas.height - HELP_H;
-  canvas.fill(0, top, canvas.width, HELP_H, 0x111317);
-  let lines: [&str; 3] = [
-    "space play/stop   r record   o overdub parameters   esc stop   home to start",
-    "n new track   f2 rename   ctrl-k delete track   m mute   up/down choose track   g next rig   l reload rigs",
-    "drag select   ctrl-click header add/drop track   ctrl-c/x/v copy/cut/paste   ctrl-shift-v insert   del clear   \
-     shift-del remove time   ctrl-z/y undo/redo   wheel scroll   +/- zoom", ];
-  for (row, line) in lines.iter().enumerate() {
-    canvas.text(6, top + 2 + row as i32 * LINE_H, line, FAINT_TEXT, canvas.width - 12); } }
+/// One row of the help overlay: a heading, or a key and what it does.
+enum HelpRow {
+  Heading(&'static str),
+  Key(&'static str, &'static str),
+}
+
+const HELP: &[HelpRow] = &[
+  HelpRow::Heading("transport"),
+  HelpRow::Key("space", "play, or stop"),
+  HelpRow::Key("r", "record notes"),
+  HelpRow::Key("o", "overdub timbre, volume"),
+  HelpRow::Key("esc", "stop"),
+  HelpRow::Key("home", "playhead to start"),
+  HelpRow::Heading("tracks"),
+  HelpRow::Key("n", "new track"),
+  HelpRow::Key("f2", "rename track"),
+  HelpRow::Key("ctrl-k", "delete track"),
+  HelpRow::Key("m", "mute, or unmute"),
+  HelpRow::Key("up, down", "choose track"),
+  HelpRow::Heading("rigs"),
+  HelpRow::Key("g", "next rig"),
+  HelpRow::Key("l", "reload the rig"),
+  HelpRow::Key("ctrl-q", "quit"),
+  HelpRow::Heading("editing"),
+  HelpRow::Key("drag", "select time"),
+  HelpRow::Key("ctrl-click", "a header: add, drop"),
+  HelpRow::Key("ctrl-c, -x", "copy, cut"),
+  HelpRow::Key("ctrl-v", "paste over"),
+  HelpRow::Key("ctrl-shift-v", "paste, pushing right"),
+  HelpRow::Key("delete", "clear the selection"),
+  HelpRow::Key("shift-delete", "remove the time"),
+  HelpRow::Key("ctrl-z, -y", "undo, redo"),
+  HelpRow::Heading("view"),
+  HelpRow::Key("wheel", "scroll time"),
+  HelpRow::Key("on headers", "scroll tracks"),
+  HelpRow::Key("ctrl-wheel", "zoom"),
+  HelpRow::Key("+, -", "zoom"),
+  HelpRow::Key("left, right", "scroll time"),
+];
+
+/// The rows the help shows per screen height.
+const HELP_ROWS: i32 = 20;
+
+/// The keys, in two columns over the whole window, in a font big enough
+/// that about twenty rows fill its height (smaller only if the window is too
+/// narrow for the longest row). '?' or escape closes it.
+pub fn render_help(canvas: &mut Canvas) {
+  canvas.shade(0, 0, canvas.width, canvas.height, 0x0B0C0F, 235);
+  let line_h: i32 = (canvas.height / HELP_ROWS).max(12);
+  let key_chars: i32 = HELP.iter()
+    .filter_map(|row| match row { HelpRow::Key(key, _) => Some(key.len() as i32), _ => None })
+    .max().unwrap_or(0) + 2;
+  let action_chars: i32 = HELP.iter()
+    .filter_map(|row| match row { HelpRow::Key(_, action) => Some(action.len() as i32), _ => None })
+    .max().unwrap_or(0);
+  let column_chars: i32 = key_chars + action_chars + 3;
+  let margin: i32 = line_h / 2;
+  let column_w: i32 = (canvas.width - 3 * margin) / 2;
+  let px: f32 = { // as big as the row height allows, unless the columns are too narrow
+    let by_height: f32 = line_h as f32 / 1.25;
+    let width_at_one_px: f32 = canvas.char_width_at(100.0) as f32 / 100.0;
+    by_height.min(column_w as f32 / (column_chars as f32 * width_at_one_px)) };
+  let char_w: i32 = canvas.char_width_at(px);
+  let rows_per_column: usize = (HELP.len() + 1) / 2;
+  let split: usize = (0..HELP.len()).rev()
+    .find(|i| *i <= rows_per_column && matches!(HELP[*i], HelpRow::Heading(_)))
+    .filter(|i| *i > 0).unwrap_or(rows_per_column);
+  for (index, row) in HELP.iter().enumerate() {
+    let (column, row_in_column): (i32, i32) =
+      if index < split { (0, index as i32) } else { (1, (index - split) as i32) };
+    let x: i32 = margin + column * (column_w + margin);
+    let y: i32 = margin + row_in_column * line_h;
+    match row {
+      HelpRow::Heading(heading) =>
+        canvas.text_at_size(x, y, heading, RIG_MARK, column_w, px),
+      HelpRow::Key(key, action) => {
+        canvas.text_at_size(x + char_w, y, key, 0xFFFFFF, column_w, px);
+        canvas.text_at_size(x + char_w * (key_chars + 1), y, action, TEXT, column_w, px); } } }
+  let close: &str = "? or esc closes this";
+  canvas.text_at_size(canvas.width - margin - canvas.char_width_at(px * 0.6) * close.len() as i32,
+    canvas.height - line_h, close, FAINT_TEXT, canvas.width, px * 0.6); }
 
 fn render_ruler(
   canvas: &mut Canvas,
@@ -367,5 +439,9 @@ mod tests {
     let mut canvas: Canvas = Canvas::new(1100, 400);
     render(&mut canvas, &frame, &View::default());
     if let Some(path) = std::env::var_os("EDO_EDITOR_SNAPSHOT") {
-      std::fs::write(path, canvas.png()).unwrap(); } }
+      std::fs::write(&path, canvas.png()).unwrap();
+      let mut help: Canvas = Canvas::new(1280, 720);
+      render(&mut help, &frame, &View::default());
+      render_help(&mut help);
+      std::fs::write(format!("{}.help.png", path.to_string_lossy()), help.png()).unwrap(); } }
 }

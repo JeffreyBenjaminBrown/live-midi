@@ -18,7 +18,8 @@ pub struct Canvas {
   pub width: i32,
   pub height: i32,
   pub pixels: Vec<u32>,
-  glyphs: HashMap<char, (Metrics, Vec<u8>)>,
+  /// Rasterized glyphs, by character and size in tenths of a pixel.
+  glyphs: HashMap<(char, u32), (Metrics, Vec<u8>)>,
   char_w: i32,
 }
 
@@ -95,6 +96,13 @@ impl Canvas {
   ) {
     self.fill(x, y, w, 1, color); }
 
+  /// The width of one character at `px` pixels.
+  pub fn char_width_at(
+    &self,
+    px: f32,
+  ) -> i32 {
+    font().metrics('M', px).advance_width.round() as i32 }
+
   /// Draw `text` with its line's top-left at (x, y), clipped to `max_w`
   /// pixels of width.
   pub fn text(
@@ -105,12 +113,28 @@ impl Canvas {
     color: u32,
     max_w: i32,
   ) {
-    let baseline: i32 = y + LINE_H - 4;
+    self.text_at_size(x, y, text, color, max_w, TEXT_PX); }
+
+  /// `text`, at `px` pixels instead of the editor's usual size. The line
+  /// is `px * 1.25` tall.
+  pub fn text_at_size(
+    &mut self,
+    x: i32,
+    y: i32,
+    text: &str,
+    color: u32,
+    max_w: i32,
+    px: f32,
+  ) {
+    let line_h: i32 = (px * 1.25).round() as i32;
+    let baseline: i32 = y + line_h - (px * 0.3).round() as i32;
+    let char_w: i32 = if px == TEXT_PX { self.char_w } else { self.char_width_at(px) };
+    let size_key: u32 = (px * 10.0).round() as u32;
     let mut pen: i32 = x;
     for ch in text.chars() {
-      if pen + self.char_w > x + max_w { break; }
-      let (metrics, mask) = self.glyphs.entry(ch)
-        .or_insert_with(|| font().rasterize(ch, TEXT_PX)).clone();
+      if pen + char_w > x + max_w { break; }
+      let (metrics, mask) = self.glyphs.entry((ch, size_key))
+        .or_insert_with(|| font().rasterize(ch, px)).clone();
       let gx: i32 = pen + metrics.xmin;
       let gy: i32 = baseline - metrics.height as i32 - metrics.ymin;
       for row in 0..metrics.height as i32 {
@@ -121,7 +145,7 @@ impl Canvas {
             continue; }
           let index: usize = (py * self.width + px) as usize;
           self.pixels[index] = blend(self.pixels[index], color, coverage); } }
-      pen += self.char_w; } }
+      pen += char_w; } }
 
   /// The picture as a PNG file's bytes (uncompressed), for looking at a
   /// frame without a display.
