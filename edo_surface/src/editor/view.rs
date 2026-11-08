@@ -114,7 +114,7 @@ pub fn render(
     let index: usize = view.first_lane + lane;
     let top: i32 = View::lanes_top() + lane as i32 * LANE_H;
     render_lane(canvas, frame, view, index, top); }
-  if let Some(selection) = frame.selection { render_selection(canvas, view, &selection, lanes); }
+  if let Some(selection) = &frame.selection { render_selection(canvas, view, selection, lanes); }
   render_ruler(canvas, view);
   let x: i32 = view.x_of(frame.position);
   if x >= HEADER_W {
@@ -144,8 +144,8 @@ fn render_help(canvas: &mut Canvas) {
   canvas.fill(0, top, canvas.width, HELP_H, 0x111317);
   let lines: [&str; 3] = [
     "space play/stop   r record   o overdub parameters   esc stop   home to start",
-    "n new track   ctrl-k delete track   m mute   up/down choose track   g next rig   l reload rigs",
-    "drag select   ctrl-c/x/v copy/cut/paste   ctrl-shift-v insert   del clear   \
+    "n new track   f2 rename   ctrl-k delete track   m mute   up/down choose track   g next rig   l reload rigs",
+    "drag select   ctrl-click header add/drop track   ctrl-c/x/v copy/cut/paste   ctrl-shift-v insert   del clear   \
      shift-del remove time   ctrl-z/y undo/redo   wheel scroll   +/- zoom", ];
   for (row, line) in lines.iter().enumerate() {
     canvas.text(6, top + 2 + row as i32 * LINE_H, line, FAINT_TEXT, canvas.width - 12); } }
@@ -187,16 +187,15 @@ fn render_selection(
   selection: &Selection,
   lanes: usize,
 ) {
-  let first_lane: usize = selection.first_track.max(view.first_lane);
-  let last_lane: usize = selection.last_track.min(view.first_lane + lanes - 1);
-  if first_lane > last_lane { return; }
   let x0: i32 = view.x_of(selection.from).max(HEADER_W);
   let x1: i32 = view.x_of(selection.to).min(canvas.width);
-  let y0: i32 = View::lanes_top() + (first_lane - view.first_lane) as i32 * LANE_H;
-  let y1: i32 = View::lanes_top() + (last_lane - view.first_lane + 1) as i32 * LANE_H;
-  canvas.shade(x0, y0, (x1 - x0).max(1), y1 - y0, SELECTION, 60);
-  canvas.vline(x0, y0, y1 - y0, SELECTION);
-  canvas.vline(x1, y0, y1 - y0, SELECTION); }
+  for track in &selection.tracks {
+    if *track < view.first_lane || *track >= view.first_lane + lanes { continue; }
+    let y: i32 = View::lanes_top() + (track - view.first_lane) as i32 * LANE_H;
+    canvas.shade(x0, y, (x1 - x0).max(1), LANE_H, SELECTION, 60);
+    canvas.shade(0, y, HEADER_W - 1, LANE_H - 1, SELECTION, 40);
+    canvas.vline(x0, y, LANE_H, SELECTION);
+    canvas.vline(x1, y, LANE_H, SELECTION); } }
 
 fn render_lane(
   canvas: &mut Canvas,
@@ -347,7 +346,7 @@ mod tests {
       track.notes = (0..24).map(|i| Note {
         start: i * 350, length: 300, pitch: 41 * (1 - index as i32) + (i as i32 * 7) % 30 }).collect();
       session.song.push(track); }
-    session.selection = Some(Selection { from: 1500, to: 2600, first_track: 0, last_track: 1 });
+    session.selection = Some(Selection::across(1500, 2600, 0, 1));
     session.playhead = 2000;
     session.song.tracks[1].track.muted = true;
     session }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
+use minifb::{InputCallback, Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 
 use super::canvas::Canvas;
 use super::recorder::RecordMode;
@@ -18,6 +18,18 @@ use crate::rig::{load_named_rig, rig_dir};
 
 /// A drag that has moved less than this many pixels is a click.
 const CLICK_SLOP_PX: f32 = 3.0;
+
+/// The characters typed since the last frame, collected by minifb.
+struct Typed(Arc<Mutex<Vec<char>>>);
+
+impl InputCallback for Typed {
+  fn add_char(
+    &mut self,
+    uni_char: u32,
+  ) {
+    if let Some(ch) = char::from_u32(uni_char) {
+      self.0.lock().unwrap_or_else(|e| e.into_inner()).push(ch); } }
+}
 
 struct Drag {
   track: usize,
@@ -36,6 +48,10 @@ pub fn run_window(
     .map_err(|e| format!(
       "the editor's window did not open ({e}); run `xhost +local:` on the host"))?;
   window.set_target_fps(60);
+  let typed: Arc<Mutex<Vec<char>>> = Arc::new(Mutex::new(vec![]));
+  window.set_input_callback(Box::new(Typed(Arc::clone(&typed))));
+  // a track's new name while it is being typed (F2)
+  let mut renaming: Option<String> = None;
   let mut canvas: Canvas = Canvas::new(1280, 720);
   let mut view: View = View::default();
   let mut drag: Option<Drag> = None;
@@ -47,10 +63,19 @@ pub fn run_window(
     let now: Instant = Instant::now();
     { // the lock is held for the input and the copy, never for the drawing
       let mut session: MutexGuard<Session> = session.lock().unwrap_or_else(|e| e.into_inner());
-      let keep_going: bool = handle_keys(&window, &mut session, &mut view, &rigs, now, &canvas);
-      if !keep_going { break; }
+      let typed_now: Vec<char> =
+        std::mem::take(&mut *typed.lock().unwrap_or_else(|e| e.into_inner()));
+      if renaming.is_some() {
+        type_name(&window, &mut session, &mut renaming, &typed_now, now);
+      } else if window.is_key_pressed(Key::F2, KeyRepeat::No) && !session.song.tracks.is_empty() {
+        renaming = Some(session.current_name());
+      } else {
+        let keep_going: bool = handle_keys(&window, &mut session, &mut view, &rigs, now, &canvas);
+        if !keep_going { break; } }
       handle_mouse(&window, &mut session, &mut view, &mut drag, now, &canvas);
-      session.refresh_frame(now, &mut frame); }
+      session.refresh_frame(now, &mut frame);
+      if let Some(name) = &renaming {
+        frame.status = format!("rename to: {name}_   (enter keeps, esc cancels)"); } }
     if frame.rolling { view.follow(frame.position, canvas.width); }
     render(&mut canvas, &frame, &view);
     window.update_with_buffer(&canvas.pixels, width, height).map_err(|e| e.to_string())?; }
@@ -106,6 +131,25 @@ fn handle_keys(
       _ => {} } }
   true }
 
+/// Typing a track's new name: characters append, backspace deletes, enter
+/// renames, escape cancels.
+fn type_name(
+  window: &Window,
+  session: &mut Session,
+  renaming: &mut Option<String>,
+  typed: &[char],
+  now: Instant,
+) {
+  let Some(name) = renaming.as_mut() else { return; };
+  name.extend(typed.iter().filter(|c| !c.is_control()));
+  if window.is_key_pressed(Key::Backspace, KeyRepeat::Yes) { name.pop(); }
+  if window.is_key_pressed(Key::Escape, KeyRepeat::No) { *renaming = None; return; }
+  if window.is_key_pressed(Key::Enter, KeyRepeat::No)
+    || window.is_key_pressed(Key::NumPadEnter, KeyRepeat::No) {
+    let name: String = name.trim().to_string();
+    session.rename_current_track(now, &name);
+    *renaming = None; } }
+
 fn choose_track(
   session: &mut Session,
   view: &mut View,
@@ -157,8 +201,12 @@ fn handle_mouse(
     (true, None) => {
       let clicked: Option<(usize, Millis)> = match hit {
         Hit::Header(track) => {
+          let ctrl: bool =
+            window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
           if track <= last_track && !session.song.tracks.is_empty() {
-            session.current_track = track; }
+            if ctrl {
+              if let Some(selection) = session.selection.as_mut() { selection.toggle_track(track); }
+            } else { session.current_track = track; } }
           None }
         Hit::Timeline { track, at } => Some((track.min(last_track), at)),
         Hit::Ruler(at) => Some((session.current_track, at)),
@@ -173,9 +221,8 @@ fn handle_mouse(
         let (track, at) = match hit {
           Hit::Timeline { track, at } => (track.min(last_track), at),
           _ => (drag.track, view.at_of(x as i32)), };
-        session.selection = Some(Selection {
-          from: drag.at.min(at), to: drag.at.max(at),
-          first_track: drag.track.min(track), last_track: drag.track.max(track), }); } }
+        session.selection = Some(Selection::across(
+          drag.at.min(at), drag.at.max(at), drag.track.min(track), drag.track.max(track))); } }
     (false, Some(_)) => {
       if !drag.as_ref().unwrap().moved { session.selection = None; }
       *drag = None; }

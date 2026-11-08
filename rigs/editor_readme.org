@@ -83,6 +83,9 @@ Move the playhead to the start.
 *** tracks
 **** n
 Add an empty track below the current one.
+**** f2
+Rename the current track: type, then enter (escape cancels).
+A name is letters, digits, '-', '_' and '.'.
 **** ctrl-k
 Delete the current track.
 **** m
@@ -91,14 +94,18 @@ Mute the current track, or unmute it.
 Choose the current track.
 *** editing
 **** drag
-Select a region of time across one or more lanes. A click
-without a drag moves the playhead and chooses the track.
+Select a region of time across one or more adjacent lanes. A
+click without a drag moves the playhead and chooses the track.
+**** ctrl-click a header
+Add that track to the selection, or take it out, so a selection
+can skip tracks.
 **** ctrl-c, ctrl-x
 Copy or cut the selection.
 **** ctrl-v
 Paste at the playhead, replacing what lies under the pasted
-material. The first copied track goes into the current track,
-the next one below it, and so on.
+material. The first copied track goes into the current track;
+each other one goes as far below it as it was copied from below
+the first.
 **** ctrl-shift-v
 Paste at the playhead, moving everything after it right.
 **** delete
@@ -166,9 +173,7 @@ timbre key is bright; the other control keys are dim. A
 monobright grid shows no dim keys.
 
 * Not here yet
-No sustain, no pedals, no loop playback, no metronome, no track
-renaming (rename the file while the editor is closed, and its
-line in 'tracks.txt').
+No sustain, no pedals, no loop playback, no metronome.
 
 * For developers
 The code is 'edo_surface/src/editor/'; its 'mod.rs' lists the

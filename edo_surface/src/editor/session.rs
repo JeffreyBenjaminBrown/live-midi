@@ -18,13 +18,33 @@ use super::sound::Sound;
 use super::track::{Millis, Setting};
 use super::track_edit::{clear, copy, merge_take, paste_inserting, paste_over, remove, Clip};
 
-/// A region of time across a run of adjacent tracks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A region of time across a set of tracks, adjacent or not.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Selection {
   pub from: Millis,
   pub to: Millis,
-  pub first_track: usize,
-  pub last_track: usize,
+  /// Indices into the song's tracks, ascending, without repeats.
+  pub tracks: Vec<usize>,
+}
+
+impl Selection {
+  /// `[from, to)` across the adjacent tracks `first..=last`.
+  pub fn across(
+    from: Millis,
+    to: Millis,
+    first: usize,
+    last: usize,
+  ) -> Selection {
+    Selection { from, to, tracks: (first..=last).collect() } }
+
+  /// Add `track` to the selection, or take it out if it is in.
+  pub fn toggle_track(
+    &mut self,
+    track: usize,
+  ) {
+    match self.tracks.binary_search(&track) {
+      Ok(index) => { self.tracks.remove(index); }
+      Err(index) => self.tracks.insert(index, track), } }
 }
 
 pub enum Transport {
@@ -50,8 +70,9 @@ pub struct Session {
   /// The track a recording, a paste or a track command acts on.
   pub current_track: usize,
   pub selection: Option<Selection>,
-  /// One clip per track copied, top to bottom.
-  pub clipboard: Vec<Clip>,
+  /// One clip per track copied, top to bottom, each with its track's
+  /// distance below the first copied track.
+  pub clipboard: Vec<(usize, Clip)>,
   undo: Vec<Vec<SongTrack>>,
   redo: Vec<Vec<SongTrack>>,
   /// One line for the window's status bar: the last thing done or failed.
@@ -257,15 +278,18 @@ impl Session {
     true }
 
   fn selected(&mut self) -> Option<Selection> {
-    let selection: Option<Selection> = self.selection
-      .filter(|s| s.to > s.from && s.last_track < self.song.tracks.len());
+    let count: usize = self.song.tracks.len();
+    let selection: Option<Selection> = self.selection.clone()
+      .filter(|s| s.to > s.from && !s.tracks.is_empty() && s.tracks.iter().all(|t| *t < count));
     if selection.is_none() { self.status = "select a region first".into(); }
     selection }
 
   pub fn copy_selection(&mut self) {
     let Some(selection) = self.selected() else { return; };
-    self.clipboard = (selection.first_track..=selection.last_track)
-      .map(|index| copy(&self.song.tracks[index].track, selection.from, selection.to))
+    let first: usize = selection.tracks[0];
+    self.clipboard = selection.tracks.iter()
+      .map(|index| (index - first,
+        copy(&self.song.tracks[*index].track, selection.from, selection.to)))
       .collect();
     self.status = format!("copied {} track(s)", self.clipboard.len()); }
 
@@ -301,14 +325,15 @@ impl Session {
     if !self.ready_to_edit(now) { return; }
     let Some(selection) = self.selected() else { return; };
     self.snapshot();
-    for index in selection.first_track..=selection.last_track {
-      edit(&mut self.song.tracks[index].track, &selection); }
+    for index in &selection.tracks {
+      edit(&mut self.song.tracks[*index].track, &selection); }
     self.status = format!("{verb} {}..{}", seconds(selection.from), seconds(selection.to));
     self.save(); }
 
   /// Paste the clipboard at the playhead, its first clip into the current
-  /// track and each next one into the next track down. `inserting` moves
-  /// what follows right; otherwise the clipboard replaces what it covers.
+  /// track and each other one as far below it as it was copied from below
+  /// the first. `inserting` moves what follows right; otherwise the
+  /// clipboard replaces what it covers.
   pub fn paste(
     &mut self,
     now: Instant,
@@ -318,8 +343,8 @@ impl Session {
     if self.clipboard.is_empty() { self.status = "the clipboard is empty".into(); return; }
     self.snapshot();
     let at: Millis = self.playhead;
-    let clips: Vec<Clip> = self.clipboard.clone();
-    for (offset, clip) in clips.iter().enumerate() {
+    let clips: Vec<(usize, Clip)> = self.clipboard.clone();
+    for (offset, clip) in &clips {
       let Some(song_track) = self.song.tracks.get_mut(self.current_track + offset)
         else { break; };
       if inserting { paste_inserting(&mut song_track.track, clip, at); }
@@ -336,6 +361,7 @@ impl Session {
     self.snapshot();
     let below: usize = if self.song.tracks.is_empty() { 0 } else { self.current_track + 1 };
     self.current_track = self.song.insert_new(below);
+    self.selection = None;
     self.status = format!("new track {}", self.current_name());
     self.save(); }
 
@@ -360,6 +386,27 @@ impl Session {
     song_track.track.muted = !song_track.track.muted;
     self.status = format!("{} {}", if song_track.track.muted { "muted" } else { "unmuted" },
       song_track.track.name);
+    self.save(); }
+
+  /// Rename the current track. A name is letters, digits, '-', '_' and '.',
+  /// not taken by another track.
+  pub fn rename_current_track(
+    &mut self,
+    now: Instant,
+    name: &str,
+  ) {
+    if !self.ready_to_edit(now) || self.song.tracks.is_empty() { return; }
+    let allowed = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
+    if name.is_empty() || !name.chars().all(allowed) || name.starts_with('.') {
+      self.status = format!("a track name is letters, digits, - _ and . ; not {name:?}");
+      return; }
+    if self.song.tracks.iter().any(|t| t.track.name == name) {
+      self.status = format!("there is already a track {name}");
+      return; }
+    self.snapshot();
+    let track = &mut self.song.tracks[self.current_track].track;
+    self.status = format!("renamed {} to {name}", track.name);
+    track.name = name.to_string();
     self.save(); }
 
   pub fn undo(
@@ -432,7 +479,7 @@ impl Session {
       frame.tracks = self.song.tracks.clone();
       frame.revision = self.revision; }
     frame.current_track = self.current_track;
-    frame.selection = self.selection;
+    frame.selection.clone_from(&self.selection);
     frame.position = self.position(now);
     frame.rolling = self.is_rolling();
     frame.recording = self.recording_mode();
@@ -540,6 +587,37 @@ mod tests {
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]
+  fn a_selection_of_separated_tracks_pastes_with_the_same_gap() {
+    let (mut session, dir) = session("separated");
+    let t0: Instant = Instant::now();
+    for _ in 0..4 { session.new_track(t0); }
+    for track in [0, 2] {
+      session.song.tracks[track].track.notes.push(Note { start: 100, length: 50, pitch: 1 }); }
+    let mut selection: Selection = Selection::across(0, 500, 0, 0);
+    selection.toggle_track(2);
+    session.selection = Some(selection);
+    session.copy_selection();
+    session.current_track = 1;
+    session.playhead = 1000;
+    session.paste(t0, false);
+    let counts: Vec<usize> = session.song.tracks.iter().map(|t| t.track.notes.len()).collect();
+    assert_eq!(counts, vec![1, 1, 1, 1]); // pasted into 1 and 3, two apart as copied
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn renaming_a_track_renames_its_file() {
+    let (mut session, dir) = session("rename");
+    let t0: Instant = Instant::now();
+    session.new_track(t0);
+    let old: String = session.current_name();
+    session.rename_current_track(t0, "bass line");
+    assert_eq!(session.current_name(), old, "a space is refused");
+    session.rename_current_track(t0, "bass-1");
+    assert!(dir.join("bass-1.track").exists());
+    assert!(!dir.join(format!("{old}.track")).exists());
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
   fn cut_and_paste_moves_a_region() {
     let (mut session, dir) = session("cut-paste");
     let t0: Instant = Instant::now();
@@ -548,7 +626,7 @@ mod tests {
     session.key(at(t0, 100), 0, cell, true);
     session.key(at(t0, 200), 0, cell, false);
     session.stop(at(t0, 1000));
-    session.selection = Some(Selection { from: 0, to: 500, first_track: 0, last_track: 0 });
+    session.selection = Some(Selection::across(0, 500, 0, 0));
     session.cut_selection(at(t0, 1000));
     assert!(session.song.tracks[0].track.notes.is_empty());
     session.playhead = 2000;
