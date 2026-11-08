@@ -1,15 +1,14 @@
 //! The surfaces synth's cpal output stream: one shared voice map summed by the
 //! block renderer, feeding both grids' voices at once (each voice carries its own
 //! grid's waveform). A `cpal_strings` sink swaps the sawwave engine's renderer for
-//! the strings engine's inside the same callback. Mirrors `looper_runtime::audio` / `sawwave_runtime` for
-//! host/format/JACK selection -- duplicated rather than factored, matching the
-//! codebase's convention that untestable cpal glue is duplicated (a shared helper
-//! would carry regression risk with no test to catch it). Launch under `pw-jack`.
+//! the strings engine's inside the same callback. Opening the device (the JACK
+//! host, the F32 format) is `crate::audio_output`, shared with the editor.
+//! Launch under `pw-jack`.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::SampleFormat;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::audio_output::{open_output, OutputStream};
 
 use super::reload::LiveParams;
 use super::Live;
@@ -45,123 +44,84 @@ pub(crate) fn start(
   pedal_positions: Arc<[AtomicU32; NUM_PEDALS]>,
   strings: Option<StringsParams>,
 ) -> Result<Audio, Box<dyn std::error::Error>> {
-  // Prefer the JACK host so this synth is an ordinary JACK node sharing the sound
-  // card via PipeWire, rather than cpal's default ALSA host grabbing the device
-  // exclusively (which would evict PipeWire and the drum sampler). Launch under
-  // `pw-jack`; fall back to the default host if the `jack` feature is absent.
-  let host = match cpal::available_hosts()
-    .into_iter()
-    .find(|id| format!("{id:?}").eq_ignore_ascii_case("jack"))
-  {
-    Some(jack_id) => cpal::host_from_id(jack_id)
-      .map_err(|e| format!("JACK host unavailable ({e}); launch under `pw-jack`"))?,
-    None => cpal::default_host(),
-  };
-  let device = host.default_output_device().ok_or("no default output device")?;
-  let default_cfg = device.default_output_config()?;
-  let default_channels = default_cfg.channels();
-  let supported = device
-    .supported_output_configs()?
-    .filter(|rig| {
-      rig.sample_format() == SampleFormat::F32
-        && rig.min_sample_rate().0 <= requested_sample_rate
-        && rig.max_sample_rate().0 >= requested_sample_rate
-    })
-    .max_by_key(|rig| (rig.channels() == default_channels, rig.channels()))
-    .map(|rig| rig.with_sample_rate(cpal::SampleRate(requested_sample_rate)))
-    .unwrap_or(default_cfg);
-  let sample_format = supported.sample_format();
-  if sample_format != SampleFormat::F32 {
-    return Err(format!("surfaces synth requires F32 output, got {sample_format:?}").into());
-  }
-  let sample_rate = supported.sample_rate().0 as f32;
-  let channels = supported.channels() as usize;
-  let stream_config = cpal::StreamConfig {
-    channels: supported.channels(),
-    sample_rate: supported.sample_rate(),
-    buffer_size: cpal::BufferSize::Fixed(requested_buffer_frames),
-  };
   // The decimation filter is stateful across callbacks, so the renderer lives outside
   // the closure (moved in, mutated each call). `flags` is the per-grid distortion
   // snapshot, reused across callbacks to keep allocation out of the audio path.
-  let mut renderer = BlockRenderer::new(oversample);
-  let mut flags = vec![false; distortion_on.len()];
-  let mut strings_renderer: Option<StringsRenderer> = // owned the same way, if the sink is strings
-    strings.map(|params| StringsRenderer::new(params, sample_rate));
-  let stream = device.build_output_stream(
-    &stream_config,
-    move |data: &mut [f32], _| {
-      if let Some(strings_renderer) = strings_renderer.as_mut() {
-        // The strings engine. Its parameters, the master amplitude and the
-        // pedal-slide smoother are hot-reloadable, so they are read fresh each
-        // callback; a reload to a rig without strings parameters (another sink
-        // kind, which needs a restart) keeps the ones running. The distortion
-        // toggles are ignored: the strings engine has no distortion bus. Every pedal's
-        // raw position is read once per callback (NaN until it reports); the live
-        // pedal targets turn them into the effective parameters, and the energy
-        // pedal's slot is the energy's position.
-        let p: LiveParams = // a copy, so the lock is held only for it
-          *live.params.lock().unwrap_or_else(|e| e.into_inner());
-        strings_renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
-        let strings_params: StringsParams = p.strings.unwrap_or(*strings_renderer.params());
-        let positions: [f32; NUM_PEDALS] = read_pedal_positions(&pedal_positions);
-        let (effective_params, energy_position): (StringsParams, f32) =
-          effective_params_and_energy_position(
-            &strings_params, &p.pedal_targets, p.string_energy_pedal, &positions);
-        let mut voices: MutexGuard<VoiceMap> = voices.lock().unwrap_or_else(|e| e.into_inner());
-        strings_renderer.render_block(
-          &mut voices, data, channels, sample_rate, p.amplitude, &effective_params,
-          energy_position);
-        return; }
-      // The master amplitude + distortion curve are hot-reloadable ('r'), and the
-      // per-grid distortion toggles are live -- read everything fresh each callback.
-      // The pedal-slide smoother is live too (`[slide].pedal_smoother_ms`); a cheap
-      // field write keeps 'r' able to retune the glide feel.
-      let (amplitude, curve) = {
-        let p = live.params.lock().unwrap_or_else(|e| e.into_inner());
-        renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
-        (p.amplitude, p.distortion)
-      };
-      // The makeup table matches that curve; cloning the Arc is one atomic increment.
-      // Its cost was paid on the reload thread (see `live_makeup`).
-      let makeup = Arc::clone(&live.makeup.lock().unwrap_or_else(|e| e.into_inner()));
-      for (f, b) in flags.iter_mut().zip(distortion_on.iter()) {
-        *f = b.load(Ordering::Relaxed);
-      }
-      let distortion = flags
-        .iter()
-        .any(|f| *f)
-        .then(|| DistortionStage { curve, makeup: &makeup });
-      // Recover from poisoning so a panicked grid thread can't permanently kill audio.
-      let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
-      // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.
-      // Distortion is per-monome: a voice routes to the dirty (distorted) bus iff
-      // its grid's toggle is on -- fingered voices and sustained (accrete) drones
-      // both follow their own grid's toggle; retired release tails (no grid worth
-      // routing specially) stay on the clean bus, as they always have.
-      renderer.render_with_distortion(
-        &mut voices,
-        data,
-        channels,
-        sample_rate,
-        amplitude,
-        am_shape_family,
-        distortion,
-        |src| {
-          let grid = match src {
-            VoiceSource::SurfaceFinger { grid, .. } => *grid,
-            VoiceSource::SurfaceDrone { grid, .. } => *grid,
-            _ => return false,
-          };
-          flags.get(grid).copied().unwrap_or(false)
-        },
-      );
-    },
-    |error| eprintln!("surfaces audio stream error: {error:?}"),
-    None,
-  )?;
-  stream.play()?;
-  Ok(Audio { _stream: Some(stream), sample_rate })
+  let output: OutputStream = open_output(requested_sample_rate, requested_buffer_frames,
+    move |sample_rate, channels| {
+      let mut renderer = BlockRenderer::new(oversample);
+      let mut flags = vec![false; distortion_on.len()];
+      let mut strings_renderer: Option<StringsRenderer> = // owned the same way, if the sink is strings
+        strings.map(|params| StringsRenderer::new(params, sample_rate));
+      move |data: &mut [f32]| {
+        if let Some(strings_renderer) = strings_renderer.as_mut() {
+          // The strings engine. Its parameters, the master amplitude and the
+          // pedal-slide smoother are hot-reloadable, so they are read fresh each
+          // callback; a reload to a rig without strings parameters (another sink
+          // kind, which needs a restart) keeps the ones running. The distortion
+          // toggles are ignored: the strings engine has no distortion bus. Every pedal's
+          // raw position is read once per callback (NaN until it reports); the live
+          // pedal targets turn them into the effective parameters, and the energy
+          // pedal's slot is the energy's position.
+          let p: LiveParams = // a copy, so the lock is held only for it
+            *live.params.lock().unwrap_or_else(|e| e.into_inner());
+          strings_renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
+          let strings_params: StringsParams = p.strings.unwrap_or(*strings_renderer.params());
+          let positions: [f32; NUM_PEDALS] = read_pedal_positions(&pedal_positions);
+          let (effective_params, energy_position): (StringsParams, f32) =
+            effective_params_and_energy_position(
+              &strings_params, &p.pedal_targets, p.string_energy_pedal, &positions);
+          let mut voices: MutexGuard<VoiceMap> = voices.lock().unwrap_or_else(|e| e.into_inner());
+          strings_renderer.render_block(
+            &mut voices, data, channels, sample_rate, p.amplitude, &effective_params,
+            energy_position);
+          return; }
+        // The master amplitude + distortion curve are hot-reloadable ('r'), and the
+        // per-grid distortion toggles are live -- read everything fresh each callback.
+        // The pedal-slide smoother is live too (`[slide].pedal_smoother_ms`); a cheap
+        // field write keeps 'r' able to retune the glide feel.
+        let (amplitude, curve) = {
+          let p = live.params.lock().unwrap_or_else(|e| e.into_inner());
+          renderer.slide_slew_secs = p.slide_pedal_smoother_secs;
+          (p.amplitude, p.distortion)
+        };
+        // The makeup table matches that curve; cloning the Arc is one atomic increment.
+        // Its cost was paid on the reload thread (see `live_makeup`).
+        let makeup = Arc::clone(&live.makeup.lock().unwrap_or_else(|e| e.into_inner()));
+        for (f, b) in flags.iter_mut().zip(distortion_on.iter()) {
+          *f = b.load(Ordering::Relaxed);
+        }
+        let distortion = flags
+          .iter()
+          .any(|f| *f)
+          .then(|| DistortionStage { curve, makeup: &makeup });
+        // Recover from poisoning so a panicked grid thread can't permanently kill audio.
+        let mut voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+        // The AM family shapes any `[[timbres]]` tremolo; inert while depths are 0.
+        // Distortion is per-monome: a voice routes to the dirty (distorted) bus iff
+        // its grid's toggle is on -- fingered voices and sustained (accrete) drones
+        // both follow their own grid's toggle; retired release tails (no grid worth
+        // routing specially) stay on the clean bus, as they always have.
+        renderer.render_with_distortion(
+          &mut voices,
+          data,
+          channels,
+          sample_rate,
+          amplitude,
+          am_shape_family,
+          distortion,
+          |src| {
+            let grid = match src {
+              VoiceSource::SurfaceFinger { grid, .. } => *grid,
+              VoiceSource::SurfaceDrone { grid, .. } => *grid,
+              _ => return false,
+            };
+            flags.get(grid).copied().unwrap_or(false)
+          },
+        );
+      } })?;
+  let sample_rate: f32 = output.sample_rate;
+  Ok(Audio { _stream: Some(output.stream), sample_rate })
 }
 
 /// Every pedal's position as the pedal thread last published it, NaN for a pedal that

@@ -1,14 +1,13 @@
 //! The drum sampler's cpal output stream + polyphonic one-shot voice pool.
 //!
-//! Mirrors `looper_runtime::audio` for host/format/JACK selection (duplicated
-//! rather than factored: the cpal path can't be unit-tested, so shared untestable
-//! glue would carry regression risk with no test to catch it). The realtime
-//! callback locks the voice pool (its only lock) and mixes one-shot samples.
+//! Opening the device (the JACK host, the F32 format) is `crate::audio_output`,
+//! shared with the surfaces runtime and the editor. The realtime callback locks
+//! the voice pool (its only lock) and mixes one-shot samples.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::SampleFormat;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+
+use crate::audio_output::{open_output, OutputStream};
 
 use super::samples::DrumSample;
 
@@ -244,64 +243,24 @@ impl Sampler {
     }
   }
 
-  /// Open the cpal/JACK output stream and start mixing. See
-  /// `looper_runtime::audio::start` for the host/format rationale.
+  /// Open the output (`crate::audio_output`) and start mixing.
   pub fn start(
     requested_sample_rate: u32,
     requested_buffer_frames: u32,
     amplitude: f32,
   ) -> Result<Sampler, Box<dyn std::error::Error>> {
-    // Prefer the JACK host so we share the card via PipeWire instead of grabbing
-    // ALSA exclusively (launch under `pw-jack`); fall back to the default host.
-    let host = match cpal::available_hosts()
-      .into_iter()
-      .find(|id| format!("{id:?}").eq_ignore_ascii_case("jack"))
-    {
-      Some(jack_id) => cpal::host_from_id(jack_id)
-        .map_err(|e| format!("JACK host unavailable ({e}); launch under `pw-jack`"))?,
-      None => cpal::default_host(),
-    };
-    let device = host.default_output_device().ok_or("no default output device")?;
-    let default_cfg = device.default_output_config()?;
-    let default_channels = default_cfg.channels();
-    let supported = device
-      .supported_output_configs()?
-      .filter(|rig| {
-        rig.sample_format() == SampleFormat::F32
-          && rig.min_sample_rate().0 <= requested_sample_rate
-          && rig.max_sample_rate().0 >= requested_sample_rate
-      })
-      .max_by_key(|rig| (rig.channels() == default_channels, rig.channels()))
-      .map(|rig| rig.with_sample_rate(cpal::SampleRate(requested_sample_rate)))
-      .unwrap_or(default_cfg);
-    if supported.sample_format() != SampleFormat::F32 {
-      return Err(format!("drum sampler requires F32 output, got {:?}", supported.sample_format()).into());
-    }
-    let output_rate = supported.sample_rate().0 as f32;
-    let channels = supported.channels() as usize;
-    let stream_config = cpal::StreamConfig {
-      channels: supported.channels(),
-      sample_rate: supported.sample_rate(),
-      buffer_size: cpal::BufferSize::Fixed(requested_buffer_frames),
-    };
-
     let pool = Arc::new(Mutex::new(VoicePool::new()));
     let pool_for_cb = Arc::clone(&pool);
     let amplitude = SamplerAmplitude::new(amplitude);
     let amplitude_for_cb = amplitude.clone();
-    let stream = device.build_output_stream(
-      &stream_config,
-      move |data: &mut [f32], _| {
+    let output: OutputStream = open_output(requested_sample_rate, requested_buffer_frames,
+      move |_, channels| move |data: &mut [f32]| {
         // The master gain is hot-reloadable ('r'), so read it fresh each callback.
         let gain = amplitude_for_cb.get();
         let mut pool = pool_for_cb.lock().unwrap_or_else(|e| e.into_inner());
-        pool.mix(data, channels, gain);
-      },
-      |error| eprintln!("drum sampler stream error: {error:?}"),
-      None,
-    )?;
-    stream.play()?;
-    Ok(Sampler { _stream: Some(stream), pool, output_rate, amplitude })
+        pool.mix(data, channels, gain); })?;
+    let output_rate: f32 = output.sample_rate;
+    Ok(Sampler { _stream: Some(output.stream), pool, output_rate, amplitude })
   }
 
   pub fn output_rate(&self) -> f32 {
