@@ -164,6 +164,7 @@ mod tests {
   use std::path::PathBuf;
   use crate::editor::live_grid::BRIGHT;
   use crate::editor::recorder::RecordMode;
+  use crate::editor::session::BLINK_MILLIS;
   use crate::editor::rig_layout::{editor_rig, EditorRig, PieceKind};
   use crate::editor::song::Song;
   use crate::editor::sound::Sound;
@@ -202,7 +203,8 @@ mod tests {
     grid.press(cell.0, cell.1);
     assert!(wait_until(Duration::from_secs(2), || grid.level_at(cell.0, cell.1) == BRIGHT as i32),
       "a held note lights");
-    std::thread::sleep(Duration::from_millis(150));
+    // longer than a whole blink cycle, so playback must catch it lit
+    std::thread::sleep(Duration::from_millis(2 * BLINK_MILLIS as u64 + 100));
     grid.release(cell.0, cell.1);
     assert!(wait_until(Duration::from_secs(2), || grid.level_at(cell.0, cell.1) == 0));
     session.lock().unwrap().stop(Instant::now());

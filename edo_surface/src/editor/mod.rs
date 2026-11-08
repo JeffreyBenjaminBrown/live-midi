@@ -20,6 +20,7 @@ pub mod song;
 pub mod sound;
 pub mod track;
 pub mod track_edit;
+pub mod track_panel;
 pub mod track_text;
 pub mod view;
 pub mod window;

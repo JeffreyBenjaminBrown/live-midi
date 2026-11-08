@@ -47,6 +47,45 @@ impl Note {
   pub fn end(&self) -> Millis { self.start + self.length }
 }
 
+/// How much of a track's notes the grids show (`Setting::Ghosts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Ghosts {
+  /// The default: a dim ghost while the music is in their section, and a
+  /// flash while they sound.
+  Always,
+  /// No dim ghost; only the flash while they sound.
+  WhileSounding,
+  /// Nothing at all, sounding or not.
+  Never,
+}
+
+impl Ghosts {
+  /// The word a track file uses.
+  pub fn word(self) -> &'static str {
+    match self {
+      Ghosts::Always => "yes",
+      Ghosts::WhileSounding => "while-sounding",
+      Ghosts::Never => "no", } }
+
+  pub fn from_word(word: &str) -> Option<Ghosts> {
+    [Ghosts::Always, Ghosts::WhileSounding, Ghosts::Never].into_iter()
+      .find(|ghosts| ghosts.word() == word) }
+
+  /// The next in the cycle 'h' steps through.
+  pub fn next(self) -> Ghosts {
+    match self {
+      Ghosts::Always => Ghosts::WhileSounding,
+      Ghosts::WhileSounding => Ghosts::Never,
+      Ghosts::Never => Ghosts::Always, } }
+
+  /// The more hidden of the two.
+  pub fn and(
+    self,
+    other: Ghosts,
+  ) -> Ghosts {
+    self.max(other) }
+}
+
 /// One kind of setting, without its value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SettingKind { Rig, Tuning, Timbre, Volume, Ghosts }
@@ -65,9 +104,10 @@ pub enum Setting {
   Timbre(usize),
   /// The volume in dB, 0 being the loudest the rig's volume keys allow.
   VolumeDb(f32),
-  /// Whether the notes starting here make scale ghosts. Unset means yes;
-  /// a track playing chromatic runs would otherwise fill the grid.
-  Ghosts(bool),
+  /// How much the grids show of the notes starting here (on the boundaries
+  /// track: of every track's notes, while the music is here). Unset means
+  /// `Always`; a track playing chromatic runs would otherwise fill the grid.
+  Ghosts(Ghosts),
 }
 
 impl Setting {
@@ -93,7 +133,7 @@ pub struct Settings {
   pub tuning: Option<TrackTuning>,
   pub timbre: Option<usize>,
   pub volume_db: Option<f32>,
-  pub ghosts: Option<bool>,
+  pub ghosts: Option<Ghosts>,
 }
 
 impl Settings {
@@ -126,11 +166,11 @@ impl Settings {
     kind: SettingKind,
   ) -> Option<Setting> {
     match (self.get(kind), kind) {
-      (None, SettingKind::Ghosts) => Some(Setting::Ghosts(true)),
+      (None, SettingKind::Ghosts) => Some(Setting::Ghosts(Ghosts::Always)),
       (setting, _) => setting, } }
 
-  /// Whether notes make scale ghosts under these settings (unset: yes).
-  pub fn makes_ghosts(&self) -> bool { self.ghosts != Some(false) }
+  /// How much the grids show of notes under these settings (unset: all).
+  pub fn ghost_mode(&self) -> Ghosts { self.ghosts.unwrap_or(Ghosts::Always) }
 
   /// One change per set setting, all at `at`.
   pub fn as_changes_at(

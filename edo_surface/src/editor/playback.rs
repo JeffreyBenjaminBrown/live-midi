@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use super::track::{Millis, Setting, Settings, Track};
+use super::track::{Ghosts, Millis, Setting, Settings, Track};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaybackAction {
@@ -30,8 +30,9 @@ struct TrackPosition {
   next_note: usize,
   next_change: usize,
   settings: Settings,
-  /// (seq, end time, frequency) of each note this track is sounding.
-  sounding: Vec<(u64, Millis, f64)>,
+  /// (seq, end time, frequency, shown on the grids) of each note this
+  /// track is sounding.
+  sounding: Vec<(u64, Millis, f64, bool)>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +71,8 @@ impl Playback {
             let seq: u64 = playback.next_seq;
             playback.next_seq += 1;
             let hz: f64 = tuning.hz(note.pitch);
-            position.sounding.push((seq, note.end(), hz));
+            let shown: bool = settings.ghost_mode() != Ghosts::Never;
+            position.sounding.push((seq, note.end(), hz, shown));
             actions.push(PlaybackAction::NoteStart {
               track: played.id, seq, hz, settings: position.settings.clone() }); } } }
       playback.tracks.push(position); }
@@ -85,7 +87,7 @@ impl Playback {
     let mut actions: Vec<PlaybackAction> = vec![];
     for (position, played) in self.tracks.iter_mut().zip(tracks) {
       let track: &Track = played.track;
-      position.sounding.retain(|(seq, end, _)| {
+      position.sounding.retain(|(seq, end, _, _)| {
         let ended: bool = *end < to;
         if ended { actions.push(PlaybackAction::NoteEnd { track: position.id, seq: *seq }); }
         !ended });
@@ -115,7 +117,8 @@ impl Playback {
               actions.push(PlaybackAction::NoteStart { track: position.id, seq, hz, settings });
               actions.push(PlaybackAction::NoteEnd { track: position.id, seq });
             } else {
-              position.sounding.push((seq, note.end(), hz));
+              let shown: bool = settings.ghost_mode() != Ghosts::Never;
+              position.sounding.push((seq, note.end(), hz, shown));
               actions.push(PlaybackAction::NoteStart { track: position.id, seq, hz, settings }); } }
           _ => break, } } }
     self.position = to;
@@ -138,14 +141,17 @@ impl Playback {
   pub fn stop(&mut self) -> Vec<PlaybackAction> {
     let mut actions: Vec<PlaybackAction> = vec![];
     for position in self.tracks.iter_mut() {
-      for (seq, _, _) in position.sounding.drain(..) {
+      for (seq, _, _, _) in position.sounding.drain(..) {
         actions.push(PlaybackAction::NoteEnd { track: position.id, seq }); } }
     actions }
 
-  /// The frequencies every track is sounding now.
+  /// The frequencies every track is sounding now, but for notes whose
+  /// track hides them (ghosts `Never`).
   pub fn sounding_hz(&self) -> Vec<f64> {
     self.tracks.iter()
-      .flat_map(|position| position.sounding.iter().map(|(_, _, hz)| *hz))
+      .flat_map(|position| position.sounding.iter()
+        .filter(|(_, _, _, shown)| *shown)
+        .map(|(_, _, hz, _)| *hz))
       .collect() }
 }
 

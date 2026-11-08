@@ -10,7 +10,7 @@
 use super::canvas::{Canvas, LINE_H};
 use super::recorder::RecordMode;
 use super::session::{Frame, Selection};
-use super::track::{Millis, Note, Setting, Settings, Track, TrackKind};
+use super::track::{Ghosts, Millis, Note, Setting, Settings, Track, TrackKind};
 use super::track_text::seconds;
 
 pub const HEADER_W: i32 = 170;
@@ -177,7 +177,7 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("drag", "select time"),
   HelpRow::Key("ctrl-a", "select whole tracks"),
   HelpRow::Key("1 2 3 4", "timbre of selection"),
-  HelpRow::Key("h, shift-h", "ghosts off, on"),
+  HelpRow::Key("h", "ghosts: some, none, all"),
   HelpRow::Key("ctrl-click", "a header: add, drop"),
   HelpRow::Key("ctrl-c, -x", "copy, cut"),
   HelpRow::Key("ctrl-v", "paste over"),
@@ -352,8 +352,8 @@ fn render_boundary_lines(
     if x >= HEADER_W && x < canvas.width {
       canvas.shade(x, View::lanes_top(), 1, canvas.height - View::lanes_top(), 0xFFFFFF, 70); } } }
 
-/// Where the track's notes make no scale ghosts: a hatched band along the
-/// lane's top, labelled.
+/// Where the track's ghosts are other than the default: a hatched band
+/// along the lane's top, labelled with what holds there.
 fn render_ghostless(
   canvas: &mut Canvas,
   view: &View,
@@ -361,17 +361,18 @@ fn render_ghostless(
   top: i32,
 ) {
   let right: Millis = view.at_of(canvas.width);
-  let mut spans: Vec<(Millis, Millis)> = vec![]; // [from, to) with ghosts off
-  let mut off_since: Option<Millis> =
-    (!track.settings_before(view.left_ms).makes_ghosts()).then_some(view.left_ms);
+  let mut spans: Vec<(Millis, Millis, Ghosts)> = vec![]; // [from, to) and what holds
+  let mut since: (Millis, Ghosts) = (view.left_ms, track.settings_before(view.left_ms).ghost_mode());
   for change in track.changes.iter().filter(|c| c.at >= view.left_ms && c.at <= right) {
-    let Setting::Ghosts(on) = change.setting else { continue; };
-    match (on, off_since) {
-      (false, None) => off_since = Some(change.at),
-      (true, Some(from)) => { spans.push((from, change.at)); off_since = None; }
-      _ => {} } }
-  if let Some(from) = off_since { spans.push((from, right)); }
-  for (from, to) in spans {
+    let Setting::Ghosts(mode) = change.setting else { continue; };
+    spans.push((since.0, change.at, since.1));
+    since = (change.at, mode); }
+  spans.push((since.0, right, since.1));
+  for (from, to, mode) in spans {
+    let label: &str = match mode {
+      Ghosts::Always => continue,
+      Ghosts::WhileSounding => "ghosts only while sounding",
+      Ghosts::Never => "no ghosts", };
     let x0: i32 = view.x_of(from).max(HEADER_W);
     let x1: i32 = view.x_of(to).min(canvas.width);
     if x1 <= x0 { continue; }
@@ -380,7 +381,7 @@ fn render_ghostless(
     while x < x1 { // hatching along the top
       canvas.fill(x.max(x0), top, 4.min(x1 - x.max(x0)), 3, GHOSTLESS);
       x += 8; }
-    canvas.text(x0 + 3, top + 3, "no ghosts", GHOSTLESS, x1 - x0 - 4); } }
+    canvas.text(x0 + 3, top + 3, label, GHOSTLESS, x1 - x0 - 4); } }
 
 /// The timbre as the strip's color, the volume (-60..0 dB) as a white line
 /// across it.
@@ -484,8 +485,9 @@ mod tests {
         SettingChange { at: 0, setting: Setting::VolumeDb(-12.0) },
         SettingChange { at: 3000, setting: Setting::Timbre(3) },
         SettingChange { at: 4500, setting: Setting::VolumeDb(-30.0) },
-        SettingChange { at: 5000, setting: Setting::Ghosts(false) },
-        SettingChange { at: 7000, setting: Setting::Ghosts(true) },
+        SettingChange { at: 5000, setting: Setting::Ghosts(Ghosts::WhileSounding) },
+        SettingChange { at: 6500, setting: Setting::Ghosts(Ghosts::Never) },
+        SettingChange { at: 8000, setting: Setting::Ghosts(Ghosts::Always) },
         SettingChange { at: 6000, setting: Setting::Tuning(
           TrackTuning { edo: 31, fundamental_hz: 110.0 }) }, ];
       track.notes = (0..24).map(|i| Note {
