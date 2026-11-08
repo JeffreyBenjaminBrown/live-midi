@@ -11,7 +11,7 @@ use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 use super::canvas::Canvas;
 use super::recorder::RecordMode;
 use super::rig_layout::{editor_rig, EditorRig};
-use super::session::{Selection, Session};
+use super::session::{Frame, Selection, Session};
 use super::track::Millis;
 use super::view::{render, Hit, View, HEADER_W};
 use crate::rig::{load_named_rig, rig_dir};
@@ -40,18 +40,19 @@ pub fn run_window(
   let mut view: View = View::default();
   let mut drag: Option<Drag> = None;
   let rigs: Vec<String> = editor_rig_names();
+  let mut frame: Frame = Frame::default();
   while window.is_open() && !stop.load(Ordering::SeqCst) {
     let (width, height) = window.get_size();
     canvas.resize(width as i32, height as i32);
     let now: Instant = Instant::now();
-    {
+    { // the lock is held for the input and the copy, never for the drawing
       let mut session: MutexGuard<Session> = session.lock().unwrap_or_else(|e| e.into_inner());
       let keep_going: bool = handle_keys(&window, &mut session, &mut view, &rigs, now, &canvas);
       if !keep_going { break; }
       handle_mouse(&window, &mut session, &mut view, &mut drag, now, &canvas);
-      if session.is_rolling() { view.follow(session.position(now), canvas.width); }
-      render(&mut canvas, &session, &view, now);
-    }
+      session.refresh_frame(now, &mut frame); }
+    if frame.rolling { view.follow(frame.position, canvas.width); }
+    render(&mut canvas, &frame, &view);
     window.update_with_buffer(&canvas.pixels, width, height).map_err(|e| e.to_string())?; }
   stop.store(true, Ordering::SeqCst);
   Ok(()) }

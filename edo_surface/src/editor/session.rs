@@ -15,7 +15,7 @@ use super::recorder::{RecordMode, Recorder};
 use super::rig_layout::EditorRig;
 use super::song::{Song, SongTrack};
 use super::sound::Sound;
-use super::track::Millis;
+use super::track::{Millis, Setting};
 use super::track_edit::{clear, copy, merge_take, paste_inserting, paste_over, remove, Clip};
 
 /// A region of time across a run of adjacent tracks.
@@ -58,6 +58,29 @@ pub struct Session {
   pub status: String,
   /// When the session began; the blink clock counts from it.
   pub born: Instant,
+  /// Counts changes to the tracks, so a view can copy them only when they
+  /// changed.
+  pub revision: u64,
+}
+
+/// What the window draws, copied out of the session so drawing never holds
+/// the session's lock (a key press waiting on a frame is latency).
+#[derive(Clone, Debug, Default)]
+pub struct Frame {
+  pub revision: u64,
+  pub tracks: Vec<SongTrack>,
+  pub current_track: usize,
+  pub selection: Option<Selection>,
+  pub position: Millis,
+  pub rolling: bool,
+  pub recording: Option<RecordMode>,
+  pub status: String,
+  pub rig_name: String,
+}
+
+impl Frame {
+  pub fn current_name(&self) -> String {
+    self.tracks.get(self.current_track).map_or("no track".into(), |t| t.track.name.clone()) }
 }
 
 impl Session {
@@ -71,7 +94,7 @@ impl Session {
     Session {
       song, live: LiveGrids::new(rig), sound, transport: Transport::Stopped,
       playhead: 0, current_track: 0, selection: None, clipboard: vec![],
-      undo: vec![], redo: vec![], status, born: Instant::now(), } }
+      undo: vec![], redo: vec![], status, born: Instant::now(), revision: 0, } }
 
   pub fn is_rolling(&self) -> bool { matches!(self.transport, Transport::Rolling { .. }) }
 
@@ -129,6 +152,15 @@ impl Session {
     now: Instant,
     recorder: Option<Recorder>,
   ) {
+    { // load every rig the tracks name now, and say which ones fail
+      let names: Vec<String> = self.song.tracks.iter()
+        .flat_map(|t| t.track.changes.iter())
+        .filter_map(|change| match &change.setting { Setting::Rig(rig) => Some(rig.clone()), _ => None })
+        .collect();
+      for name in names { let _ = self.sound.rigs.get(&name); }
+      let failures: Vec<String> = self.sound.rigs.failures();
+      if !failures.is_empty() {
+        self.status = format!("silent, rig failed: {}", failures.join("; ")); } }
     let tracks: Vec<PlayedTrack> = played_tracks(&self.song);
     let (playback, actions) = Playback::start(&tracks, self.playhead);
     self.apply_playback(&actions);
@@ -326,6 +358,8 @@ impl Session {
     if !self.ready_to_edit(now) { return; }
     let Some(song_track) = self.song.tracks.get_mut(self.current_track) else { return; };
     song_track.track.muted = !song_track.track.muted;
+    self.status = format!("{} {}", if song_track.track.muted { "muted" } else { "unmuted" },
+      song_track.track.name);
     self.save(); }
 
   pub fn undo(
@@ -384,7 +418,26 @@ impl Session {
     self.redo.clear(); }
 
   fn save(&mut self) {
+    self.revision += 1;
     if let Err(error) = self.song.save() { self.status = format!("NOT SAVED: {error}"); } }
+
+  /// Refresh `frame` from the session; the tracks are copied only if they
+  /// changed since the frame's last refresh.
+  pub fn refresh_frame(
+    &self,
+    now: Instant,
+    frame: &mut Frame,
+  ) {
+    if frame.revision != self.revision || frame.tracks.len() != self.song.tracks.len() {
+      frame.tracks = self.song.tracks.clone();
+      frame.revision = self.revision; }
+    frame.current_track = self.current_track;
+    frame.selection = self.selection;
+    frame.position = self.position(now);
+    frame.rolling = self.is_rolling();
+    frame.recording = self.recording_mode();
+    frame.status.clone_from(&self.status);
+    frame.rig_name.clone_from(&self.live.rig.name); }
 
   pub fn current_name(&self) -> String {
     self.song.tracks.get(self.current_track)

@@ -7,11 +7,9 @@
 //! showing the timbre (its color) and the volume (the strip's white line).
 //! Time scrolls horizontally, shared by every lane; lanes scroll vertically.
 
-use std::time::Instant;
-
 use super::canvas::{Canvas, LINE_H};
 use super::recorder::RecordMode;
-use super::session::{Selection, Session, Transport};
+use super::session::{Frame, Selection};
 use super::track::{Millis, Note, Setting, Settings, Track};
 use super::track_text::seconds;
 
@@ -107,41 +105,38 @@ impl View {
 
 pub fn render(
   canvas: &mut Canvas,
-  session: &Session,
+  frame: &Frame,
   view: &View,
-  now: Instant,
 ) {
   canvas.fill(0, 0, canvas.width, canvas.height, BACKGROUND);
   let lanes: usize = view.visible_lanes(canvas.height);
   for lane in 0..lanes {
     let index: usize = view.first_lane + lane;
     let top: i32 = View::lanes_top() + lane as i32 * LANE_H;
-    render_lane(canvas, session, view, index, top); }
-  if let Some(selection) = session.selection { render_selection(canvas, view, &selection, lanes); }
+    render_lane(canvas, frame, view, index, top); }
+  if let Some(selection) = frame.selection { render_selection(canvas, view, &selection, lanes); }
   render_ruler(canvas, view);
-  let position: Millis = session.position(now);
-  let x: i32 = view.x_of(position);
+  let x: i32 = view.x_of(frame.position);
   if x >= HEADER_W {
     canvas.vline(x, STATUS_H, canvas.height - STATUS_H - HELP_H, PLAYHEAD); }
-  render_status(canvas, session, position);
+  render_status(canvas, frame);
   render_help(canvas); }
 
 fn render_status(
   canvas: &mut Canvas,
-  session: &Session,
-  position: Millis,
+  frame: &Frame,
 ) {
   canvas.fill(0, 0, canvas.width, STATUS_H, 0x111317);
-  let (label, color): (&str, u32) = match (&session.transport, session.recording_mode()) {
+  let (label, color): (&str, u32) = match (frame.rolling, frame.recording) {
     (_, Some(RecordMode::Notes)) => ("RECORDING", 0xC03030),
     (_, Some(RecordMode::Parameters)) => ("OVERDUB", 0xD07020),
-    (Transport::Rolling { .. }, None) => ("PLAYING", 0x308040),
-    (Transport::Stopped, None) => ("STOPPED", 0x444A55), };
+    (true, None) => ("PLAYING", 0x308040),
+    (false, None) => ("STOPPED", 0x444A55), };
   canvas.fill(4, 3, 96, STATUS_H - 6, color);
   canvas.text(10, 4, label, 0xFFFFFF, 90);
   let summary: String = format!(
     "{} s   track: {}   rig: {}   {}",
-    seconds(position), session.current_name(), session.live.rig.name, session.status);
+    seconds(frame.position), frame.current_name(), frame.rig_name, frame.status);
   canvas.text(110, 4, &summary, TEXT, canvas.width - 114); }
 
 fn render_help(canvas: &mut Canvas) {
@@ -205,18 +200,18 @@ fn render_selection(
 
 fn render_lane(
   canvas: &mut Canvas,
-  session: &Session,
+  frame: &Frame,
   view: &View,
   index: usize,
   top: i32,
 ) {
   canvas.fill(HEADER_W, top, canvas.width - HEADER_W, LANE_H, LANE_BACKGROUND[index % 2]);
   canvas.hline(0, top + LANE_H - 1, canvas.width, GRID_LINE);
-  let Some(song_track) = session.song.tracks.get(index) else {
+  let Some(song_track) = frame.tracks.get(index) else {
     canvas.fill(0, top, HEADER_W - 1, LANE_H - 1, BACKGROUND);
     return; };
   let track: &Track = &song_track.track;
-  let header: u32 = if index == session.current_track { CURRENT_HEADER } else { HEADER_BACKGROUND };
+  let header: u32 = if index == frame.current_track { CURRENT_HEADER } else { HEADER_BACKGROUND };
   canvas.fill(0, top, HEADER_W - 1, LANE_H - 1, header);
   canvas.text(6, top + 4, &track.name, TEXT, HEADER_W - 12);
   canvas.text(6, top + 4 + LINE_H, &format!("{} notes", track.notes.len()),
@@ -228,7 +223,7 @@ fn render_lane(
     canvas.text(6, top + 4 + 3 * LINE_H, settings.rig.as_deref().unwrap_or("no rig"),
       RIG_MARK, HEADER_W - 12); }
   if track.muted { canvas.text(HEADER_W - 50, top + 4, "MUTED", 0xE07070, 48); }
-  if session.recording_mode().is_some() && index == session.current_track {
+  if frame.recording.is_some() && index == frame.current_track {
     canvas.text(HEADER_W - 42, top + 4 + LINE_H, "REC", 0xFF6060, 40); }
   render_parameters(canvas, view, track, top + LANE_H - 1 - PARAMETER_H);
   render_rig_marks(canvas, view, track, top);
@@ -320,6 +315,8 @@ pub fn notes_with_hz(track: &Track) -> Vec<(Note, f64)> {
 mod tests {
   use super::*;
   use std::path::PathBuf;
+  use std::time::Instant;
+  use crate::editor::session::Session;
   use std::sync::{Arc, Mutex};
   use crate::editor::rig_layout::editor_rig;
   use crate::editor::song::Song;
@@ -366,8 +363,10 @@ mod tests {
   #[test]
   fn snapshot() {
     let session: Session = sample_session();
+    let mut frame: Frame = Frame::default();
+    session.refresh_frame(Instant::now(), &mut frame);
     let mut canvas: Canvas = Canvas::new(1100, 400);
-    render(&mut canvas, &session, &View::default(), Instant::now());
+    render(&mut canvas, &frame, &View::default());
     if let Some(path) = std::env::var_os("EDO_EDITOR_SNAPSHOT") {
       std::fs::write(path, canvas.png()).unwrap(); } }
 }
