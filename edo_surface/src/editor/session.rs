@@ -257,6 +257,8 @@ impl Session {
     width: i32,
     height: i32,
   ) -> Vec<u8> {
+    if grid >= self.live.rig.grids.len() { // the live rig has fewer grids than are connected
+      return vec![0; (width * height).max(0) as usize]; }
     let blink_on: bool =
       (now.saturating_duration_since(self.born).as_millis() / BLINK_MILLIS) % 2 == 0;
     let playing: Vec<f64> = match &self.transport {
