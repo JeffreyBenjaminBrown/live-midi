@@ -88,7 +88,8 @@ impl LiveGrids {
       rig: Some(self.rig.name.clone()),
       tuning: Some(self.rig.grids[grid].track_tuning()),
       timbre: Some(tone.timbre),
-      volume_db: Some(tone.current_volume_db()), } }
+      volume_db: Some(tone.current_volume_db()),
+      ghosts: None, } }
 
   pub fn press(
     &mut self,

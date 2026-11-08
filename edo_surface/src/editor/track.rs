@@ -49,10 +49,11 @@ impl Note {
 
 /// One kind of setting, without its value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SettingKind { Rig, Tuning, Timbre, Volume }
+pub enum SettingKind { Rig, Tuning, Timbre, Volume, Ghosts }
 
-pub const SETTING_KINDS: [SettingKind; 4] =
-  [SettingKind::Rig, SettingKind::Tuning, SettingKind::Timbre, SettingKind::Volume];
+pub const SETTING_KINDS: [SettingKind; 5] = [
+  SettingKind::Rig, SettingKind::Tuning, SettingKind::Timbre, SettingKind::Volume,
+  SettingKind::Ghosts, ];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Setting {
@@ -64,6 +65,9 @@ pub enum Setting {
   Timbre(usize),
   /// The volume in dB, 0 being the loudest the rig's volume keys allow.
   VolumeDb(f32),
+  /// Whether the notes starting here make scale ghosts. Unset means yes;
+  /// a track playing chromatic runs would otherwise fill the grid.
+  Ghosts(bool),
 }
 
 impl Setting {
@@ -72,7 +76,8 @@ impl Setting {
       Setting::Rig(_) => SettingKind::Rig,
       Setting::Tuning(_) => SettingKind::Tuning,
       Setting::Timbre(_) => SettingKind::Timbre,
-      Setting::VolumeDb(_) => SettingKind::Volume, } }
+      Setting::VolumeDb(_) => SettingKind::Volume,
+      Setting::Ghosts(_) => SettingKind::Ghosts, } }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +93,7 @@ pub struct Settings {
   pub tuning: Option<TrackTuning>,
   pub timbre: Option<usize>,
   pub volume_db: Option<f32>,
+  pub ghosts: Option<bool>,
 }
 
 impl Settings {
@@ -99,7 +105,8 @@ impl Settings {
       SettingKind::Rig => self.rig.clone().map(Setting::Rig),
       SettingKind::Tuning => self.tuning.map(Setting::Tuning),
       SettingKind::Timbre => self.timbre.map(Setting::Timbre),
-      SettingKind::Volume => self.volume_db.map(Setting::VolumeDb), } }
+      SettingKind::Volume => self.volume_db.map(Setting::VolumeDb),
+      SettingKind::Ghosts => self.ghosts.map(Setting::Ghosts), } }
 
   pub fn apply(
     &mut self,
@@ -109,7 +116,21 @@ impl Settings {
       Setting::Rig(rig) => self.rig = Some(rig.clone()),
       Setting::Tuning(tuning) => self.tuning = Some(*tuning),
       Setting::Timbre(slot) => self.timbre = Some(*slot),
-      Setting::VolumeDb(db) => self.volume_db = Some(*db), } }
+      Setting::VolumeDb(db) => self.volume_db = Some(*db),
+      Setting::Ghosts(on) => self.ghosts = Some(*on), } }
+
+  /// `get`, but an unset setting that has a default (only ghosts: yes)
+  /// reads as that default.
+  pub fn get_or_default(
+    &self,
+    kind: SettingKind,
+  ) -> Option<Setting> {
+    match (self.get(kind), kind) {
+      (None, SettingKind::Ghosts) => Some(Setting::Ghosts(true)),
+      (setting, _) => setting, } }
+
+  /// Whether notes make scale ghosts under these settings (unset: yes).
+  pub fn makes_ghosts(&self) -> bool { self.ghosts != Some(false) }
 
   /// One change per set setting, all at `at`.
   pub fn as_changes_at(
@@ -171,13 +192,19 @@ impl Track {
 
   /// Each note with its frequency in the tuning in force where it starts.
   pub fn notes_with_hz(&self) -> Vec<(Note, f64)> {
+    self.notes_with_settings().into_iter().map(|(note, hz, _)| (note, hz)).collect() }
+
+  /// Each note with its frequency and the settings in force where it starts.
+  /// A note before any tuning is left out: it has no frequency.
+  pub fn notes_with_settings(&self) -> Vec<(Note, f64, Settings)> {
     let mut settings: Settings = Settings::default();
     let mut changes = self.changes.iter().peekable();
-    let mut out: Vec<(Note, f64)> = Vec::with_capacity(self.notes.len());
+    let mut out: Vec<(Note, f64, Settings)> = Vec::with_capacity(self.notes.len());
     for note in &self.notes {
       while let Some(change) = changes.next_if(|change| change.at <= note.start) {
         settings.apply(&change.setting); }
-      if let Some(tuning) = settings.tuning { out.push((*note, tuning.hz(note.pitch))); } }
+      if let Some(tuning) = settings.tuning {
+        out.push((*note, tuning.hz(note.pitch), settings.clone())); } }
     out }
 
   /// The settings in force at `at`, counting a change made exactly at `at`.

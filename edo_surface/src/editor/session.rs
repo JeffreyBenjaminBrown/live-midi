@@ -15,7 +15,7 @@ use super::recorder::{RecordMode, Recorder};
 use super::rig_layout::EditorRig;
 use super::song::{Song, SongTrack};
 use super::sound::Sound;
-use super::track::{Millis, Setting, TrackKind};
+use super::track::{Millis, Setting, Track, TrackKind};
 use super::track_edit::{
   clear, copy, merge_take, paste_inserting, paste_over, remove, set_throughout, Clip,
 };
@@ -312,20 +312,23 @@ impl Session {
     self.live.paint(grid, &self.live.held_hz(), &playing, &ghosts, blink_on, width, height) }
 
   /// The scale ghosts at `at`: the frequency of every note on every unmuted
-  /// notes track that starts in the section around `at`; none outside a
-  /// section.
+  /// notes track that starts in the section around `at` where the track has
+  /// ghosts on; none outside a section, nor where the boundaries track turns
+  /// ghosts off.
   pub fn ghost_hz(
     &self,
     at: Millis,
   ) -> Vec<f64> {
     let Some(boundaries) = self.song.boundaries_track() else { return vec![]; };
-    let Some((from, to)) = self.song.tracks[boundaries].track.section_around(at)
-      else { return vec![]; };
+    let boundaries: &Track = &self.song.tracks[boundaries].track;
+    if !boundaries.settings_at(at).makes_ghosts() { return vec![]; }
+    let Some((from, to)) = boundaries.section_around(at) else { return vec![]; };
     self.song.tracks.iter()
       .filter(|t| t.track.kind == TrackKind::Notes && !t.track.muted)
-      .flat_map(|t| t.track.notes_with_hz())
-      .filter(|(note, _)| note.start >= from && note.start < to)
-      .map(|(_, hz)| hz)
+      .flat_map(|t| t.track.notes_with_settings())
+      .filter(|(note, _, settings)|
+        note.start >= from && note.start < to && settings.makes_ghosts())
+      .map(|(_, hz, _)| hz)
       .collect() }
 
   /// Add a section boundary where the music is (making the boundaries
@@ -432,6 +435,17 @@ impl Session {
     self.edit_selection(now, &format!("timbre {slot} for"), |track, s| {
       if track.kind == TrackKind::Notes {
         set_throughout(track, s.from, s.to, Setting::Timbre(slot)); } }); }
+
+  /// Turn scale ghosts on or off over the selection: on a notes track, for
+  /// the notes starting there; on the boundaries track, for every ghost
+  /// while the music is there.
+  pub fn set_selection_ghosts(
+    &mut self,
+    now: Instant,
+    on: bool,
+  ) {
+    self.edit_selection(now, if on { "ghosts on for" } else { "ghosts off for" },
+      |track, s| set_throughout(track, s.from, s.to, Setting::Ghosts(on))); }
 
   /// Paste the clipboard at the playhead, its first clip into the current
   /// track and each other one as far below it as it was copied from below
@@ -816,7 +830,15 @@ mod tests {
     session.song.tracks[1].track.muted = true;
     assert!(session.ghost_hz(500).is_empty(), "a muted track casts no ghosts");
     session.song.tracks[1].track.muted = false;
-    session.playhead = 500;
+    session.selection = Some(Selection::across(1050, 1500, 1, 1));
+    session.set_selection_ghosts(at(t0, 3000), false);
+    assert!(session.ghost_hz(1500).is_empty(), "ghosts turned off where that note starts");
+    assert_eq!(session.ghost_hz(500).len(), 2, "and only there");
+    session.selection = Some(Selection::across(0, 800, 0, 0)); // the boundaries track
+    session.set_selection_ghosts(at(t0, 3000), false);
+    assert!(session.ghost_hz(500).is_empty(), "the boundaries track turns every ghost off");
+    assert_eq!(session.ghost_hz(900).len(), 2, "until it turns them back on");
+    session.playhead = 900;
     let index: usize = (cell.1 * 16 + cell.0) as usize;
     assert_eq!(session.leds(t0, 0, 16, 16)[index], crate::editor::live_grid::DIM);
     std::fs::remove_dir_all(&dir).unwrap(); }

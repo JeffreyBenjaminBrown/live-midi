@@ -10,6 +10,7 @@
 //!   0.000 timbre 3
 //!   0.000 volume -12 dB
 //!   1.250 note 37 for 0.650
+//!   2.000 ghosts no
 //!
 //! A line starting with a time is a setting change or a note; times and
 //! lengths are seconds. '#' starts a comment. The track's name is the file's
@@ -41,13 +42,20 @@ pub fn write_track(track: &Track) -> String {
         out.push_str(&note_line(notes.next().unwrap())); } } }
   out }
 
-/// A boundaries track: one time per line.
+/// A boundaries track: a time per line for each boundary, and a
+/// 'TIME ghosts yes|no' line where ghosts are switched on or off for the
+/// whole song.
 fn write_boundaries(track: &Track) -> String {
+  let mut lines: Vec<(Millis, String)> = track.boundaries.iter()
+    .map(|boundary| (*boundary, format!("{}\n", seconds(*boundary))))
+    .chain(track.changes.iter().map(|change| (change.at, change_line(change))))
+    .collect();
+  lines.sort_by_key(|(at, _)| *at); // stable: a boundary before a change at its time
   let mut out: String = format!("{BOUNDARIES_HEADER}\n");
-  for boundary in &track.boundaries { out.push_str(&format!("{}\n", seconds(*boundary))); }
+  for (_, line) in lines { out.push_str(&line); }
   out }
 
-/// Parse a boundaries track: one time per line; '#' starts a comment.
+/// Parse a boundaries track (see `write_boundaries`); '#' starts a comment.
 pub fn parse_boundaries(
   name: &str,
   text: &str,
@@ -56,8 +64,13 @@ pub fn parse_boundaries(
   for (index, raw_line) in text.lines().enumerate() {
     let line: &str = raw_line.split('#').next().unwrap_or("").trim();
     if line.is_empty() { continue; }
-    track.boundaries.push(parse_seconds(line)
-      .map_err(|error| format!("{name} line {}: {error}", index + 1))?); }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let parsed: Result<(), String> = match words.as_slice() {
+      [time] => parse_seconds(time).map(|at| track.boundaries.push(at)),
+      [time, "ghosts", flag] =>
+        parse_yes_no(flag).and_then(|on| push_change(&mut track, time, Setting::Ghosts(on))),
+      _ => Err("unrecognized".to_string()), };
+    parsed.map_err(|error| format!("{name} line {}: {error}: {raw_line}", index + 1))?; }
   track.normalize();
   Ok(track) }
 
@@ -69,7 +82,8 @@ fn change_line(change: &SettingChange) -> String {
     Setting::Tuning(tuning) =>
       format!("tuning {} edo {} hz", tuning.edo, trim_float(tuning.fundamental_hz)),
     Setting::Timbre(slot) => format!("timbre {slot}"),
-    Setting::VolumeDb(db) => format!("volume {} dB", trim_float(*db as f64)), };
+    Setting::VolumeDb(db) => format!("volume {} dB", trim_float(*db as f64)),
+    Setting::Ghosts(on) => format!("ghosts {}", yes_no(*on)), };
   format!("{} {body}\n", seconds(change.at)) }
 
 fn note_line(note: &Note) -> String {
@@ -119,6 +133,7 @@ fn parse_line(
       track, time, Setting::Timbre(slot.parse().map_err(|_| format!("bad slot {slot:?}"))?))?,
     [time, "volume", db, "dB"] => push_change(
       track, time, Setting::VolumeDb(db.parse().map_err(|_| format!("bad dB {db:?}"))?))?,
+    [time, "ghosts", flag] => push_change(track, time, Setting::Ghosts(parse_yes_no(flag)?))?,
     _ => return Err("unrecognized".to_string()), }
   Ok(()) }
 
@@ -154,7 +169,8 @@ mod tests {
         TrackTuning { edo: 41, fundamental_hz: 110.0 }) },
       SettingChange { at: 0, setting: Setting::Timbre(3) },
       SettingChange { at: 0, setting: Setting::VolumeDb(-12.0) },
-      SettingChange { at: 2500, setting: Setting::VolumeDb(-2.5) }, ];
+      SettingChange { at: 2500, setting: Setting::VolumeDb(-2.5) },
+      SettingChange { at: 3000, setting: Setting::Ghosts(false) }, ];
     track.notes = vec![
       Note { start: 1250, length: 650, pitch: 37 },
       Note { start: 3001, length: 1, pitch: -4 }, ];
@@ -163,14 +179,16 @@ mod tests {
     assert!(text.contains("1.250 note 37 for 0.650\n"), "{text}");
     assert!(text.contains("0.000 tuning 41 edo 110 hz\n"), "{text}");
     assert!(text.contains("2.500 volume -2.5 dB\n"), "{text}");
+    assert!(text.contains("3.000 ghosts no\n"), "{text}");
     assert_eq!(parse_track("melody", &text).unwrap(), track); }
 
   #[test]
   fn boundaries_are_one_time_per_line_and_read_back() {
     let mut track: Track = Track::new_boundaries("sections");
     track.boundaries = vec![0, 2500, 61_000];
+    track.changes = vec![SettingChange { at: 2500, setting: Setting::Ghosts(false) }];
     let text: String = write_track(&track);
-    assert!(text.ends_with("0.000\n2.500\n61.000\n"), "{text}");
+    assert!(text.ends_with("0.000\n2.500\n2.500 ghosts no\n61.000\n"), "{text}");
     assert_eq!(parse_boundaries("sections", &text).unwrap(), track); }
 
   #[test]

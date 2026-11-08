@@ -147,7 +147,8 @@ fn shift_from(
 /// Make each of `kinds` take its `wanted` value from `at` on, by a change at
 /// `at`, unless a change of that kind is already there (it decides) or the
 /// value in force already is the wanted one. An unset wanted value can't be
-/// restored, so it is left alone.
+/// restored, so it is left alone, except one with a default (ghosts), which
+/// is restored to its default.
 fn restore_settings_at(
   track: &mut Track,
   at: Millis,
@@ -159,8 +160,8 @@ fn restore_settings_at(
     let already_changed_there: bool = track.changes.iter()
       .any(|change| change.at == at && change.setting.kind() == *kind);
     if already_changed_there { continue; }
-    if let Some(setting) = wanted.get(*kind) {
-      if in_force.get(*kind).as_ref() != Some(&setting) {
+    if let Some(setting) = wanted.get_or_default(*kind) {
+      if in_force.get_or_default(*kind).as_ref() != Some(&setting) {
         track.changes.push(SettingChange { at, setting }); } } } }
 
 /// What one recording pass produced.
@@ -333,7 +334,8 @@ mod tests {
   fn a_take_into_a_new_track_sets_everything_at_its_start() {
     let mut track: Track = Track::new("new");
     let live: Settings = Settings {
-      rig: Some("r".into()), tuning: Some(tuning(41)), timbre: Some(2), volume_db: Some(-6.0) };
+      rig: Some("r".into()), tuning: Some(tuning(41)), timbre: Some(2), volume_db: Some(-6.0),
+      ghosts: None };
     let take: Take = Take {
       start: 500, stop: 2000, live_settings: live.clone(),
       notes: vec![note(700, 100, 5)],

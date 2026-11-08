@@ -143,6 +143,7 @@ fn handle_keys(
       (Key::RightBracket, _, _) => session.step_speed(now, 1),
       (Key::Backslash, _, _) => session.step_speed(now, 0),
       (Key::B, false, _) => session.add_boundary(now),
+      (Key::H, false, shift) => session.set_selection_ghosts(now, shift),
       (Key::G, false, _) => next_rig(session, rigs, now),
       (Key::L, false, _) => reload_rig(session, now),
       _ => {} } }

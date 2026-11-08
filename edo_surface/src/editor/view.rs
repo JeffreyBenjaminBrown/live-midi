@@ -31,6 +31,8 @@ const MUTED_NOTE: u32 = 0x5A6270;
 const PLAYHEAD: u32 = 0xFF5555;
 const SELECTION: u32 = 0x6FA8FF;
 const RIG_MARK: u32 = 0xE0B050;
+/// The mark of a region whose notes make no scale ghosts.
+const GHOSTLESS: u32 = 0xB07CC6;
 /// Alternate scale ghost sections' bands.
 const SECTION_SHADES: [u32; 2] = [0x3A3550, 0x2E3A48];
 /// One color per timbre slot, left to right.
@@ -175,6 +177,7 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("drag", "select time"),
   HelpRow::Key("ctrl-a", "select whole tracks"),
   HelpRow::Key("1 2 3 4", "timbre of selection"),
+  HelpRow::Key("h, shift-h", "ghosts off, on"),
   HelpRow::Key("ctrl-click", "a header: add, drop"),
   HelpRow::Key("ctrl-c, -x", "copy, cut"),
   HelpRow::Key("ctrl-v", "paste over"),
@@ -300,6 +303,7 @@ fn render_lane(
       FAINT_TEXT, HEADER_W - 12);
     canvas.text(6, top + 4 + 2 * LINE_H, "ghost sections", FAINT_TEXT, HEADER_W - 12);
     render_sections(canvas, view, track, top);
+    render_ghostless(canvas, view, track, top);
     return; }
   canvas.text(6, top + 4 + LINE_H, &format!("{} notes", track.notes.len()),
     FAINT_TEXT, HEADER_W - 12);
@@ -312,6 +316,7 @@ fn render_lane(
   if track.muted { canvas.text(HEADER_W - 50, top + 4, "MUTED", 0xE07070, 48); }
   if frame.recording.is_some() && index == frame.current_track {
     canvas.text(HEADER_W - 42, top + 4 + LINE_H, "REC", 0xFF6060, 40); }
+  render_ghostless(canvas, view, track, top);
   render_parameters(canvas, view, track, top + LANE_H - 1 - PARAMETER_H);
   render_rig_marks(canvas, view, track, top);
   render_notes(canvas, view, track, top + 4, LANE_H - PARAMETER_H - 10); }
@@ -346,6 +351,36 @@ fn render_boundary_lines(
     let x: i32 = view.x_of(*boundary);
     if x >= HEADER_W && x < canvas.width {
       canvas.shade(x, View::lanes_top(), 1, canvas.height - View::lanes_top(), 0xFFFFFF, 70); } } }
+
+/// Where the track's notes make no scale ghosts: a hatched band along the
+/// lane's top, labelled.
+fn render_ghostless(
+  canvas: &mut Canvas,
+  view: &View,
+  track: &Track,
+  top: i32,
+) {
+  let right: Millis = view.at_of(canvas.width);
+  let mut spans: Vec<(Millis, Millis)> = vec![]; // [from, to) with ghosts off
+  let mut off_since: Option<Millis> =
+    (!track.settings_before(view.left_ms).makes_ghosts()).then_some(view.left_ms);
+  for change in track.changes.iter().filter(|c| c.at >= view.left_ms && c.at <= right) {
+    let Setting::Ghosts(on) = change.setting else { continue; };
+    match (on, off_since) {
+      (false, None) => off_since = Some(change.at),
+      (true, Some(from)) => { spans.push((from, change.at)); off_since = None; }
+      _ => {} } }
+  if let Some(from) = off_since { spans.push((from, right)); }
+  for (from, to) in spans {
+    let x0: i32 = view.x_of(from).max(HEADER_W);
+    let x1: i32 = view.x_of(to).min(canvas.width);
+    if x1 <= x0 { continue; }
+    canvas.shade(x0, top, x1 - x0, LANE_H - PARAMETER_H - 1, 0x000000, 70);
+    let mut x: i32 = x0 - (x0 % 8);
+    while x < x1 { // hatching along the top
+      canvas.fill(x.max(x0), top, 4.min(x1 - x.max(x0)), 3, GHOSTLESS);
+      x += 8; }
+    canvas.text(x0 + 3, top + 3, "no ghosts", GHOSTLESS, x1 - x0 - 4); } }
 
 /// The timbre as the strip's color, the volume (-60..0 dB) as a white line
 /// across it.
@@ -449,6 +484,8 @@ mod tests {
         SettingChange { at: 0, setting: Setting::VolumeDb(-12.0) },
         SettingChange { at: 3000, setting: Setting::Timbre(3) },
         SettingChange { at: 4500, setting: Setting::VolumeDb(-30.0) },
+        SettingChange { at: 5000, setting: Setting::Ghosts(false) },
+        SettingChange { at: 7000, setting: Setting::Ghosts(true) },
         SettingChange { at: 6000, setting: Setting::Tuning(
           TrackTuning { edo: 31, fundamental_hz: 110.0 }) }, ];
       track.notes = (0..24).map(|i| Note {
