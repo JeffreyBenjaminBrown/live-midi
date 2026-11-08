@@ -3901,3 +3901,20 @@
     assert!(wait_until(secs(3), || mono.level_at(6, 6) == 15), "monobright held note bright via map");
 
   }
+
+  /// The editor's plain synth is an ordinary surfaces rig too: it resolves, and
+  /// a press on its note grid sounds.
+  #[test]
+  fn the_editors_plain_rig_plays_in_the_surfaces_runtime() {
+    let mut rt = test_grid_thread_for("timbres-volume-scroll_41edo");
+    let cell = (0..16).flat_map(|y| (0..16).map(move |x| (x, y)))
+      .find(|c| !in_overlay(rt.overlays.selector_rect, *c)
+        && !in_overlay(rt.overlays.volume_delta_rect, *c)
+        && !in_overlay(rt.overlays.scroll_rect, *c))
+      .unwrap();
+    let mut register: i32 = 0;
+    let mut held: HashMap<(i32, i32), i32> = HashMap::new();
+    handle_key(&mut rt, &mut register, &mut held, cell, true);
+    assert_eq!(held.len(), 1);
+    assert!(!rt.shared.voices.lock().unwrap().is_empty());
+  }
