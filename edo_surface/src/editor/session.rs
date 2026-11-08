@@ -15,7 +15,7 @@ use super::recorder::{RecordMode, Recorder};
 use super::rig_layout::EditorRig;
 use super::song::{Song, SongTrack};
 use super::sound::Sound;
-use super::track::{Millis, Setting};
+use super::track::{Millis, Setting, TrackKind};
 use super::track_edit::{
   clear, copy, merge_take, paste_inserting, paste_over, remove, set_throughout, Clip,
 };
@@ -77,8 +77,9 @@ pub struct Session {
   /// One clip per track copied, top to bottom, each with its track's
   /// distance below the first copied track.
   pub clipboard: Vec<(usize, Clip)>,
-  undo: Vec<Vec<SongTrack>>,
-  redo: Vec<Vec<SongTrack>>,
+  /// The tracks, and which one was current, before each change.
+  undo: Vec<(Vec<SongTrack>, usize)>,
+  redo: Vec<(Vec<SongTrack>, usize)>,
   /// One line for the window's status bar: the last thing done or failed.
   pub status: String,
   /// When the session began; the blink clock counts from it.
@@ -163,10 +164,15 @@ impl Session {
     now: Instant,
     mode: RecordMode,
   ) {
-    if self.song.tracks.is_empty() {
-      self.snapshot();
-      self.current_track = self.song.insert_new(0);
-      self.save(); }
+    let no_notes_track_chosen: bool = self.song.tracks.get(self.current_track)
+      .is_none_or(|t| t.track.kind != TrackKind::Notes);
+    if no_notes_track_chosen && self.song.tracks.len() <= 1 {
+      self.snapshot(); // an empty song, or one with only boundaries: a first notes track
+      self.current_track = self.song.insert_new(self.song.tracks.len());
+      self.save();
+    } else if no_notes_track_chosen {
+      self.status = "choose a notes track to record into".into();
+      return; }
     let position: Millis = self.position(now);
     match &mut self.transport {
       Transport::Rolling { recorder: Some(_), .. } => {}
@@ -302,7 +308,44 @@ impl Session {
     let playing: Vec<f64> = match &self.transport {
       Transport::Rolling { playback, .. } => playback.sounding_hz(),
       Transport::Stopped => vec![], };
-    self.live.paint(grid, &self.live.held_hz(), &playing, blink_on, width, height) }
+    let ghosts: Vec<f64> = self.ghost_hz(self.position(now));
+    self.live.paint(grid, &self.live.held_hz(), &playing, &ghosts, blink_on, width, height) }
+
+  /// The scale ghosts at `at`: the frequency of every note on every notes
+  /// track that sounds in the section around `at`; none outside a section.
+  pub fn ghost_hz(
+    &self,
+    at: Millis,
+  ) -> Vec<f64> {
+    let Some(boundaries) = self.song.boundaries_track() else { return vec![]; };
+    let Some((from, to)) = self.song.tracks[boundaries].track.section_around(at)
+      else { return vec![]; };
+    self.song.tracks.iter()
+      .filter(|t| t.track.kind == TrackKind::Notes)
+      .flat_map(|t| t.track.notes_with_hz())
+      .filter(|(note, _)| note.start < to && note.end() > from)
+      .map(|(_, hz)| hz)
+      .collect() }
+
+  /// Add a section boundary where the music is (making the boundaries
+  /// track if there is none). Works while recording, too.
+  pub fn add_boundary(
+    &mut self,
+    now: Instant,
+  ) {
+    let at: Millis = self.position(now);
+    self.snapshot();
+    let made: bool = self.song.boundaries_track().is_none();
+    let index: usize = self.song.boundaries_track_or_new();
+    if made && self.song.tracks.len() > 1 { // it went on top, so every other track moved down
+      self.current_track += 1;
+      if let Some(selection) = self.selection.as_mut() {
+        selection.tracks.iter_mut().for_each(|track| *track += 1); } }
+    let track = &mut self.song.tracks[index].track;
+    track.boundaries.push(at);
+    track.normalize();
+    self.status = format!("boundary at {}", seconds(at));
+    self.save(); }
 
   // === editing ===
 
@@ -385,8 +428,9 @@ impl Session {
     now: Instant,
     slot: usize,
   ) {
-    self.edit_selection(now, &format!("timbre {slot} for"),
-      |track, s| set_throughout(track, s.from, s.to, Setting::Timbre(slot))); }
+    self.edit_selection(now, &format!("timbre {slot} for"), |track, s| {
+      if track.kind == TrackKind::Notes {
+        set_throughout(track, s.from, s.to, Setting::Timbre(slot)); } }); }
 
   /// Paste the clipboard at the playhead, its first clip into the current
   /// track and each other one as far below it as it was copied from below
@@ -405,6 +449,7 @@ impl Session {
     for (offset, clip) in &clips {
       let Some(song_track) = self.song.tracks.get_mut(self.current_track + offset)
         else { break; };
+      if song_track.track.kind != clip.kind { continue; } // boundaries go only to boundaries
       if inserting { paste_inserting(&mut song_track.track, clip, at); }
       else { paste_over(&mut song_track.track, clip, at); } }
     self.status = format!("pasted at {}", seconds(at));
@@ -472,8 +517,10 @@ impl Session {
     now: Instant,
   ) {
     if !self.ready_to_edit(now) { return; }
-    let Some(tracks) = self.undo.pop() else { self.status = "nothing to undo".into(); return; };
-    self.redo.push(std::mem::replace(&mut self.song.tracks, tracks));
+    let Some((tracks, current)) = self.undo.pop()
+      else { self.status = "nothing to undo".into(); return; };
+    self.redo.push((std::mem::replace(&mut self.song.tracks, tracks), self.current_track));
+    self.current_track = current;
     self.after_history_move("undone"); }
 
   pub fn redo(
@@ -481,8 +528,10 @@ impl Session {
     now: Instant,
   ) {
     if !self.ready_to_edit(now) { return; }
-    let Some(tracks) = self.redo.pop() else { self.status = "nothing to redo".into(); return; };
-    self.undo.push(std::mem::replace(&mut self.song.tracks, tracks));
+    let Some((tracks, current)) = self.redo.pop()
+      else { self.status = "nothing to redo".into(); return; };
+    self.undo.push((std::mem::replace(&mut self.song.tracks, tracks), self.current_track));
+    self.current_track = current;
     self.after_history_move("redone"); }
 
   fn after_history_move(
@@ -519,7 +568,7 @@ impl Session {
     self.live.change_rig(rig); }
 
   fn snapshot(&mut self) {
-    self.undo.push(self.song.tracks.clone());
+    self.undo.push((self.song.tracks.clone(), self.current_track));
     self.redo.clear(); }
 
   fn save(&mut self) {
@@ -737,6 +786,33 @@ mod tests {
     session.stop(at(t0, 2600));
     let note = session.song.tracks[0].track.notes[0];
     assert_eq!((note.start, note.length), (500, 500));
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn ghosts_are_the_pitches_played_in_the_section_around_the_music() {
+    let (mut session, dir) = session("ghosts");
+    let t0: Instant = Instant::now();
+    let cell: Cell = note_cell(&session);
+    let other: Cell = (cell.0 + 1, cell.1);
+    session.record(t0, RecordMode::Notes);
+    session.add_boundary(at(t0, 0));
+    session.key(at(t0, 100), 0, cell, true);
+    session.key(at(t0, 200), 0, cell, false);
+    session.add_boundary(at(t0, 1000));
+    session.key(at(t0, 1100), 0, other, true);
+    session.key(at(t0, 1200), 0, other, false);
+    session.add_boundary(at(t0, 2000));
+    session.stop(at(t0, 2100));
+    let sections: usize = session.song.boundaries_track().unwrap();
+    assert_eq!(session.song.tracks[sections].track.boundaries, vec![0, 1000, 2000]);
+    let tuning = session.live.rig.grids[0].tuning;
+    let hz = |c: Cell| tuning.hz(tuning.pitch_at(0, c));
+    assert_eq!(session.ghost_hz(500), vec![hz(cell)]);
+    assert_eq!(session.ghost_hz(1500), vec![hz(other)]);
+    assert!(session.ghost_hz(2500).is_empty(), "no section after the last boundary");
+    session.playhead = 500;
+    let index: usize = (cell.1 * 16 + cell.0) as usize;
+    assert_eq!(session.leds(t0, 0, 16, 16)[index], crate::editor::live_grid::DIM);
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]

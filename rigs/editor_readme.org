@@ -57,6 +57,11 @@ You may edit a track file in Emacs while the editor is closed.
 Lines may come in any order; the editor sorts them when it
 saves.
 
+** the boundaries file
+A song's scale ghost section boundaries (see "Scale ghost
+sections") are 'sections.boundaries': one time in seconds per
+line, '#' starting a comment.
+
 * The window
 ** layout
 A status bar at the top shows the transport, the time, the
@@ -82,6 +87,9 @@ Overdub parameters into the current track.
 Stop.
 **** home
 Move the playhead to the start.
+**** b
+Put a section boundary where the music is (or at the playhead),
+also while recording.
 **** [ and ]
 Slower, faster: 0.25x to 2x, in steps. The status bar shows a
 speed other than 1. Pitch does not change. A recording made
@@ -170,6 +178,24 @@ tuning from the recording's start to its stop. Notes already
 there in another tuning move to the nearest pitch of the new
 one.
 
+* Scale ghost sections
+** what they are
+A song may have one boundaries track, at the top, holding
+nothing but moments: section boundaries. Between each two
+adjacent boundaries lies a section. While the music (or the
+stopped playhead) is in a section, the grids show a dim ghost of
+every pitch that any track plays in that section, in every
+octave. Ghosts don't flash; a ghost being played flashes between
+dim and bright. Before the first boundary and after the last
+there is no section and no ghosts.
+** making and editing them
+'b' puts a boundary where the music is, making the boundaries
+track the first time. Select boundaries like notes, by dragging
+across the boundaries lane: delete clears them, and cut, copy
+and paste move them. Boundaries paste only into the boundaries
+track, notes only into notes tracks. You can't record notes into
+the boundaries track.
+
 * The editing rules
 ** a note belongs where it starts
 A region holds the notes that start in it, at their full length,
@@ -183,7 +209,8 @@ restores what was in force there.
 
 * The monome
 The keys play the live rig. A note you hold lights solid on
-every cell that sounds its pitch in any octave. A note any
+every cell that sounds its pitch in any octave (and see "Scale
+ghost sections" for the dim ghosts). A note any
 unmuted track is playing blinks the same way, on the cells
 nearest its pitch in the grid's tuning. The selected
 timbre key is bright; the other control keys are dim, except

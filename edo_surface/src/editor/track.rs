@@ -122,10 +122,22 @@ impl Settings {
       .collect() }
 }
 
+/// What a track holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrackKind {
+  /// Notes and the settings they sound with.
+  #[default]
+  Notes,
+  /// Only section boundaries: moments that divide the song into scale
+  /// ghost sections (see `Track::boundaries`).
+  Boundaries,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Track {
   /// The file name's stem; the editor shows it in the track's header.
   pub name: String,
+  pub kind: TrackKind,
   /// A muted track makes no sound, and so lights nothing on the monome.
   pub muted: bool,
   /// Sorted by start, then pitch.
@@ -133,11 +145,40 @@ pub struct Track {
   /// Sorted by time, then kind; at most one change per kind and time, and
   /// none that repeats the value already in force (see `normalize`).
   pub changes: Vec<SettingChange>,
+  /// A boundaries track's boundaries, ascending, without repeats. Each
+  /// adjacent pair bounds a scale ghost section: while the music is in it,
+  /// the grids show dim ghosts of every pitch any track plays in it. Empty
+  /// on a notes track.
+  pub boundaries: Vec<Millis>,
 }
 
 impl Track {
   pub fn new(name: &str) -> Track {
     Track { name: name.to_string(), ..Track::default() } }
+
+  pub fn new_boundaries(name: &str) -> Track {
+    Track { name: name.to_string(), kind: TrackKind::Boundaries, ..Track::default() } }
+
+  /// The scale ghost section around `at`: the adjacent boundaries
+  /// `[from, to)` with `from <= at < to`, if `at` lies between two.
+  pub fn section_around(
+    &self,
+    at: Millis,
+  ) -> Option<(Millis, Millis)> {
+    let after: usize = self.boundaries.partition_point(|b| *b <= at);
+    if after == 0 || after == self.boundaries.len() { return None; }
+    Some((self.boundaries[after - 1], self.boundaries[after])) }
+
+  /// Each note with its frequency in the tuning in force where it starts.
+  pub fn notes_with_hz(&self) -> Vec<(Note, f64)> {
+    let mut settings: Settings = Settings::default();
+    let mut changes = self.changes.iter().peekable();
+    let mut out: Vec<(Note, f64)> = Vec::with_capacity(self.notes.len());
+    for note in &self.notes {
+      while let Some(change) = changes.next_if(|change| change.at <= note.start) {
+        settings.apply(&change.setting); }
+      if let Some(tuning) = settings.tuning { out.push((*note, tuning.hz(note.pitch))); } }
+    out }
 
   /// The settings in force at `at`, counting a change made exactly at `at`.
   pub fn settings_at(
@@ -166,7 +207,8 @@ impl Track {
   pub fn end(&self) -> Millis {
     let last_note: Millis = self.notes.iter().map(Note::end).max().unwrap_or(0);
     let last_change: Millis = self.changes.last().map(|change| change.at).unwrap_or(0);
-    last_note.max(last_change) }
+    let last_boundary: Millis = self.boundaries.last().copied().unwrap_or(0);
+    last_note.max(last_change).max(last_boundary) }
 
   /// Restore the invariants documented on `notes` and `changes`. Where two
   /// changes of one kind share a time, the later in the vector wins, so a
@@ -175,6 +217,8 @@ impl Track {
     self.notes.retain(|note| note.length > 0);
     self.notes.sort_by_key(|note| (note.start, note.pitch, note.length));
     self.notes.dedup();
+    self.boundaries.sort();
+    self.boundaries.dedup();
     { // the last change pushed for a (time, kind) wins; stable sort keeps push order
       let mut indexed: Vec<(usize, SettingChange)> =
         self.changes.drain(..).enumerate().collect();

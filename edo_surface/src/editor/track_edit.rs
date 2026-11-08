@@ -10,13 +10,15 @@
 //!   restores what was in force there before.
 
 use super::track::{
-  Millis, Note, Setting, SettingChange, SettingKind, Settings, Track, TrackTuning,
+  Millis, Note, Setting, SettingChange, SettingKind, Settings, Track, TrackKind, TrackTuning,
   SETTING_KINDS,
 };
 
 /// A piece of one track, positioned from 0.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Clip {
+  /// The kind of track it came from, and the only kind it pastes into.
+  pub kind: TrackKind,
   pub length: Millis,
   /// The settings in force where the clip was copied from.
   pub start_settings: Settings,
@@ -24,6 +26,8 @@ pub struct Clip {
   pub changes: Vec<SettingChange>,
   /// The notes starting in the clip, with times from its start.
   pub notes: Vec<Note>,
+  /// The section boundaries in the clip, with times from its start.
+  pub boundaries: Vec<Millis>,
 }
 
 /// The region `[from, to)` of `track` as a clip.
@@ -33,6 +37,7 @@ pub fn copy(
   to: Millis,
 ) -> Clip {
   Clip {
+    kind: track.kind,
     length: to - from,
     start_settings: track.settings_at(from),
     changes: track.changes.iter()
@@ -42,6 +47,10 @@ pub fn copy(
     notes: track.notes.iter()
       .filter(|note| note.start >= from && note.start < to)
       .map(|note| Note { start: note.start - from, ..*note })
+      .collect(),
+    boundaries: track.boundaries.iter()
+      .filter(|b| **b >= from && **b < to)
+      .map(|b| b - from)
       .collect(), } }
 
 /// Empty `[from, to)`: silence there, and everything after it unchanged.
@@ -54,6 +63,7 @@ pub fn clear(
   truncate_notes_sounding_into(track, from);
   track.notes.retain(|note| note.start < from || note.start >= to);
   track.changes.retain(|change| change.at < from || change.at >= to);
+  track.boundaries.retain(|b| *b < from || *b >= to);
   restore_settings_at(track, to, &settings_at_end, &SETTING_KINDS);
   track.normalize(); }
 
@@ -80,6 +90,7 @@ pub fn paste_over(
   track.changes.extend(clip.changes.iter()
     .map(|change| SettingChange { at: change.at + at, setting: change.setting.clone() }));
   track.notes.extend(clip.notes.iter().map(|note| Note { start: note.start + at, ..*note }));
+  track.boundaries.extend(clip.boundaries.iter().map(|b| b + at));
   restore_settings_at(track, end, &settings_at_end, &SETTING_KINDS);
   track.normalize(); }
 
@@ -129,7 +140,9 @@ fn shift_from(
   for note in track.notes.iter_mut().filter(|note| note.start >= from) {
     note.start += by; }
   for change in track.changes.iter_mut().filter(|change| change.at >= from) {
-    change.at += by; } }
+    change.at += by; }
+  for boundary in track.boundaries.iter_mut().filter(|b| **b >= from) {
+    *boundary += by; } }
 
 /// Make each of `kinds` take its `wanted` value from `at` on, by a change at
 /// `at`, unless a change of that kind is already there (it decides) or the
@@ -302,6 +315,19 @@ mod tests {
     assert_eq!(track.settings_at(500).timbre, Some(3));
     assert_eq!(track.settings_at(1600).timbre, Some(3)); // the change at 1500 is gone
     assert_eq!(track.settings_at(2500).timbre, Some(1)); }
+
+  #[test]
+  fn boundaries_cut_paste_and_remove_like_notes() {
+    let mut track: Track = Track::new_boundaries("sections");
+    track.boundaries = vec![0, 1000, 2000, 3000];
+    let clip: Clip = copy(&track, 900, 2100);
+    assert_eq!(clip.boundaries, vec![100, 1100]);
+    clear(&mut track, 900, 2100);
+    assert_eq!(track.boundaries, vec![0, 3000]);
+    paste_over(&mut track, &clip, 4000);
+    assert_eq!(track.boundaries, vec![0, 3000, 4100, 5100]);
+    remove(&mut track, 3500, 4500);
+    assert_eq!(track.boundaries, vec![0, 3000, 4100]); }
 
   #[test]
   fn a_take_into_a_new_track_sets_everything_at_its_start() {

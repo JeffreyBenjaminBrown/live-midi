@@ -10,7 +10,7 @@
 use super::canvas::{Canvas, LINE_H};
 use super::recorder::RecordMode;
 use super::session::{Frame, Selection};
-use super::track::{Millis, Note, Setting, Settings, Track};
+use super::track::{Millis, Note, Setting, Settings, Track, TrackKind};
 use super::track_text::seconds;
 
 pub const HEADER_W: i32 = 170;
@@ -31,6 +31,8 @@ const MUTED_NOTE: u32 = 0x5A6270;
 const PLAYHEAD: u32 = 0xFF5555;
 const SELECTION: u32 = 0x6FA8FF;
 const RIG_MARK: u32 = 0xE0B050;
+/// Alternate scale ghost sections' bands.
+const SECTION_SHADES: [u32; 2] = [0x3A3550, 0x2E3A48];
 /// One color per timbre slot, left to right.
 const TIMBRE_COLORS: [u32; 4] = [0x4F8A6E, 0x5B6FB0, 0xA0704C, 0x9A4F7E];
 
@@ -113,6 +115,7 @@ pub fn render(
     let index: usize = view.first_lane + lane;
     let top: i32 = View::lanes_top() + lane as i32 * LANE_H;
     render_lane(canvas, frame, view, index, top); }
+  render_boundary_lines(canvas, frame, view);
   if let Some(selection) = &frame.selection { render_selection(canvas, view, selection, lanes); }
   render_ruler(canvas, view);
   let x: i32 = view.x_of(frame.position);
@@ -157,6 +160,7 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("home", "playhead to start"),
   HelpRow::Key("[, ]", "slower, faster"),
   HelpRow::Key("\\", "normal speed"),
+  HelpRow::Key("b", "section boundary"),
   HelpRow::Heading("tracks"),
   HelpRow::Key("n", "new track"),
   HelpRow::Key("f2", "rename track"),
@@ -291,6 +295,12 @@ fn render_lane(
   let header: u32 = if index == frame.current_track { CURRENT_HEADER } else { HEADER_BACKGROUND };
   canvas.fill(0, top, HEADER_W - 1, LANE_H - 1, header);
   canvas.text(6, top + 4, &track.name, TEXT, HEADER_W - 12);
+  if track.kind == TrackKind::Boundaries {
+    canvas.text(6, top + 4 + LINE_H, &format!("{} boundaries", track.boundaries.len()),
+      FAINT_TEXT, HEADER_W - 12);
+    canvas.text(6, top + 4 + 2 * LINE_H, "ghost sections", FAINT_TEXT, HEADER_W - 12);
+    render_sections(canvas, view, track, top);
+    return; }
   canvas.text(6, top + 4 + LINE_H, &format!("{} notes", track.notes.len()),
     FAINT_TEXT, HEADER_W - 12);
   { // the rig and tuning in force at the left edge
@@ -305,6 +315,37 @@ fn render_lane(
   render_parameters(canvas, view, track, top + LANE_H - 1 - PARAMETER_H);
   render_rig_marks(canvas, view, track, top);
   render_notes(canvas, view, track, top + 4, LANE_H - PARAMETER_H - 10); }
+
+/// A boundaries lane: each section (between adjacent boundaries) a band,
+/// alternating in shade, and each boundary a white line.
+fn render_sections(
+  canvas: &mut Canvas,
+  view: &View,
+  track: &Track,
+  top: i32,
+) {
+  for (index, pair) in track.boundaries.windows(2).enumerate() {
+    let x0: i32 = view.x_of(pair[0]).max(HEADER_W);
+    let x1: i32 = view.x_of(pair[1]).min(canvas.width);
+    if x1 <= x0 { continue; }
+    let shade: u32 = if index % 2 == 0 { SECTION_SHADES[0] } else { SECTION_SHADES[1] };
+    canvas.fill(x0, top + 8, x1 - x0, LANE_H - 17, shade); }
+  for boundary in &track.boundaries {
+    let x: i32 = view.x_of(*boundary);
+    if x >= HEADER_W && x < canvas.width { canvas.fill(x - 1, top, 3, LANE_H - 1, 0xFFFFFF); } } }
+
+/// Each section boundary as a faint line through every lane.
+fn render_boundary_lines(
+  canvas: &mut Canvas,
+  frame: &Frame,
+  view: &View,
+) {
+  let Some(boundaries) = frame.tracks.iter().find(|t| t.track.kind == TrackKind::Boundaries)
+    else { return; };
+  for boundary in &boundaries.track.boundaries {
+    let x: i32 = view.x_of(*boundary);
+    if x >= HEADER_W && x < canvas.width {
+      canvas.shade(x, View::lanes_top(), 1, canvas.height - View::lanes_top(), 0xFFFFFF, 70); } } }
 
 /// The timbre as the strip's color, the volume (-60..0 dB) as a white line
 /// across it.
@@ -361,7 +402,7 @@ fn render_notes(
   top: i32,
   height: i32,
 ) {
-  let notes: Vec<(Note, f64)> = notes_with_hz(track);
+  let notes: Vec<(Note, f64)> = track.notes_with_hz();
   if notes.is_empty() { return; }
   let octaves = |hz: f64| hz.log2();
   let low: f64 = notes.iter().map(|(_, hz)| octaves(*hz)).fold(f64::INFINITY, f64::min);
@@ -376,17 +417,6 @@ fn render_notes(
     let x1: i32 = view.x_of(note.end()).min(canvas.width);
     canvas.fill(x0, y, (x1 - x0).max(2), bar_h, color);
     canvas.fill(view.x_of(note.start).max(HEADER_W), y - 1, 1, bar_h + 2, 0xFFFFFF); } }
-
-/// Each note with its frequency in the tuning in force where it starts.
-pub fn notes_with_hz(track: &Track) -> Vec<(Note, f64)> {
-  let mut settings: Settings = Settings::default();
-  let mut changes = track.changes.iter().peekable();
-  let mut out: Vec<(Note, f64)> = Vec::with_capacity(track.notes.len());
-  for note in &track.notes {
-    while let Some(change) = changes.next_if(|change| change.at <= note.start) {
-      settings.apply(&change.setting); }
-    if let Some(tuning) = settings.tuning { out.push((*note, tuning.hz(note.pitch))); } }
-  out }
 
 #[cfg(test)]
 mod tests {
@@ -424,9 +454,11 @@ mod tests {
       track.notes = (0..24).map(|i| Note {
         start: i * 350, length: 300, pitch: 41 * (1 - index as i32) + (i as i32 * 7) % 30 }).collect();
       session.song.push(track); }
-    session.selection = Some(Selection::across(1500, 2600, 0, 1));
+    let sections: usize = session.song.boundaries_track_or_new();
+    session.song.tracks[sections].track.boundaries = vec![0, 2000, 4500, 8000];
+    session.selection = Some(Selection::across(1500, 2600, 1, 2));
     session.playhead = 2000;
-    session.song.tracks[1].track.muted = true;
+    session.song.tracks[2].track.muted = true;
     session }
 
   #[test]

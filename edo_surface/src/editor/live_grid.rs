@@ -136,15 +136,20 @@ impl LiveGrids {
       .flat_map(|(held, layout)| held.values().map(|pitch| layout.tuning.hz(*pitch)))
       .collect() }
 
-  /// Grid `grid`'s LED levels, row by row. `solid_hz` (the held notes) light
-  /// steady; `blinking_hz` (the tracks' sounding notes) light only while
-  /// `blink_on`. A frequency lights every cell in the pitch class (any
-  /// octave) of the grid's pitch nearest to it.
+  /// Grid `grid`'s LED levels, row by row. A frequency lights every cell in
+  /// the pitch class (any octave) of the grid's pitch nearest to it.
+  /// - `solid_hz` (the held notes) light bright, steadily.
+  /// - `ghost_hz` (the scale ghosts: every pitch played in the current
+  ///   section) light dim, steadily.
+  /// - `blinking_hz` (the tracks' sounding notes) light bright while
+  ///   `blink_on`, and otherwise fall back to dim if a ghost, else dark.
+  #[allow(clippy::too_many_arguments)]
   pub fn paint(
     &self,
     grid: usize,
     solid_hz: &[f64],
     blinking_hz: &[f64],
+    ghost_hz: &[f64],
     blink_on: bool,
     width: i32,
     height: i32,
@@ -154,6 +159,7 @@ impl LiveGrids {
     let class = |hz: &f64| tuning.nearest_pitch(*hz).rem_euclid(tuning.edo);
     let solid: HashSet<i32> = solid_hz.iter().map(class).collect();
     let blinking: HashSet<i32> = blinking_hz.iter().map(class).collect();
+    let ghosts: HashSet<i32> = ghost_hz.iter().map(class).collect();
     let mut levels: Vec<u8> = vec![0; (width * height) as usize];
     for y in 0..height {
       for x in 0..width {
@@ -164,6 +170,7 @@ impl LiveGrids {
               layout.tuning.pitch_at(self.registers[grid], (x, y)).rem_euclid(tuning.edo);
             if solid.contains(&class) { BRIGHT }
             else if blink_on && blinking.contains(&class) { BRIGHT }
+            else if ghosts.contains(&class) { DIM }
             else { 0 } }
           PieceKind::Timbre { controls } =>
             if piece.index_of((x, y)) == self.tones[controls].timbre { BRIGHT } else { DIM },
@@ -211,11 +218,21 @@ mod tests {
     live.press(0, cell, true);
     let held: Vec<f64> = live.held_hz();
     let index: usize = (cell.1 * 16 + cell.0) as usize;
-    assert_eq!(live.paint(0, &held, &[], false, 16, 16)[index], BRIGHT);
-    assert_eq!(live.paint(0, &[], &held, true, 16, 16)[index], BRIGHT);
-    assert_eq!(live.paint(0, &[], &held, false, 16, 16)[index], 0);
+    assert_eq!(live.paint(0, &held, &[], &[], false, 16, 16)[index], BRIGHT);
+    assert_eq!(live.paint(0, &[], &held, &[], true, 16, 16)[index], BRIGHT);
+    assert_eq!(live.paint(0, &[], &held, &[], false, 16, 16)[index], 0);
     let octave_up: Vec<f64> = held.iter().map(|hz| hz * 2.0).collect();
-    assert_eq!(live.paint(0, &octave_up, &[], false, 16, 16)[index], BRIGHT, "octaves light"); }
+    assert_eq!(live.paint(0, &octave_up, &[], &[], false, 16, 16)[index], BRIGHT, "octaves light"); }
+
+  #[test]
+  fn a_ghost_is_dim_and_a_playing_ghost_flashes_between_dim_and_bright() {
+    let live: LiveGrids = live();
+    let cell: Cell = note_cell(&live);
+    let hz: Vec<f64> = vec![live.rig.grids[0].tuning.hz(live.rig.grids[0].tuning.pitch_at(0, cell))];
+    let index: usize = (cell.1 * 16 + cell.0) as usize;
+    assert_eq!(live.paint(0, &[], &[], &hz, true, 16, 16)[index], DIM);
+    assert_eq!(live.paint(0, &[], &hz, &hz, true, 16, 16)[index], BRIGHT);
+    assert_eq!(live.paint(0, &[], &hz, &hz, false, 16, 16)[index], DIM); }
 
   #[test]
   fn a_timbre_key_chooses_the_slot_and_reports_its_volume() {
@@ -251,7 +268,7 @@ mod tests {
   fn the_octave_keys_are_dark_and_the_arrows_dim() {
     let live: LiveGrids = live();
     let shift: Piece = piece(&live, |kind| *kind == PieceKind::Shift);
-    let levels: Vec<u8> = live.paint(0, &[], &[], false, 16, 16);
+    let levels: Vec<u8> = live.paint(0, &[], &[], &[], false, 16, 16);
     for cell in (shift.rect[1]..=shift.rect[3])
       .flat_map(|y| (shift.rect[0]..=shift.rect[2]).map(move |x| (x, y))) {
       let level: u8 = levels[(cell.1 * 16 + cell.0) as usize];

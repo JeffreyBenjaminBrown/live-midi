@@ -15,9 +15,14 @@
 //! lengths are seconds. '#' starts a comment. The track's name is the file's
 //! stem, so it is not in the file.
 
-use super::track::{Millis, Note, Setting, SettingChange, Track, TrackTuning};
+use super::track::{Millis, Note, Setting, SettingChange, Track, TrackKind, TrackTuning};
+
+/// The first line of a boundaries track's file.
+const BOUNDARIES_HEADER: &str =
+  "# scale ghost section boundaries, in seconds; rigs/editor_readme.org explains them";
 
 pub fn write_track(track: &Track) -> String {
+  if track.kind == TrackKind::Boundaries { return write_boundaries(track); }
   let mut out: String = String::new();
   out.push_str("# an edo-editor track; rigs/editor_readme.org describes the format\n");
   out.push_str(&format!("muted {}\n\n", yes_no(track.muted)));
@@ -35,6 +40,26 @@ pub fn write_track(track: &Track) -> String {
       } else {
         out.push_str(&note_line(notes.next().unwrap())); } } }
   out }
+
+/// A boundaries track: one time per line.
+fn write_boundaries(track: &Track) -> String {
+  let mut out: String = format!("{BOUNDARIES_HEADER}\n");
+  for boundary in &track.boundaries { out.push_str(&format!("{}\n", seconds(*boundary))); }
+  out }
+
+/// Parse a boundaries track: one time per line; '#' starts a comment.
+pub fn parse_boundaries(
+  name: &str,
+  text: &str,
+) -> Result<Track, String> {
+  let mut track: Track = Track::new_boundaries(name);
+  for (index, raw_line) in text.lines().enumerate() {
+    let line: &str = raw_line.split('#').next().unwrap_or("").trim();
+    if line.is_empty() { continue; }
+    track.boundaries.push(parse_seconds(line)
+      .map_err(|error| format!("{name} line {}: {error}", index + 1))?); }
+  track.normalize();
+  Ok(track) }
 
 fn yes_no(flag: bool) -> &'static str { if flag { "yes" } else { "no" } }
 
@@ -139,6 +164,14 @@ mod tests {
     assert!(text.contains("0.000 tuning 41 edo 110 hz\n"), "{text}");
     assert!(text.contains("2.500 volume -2.5 dB\n"), "{text}");
     assert_eq!(parse_track("melody", &text).unwrap(), track); }
+
+  #[test]
+  fn boundaries_are_one_time_per_line_and_read_back() {
+    let mut track: Track = Track::new_boundaries("sections");
+    track.boundaries = vec![0, 2500, 61_000];
+    let text: String = write_track(&track);
+    assert!(text.ends_with("0.000\n2.500\n61.000\n"), "{text}");
+    assert_eq!(parse_boundaries("sections", &text).unwrap(), track); }
 
   #[test]
   fn an_unknown_line_is_an_error_naming_it() {
