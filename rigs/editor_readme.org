@@ -142,11 +142,15 @@ material. The first copied track goes into the current track;
 each other one goes as far below it as it was copied from below
 the first.
 **** ctrl-shift-v
-Paste at the playhead, moving everything after it right.
+Paste at the playhead, moving everything after it right; every
+other track gets the same stretch of silence there, so the
+tracks stay in step.
 **** delete
 Clear the selection: it becomes silence, nothing moves.
 **** shift-delete
-Remove the selected time: everything after it moves left.
+Remove the selected time from every track, whichever tracks are
+selected: everything after it moves left, so the tracks stay in
+step.
 **** ctrl-z, ctrl-y
 Undo, redo.
 *** view
