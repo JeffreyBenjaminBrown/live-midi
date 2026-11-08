@@ -159,8 +159,9 @@ restores what was in force there.
 
 * The monome
 The keys play the live rig. A note you hold lights solid on
-every cell that sounds its pitch. A note any unmuted track is
-playing blinks, on the cells nearest its pitch. The selected
+every cell that sounds its pitch in any octave. A note any
+unmuted track is playing blinks the same way, on the cells
+nearest its pitch in the grid's tuning. The selected
 timbre key is bright; the other control keys are dim. A
 monobright grid shows no dim keys.
 

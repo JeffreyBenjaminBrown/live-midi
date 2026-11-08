@@ -138,7 +138,8 @@ impl LiveGrids {
 
   /// Grid `grid`'s LED levels, row by row. `solid_hz` (the held notes) light
   /// steady; `blinking_hz` (the tracks' sounding notes) light only while
-  /// `blink_on`. A frequency lights every cell whose pitch is nearest to it.
+  /// `blink_on`. A frequency lights every cell in the pitch class (any
+  /// octave) of the grid's pitch nearest to it.
   pub fn paint(
     &self,
     grid: usize,
@@ -150,18 +151,19 @@ impl LiveGrids {
   ) -> Vec<u8> {
     let layout: &GridLayout = &self.rig.grids[grid];
     let tuning = layout.track_tuning();
-    let solid: HashSet<i32> = solid_hz.iter().map(|hz| tuning.nearest_pitch(*hz)).collect();
-    let blinking: HashSet<i32> =
-      blinking_hz.iter().map(|hz| tuning.nearest_pitch(*hz)).collect();
+    let class = |hz: &f64| tuning.nearest_pitch(*hz).rem_euclid(tuning.edo);
+    let solid: HashSet<i32> = solid_hz.iter().map(class).collect();
+    let blinking: HashSet<i32> = blinking_hz.iter().map(class).collect();
     let mut levels: Vec<u8> = vec![0; (width * height) as usize];
     for y in 0..height {
       for x in 0..width {
         let Some(piece) = layout.piece_at((x, y)) else { continue; };
         levels[(y * width + x) as usize] = match piece.kind {
           PieceKind::Notes => {
-            let pitch: i32 = layout.tuning.pitch_at(self.registers[grid], (x, y));
-            if solid.contains(&pitch) { BRIGHT }
-            else if blink_on && blinking.contains(&pitch) { BRIGHT }
+            let class: i32 =
+              layout.tuning.pitch_at(self.registers[grid], (x, y)).rem_euclid(tuning.edo);
+            if solid.contains(&class) { BRIGHT }
+            else if blink_on && blinking.contains(&class) { BRIGHT }
             else { 0 } }
           PieceKind::Timbre { controls } =>
             if piece.index_of((x, y)) == self.tones[controls].timbre { BRIGHT } else { DIM },
@@ -207,7 +209,9 @@ mod tests {
     let index: usize = (cell.1 * 16 + cell.0) as usize;
     assert_eq!(live.paint(0, &held, &[], false, 16, 16)[index], BRIGHT);
     assert_eq!(live.paint(0, &[], &held, true, 16, 16)[index], BRIGHT);
-    assert_eq!(live.paint(0, &[], &held, false, 16, 16)[index], 0); }
+    assert_eq!(live.paint(0, &[], &held, false, 16, 16)[index], 0);
+    let octave_up: Vec<f64> = held.iter().map(|hz| hz * 2.0).collect();
+    assert_eq!(live.paint(0, &octave_up, &[], false, 16, 16)[index], BRIGHT, "octaves light"); }
 
   #[test]
   fn a_timbre_key_chooses_the_slot_and_reports_its_volume() {
