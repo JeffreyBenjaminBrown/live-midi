@@ -1,0 +1,112 @@
+* timbres-volume-scroll_41edo
+** about
+TOML-in-org format reference: [[file:README.org]]
+The editor's first synth, and the plainest playable rig: one or
+two 16x16 monomes, each a 41-EDO play surface with four timbre
+keys, four volume keys and a scroll pad. No sustain, no pedals.
+The editor ([[file:editor_readme.org]]) records and plays it; the
+surfaces runtime plays it too:
+=pw-jack cargo run --bin midi_pulse -- timbres-volume-scroll_41edo=
+** identity
+*** PARAM version = 1
+*** PARAM id = "timbres-volume-scroll_41edo"
+*** PARAM title = "Monomes: 41-EDO with timbre, volume and scroll keys"
+** ELEM tunings
+*** PARAM id = "main"
+*** PARAM edo = 41
+*** PARAM x_step = 8
+*** PARAM y_step = 1
+*** PARAM fundamental_hz = 110
+Pitch rises by 8 EDO steps to the right and 1 step downward.
+Pitch 0 is 110 Hz.
+** audio
+*** ELEM sinks
+**** PARAM id = "synth"
+**** PARAM kind = "cpal_synth"
+**** PARAM sample_rate = 48000
+**** PARAM buffer_frames = 128
+**** PARAM amplitude = 0.15
+**** PARAM attack_secs = 0.003
+**** PARAM release_secs = 0.050
+**** PARAM sustain_level = 0.35
+**** PARAM decay_secs = 0.5
+** grid A: the first available 16x16 monome
+*** ELEM monomes
+**** PARAM id = "a"
+**** PARAM listen_port = 9010
+**** PARAM prefix = "/plain-a"
+**** PARAM select.size = [16, 16]
+*** ELEM monome_windows
+**** PARAM id = "grid-a"
+**** PARAM monome = "a"
+**** PARAM kind = "edo_note_grid"
+**** PARAM rect = [0, 0, 15, 15]
+**** PARAM tuning = "main"
+**** PARAM sink = "synth"
+**** PARAM sustain_handle = "none"
+**** PARAM edit_handle = "none"
+**** PARAM square_dance = false
+*** ELEM monome_windows
+**** PARAM id = "timbre-a"
+**** PARAM monome = "a"
+**** PARAM kind = "waveform_selector"
+**** PARAM rect = [0, 0, 3, 0]
+**** PARAM controls = "a"
+Sine, triangle, square, saw, left to right.
+*** ELEM monome_windows
+**** PARAM id = "volume-a"
+**** PARAM monome = "a"
+**** PARAM kind = "volume_delta"
+**** PARAM rect = [0, 1, 3, 1]
+**** PARAM controls = "a"
+**** PARAM volume_coarse = 12
+**** PARAM volume_fine = 2
+**** PARAM initial_db = -12
+**** PARAM min_db = -60
+**** PARAM max_db = 0
+-12, -2, +2 and +12 dB to the current timbre's volume.
+*** ELEM monome_windows
+**** PARAM id = "shift-a"
+**** PARAM monome = "a"
+**** PARAM kind = "edo_shift_pad"
+**** PARAM rect = [13, 0, 15, 1]
+Octave down, up, octave up; left, down, right.
+** grid B: the second available 16x16 monome
+If only one grid is connected, B is skipped.
+*** ELEM monomes
+**** PARAM id = "b"
+**** PARAM listen_port = 9011
+**** PARAM prefix = "/plain-b"
+**** PARAM select.size = [16, 16]
+*** ELEM monome_windows
+**** PARAM id = "grid-b"
+**** PARAM monome = "b"
+**** PARAM kind = "edo_note_grid"
+**** PARAM rect = [0, 0, 15, 15]
+**** PARAM tuning = "main"
+**** PARAM sink = "synth"
+**** PARAM sustain_handle = "none"
+**** PARAM edit_handle = "none"
+**** PARAM square_dance = false
+*** ELEM monome_windows
+**** PARAM id = "timbre-b"
+**** PARAM monome = "b"
+**** PARAM kind = "waveform_selector"
+**** PARAM rect = [0, 0, 3, 0]
+**** PARAM controls = "b"
+*** ELEM monome_windows
+**** PARAM id = "volume-b"
+**** PARAM monome = "b"
+**** PARAM kind = "volume_delta"
+**** PARAM rect = [0, 1, 3, 1]
+**** PARAM controls = "b"
+**** PARAM volume_coarse = 12
+**** PARAM volume_fine = 2
+**** PARAM initial_db = -12
+**** PARAM min_db = -60
+**** PARAM max_db = 0
+*** ELEM monome_windows
+**** PARAM id = "shift-b"
+**** PARAM monome = "b"
+**** PARAM kind = "edo_shift_pad"
+**** PARAM rect = [13, 0, 15, 1]

@@ -30,6 +30,9 @@ pub mod mock_monome;
 pub mod monome;
 pub mod monome_brightness;
 
+// The four timbres of a selector strip, from a rig.
+pub mod timbre_slots;
+
 // The shared 5x7 bitmap font for the on-screen readouts.
 pub mod bitmap_font;
 
@@ -60,3 +63,6 @@ pub mod surfaces_runtime;
 
 // The strings render engine (a `cpal_strings` sink), beside the sawwave one.
 pub mod strings;
+
+// The multitrack editor (TODO/editor/).
+pub mod editor;

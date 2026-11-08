@@ -96,6 +96,12 @@ pub enum VoiceSource {
   // A compact-loop playback occurrence. `seq` is unique for each scheduled
   // attack, so equal pitches, slots, and overlapping laps remain independent.
   SurfaceLoop { grid: usize, seq: u64 },
+  // The editor's (`editor/`) live voices: a finger on one of its grids, keyed
+  // by the cell, like `SurfaceFinger`.
+  EditorFinger { grid: usize, cell: MonomeKey },
+  // A note a track of the editor is playing back: `track` is the track's
+  // session-long id, `seq` unique per started note.
+  EditorTrackNote { track: u64, seq: u64 },
 }
 
 // === Timbre =============================================================
