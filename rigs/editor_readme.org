@@ -91,6 +91,9 @@ Move the playhead to the start.
 Put a section boundary where the music is (or at the playhead),
 also while recording.
 **** [ and ]
+Move the playhead to the previous or next section boundary;
+while playing, the music jumps there.
+**** { and }
 Slower, faster: 0.25x to 2x, in steps. The status bar shows a
 speed other than 1. Pitch does not change. A recording made
 slowly is stored in song time, so it plays back faster at 1x.

@@ -240,6 +240,27 @@ impl Session {
     self.status = format!("recorded {} take(s) into {}", takes.len(), self.current_name());
     self.save(); }
 
+  /// Move the playhead to the nearest section boundary before where the
+  /// music is (`forward` false) or after it (`forward` true); while
+  /// playing, the music jumps there.
+  pub fn jump_to_boundary(
+    &mut self,
+    now: Instant,
+    forward: bool,
+  ) {
+    let here: Millis = self.position(now);
+    let Some(index) = self.song.boundaries_track() else {
+      self.status = "no boundaries yet: b makes one".into();
+      return; };
+    let boundaries: &[Millis] = &self.song.tracks[index].track.boundaries;
+    let target: Option<Millis> = if forward {
+      boundaries.iter().copied().find(|b| *b > here)
+    } else { // a little slack, so a jump back while playing passes the one just crossed
+      boundaries.iter().copied().rev().find(|b| *b < here - if self.is_rolling() { 150 } else { 0 }) };
+    match target {
+      Some(at) => self.set_playhead(now, at),
+      None => self.status = format!("no boundary {}", if forward { "after" } else { "before" }), } }
+
   /// Step the speed one place along `SPEEDS` (`by` = -1 slower, +1 faster),
   /// or back to 1 when `by` is 0. While rolling the music carries on from
   /// where it is.
@@ -934,6 +955,22 @@ mod tests {
     session.playhead = 100;
     session.paste(t0, true);
     assert_eq!(session.song.tracks[sections].track.boundaries, vec![700, 2700]);
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn brackets_jump_to_the_nearest_boundary() {
+    let (mut session, dir) = session("jump");
+    let t0: Instant = Instant::now();
+    for at_ms in [1000, 3000] {
+      session.playhead = at_ms;
+      session.add_boundary(t0); }
+    session.playhead = 2000;
+    session.jump_to_boundary(t0, true);
+    assert_eq!(session.playhead, 3000);
+    session.jump_to_boundary(t0, true);
+    assert_eq!(session.playhead, 3000, "none after the last");
+    session.jump_to_boundary(t0, false);
+    assert_eq!(session.playhead, 1000);
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]

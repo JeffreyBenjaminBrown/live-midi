@@ -163,7 +163,8 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("o", "overdub timbre, volume"),
   HelpRow::Key("esc", "stop"),
   HelpRow::Key("home", "playhead to start"),
-  HelpRow::Key("[, ]", "slower, faster"),
+  HelpRow::Key("[, ]", "previous, next boundary"),
+  HelpRow::Key("{, }", "slower, faster"),
   HelpRow::Key("\\", "normal speed"),
   HelpRow::Key("b", "section boundary"),
   HelpRow::Heading("tracks"),
@@ -235,12 +236,13 @@ pub fn render_track_panel(
 /// The rows the help shows per screen height.
 const HELP_ROWS: i32 = 20;
 
-/// The keys, in two columns over the whole window, in a font big enough
-/// that about twenty rows fill its height (smaller only if the window is too
-/// narrow for the longest row). '?' or escape closes it.
+/// The keys over the whole window, in columns of whole groups (a heading
+/// and its keys), in as big a font as fits: about twenty rows to the
+/// window's height when the groups fit in that many rows' columns, smaller
+/// when they need more. '?' or escape closes it.
 pub fn render_help(canvas: &mut Canvas) {
   canvas.shade(0, 0, canvas.width, canvas.height, 0x0B0C0F, 235);
-  let line_h: i32 = (canvas.height / HELP_ROWS).max(12);
+  let groups: Vec<&[HelpRow]> = help_groups();
   let key_chars: i32 = HELP.iter()
     .filter_map(|row| match row { HelpRow::Key(key, _) => Some(key.len() as i32), _ => None })
     .max().unwrap_or(0) + 2;
@@ -248,31 +250,62 @@ pub fn render_help(canvas: &mut Canvas) {
     .filter_map(|row| match row { HelpRow::Key(_, action) => Some(action.len() as i32), _ => None })
     .max().unwrap_or(0);
   let column_chars: i32 = key_chars + action_chars + 3;
+  let width_at_one_px: f32 = canvas.char_width_at(100.0) as f32 / 100.0;
+  // try row heights from a twentieth of the window down; keep the biggest font
+  let (line_h, columns, px): (i32, Vec<Vec<usize>>, f32) = (20..=40)
+    .map(|rows_per_height| {
+      let line_h: i32 = (canvas.height / rows_per_height).max(10);
+      let margin: i32 = line_h / 2;
+      let max_rows: usize = ((canvas.height - 2 * margin - line_h) / line_h).max(1) as usize;
+      let columns: Vec<Vec<usize>> = pack_columns(&groups, max_rows);
+      let count: i32 = columns.len() as i32;
+      let column_w: i32 = (canvas.width - (count + 1) * margin) / count;
+      let px: f32 = (line_h as f32 / 1.25)
+        .min(column_w as f32 / (column_chars as f32 * width_at_one_px));
+      (line_h, columns, px) })
+    .max_by(|a, b| a.2.total_cmp(&b.2))
+    .unwrap();
   let margin: i32 = line_h / 2;
-  let column_w: i32 = (canvas.width - 3 * margin) / 2;
-  let px: f32 = { // as big as the row height allows, unless the columns are too narrow
-    let by_height: f32 = line_h as f32 / 1.25;
-    let width_at_one_px: f32 = canvas.char_width_at(100.0) as f32 / 100.0;
-    by_height.min(column_w as f32 / (column_chars as f32 * width_at_one_px)) };
+  let column_w: i32 = (canvas.width - (columns.len() as i32 + 1) * margin) / columns.len() as i32;
   let char_w: i32 = canvas.char_width_at(px);
-  let rows_per_column: usize = (HELP.len() + 1) / 2;
-  let split: usize = (0..HELP.len()).rev()
-    .find(|i| *i <= rows_per_column && matches!(HELP[*i], HelpRow::Heading(_)))
-    .filter(|i| *i > 0).unwrap_or(rows_per_column);
-  for (index, row) in HELP.iter().enumerate() {
-    let (column, row_in_column): (i32, i32) =
-      if index < split { (0, index as i32) } else { (1, (index - split) as i32) };
-    let x: i32 = margin + column * (column_w + margin);
-    let y: i32 = margin + row_in_column * line_h;
-    match row {
-      HelpRow::Heading(heading) =>
-        canvas.text_at_size(x, y, heading, RIG_MARK, column_w, px),
-      HelpRow::Key(key, action) => {
-        canvas.text_at_size(x + char_w, y, key, 0xFFFFFF, column_w, px);
-        canvas.text_at_size(x + char_w * (key_chars + 1), y, action, TEXT, column_w, px); } } }
+  for (column, group_indices) in columns.iter().enumerate() {
+    let x: i32 = margin + column as i32 * (column_w + margin);
+    let rows = group_indices.iter().flat_map(|index| groups[*index].iter());
+    for (row_in_column, row) in rows.enumerate() {
+      let y: i32 = margin + row_in_column as i32 * line_h;
+      match row {
+        HelpRow::Heading(heading) =>
+          canvas.text_at_size(x, y, heading, RIG_MARK, column_w, px),
+        HelpRow::Key(key, action) => {
+          canvas.text_at_size(x + char_w, y, key, 0xFFFFFF, column_w, px);
+          canvas.text_at_size(x + char_w * (key_chars + 1), y, action, TEXT, column_w, px); } } } }
   let close: &str = "? or esc closes this";
   canvas.text_at_size(canvas.width - margin - canvas.char_width_at(px * 0.6) * close.len() as i32,
     canvas.height - line_h, close, FAINT_TEXT, canvas.width, px * 0.6); }
+
+/// The help rows cut into groups, each a heading and the keys under it.
+fn help_groups() -> Vec<&'static [HelpRow]> {
+  let starts: Vec<usize> = (0..HELP.len())
+    .filter(|i| matches!(HELP[*i], HelpRow::Heading(_))).collect();
+  starts.iter().enumerate()
+    .map(|(n, start)| &HELP[*start..starts.get(n + 1).copied().unwrap_or(HELP.len())])
+    .collect() }
+
+/// Fill columns with whole groups, in order, none taller than `max_rows`
+/// unless a single group is.
+fn pack_columns(
+  groups: &[&[HelpRow]],
+  max_rows: usize,
+) -> Vec<Vec<usize>> {
+  let mut columns: Vec<Vec<usize>> = vec![vec![]];
+  let mut used: usize = 0;
+  for (index, group) in groups.iter().enumerate() {
+    if used > 0 && used + group.len() > max_rows {
+      columns.push(vec![]);
+      used = 0; }
+    columns.last_mut().unwrap().push(index);
+    used += group.len(); }
+  columns }
 
 fn render_ruler(
   canvas: &mut Canvas,
