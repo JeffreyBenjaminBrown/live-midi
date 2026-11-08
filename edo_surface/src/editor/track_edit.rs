@@ -106,6 +106,17 @@ pub fn paste_inserting(
   track.normalize();
   paste_over(track, clip, at); }
 
+/// Open `length` of empty time at `at`, moving everything from `at` on
+/// right (a note sounding across `at` is cut short there).
+pub fn insert_time(
+  track: &mut Track,
+  at: Millis,
+  length: Millis,
+) {
+  truncate_notes_sounding_into(track, at);
+  shift_from(track, at, length);
+  track.normalize(); }
+
 /// Cut short every note that starts before `at` and sounds past it.
 fn truncate_notes_sounding_into(
   track: &mut Track,

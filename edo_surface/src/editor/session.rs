@@ -18,7 +18,7 @@ use super::sound::Sound;
 use super::track::{Ghosts, Millis, Setting, Track, TrackKind};
 use super::track_edit::{
   clear, copy, merge_take, paste_inserting, paste_over, remove, set_throughout,
-  set_whole_track, Clip,
+  set_whole_track, insert_time, Clip,
 };
 
 /// A region of time across a set of tracks, adjacent or not.
@@ -406,8 +406,16 @@ impl Session {
     &mut self,
     now: Instant,
   ) {
+    let Some(selection) = self.selected() else { return; };
+    let sections: Option<usize> = self.song.boundaries_track()
+      .filter(|index| !selection.tracks.contains(index));
+    if let Some(index) = sections { // the boundaries follow the time, selected or not
+      self.selection.as_mut().unwrap().tracks.push(index);
+      self.selection.as_mut().unwrap().tracks.sort(); }
     self.edit_selection(now, "removed", |track, s| remove(track, s.from, s.to));
-    if let Some(selection) = self.selection.as_mut() { selection.to = selection.from; } }
+    if let Some(selection) = self.selection.as_mut() {
+      selection.to = selection.from;
+      if let Some(index) = sections { selection.tracks.retain(|t| *t != index); } } }
 
   pub fn cut_selection(
     &mut self,
@@ -502,12 +510,18 @@ impl Session {
     self.snapshot();
     let at: Millis = self.playhead;
     let clips: Vec<(usize, Clip)> = self.clipboard.clone();
+    let mut boundaries_pasted: bool = false;
     for (offset, clip) in &clips {
       let Some(song_track) = self.song.tracks.get_mut(self.current_track + offset)
         else { break; };
       if song_track.track.kind != clip.kind { continue; } // boundaries go only to boundaries
+      boundaries_pasted |= clip.kind == TrackKind::Boundaries;
       if inserting { paste_inserting(&mut song_track.track, clip, at); }
       else { paste_over(&mut song_track.track, clip, at); } }
+    if let (true, false, Some(index)) = (inserting, boundaries_pasted, self.song.boundaries_track()) {
+      // the boundaries follow the time an insert opens, pasted into or not
+      let length: Millis = clips.iter().map(|(_, clip)| clip.length).max().unwrap_or(0);
+      insert_time(&mut self.song.tracks[index].track, at, length); }
     self.status = format!("pasted at {}", seconds(at));
     self.save(); }
 
@@ -898,6 +912,28 @@ mod tests {
     session.selection = None;
     session.set_current_track_setting(t0, Setting::Timbre(2));
     assert_eq!(session.song.tracks[0].track.settings_at(1500).timbre, Some(2));
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn removing_or_inserting_time_moves_the_boundaries_too() {
+    let (mut session, dir) = session("boundaries-follow");
+    let t0: Instant = Instant::now();
+    session.new_track(t0);
+    for at_ms in [1000, 3000] {
+      session.playhead = at_ms;
+      session.add_boundary(t0); }
+    let sections: usize = session.song.boundaries_track().unwrap();
+    let notes: usize = 1 - sections;
+    session.song.tracks[notes].track.notes.push(Note { start: 0, length: 100, pitch: 0 });
+    session.selection = Some(Selection::across(0, 500, notes, notes));
+    session.remove_selection(t0);
+    assert_eq!(session.song.tracks[sections].track.boundaries, vec![500, 2500]);
+    session.selection = Some(Selection::across(0, 200, notes, notes));
+    session.copy_selection();
+    session.current_track = notes;
+    session.playhead = 100;
+    session.paste(t0, true);
+    assert_eq!(session.song.tracks[sections].track.boundaries, vec![700, 2700]);
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]
