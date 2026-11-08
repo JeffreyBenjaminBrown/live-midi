@@ -309,46 +309,9 @@ pub(super) fn send_binary_frame(
   dim_on: bool,
   last: &mut Vec<[u8; 8]>,
 ) {
-  let nqx = (grid_w + 7) / 8;
-  let nqy = (grid_h + 7) / 8;
-  let nq = (nqx * nqy) as usize;
-  // On the first frame (or after a re-register clears it) the grid was just blanked, so
-  // an all-zero baseline diffs correctly.
-  if last.len() != nq {
-    *last = vec![[0u8; 8]; nq];
-  }
-  for qy in 0..nqy {
-    for qx in 0..nqx {
-      let x_off = qx * 8;
-      let y_off = qy * 8;
-      let mut rows = [0u8; 8];
-      for r in 0..8 {
-        let y = y_off + r;
-        if y >= grid_h {
-          continue;
-        }
-        let mut byte = 0u8;
-        for c in 0..8 {
-          let x = x_off + c;
-          if x >= grid_w {
-            continue;
-          }
-          let level = levels[(y * grid_w + x) as usize];
-          let on = level == BRIGHT || level == STEADY_DIM || (level == DIM && dim_on);
-          if on {
-            byte |= 1u8 << c;
-          }
-        }
-        rows[r as usize] = byte;
-      }
-      let qi = (qy * nqx + qx) as usize;
-      if last[qi] != rows {
-        monome::send_led_map(sock, device, prefix, x_off, y_off, &rows);
-        last[qi] = rows;
-      }
-    }
-  }
-}
+  monome::send_binary_frame(sock, device, prefix, grid_w, grid_h, last, |index| {
+    let level = levels[index];
+    level == BRIGHT || level == STEADY_DIM || (level == DIM && dim_on) }); }
 
 /// Send only the cells whose level changed since `last`, then update `last`.
 pub(super) fn send_diffs(

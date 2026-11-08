@@ -225,3 +225,35 @@ pub fn send_led_level_map(
   args.extend(levels.iter().map(|level| OscType::Int(*level as i32)));
   send_osc(sock, device, &format!("{prefix}/grid/led/level/map"), args);
 }
+
+/// Send a monobright frame as the 8x8 quads (`/grid/led/map`) that changed since
+/// `last`: a cell is on where `lit(y * grid_w + x)`. A whole 16x16 frame is at most four
+/// messages, cheap enough to flash a fake dim near the LED-fusion rate
+/// (`monome_brightness`). `last` starts empty, which reads as a blank grid.
+pub fn send_binary_frame(
+  sock: &UdpSocket,
+  device: SocketAddr,
+  prefix: &str,
+  grid_w: i32,
+  grid_h: i32,
+  last: &mut Vec<[u8; 8]>,
+  lit: impl Fn(usize) -> bool,
+) {
+  let quads_x: i32 = (grid_w + 7) / 8;
+  let quads_y: i32 = (grid_h + 7) / 8;
+  let quads: usize = (quads_x * quads_y) as usize;
+  if last.len() != quads { *last = vec![[0u8; 8]; quads]; }
+  for quad_y in 0..quads_y {
+    for quad_x in 0..quads_x {
+      let (x_off, y_off): (i32, i32) = (quad_x * 8, quad_y * 8);
+      let mut rows = [0u8; 8];
+      for r in 0..8 {
+        let y: i32 = y_off + r;
+        if y >= grid_h { continue; }
+        for c in 0..8 {
+          let x: i32 = x_off + c;
+          if x < grid_w && lit((y * grid_w + x) as usize) { rows[r as usize] |= 1u8 << c; } } }
+      let index: usize = (quad_y * quads_x + quad_x) as usize;
+      if last[index] != rows {
+        send_led_map(sock, device, prefix, x_off, y_off, &rows);
+        last[index] = rows; } } } }

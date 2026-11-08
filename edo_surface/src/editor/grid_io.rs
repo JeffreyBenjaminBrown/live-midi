@@ -18,12 +18,21 @@ use rosc::{decoder, OscPacket, OscType};
 
 use crate::device_assign::assign_selected_devices;
 use crate::monome::{self, DeviceInfo};
+use crate::monome_brightness::PulseBrightness;
 use crate::rig::{MonomeRig, MonomeSelect};
 
 use super::session::Session;
 
 /// How often the LEDs are repainted.
 const PAINT_EVERY: Duration = Duration::from_millis(20);
+
+/// A monobright grid's fake dim: on for 1/32 of every 15 ms, the surfaces
+/// runtime's figure.
+const DIM_PULSE: PulseBrightness = PulseBrightness::one_thirty_second(15_000);
+
+/// The level from which a monobright grid shows a cell steadily lit; below it
+/// (but above 0) the cell is dim, so it flashes.
+const MONOBRIGHT_ON: u8 = 8;
 
 /// Find the grids (asking the serialosc detector at `detector_port`) and
 /// start a thread for each one present. Returns the threads and one line per
@@ -80,7 +89,13 @@ fn grid_thread(
   let (width, height): (i32, i32) = (device.grid_w, device.grid_h);
   let mut pressed: HashSet<(i32, i32)> = HashSet::new();
   let mut sent: Vec<u8> = vec![];
+  let mut levels: Vec<u8> = vec![];
   let mut next_paint: Instant = Instant::now();
+  // A monobright grid can't dim an LED, so it shows a dim cell by flashing it on
+  // briefly every DIM_PULSE period, as the surfaces runtime does.
+  let monobright: bool = monome::is_monobright(&device.id);
+  let mut sent_quads: Vec<[u8; 8]> = vec![];
+  let mut next_pulse: Instant = Instant::now();
   let mut buf = [0u8; 2048];
   while !stop.load(Ordering::SeqCst) {
     if let Ok((n, _)) = sock.recv_from(&mut buf) {
@@ -93,10 +108,21 @@ fn grid_thread(
     let now: Instant = Instant::now();
     if now >= next_paint {
       next_paint = now + PAINT_EVERY;
-      let levels: Vec<u8> = session.lock().unwrap_or_else(|e| e.into_inner())
-        .leds(now, grid, width, height);
-      send_changed_quads(&sock, address, prefix, &levels, &sent, width, height);
-      sent = levels; } }
+      levels = session.lock().unwrap_or_else(|e| e.into_inner()).leds(now, grid, width, height);
+      if !monobright {
+        send_changed_quads(&sock, address, prefix, &levels, &sent, width, height);
+        sent = levels.clone(); } }
+    if monobright {
+      let bright = |index: usize| levels.get(index).is_some_and(|level| *level >= MONOBRIGHT_ON);
+      monome::send_binary_frame(&sock, address, prefix, width, height, &mut sent_quads, bright);
+      if now >= next_pulse {
+        next_pulse = now + DIM_PULSE.period;
+        let any_level = |index: usize| levels.get(index).is_some_and(|level| *level > 0);
+        monome::send_binary_frame(
+          &sock, address, prefix, width, height, &mut sent_quads, any_level);
+        thread::sleep(DIM_PULSE.on_time);
+        monome::send_binary_frame(&sock, address, prefix, width, height, &mut sent_quads, bright);
+      } } }
   monome::send_led_all(&sock, address, prefix, 0); }
 
 /// A key message's cell and whether it went down.
@@ -189,6 +215,38 @@ mod tests {
       seen.push(grid.level_at(cell.0, cell.1));
       std::thread::sleep(Duration::from_millis(5)); }
     assert!(seen.contains(&(BRIGHT as i32)), "the played-back note blinks on");
+    stop.store(true, Ordering::SeqCst);
+    for thread in threads { thread.join().unwrap(); }
+    let _ = std::fs::remove_dir_all(&dir); }
+
+  #[test]
+  fn a_monobright_grid_shows_bright_cells_steady_and_flashes_dim_ones() {
+    let mock: MockRig = MockRig::start(0, &[GridSpec::grid_256("m256-editor-test")]).unwrap();
+    let mut rig: EditorRig = editor_rig(PLAIN, &load_named_rig(PLAIN).unwrap()).unwrap();
+    for grid in rig.grids.iter_mut() { grid.monome.listen_port = free_port(); }
+    let dir: PathBuf = std::env::temp_dir()
+      .join(format!("edo-editor-monobright-{}", std::process::id()));
+    let sound: Sound = Sound::new(Arc::new(Mutex::new(VoiceMap::new())), 48000.0);
+    let session: Arc<Mutex<Session>> =
+      Arc::new(Mutex::new(Session::new(Song::load(&dir).unwrap(), rig, sound)));
+    let stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let (threads, _) = start_grids(&session, &stop, mock.detector_port()).unwrap();
+    let (selected, other): ((i32, i32), (i32, i32)) = {
+      let session = session.lock().unwrap();
+      let piece = session.live.rig.grids[0].pieces.iter()
+        .find(|p| matches!(p.kind, PieceKind::Timbre { .. })).unwrap().clone();
+      let selected_slot: i32 = session.live.tones[0].timbre as i32;
+      let other_slot: i32 = if selected_slot == 0 { 1 } else { 0 };
+      ((piece.rect[0] + selected_slot, piece.rect[1]), (piece.rect[0] + other_slot, piece.rect[1])) };
+    let grid = mock.grid(0);
+    assert!(wait_until(Duration::from_secs(3), || grid.level_at(selected.0, selected.1) == 15),
+      "the selected timbre key lights steadily");
+    let mut other_levels: Vec<i32> = vec![];
+    for _ in 0..50 {
+      other_levels.push(grid.level_at(other.0, other.1));
+      std::thread::sleep(Duration::from_millis(2)); }
+    assert!(other_levels.iter().filter(|level| **level == 0).count() > 40,
+      "a dim key is dark nearly all the time: {other_levels:?}");
     stop.store(true, Ordering::SeqCst);
     for thread in threads { thread.join().unwrap(); }
     let _ = std::fs::remove_dir_all(&dir); }

@@ -170,7 +170,8 @@ every cell that sounds its pitch in any octave. A note any
 unmuted track is playing blinks the same way, on the cells
 nearest its pitch in the grid's tuning. The selected
 timbre key is bright; the other control keys are dim. A
-monobright grid shows no dim keys.
+monobright grid fakes the dim keys by flashing them faintly, as
+the surfaces runtime does.
 
 * Not here yet
 No sustain, no pedals, no loop playback, no metronome.
