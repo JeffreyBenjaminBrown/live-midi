@@ -68,7 +68,14 @@ fn handle_keys(
   let ctrl: bool = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
   let shift: bool = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
   let page_ms: Millis = ((canvas.width - HEADER_W) as f64 * view.ms_per_px) as Millis;
-  for key in window.get_keys_pressed(KeyRepeat::Yes) {
+  // only navigation repeats while held: a held space must not toggle
+  let repeating = |key: &Key| matches!(key,
+    Key::Left | Key::Right | Key::Up | Key::Down | Key::Equal | Key::Minus
+    | Key::NumPadPlus | Key::NumPadMinus);
+  let pressed: Vec<Key> = window.get_keys_pressed(KeyRepeat::Yes).into_iter()
+    .filter(|key| repeating(key) || window.is_key_pressed(*key, KeyRepeat::No))
+    .collect();
+  for key in pressed {
     match (key, ctrl, shift) {
       (Key::Q, true, _) => return false,
       (Key::Space, _, _) =>

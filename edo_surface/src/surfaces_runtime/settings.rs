@@ -1,7 +1,7 @@
 //! Rig -> runtime settings resolution: `Settings` / `GridSettings`, the bring-up
 //! plan (`BringUp` / `plan_bringup`) that decides what loads around missing gear,
-//! and the timbre-slot table (`TimbreSlot` + its resolve/default helpers and the
-//! currently-selected-slot accessors).
+//! and the currently-selected timbre slot's accessors (the slots themselves come
+//! from `crate::timbre_slots`).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::rig::{
   default_distortion_scale, default_distortion_shape, play_grids_sink, AccreteControlKind,
   AmShapeFamilyRig, EditmodeControlKind, HandleSide, MonomeWindowRig, PedalRole, Rig, SinkRig,
-  SoftstepWindowRig, WaveformChoice,
+  SoftstepWindowRig,
 };
 use crate::strings::pedal_targets::{
   resolve_strings_pedals, PedalTargetsPerChannel, ResolvedStringsPedals,
@@ -17,7 +17,8 @@ use crate::strings::pedal_targets::{
 use crate::strings::scripted_voices::STRIKE_ATTACK_SECS;
 use crate::strings::StringsParams;
 
-use crate::types::{Am, AmShapeFamily, Fm, RelAm, RelFm, Waveform};
+use crate::timbre_slots::timbre_slots;
+use crate::types::{AmShapeFamily, Timbre};
 use crate::voices::Distortion;
 
 use super::grid::SELECTOR_CELLS;
@@ -25,40 +26,9 @@ use super::pedal_volume::PedalVolumeCurve;
 use super::tone_controls::ToneVolumeConfig;
 use super::NO_RECT;
 
-/// One selectable timbre behind a selector cell: the resolved form of a rig
-/// `[[timbres]]` entry (or a plain-waveform default). `amplitude` multiplies below
-/// the grid's volume fader at note-on.
-#[derive(Clone, Copy)]
-pub(crate) struct TimbreSlot {
-  pub(super) waveform: Waveform,
-  pub(super) amplitude: f32,
-  pub(super) am: Am,
-  pub(super) fm: Fm,
-  pub(super) rel_am: RelAm,
-  pub(super) rel_fm: RelFm,
-}
-
 /// The startup-selected slot: 1 = triangle in the default slots, matching the old
 /// `Waveform::default()` behavior (and any custom `[[timbres]]` layout's cell 1).
 pub(super) const DEFAULT_SLOT: usize = 1;
-
-/// The pre-`[[timbres]]` behavior: the four plain waveforms, everything else off.
-pub(super) fn default_timbre_slots() -> [TimbreSlot; SELECTOR_CELLS] {
-  let plain = |waveform| TimbreSlot {
-    waveform,
-    amplitude: 1.0,
-    am: Am::default(),
-    fm: Fm::default(),
-    rel_am: RelAm::default(),
-    rel_fm: RelFm::default(),
-  };
-  [
-    plain(Waveform::Sine),
-    plain(Waveform::Triangle),
-    plain(Waveform::Square),
-    plain(Waveform::Saw),
-  ]
-}
 
 /// Every overlay rect a play grid can carry, `NO_RECT` where absent. Built once per
 /// grid in `resolve_settings` and stored WHOLE in both `GridSettings` (the resolved
@@ -192,7 +162,7 @@ pub(super) struct Settings {
   /// Cents between crowded equal-nominal-pitch surface voices; zero disables.
   pub(super) crowded_pitch_planck_deviation: f32,
   /// The four selectable timbres (rig `[[timbres]]`, or the plain waveforms).
-  pub(super) timbres: [TimbreSlot; SELECTOR_CELLS],
+  pub(super) timbres: [Timbre; SELECTOR_CELLS],
   /// The instrument-wide AM LFO morph family (rig `[am]`).
   pub(super) am_shape_family: AmShapeFamily,
   /// The global distortion's curve (scale + shape from the cpal_synth sink); the
@@ -657,7 +627,7 @@ pub(super) fn resolve_settings(rig: &Rig) -> Result<Settings, Box<dyn std::error
     decay_secs: sink_settings.decay_secs,
     retrigger_tail_detune_cents: sink_settings.retrigger_tail_detune_cents,
     crowded_pitch_planck_deviation: sink_settings.crowded_pitch_planck_deviation,
-    timbres: resolve_timbre_slots(rig),
+    timbres: timbre_slots(rig),
     am_shape_family: match rig.am.as_ref().map(|a| a.shape.family).unwrap_or_default() {
       AmShapeFamilyRig::SinToSquare => AmShapeFamily::SinToSquare,
       AmShapeFamilyRig::TriToSquare => AmShapeFamily::TriToSquare,
@@ -733,31 +703,6 @@ fn resolve_sink_settings(
         strings: sink.strings_params(), }),
     SinkRig::Midi { .. } | SinkRig::CpalSampler { .. } =>
       Err("surfaces requires a cpal_synth or a cpal_strings sink for the play grids".into()), }}
-
-/// The rig's `[[timbres]]` mapped onto the four selector slots (validation
-/// guarantees exactly four when present); absent = the plain waveforms.
-pub(super) fn resolve_timbre_slots(rig: &Rig) -> [TimbreSlot; SELECTOR_CELLS] {
-  if rig.timbres.is_empty() {
-    return default_timbre_slots();
-  }
-  let mut slots = default_timbre_slots();
-  for (slot, t) in slots.iter_mut().zip(&rig.timbres) {
-    *slot = TimbreSlot {
-      waveform: match t.waveform {
-        WaveformChoice::Sine => Waveform::Sine,
-        WaveformChoice::Triangle => Waveform::Triangle,
-        WaveformChoice::Square => Waveform::Square,
-        WaveformChoice::Saw => Waveform::Saw,
-      },
-      amplitude: t.amplitude,
-      am: Am { depth: t.abs_am_depth, freq: t.abs_am_hz, shape: t.am_shape },
-      fm: Fm { depth_cents: t.abs_fm_depth_cents, freq: t.abs_fm_hz },
-      rel_am: RelAm { depth: t.rel_am_depth, freq: t.rel_am_freq },
-      rel_fm: RelFm { depth: t.rel_fm_depth, freq: t.rel_fm_freq },
-    };
-  }
-  slots
-}
 
 /// The bring-up decision for one run: given which configured grids have a live device
 /// (and whether the SoftStep is present), what loads and what is skipped for a missing

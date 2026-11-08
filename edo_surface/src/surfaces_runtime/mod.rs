@@ -68,7 +68,7 @@ use crate::monome::{self, DeviceInfo};
 use crate::monome_brightness::PulseBrightness;
 
 use crate::drumkit_runtime;
-use crate::types::VoiceMap;
+use crate::types::{Timbre, VoiceMap};
 
 // Used only by tests.rs (via `use super::*;`); gated so a non-test build doesn't warn.
 #[cfg(test)]
@@ -879,7 +879,7 @@ struct GridThread {
   /// A monobright grid fakes DIM by flashing; a varibright grid sends native levels.
   monobright: bool,
   /// The four selectable timbres (shared instrument-wide table, copied per thread).
-  timbres: [TimbreSlot; SELECTOR_CELLS],
+  timbres: [Timbre; SELECTOR_CELLS],
   overlays: Overlays,
   /// Whether each editmode_control button is physically down right now (they light
   /// while pressed, like accrete's clear). Runtime press state, not a rig setting,

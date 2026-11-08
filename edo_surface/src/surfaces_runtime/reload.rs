@@ -12,12 +12,13 @@ use crate::expression_pedals::NUM_PEDALS;
 use crate::rig::{load_named_rig, Rig, SinkRig};
 use crate::strings::pedal_targets::PedalTargetsPerChannel;
 use crate::strings::StringsParams;
+use crate::types::Timbre;
 
 use crate::voices::{Distortion, Makeup};
 
 use super::grid::SELECTOR_CELLS;
 use super::pedal_volume::PedalVolumeCurve;
-use super::settings::{resolve_settings, PedalTarget, Settings, TimbreSlot};
+use super::settings::{resolve_settings, PedalTarget, Settings};
 use super::GridThread;
 
 /// The hot-reloadable ('r' + Enter) subset of the settings -- the scalars a running
@@ -88,7 +89,7 @@ fn adopt_sampler_amplitudes(rig: &Rig, live: &Live) -> usize {
 pub(crate) struct LiveParams {
   pub amplitude: f32,
   pub distortion: Distortion,
-  pub timbres: [TimbreSlot; SELECTOR_CELLS],
+  pub timbres: [Timbre; SELECTOR_CELLS],
   pub x_step: i32,
   pub y_step: i32,
   pub edo: i32,

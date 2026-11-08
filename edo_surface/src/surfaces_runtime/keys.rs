@@ -27,17 +27,7 @@ use super::synth::{self, set_grid_fader_gain};
 use super::tone_controls::ToneTarget;
 use super::{edit, pedal_slide, GridThread, VOLUME_DB_RANGE};
 
-fn timbre_at(rt: &GridThread, slot: usize) -> Timbre {
-  let ts = rt.timbres[slot];
-  Timbre {
-    waveform: ts.waveform,
-    gain: ts.amplitude,
-    am: ts.am,
-    fm: ts.fm,
-    rel_am: ts.rel_am,
-    rel_fm: ts.rel_fm,
-  }
-}
+fn timbre_at(rt: &GridThread, slot: usize) -> Timbre { rt.timbres[slot] }
 
 /// Route one debounced key edge by which overlay (if any) it falls in.
 /// If this grid's edit selection is empty, put every voice it is currently sounding --
@@ -595,15 +585,7 @@ pub(super) fn handle_key(
         // The pitch also droned: the drone half of the retrigger. A fresh strike
         // (grid timbre) the finger owns, its oscillator and pulse continuing; the
         // pitch keeps its place in the accrete set, so release re-drones it.
-        let slot = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
-        let timbre = Timbre {
-          waveform: slot.waveform,
-          gain: slot.amplitude,
-          am: slot.am,
-          fm: slot.fm,
-          rel_am: slot.rel_am,
-          rel_fm: slot.rel_fm,
-        };
+        let timbre: Timbre = rt.timbres[current_slot(&rt.shared.selected, rt.grid_index)];
         rt.sink.note_on_continuing(cell, pitch, timbre, cut);
         drone_became_fingered(rt, pitch, cell);
         held.insert(cell, pitch);
@@ -1208,15 +1190,7 @@ fn chord_slide_to(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, slot: us
   // Spare targets have nobody to glide into them, so they swell in from silence -- the
   // vision's "just fade in the other voices".
   for pitch in outcome.spawn_fade_ins {
-    let ts = rt.timbres[current_slot(&rt.shared.selected, grid)];
-    let timbre = Timbre {
-      waveform: ts.waveform,
-      gain: ts.amplitude,
-      am: ts.am,
-      fm: ts.fm,
-      rel_am: ts.rel_am,
-      rel_fm: ts.rel_fm,
-    };
+    let timbre: Timbre = rt.timbres[current_slot(&rt.shared.selected, grid)];
     if let Some(key) = rt.sink.spawn_slide_swell(pitch, timbre) {
       rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid]
         .store
@@ -1734,15 +1708,7 @@ fn slide_pick(rt: &mut GridThread, held: &HashMap<(i32, i32), i32>, target: i32)
   // pitch, and it is exactly the chord case with a one-note chord"). It joins the
   // sustain set, so it is a real drone the clears and handles can reach.
   for pitch in outcome.spawn_fade_ins {
-    let slot = rt.timbres[current_slot(&rt.shared.selected, grid)];
-    let timbre = Timbre {
-      waveform: slot.waveform,
-      gain: slot.amplitude,
-      am: slot.am,
-      fm: slot.fm,
-      rel_am: slot.rel_am,
-      rel_fm: slot.rel_fm,
-    };
+    let timbre: Timbre = rt.timbres[current_slot(&rt.shared.selected, grid)];
     if let Some(key) = rt.sink.spawn_slide_swell(pitch, timbre) {
       rt.shared.ring.lock().unwrap_or_else(|e| e.into_inner())[grid]
         .store
