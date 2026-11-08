@@ -184,10 +184,10 @@ A song may have one boundaries track, at the top, holding
 nothing but moments: section boundaries. Between each two
 adjacent boundaries lies a section. While the music (or the
 stopped playhead) is in a section, the grids show a dim ghost of
-every pitch that any track plays in that section, in every
-octave. Ghosts don't flash; a ghost being played flashes between
-dim and bright. Before the first boundary and after the last
-there is no section and no ghosts.
+every pitch that a note starting in that section plays, on any
+unmuted track, in every octave. Ghosts don't flash; a ghost
+being played flashes between dim and bright. Before the first
+boundary and after the last there is no section and no ghosts.
 ** making and editing them
 'b' puts a boundary where the music is, making the boundaries
 track the first time. Select boundaries like notes, by dragging

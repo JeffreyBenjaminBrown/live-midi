@@ -311,8 +311,9 @@ impl Session {
     let ghosts: Vec<f64> = self.ghost_hz(self.position(now));
     self.live.paint(grid, &self.live.held_hz(), &playing, &ghosts, blink_on, width, height) }
 
-  /// The scale ghosts at `at`: the frequency of every note on every notes
-  /// track that sounds in the section around `at`; none outside a section.
+  /// The scale ghosts at `at`: the frequency of every note on every unmuted
+  /// notes track that starts in the section around `at`; none outside a
+  /// section.
   pub fn ghost_hz(
     &self,
     at: Millis,
@@ -321,9 +322,9 @@ impl Session {
     let Some((from, to)) = self.song.tracks[boundaries].track.section_around(at)
       else { return vec![]; };
     self.song.tracks.iter()
-      .filter(|t| t.track.kind == TrackKind::Notes)
+      .filter(|t| t.track.kind == TrackKind::Notes && !t.track.muted)
       .flat_map(|t| t.track.notes_with_hz())
-      .filter(|(note, _)| note.start < to && note.end() > from)
+      .filter(|(note, _)| note.start >= from && note.start < to)
       .map(|(_, hz)| hz)
       .collect() }
 
@@ -798,7 +799,9 @@ mod tests {
     session.add_boundary(at(t0, 0));
     session.key(at(t0, 100), 0, cell, true);
     session.key(at(t0, 200), 0, cell, false);
+    session.key(at(t0, 900), 0, cell, true); // starts in the first section, sounds into the next
     session.add_boundary(at(t0, 1000));
+    session.key(at(t0, 1050), 0, cell, false);
     session.key(at(t0, 1100), 0, other, true);
     session.key(at(t0, 1200), 0, other, false);
     session.add_boundary(at(t0, 2000));
@@ -807,9 +810,12 @@ mod tests {
     assert_eq!(session.song.tracks[sections].track.boundaries, vec![0, 1000, 2000]);
     let tuning = session.live.rig.grids[0].tuning;
     let hz = |c: Cell| tuning.hz(tuning.pitch_at(0, c));
-    assert_eq!(session.ghost_hz(500), vec![hz(cell)]);
-    assert_eq!(session.ghost_hz(1500), vec![hz(other)]);
+    assert_eq!(session.ghost_hz(500), vec![hz(cell), hz(cell)]);
+    assert_eq!(session.ghost_hz(1500), vec![hz(other)], "only notes starting in the section");
     assert!(session.ghost_hz(2500).is_empty(), "no section after the last boundary");
+    session.song.tracks[1].track.muted = true;
+    assert!(session.ghost_hz(500).is_empty(), "a muted track casts no ghosts");
+    session.song.tracks[1].track.muted = false;
     session.playhead = 500;
     let index: usize = (cell.1 * 16 + cell.0) as usize;
     assert_eq!(session.leds(t0, 0, 16, 16)[index], crate::editor::live_grid::DIM);
