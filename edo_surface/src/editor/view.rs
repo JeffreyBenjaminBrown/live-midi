@@ -9,7 +9,8 @@
 
 use super::canvas::{Canvas, LINE_H};
 use super::recorder::RecordMode;
-use super::session::{Frame, Selection};
+use super::session::{edit_scope, Frame, Selection};
+use super::track_panel::{self, Row};
 use super::track::{Ghosts, Millis, Note, Setting, Settings, Track, TrackKind};
 use super::track_text::seconds;
 
@@ -165,6 +166,7 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("b", "section boundary"),
   HelpRow::Heading("tracks"),
   HelpRow::Key("n", "new track"),
+  HelpRow::Key("p", "track parameters"),
   HelpRow::Key("f2", "rename track"),
   HelpRow::Key("ctrl-k", "delete track"),
   HelpRow::Key("m", "mute, or unmute"),
@@ -177,7 +179,7 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("drag", "select time"),
   HelpRow::Key("ctrl-a", "select whole tracks"),
   HelpRow::Key("1 2 3 4", "timbre of selection"),
-  HelpRow::Key("h", "ghosts: some, none, all"),
+  HelpRow::Key("h", "ghosts of selection"),
   HelpRow::Key("ctrl-click", "a header: add, drop"),
   HelpRow::Key("ctrl-c, -x", "copy, cut"),
   HelpRow::Key("ctrl-v", "paste over"),
@@ -192,6 +194,40 @@ const HELP: &[HelpRow] = &[
   HelpRow::Key("+, -", "zoom"),
   HelpRow::Key("left, right", "scroll time"),
 ];
+
+/// The track panel ('p'): the current track's parameters in the help's big
+/// font, the chosen row (`row`) highlighted.
+pub fn render_track_panel(
+  canvas: &mut Canvas,
+  frame: &Frame,
+  row: usize,
+) {
+  let Some(song_track) = frame.tracks.get(frame.current_track) else { return; };
+  let track: &Track = &song_track.track;
+  let scope: Option<(Millis, Millis)> = edit_scope(&frame.selection, frame.current_track);
+  let rows: &[Row] = track_panel::rows(track.kind);
+  canvas.shade(0, 0, canvas.width, canvas.height, 0x0B0C0F, 235);
+  let line_h: i32 = (canvas.height / HELP_ROWS).max(12);
+  let px: f32 = line_h as f32 / 1.25;
+  let char_w: i32 = canvas.char_width_at(px);
+  let margin: i32 = line_h / 2;
+  let where_: String = match scope {
+    Some((from, to)) => format!("from {} to {} s", seconds(from), seconds(to)),
+    None => "the whole track".into(), };
+  canvas.text_at_size(margin, margin, &format!("{}: {where_}", track.name),
+    RIG_MARK, canvas.width - 2 * margin, px);
+  let label_chars: i32 = 9;
+  for (index, panel_row) in rows.iter().enumerate() {
+    let y: i32 = margin + (index as i32 + 2) * line_h;
+    if index == row { canvas.shade(0, y, canvas.width, line_h, SELECTION, 70); }
+    let color: u32 = if track_panel::editable(*panel_row) { TEXT } else { FAINT_TEXT };
+    canvas.text_at_size(margin + char_w, y, track_panel::label(*panel_row), 0xFFFFFF,
+      canvas.width, px);
+    canvas.text_at_size(margin + char_w * (label_chars + 2), y,
+      &track_panel::value(*panel_row, track, scope), color, canvas.width, px); }
+  let hint: &str =
+    "up/down choose   left/right change (shift: more)   enter rename   esc or p closes";
+  canvas.text_at_size(margin, canvas.height - line_h, hint, FAINT_TEXT, canvas.width, px * 0.6); }
 
 /// The rows the help shows per screen height.
 const HELP_ROWS: i32 = 20;
@@ -520,5 +556,11 @@ mod tests {
       let mut help: Canvas = Canvas::new(1280, 720);
       render(&mut help, &frame, &View::default());
       render_help(&mut help);
-      std::fs::write(format!("{}.help.png", path.to_string_lossy()), help.png()).unwrap(); } }
+      std::fs::write(format!("{}.help.png", path.to_string_lossy()), help.png()).unwrap();
+      let mut panel: Canvas = Canvas::new(1280, 720);
+      render(&mut panel, &frame, &View::default());
+      let mut on_melody: Frame = frame.clone();
+      on_melody.current_track = 1;
+      render_track_panel(&mut panel, &on_melody, 2);
+      std::fs::write(format!("{}.panel.png", path.to_string_lossy()), panel.png()).unwrap(); } }
 }

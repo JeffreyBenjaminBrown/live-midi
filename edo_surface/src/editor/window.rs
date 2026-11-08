@@ -11,9 +11,10 @@ use minifb::{InputCallback, Key, KeyRepeat, MouseButton, MouseMode, Window, Wind
 use super::canvas::Canvas;
 use super::recorder::RecordMode;
 use super::rig_layout::{editor_rig, EditorRig};
-use super::session::{Frame, Selection, Session};
+use super::session::{edit_scope, Frame, Selection, Session};
 use super::track::Millis;
-use super::view::{render, render_help, Hit, View, HEADER_W};
+use super::track_panel::{self, Request, Row};
+use super::view::{render, render_help, render_track_panel, Hit, View, HEADER_W};
 use crate::rig::{load_named_rig, rig_dir};
 
 /// A drag that has moved less than this many pixels is a click.
@@ -54,6 +55,8 @@ pub fn run_window(
   let mut renaming: Option<String> = None;
   // the key help covers the window while shown ('?' toggles, escape closes)
   let mut help_shown: bool = false;
+  // the track panel's chosen row, while it shows ('p')
+  let mut panel: Option<usize> = None;
   let mut canvas: Canvas = Canvas::new(1280, 720);
   let mut view: View = View::default();
   let mut drag: Option<Drag> = None;
@@ -72,6 +75,13 @@ pub fn run_window(
           help_shown = false; }
       } else if renaming.is_some() {
         type_name(&window, &mut session, &mut renaming, &typed_now, now);
+      } else if let Some(row) = panel.as_mut() {
+        match panel_keys(&window, &mut session, row, &rigs, now) {
+          PanelOutcome::Stay => {}
+          PanelOutcome::Close => panel = None,
+          PanelOutcome::Rename => renaming = Some(session.current_name()), }
+      } else if window.is_key_pressed(Key::P, KeyRepeat::No) && !session.song.tracks.is_empty() {
+        panel = Some(0);
       } else if typed_now.contains(&'?') {
         help_shown = true;
       } else if window.is_key_pressed(Key::F2, KeyRepeat::No) && !session.song.tracks.is_empty() {
@@ -85,6 +95,7 @@ pub fn run_window(
         frame.status = format!("rename to: {name}_   (enter keeps, esc cancels)"); } }
     if frame.rolling { view.follow(frame.position, canvas.width); }
     render(&mut canvas, &frame, &view);
+    if let Some(row) = panel { render_track_panel(&mut canvas, &frame, row); }
     if help_shown { render_help(&mut canvas); }
     window.update_with_buffer(&canvas.pixels, width, height).map_err(|e| e.to_string())?; }
   stop.store(true, Ordering::SeqCst);
@@ -148,6 +159,40 @@ fn handle_keys(
       (Key::L, false, _) => reload_rig(session, now),
       _ => {} } }
   true }
+
+enum PanelOutcome { Stay, Close, Rename }
+
+/// The track panel's keys: up and down choose a row, left and right (with
+/// shift, in bigger steps) change it, enter changes it too (or renames),
+/// escape or p closes.
+fn panel_keys(
+  window: &Window,
+  session: &mut Session,
+  row: &mut usize,
+  rigs: &[String],
+  now: Instant,
+) -> PanelOutcome {
+  let Some(song_track) = session.song.tracks.get(session.current_track) else {
+    return PanelOutcome::Close; };
+  let rows: &[Row] = track_panel::rows(song_track.track.kind);
+  *row = (*row).min(rows.len() - 1);
+  if window.is_key_pressed(Key::Escape, KeyRepeat::No) || window.is_key_pressed(Key::P, KeyRepeat::No) {
+    return PanelOutcome::Close; }
+  if window.is_key_pressed(Key::Up, KeyRepeat::Yes) { *row = row.saturating_sub(1); }
+  if window.is_key_pressed(Key::Down, KeyRepeat::Yes) { *row = (*row + 1).min(rows.len() - 1); }
+  let shift: bool = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+  let by: i32 =
+    if window.is_key_pressed(Key::Left, KeyRepeat::Yes) { -1 }
+    else if window.is_key_pressed(Key::Right, KeyRepeat::Yes)
+      || window.is_key_pressed(Key::Enter, KeyRepeat::No) { 1 }
+    else { return PanelOutcome::Stay; };
+  let scope = edit_scope(&session.selection, session.current_track);
+  match track_panel::step(rows[*row], &song_track.track, scope, by, shift, rigs) {
+    Request::Rename => return PanelOutcome::Rename,
+    Request::ToggleMute => session.toggle_mute(now),
+    Request::Set(setting) => session.set_current_track_setting(now, setting),
+    Request::Nothing => {} }
+  PanelOutcome::Stay }
 
 /// Typing a track's new name: characters append, backspace deletes, enter
 /// renames, escape cancels.

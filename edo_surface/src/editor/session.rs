@@ -17,7 +17,8 @@ use super::song::{Song, SongTrack};
 use super::sound::Sound;
 use super::track::{Ghosts, Millis, Setting, Track, TrackKind};
 use super::track_edit::{
-  clear, copy, merge_take, paste_inserting, paste_over, remove, set_throughout, Clip,
+  clear, copy, merge_take, paste_inserting, paste_over, remove, set_throughout,
+  set_whole_track, Clip,
 };
 
 /// A region of time across a set of tracks, adjacent or not.
@@ -60,6 +61,16 @@ pub enum Transport {
     recorder: Option<Recorder>,
   },
 }
+
+/// Where an edit of track `track`'s parameters applies: the selection's
+/// time, if the selection covers the track, else (`None`) the whole track.
+pub fn edit_scope(
+  selection: &Option<Selection>,
+  track: usize,
+) -> Option<(Millis, Millis)> {
+  selection.as_ref()
+    .filter(|s| s.to > s.from && s.tracks.contains(&track))
+    .map(|s| (s.from, s.to)) }
 
 /// How long a blinking note stays lit, and then dark.
 pub const BLINK_MILLIS: u128 = 150;
@@ -438,6 +449,22 @@ impl Session {
     self.edit_selection(now, &format!("timbre {slot} for"), |track, s| {
       if track.kind == TrackKind::Notes {
         set_throughout(track, s.from, s.to, Setting::Timbre(slot)); } }); }
+
+  /// Give the current track `setting` over its edit scope (`edit_scope`).
+  pub fn set_current_track_setting(
+    &mut self,
+    now: Instant,
+    setting: Setting,
+  ) {
+    if !self.ready_to_edit(now) || self.song.tracks.is_empty() { return; }
+    self.snapshot();
+    let scope: Option<(Millis, Millis)> = edit_scope(&self.selection, self.current_track);
+    let track = &mut self.song.tracks[self.current_track].track;
+    match scope {
+      Some((from, to)) => set_throughout(track, from, to, setting),
+      None => set_whole_track(track, setting), }
+    self.status = format!("{}: changed", track.name);
+    self.save(); }
 
   /// Set how much the grids show over the selection: on a notes track, of
   /// the notes starting there; on the boundaries track, of every track's
@@ -855,6 +882,22 @@ mod tests {
     session.playhead = 900;
     let index: usize = (cell.1 * 16 + cell.0) as usize;
     assert_eq!(session.leds(t0, 0, 16, 16)[index], crate::editor::live_grid::DIM);
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn a_track_setting_applies_to_the_selection_or_else_the_whole_track() {
+    let (mut session, dir) = session("track-setting");
+    let t0: Instant = Instant::now();
+    session.new_track(t0);
+    session.set_current_track_setting(t0, Setting::Timbre(1));
+    session.selection = Some(Selection::across(1000, 2000, 0, 0));
+    session.set_current_track_setting(t0, Setting::Timbre(3));
+    let track = &session.song.tracks[0].track;
+    assert_eq!((track.settings_at(500).timbre, track.settings_at(1500).timbre,
+      track.settings_at(2500).timbre), (Some(1), Some(3), Some(1)));
+    session.selection = None;
+    session.set_current_track_setting(t0, Setting::Timbre(2));
+    assert_eq!(session.song.tracks[0].track.settings_at(1500).timbre, Some(2));
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]

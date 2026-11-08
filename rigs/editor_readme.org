@@ -99,6 +99,8 @@ Back to normal speed.
 *** tracks
 **** n
 Add an empty track below the current one.
+**** p
+Open the track panel: see "The track panel".
 **** f2
 Rename the current track: type, then enter (escape cancels).
 A name is letters, digits, '-', '_' and '.'.
@@ -118,6 +120,9 @@ Select the whole of the selected tracks (or the current one).
 Give the selection one timbre throughout: the timbre slot 0, 1,
 2 or 3, left to right as on the grid. After the selection the
 timbre goes back to what it was.
+**** h
+Step the selection's ghosts through while-sounding, no, and yes
+again: see "Scale ghost sections".
 **** ctrl-click a header
 Add that track to the selection, or take it out, so a selection
 can skip tracks.
@@ -195,6 +200,43 @@ across the boundaries lane: delete clears them, and cut, copy
 and paste move them. Boundaries paste only into the boundaries
 track, notes only into notes tracks. You can't record notes into
 the boundaries track.
+
+** turning ghosts down
+A chromatic run in some track can fill the grid with ghosts and
+say nothing. Every track has a 'ghosts' setting over time, like
+its timbre, with three values.
+*** yes
+The default: the notes starting here cast ghosts, and flash
+while they sound.
+*** while-sounding
+No ghosts; the notes still flash while they sound.
+*** no
+The grid shows nothing of these notes, sounding or not.
+*** setting it
+Select a region (or ctrl-a for whole tracks) and press 'h' to
+step through the three. A lane marks a region whose ghosts are
+not 'yes' with a hatched band. In a track file it is a line like
+'12.000 ghosts while-sounding'.
+*** song-wide
+The boundaries track has the same setting, which holds for every
+track while the music is there: select a region of the
+boundaries lane and press 'h'. The more hidden of the two wins.
+
+* The track panel
+'p' covers the window with the current track's parameters: name,
+muted, ghosts, timbre, volume, rig and tuning (a boundaries
+track has only name and ghosts). Up and down choose one; left
+and right change it (shift for volume in 6 dB steps); enter
+changes it too, or on the name, renames the track. Escape or 'p'
+closes the panel.
+** what a change applies to
+If the selection covers the current track, a change applies to
+the selection's time; otherwise to the whole track. The panel's
+title says which. A value is the one at the start of that time,
+marked "varies" if it changes inside it.
+** the tuning
+The tuning shows but cannot change here, because changing it
+would move every recorded pitch.
 
 * The editing rules
 ** a note belongs where it starts

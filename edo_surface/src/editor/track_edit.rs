@@ -131,6 +131,17 @@ pub fn set_throughout(
   restore_settings_at(track, to, &settings_at_end, &[kind]);
   track.normalize(); }
 
+/// Make `setting` hold over the whole track: every change of its kind goes,
+/// and one at 0 takes their place.
+pub fn set_whole_track(
+  track: &mut Track,
+  setting: Setting,
+) {
+  let kind: SettingKind = setting.kind();
+  track.changes.retain(|change| change.setting.kind() != kind);
+  track.changes.push(SettingChange { at: 0, setting });
+  track.normalize(); }
+
 /// Move every note starting at or after `from`, and every change, by `by`.
 fn shift_from(
   track: &mut Track,
