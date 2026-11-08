@@ -1,0 +1,184 @@
+#+title: The edo editor: record, overdub and edit tracks
+
+* Run
+On the host, once per login, let the container open windows:
+#+begin_src sh
+xhost +local:
+#+end_src
+Then, from the repository root inside the container:
+#+begin_src sh
+pw-jack cargo run --release --bin editor -- songs/my-song
+#+end_src
+The song directory is created on the first change. Leave it out
+to use 'songs/untitled'. Add '--rig NAME' to play another rig
+live; the default is [[file:timbres-volume-scroll_41edo.org]].
+One or two 16x16 grids work; a missing one is skipped. Closing
+the window, ctrl-q or Ctrl-C ends the editor.
+
+* What a song is
+A song is a directory. Each track is one text file,
+'<name>.track', and 'tracks.txt' lists the tracks top to bottom.
+Every change is saved the moment you make it, so there is no
+save command; ctrl-z takes a change back.
+** a track file
+#+begin_example
+  # an edo-editor track; rigs/editor_readme.org describes the format
+  muted no
+
+  0.000 rig timbres-volume-scroll_41edo
+  0.000 tuning 41 edo 110 hz
+  0.000 timbre 1
+  0.000 volume -12 dB
+  1.250 note 37 for 0.650
+  2.000 timbre 3
+#+end_example
+Each line after the header starts with a time in seconds.
+*** notes
+'note 37 for 0.650' sounds pitch 37 for 0.65 seconds. A pitch is
+an integer, read in the tuning in force where the note starts:
+pitch p sounds at the tuning's hz times 2^(p/edo).
+*** settings
+A setting holds from its line until the next line that changes
+it.
+**** rig
+The rig whose synth plays the track: its timbres and envelope.
+The rig file is read when the track plays, so editing the rig
+changes how old tracks sound; their pitches stay put.
+**** tuning
+How the integer pitches become frequencies. A recording writes
+the tuning of the grid it was played on, so retuning a rig later
+does not move recorded notes.
+**** timbre
+A slot of the rig's timbre keys, 0 to 3 from the left.
+**** volume
+In dB.
+*** editing by hand
+You may edit a track file in Emacs while the editor is closed.
+Lines may come in any order; the editor sorts them when it
+saves.
+
+* The window
+** layout
+A status bar at the top shows the transport, the time, the
+current track, the live rig and the last thing that happened.
+Under it a ruler counts seconds. Each track has a lane: its
+header on the left (name, note count, and the tuning and rig in
+force at the lane's left edge), its notes on the right, higher
+pitches higher. The strip along a lane's bottom shows the timbre
+by its color and the volume by the height of its white line
+(bottom -60 dB, top 0 dB). A gold line marks a later change of
+rig or tuning. The red line is the playhead.
+** keys
+*** transport
+**** space
+Play from the playhead, or stop.
+**** r
+Record from the playhead into the current track.
+**** o
+Overdub parameters into the current track.
+**** esc
+Stop.
+**** home
+Move the playhead to the start.
+*** tracks
+**** n
+Add an empty track below the current one.
+**** ctrl-k
+Delete the current track.
+**** m
+Mute the current track, or unmute it.
+**** up, down
+Choose the current track.
+*** editing
+**** drag
+Select a region of time across one or more lanes. A click
+without a drag moves the playhead and chooses the track.
+**** ctrl-c, ctrl-x
+Copy or cut the selection.
+**** ctrl-v
+Paste at the playhead, replacing what lies under the pasted
+material. The first copied track goes into the current track,
+the next one below it, and so on.
+**** ctrl-shift-v
+Paste at the playhead, moving everything after it right.
+**** delete
+Clear the selection: it becomes silence, nothing moves.
+**** shift-delete
+Remove the selected time: everything after it moves left.
+**** ctrl-z, ctrl-y
+Undo, redo.
+*** view
+**** the wheel
+Over the lanes it scrolls time; over the headers it scrolls the
+lanes; with ctrl it zooms.
+**** + and -
+Zoom in and out.
+**** left, right
+Scroll time.
+*** rigs
+**** g
+Play the next rig the editor can play, live.
+**** l
+Read the live rig's file again, after you edit it.
+
+* Recording
+** what gets recorded
+Record (r) starts the transport at the playhead and keeps the
+notes you play, adding them to the current track's notes. Every
+other track plays while you record. Stopping returns the
+playhead to where the recording began, ready for another take.
+** parameters
+A timbre or volume key you press during a recording replaces
+that parameter's old values from your first press until you
+stop; afterwards the old values resume. A parameter the track
+has never set takes the grid's value at the recording's start,
+so a new track sounds the way you played it.
+** overdubbing parameters
+Overdub (o) plays the current track and records only the
+parameters. Notes you play sound but are not kept.
+** two grids
+If both grids play during a recording, the grid that acts first
+records into the current track and the other into a new track
+below it.
+** the rig and tuning
+Where a recording adds notes, the track takes the live rig and
+tuning from the recording's start to its stop. Notes already
+there in another tuning move to the nearest pitch of the new
+one.
+
+* The editing rules
+** a note belongs where it starts
+A region holds the notes that start in it, at their full length,
+so a copied phrase keeps its ringing last note. Clearing a
+region also cuts short a note that started before it and would
+sound into it.
+** settings after an edit stay put
+An edit never changes the settings after its region: if the
+region held a timbre change, a change at the region's end
+restores what was in force there.
+
+* The monome
+The keys play the live rig. A note you hold lights solid on
+every cell that sounds its pitch. A note any unmuted track is
+playing blinks, on the cells nearest its pitch. The selected
+timbre key is bright; the other control keys are dim. A
+monobright grid shows no dim keys.
+
+* Not here yet
+No sustain, no pedals, no loop playback, no metronome, no track
+renaming (rename the file while the editor is closed, and its
+line in 'tracks.txt').
+
+* For developers
+The code is 'edo_surface/src/editor/'; its 'mod.rs' lists the
+layers. Every layer below 'window' and 'grid_io' is pure and
+tested without hardware; 'grid_io' is tested against the monome
+mock. To look at a frame without a display:
+#+begin_src sh
+EDO_EDITOR_SNAPSHOT=/tmp/frame.png cargo test -p edo_surface --lib editor::view::tests::snapshot
+#+end_src
+To play it headless against the mock (see [[file:../MOCK-MONOME.org]]):
+#+begin_src sh
+cargo run --bin mock_monome -- --detector-port 17002
+MIDI_PULSE_NO_AUDIO=1 MIDI_PULSE_DETECTOR_PORT=17002 cargo run --bin editor -- --headless
+#+end_src

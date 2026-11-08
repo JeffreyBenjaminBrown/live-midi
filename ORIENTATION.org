@@ -148,6 +148,20 @@ per-channel positions the pedal thread publishes. Player reference:
 Listen without grids:
 =cargo run -p tools --bin strings_harness -- --rig two-pedals_monome --scene squeal=.
 
+* the multitrack editor
+A window that records what one or two grids play into text
+tracks (one '.track' file per track, a song being a directory),
+plays them back, overdubs their timbre and volume, and cuts,
+pastes, clears and removes regions of time. Notes are integer
+pitches with a tuning; each track says which rig plays it when.
+Held notes light solid on the grids; tracks' notes blink. It
+plays the plain pieces of a rig (note grid, timbre keys, volume
+keys, scroll pad) and ignores the rest; its first synth is
+=rigs/timbres-volume-scroll_41edo.org=. Player reference:
+[[./rigs/editor_readme.org]]; code: =edo_surface/src/editor/=
+(=mod.rs= lists the layers); binary: =--bin editor=. Open
+questions: =hey-jeff.org=.
+
 * the previous instrument: monome-looper-58-8-1
 A two-grid looping instrument in 58-EDO; still runs.
 - Reference: [[./rigs/monome-looper-58-8-1_readme.org]];
