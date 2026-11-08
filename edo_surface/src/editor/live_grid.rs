@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::edo_play::{register_delta, shift_for_cell};
+use crate::edo_play::{register_delta, shift_for_cell, Shift};
 use crate::timbre_slots::TIMBRE_SLOTS;
 
 use super::rig_layout::{EditorRig, GridLayout, PieceKind};
@@ -167,7 +167,11 @@ impl LiveGrids {
             else { 0 } }
           PieceKind::Timbre { controls } =>
             if piece.index_of((x, y)) == self.tones[controls].timbre { BRIGHT } else { DIM },
-          PieceKind::Shift | PieceKind::Volume { .. } => DIM,
+          // the octave keys work but stay dark (Jeff); the arrows are dim
+          PieceKind::Shift => match shift_for_cell(piece.rect, (x, y)) {
+            Some(Shift::OctaveDown | Shift::OctaveUp) => 0,
+            _ => DIM, },
+          PieceKind::Volume { .. } => DIM,
           PieceKind::Inert => 0, }; } }
     levels }
 }
@@ -242,4 +246,16 @@ mod tests {
     let octave_up: Cell = (shift.rect[0] + 2, shift.rect[1]);
     live.press(0, octave_up, true);
     assert_eq!(live.registers[0], live.rig.grids[0].tuning.edo); }
+
+  #[test]
+  fn the_octave_keys_are_dark_and_the_arrows_dim() {
+    let live: LiveGrids = live();
+    let shift: Piece = piece(&live, |kind| *kind == PieceKind::Shift);
+    let levels: Vec<u8> = live.paint(0, &[], &[], false, 16, 16);
+    for cell in (shift.rect[1]..=shift.rect[3])
+      .flat_map(|y| (shift.rect[0]..=shift.rect[2]).map(move |x| (x, y))) {
+      let level: u8 = levels[(cell.1 * 16 + cell.0) as usize];
+      match shift_for_cell(shift.rect, cell) {
+        Some(Shift::OctaveDown | Shift::OctaveUp) => assert_eq!(level, 0, "{cell:?}"),
+        _ => assert_eq!(level, DIM, "{cell:?}"), } } }
 }

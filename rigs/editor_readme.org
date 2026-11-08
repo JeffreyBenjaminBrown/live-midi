@@ -171,7 +171,8 @@ The keys play the live rig. A note you hold lights solid on
 every cell that sounds its pitch in any octave. A note any
 unmuted track is playing blinks the same way, on the cells
 nearest its pitch in the grid's tuning. The selected
-timbre key is bright; the other control keys are dim. A
+timbre key is bright; the other control keys are dim, except
+the scroll pad's two octave keys, which work but stay dark. A
 monobright grid fakes the dim keys by flashing them faintly, as
 the surfaces runtime does.
 
