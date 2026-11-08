@@ -30,6 +30,9 @@ pub mod mock_monome;
 pub mod monome;
 pub mod monome_brightness;
 
+// Opening the sound card for a synth.
+pub mod audio_output;
+
 // The four timbres of a selector strip, from a rig.
 pub mod timbre_slots;
 

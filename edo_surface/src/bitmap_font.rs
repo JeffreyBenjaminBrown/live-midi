@@ -48,7 +48,7 @@ pub const GLYPH_H: usize = 7 * SCALE;
 
 /// The rasterizer, built once. Parsing the font on every glyph would be absurd at
 /// 20 fps, and `Font` is immutable once built.
-fn font() -> &'static Font {
+pub(crate) fn font() -> &'static Font {
   static FONT: OnceLock<Font> = OnceLock::new();
   FONT.get_or_init(|| {
     Font::from_bytes(FONT_BYTES, FontSettings::default())
@@ -59,7 +59,7 @@ fn font() -> &'static Font {
 /// Blend `color` over `under` by `coverage` (0..=255). This is what buys the smooth
 /// edge: a partly-covered pixel becomes a partly-mixed colour rather than being
 /// forced fully on or fully off.
-fn blend(under: u32, color: u32, coverage: u8) -> u32 {
+pub(crate) fn blend(under: u32, color: u32, coverage: u8) -> u32 {
   if coverage == 0 {
     return under;
   }

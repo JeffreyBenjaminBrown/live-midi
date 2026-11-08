@@ -16,6 +16,7 @@
 //!     recv `/sys/prefix ,s <prefix>`      (OSC namespace for this grid)
 //!     recv `<prefix>/grid/led/all       ,i   <state>`
 //!     recv `<prefix>/grid/led/level/set ,iii <x> <y> <level>`
+//!     recv `<prefix>/grid/led/level/map ,ii<64 i> <x_off> <y_off> <levels...>`
 //!     recv `<prefix>/grid/led/col       ,iii <x> <y> <mask>`   (monochrome)
 //!     send `<prefix>/grid/key ,iii <x> <y> <s>`  on press/release (s in {0,1})
 //!
@@ -342,6 +343,19 @@ fn grid_loop(
           let y = y0 + bit;
           if (0..w).contains(x) && (0..h).contains(&y) {
             st.levels[(y * w + x) as usize] = if mask & (1 << bit) != 0 { 15 } else { 0 };
+            changed = true;
+          }
+        }
+      }
+    } else if addr.ends_with("/grid/led/level/map") {
+      // Varibright 8x8 quad: args = x_off, y_off, then 64 levels row by row.
+      if let (Some(OscType::Int(x0)), Some(OscType::Int(y0))) = (m.args.first(), m.args.get(1)) {
+        let (w, h) = (st.grid_w, st.grid_h);
+        for i in 0..64i32 {
+          let Some(OscType::Int(level)) = m.args.get(2 + i as usize) else { break };
+          let (x, y) = (x0 + i % 8, y0 + i / 8);
+          if (0..w).contains(&x) && (0..h).contains(&y) {
+            st.levels[(y * w + x) as usize] = *level;
             changed = true;
           }
         }

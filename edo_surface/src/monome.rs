@@ -207,3 +207,21 @@ pub fn send_led_map(
   args.extend(rows.iter().map(|r| OscType::Int(*r as i32)));
   send_osc(sock, device, &format!("{prefix}/grid/led/map"), args);
 }
+
+/// Varibright quad map: set the levels (0..15) of a whole 8x8 block in one message
+/// (`/grid/led/level/map x y l[64]`). `levels` is row by row from the block's
+/// top-left `(x_off, y_off)`, both multiples of 8.
+pub fn send_led_level_map(
+  sock: &UdpSocket,
+  device: SocketAddr,
+  prefix: &str,
+  x_off: i32,
+  y_off: i32,
+  levels: &[u8; 64],
+) {
+  let mut args: Vec<OscType> = Vec::with_capacity(66);
+  args.push(OscType::Int(x_off));
+  args.push(OscType::Int(y_off));
+  args.extend(levels.iter().map(|level| OscType::Int(*level as i32)));
+  send_osc(sock, device, &format!("{prefix}/grid/led/level/map"), args);
+}

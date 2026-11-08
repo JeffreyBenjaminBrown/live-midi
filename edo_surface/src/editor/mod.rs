@@ -9,6 +9,8 @@
 //! the sawwave engine's voices; 'session' holds it all and is what the
 //! window and the monome threads call.
 
+pub mod canvas;
+pub mod grid_io;
 pub mod live_grid;
 pub mod playback;
 pub mod recorder;
@@ -19,3 +21,5 @@ pub mod sound;
 pub mod track;
 pub mod track_edit;
 pub mod track_text;
+pub mod view;
+pub mod window;
