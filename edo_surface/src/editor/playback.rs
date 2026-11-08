@@ -6,7 +6,9 @@
 //! at a time in [the old position, `to`). At one time, setting changes come
 //! before notes, so a note sounds with the settings changed at its start.
 
-use super::track::{Millis, Settings, Track};
+use std::collections::HashMap;
+
+use super::track::{Millis, Setting, Settings, Track};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaybackAction {
@@ -37,6 +39,9 @@ pub struct Playback {
   pub position: Millis,
   next_seq: u64,
   tracks: Vec<TrackPosition>,
+  /// Per track id: parameters a player is overdubbing, which the track
+  /// sounds instead of its own until playback stops.
+  overrides: HashMap<u64, Settings>,
 }
 
 impl Playback {
@@ -46,7 +51,8 @@ impl Playback {
     tracks: &[PlayedTrack],
     from: Millis,
   ) -> (Playback, Vec<PlaybackAction>) {
-    let mut playback: Playback = Playback { position: from, next_seq: 0, tracks: vec![] };
+    let mut playback: Playback = Playback {
+      position: from, next_seq: 0, tracks: vec![], overrides: HashMap::new() };
     let mut actions: Vec<PlaybackAction> = vec![];
     for played in tracks {
       let track: &Track = played.track;
@@ -94,7 +100,7 @@ impl Playback {
             position.next_change += 1;
             if !track.changes.get(position.next_change).is_some_and(|next| next.at == change) {
               actions.push(PlaybackAction::SettingsChanged {
-                track: position.id, settings: position.settings.clone() }); } }
+                track: position.id, settings: effective(&self.overrides, position) }); } }
           (_, Some(_)) => {
             let note = track.notes[position.next_note];
             position.next_note += 1;
@@ -103,18 +109,30 @@ impl Playback {
             let seq: u64 = self.next_seq;
             self.next_seq += 1;
             let hz: f64 = tuning.hz(note.pitch);
+            let settings: Settings = effective(&self.overrides, position);
             if note.end() < to {
               // starts and ends inside this window: still give it its start
-              actions.push(PlaybackAction::NoteStart {
-                track: position.id, seq, hz, settings: position.settings.clone() });
+              actions.push(PlaybackAction::NoteStart { track: position.id, seq, hz, settings });
               actions.push(PlaybackAction::NoteEnd { track: position.id, seq });
             } else {
               position.sounding.push((seq, note.end(), hz));
-              actions.push(PlaybackAction::NoteStart {
-                track: position.id, seq, hz, settings: position.settings.clone() }); } }
+              actions.push(PlaybackAction::NoteStart { track: position.id, seq, hz, settings }); } }
           _ => break, } } }
     self.position = to;
     actions }
+
+  /// Sound `setting` (a timbre or volume) on track `track` instead of the
+  /// track's own, from now until playback stops; returns the action that
+  /// re-tones its sounding notes.
+  pub fn override_parameter(
+    &mut self,
+    track: u64,
+    setting: &Setting,
+  ) -> Option<PlaybackAction> {
+    self.overrides.entry(track).or_default().apply(setting);
+    let position: &TrackPosition = self.tracks.iter().find(|p| p.id == track)?;
+    Some(PlaybackAction::SettingsChanged {
+      track, settings: effective(&self.overrides, position) }) }
 
   /// End every sounding note, as on a stop.
   pub fn stop(&mut self) -> Vec<PlaybackAction> {
@@ -130,6 +148,17 @@ impl Playback {
       .flat_map(|position| position.sounding.iter().map(|(_, _, hz)| *hz))
       .collect() }
 }
+
+/// A track's settings now, with any overdubbed parameters in place of its own.
+fn effective(
+  overrides: &HashMap<u64, Settings>,
+  position: &TrackPosition,
+) -> Settings {
+  let mut settings: Settings = position.settings.clone();
+  if let Some(over) = overrides.get(&position.id) {
+    if over.timbre.is_some() { settings.timbre = over.timbre; }
+    if over.volume_db.is_some() { settings.volume_db = over.volume_db; } }
+  settings }
 
 #[cfg(test)]
 mod tests {

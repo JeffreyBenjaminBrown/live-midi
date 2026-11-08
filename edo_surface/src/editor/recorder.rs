@@ -69,6 +69,14 @@ impl Recorder {
     if recorded && !self.active_order.contains(&grid) {
       self.active_order.push(grid); } }
 
+  /// Whether grid `grid` is the one recording into the current track: the
+  /// first grid to record anything (the others get new tracks).
+  pub fn records_into_current_track(
+    &self,
+    grid: usize,
+  ) -> bool {
+    self.active_order.first() == Some(&grid) }
+
   /// The takes of the grids that recorded something, in the order they first
   /// did, each with its grid's number. A note still held ends at `stop`.
   pub fn finish(

@@ -246,8 +246,15 @@ impl Session {
         LiveEvent::NoteOn { pitch, .. } => self.live.rig.grids[event_grid].tuning.hz(*pitch),
         _ => 0.0, };
       self.sound.live(&event, &self.live.settings(event_grid), hz);
-      if let Transport::Rolling { recorder: Some(recorder), .. } = &mut self.transport {
-        recorder.event(position, &event); } } }
+      let current_track_id: Option<u64> = self.song.tracks.get(self.current_track).map(|t| t.id);
+      let mut retone: Option<PlaybackAction> = None;
+      if let Transport::Rolling { recorder: Some(recorder), playback, .. } = &mut self.transport {
+        recorder.event(position, &event);
+        // an overdubbed parameter is heard on the track it is going into
+        if let (LiveEvent::Parameter { setting, .. }, Some(id)) = (&event, current_track_id) {
+          if recorder.records_into_current_track(event_grid) {
+            retone = playback.override_parameter(id, setting); } } }
+      if let Some(action) = retone { self.sound.playback(&action); } } }
 
   /// Grid `grid`'s LED levels now.
   pub fn leds(
@@ -507,7 +514,7 @@ mod tests {
   use crate::editor::rig_layout::{editor_rig, PieceKind};
   use crate::editor::track::Note;
   use crate::rig::load_named_rig;
-  use crate::types::VoiceMap;
+  use crate::types::{VoiceMap, VoiceSource};
 
   const PLAIN: &str = "timbres-volume-scroll_41edo";
 
@@ -617,6 +624,36 @@ mod tests {
     session.rename_current_track(t0, "bass-1");
     assert!(dir.join("bass-1.track").exists());
     assert!(!dir.join(format!("{old}.track")).exists());
+    std::fs::remove_dir_all(&dir).unwrap(); }
+
+  #[test]
+  fn overdubbing_started_while_playing_is_heard_and_kept() {
+    let (mut session, dir) = session("overdub-while-playing");
+    let t0: Instant = Instant::now();
+    let cell: Cell = note_cell(&session);
+    session.record(t0, RecordMode::Notes);
+    session.key(at(t0, 100), 0, cell, true);
+    session.key(at(t0, 2000), 0, cell, false);
+    session.stop(at(t0, 2100));
+    let timbre_piece = session.live.rig.grids[0].pieces.iter()
+      .find(|p| matches!(p.kind, PieceKind::Timbre { .. })).unwrap().clone();
+    let new_slot_cell: Cell = (timbre_piece.rect[2], timbre_piece.rect[1]);
+    let new_slot: usize = timbre_piece.index_of(new_slot_cell);
+    let t1: Instant = at(t0, 5000);
+    session.play(t1);
+    session.tick(at(t1, 200)); // the note is sounding
+    session.record(at(t1, 300), RecordMode::Parameters);
+    session.key(at(t1, 500), 0, new_slot_cell, true);
+    session.tick(at(t1, 510));
+    let wanted_waveform = session.sound.rigs.get(PLAIN).unwrap().timbres[new_slot].waveform;
+    let heard: Vec<_> = session.sound.voices.lock().unwrap().iter()
+      .filter(|(source, _)| matches!(source, VoiceSource::EditorTrackNote { .. }))
+      .map(|(_, voice)| voice.timbre.waveform).collect();
+    assert_eq!(heard, vec![wanted_waveform], "the playing note takes the new timbre");
+    session.stop(at(t1, 1500));
+    let track = &session.song.tracks[0].track;
+    assert_eq!(track.settings_at(600).timbre, Some(new_slot));
+    assert_eq!(track.settings_at(1600).timbre, track.settings_at(50).timbre, "restored after");
     std::fs::remove_dir_all(&dir).unwrap(); }
 
   #[test]
