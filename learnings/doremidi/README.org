@@ -1,0 +1,40 @@
+#+title: DOREMiDi MPC-20: the manufacturer's documents
+
+Downloaded 2026-11-07 from DOREMiDi's own product page,
+https://www.doremidi.cn/h-pd-71.html (the unit is sold there as
+"MIDI Pedal Converter Pro", model MPC-20). How this repo uses
+the unit is in 'tools/pedals/README.org'.
+
+* The files
+** 'MPC-20_Instructions_V2.0.pdf'
+The user manual, ten pages, English. Source:
+https://download.s21i.faiusr.com/11167047/0/0/ABUIABA9GAAg8tq7nAYoiqPhgAU.pdf
+** 'Compatible_Pedal_list.pdf'
+One page of pedals DOREMiDi has tested. Source:
+https://11167047.s21i.faiusr.com/61/ABUIABA9GAAgpvy7sgYoxpHRQQ.pdf
+
+* The indicator light
+The manual, "Steps for usage", "Connection": "The indicator
+light flashes when the power is only supplied, and the
+indicator light is always on when it is connected to the
+computer."
+** Flashing
+The unit has power but no USB host has enumerated it: a
+charge-only cable, a USB port or hub that passes power but not
+data, or a wall adapter. 'tools/pedals/bridge.sh' then reports
+"DOREMiDi MPC-20 (1a86:752d) not found".
+** Steady
+A computer has enumerated it as a USB device.
+** After a firmware upgrade
+The product page's firmware notes add that the light "flashes
+slowly" for a few seconds after "Upgrade Completed", before
+the unit is unplugged and reconnected.
+
+* Other downloads on the product page
+** Pedal Config Tool V4.0.3
+Windows and macOS; it needs the latest firmware.
+https://www.doremidi.club/download/Product/PedalConfigTool/Update/Pedal_Config_Tool_V4.0.3.exe
+https://www.doremidi.club/download/Product/PedalConfigTool/Update/Pedal_Config_Tool_V4.0.3.dmg
+** Firmware upgrade tools and packages
+Listed per version on the product page, for example
+https://www.doremidi.club/download/Product/MPC-20/MPC-20_Upgrade_instructionsV2.1.1.zip

@@ -1,11 +1,15 @@
 * energy-pedal_monome
 ** about
+*** to run
+from host:
+  tools/pedals/bridge.sh
+from docker, root of project:
+  =pw-jack cargo run --bin midi_pulse -- energy-pedal_monome=
+*** references and design
 TOML-in-org format reference: [[file:README.org]]
 Player reference: [[file:energy-pedal_monome_readme.org]]
 Design: [[file:../TODO/resonance/02_plan.org]], and beside it
 the discussion: [[file:../TODO/resonance/01_discussion.org]].
-Run from the repository root:
-=pw-jack cargo run --bin midi_pulse -- energy-pedal_monome=
 Derived from
 [[file:volpedal-newnotes-and-global_granular-sustain.org]]:
 the same tuning, the same two unpinned grids, the same sustain
@@ -31,10 +35,6 @@ error at load, never silently ignored. A key left out takes the
 engine's default ('StringsParams::default()' in
 'edo_surface/src/strings/params.rs'); this file sets every one
 explicitly, at that default, so each is here to read and edit.
-** identity
-*** PARAM version = 1
-*** PARAM id = "energy-pedal_monome"
-*** PARAM title = "Monomes: coupled strings, struck and bloomed by an energy pedal"
 ** ELEM tunings
 *** PARAM id = "main"
 *** PARAM edo = 41
@@ -49,15 +49,6 @@ The strings engine. 'rigs/README.org', "Output sinks", has the
 short version; every parameter is documented here, in place.
 *** PARAM id = "strings"
 *** PARAM kind = "cpal_strings"
-*** the stream
-Both need a restart to change.
-**** PARAM sample_rate = 48000
-Hz. Whatever the audio server runs at; 48000 or 44100.
-**** PARAM buffer_frames = 128
-Frames per audio callback. 64 to 512 are the useful range.
-***** the math
-The block's latency is 'buffer_frames / sample_rate': 128 frames
-at 48 kHz is 2.7 ms. The energy pedal is read once per block.
 *** the level and the damper
 **** PARAM amplitude = 0.15
 Unitless master level, in (0, 1]. Useful from about 0.05 to 0.4;
@@ -69,7 +60,7 @@ over the voice's loops of v_i), -0.95, 0.95)', where 'v_i' is
 the wave a loop delivers to the bridge and 'gain_v' the voice's
 envelope times its timbre, fader and pedal gains, as the sawwave
 engine computes them. The clamp is the sawwave engine's too.
-**** PARAM release_secs = 0.05
+**** PARAM release_secs = 0.2
 Seconds, > 0. The damper: how long a released note takes to fall
 silent. Useful from 0.01 (a hard damper) to about 1 (a soft
 one). A sustained note is not released and rings on its own
@@ -80,8 +71,9 @@ it is to 0 over 'release_secs', and the voice's output is scaled
 by it. When 'env' reaches 0 the voice leaves the voice map and
 its string leaves the engine, so it no longer rings in sympathy
 with the others.
-*** parameters we talked about having access to
+*** timbre, "familiar"
 **** TABLE string
+***** about
 One string: how it decays over pitch, how many unison loops a
 note has, and how stiff it is. Each loop is an extended
 Karplus-Strong loop: a delay line, then a tuning allpass, the
@@ -102,7 +94,7 @@ blocker 'y = k (x - x1) + R y1', 'k = (1 + R) / 2', has its
 cutoff at 'f0 / 200'; the loss filter and the tuning absorb its
 small loss and lead at 'f0'.
 ***** decay
-****** PARAM t60_seconds_at_55hz = 10.0
+****** PARAM t60_seconds_at_55hz = 20.0
 Seconds, > 0. How long a 55 Hz note's fundamental takes to fall
 60 dB against a rigid bridge: the low anchor of the decay curve.
 Useful from about 2 (a guitar) to 30 (a long piano bass). Longer
@@ -127,7 +119,7 @@ on pitch.
 'T60(f0)' as under 't60_seconds_at_55hz', with this as its value
 at 1760 Hz. Its ratio to the low anchor sets the slope: at the
 defaults 'T60' falls by a factor of 0.68 per octave.
-****** PARAM high_frequency_t60_ratio = 0.3
+****** PARAM high_frequency_t60_ratio = 0.5
 Unitless, in (0, 1]. How much faster the upper partials die than
 the fundamental. 1 keeps every partial ringing as long as the
 fundamental (bright, metallic, Karplus-Strong-like); 0.1 is a
@@ -198,7 +190,7 @@ inharmonicity_b_at_55hz) ^ (log2(f0 / 55) / 5)', a log-log line
 like the decay curve. Where 'B(f0)' is at or below the audible
 threshold 'exp(2.54 ln(f0) - 24.6)' (5.5e-7 at 55 Hz, 1.1e-4 at
 440 Hz, 3.6e-3 at 1760 Hz) the dispersion chain is left out.
-****** PARAM inharmonicity_b_at_1760hz = 5e-3
+****** PARAM inharmonicity_b_at_1760hz = 1e-3
 Unitless, in (0, 0.1]. The stiffness 'B' at 1760 Hz: the high
 anchor. Useful from 1e-4 to 2e-2. Piano treble strings are stiff
 for their length, so the curve usually rises with pitch.
@@ -225,6 +217,7 @@ the chain delays less, run sharp. The chain is also dropped when
 it would leave the tuning allpass less than its minimum delay
 (only at very high pitch).
 **** TABLE exciter
+***** about
 What starts a note: the "pick energy" of the discussion. At
 key-down a table is read into the note's loops, one sample per
 sample, as the plectrum or hammer would push the string. A
@@ -265,7 +258,7 @@ is a brighter attack.
 'fc = min(brightness * f0, 0.45 * sample_rate)'. The knock
 passes the same lowpass at the fixed 'fc = brightness * 110' Hz,
 since the knock is shared by every note.
-****** PARAM position = 0.125
+****** PARAM position = 0.2
 Fraction of the string's length from the bridge, in (0, 0.5],
 at which it is plucked or struck. Near 0.5 (the middle) is
 hollow, like a clarinet; near 0.1 is full and bright; very near
@@ -313,6 +306,7 @@ tight click; 150 a boomy thud.
 The table is 'knock_ms' long, under the window
 'exp(-t / (knock_ms / 6.9))', which falls 60 dB over 'knock_ms'.
 **** TABLE energy
+***** about
 How the energy pedal puts "bow energy" into a string: the energy
 that, unlike the pick energy, arrives continuously. Around each
 key-down there is a window shaped like an asymmetric triangle:
@@ -337,6 +331,7 @@ and 'b = ex_post_energizing_ms' (in seconds):
 The energy factor is 'f(t) = tri(t) * pedal(t) ^ e', with
 'e = pedal_energy_exponent'.
 ***** PARAM kind = "ebow"
+****** about
 An enum: how the drive puts energy in, "ebow", "bow" or "wind".
 The ebow is a magnet under the string that feeds the string's own
 motion back into it, so the note blooms from what it already
@@ -366,7 +361,7 @@ dulls it. The wind's is a sine at the partial 'k f0' (k >= 1)
 nearest the wind's pitch 'f_s' at key-down (see
 'wind_speed_hz_max').
 ***** the window
-****** PARAM ex_ante_energizing_ms = 300.0
+****** PARAM ex_ante_energizing_ms = 100.0
 Milliseconds, in [0, 10000]. How far back before key-down the
 pedal's history counts. With the pedal already down when a key
 is struck, the note starts with energy in it, as if it had been
@@ -382,7 +377,7 @@ amplitude time constant, so energy put in early has partly
 decayed by key-down. Each loop then gets one delay line's worth
 of the kind's waveshape, scaled to the peak 'A0 / unison_count',
 added on top of the strike.
-****** PARAM ex_post_energizing_ms = 600.0
+****** PARAM ex_post_energizing_ms = 300.0
 Milliseconds, in [0, 60000]. How long after key-down the pedal
 keeps driving the note, its weight falling linearly to 0. Short
 (100 to 300) is a swell on the attack; long (1000 to 5000) lets
@@ -453,6 +448,7 @@ pre-charge as loud as the strike. Useful from 0 to 5.
 a constant full pedal over a leg 'a' short beside 'tau',
 'A0' is about 'precharge_gain * a / 2'.
 **** TABLE bridge
+***** about
 The one bridge every sounding string meets. Each string hands
 the bridge the wave arriving at it, and takes back that wave
 minus the bridge's motion, so every sounding string hears every
@@ -460,7 +456,7 @@ other: sympathetic ringing, between any pitches, in any tuning.
 Only sounding strings take part: a held or sustained note rings
 in sympathy, an unplayed key has no string. A change here
 reaches every sounding string at once.
-***** PARAM heaviness = 3000.0
+***** PARAM heaviness = 3e3
 Unitless, > 0. The bridge's impedance over one string's. A
 heavy bridge (large) barely moves: weak sympathy and long notes,
 as on a piano. A light bridge (small) moves freely: strong
@@ -491,7 +487,7 @@ every note, the high ones most. A silent string hears the others
 through '-v_b': each round trip it takes '2 / (N + r)' of their
 summed waves, which builds up only where its partials meet
 theirs.
-***** PARAM damping_hz = 6000.0
+***** PARAM damping_hz = 1.5e4
 Hz, > 0. The cutoff of a lowpass on the bridge's motion. Lower
 keeps the coupling (and the drain into the bridge) to the low
 partials; higher lets the upper partials ring in sympathy too.
@@ -502,6 +498,7 @@ sample_rate)', gain 1 at DC. Above the cutoff the bridge passes
 less of the summed wave, so those frequencies neither couple nor
 drain as much.
 **** TABLE body
+***** about
 The resonating body on the summed output: what turns strings
 into an instrument. A bank of resonators, like the modes of a
 soundboard or a guitar top, colors everything and, through the
@@ -509,7 +506,7 @@ knock, the attack. It is outside the strings, so it cannot make
 them unstable. A change here rebuilds the body at once (its
 resonators start from rest, a brief dip) and rebuilds the knock
 for notes struck afterward.
-***** PARAM mix = 0.5
+***** PARAM mix = 0.3
 Unitless, in [0, 1]. How much of the output is the body's. 0 is
 the bare strings; 1 only the body.
 ****** the math
@@ -519,7 +516,7 @@ gain on white noise (measured once per parameter change), so the
 body leaves a broadband signal at the level it came in. 'mix 0'
 is exactly the dry sum.
 ***** the modes
-****** PARAM mode_count = 24
+****** PARAM mode_count = 64
 Count, 1 to 128. Resonators in the bank. A few is a small,
 boxy, colored body; 20 to 60 a full one. Useful from 8 to 64.
 ******* the math
@@ -541,7 +538,7 @@ Hz, above 'lowest_hz'. The highest mode's nominal center. Lower
 is a darker body. Useful from 2000 to 12000.
 ******* the math
 'f_(M-1) = highest_hz' before jitter.
-****** PARAM q = 30.0
+****** PARAM q = 60
 Unitless, > 0. Each mode's sharpness. Low (5 to 15) is a damped,
 smooth body; high (50 to 200) a ringing, resonant one whose
 modes can be heard as pitches. Useful from 10 to 100.
@@ -557,7 +554,8 @@ Any integer, >= 0. Picks the jitter of the mode centers: another
 seed is another body of the same size and shape. Try a few.
 ******* the math
 The seed of the deterministic noise that draws each 'j_k'.
-*** parameters you might also enjoy
+*** timbre, exotic
+**** DONE about
 Options beside the passive instrument. The bow and the wind are
 two more ways for the energy pedal to drive a string, chosen by
 the energy table's 'kind'. The howl is an active path that can
@@ -567,11 +565,13 @@ howl or the modal table reaches sounding strings at once, except
 the crossover, which applies to notes struck afterward; a change
 to the bow or the wind applies to notes struck afterward.
 **** TABLE energy
+***** DONE about
 The rest of the energy table: the bow's and the wind's
 parameters, read only when 'kind' (under 'parameters we talked
 about having access to') is "bow" or "wind". The two energy
 tables are one table to the engine.
 ***** the bow
+****** DONE about
 A bow drawn across the string at a speed the pedal and the window
 set: strongest at the key-down, fading as the window closes, a
 lighter pedal bowing the same way, softer. It speaks at about
@@ -633,6 +633,7 @@ under the bow, 'delta / f = bow_velocity', so
 bow grips until something else moves the string: about 0.7 speaks
 after the shipped strike, not after a soft one.
 ***** the wind
+****** DONE about
 Wind across the string, as across an aeolian harp: the partial
 nearest the wind's pitch gathers the noise and blooms, and as
 the pedal rises the wind's pitch climbs, so the bloom moves up
@@ -684,6 +685,7 @@ The band's noise times 'tri(t) * wind_gain': the pedal's position
 enters through 'f_s' (a higher, wider band carries more noise)
 and not as a factor of its own.
 **** TABLE howl
+***** about
 An active loop beside the passive bridge, as an amplifier and
 its speaker are beside a guitar's strings: the sum of every
 sounding string, saturated, delayed and added back into each.
@@ -692,7 +694,7 @@ it chooses. Among several notes the partials they share win, so
 it pulls near-unisons, near-fifths and near-octaves toward just
 ratios: it fights the EDO tuning, the more the higher the gain.
 Released notes still stop (the damper wins). Off as shipped.
-***** the math of the howl
+***** the math
 Per sample, with 'v_i' the wave arriving at the bridge from each
 string (the same sum the bridge takes),
 'h = level * tanh(gain * sum over every string of v_i)' is
@@ -718,7 +720,7 @@ from 0 to 50.
 times 'level' is the small-signal gain of the path; above it,
 more 'gain' only sharpens the square wave and speeds the
 take-over, while 'level' sets how loud.
-***** PARAM level = 0.003
+***** PARAM level = 0.02
 Loop amplitude units, in [0, 1]. How loud a howling note
 settles. At gain 20, 0.003 settles a lone 220 Hz note at a peak
 of about 0.5 (struck without the howl it peaks near 0.17), and
@@ -731,7 +733,7 @@ The howl adds at most 'level' per sample to each string. With
 default decay curve, a string settles near an amplitude of
 '4 / pi * level / (1 - g)'; what is heard also passes the body,
 whose resonances lift some pitches more than others.
-***** PARAM delay_ms = 5.0
+***** PARAM delay_ms = 4.0
 Milliseconds, in [0.5, 20]. The speaker's distance (1 ms is
 about 34 cm). It picks which partials howl readily: one whose
 period fits the delay a whole number of times is helped most,
@@ -745,6 +747,7 @@ The delayed 'h' reaches a partial at 'f' with the phase
 scaled by the cosine of that phase. The delay is rounded to
 whole samples.
 **** TABLE modal
+***** about
 Above the crossover a note is a few resonators (modes) instead
 of loops. Up there a period is a couple of dozen samples or
 fewer, and the loop's loss, stiffness and tuning filters eat it,
@@ -796,7 +799,17 @@ costs a few multiply-adds per sample.
 Modes 'k = 1 .. mode_count', stopping at the first at or above
 '0.45 * sample_rate'. Since 'f_k' is at least 'k f0', a note at
 'f0' keeps at most '0.45 * sample_rate / f0' modes.
-** the energy pedal
+*** DONE the stream
+Both need a restart to change.
+**** PARAM sample_rate = 48000
+Hz. Whatever the audio server runs at; 48000 or 44100.
+**** PARAM buffer_frames = 128
+Frames per audio callback. 64 to 512 are the useful range.
+***** the math
+The block's latency is 'buffer_frames / sample_rate': 128 frames
+at 48 kHz is 2.7 ms. The energy pedal is read once per block.
+** pedal connection
+*** about
 It reaches the runtime through the MPC-20 -> host bridge: run
 =tools/pedals/bridge.sh= on the HOST before starting the rig,
 which looks for the "MPC-20 pedals" port only at startup
@@ -807,6 +820,7 @@ taper knobs. Use channel 2 if the pedal is cabled there.
 *** ELEM expression_pedals
 **** PARAM channel = 1
 **** PARAM role = "string_energy"
+***** TODO jeff : are there other options for this?
 ** grid A: the first available 16x16 monome
 *** ELEM monomes
 **** PARAM id = "a"
@@ -904,3 +918,7 @@ skipped and A plays on.
 **** PARAM monome = "b"
 **** PARAM kind = "edo_shift_pad"
 **** PARAM rect = [13, 0, 15, 1]
+** DONE identity (boring)
+*** PARAM version = 1
+*** PARAM id = "energy-pedal_monome"
+*** PARAM title = "Monomes: coupled strings, struck and bloomed by an energy pedal"

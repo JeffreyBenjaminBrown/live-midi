@@ -4,7 +4,7 @@
 from host:
   tools/pedals/bridge.sh
 from docker, root of project:
-  =pw-jack cargo run --bin midi_pulse -- two-pedals_monome=
+  pw-jack cargo run --bin midi_pulse -- two-pedals_monome
 *** references and design
 TOML-in-org format reference: [[file:README.org]]
 Player reference: [[file:two-pedals_monome_readme.org]]

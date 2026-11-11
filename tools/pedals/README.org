@@ -23,6 +23,13 @@ as root (required, to detach the USB interface from =snd-usb-audio=) -- it will
 prompt for your sudo password. Ctrl-C stops it; it reconnects across replugs.
 Verify from the container: =aseqdump -p 'MPC-20 pedals'= and move a pedal.
 
+The MPC-20's light tells you whether the host sees it: *flashing*
+means power only, no USB data (a charge-only cable, or a port or
+hub that passes power but not data), and the bridge prints
+"DOREMiDi MPC-20 (1a86:752d) not found"; *steady* means a
+computer has enumerated it. The manufacturer's manual is in
+=learnings/doremidi/=.
+
 Why a wrapper instead of typing the =nix-shell= line by hand -- two traps it
 sidesteps, both observed in the wild:
 - =nix-shell='s =--run= takes ONE (quoted) argument. Unquoted, =--run sudo

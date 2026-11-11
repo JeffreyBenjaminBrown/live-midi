@@ -1,6 +1,12 @@
 #+title: Monomes: coupled strings and an energy pedal
 
 * Run
+** in brief
+on host:
+  tools/pedals/bridge.sh
+in docker:
+  pw-jack cargo run --bin midi_pulse -- energy-pedal_monome
+** for others
 Connect one or two 16x16 monomes. For the energy pedal, run
 =tools/pedals/bridge.sh= on the HOST first, in a terminal you
 leave open, every session. Then, from the repository root inside
@@ -19,14 +25,14 @@ instead. Ctrl-C blanks the grids and stops audio.
 
 * Layout
 #+begin_example
-       x=0                                     13    14    15
-y=0  | . . . . . . . . . . . . .              SHIFT SHIFT SHIFT
-y=1  | . . . . . . . . . . . . .              SHIFT SHIFT SHIFT
+       x=0                                 13    14    15
+y=0  | . . . . . . . . . . . . .         SHIFT SHIFT SHIFT
+y=1  | . . . . . . . . . . . . .         SHIFT SHIFT SHIFT
      |
-     |                   EDO PLAY SURFACE
+     |                EDO PLAY SURFACE
      |
-y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . .
-                   x=6  x=7  x=8
+y=15 | . . . . . .  OFF  ON  TOGGLE  . . . . . . . . .
+                    x=6  x=7  x=8
 #+end_example
 Everything but the shift pad and the three sustain buttons is
 play surface: 41-EDO from 110 Hz, eight steps per cell rightward

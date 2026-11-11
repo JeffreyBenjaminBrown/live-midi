@@ -1,0 +1,68 @@
+#+title: Swapping pieces in and out of rigs
+
+* TODO [Claude] what makes it hard today, and a proposal
+You said it ought to be easy to swap pieces in and out of rigs,
+and suspected it isn't. It isn't, for the surfaces runtime; the
+editor shows another way. This is a proposal; I have not started
+it, because it would change every instrument you play and I
+can't play-test them.
+** what I already did
+Small, safe moves, each one piece with one home:
+*** the timbre slots
+A rig's '[[timbres]]' became four 'Timbre's in one module,
+'timbre_slots.rs'. The surfaces runtime had a private copy of
+'Timbre' under another name and converted it field by field in
+four places.
+*** opening the sound card
+'audio_output.rs' now opens the JACK output for the surfaces
+runtime, the drum sampler and the editor. Each had its own copy.
+** why swapping pieces is hard in the surfaces runtime
+*** one struct holds every feature
+'GridThread' holds the state of every feature a grid might have:
+chords, loops, edit mode, the pedal slide, fine transpose, tone
+controls, the pulse. A rig without a feature still carries it,
+switched off by a sentinel rect.
+*** one function routes every key
+'keys::handle_key' tests the pressed cell against each overlay's
+rect in a fixed order, and each branch reaches into whatever
+other features it affects: the timbre keys check edit mode,
+chord storage and tone targets.
+*** features change each other by rule
+The rig README's wiring map lists the connections that are still
+fixed in code: a 'compact_loop_block' changes how the sustain
+buttons behave, a 'volume_delta' changes how the grid looks, a
+'momentary_chord_block' turns off the note handles. Those rules
+live in the code of the feature that is affected, not of the one
+that causes them.
+** how the editor does it
+The editor plays a rig as a list of pieces, back to front, each a
+rect and a kind ('editor/rig_layout.rs'). A key goes to the front
+piece under it. A piece's press yields events (a note on, a note
+off, a parameter change) instead of touching voices, and one
+place, the session, sends those events to the sound and to a
+recording. Painting asks each piece for its cells. A rig gains or
+loses a piece by gaining or losing a window, and nothing else
+changes.
+** the proposal
+Move the surfaces runtime to the editor's shape, one feature at a
+time.
+*** a piece interface
+A piece owns its rect and its state, takes presses, emits events,
+and paints. Features that are pieces already, nearly: the timbre
+keys, the volume keys, the scroll pad, the sustain buttons, the
+pedal toggles.
+*** events instead of reach-ins
+Where a feature affects another (edit mode redirects the timbre
+keys), the affected one would subscribe to an event rather than
+the cause checking for it.
+*** order
+Begin with the pieces the editor shares (timbre, volume, scroll),
+so the editor and the surfaces runtime run the same code; then
+the sustain family; leave chords, loops and edit mode, the most
+entangled, for last, or for never.
+** TODO [Claude] should I do this?
+It is several days of work at the surfaces runtime's current
+size (about 15,000 lines) and would change every rig you play,
+though its 800 tests would hold the behaviour still. I would do
+the first step, the three shared pieces, and stop for you to
+play a rig before going on.
